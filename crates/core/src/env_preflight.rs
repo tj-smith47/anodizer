@@ -49,6 +49,10 @@ impl KeyKind {
 pub enum EnvRequirement {
     /// A CLI tool that must be resolvable on PATH.
     Tool { name: String },
+    /// At least one of the listed CLI tools must be resolvable on PATH
+    /// (stages with a detection ladder, e.g. dmg's
+    /// hdiutil → genisoimage → mkisofs).
+    ToolAnyOf { names: Vec<String> },
     /// Every listed env var must be present and non-empty.
     EnvAllOf { vars: Vec<String> },
     /// At least one of the listed env vars must be present and non-empty.
@@ -219,6 +223,15 @@ fn check_one(
                 format!("required tool '{name}' not found on PATH"),
             )
         }),
+        EnvRequirement::ToolAnyOf { names } => {
+            let any = names.iter().any(|n| (probes.tool)(n));
+            (!any).then(|| {
+                (
+                    FailureKind::MissingTool,
+                    format!("none of the tool(s) [{}] found on PATH", names.join(", ")),
+                )
+            })
+        }
         EnvRequirement::EnvAllOf { vars } => {
             let missing: Vec<&str> = vars
                 .iter()
@@ -508,6 +521,110 @@ pub fn env_ref_requirements(source: &str, value: &str) -> Vec<SourcedRequirement
     out
 }
 
+/// True when a config entry is statically inactive for this run: its
+/// `skip:` / `skip_upload:` evaluates truthy, or its `if:` condition
+/// renders falsy. Mirrors the run-path gating for requirement derivation —
+/// a `skip: true` entry must not demand tools or credentials from
+/// preflight. Anything unrenderable is treated as ACTIVE so preflight
+/// over-collects rather than silently under-collecting.
+pub fn entry_inactive(
+    ctx: &crate::context::Context,
+    skip: Option<&crate::config::StringOrBool>,
+    skip_upload: Option<&crate::config::StringOrBool>,
+    if_condition: Option<&str>,
+) -> bool {
+    let truthy = |v: &crate::config::StringOrBool| {
+        v.try_evaluates_to_true(|t| ctx.render_template(t))
+            .unwrap_or(false)
+    };
+    if skip.is_some_and(truthy) || skip_upload.is_some_and(truthy) {
+        return true;
+    }
+    if_condition.is_some_and(|cond| {
+        matches!(
+            crate::config::evaluate_if_condition(Some(cond), "preflight", |t| ctx
+                .render_template(t)),
+            Ok(false)
+        )
+    })
+}
+
+/// Requirement for a templated secret-bearing config value with an env-var
+/// fallback: a set value declares its `{{ .Env.X }}` references (a literal
+/// declares nothing — the credential is inline); an unset value declares
+/// the fallback env var the run path reads instead.
+pub fn secret_requirement(
+    config_value: Option<&str>,
+    fallback_env: &str,
+) -> Option<EnvRequirement> {
+    match config_value.filter(|v| !v.is_empty()) {
+        Some(v) => {
+            let refs = template_env_refs(v);
+            (!refs.is_empty()).then_some(EnvRequirement::EnvAllOf { vars: refs })
+        }
+        None => Some(EnvRequirement::EnvAllOf {
+            vars: vec![fallback_env.to_string()],
+        }),
+    }
+}
+
+/// The union of build targets this run would compile, mirroring the build
+/// stage's resolution: per-build `targets:` (an explicitly empty list means
+/// "skip this build"), else `defaults.targets`, else the built-in default
+/// matrix; a skipped build (`skip:` truthy) contributes nothing; an
+/// unrenderable `skip:` counts as active (over-collect). `--single-target`
+/// narrows the union to the requested triple (exact match first, then the
+/// same OS/arch alias fallback the build stage applies), so a host-only
+/// release never demands cross-platform bundler tools.
+pub fn configured_build_targets(ctx: &crate::context::Context) -> Vec<String> {
+    let default_targets: Vec<String> = ctx
+        .config
+        .defaults
+        .as_ref()
+        .and_then(|d| d.targets.clone())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| {
+            crate::target::DEFAULT_TARGETS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect()
+        });
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |t: &str| {
+        if !out.iter().any(|x| x == t) {
+            out.push(t.to_string());
+        }
+    };
+    for krate in crate_universe(&ctx.config) {
+        match krate.builds.as_ref().filter(|b| !b.is_empty()) {
+            Some(builds) => {
+                for build in builds {
+                    if entry_inactive(ctx, build.skip.as_ref(), None, None) {
+                        continue;
+                    }
+                    match build.targets.as_ref() {
+                        Some(targets) => targets.iter().for_each(|t| push(t)),
+                        None => default_targets.iter().for_each(|t| push(t)),
+                    }
+                }
+            }
+            // No builds configured: the build stage synthesizes a default
+            // binary build over the default target matrix.
+            None => default_targets.iter().for_each(|t| push(t)),
+        }
+    }
+    if let Some(single) = ctx.options.single_target.as_deref() {
+        if out.iter().any(|t| t == single) {
+            out.retain(|t| t == single);
+        } else {
+            out = crate::partial::find_runtime_target(single, &out)
+                .into_iter()
+                .collect();
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -533,6 +650,35 @@ mod tests {
         let report = evaluate(&[], &no_env, &all_pass_probes());
         assert!(report.ok());
         assert_eq!(report.checks, 0);
+    }
+
+    #[test]
+    fn tool_any_of_passes_when_one_is_present() {
+        let ladder = EnvRequirement::ToolAnyOf {
+            names: vec!["hdiutil".into(), "genisoimage".into(), "mkisofs".into()],
+        };
+        let probes = EnvProbes {
+            tool: &|name| name == "mkisofs",
+            endpoint: &|_| Ok(()),
+            docker: &|| true,
+        };
+        let report = evaluate(&[req("stage:dmg", ladder.clone())], &no_env, &probes);
+        assert!(report.ok(), "one available tool must satisfy the ladder");
+
+        let none_available = EnvProbes {
+            tool: &|_| false,
+            endpoint: &|_| Ok(()),
+            docker: &|| true,
+        };
+        let report = evaluate(&[req("stage:dmg", ladder)], &no_env, &none_available);
+        assert_eq!(report.failures.len(), 1);
+        assert_eq!(report.failures[0].kind, FailureKind::MissingTool);
+        assert!(
+            report.failures[0].message.contains("hdiutil")
+                && report.failures[0].message.contains("mkisofs"),
+            "message must list the whole ladder: {}",
+            report.failures[0].message
+        );
     }
 
     #[test]
@@ -836,5 +982,85 @@ mod tests {
                 .contains("http://minio.local:9000")
         );
         assert!(report.failures[0].message.contains("timed out"));
+    }
+
+    #[test]
+    fn configured_build_targets_mirror_build_resolution() {
+        use crate::config::{BuildConfig, Config, CrateConfig, StringOrBool};
+        use crate::context::{Context, ContextOptions};
+
+        let krate = |name: &str, builds: Option<Vec<BuildConfig>>| CrateConfig {
+            name: name.to_string(),
+            builds,
+            ..Default::default()
+        };
+
+        // No builds anywhere: the default matrix applies.
+        let config = Config {
+            crates: vec![krate("app", None)],
+            ..Default::default()
+        };
+        let ctx = Context::new(config, ContextOptions::default());
+        assert_eq!(
+            configured_build_targets(&ctx),
+            crate::target::DEFAULT_TARGETS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect::<Vec<_>>()
+        );
+
+        // Explicit per-build targets win; a skipped build and an
+        // explicitly-empty target list contribute nothing; the union spans
+        // crates.
+        let config = Config {
+            crates: vec![
+                krate(
+                    "app",
+                    Some(vec![
+                        BuildConfig {
+                            targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
+                            ..Default::default()
+                        },
+                        BuildConfig {
+                            targets: Some(vec!["x86_64-pc-windows-msvc".to_string()]),
+                            skip: Some(StringOrBool::Bool(true)),
+                            ..Default::default()
+                        },
+                    ]),
+                ),
+                krate(
+                    "helper",
+                    Some(vec![BuildConfig {
+                        targets: Some(vec![
+                            "aarch64-apple-darwin".to_string(),
+                            "x86_64-unknown-linux-gnu".to_string(),
+                        ]),
+                        ..Default::default()
+                    }]),
+                ),
+            ],
+            ..Default::default()
+        };
+        let ctx = Context::new(config.clone(), ContextOptions::default());
+        assert_eq!(
+            configured_build_targets(&ctx),
+            vec![
+                "x86_64-unknown-linux-gnu".to_string(),
+                "aarch64-apple-darwin".to_string(),
+            ]
+        );
+
+        // --single-target narrows the union to the requested triple.
+        let ctx = Context::new(
+            config,
+            ContextOptions {
+                single_target: Some("aarch64-apple-darwin".to_string()),
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            configured_build_targets(&ctx),
+            vec!["aarch64-apple-darwin".to_string()]
+        );
     }
 }

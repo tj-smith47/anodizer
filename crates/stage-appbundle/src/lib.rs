@@ -718,6 +718,16 @@ impl Stage for AppBundleStage {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Environment requirements for the appbundle stage: none. The stage
+/// assembles the `.app` directory layout with pure file operations — no
+/// external tool, env var, or endpoint is consumed. Declared explicitly so
+/// the preflight aggregation covers every pipeline stage by construction.
+pub fn env_requirements(
+    _ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    Vec::new()
+}
+
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests {

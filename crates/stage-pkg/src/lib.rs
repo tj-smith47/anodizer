@@ -597,6 +597,37 @@ impl Stage for PkgStage {
 // Tests
 // ---------------------------------------------------------------------------
 
+/// Environment requirements for the pkg stage: `pkgbuild` when any active
+/// `pkgs:` entry exists and the configured build targets include macOS
+/// (the stage only packages darwin binaries).
+pub fn env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    if !anodizer_core::env_preflight::configured_build_targets(ctx)
+        .iter()
+        .any(|t| anodizer_core::target::is_darwin(t))
+    {
+        return Vec::new();
+    }
+    let configured = anodizer_core::env_preflight::crate_universe(&ctx.config)
+        .into_iter()
+        .flat_map(|c| c.pkgs.iter().flatten())
+        .any(|cfg| {
+            !anodizer_core::env_preflight::entry_inactive(
+                ctx,
+                cfg.skip.as_ref(),
+                None,
+                cfg.if_condition.as_deref(),
+            )
+        });
+    if !configured {
+        return Vec::new();
+    }
+    vec![anodizer_core::EnvRequirement::Tool {
+        name: "pkgbuild".to_string(),
+    }]
+}
+
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests {

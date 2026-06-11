@@ -36,8 +36,8 @@ pub enum PreflightScope {
     /// Full `anodizer release` pipeline: every configured stage.
     Full,
     /// `anodizer release --publish-only`: sign/checksum/release/docker/
-    /// publish/blob/snapcraft-publish/verify-release only (mirrors
-    /// `build_publish_only_pipeline`).
+    /// publish/blob/snapcraft-publish/announce/verify-release only
+    /// (mirrors `build_publish_only_pipeline`).
     PublishOnly,
 }
 
@@ -55,6 +55,7 @@ impl PreflightScope {
                     | "publish"
                     | "blob"
                     | "snapcraft-publish"
+                    | "announce"
                     | "verify-release"
             ),
         }
@@ -151,6 +152,45 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
         add(
             "stage:verify-release",
             anodizer_stage_verify_release::env_requirements(ctx),
+        );
+    }
+    // Per-platform bundler stages: each gates itself on the configured
+    // build targets (a darwin-only matrix never demands makensis, a
+    // --single-target host release never demands cross-platform tools).
+    if runs("msi") {
+        add("stage:msi", anodizer_stage_msi::env_requirements(ctx));
+    }
+    if runs("nsis") {
+        add("stage:nsis", anodizer_stage_nsis::env_requirements(ctx));
+    }
+    if runs("pkg") {
+        add("stage:pkg", anodizer_stage_pkg::env_requirements(ctx));
+    }
+    if runs("dmg") {
+        add("stage:dmg", anodizer_stage_dmg::env_requirements(ctx));
+    }
+    if runs("appbundle") {
+        add(
+            "stage:appbundle",
+            anodizer_stage_appbundle::env_requirements(ctx),
+        );
+    }
+    if runs("flatpak") {
+        add(
+            "stage:flatpak",
+            anodizer_stage_flatpak::env_requirements(ctx),
+        );
+    }
+    if runs("notarize") {
+        add(
+            "stage:notarize",
+            anodizer_stage_notarize::env_requirements(ctx),
+        );
+    }
+    if runs("announce") {
+        add(
+            "stage:announce",
+            anodizer_stage_announce::env_requirements(ctx),
         );
     }
 
@@ -410,22 +450,227 @@ publish:
 
     /// An empty config must not demand publisher credentials: the
     /// ungated `all_publishers` walk relies on every `requirements`
-    /// impl self-gating on its own configuration. The one exception is
-    /// github-release — release creation is on by default, so its token
-    /// ladder is a real requirement even for an empty config.
+    /// impl self-gating on its own configuration. That includes
+    /// github-release — the release stage only releases crates carrying a
+    /// `release:` block (real configs get one injected by defaults
+    /// merging), so a crate-less config demands no token.
     #[test]
     fn empty_config_yields_no_publisher_requirements() {
         let ctx = TestContextBuilder::new().build();
         let reqs = collect_requirements(&ctx, PreflightScope::Full);
         assert!(
-            !reqs
-                .iter()
-                .any(|r| r.source.starts_with("publish:") && r.source != "publish:github-release"),
+            !reqs.iter().any(|r| r.source.starts_with("publish:")),
             "unconfigured publishers contributed requirements: {reqs:?}"
         );
+
+        // And the inverse: a crate WITH a release block demands the ladder.
+        let top = crate_from_yaml("name: top\nrelease: { github: { owner: o, name: r } }");
+        let ctx = TestContextBuilder::new().crates(vec![top]).build();
+        let reqs = collect_requirements(&ctx, PreflightScope::Full);
         assert!(
             reqs.iter().any(|r| r.source == "publish:github-release"),
-            "default-on github-release must require its token ladder: {reqs:?}"
+            "a configured release block must require the token ladder: {reqs:?}"
+        );
+    }
+
+    /// Bundler stages contribute their tools only when the configured
+    /// build targets include the platform they package: a Windows target
+    /// matrix demands makensis + the WiX toolchain, a Linux-only matrix
+    /// demands neither — and dmg's detection ladder surfaces as a
+    /// tool-any-of, not three hard requirements.
+    #[test]
+    fn bundler_requirements_follow_configured_targets() {
+        let installer_yaml = |targets: &str| {
+            crate_from_yaml(&format!(
+                r#"
+name: app
+builds:
+  - targets: [{targets}]
+msis:
+  - wxs: app.wxs
+    version: v4
+nsis:
+  - script: app.nsi
+dmgs:
+  - {{}}
+flatpaks:
+  - app_id: org.example.App
+"#
+            ))
+        };
+
+        let ctx = TestContextBuilder::new()
+            .crates(vec![installer_yaml(
+                "x86_64-pc-windows-msvc, aarch64-apple-darwin",
+            )])
+            .build();
+        let reqs = collect_requirements(&ctx, PreflightScope::Full);
+        let tool = |reqs: &[SourcedRequirement], source: &str, name: &str| {
+            reqs.iter().any(|r| {
+                r.source == source
+                    && matches!(&r.requirement, EnvRequirement::Tool { name: n } if n == name)
+            })
+        };
+        assert!(
+            tool(&reqs, "stage:msi", "wix"),
+            "windows target must demand the configured WiX v4 toolchain: {reqs:?}"
+        );
+        assert!(
+            tool(&reqs, "stage:nsis", "makensis"),
+            "windows target must demand makensis: {reqs:?}"
+        );
+        let dmg_ladder = reqs.iter().any(|r| {
+            r.source == "stage:dmg"
+                && matches!(
+                    &r.requirement,
+                    EnvRequirement::ToolAnyOf { names } if names.contains(&"hdiutil".to_string())
+                )
+        });
+        assert!(
+            dmg_ladder,
+            "darwin target must demand the dmg tool ladder: {reqs:?}"
+        );
+        assert!(
+            !reqs.iter().any(|r| r.source == "stage:flatpak"),
+            "no linux target configured — flatpak must contribute nothing: {reqs:?}"
+        );
+
+        let ctx = TestContextBuilder::new()
+            .crates(vec![installer_yaml("x86_64-unknown-linux-gnu")])
+            .build();
+        let reqs = collect_requirements(&ctx, PreflightScope::Full);
+        for absent in ["stage:msi", "stage:nsis", "stage:dmg", "stage:pkg"] {
+            assert!(
+                !reqs.iter().any(|r| r.source == absent),
+                "linux-only matrix must not demand {absent} tools: {reqs:?}"
+            );
+        }
+        assert!(
+            tool(&reqs, "stage:flatpak", "flatpak-builder"),
+            "linux target must demand flatpak-builder: {reqs:?}"
+        );
+    }
+
+    /// An active `notarize.macos` entry demands rcodesign plus the env
+    /// refs of its templated secret fields; the templated values
+    /// themselves never appear in the requirements.
+    #[test]
+    fn notarize_requirements_follow_active_entries() {
+        use anodizer_core::config::{
+            MacOSNotarizeApiConfig, MacOSSignConfig, MacOSSignNotarizeConfig, NotarizeConfig,
+        };
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.config.notarize = Some(NotarizeConfig {
+            macos: Some(vec![MacOSSignNotarizeConfig {
+                sign: Some(MacOSSignConfig {
+                    certificate: Some("{{ .Env.PF_P12_B64 }}".to_string()),
+                    password: Some("{{ .Env.PF_P12_PASSWORD }}".to_string()),
+                    ..Default::default()
+                }),
+                notarize: Some(MacOSNotarizeApiConfig {
+                    key: Some("{{ .Env.PF_ASC_KEY }}".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        });
+        let reqs = collect_requirements(&ctx, PreflightScope::Full);
+        assert!(
+            reqs.iter().any(|r| {
+                r.source == "stage:notarize"
+                    && matches!(&r.requirement, EnvRequirement::Tool { name } if name == "rcodesign")
+            }),
+            "active macos entry must demand rcodesign: {reqs:?}"
+        );
+        for var in ["PF_P12_B64", "PF_P12_PASSWORD", "PF_ASC_KEY"] {
+            assert!(
+                reqs.iter().any(|r| {
+                    r.source == "stage:notarize"
+                        && matches!(
+                            &r.requirement,
+                            EnvRequirement::EnvAllOf { vars } if vars.contains(&var.to_string())
+                        )
+                }),
+                "templated notarize field must demand {var}: {reqs:?}"
+            );
+        }
+    }
+
+    /// Announce credentials derive from the per-announcer env resolution:
+    /// SMTP_PASSWORD for an enabled email announcer, the SLACK_WEBHOOK
+    /// fallback for slack without a configured webhook_url, the env ref of
+    /// a templated webhook_url instead when one is set — and announce is
+    /// part of the publish-only scope (its pipeline runs the stage last).
+    #[test]
+    fn announce_requirements_derive_from_announcer_config() {
+        use anodizer_core::config::{
+            AnnounceConfig, EmailAnnounce, SlackAnnounce, StringOrBool, TelegramAnnounce,
+        };
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.config.announce = Some(AnnounceConfig {
+            email: Some(EmailAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                host: Some("smtp.example.com".to_string()),
+                username: Some("releases@example.com".to_string()),
+                ..Default::default()
+            }),
+            slack: Some(SlackAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                ..Default::default()
+            }),
+            telegram: Some(TelegramAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                bot_token: Some("{{ .Env.PF_TG_TOKEN }}".to_string()),
+                ..Default::default()
+            }),
+            // Present but not enabled: must contribute nothing.
+            reddit: Some(Default::default()),
+            ..Default::default()
+        });
+
+        for scope in [PreflightScope::Full, PreflightScope::PublishOnly] {
+            let reqs = collect_requirements(&ctx, scope);
+            let announce_env = |var: &str| {
+                reqs.iter().any(|r| {
+                    r.source == "stage:announce"
+                        && matches!(
+                            &r.requirement,
+                            EnvRequirement::EnvAllOf { vars } if vars.contains(&var.to_string())
+                        )
+                })
+            };
+            assert!(
+                announce_env("SMTP_PASSWORD"),
+                "{scope:?}: enabled email announcer must demand SMTP_PASSWORD: {reqs:?}"
+            );
+            assert!(
+                announce_env("SLACK_WEBHOOK"),
+                "{scope:?}: slack without webhook_url must demand the fallback: {reqs:?}"
+            );
+            assert!(
+                announce_env("PF_TG_TOKEN"),
+                "{scope:?}: templated bot_token must demand its env ref: {reqs:?}"
+            );
+            assert!(
+                !announce_env("TELEGRAM_TOKEN"),
+                "{scope:?}: configured bot_token must not demand the fallback: {reqs:?}"
+            );
+            assert!(
+                !announce_env("REDDIT_SECRET"),
+                "{scope:?}: a present-but-disabled announcer must contribute nothing: {reqs:?}"
+            );
+        }
+
+        // `--skip=announce` drops the whole surface.
+        let mut skipped = TestContextBuilder::new()
+            .skip_stages(vec!["announce".to_string()])
+            .build();
+        skipped.config.announce = ctx.config.announce.clone();
+        let reqs = collect_requirements(&skipped, PreflightScope::Full);
+        assert!(
+            !reqs.iter().any(|r| r.source == "stage:announce"),
+            "--skip=announce must drop announce requirements: {reqs:?}"
         );
     }
 }

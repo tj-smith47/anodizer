@@ -5,6 +5,18 @@
 // so that `infer_os`/`infer_arch` in `stage-publish` are a strict subset of
 // what this function handles.
 
+/// Default build-target matrix used when neither a build's `targets:` nor
+/// `defaults.targets` is configured. Single source of truth shared by the
+/// build stage's job planner and preflight's target derivation.
+pub const DEFAULT_TARGETS: &[&str] = &[
+    "x86_64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "aarch64-pc-windows-msvc",
+    "aarch64-unknown-linux-gnu",
+];
+
 pub fn map_target(triple: &str) -> (String, String) {
     // ---- OS (substring match) ----
     // Note: android triples contain "linux" (e.g. aarch64-linux-android),

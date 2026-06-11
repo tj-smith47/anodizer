@@ -382,16 +382,7 @@ pub(crate) fn secret_requirement(
     config_value: Option<&str>,
     fallback_env: &str,
 ) -> Option<anodizer_core::EnvRequirement> {
-    use anodizer_core::env_preflight::template_env_refs;
-    match config_value.filter(|v| !v.is_empty()) {
-        Some(v) => {
-            let refs = template_env_refs(v);
-            (!refs.is_empty()).then_some(anodizer_core::EnvRequirement::EnvAllOf { vars: refs })
-        }
-        None => Some(anodizer_core::EnvRequirement::EnvAllOf {
-            vars: vec![fallback_env.to_string()],
-        }),
-    }
+    anodizer_core::env_preflight::secret_requirement(config_value, fallback_env)
 }
 
 /// True when a publisher entry is statically inactive for this run: its
@@ -406,20 +397,7 @@ pub(crate) fn entry_inactive(
     skip_upload: Option<&anodizer_core::config::StringOrBool>,
     if_condition: Option<&str>,
 ) -> bool {
-    let truthy = |v: &anodizer_core::config::StringOrBool| {
-        v.try_evaluates_to_true(|t| ctx.render_template(t))
-            .unwrap_or(false)
-    };
-    if skip.is_some_and(truthy) || skip_upload.is_some_and(truthy) {
-        return true;
-    }
-    if_condition.is_some_and(|cond| {
-        matches!(
-            anodizer_core::config::evaluate_if_condition(Some(cond), "preflight", |t| ctx
-                .render_template(t)),
-            Ok(false)
-        )
-    })
+    anodizer_core::env_preflight::entry_inactive(ctx, skip, skip_upload, if_condition)
 }
 
 #[cfg(test)]
