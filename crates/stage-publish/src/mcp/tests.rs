@@ -1024,3 +1024,36 @@ fn mcp_runs_when_manifest_has_no_oci_package() {
     }];
     assert!(mcp_image_owned_by_selected(&ctx));
 }
+
+#[test]
+fn render_strings_renders_header_values_but_not_names() {
+    // Transport header NAMES are literal protocol identifiers — published
+    // exactly as written, never template-rendered — while header VALUES
+    // are rendered. Pins the documented contract in both directions.
+    use anodizer_core::config::McpHeader;
+
+    let mut ctx = mcp_ctx(|mcp| {
+        mcp.packages[0].transport = McpTransport {
+            kind: McpTransportType::StreamableHttp,
+            url: "https://example.com/v1".to_string(),
+            headers: vec![McpHeader {
+                name: "X-{{ .Env.MCP_HDR }}".to_string(),
+                value: "Bearer {{ .Env.MCP_HDR }}".to_string(),
+            }],
+        };
+    });
+    ctx.template_vars_mut().set_env("MCP_HDR", "rendered");
+
+    let mut mcp = ctx.config.mcp.clone();
+    super::render_strings(&ctx, &mut mcp).expect("render_strings succeeds");
+
+    let header = &mcp.packages[0].transport.headers[0];
+    assert_eq!(
+        header.name, "X-{{ .Env.MCP_HDR }}",
+        "header name must stay byte-for-byte literal"
+    );
+    assert_eq!(
+        header.value, "Bearer rendered",
+        "header value must be template-rendered"
+    );
+}

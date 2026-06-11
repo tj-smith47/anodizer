@@ -811,6 +811,58 @@ mod tests {
         }
     }
 
+    // --------------- on_error defaults: lockstep append-merge ---------------
+
+    /// `defaults.publish.on_error` append-merges into EVERY crate of a
+    /// multi-crate (lockstep) workspace independently: a crate with its own
+    /// hooks keeps them first with the defaults appended after; a crate with
+    /// no `publish:` block at all inherits the defaults list outright.
+    #[test]
+    fn on_error_defaults_append_merge_across_lockstep_crates() {
+        use crate::config::HookEntry;
+
+        let mut crate_a = make_crate("a");
+        crate_a.publish = Some(PublishConfig {
+            on_error: Some(vec![HookEntry::Simple("notify-a".to_string())]),
+            ..Default::default()
+        });
+        let crate_b = make_crate("b");
+
+        let mut config = Config {
+            crates: vec![crate_a, crate_b],
+            defaults: Some(Defaults {
+                publish: Some(PublishDefaults {
+                    on_error: Some(vec![HookEntry::Simple("notify-default".to_string())]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        apply_defaults(&mut config);
+
+        let a = config.crates[0]
+            .publish
+            .as_ref()
+            .expect("crate a publish block")
+            .on_error
+            .as_ref()
+            .expect("crate a on_error");
+        assert_eq!(a.len(), 2, "per-crate hook first, defaults appended");
+        assert!(a[0] == "notify-a", "crate a's own hook must come first");
+        assert!(a[1] == "notify-default", "defaults hook appended after");
+
+        let b = config.crates[1]
+            .publish
+            .as_ref()
+            .expect("crate b publish block created by the merge")
+            .on_error
+            .as_ref()
+            .expect("crate b on_error");
+        assert_eq!(b.len(), 1, "crate b inherits the defaults list outright");
+        assert!(b[0] == "notify-default");
+    }
+
     // --------------- Cargo (crates.io) publisher defaults ---------------
 
     #[test]
