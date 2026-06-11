@@ -1359,7 +1359,11 @@ mod tests {
             tmp.path().display(),
             prev_path.clone().unwrap_or_default()
         );
-        // SAFETY: env mutation single-threaded within this serial group.
+        let _env = anodizer_core::test_helpers::env::env_mutex()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: serialised by env_mutex above (shared with every other
+        // PATH mutator) plus this test's serial group; paired restore below.
         unsafe { std::env::set_var("PATH", &new_path) };
         let res = run_dispatch_and_rollback(&mut ctx, &publishers);
         // SAFETY: restore PATH within the same serial group.

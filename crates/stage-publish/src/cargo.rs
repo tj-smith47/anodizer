@@ -4766,7 +4766,11 @@ mod partial_rollback_tests {
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "crate-b");
         let prev_path = std::env::var("PATH").ok();
-        // SAFETY: env mutation is single-threaded within this serial group.
+        let _env = anodizer_core::test_helpers::env::env_mutex()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: serialised by env_mutex above (shared with every other
+        // PATH mutator) plus this test's serial group; paired restore below.
         unsafe { std::env::set_var("PATH", &new_path) };
         let result = publish_to_cargo_with(
             &mut ctx,
@@ -4848,7 +4852,11 @@ mod partial_rollback_tests {
         let log = StageLogger::new("publish-test", anodizer_core::log::Verbosity::Normal);
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "crate-b");
         let prev_path = std::env::var("PATH").ok();
-        // SAFETY: env mutation is single-threaded within this serial group.
+        let _env = anodizer_core::test_helpers::env::env_mutex()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: serialised by env_mutex above (shared with every other
+        // PATH mutator) plus this test's serial group; paired restore below.
         unsafe { std::env::set_var("PATH", &new_path) };
 
         let mut record: Vec<CargoYankTarget> = Vec::new();
@@ -4916,7 +4924,11 @@ mod partial_rollback_tests {
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "none");
         let prev_path = std::env::var("PATH").ok();
-        // SAFETY: env mutation is single-threaded within this serial group.
+        let _env = anodizer_core::test_helpers::env::env_mutex()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: serialised by env_mutex above (shared with every other
+        // PATH mutator) plus this test's serial group; paired restore below.
         unsafe { std::env::set_var("PATH", &new_path) };
 
         let publisher = CargoPublisher::new();
@@ -4964,9 +4976,14 @@ mod partial_rollback_tests {
     /// restoring the previous value afterward. Keeps the set/restore pairing
     /// out of each test body.
     fn with_path<R>(new_path: &str, f: impl FnOnce() -> R) -> R {
+        let _env = anodizer_core::test_helpers::env::env_mutex()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var("PATH").ok();
-        // SAFETY: callers hold the `#[serial(cargo_stub_path)]` guard, so the
-        // process-global PATH is mutated single-threaded; paired restore below.
+        // SAFETY: serialised by env_mutex above (shared with every other
+        // PATH mutator in the workspace, including fake_tool::activate)
+        // plus the callers' `#[serial(cargo_stub_path)]` guard; paired
+        // restore below.
         unsafe { std::env::set_var("PATH", new_path) };
         let out = f();
         // SAFETY: restore the prior PATH (paired with the set above).
@@ -5398,7 +5415,11 @@ mod partial_rollback_tests {
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "none");
         let prev_path = std::env::var("PATH").ok();
-        // SAFETY: single-threaded within this #[serial] group.
+        let _env = anodizer_core::test_helpers::env::env_mutex()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // SAFETY: serialised by env_mutex above (shared with every other
+        // PATH mutator) plus this test's serial group; paired restore below.
         unsafe { std::env::set_var("PATH", &new_path) };
 
         let mut record: Vec<CargoYankTarget> = Vec::new();

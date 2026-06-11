@@ -318,7 +318,7 @@ Recovery tooling consumes the flag at two layers:
 ```yaml
 # CI (the anodizer-action exposes it as a step output):
 - name: Rollback on release failure
-  if: failure() && steps.release.outputs.irreversibly_published != 'true'
+  if: always() && (steps.release.outcome == 'failure' || steps.release.outcome == 'cancelled') && steps.release.outputs.irreversibly_published != 'true'
 ```
 
 ```bash
@@ -487,12 +487,30 @@ anodizer tag rollback --no-push "$GITHUB_SHA"
 | `--no-push` | off | Mutate locally; skip the remote tag-delete and revert-commit push |
 | `--scope` | `all` | `all` (lockstep + per-crate) \| `lockstep` (`vX.Y.Z` only) \| `per-crate` (`<crate>-vX.Y.Z` only) |
 | `--mode` | `revert` | `revert` (history-preserving `git revert --no-edit`, default) \| `reset` (history-rewriting `git reset --hard <sha>~1`; requires force-push to land) |
+| `--force` | off | Override the published-state guard (below). For operators who are CERTAIN nothing irreversible shipped — e.g. offline recovery of a release that died before publish |
 | `--branch` | auto | Branch to push the revert to. Auto-resolved from `git branch -r --contains <bump_sha>` so the bump SHA itself (not "the default branch right now") drives the lookup — race-immune to default-branch movement. Falls back to `HEAD` resolution for local-only repos. Pass `--branch` to override |
 
 **SHA-derivation:** the bump SHA is the anchor for both the tag lookup AND
 the branch resolution. There is no `--default-branch` flag and no API call
 to `repos/<owner>/<repo>` — the rollback can run on a detached HEAD as long
 as the bump SHA is reachable from at least one remote branch.
+
+**Published-state guard:** before touching anything (including in
+`--dry-run`), rollback checks whether the version is already burned at a
+one-way-door publisher, by evidence strength:
+
+1. **Run summaries** (`<dist>/run-*/summary.json`, per-crate
+   `<dist>/<crate>/run-*/summary.json`) whose `tag` matches a tag being
+   rolled back. A landed Submitter-group publisher → refuse, naming the
+   publishers; only-reversible publishers → proceed.
+2. **GitHub release probe** — only for tags with NO summary on disk. A
+   published (non-draft) release → refuse. An **unanswerable probe**
+   (gh missing, auth/network error) also refuses — fail closed: with no
+   summary and no probe answer there is zero evidence the version is safe
+   to destroy. Only a non-GitHub origin proceeds with a warning, since no
+   GitHub release can exist there.
+
+`--force` overrides the whole guard for genuinely-offline recovery.
 
 **Safety check:** under the default `--mode=revert`, anodize hard-fails when
 non-bump commits sit between HEAD and the target SHA. (Anodize's own prior
@@ -501,12 +519,14 @@ recognised so re-runs of the same rollback are idempotent.) Use
 `--mode=reset` to force history rewrite when you genuinely want the
 intervening commits gone too.
 
-**Workflow integration:** anodizer's own `release.yml` wires this as the
-default `if: failure() || cancelled()` step on the release job:
+**Workflow integration:** anodizer's own `release.yml` wires this as a
+failure/cancelled step on the release job, additionally gated on the
+action's `irreversibly_published` output so a post-publish failure never
+triggers automated destruction of a live release:
 
 ```yaml
 - name: Rollback on release failure
-  if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
+  if: always() && (steps.release.outcome == 'failure' || steps.release.outcome == 'cancelled') && steps.release.outputs.irreversibly_published != 'true'
   env:
     GH_TOKEN: ${{ secrets.GH_PAT }}
     GITHUB_TOKEN: ${{ secrets.GH_PAT }}
@@ -514,9 +534,10 @@ default `if: failure() || cancelled()` step on the release job:
 ```
 
 The `id: release` on the release step is what makes `steps.release.outcome`
-resolvable; the `steps.release.outcome != 'skipped'` guard prevents the
-rollback from running when the release step itself was skipped (e.g.,
-`workflow_dispatch` with a `if:` that didn't match).
+and `steps.release.outputs.irreversibly_published` resolvable; checking the
+outcome (rather than bare `failure()`) also keeps the rollback from running
+when the release step itself was skipped (e.g. `workflow_dispatch` with an
+`if:` that didn't match).
 
 `tag rollback` complements `release --rollback-only` rather than replacing
 it: use `--rollback-only` to unwind individual publisher state (reversible

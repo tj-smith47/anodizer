@@ -277,7 +277,22 @@ fn outcome_to_status_string(outcome: &PublisherOutcome) -> String {
 /// Write the run summary JSON to the given path. Creates parent
 /// directories if missing. Pretty-prints so operators reading the
 /// file directly do not have to pipe through `jq`.
-pub fn write_summary_json(summary: &RunSummary, path: &Path) -> Result<()> {
+///
+/// Returns `true` when the summary was written, `false` when an
+/// existing file was PRESERVED: a summary with no publisher results
+/// never overwrites one that has them. Report-less pipelines
+/// (standalone `announce`, `release --split`) resolve the same tag —
+/// and therefore the same run dir — as the release run that preceded
+/// them; letting their empty summary clobber the real one would erase
+/// the burn evidence the rollback guard keys on (fail-open).
+pub fn write_summary_json(summary: &RunSummary, path: &Path) -> Result<bool> {
+    if summary.results.is_empty()
+        && let Ok(existing) = fs::read_to_string(path)
+        && serde_json::from_str::<RunSummary>(&existing)
+            .is_ok_and(|prior| !prior.results.is_empty())
+    {
+        return Ok(false);
+    }
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -291,7 +306,7 @@ pub fn write_summary_json(summary: &RunSummary, path: &Path) -> Result<()> {
     let text = serde_json::to_string_pretty(summary).context("serialize run summary")?;
     anodizer_core::fs_atomic::atomic_write_str(path, &text)
         .with_context(|| format!("write run summary to {}", path.display()))?;
-    Ok(())
+    Ok(true)
 }
 
 /// Pretty-print a per-publisher status table to the supplied writer
@@ -838,10 +853,40 @@ mod tests {
         let path = tmp.path().join("summary.json");
         fs::write(&path, "stale").expect("seed");
         let s = populated_summary();
-        write_summary_json(&s, &path).expect("write");
+        assert!(write_summary_json(&s, &path).expect("write"), "must write");
         let back: RunSummary =
             serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
         assert_eq!(back, s);
+    }
+
+    #[test]
+    fn write_summary_json_preserves_results_bearing_file_from_empty_summary() {
+        // A report-less summary (results: []) must never clobber an
+        // existing summary that carries publisher results — that file
+        // is the burn evidence the rollback guard keys on.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("summary.json");
+        let real = populated_summary();
+        assert!(write_summary_json(&real, &path).expect("seed real summary"));
+
+        let mut empty = populated_summary();
+        empty.results.clear();
+        empty.publishers_succeeded = 0;
+        empty.irreversibly_published = false;
+        assert!(
+            !write_summary_json(&empty, &path).expect("preserve must not error"),
+            "empty summary over results-bearing file must be skipped"
+        );
+
+        let back: RunSummary =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
+        assert_eq!(back, real, "original summary must survive");
+
+        // Empty-over-empty (and empty-over-missing) still writes: there
+        // is no evidence to protect.
+        let empty_path = tmp.path().join("fresh.json");
+        assert!(write_summary_json(&empty, &empty_path).expect("write fresh"));
+        assert!(write_summary_json(&empty, &empty_path).expect("rewrite empty over empty"));
     }
 
     #[test]

@@ -267,7 +267,11 @@ pub fn emit_summary(ctx: &mut Context) {
     if let Some(path) = path {
         let log = ctx.logger("announce");
         match anodizer_stage_publish::run_summary::write_summary_json(&summary, &path) {
-            Ok(()) => log.status(&format!("summary: wrote {}", path.display())),
+            Ok(true) => log.status(&format!("summary: wrote {}", path.display())),
+            Ok(false) => log.status(&format!(
+                "summary: preserved existing {} (this run carries no publisher results)",
+                path.display()
+            )),
             Err(err) => log.warn(&format!(
                 "summary: failed to write {}: {err}",
                 path.display()
@@ -304,14 +308,24 @@ pub fn emit_summary(ctx: &mut Context) {
 /// state, and the recovery workflow rolled back a fully-published
 /// release.
 ///
-/// `None` for snapshot / dry-run: those modes are not real releases
-/// and must not pollute `dist/run-*/` (mirrors the gating in
-/// `stage-publish::write_report_to_run_dir`). An explicit
-/// `--summary-json=<path>` still writes in every mode.
+/// `None` for snapshot / dry-run (not real releases; must not pollute
+/// `dist/run-*/`, mirroring `stage-publish::write_report_to_run_dir`)
+/// and for report-less pipelines (no publisher dispatch happened, so
+/// there is no publish state worth recording — and writing would risk
+/// clobbering a prior real run's summary in the same run dir). An
+/// explicit `--summary-json=<path>` still writes in every mode.
 fn default_summary_path(ctx: &Context) -> Option<std::path::PathBuf> {
     if ctx.is_snapshot() || ctx.is_dry_run() {
         return None;
     }
+    // Report-less pipelines (standalone `announce`, `release --split`)
+    // resolve the same tag — hence the same run dir — as the release
+    // run that preceded them. Emitting a default summary from them
+    // would clobber the real run's publish state with an empty one and
+    // fail the rollback guard open. Only a pipeline that actually
+    // dispatched publishers gets the default write; an explicit
+    // `--summary-json=<path>` still writes in every mode.
+    ctx.publish_report.as_ref()?;
     let run_id = anodizer_stage_publish::derive_run_id(ctx);
     Some(
         ctx.config
@@ -839,6 +853,69 @@ mod summary_tests {
             !tmp.path().join("run-local").exists(),
             "default run-dir write must not fire alongside an explicit path"
         );
+    }
+
+    #[test]
+    fn emit_summary_default_path_skipped_for_report_less_pipelines() {
+        // Standalone `announce` / `release --split` run with
+        // publish_report = None; without an explicit --summary-json they
+        // must not write a default summary at all — the run dir may hold
+        // the REAL summary of the failed release run they follow.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = ctx_with(ContextOptions::default(), None, None);
+        ctx.config.dist = tmp.path().to_path_buf();
+        emit_summary(&mut ctx);
+
+        assert!(
+            !tmp.path().join("run-local").exists(),
+            "report-less run must not emit a default summary"
+        );
+    }
+
+    #[test]
+    fn emit_summary_after_failed_release_preserves_burn_evidence() {
+        // The clobber sequence: a failed release left a summary with a
+        // landed Submitter (burn evidence) at the default path; a
+        // standalone `announce` for the same tag then runs report-less.
+        // The original summary must survive byte-for-byte — both the
+        // default-path gate and the write-side preserve guard protect it.
+        use anodizer_core::publish_report::{PublisherGroup, PublisherOutcome, PublisherResult};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        // The failed release run: cargo (Submitter) landed.
+        let mut release_ctx = ctx_with(ContextOptions::default(), None, None);
+        release_ctx.config.dist = tmp.path().to_path_buf();
+        release_ctx.publish_report = Some(PublishReport {
+            submitter_gated: false,
+            announce_gated: false,
+            results: vec![PublisherResult {
+                name: "cargo".to_string(),
+                group: PublisherGroup::Submitter,
+                required: true,
+                outcome: PublisherOutcome::Succeeded,
+                evidence: None,
+            }],
+        });
+        emit_summary(&mut release_ctx);
+        let path = tmp.path().join("run-local").join("summary.json");
+        let original = fs::read_to_string(&path).expect("release summary written");
+
+        // The follow-up announce-only run: same dist, no report — but
+        // pass an explicit summary path at the SAME location to prove
+        // the write-side guard holds even when the path gate is
+        // bypassed.
+        let mut announce_ctx = ctx_with(opts_with_summary_path(path.clone()), None, None);
+        announce_ctx.config.dist = tmp.path().to_path_buf();
+        emit_summary(&mut announce_ctx);
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("summary still present"),
+            original,
+            "announce-after-failed-release must not clobber burn evidence"
+        );
+        let parsed: RunSummary = serde_json::from_str(&original).expect("parse");
+        assert!(parsed.irreversibly_published, "fixture must carry the burn");
     }
 
     #[test]

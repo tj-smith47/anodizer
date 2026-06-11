@@ -581,10 +581,12 @@ enum ReleaseProbe {
     /// No release, or only a draft (drafts are reversible).
     NotBlocking,
     /// The probe could not determine release state (gh missing, auth /
-    /// network error, ...). Carried message is logged; rollback
-    /// proceeds because this guard is defense-in-depth — blocking
-    /// legitimate failure-recovery on an offline `gh` would trade one
-    /// incident class for another.
+    /// network error, ...). The guard FAILS CLOSED on this: with a
+    /// GitHub-shaped origin and no run summary, an unanswerable probe
+    /// leaves a real possibility that a published release (and burned
+    /// one-way-door versions behind it) exists — proceeding would
+    /// gamble irreversible state on a transient outage. `--force` is
+    /// the operator escape for genuinely-offline recovery.
     Indeterminate(String),
 }
 
@@ -625,11 +627,14 @@ fn probe_release_for_tag(
 /// Fallback layer of [`check_not_irreversibly_published`], consulted
 /// only for tags with no run summary on disk: a published release is
 /// the strongest remaining signal that one-way-door publishers shipped
-/// alongside it. Indeterminate states (no GitHub-shaped origin, gh CLI
-/// missing, API errors other than 404) warn and proceed: the guard is
-/// defense-in-depth behind the CI-side `irreversibly_published` output
-/// gate, and a rollback that cannot reach GitHub is the local
-/// failure-recovery path that must keep working.
+/// alongside it.
+///
+/// Indeterminate probes (gh CLI missing, auth / network errors other
+/// than 404) FAIL CLOSED — refuse with the probe error and point at
+/// `--force`: with no summary and no probe answer there is zero
+/// evidence the version is safe to destroy. Only a non-GitHub origin
+/// warns and proceeds, because no GitHub release can exist there and
+/// the probe carries no signal either way.
 fn check_no_published_releases(
     cwd: &std::path::Path,
     gh_binary: &std::path::Path,
@@ -646,14 +651,28 @@ fn check_no_published_releases(
         }
     };
     let mut published: Vec<&str> = Vec::new();
+    let mut indeterminate: Vec<(&str, String)> = Vec::new();
     for tag in tags {
         match probe_release_for_tag(gh_binary, &owner, &repo, tag) {
             ReleaseProbe::Published => published.push(tag),
             ReleaseProbe::NotBlocking => {}
-            ReleaseProbe::Indeterminate(msg) => log.warn(&format!(
-                "published-release guard inconclusive for {tag} (proceeding): {msg}"
-            )),
+            ReleaseProbe::Indeterminate(msg) => indeterminate.push((tag, msg)),
         }
+    }
+    if !indeterminate.is_empty() {
+        let detail = indeterminate
+            .iter()
+            .map(|(tag, msg)| format!("  {tag}: {msg}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        bail!(
+            "refusing to roll back: could not determine whether published GitHub \
+             release(s) exist for:\n{detail}\n\
+             No run summary covers these tag(s) and the release probe is \
+             unanswerable, so there is no evidence the version(s) are safe to \
+             destroy. Restore gh / network access (or GITHUB_TOKEN auth) and retry, \
+             or pass --force if you are certain nothing irreversible shipped.",
+        );
     }
     if !published.is_empty() {
         bail!(
@@ -1323,15 +1342,46 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
-    fn guard_proceeds_on_indeterminate_probe() {
-        // gh binary missing entirely — the guard is defense-in-depth
-        // and must not block offline failure-recovery.
+    fn guard_fails_closed_on_indeterminate_probe() {
+        // gh binary missing entirely — with a GitHub-shaped origin and
+        // no summary, an unanswerable probe means zero evidence the
+        // version is safe to destroy: refuse and point at --force.
         let tmp = tempfile::tempdir().unwrap();
         init_github_origin_repo(tmp.path());
         let missing = tmp.path().join("nonexistent-gh");
 
-        check_no_published_releases(tmp.path(), &missing, &["v1.0.0".to_string()], &quiet_log())
-            .expect("indeterminate probe must warn and proceed");
+        let err = check_no_published_releases(
+            tmp.path(),
+            &missing,
+            &["v1.0.0".to_string()],
+            &quiet_log(),
+        )
+        .expect_err("indeterminate probe must fail closed");
+        let msg = err.to_string();
+        assert!(msg.contains("could not determine"), "got: {msg}");
+        assert!(msg.contains("v1.0.0"), "must name the tag: {msg}");
+        assert!(msg.contains("--force"), "must name the escape hatch: {msg}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn guard_fails_closed_on_gh_auth_error() {
+        // gh present but erroring (auth/network) — same fail-closed
+        // ruling as a missing gh, with the probe error surfaced.
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(
+            tmp.path(),
+            r#"echo 'gh: HTTP 401: Bad credentials' >&2; exit 1"#,
+        );
+
+        let err =
+            check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log())
+                .expect_err("auth-failed probe must fail closed");
+        assert!(
+            err.to_string().contains("401"),
+            "must carry the probe error"
+        );
     }
 
     #[test]
