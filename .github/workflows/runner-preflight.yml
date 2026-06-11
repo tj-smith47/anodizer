@@ -1,0 +1,42 @@
+name: Runner preflight
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  canary:
+    name: arc-anodizer canary
+    runs-on: arc-anodizer
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Preflight runner environment
+        uses: ./.github/actions/runner-preflight
+
+      - name: Docker pull and run
+        run: docker run --rm alpine:3 true
+
+      - name: Install release tooling and run anodizer healthcheck
+        uses: tj-smith47/anodizer-action@v1
+        with:
+          from-artifact: anodizer-linux
+          artifact-workflow: ci.yml
+          artifact-run-id: auto
+          install: nfpm,makeself,snapcraft,rpmbuild,cosign,syft
+          args: healthcheck
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+
+      - name: Assert installed tool versions
+        run: |
+          set -euo pipefail
+          nfpm --version
+          makeself --version
+          snapcraft version
+          rpmbuild --version
+          cosign version
+          syft version
