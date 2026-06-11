@@ -8,7 +8,14 @@
 //!   asset on the published release ([`asset_check`]). The produced set is
 //!   derived for free from `release_uploadable_kinds()` + the artifact
 //!   registry (no new config); the published set is fetched live via
-//!   [`anodizer_stage_release::fetch_published_asset_names`].
+//!   [`anodizer_stage_release::fetch_published_asset_names`]. The expected
+//!   set additionally includes the signature / certificate / SBOM asset
+//!   names the resolved `signs:` / `sboms:` config demands
+//!   ([`anodizer_stage_sign::expected_signature_assets`],
+//!   [`anodizer_stage_sbom::expected_sbom_assets`]) — derived from config +
+//!   the artifact set rather than from the producing stages' registrations,
+//!   so a sign/SBOM stage that silently produced nothing still fails the
+//!   gate with the exact missing names.
 //! - **install smoke-test** — each Linux package is installed in a pinned
 //!   container and `<bin> --version` is run ([`smoke`]). Skipped with a
 //!   notice when Docker is unavailable.
@@ -196,6 +203,40 @@ fn produced_asset_names(ctx: &Context, crate_name: &str, ids: Option<&[String]>)
     names
 }
 
+/// Asset names the published release must ALSO carry per the resolved
+/// `signs:` / `sboms:` config, derived from config + the artifact set — NOT
+/// from the producing stages' registrations.
+///
+/// This is the gate's defense against a configured stage silently producing
+/// nothing: the v0.8.0 release shipped with zero signature assets and the
+/// produced-vs-published diff passed, because the silently-skipped sign stage
+/// had registered no `Signature` artifacts and the produced set is
+/// registry-derived. Expectations here come from the config itself, so a
+/// no-op sign/SBOM stage yields a precise missing-asset failure.
+///
+/// Intentional skips create no expectations (see the derivation modules for
+/// the full waiver order): the run's own skip record is consulted first as
+/// the authoritative account of what THIS run decided, with the config's
+/// `if:` / `skip:` re-evaluated only as a fallback.
+fn config_expected_asset_names(
+    ctx: &Context,
+    crate_name: &str,
+    release_ids: Option<&[String]>,
+) -> Result<Vec<String>> {
+    // Mirror the upload path's id-filter semantics: Signature, Certificate,
+    // and Sbom artifacts carry no `id` metadata, so a non-empty `release.ids`
+    // filter excludes them from upload (`matches_id_filter`); demanding them
+    // here would fail the gate over assets the release stage never sends.
+    if release_ids.is_some_and(|ids| !ids.is_empty()) {
+        return Ok(Vec::new());
+    }
+    let mut names = anodizer_stage_sign::expected_signature_assets(ctx, crate_name)?;
+    names.extend(anodizer_stage_sbom::expected_sbom_assets(ctx, crate_name)?);
+    names.sort();
+    names.dedup();
+    Ok(names)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn verify_one_crate(
     ctx: &Context,
@@ -224,20 +265,69 @@ fn verify_one_crate(
             Ok(Some(published)) => {
                 let produced =
                     produced_asset_names(ctx, &crate_cfg.name, release_cfg.ids.as_deref());
-                let diff = diff_assets(&produced, &published);
-                if diff.has_missing() {
+                // Config-derived expectations (signatures / SBOMs). A
+                // derivation error is itself a finding — never a silent pass.
+                let derived = match config_expected_asset_names(
+                    ctx,
+                    &crate_cfg.name,
+                    release_cfg.ids.as_deref(),
+                ) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        issues.push(format!(
+                            "crate '{}': could not derive expected signature/SBOM \
+                                 assets from config: {e:#}",
+                            crate_cfg.name
+                        ));
+                        Vec::new()
+                    }
+                };
+                let mut all_expected = produced.clone();
+                all_expected.extend(derived);
+                all_expected.sort();
+                all_expected.dedup();
+
+                let diff = diff_assets(&all_expected, &published);
+                let produced_set: std::collections::BTreeSet<&str> =
+                    produced.iter().map(String::as_str).collect();
+                let (missing_produced, missing_derived): (Vec<&String>, Vec<&String>) = diff
+                    .missing
+                    .iter()
+                    .partition(|name| produced_set.contains(name.as_str()));
+                if !missing_produced.is_empty() {
                     issues.push(format!(
                         "crate '{}': {} produced artifact(s) missing from the published \
                          release: {}",
                         crate_cfg.name,
-                        diff.missing.len(),
-                        diff.missing.join(", ")
+                        missing_produced.len(),
+                        missing_produced
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ));
-                } else {
-                    log.verbose(&format!(
-                        "verify-release: crate '{}' all {} asset(s) present",
+                }
+                if !missing_derived.is_empty() {
+                    issues.push(format!(
+                        "crate '{}': {} signature/SBOM asset(s) required by the resolved \
+                         signs/sboms config were never uploaded (the producing stage \
+                         registered no such artifact): {}",
                         crate_cfg.name,
-                        produced.len()
+                        missing_derived.len(),
+                        missing_derived
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                if !diff.has_missing() {
+                    log.verbose(&format!(
+                        "verify-release: crate '{}' all {} asset(s) present \
+                         ({} config-derived)",
+                        crate_cfg.name,
+                        all_expected.len(),
+                        all_expected.len() - produced.len()
                     ));
                 }
                 if !diff.orphan.is_empty() {

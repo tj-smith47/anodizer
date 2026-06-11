@@ -255,20 +255,8 @@ pub(crate) fn process_sign_configs(
                         }
                     }
                 }
-                if let Some(ref ids) = sign_cfg.ids {
-                    let matches_id = a
-                        .metadata
-                        .get("id")
-                        .map(|id| ids.contains(id))
-                        .unwrap_or(false);
-                    let matches_name = a
-                        .metadata
-                        .get("name")
-                        .map(|name| ids.contains(name))
-                        .unwrap_or(false);
-                    if !(matches_id || matches_name) {
-                        continue;
-                    }
+                if !crate::helpers::sign_ids_match(&a.metadata, sign_cfg.ids.as_ref()) {
+                    continue;
                 }
                 matched.push((
                     a.path.clone(),
@@ -335,7 +323,7 @@ pub(crate) fn process_sign_configs(
             }
 
             let signature_str =
-                resolve_signature_path(sign_cfg, &artifact_str, ctx, log, default_sig_template)?;
+                resolve_signature_path(sign_cfg, &artifact_str, ctx, default_sig_template)?;
 
             let certificate_str = sign_cfg
                 .certificate

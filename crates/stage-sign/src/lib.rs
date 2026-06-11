@@ -7,8 +7,11 @@ use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
 
+mod expected;
 mod helpers;
 mod process;
+
+pub use expected::expected_signature_assets;
 
 use helpers::{prepare_stdin_from, resolve_sign_args};
 use process::{ArtifactFilter, process_sign_configs};

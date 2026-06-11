@@ -12,7 +12,6 @@ use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::config::SignConfig;
 use anodizer_core::context::Context;
 use anodizer_core::env_expand::expand_with_preserve;
-use anodizer_core::log::StageLogger;
 
 /// Returns `true` if an artifact of `kind` should be signed given the `filter`
 /// string from `SignConfig::artifacts` / `DockerSignConfig::artifacts`.
@@ -70,6 +69,29 @@ fn is_release_uploadable(kind: ArtifactKind) -> bool {
     anodizer_core::artifact::release_uploadable_kinds().contains(&kind)
 }
 
+/// Returns `true` when an artifact passes a sign config's `ids:` filter.
+///
+/// The sign-stage `ids:` semantic matches either the artifact's `id` metadata
+/// (its build id) or its `name` metadata; an absent filter matches everything.
+/// Shared by the execution path (`process_sign_configs`) and the
+/// expected-asset derivation so the two cannot diverge on which artifacts a
+/// sign config selects.
+pub(crate) fn sign_ids_match(
+    metadata: &HashMap<String, String>,
+    ids: Option<&Vec<String>>,
+) -> bool {
+    let Some(ids) = ids else { return true };
+    let matches_id = metadata
+        .get("id")
+        .map(|id| ids.contains(id))
+        .unwrap_or(false);
+    let matches_name = metadata
+        .get("name")
+        .map(|name| ids.contains(name))
+        .unwrap_or(false);
+    matches_id || matches_name
+}
+
 /// Resolve the signature output path from a `SignConfig::signature` template,
 /// falling back to `default_template`.
 ///
@@ -81,7 +103,6 @@ pub(crate) fn resolve_signature_path(
     sign_cfg: &SignConfig,
     artifact_path: &str,
     ctx: &Context,
-    _log: &StageLogger,
     default_template: &str,
 ) -> Result<String> {
     let sig_template = sign_cfg.resolved_signature_template(default_template);

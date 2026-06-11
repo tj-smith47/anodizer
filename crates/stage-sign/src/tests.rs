@@ -1922,14 +1922,13 @@ fn test_binary_signature_no_duplicate_suffix_has_dot_sig() {
     ctx.template_vars_mut().set("Mips", "");
 
     let sign_cfg = SignConfig::default();
-    let log = ctx.logger("test");
+    let _log = ctx.logger("test");
 
     // The artifact path already contains the platform suffix (anodize flat layout).
     let result = resolve_signature_path(
         &sign_cfg,
         "/dist/myapp_linux_amd64",
         &ctx,
-        &log,
         SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
     )
     .unwrap();
@@ -1985,13 +1984,12 @@ fn test_binary_signs_signature_default_adds_dot_sig() {
         output: None,
         if_condition: None,
     };
-    let log = ctx.logger("test");
+    let _log = ctx.logger("test");
     // artifact_path already contains the platform suffix (anodize flat layout)
     let result = resolve_signature_path(
         &sign_cfg,
         "/dist/myapp_linux_amd64",
         &ctx,
-        &log,
         SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
     )
     .unwrap();
@@ -2022,13 +2020,12 @@ fn test_binary_signs_signature_arm_artifact_gets_dot_sig() {
         output: None,
         if_condition: None,
     };
-    let log = ctx.logger("test");
+    let _log = ctx.logger("test");
     // artifact_path already contains the platform suffix (anodize flat layout)
     let result = resolve_signature_path(
         &sign_cfg,
         "/dist/myapp_linux_armv6",
         &ctx,
-        &log,
         SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
     )
     .unwrap();
@@ -2059,13 +2056,12 @@ fn test_binary_signs_signature_amd64v2_artifact_gets_dot_sig() {
         output: None,
         if_condition: None,
     };
-    let log = ctx.logger("test");
+    let _log = ctx.logger("test");
     // artifact_path already contains the platform+level suffix (anodize flat layout)
     let result = resolve_signature_path(
         &sign_cfg,
         "/dist/myapp_linux_amd64v2",
         &ctx,
-        &log,
         SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
     )
     .unwrap();
@@ -2089,13 +2085,12 @@ fn test_normal_signs_uses_simple_default() {
         output: None,
         if_condition: None,
     };
-    let log = ctx.logger("test");
+    let _log = ctx.logger("test");
     // Normal signs default → simple {{ .Artifact }}.sig.
     let result = resolve_signature_path(
         &sign_cfg,
         "/dist/myapp.tar.gz",
         &ctx,
-        &log,
         SignConfig::DEFAULT_SIGNATURE_TEMPLATE,
     )
     .unwrap();

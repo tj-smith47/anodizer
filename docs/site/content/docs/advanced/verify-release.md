@@ -22,7 +22,7 @@ Three independently-toggleable checks:
 
 | Check | What it catches | Needs |
 |---|---|---|
-| **asset-existence** | A produced artifact that never made it onto the published release (the partial uploads GitHub silently tolerates) | network |
+| **asset-existence** | A produced artifact that never made it onto the published release (the partial uploads GitHub silently tolerates), **and** a signature / SBOM asset your `signs:` / `sboms:` config demands that was never produced at all (a silently no-op'd sign or SBOM stage) | network |
 | **install smoke-test** | A `.deb` / `.rpm` / `.apk` that won't install or whose binary won't run `--version` | Docker |
 | **libc ceiling** | A glibc-linked `.deb` that requires a glibc newer than your support floor | — |
 
@@ -76,6 +76,35 @@ Error: verify-release: post-publish verification found 1 issue(s);
 
 Extra assets on the release (orphans from a prior re-cut) are reported as an
 advisory, never a failure on their own.
+
+### Config-derived signature / SBOM expectations
+
+The produced set alone cannot catch a sign or SBOM stage that silently
+produced **nothing** — there is no registered artifact to miss. So the check
+additionally derives, from your resolved config plus the artifact set, the
+signature / certificate / SBOM asset names that **should** exist:
+
+- each `signs:` entry contributes one signature (and one certificate, when
+  `certificate:` is set) per artifact its `artifacts:`/`ids:` filters select,
+  named by its `signature:` template;
+- each `sboms:` entry contributes its rendered `documents:` names per matched
+  artifact.
+
+No new config is required — the expectations come from what anodizer already
+knows. A release missing them fails with the exact names:
+
+```
+- crate 'myapp': 2 signature/SBOM asset(s) required by the resolved signs/sboms
+  config were never uploaded (the producing stage registered no such artifact):
+  myapp_1.0.0_checksums.txt.sig, myapp_1.0.0_linux_amd64.tar.gz.cdx.json
+```
+
+Intentional skips create **no** expectations: a sign config whose `if:`
+evaluated falsy or whose `artifacts: none` disabled it (the run's own skip
+record is consulted first as the authoritative account of what this run
+decided), an SBOM config whose `skip:` evaluated truthy, or a whole stage
+skipped via `--skip=sign` / `--skip=sbom`. SBOM `documents:` containing glob
+patterns are not predictable from config and create no expectations either.
 
 ## (b) install smoke-test
 

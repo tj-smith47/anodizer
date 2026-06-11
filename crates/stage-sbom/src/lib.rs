@@ -17,6 +17,51 @@ use anodizer_core::config::SbomConfig;
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
 
+mod expected;
+
+pub use expected::expected_sbom_assets;
+
+/// Map a typed (non-`any`, non-`binary`) `artifacts:` filter value to the
+/// artifact kind it selects. Shared by both generation modes and the
+/// expected-asset derivation so the selection cannot drift between them.
+pub(crate) fn typed_artifact_kind(artifacts_type: &str, id: &str) -> Result<ArtifactKind> {
+    match artifacts_type {
+        "source" => Ok(ArtifactKind::SourceArchive),
+        "archive" => Ok(ArtifactKind::Archive),
+        "package" => Ok(ArtifactKind::LinuxPackage),
+        "diskimage" => Ok(ArtifactKind::DiskImage),
+        "installer" => Ok(ArtifactKind::Installer),
+        other => bail!(
+            "sbom[{}]: unknown artifacts type '{}'. Valid values are: \
+             source, archive, package, diskimage, installer, binary, any",
+            id,
+            other
+        ),
+    }
+}
+
+/// Detect the built-in SBOM format (and its file extension) from the
+/// `documents:` templates' trailing extension chain.
+/// `mytool-spdx-companion.cdx.json` resolves to CycloneDX because the
+/// trailing extension is `.cdx.json`; a raw substring match on the marketing
+/// word in the basename would flip to SPDX and produce a
+/// CycloneDX-by-name / SPDX-by-payload file.
+pub(crate) fn builtin_format_and_extension(documents: &[String]) -> (&'static str, &'static str) {
+    let mut detected = ("cyclonedx", "cdx.json");
+    for d in documents {
+        let lower = d.to_lowercase();
+        if lower.ends_with(".spdx.json") || lower.ends_with(".spdx") {
+            detected = ("spdx", "spdx.json");
+            break;
+        }
+        if lower.ends_with(".cdx.json") || lower.ends_with(".cyclonedx.json") {
+            detected = ("cyclonedx", "cdx.json");
+            break;
+        }
+    }
+    detected
+}
+
 // ---------------------------------------------------------------------------
 // Built-in SBOM generation (Rust-specific)
 // ---------------------------------------------------------------------------
@@ -388,19 +433,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                 .map(|a| (a.path.clone(), a.metadata.clone(), a.target.clone()))
                 .collect(),
             _ => {
-                let kind = match artifacts_type {
-                    "source" => ArtifactKind::SourceArchive,
-                    "archive" => ArtifactKind::Archive,
-                    "package" => ArtifactKind::LinuxPackage,
-                    "diskimage" => ArtifactKind::DiskImage,
-                    "installer" => ArtifactKind::Installer,
-                    other => anyhow::bail!(
-                        "sbom[{}]: unknown artifacts type '{}'. Valid values are: \
-                         source, archive, package, diskimage, installer, binary, any",
-                        id,
-                        other
-                    ),
-                };
+                let kind = typed_artifact_kind(artifacts_type, id)?;
 
                 let matched: Vec<(PathBuf, HashMap<String, String>, Option<String>)> = ctx
                     .artifacts
@@ -667,27 +700,7 @@ fn run_sbom_builtin(
     let artifacts_type = sbom_cfg.resolved_artifacts();
     let documents = sbom_cfg.resolved_documents(artifacts_type);
 
-    // Detect format from the document's extension chain rather than a raw
-    // substring match. `mytool-spdx-companion.cdx.json` should resolve to
-    // CycloneDX because the trailing extension is `.cdx.json`; the prior
-    // `.contains("spdx")` heuristic flipped to SPDX based on the marketing
-    // word in the basename and produced a malformed CycloneDX-by-name /
-    // SPDX-by-payload file.
-    let format = {
-        let mut detected = "cyclonedx";
-        for d in &documents {
-            let lower = d.to_lowercase();
-            if lower.ends_with(".spdx.json") || lower.ends_with(".spdx") {
-                detected = "spdx";
-                break;
-            }
-            if lower.ends_with(".cdx.json") || lower.ends_with(".cyclonedx.json") {
-                detected = "cyclonedx";
-                break;
-            }
-        }
-        detected
-    };
+    let (format, builtin_extension) = builtin_format_and_extension(&documents);
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -754,26 +767,16 @@ fn run_sbom_builtin(
     };
     let namespace_uuid = deterministic_uuid_from(&format!("{}-{}", project_name, version));
 
-    let (sbom_json, extension) = match format {
-        "cyclonedx" => (
-            generate_cyclonedx(project_name, version, &timestamp, &packages)?,
-            "cdx.json",
-        ),
-        "spdx" => (
-            generate_spdx(
-                project_name,
-                version,
-                &timestamp,
-                &namespace_uuid,
-                &packages,
-            )?,
-            "spdx.json",
-        ),
-        _ => bail!(
-            "sbom[{}]: unsupported format '{}' (use cyclonedx or spdx)",
-            id,
-            format
-        ),
+    let extension = builtin_extension;
+    let sbom_json = match format {
+        "spdx" => generate_spdx(
+            project_name,
+            version,
+            &timestamp,
+            &namespace_uuid,
+            &packages,
+        )?,
+        _ => generate_cyclonedx(project_name, version, &timestamp, &packages)?,
     };
 
     let json_string = serde_json::to_string_pretty(&sbom_json)

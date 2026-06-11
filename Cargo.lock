@@ -543,6 +543,8 @@ version = "0.8.0"
 dependencies = [
  "anodizer-core",
  "anodizer-stage-release",
+ "anodizer-stage-sbom",
+ "anodizer-stage-sign",
  "anyhow",
  "flate2",
  "object",

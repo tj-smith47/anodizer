@@ -12,6 +12,24 @@ cold without re-investigating.
 
 ## Open
 
+- [ ] **`release.ids` silently drops signature/certificate/SBOM uploads.**
+  Found 2026-06-11 while building the verify-release signature-expectation
+  derivation. `collect_release_upload_candidates` applies
+  `matches_id_filter` to every candidate; `Signature`/`Certificate` artifacts
+  (registered by `stage-sign/process.rs` with only `type`/`binary_sign`
+  metadata) and `Sbom` artifacts (only `format`/`sbom_id`) carry no `id`
+  metadata and are not in the filter's always-pass list — so any non-empty
+  `release.ids` excludes ALL of them from upload and the release ships
+  without its signatures/SBOMs, silently. Correct semantic: a signature/SBOM
+  uploads iff its subject artifact uploads (propagate the subject's `id`
+  metadata onto the derived artifact at registration, or filter on the
+  recorded subject). The new expectation derivation deliberately mirrors
+  today's behavior (`config_expected_asset_names` returns empty when
+  `release.ids` is non-empty — see the comment there) so the gate stays
+  truthful to what upload sends; when the upload semantics are fixed, that
+  mirror must be updated in the same change. Repo's own config sets no
+  `release.ids`, so anodizer's releases are unaffected.
+
 ## Resolved
 
 - [x] **Test-suite PATH race — RESOLVED 2026-06-11 (bc2e553e + review
