@@ -89,17 +89,33 @@ verify_release:
 ```
 
 For each produced Linux package, anodizer runs the install + a version check in
-a pinned container:
+a fresh pinned container, with the container platform pinned to the package's
+**build architecture**:
 
 ```bash
-docker run --rm -v <pkg>:/pkg/<pkg>:ro debian:12 \
-  sh -c "dpkg -i /pkg/<pkg> || (apt-get update && apt-get -y -f install) && myapp --version"
+docker run --rm --platform linux/arm64 \
+  --mount type=bind,source=<pkg>,destination=/pkg/<pkg>,readonly debian:12 \
+  sh -c "dpkg -i '/pkg/<pkg>' || (apt-get update && apt-get -y -f install) && 'myapp' --version"
 ```
 
 Per-package install commands: `.deb` → `dpkg -i` (with an `apt-get -f` dependency
 fixup), `.rpm` → `rpm -i --nodeps`, `.apk` → `apk add --allow-untrusted`. Each
 image defaults to a sane base (`debian:stable-slim`, `fedora:latest`,
 `alpine:latest`); override only the ones you care about.
+
+The `--platform` pin comes from the package's build target — an arm64 `.deb`
+is installed in an arm64 container, never the runner's native one. Running a
+non-native platform needs cross-arch emulation (qemu/binfmt) on the Docker
+host; anodizer probes for it once per platform and, when it is missing,
+**fails that package's smoke-test loudly** instead of reporting a misleading
+in-container arch error or silently skipping the coverage:
+
+```
+- crate 'myapp': install smoke-test failed for myapp_1.0.0_linux_arm64.deb on debian:stable-slim:
+  cannot run linux/arm64 containers on this linux/amd64 host: cross-arch emulation (qemu/binfmt)
+  is unavailable. Install it (e.g. `docker run --privileged --rm tonistiigi/binfmt --install all`)
+  or run install_smoke on a linux/arm64 runner. The package was NOT smoke-tested.
+```
 
 When **Docker is unavailable**, the smoke-test is **skipped with a notice** —
 it does not hard-fail the gate, and asset-existence and libc-ceiling still run:

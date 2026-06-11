@@ -222,7 +222,7 @@ config is rendered.
 | `nfpm[].bindir` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`bindir: /usr/bin`) |
 | `nfpm[].section/priority/epoch/release/umask` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (Debian/RPM packaging metadata) |
 | `nfpm[].mtime` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`mtime: "{{ CommitDate }}"` — reproducible package mtime) |
-| `nfpm[].recommends/suggests/provides` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (recommends git, suggests upx, provides anodizer) |
+| `nfpm[].recommends/suggests` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (recommends git, suggests upx; an earlier `provides: [anodizer]` self-provide was removed — apk rejects a package that provides its own name) |
 | `nfpm[].file_name_template` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`"{{ ProjectName }}_{{ RawVersion }}_{{ Os }}_{{ Arch }}"`) |
 | `nfpm[].contents` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (LICENSE + README.md installed to `/usr/share/doc/anodizer/`) |
 | `nfpm[].deb.signature.key_file` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`"{{ .Env.GPG_KEY_PATH }}"`, type: origin) |

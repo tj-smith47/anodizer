@@ -602,6 +602,68 @@ fn test_all_package_relationship_fields_in_yaml() {
     assert!(yaml.contains("provides:\n- myapp-bin"));
 }
 
+/// A `provides` entry naming the package itself makes the resulting apk
+/// uninstallable (apk solver self-conflict, `conflicts: <pkg>[<pkg>]`), so
+/// the apk YAML must drop self-provides — versioned or not — while keeping
+/// every other provide.
+#[test]
+fn test_apk_yaml_drops_self_provides() {
+    let nfpm_cfg = NfpmConfig {
+        package_name: Some("myapp".to_string()),
+        formats: vec!["apk".to_string()],
+        provides: Some(vec![
+            "myapp".to_string(),
+            "myapp=1.0.0".to_string(),
+            "myapp-bin".to_string(),
+        ]),
+        ..Default::default()
+    };
+    let yaml = generate_nfpm_yaml(
+        &nfpm_cfg,
+        "1.0.0",
+        &["/dist/myapp".to_string()],
+        Some("apk"),
+        false,
+        &NfpmLibraryPaths::default(),
+    )
+    .unwrap();
+    assert!(
+        yaml.contains("provides:\n- myapp-bin"),
+        "non-self provide must survive: {yaml}"
+    );
+    assert!(
+        !yaml.contains("- myapp\n") && !yaml.contains("- myapp=1.0.0"),
+        "self-provides must be dropped for apk: {yaml}"
+    );
+}
+
+/// dpkg/rpm treat an explicit self-provide as a redundant no-op, so non-apk
+/// formats must pass `provides` through untouched.
+#[test]
+fn test_deb_rpm_yaml_keep_self_provides() {
+    for format in ["deb", "rpm"] {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec![format.to_string()],
+            provides: Some(vec!["myapp".to_string(), "myapp-bin".to_string()]),
+            ..Default::default()
+        };
+        let yaml = generate_nfpm_yaml(
+            &nfpm_cfg,
+            "1.0.0",
+            &["/dist/myapp".to_string()],
+            Some(format),
+            false,
+            &NfpmLibraryPaths::default(),
+        )
+        .unwrap();
+        assert!(
+            yaml.contains("provides:\n- myapp\n- myapp-bin"),
+            "{format} keeps self-provide: {yaml}"
+        );
+    }
+}
+
 #[test]
 fn test_contents_type_and_file_info_serialize_correctly() {
     use anodizer_core::config::{NfpmContent, NfpmFileInfo};

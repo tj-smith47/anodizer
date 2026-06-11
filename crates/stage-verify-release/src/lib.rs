@@ -40,7 +40,8 @@ pub use libc_check::{
     max_glibc_requirement,
 };
 pub use smoke::{
-    PackageType, SmokeJob, SmokeOutcome, build_smoke_argv, docker_available, run_smoke,
+    PackageType, SmokeJob, SmokeOutcome, build_smoke_argv, docker_available, docker_platform,
+    run_smoke,
 };
 
 use anodizer_core::artifact::ArtifactKind;
@@ -273,7 +274,7 @@ fn verify_one_crate(
     if cfg.glibc_check_enabled()
         && let Some(ceiling) = cfg.glibc_ceiling.as_deref()
     {
-        for (path, name) in linux_packages(ctx, &crate_cfg.name) {
+        for (path, name, _) in linux_packages(ctx, &crate_cfg.name) {
             if !name.to_ascii_lowercase().ends_with(".deb") {
                 continue;
             }
@@ -289,7 +290,7 @@ fn verify_one_crate(
         && let Some(smoke_cfg) = cfg.install_smoke.as_ref()
     {
         let binary = crate_binary_name(crate_cfg);
-        for (path, name) in linux_packages(ctx, &crate_cfg.name) {
+        for (path, name, target) in linux_packages(ctx, &crate_cfg.name) {
             let Some(pt) = PackageType::from_filename(&name) else {
                 continue;
             };
@@ -304,6 +305,7 @@ fn verify_one_crate(
                 host_pkg_path: path.to_string_lossy().to_string(),
                 pkg_name: name.clone(),
                 binary: binary.clone(),
+                platform: target.as_deref().and_then(docker_platform),
             };
             if !*smoke_strategy_logged {
                 log.verbose(&format!(
@@ -394,19 +396,25 @@ fn check_one_deb_libc(
     }
 }
 
-/// All Linux-package artifacts for a crate as `(absolute_path, basename)`.
+/// All Linux-package artifacts for a crate as `(absolute_path, basename,
+/// build_target)`.
 ///
 /// The path is canonicalized (falling back to the registered path) so both
 /// consumers work: the libc check reads the file, and the smoke-test
 /// bind-mounts it into a container (which requires an absolute host path).
-/// Callers filter by extension at the call site.
-fn linux_packages(ctx: &Context, crate_name: &str) -> Vec<(std::path::PathBuf, String)> {
+/// The target triple (when the package was built for one) lets the smoke-test
+/// pin its container to the package's architecture. Callers filter by
+/// extension at the call site.
+fn linux_packages(
+    ctx: &Context,
+    crate_name: &str,
+) -> Vec<(std::path::PathBuf, String, Option<String>)> {
     ctx.artifacts
         .by_kind_and_crate(ArtifactKind::LinuxPackage, crate_name)
         .into_iter()
         .map(|a| {
             let abs = std::fs::canonicalize(&a.path).unwrap_or_else(|_| a.path.clone());
-            (abs, a.name.clone())
+            (abs, a.name.clone(), a.target.clone())
         })
         .collect()
 }

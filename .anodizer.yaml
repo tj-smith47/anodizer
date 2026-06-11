@@ -517,8 +517,6 @@ crates:
           - git
         suggests:
           - upx
-        provides:
-          - anodizer
         file_name_template: "{{ ProjectName }}_{{ RawVersion }}_{{ Os }}_{{ Arch }}"
         contents:
           - src: LICENSE

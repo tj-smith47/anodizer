@@ -931,13 +931,36 @@ fn linux_packages_resolves_absolute_path_and_basename() {
 
     let pkgs = linux_packages(&ctx, "app");
     assert_eq!(pkgs.len(), 1, "the one LinuxPackage artifact is returned");
-    let (abs, name) = &pkgs[0];
+    let (abs, name, target) = &pkgs[0];
     assert!(abs.is_absolute(), "path is absolute: {}", abs.display());
     assert_eq!(name, "pkg_amd64.deb", "basename surfaced for the caller");
+    assert_eq!(target, &None, "host build carries no target triple");
     // A non-existent crate must yield no packages (per-crate isolation).
     assert!(
         linux_packages(&ctx, "other").is_empty(),
         "packages are isolated per crate"
+    );
+
+    // A target-built package surfaces its triple so the smoke-test can pin
+    // the container platform to the package's architecture.
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::LinuxPackage,
+        name: "pkg_arm64.deb".to_string(),
+        path: path.clone(),
+        target: Some("aarch64-unknown-linux-gnu".to_string()),
+        crate_name: "app".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+    let pkgs = linux_packages(&ctx, "app");
+    let arm = pkgs
+        .iter()
+        .find(|(_, n, _)| n == "pkg_arm64.deb")
+        .expect("arm64 package present");
+    assert_eq!(
+        arm.2.as_deref().and_then(docker_platform).as_deref(),
+        Some("linux/arm64"),
+        "triple maps to the docker platform the smoke job pins"
     );
 }
 

@@ -17,6 +17,34 @@ use crate::builders::{
 };
 use crate::yaml::{NfpmYamlConfig, NfpmYamlContent, NfpmYamlFileInfo, NfpmYamlScripts};
 
+/// Drop `provides` entries that would make the package uninstallable for the
+/// target format.
+///
+/// apk auto-provides a package's own name; an EXPLICIT self-provide
+/// (versioned or not) registers a second provider of that name, and apk's
+/// solver rejects the package as conflicting with itself
+/// (`conflicts: <pkg>[<pkg>]`) — the package cannot be installed at all.
+/// dpkg and rpm treat a self-provide as a redundant no-op, so only the apk
+/// format filters it. The provide's name is the text before any version
+/// operator (`=`, `<`, `>`, `~`). A `None` package name never reaches a
+/// built package (nfpm rejects a nameless config), so no filtering applies.
+fn filter_provides_for_format(
+    provides: Vec<String>,
+    package_name: Option<&str>,
+    format: Option<&str>,
+) -> Vec<String> {
+    let (Some("apk"), Some(pkg)) = (format, package_name) else {
+        return provides;
+    };
+    provides
+        .into_iter()
+        .filter(|p| {
+            let name = p.split(['=', '<', '>', '~']).next().unwrap_or(p).trim();
+            name != pkg
+        })
+        .collect()
+}
+
 /// Paths to C library artifacts grouped by type.
 ///
 /// nfpm includes Header, CArchive, and
@@ -377,7 +405,11 @@ pub fn generate_nfpm_yaml_with_env(
         suggests: config.suggests.clone().unwrap_or_default(),
         conflicts: config.conflicts.clone().unwrap_or_default(),
         replaces: config.replaces.clone().unwrap_or_default(),
-        provides: config.provides.clone().unwrap_or_default(),
+        provides: filter_provides_for_format(
+            config.provides.clone().unwrap_or_default(),
+            config.package_name.as_deref(),
+            format,
+        ),
         contents,
         overrides,
         depends,
