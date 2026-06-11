@@ -4344,16 +4344,20 @@ lib.workspace = true
     }
 
     /// Dry-run rollback takes the `is_dry_run` branch: it returns Ok WITHOUT
-    /// spawning `cargo`. "No spawn" is proven by pointing PATH at an empty
-    /// dir, so any reached `cargo yank` would fail with not-found at
-    /// `Command::output()?`; the Ok result therefore witnesses the dry-run
-    /// short-circuit firing before the loop. Gated unix: mutates PATH and
-    /// uses unix paths.
+    /// spawning `cargo`. "No spawn" is proven by shadowing `cargo` with the
+    /// argv-recording stub: any reached `cargo yank` would land in the argv
+    /// log, so an empty log witnesses the dry-run short-circuit firing
+    /// before the loop. The stub is PREPENDED to PATH (never a wholesale
+    /// replacement, which would make every concurrent PATH-resolved spawn
+    /// in this binary flaky). Gated unix: mutates PATH and uses unix paths.
     #[cfg(unix)]
     #[test]
     fn rollback_dry_run_returns_ok_without_spawning_cargo() {
         use anodizer_core::Publisher;
-        let empty = tempfile::tempdir().expect("tempdir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let argv_log = tmp.path().join("argv.log");
+        let new_path =
+            super::partial_rollback_tests::install_cargo_stub(tmp.path(), &argv_log, "none");
         let mut ctx = TestContextBuilder::new()
             .tag("v1.0.0")
             .dry_run(true)
@@ -4381,7 +4385,7 @@ lib.workspace = true
             .unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var("PATH").ok();
         // SAFETY: serialised by env_mutex; paired with the restore below.
-        unsafe { std::env::set_var("PATH", empty.path()) };
+        unsafe { std::env::set_var("PATH", &new_path) };
         let rb = CargoPublisher::new().rollback(&mut ctx, &evidence);
         // SAFETY: restore PATH (paired with the set above).
         unsafe {
@@ -4391,6 +4395,10 @@ lib.workspace = true
             }
         }
         rb.expect("dry-run rollback must short-circuit to Ok before spawning");
+        assert!(
+            super::partial_rollback_tests::read_argv_log(&argv_log).is_empty(),
+            "dry-run rollback must never spawn cargo"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -4646,7 +4654,7 @@ mod partial_rollback_tests {
     /// (other publishes, `cargo yank`) exits 0. Returns a PATH value with
     /// the stub dir prepended; the caller installs it under a `#[serial]`
     /// guard and restores the prior value.
-    fn install_cargo_stub(dir: &Path, argv_log: &Path, fail_crate: &str) -> String {
+    pub(super) fn install_cargo_stub(dir: &Path, argv_log: &Path, fail_crate: &str) -> String {
         let stub = dir.join("cargo");
         let script = format!(
             "#!/bin/sh\n\
@@ -4670,7 +4678,7 @@ mod partial_rollback_tests {
 
     /// Read the stub's recorded argv lines (empty vec when the stub never
     /// ran / the log was never created).
-    fn read_argv_log(path: &Path) -> Vec<String> {
+    pub(super) fn read_argv_log(path: &Path) -> Vec<String> {
         std::fs::read_to_string(path)
             .unwrap_or_default()
             .lines()
