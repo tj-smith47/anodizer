@@ -820,6 +820,7 @@ impl PublishStage {
         let opts = dispatch::DispatchOptions {
             fail_fast: ctx.options.fail_fast,
             gate_submitter: ctx.options.gate_submitter.unwrap_or(true),
+            persist_snapshots: true,
         };
         let report = dispatch::dispatch(publishers, ctx, &opts)?;
 

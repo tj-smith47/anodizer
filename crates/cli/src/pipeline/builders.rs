@@ -1599,6 +1599,67 @@ before_publish:
     }
 
     #[test]
+    fn pipeline_writes_default_summary_on_release_stage_failure_before_publish() {
+        // The 2026-06-11 v0.9.0 incident: the RELEASE stage failed on an
+        // asset upload AFTER the GitHub release was created, the publish
+        // stage never ran (publish_report = None), and no summary.json
+        // landed on disk — CI's "Upload run summary" step found nothing
+        // and recovery had no machine-readable state. Pin the fix: any
+        // real (non-snapshot) pipeline failure after tag resolution
+        // writes the default summary, carrying the tag, an EMPTY
+        // publisher table, and irreversibly_published: false.
+        use anodizer_core::context::ContextOptions;
+
+        struct FailingReleaseStage;
+        impl anodizer_core::stage::Stage for FailingReleaseStage {
+            fn name(&self) -> &str {
+                "release"
+            }
+            fn run(&self, _ctx: &mut anodizer_core::context::Context) -> anyhow::Result<()> {
+                anyhow::bail!("release: upload artifact 'x.tar.zst.sha256' to release 'v9.9.9'")
+            }
+        }
+
+        let mut p = Pipeline::new();
+        p.add(Box::new(FailingReleaseStage));
+
+        let config = anodizer_core::config::Config {
+            project_name: "myapp".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = anodizer_core::context::Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+        // The release stage failed before publish: NO publish_report.
+        assert!(ctx.publish_report.is_none());
+
+        let _dist_guard = isolate_dist(&mut ctx);
+        let log = ctx.logger("pipeline-test");
+        let result = p.run(&mut ctx, &log);
+        assert!(result.is_err(), "release-stage failure must propagate");
+
+        // No git info in the fixture → derive_run_id falls back to "local".
+        let summary_path = ctx.config.dist.join("run-local").join("summary.json");
+        assert!(
+            summary_path.exists(),
+            "default summary.json must be written on a pre-publish stage failure"
+        );
+        let parsed: anodizer_stage_publish::run_summary::RunSummary =
+            serde_json::from_str(&fs::read_to_string(&summary_path).expect("read summary"))
+                .expect("parse summary");
+        assert_eq!(parsed.tag, "v9.9.9-test", "summary must carry the tag");
+        assert!(
+            parsed.results.is_empty(),
+            "publish never ran -> empty publisher table"
+        );
+        assert_eq!(parsed.publishers_succeeded, 0);
+        assert_eq!(parsed.publishers_failed, 0);
+        assert!(
+            !parsed.irreversibly_published,
+            "nothing published -> recovery may roll back safely"
+        );
+    }
+
+    #[test]
     fn pipeline_emits_summary_when_announce_is_skipped_via_skip_flag() {
         use anodizer_core::context::ContextOptions;
         use anodizer_stage_announce::AnnounceStage;

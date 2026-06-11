@@ -105,7 +105,17 @@ impl RunSummary {
     /// `ctx.options.runtime_nondeterministic_allowlist` so the operator
     /// still gets an audit row in the summary.
     pub fn from_context(ctx: &Context) -> Self {
-        let report = ctx.publish_report.as_ref();
+        Self::from_context_with_report(ctx, ctx.publish_report.as_ref())
+    }
+
+    /// Like [`from_context`](Self::from_context) but with an explicit
+    /// report, for callers that hold the in-progress `PublishReport`
+    /// before it is installed on the `Context` (the dispatch loop's
+    /// per-publisher snapshot writes).
+    pub fn from_context_with_report(
+        ctx: &Context,
+        report: Option<&anodizer_core::publish_report::PublishReport>,
+    ) -> Self {
         let results = report
             .map(|r| {
                 r.results
@@ -307,6 +317,61 @@ pub fn write_summary_json(summary: &RunSummary, path: &Path) -> Result<bool> {
     anodizer_core::fs_atomic::atomic_write_str(path, &text)
         .with_context(|| format!("write run summary to {}", path.display()))?;
     Ok(true)
+}
+
+/// Resolve where this run's `summary.json` belongs.
+///
+/// An explicit `--summary-json=<path>` wins in every mode. Otherwise the
+/// default is `<dist>/run-<id>/summary.json` (next to the publish stage's
+/// `report.json` for the same run; `<dist>` is the per-crate dist in
+/// per-crate workspace mode, so each published crate gets its own
+/// summary), suppressed only for snapshot / dry-run pipelines — those are
+/// not real releases and must not pollute `dist/run-*/`.
+///
+/// The default deliberately does NOT require `ctx.publish_report`: a real
+/// release that fails BEFORE the publish stage (tag resolution, build,
+/// release-asset upload) must still leave machine-readable state on disk —
+/// CI reads the summary post-mortem to decide whether destructive recovery
+/// (tag rollback) is safe, and "no file" forces it to guess. A report-less
+/// summary carries the tag, empty publisher results, and
+/// `irreversibly_published: false`. Report-less pipelines that share a run
+/// dir with a prior real run (standalone `announce`, `release --split`)
+/// cannot erase that run's publish state: [`write_summary_json`] refuses
+/// to clobber a results-bearing summary with an empty one.
+pub fn summary_path(ctx: &Context) -> Option<std::path::PathBuf> {
+    if let Some(explicit) = ctx.options.summary_json_path.clone() {
+        return Some(explicit);
+    }
+    if ctx.is_snapshot() || ctx.is_dry_run() {
+        return None;
+    }
+    let run_id = crate::derive_run_id(ctx);
+    Some(
+        ctx.config
+            .dist
+            .join(format!("run-{run_id}"))
+            .join("summary.json"),
+    )
+}
+
+/// Persist a point-in-time summary for an in-progress publish run.
+///
+/// Called by the dispatch loop after every publisher completes so a
+/// hard kill (SIGKILL, OOM, runner eviction) mid-publish still leaves
+/// the last-known per-publisher state on disk for recovery tooling.
+/// The pipeline-end `emit_summary` rewrite supersedes the final
+/// snapshot on every orderly exit (success or Err).
+///
+/// No-op when [`summary_path`] resolves to `None` (snapshot / dry-run).
+pub fn persist_summary_snapshot(
+    ctx: &Context,
+    report: &anodizer_core::publish_report::PublishReport,
+) -> Result<()> {
+    let Some(path) = summary_path(ctx) else {
+        return Ok(());
+    };
+    let summary = RunSummary::from_context_with_report(ctx, Some(report));
+    write_summary_json(&summary, &path).map(|_| ())
 }
 
 /// Pretty-print a per-publisher status table to the supplied writer

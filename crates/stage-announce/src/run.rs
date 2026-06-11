@@ -259,11 +259,7 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
 /// by a missing observability artifact.
 pub fn emit_summary(ctx: &mut Context) {
     let summary = anodizer_stage_publish::run_summary::RunSummary::from_context(ctx);
-    let path = ctx
-        .options
-        .summary_json_path
-        .clone()
-        .or_else(|| default_summary_path(ctx));
+    let path = anodizer_stage_publish::run_summary::summary_path(ctx);
     if let Some(path) = path {
         let log = ctx.logger("announce");
         match anodizer_stage_publish::run_summary::write_summary_json(&summary, &path) {
@@ -294,45 +290,6 @@ pub fn emit_summary(ctx: &mut Context) {
             log.status(line);
         }
     }
-}
-
-/// Default on-disk location for the run summary when the operator did
-/// not pass `--summary-json`: `<dist>/run-<id>/summary.json`, next to
-/// the `report.json` the publish stage writes for the same run.
-///
-/// A real release must ALWAYS leave its publish state on disk — CI
-/// reads it post-mortem to decide whether a failed run published
-/// anything irreversible before firing destructive recovery (tag
-/// rollback). Gating the write on an explicit flag meant a failing
-/// `release --publish-only` exited with NO machine-readable publish
-/// state, and the recovery workflow rolled back a fully-published
-/// release.
-///
-/// `None` for snapshot / dry-run (not real releases; must not pollute
-/// `dist/run-*/`, mirroring `stage-publish::write_report_to_run_dir`)
-/// and for report-less pipelines (no publisher dispatch happened, so
-/// there is no publish state worth recording — and writing would risk
-/// clobbering a prior real run's summary in the same run dir). An
-/// explicit `--summary-json=<path>` still writes in every mode.
-fn default_summary_path(ctx: &Context) -> Option<std::path::PathBuf> {
-    if ctx.is_snapshot() || ctx.is_dry_run() {
-        return None;
-    }
-    // Report-less pipelines (standalone `announce`, `release --split`)
-    // resolve the same tag — hence the same run dir — as the release
-    // run that preceded them. Emitting a default summary from them
-    // would clobber the real run's publish state with an empty one and
-    // fail the rollback guard open. Only a pipeline that actually
-    // dispatched publishers gets the default write; an explicit
-    // `--summary-json=<path>` still writes in every mode.
-    ctx.publish_report.as_ref()?;
-    let run_id = anodizer_stage_publish::derive_run_id(ctx);
-    Some(
-        ctx.config
-            .dist
-            .join(format!("run-{run_id}"))
-            .join("summary.json"),
-    )
 }
 
 #[cfg(test)]
@@ -856,19 +813,33 @@ mod summary_tests {
     }
 
     #[test]
-    fn emit_summary_default_path_skipped_for_report_less_pipelines() {
-        // Standalone `announce` / `release --split` run with
-        // publish_report = None; without an explicit --summary-json they
-        // must not write a default summary at all — the run dir may hold
-        // the REAL summary of the failed release run they follow.
+    fn emit_summary_default_path_writes_empty_summary_for_report_less_pipelines() {
+        // A real (non-snapshot) pipeline that fails BEFORE the publish
+        // stage — e.g. a release-asset upload error — exits with
+        // publish_report = None. It must STILL leave a default summary
+        // on disk (tag + empty results + irreversibly_published: false)
+        // so CI recovery has machine-readable proof that nothing was
+        // published. A run dir holding a prior REAL summary is protected
+        // by write_summary_json's preserve guard, not by skipping the
+        // write (see emit_summary_after_failed_release_preserves_burn_evidence).
         let tmp = tempfile::tempdir().expect("tempdir");
         let mut ctx = ctx_with(ContextOptions::default(), None, None);
         ctx.config.dist = tmp.path().to_path_buf();
         emit_summary(&mut ctx);
 
+        let expected = tmp.path().join("run-local").join("summary.json");
         assert!(
-            !tmp.path().join("run-local").exists(),
-            "report-less run must not emit a default summary"
+            expected.exists(),
+            "report-less real run must emit a default summary"
+        );
+        let summary = parse_summary(&expected);
+        assert!(
+            summary.results.is_empty(),
+            "no publisher dispatched -> empty results"
+        );
+        assert!(
+            !summary.irreversibly_published,
+            "nothing published -> not irreversible"
         );
     }
 
@@ -877,8 +848,9 @@ mod summary_tests {
         // The clobber sequence: a failed release left a summary with a
         // landed Submitter (burn evidence) at the default path; a
         // standalone `announce` for the same tag then runs report-less.
-        // The original summary must survive byte-for-byte — both the
-        // default-path gate and the write-side preserve guard protect it.
+        // The original summary must survive byte-for-byte — the
+        // write-side preserve guard (results-bearing summaries are never
+        // overwritten by empty ones) protects it.
         use anodizer_core::publish_report::{PublisherGroup, PublisherOutcome, PublisherResult};
 
         let tmp = tempfile::tempdir().expect("tempdir");
