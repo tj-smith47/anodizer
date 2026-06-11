@@ -5019,19 +5019,27 @@ crates:
 }
 
 /// E2E regression: a required-publisher failure in real-release mode
-/// (not snapshot, not dry-run) must surface as a non-zero exit even
-/// though the pipeline body returned `Ok`. Pinned at
-/// `crates/cli/src/commands/release/mod.rs` (the
-/// `gate_required_failures(&ctx)?` call after the pipeline returns).
-/// If that call is dropped, the simulated cargo failure rides through
-/// to exit 0 and this test fails.
+/// (not snapshot, not dry-run) must surface as a non-zero exit. Two
+/// gates defend this, in layers:
 ///
-/// The bail message lives in `gate_required_failures` and
-/// reads `"release pipeline finished but {N} required publisher(s)
+/// 1. The publish stage itself errors (`bail_on_required_failures` in
+///    `crates/stage-publish/src/lib.rs`), after dispatch, rollback
+///    bookkeeping, and report/summary persistence complete — so the
+///    pipeline body returns `Err` and this is the gate that normally
+///    fires.
+/// 2. `gate_required_failures(&ctx)?` in
+///    `crates/cli/src/commands/release/mod.rs` remains as the outer
+///    defense: if the stage-level gate were removed, it would still
+///    convert the recorded failure to a non-zero exit. Both gates must
+///    be dropped before the simulated cargo failure rides through to
+///    exit 0 and this test fails.
+///
+/// Both gates phrase the bail as `"... {N} required publisher(s)
 /// failed: {names}. ..."` — so this test asserts both `"required
-/// publisher"` and `"cargo"` appear in stderr. It also confirms
-/// `report.json` was persisted *before* the gate fired so operators
-/// can replay rollback via `--rollback-only --from-run=<id>`.
+/// publisher"` and `"cargo"` appear in stderr without pinning which
+/// layer fired. It also confirms `report.json` was persisted *before*
+/// the gate fired so operators can replay rollback via
+/// `--rollback-only --from-run=<id>`.
 #[test]
 fn release_required_publisher_failure_gates_exit_code() {
     let tmp = TempDir::new().unwrap();

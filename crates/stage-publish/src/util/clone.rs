@@ -181,12 +181,12 @@ fn stage_bootstrap_key(
 ///
 /// The path is single-quoted: git hands this string to a shell, and an
 /// unquoted Windows path would have its backslashes consumed as shell escape
-/// characters (`C:\Users\…` → `C:Users…`).
+/// characters (`C:\Users\…` → `C:Users…`). Embedded single quotes are
+/// escaped with the POSIX `'\''` idiom — without it a path component like
+/// `O'Brien` would terminate the quoting early and break the `-i` argument.
 fn ssh_key_command(key_path: &Path) -> String {
-    format!(
-        "ssh -i '{}' -o StrictHostKeyChecking=accept-new -F /dev/null",
-        key_path.display()
-    )
+    let path = key_path.display().to_string().replace('\'', r"'\''");
+    format!("ssh -i '{path}' -o StrictHostKeyChecking=accept-new -F /dev/null")
 }
 
 /// Write an SSH private key to `path` such that it is never world-readable,
@@ -337,6 +337,23 @@ mod tests {
     use anodizer_core::test_helpers::TestContextBuilder;
     use std::process::Command;
     use std::sync::OnceLock;
+
+    #[test]
+    fn ssh_key_command_escapes_single_quotes_in_key_path() {
+        let cmd = ssh_key_command(Path::new(
+            r"C:\Users\O'Brien\AppData\Local\Temp\anodizer_ssh_key",
+        ));
+        assert_eq!(
+            cmd,
+            r"ssh -i 'C:\Users\O'\''Brien\AppData\Local\Temp\anodizer_ssh_key' -o StrictHostKeyChecking=accept-new -F /dev/null",
+        );
+
+        let plain = ssh_key_command(Path::new("/tmp/key"));
+        assert_eq!(
+            plain,
+            "ssh -i '/tmp/key' -o StrictHostKeyChecking=accept-new -F /dev/null",
+        );
+    }
 
     #[test]
     fn aur_default_git_url_is_canonical_remote() {
