@@ -3196,6 +3196,24 @@ impl anodizer_core::Publisher for KrewPublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // Both krew flows need a token (PR-direct for the clone+PR, bot/auto
+        // for the index probe + webhook), and the PR-direct flow clones
+        // with git. `git` is declared unconditionally because `auto` mode
+        // can resolve to PR-direct at run time.
+        anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.krew.as_ref())
+            .flat_map(|k| {
+                crate::publisher_helpers::git_repo_requirements(
+                    ctx,
+                    k.repository.as_ref(),
+                    Some("KREW_INDEX_TOKEN"),
+                )
+            })
+            .collect()
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let selected =

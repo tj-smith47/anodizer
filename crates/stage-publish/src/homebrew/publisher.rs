@@ -230,6 +230,28 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        let mut out = Vec::new();
+        let formula_repos = anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.homebrew.as_ref())
+            .map(|h| h.repository.as_ref());
+        let cask_repos = ctx
+            .config
+            .homebrew_casks
+            .iter()
+            .flatten()
+            .map(|c| c.repository.as_ref());
+        for repo in formula_repos.chain(cask_repos) {
+            out.extend(crate::publisher_helpers::git_repo_requirements(
+                ctx,
+                repo,
+                Some("HOMEBREW_TAP_TOKEN"),
+            ));
+        }
+        out
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
 

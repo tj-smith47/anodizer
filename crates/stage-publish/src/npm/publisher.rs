@@ -66,6 +66,23 @@ impl anodizer_core::Publisher for NpmPublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // Mirrors `resolve_token`: templated `token` from config, else the
+        // NPM_TOKEN env var. The publish spawns the npm CLI.
+        let mut out = vec![anodizer_core::EnvRequirement::Tool {
+            name: "npm".to_string(),
+        }];
+        for entry in ctx.config.npms.iter().flatten() {
+            if let Some(req) = crate::publisher_helpers::secret_requirement(
+                entry.token.as_deref(),
+                crate::npm::manifest::token_env_var(entry),
+            ) {
+                out.push(req);
+            }
+        }
+        out
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let entries = ctx.config.npms.clone().unwrap_or_default();

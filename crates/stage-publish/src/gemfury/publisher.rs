@@ -168,6 +168,20 @@ impl anodizer_core::Publisher for GemFuryPublisher {
         true
     }
 
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // The publish path reads the push token from each entry's
+        // (configurable) env var name; the API token is rollback-only and
+        // intentionally not required up front.
+        ctx.config
+            .gemfury
+            .iter()
+            .flatten()
+            .map(|entry| anodizer_core::EnvRequirement::EnvAllOf {
+                vars: vec![crate::gemfury::publish::push_token_env_var(entry).to_string()],
+            })
+            .collect()
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         // `pushed` accumulates landed artifacts. On a mid-loop failure it

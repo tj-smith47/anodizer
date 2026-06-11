@@ -170,6 +170,20 @@ impl anodizer_core::Publisher for NixPublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.nix.as_ref())
+            .flat_map(|n| {
+                crate::publisher_helpers::git_repo_requirements(
+                    ctx,
+                    n.repository.as_ref(),
+                    Some("NIX_PKGS_TOKEN"),
+                )
+            })
+            .collect()
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let selected =

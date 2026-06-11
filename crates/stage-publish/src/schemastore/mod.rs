@@ -63,6 +63,14 @@ impl anodizer_core::Publisher for SchemastorePublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        crate::publisher_helpers::git_repo_requirements(
+            ctx,
+            ctx.config.schemastore.repository.as_ref(),
+            Some("SCHEMASTORE_TOKEN"),
+        )
+    }
+
     fn preflight(&self, ctx: &Context) -> anyhow::Result<PreflightCheck> {
         preflight::preflight_checks(ctx)
     }

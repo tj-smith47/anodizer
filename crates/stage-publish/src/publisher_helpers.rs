@@ -263,6 +263,137 @@ macro_rules! simple_publisher {
     };
 }
 
+// ---------------------------------------------------------------------------
+// Preflight requirement helpers shared by the per-publisher
+// `Publisher::requirements` implementations
+// ---------------------------------------------------------------------------
+
+/// Derive the env requirement for a git/GitHub-repo-backed publisher's
+/// token, mirroring `util::resolve_repo_token`'s ladder: explicit
+/// `--token` option → `repo.token` (templated) → preferred env var →
+/// `ANODIZER_GITHUB_TOKEN` → `GITHUB_TOKEN`.
+///
+/// Returns `None` when no env var is needed (explicit `--token`, or a
+/// literal non-templated `repo.token` in config).
+pub(crate) fn repo_token_requirement(
+    ctx: &anodizer_core::context::Context,
+    repo: Option<&anodizer_core::config::RepositoryConfig>,
+    preferred_env: Option<&str>,
+) -> Option<anodizer_core::EnvRequirement> {
+    use anodizer_core::env_preflight::template_env_refs;
+    if ctx.options.token.as_deref().is_some_and(|t| !t.is_empty()) {
+        return None;
+    }
+    if let Some(r) = repo
+        && let Some(tok) = r.token.as_deref()
+        && !tok.is_empty()
+    {
+        let refs = template_env_refs(tok);
+        if refs.is_empty() {
+            // Literal token value in config — present by definition.
+            return None;
+        }
+        return Some(anodizer_core::EnvRequirement::EnvAllOf { vars: refs });
+    }
+    let mut vars: Vec<String> = Vec::new();
+    if let Some(p) = preferred_env {
+        vars.push(p.to_string());
+    }
+    vars.push("ANODIZER_GITHUB_TOKEN".to_string());
+    vars.push("GITHUB_TOKEN".to_string());
+    Some(anodizer_core::EnvRequirement::EnvAnyOf { vars })
+}
+
+/// Full requirement set for a git-repo-backed publisher: the `git` tool
+/// plus either the token ladder (HTTPS pushes) or the SSH key material
+/// referenced by `repo.git` (SSH pushes).
+pub(crate) fn git_repo_requirements(
+    ctx: &anodizer_core::context::Context,
+    repo: Option<&anodizer_core::config::RepositoryConfig>,
+    preferred_env: Option<&str>,
+) -> Vec<anodizer_core::EnvRequirement> {
+    use anodizer_core::env_preflight::template_env_refs;
+    let mut out = vec![anodizer_core::EnvRequirement::Tool {
+        name: "git".to_string(),
+    }];
+    let git_cfg = repo.and_then(|r| r.git.as_ref());
+    let ssh_url = git_cfg
+        .and_then(|g| g.url.as_deref())
+        .is_some_and(|u| !u.is_empty());
+    if ssh_url {
+        for field in [
+            git_cfg.and_then(|g| g.private_key.as_deref()),
+            git_cfg.and_then(|g| g.ssh_command.as_deref()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let refs = template_env_refs(field);
+            if !refs.is_empty() {
+                out.push(anodizer_core::EnvRequirement::EnvAllOf { vars: refs });
+            }
+        }
+    } else if let Some(req) = repo_token_requirement(ctx, repo, preferred_env) {
+        out.push(req);
+    }
+    out
+}
+
+/// Requirement set for an AUR-style ssh-push publisher: the `git` tool
+/// plus the ssh key material referenced by `private_key` /
+/// `git_ssh_command` (both templated; `{{ .Env.AUR_SSH_KEY }}` is the
+/// canonical shape). A `private_key` that is exactly one env reference is
+/// declared as validatable key material; composite templates degrade to a
+/// presence check on the referenced vars.
+pub(crate) fn aur_ssh_requirements(
+    private_key: Option<&str>,
+    git_ssh_command: Option<&str>,
+) -> Vec<anodizer_core::EnvRequirement> {
+    use anodizer_core::env_preflight::{sole_env_ref, template_env_refs};
+    let mut out = vec![anodizer_core::EnvRequirement::Tool {
+        name: "git".to_string(),
+    }];
+    if let Some(pk) = private_key.filter(|v| !v.is_empty()) {
+        if let Some(var) = sole_env_ref(pk) {
+            out.push(anodizer_core::EnvRequirement::KeyEnv {
+                kind: anodizer_core::KeyKind::SshPrivate,
+                var,
+            });
+        } else {
+            let refs = template_env_refs(pk);
+            if !refs.is_empty() {
+                out.push(anodizer_core::EnvRequirement::EnvAllOf { vars: refs });
+            }
+        }
+    } else if let Some(cmd) = git_ssh_command.filter(|v| !v.is_empty()) {
+        let refs = template_env_refs(cmd);
+        if !refs.is_empty() {
+            out.push(anodizer_core::EnvRequirement::EnvAllOf { vars: refs });
+        }
+    }
+    out
+}
+
+/// Requirement for a secret resolved as "templated config value, else env
+/// var `fallback_env`": env refs of the config value when templated, the
+/// fallback var when the config value is absent, nothing when the config
+/// holds a literal.
+pub(crate) fn secret_requirement(
+    config_value: Option<&str>,
+    fallback_env: &str,
+) -> Option<anodizer_core::EnvRequirement> {
+    use anodizer_core::env_preflight::template_env_refs;
+    match config_value.filter(|v| !v.is_empty()) {
+        Some(v) => {
+            let refs = template_env_refs(v);
+            (!refs.is_empty()).then_some(anodizer_core::EnvRequirement::EnvAllOf { vars: refs })
+        }
+        None => Some(anodizer_core::EnvRequirement::EnvAllOf {
+            vars: vec![fallback_env.to_string()],
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

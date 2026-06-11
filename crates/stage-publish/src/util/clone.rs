@@ -99,32 +99,27 @@ pub(crate) fn clone_repo_ssh(
     // We may need to persist the SSH command string for configuring the repo
     // after clone, so track it here.
     let mut ssh_cmd_for_config: Option<String> = None;
+    // Guard for the bootstrap key's tempdir. Holding it here keeps the key
+    // alive for the clone; dropping it on EVERY exit path (success, clone
+    // failure, panic) removes the key from disk, so the only key bytes that
+    // can outlive this call are the ones persisted inside the caller-owned
+    // clone directory below.
+    let mut bootstrap_key: Option<tempfile::TempDir> = None;
 
     if let Some(ssh_cmd) = ssh_command {
         // Explicit ssh_command takes precedence.
         cmd.env("GIT_SSH_COMMAND", ssh_cmd);
         ssh_cmd_for_config = Some(ssh_cmd.to_string());
     } else if let Some(key_content) = private_key {
-        // Write the private key to a sibling of the clone target directory
-        // (inside the caller's unique tempdir) so it lives as long as the
-        // tempdir but never inside the git worktree. The filename is derived
-        // from the clone target's unique name, guaranteeing a different path
-        // on every run and preventing EEXIST when a prior failed run left the
-        // key file behind.
-        let key_dir = tmp_dir.parent().unwrap_or(tmp_dir);
-        let key_name = tmp_dir
-            .file_name()
-            .map(|n| format!(".anodizer_ssh_{}", n.to_string_lossy()))
-            .unwrap_or_else(|| ".anodizer_ssh_key".to_string());
-        let key_path = key_dir.join(&key_name);
-        write_ssh_key_secure(&key_path, key_content)
-            .with_context(|| format!("{label}: write SSH private key"))?;
-        let built_ssh_cmd = format!(
-            "ssh -i {} -o StrictHostKeyChecking=accept-new -F /dev/null",
-            key_path.display()
-        );
-        cmd.env("GIT_SSH_COMMAND", &built_ssh_cmd);
-        ssh_cmd_for_config = Some(built_ssh_cmd);
+        // The key must exist on disk before the clone can authenticate, but
+        // the clone target must not exist yet (git refuses a non-empty
+        // target), so the target can't host it. Bootstrap the key from a
+        // dedicated fresh tempdir instead: unique per invocation (a stale
+        // key from a prior failed run can never collide or be reused) and
+        // removed when `bootstrap_key` drops.
+        let (key_dir, key_path) = stage_bootstrap_key(key_content, label)?;
+        cmd.env("GIT_SSH_COMMAND", ssh_key_command(&key_path));
+        bootstrap_key = Some(key_dir);
     }
 
     let output = cmd
@@ -137,6 +132,20 @@ pub(crate) fn clone_repo_ssh(
     // secret-on-argv contract explicit at the read-site.
     let output = redact_output_token(output, None);
     log.check_output(output, &format!("{label}: git clone (SSH)"))?;
+
+    // Pushes after the clone reuse the key via `core.sshCommand`, so it must
+    // outlive this function. Persist it inside the clone's `.git` directory —
+    // never the worktree, where it could be staged and pushed — so it shares
+    // the caller's clone-dir lifetime and is removed along with it. The
+    // bootstrap copy is deleted when `bootstrap_key` drops at return.
+    if bootstrap_key.is_some()
+        && let Some(key_content) = private_key
+    {
+        let persisted = tmp_dir.join(".git").join("anodizer_ssh_key");
+        write_ssh_key_secure(&persisted, key_content)
+            .with_context(|| format!("{label}: persist SSH private key for push"))?;
+        ssh_cmd_for_config = Some(ssh_key_command(&persisted));
+    }
 
     // Configure core.sshCommand in the cloned repo so that subsequent push
     // operations use the same SSH credentials.
@@ -152,6 +161,34 @@ pub(crate) fn clone_repo_ssh(
     Ok(())
 }
 
+/// Stage the SSH private key used to authenticate the clone itself in a
+/// fresh per-invocation tempdir. Returns the tempdir guard plus the key's
+/// path; the key is deleted from disk as soon as the guard drops, so the
+/// caller controls exactly how long the bootstrap copy survives.
+fn stage_bootstrap_key(
+    key_content: &str,
+    label: &str,
+) -> Result<(tempfile::TempDir, std::path::PathBuf)> {
+    let key_dir =
+        tempfile::tempdir().with_context(|| format!("{label}: create SSH key temp dir"))?;
+    let key_path = key_dir.path().join("anodizer_ssh_key");
+    write_ssh_key_secure(&key_path, key_content)
+        .with_context(|| format!("{label}: write SSH private key"))?;
+    Ok((key_dir, key_path))
+}
+
+/// `GIT_SSH_COMMAND` string that authenticates with the key at `key_path`.
+///
+/// The path is single-quoted: git hands this string to a shell, and an
+/// unquoted Windows path would have its backslashes consumed as shell escape
+/// characters (`C:\Users\…` → `C:Users…`).
+fn ssh_key_command(key_path: &Path) -> String {
+    format!(
+        "ssh -i '{}' -o StrictHostKeyChecking=accept-new -F /dev/null",
+        key_path.display()
+    )
+}
+
 /// Write an SSH private key to `path` such that it is never world-readable,
 /// even for the instant between creation and the mode being applied.
 ///
@@ -162,21 +199,24 @@ pub(crate) fn clone_repo_ssh(
 /// shared CI runner. `create_new` also rejects an already-present path so a
 /// stale key left by an earlier run cannot be silently reused.
 ///
-/// The content is written with a guaranteed trailing newline (see below): an
+/// The content is written with exactly one trailing newline (see below): an
 /// OpenSSH-format private key without one is rejected by `ssh` at parse time.
 fn write_ssh_key_secure(path: &Path, key_content: &str) -> std::io::Result<()> {
     use std::io::Write as _;
     let mut f = open_secure_key_file(path)?;
-    f.write_all(key_content.as_bytes())?;
     // OpenSSH-format private keys (always the case for ed25519) require a
     // trailing newline. Secret/env round-trips routinely strip it — e.g.
     // `gh secret set -b "$(cat key)"`, where command substitution drops the
     // final newline — after which `ssh` rejects the key with "error in
-    // libcrypto" → "Permission denied (publickey)". Append exactly one when
-    // the content lacks it; an existing trailing newline is left untouched so
-    // a correctly-formed key is never double-terminated. Empty content is left
-    // empty (an invalid key either way — don't manufacture a lone-newline file).
-    if !key_content.is_empty() && !key_content.ends_with('\n') {
+    // libcrypto" → "Permission denied (publickey)". Normalize to exactly one:
+    // a missing newline is appended, surplus trailing newlines (a sloppy
+    // paste, a doubly-terminated secret) are collapsed. Trailing newlines are
+    // never key material, so the rewrite can't corrupt a valid key. Content
+    // with no key bytes at all stays empty (an invalid key either way —
+    // don't manufacture a lone-newline file).
+    let body = key_content.trim_end_matches('\n');
+    f.write_all(body.as_bytes())?;
+    if !body.is_empty() {
         f.write_all(b"\n")?;
     }
     f.flush()
@@ -194,6 +234,16 @@ fn open_secure_key_file(path: &Path) -> std::io::Result<std::fs::File> {
         .open(path)
 }
 
+/// Windows has no `std`-level analogue of the unix `mode(0o600)` open:
+/// `std` exposes no DACL surface, and the `readonly` attribute does not
+/// restrict reads, so an in-process ACL tightening would require a winapi
+/// dependency. The mitigation is containment instead: every key this module
+/// writes lives either in a per-invocation `tempfile` dir or in the clone's
+/// `.git` dir — both under `%TEMP%`, which sits inside the invoking user's
+/// profile and inherits user-only ACLs — and is deleted when its owning
+/// directory guard drops. On a runner whose temp dir is shared AND
+/// world-readable, the key may be readable by other local users for the
+/// lifetime of the publish; `create_new` still guarantees no stale-key reuse.
 #[cfg(not(unix))]
 fn open_secure_key_file(path: &Path) -> std::io::Result<std::fs::File> {
     std::fs::OpenOptions::new()
@@ -465,47 +515,105 @@ mod tests {
         assert!(dest.path().join("README").exists());
     }
 
-    /// When `private_key` is provided, the helper writes the key to a
-    /// sibling of the clone target (named `.anodizer_ssh_<target>`) with
-    /// 0o600 perms (Unix). We can observe the side-effect even if the clone
-    /// itself fails downstream, because the key write happens BEFORE the
-    /// spawn. Use a parent dir with a not-yet-existing child so the
-    /// sibling-write logic kicks in.
+    /// When `private_key` is provided and the clone succeeds, the key is
+    /// persisted at `<clone>/.git/anodizer_ssh_key` (0o600 on Unix) and
+    /// `core.sshCommand` points at that persisted copy, so subsequent pushes
+    /// authenticate with a key whose lifetime is bound to the clone dir. A
+    /// local-path URL skips the real SSH transport (git ignores
+    /// `GIT_SSH_COMMAND` for filesystem paths) while exercising the full
+    /// write → clone → persist path.
     #[cfg(unix)]
     #[test]
-    fn clone_repo_ssh_private_key_writes_keyfile_with_0600_perms() {
+    fn clone_repo_ssh_private_key_persists_key_inside_git_dir() {
         use std::os::unix::fs::PermissionsExt;
+        let (url, _bare, _work) = make_bare_remote();
         let log = StageLogger::new("test", Verbosity::Quiet);
         let parent = tempfile::tempdir().unwrap();
         let dest = parent.path().join("clone-target");
-        // Don't create the dest dir — `git clone` will. We just need
-        // its parent to exist so the sibling `.anodizer_ssh_key` lands
-        // somewhere we can inspect.
-        let _ = clone_repo_ssh(
+        clone_repo_ssh(&url, Some("FAKE-KEY-MATERIAL\n"), None, &dest, "key", &log)
+            .expect("local-path clone with private_key succeeds");
+
+        let key_path = dest.join(".git").join("anodizer_ssh_key");
+        assert!(
+            key_path.exists(),
+            "expected SSH private key persisted at {}",
+            key_path.display()
+        );
+        let mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "key file must be 0600 for ssh to accept it");
+        assert_eq!(
+            std::fs::read_to_string(&key_path).unwrap(),
+            "FAKE-KEY-MATERIAL\n"
+        );
+
+        // core.sshCommand must reference the PERSISTED key, not the
+        // (already-deleted) bootstrap copy.
+        let cfg = Command::new("git")
+            .args(["config", "core.sshCommand"])
+            .current_dir(&dest)
+            .output()
+            .unwrap();
+        let cfg = String::from_utf8_lossy(&cfg.stdout);
+        assert!(
+            cfg.contains(&key_path.display().to_string()),
+            "core.sshCommand must point at the persisted key, got: {cfg}"
+        );
+
+        // No key sidecar may remain next to the clone target (the historical
+        // leak location: a sibling of a tempdir-root clone target lands in
+        // the SHARED system temp dir and was never cleaned up).
+        let siblings: Vec<_> = std::fs::read_dir(parent.path())
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+            .filter(|n| n.contains("anodizer_ssh"))
+            .collect();
+        assert!(
+            siblings.is_empty(),
+            "no key sidecar may be left next to the clone target, found: {siblings:?}"
+        );
+    }
+
+    /// A FAILED clone must leave no key bytes behind: the bootstrap tempdir
+    /// guard drops on the error path and removes the key with it, and no
+    /// sidecar is ever written next to the clone target.
+    #[test]
+    fn clone_repo_ssh_failed_clone_leaves_no_key_sidecar() {
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let parent = tempfile::tempdir().unwrap();
+        let dest = parent.path().join("clone-target");
+        clone_repo_ssh(
             "ssh://git@127.0.0.1:1/never.git",
             Some("FAKE-KEY-MATERIAL\n"),
             None,
             &dest,
             "ssh-key-test",
             &log,
-        );
-        // The keyfile lives in the parent of `dest` (see source). Clone
-        // will fail (the SSH URL is fake) but the key write happens
-        // first, so the file should exist.
-        let key_name = format!(
-            ".anodizer_ssh_{}",
-            dest.file_name().unwrap().to_string_lossy()
-        );
-        let key_path = dest.parent().unwrap().join(&key_name);
+        )
+        .expect_err("clone of a fake SSH URL must fail");
+        let leftovers: Vec<_> = std::fs::read_dir(parent.path())
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.file_name().to_string_lossy().into_owned()))
+            .collect();
         assert!(
-            key_path.exists(),
-            "expected SSH private key sidecar to be written at {}",
-            key_path.display()
+            leftovers.iter().all(|n| !n.contains("anodizer_ssh")),
+            "failed clone must not leave a key sidecar, found: {leftovers:?}"
         );
-        let mode = std::fs::metadata(&key_path).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o600, "key file must be 0600 for ssh to accept it");
-        let body = std::fs::read_to_string(&key_path).unwrap();
-        assert_eq!(body, "FAKE-KEY-MATERIAL\n");
+    }
+
+    /// The bootstrap key vanishes from disk the moment its tempdir guard
+    /// drops — the cleanup guarantee `clone_repo_ssh` relies on for every
+    /// exit path, pinned at the unit level.
+    #[test]
+    fn stage_bootstrap_key_removes_key_when_guard_drops() {
+        let (guard, key_path) =
+            stage_bootstrap_key("FAKE-KEY\n", "bootstrap-test").expect("stage key");
+        assert!(key_path.exists(), "key must exist while the guard lives");
+        assert_eq!(std::fs::read_to_string(&key_path).unwrap(), "FAKE-KEY\n");
+        drop(guard);
+        assert!(
+            !key_path.exists(),
+            "key must be deleted when the guard drops"
+        );
     }
 
     /// `write_ssh_key_secure` must never expose a world-readable window: the
@@ -574,6 +682,37 @@ mod tests {
             std::fs::read_to_string(&key_path).unwrap(),
             "-----END OPENSSH PRIVATE KEY-----\n",
             "an existing trailing newline must not be doubled"
+        );
+    }
+
+    /// Surplus trailing newlines (a sloppy paste, a doubly-terminated secret)
+    /// are collapsed to exactly one — trailing newlines are never key
+    /// material, so the rewrite cannot corrupt a valid key.
+    #[test]
+    fn write_ssh_key_secure_normalizes_multiple_trailing_newlines() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join(".anodizer_ssh_key");
+        write_ssh_key_secure(&key_path, "-----END OPENSSH PRIVATE KEY-----\n\n\n")
+            .expect("write succeeds");
+        assert_eq!(
+            std::fs::read_to_string(&key_path).unwrap(),
+            "-----END OPENSSH PRIVATE KEY-----\n",
+            "surplus trailing newlines must be collapsed to exactly one"
+        );
+    }
+
+    /// Content that is nothing but newlines carries no key bytes and is
+    /// treated like empty content: the file stays empty rather than keeping
+    /// meaningless newline-only bytes.
+    #[test]
+    fn write_ssh_key_secure_treats_newline_only_content_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join(".anodizer_ssh_key");
+        write_ssh_key_secure(&key_path, "\n\n").expect("write succeeds");
+        assert_eq!(
+            std::fs::read(&key_path).unwrap(),
+            Vec::<u8>::new(),
+            "newline-only content must produce an empty file"
         );
     }
 
@@ -665,11 +804,13 @@ mod tests {
     /// A templated `git.private_key` (`{{ .Env.X }}`) must be rendered
     /// before the key bytes are written to disk; the literal `{{` must
     /// never reach the SSH key file (the canonical `error in libcrypto`
-    /// failure). The clone target is fake so the spawn fails, but the key
-    /// write happens first and is inspectable.
+    /// failure). The clone target is the local bare remote (git ignores
+    /// `GIT_SSH_COMMAND` for filesystem paths), so the clone succeeds and
+    /// the persisted key in `.git/` is inspectable.
     #[cfg(unix)]
     #[test]
     fn clone_repo_renders_templated_private_key_before_write() {
+        let (url, _bare, _work) = make_bare_remote();
         let mut ctx = TestContextBuilder::new().build();
         ctx.template_vars_mut()
             .set_env("AUR_SSH_KEY", "RENDERED-KEY-MATERIAL\n");
@@ -678,19 +819,16 @@ mod tests {
         let dest = parent.path().join("clone-target");
         let repo = RepositoryConfig {
             git: Some(GitRepoConfig {
-                url: Some("ssh://git@127.0.0.1:1/never.git".to_string()),
+                url: Some(url.clone()),
                 private_key: Some("{{ .Env.AUR_SSH_KEY }}".to_string()),
                 ..Default::default()
             }),
             ..Default::default()
         };
-        let _ = clone_repo(&ctx, Some(&repo), "o", "n", None, &dest, "key-render", &log);
-        let key_name = format!(
-            ".anodizer_ssh_{}",
-            dest.file_name().unwrap().to_string_lossy()
-        );
-        let key_path = dest.parent().unwrap().join(&key_name);
-        let body = std::fs::read_to_string(&key_path).expect("key sidecar must be written");
+        clone_repo(&ctx, Some(&repo), "o", "n", None, &dest, "key-render", &log)
+            .expect("local-path SSH clone with templated key succeeds");
+        let key_path = dest.join(".git").join("anodizer_ssh_key");
+        let body = std::fs::read_to_string(&key_path).expect("persisted key must be written");
         assert_eq!(
             body, "RENDERED-KEY-MATERIAL\n",
             "the private key must be the rendered env value, never the literal template"

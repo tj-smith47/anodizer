@@ -104,6 +104,20 @@ pub trait Publisher: Send + Sync {
         None
     }
 
+    /// Environment requirements this publisher derives from the resolved
+    /// config: CLI tools it spawns, env vars/secrets it reads, endpoints
+    /// it talks to, key material it loads.
+    ///
+    /// Consumed by the config-aware preflight (`anodizer preflight` and the
+    /// in-process phase at the head of `anodizer release`). Declared next
+    /// to each publisher's implementation — derived from the same config
+    /// fields `run()` reads — so the preflight cannot drift from the
+    /// publish path. Default is empty for publishers with no external
+    /// prerequisites beyond what their stage already declares.
+    fn requirements(&self, _ctx: &Context) -> Vec<crate::env_preflight::EnvRequirement> {
+        Vec::new()
+    }
+
     /// Whether this publisher opts out of nightly runs (the
     /// `customization/publish/nightlies.md` skip-list).
     ///

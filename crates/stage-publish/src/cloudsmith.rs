@@ -972,6 +972,24 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
         Self::ROLLBACK_SCOPE
     }
 
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // Same env-var-name resolution the upload path uses: a (templated)
+        // `secret_name` per entry, defaulting to CLOUDSMITH_TOKEN.
+        ctx.config
+            .cloudsmiths
+            .iter()
+            .flatten()
+            .map(|entry| {
+                let var = crate::util::resolve_secret_name(
+                    ctx,
+                    entry.secret_name.as_deref(),
+                    "CLOUDSMITH_TOKEN",
+                );
+                anodizer_core::EnvRequirement::EnvAllOf { vars: vec![var] }
+            })
+            .collect()
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         // The upload path returns the live target list (with slugs

@@ -1765,6 +1765,19 @@ impl anodizer_core::Publisher for CargoPublisher {
         true
     }
 
+    fn requirements(&self, _ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // `cargo publish` resolves the crates.io token from
+        // CARGO_REGISTRY_TOKEN; the cargo binary itself honors the same
+        // CARGO env override `run()` uses before falling back to PATH.
+        let cargo_bin = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        vec![
+            anodizer_core::EnvRequirement::Tool { name: cargo_bin },
+            anodizer_core::EnvRequirement::EnvAllOf {
+                vars: vec!["CARGO_REGISTRY_TOKEN".to_string()],
+            },
+        ]
+    }
+
     fn programmatic_rollback_on_failure(&self, evidence: &anodizer_core::PublishEvidence) -> bool {
         // A failed cargo run that already pushed one or more crates to
         // crates.io recorded them here; rollback must yank them even

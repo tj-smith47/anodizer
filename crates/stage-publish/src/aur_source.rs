@@ -980,6 +980,19 @@ impl anodizer_core::Publisher for AurSourcePublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.aur_source.as_ref())
+            .flat_map(|a| {
+                crate::publisher_helpers::aur_ssh_requirements(
+                    a.private_key.as_deref(),
+                    a.git_ssh_command.as_deref(),
+                )
+            })
+            .collect()
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let mut targets: Vec<AurSourceTarget> = Vec::new();
@@ -2505,12 +2518,8 @@ crates:
         let dest = parent.path().join("clone");
         util::clone_repo_ssh(&bare_url, Some(&rendered), None, &dest, "aur_source", &log)
             .expect("clone with rendered key must succeed");
-        let key_name = format!(
-            ".anodizer_ssh_{}",
-            dest.file_name().unwrap().to_string_lossy()
-        );
-        let key_path = parent.path().join(&key_name);
-        let written = std::fs::read_to_string(&key_path).expect("key sidecar must be written");
+        let key_path = dest.join(".git").join("anodizer_ssh_key");
+        let written = std::fs::read_to_string(&key_path).expect("persisted key must be written");
         assert_eq!(
             written.trim_end_matches('\n'),
             key_value.trim_end_matches('\n'),

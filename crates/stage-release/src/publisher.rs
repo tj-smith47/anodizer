@@ -316,6 +316,21 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
         Self::ROLLBACK_SCOPE
     }
 
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // GitHub release creation + asset upload authenticate via the
+        // same ladder the stage uses: explicit `--token` option, else
+        // ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN.
+        if ctx.options.token.as_deref().is_some_and(|t| !t.is_empty()) {
+            return Vec::new();
+        }
+        vec![anodizer_core::EnvRequirement::EnvAnyOf {
+            vars: vec![
+                "ANODIZER_GITHUB_TOKEN".to_string(),
+                "GITHUB_TOKEN".to_string(),
+            ],
+        }]
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         // Existing ReleaseStage::run body is unchanged per the
         // release-resilience contract. We delegate to it for the

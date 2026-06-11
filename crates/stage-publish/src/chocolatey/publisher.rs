@@ -167,6 +167,22 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // Mirrors `resolve_api_key`: templated `api_key` from config, else
+        // the CHOCOLATEY_API_KEY env var. The push itself is plain HTTPS
+        // (no choco CLI).
+        anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.chocolatey.as_ref())
+            .filter_map(|ch| {
+                crate::publisher_helpers::secret_requirement(
+                    ch.api_key.as_deref(),
+                    "CHOCOLATEY_API_KEY",
+                )
+            })
+            .collect()
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let mut targets: Vec<ChocolateyTarget> = Vec::new();

@@ -1044,6 +1044,34 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
         Self::ROLLBACK_SCOPE
     }
 
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // Mirrors `resolve_http_credentials` (anonymous_ok = false): per
+        // entry, each of username/password comes from the templated config
+        // value or the `ARTIFACTORY_<NAME>_{USERNAME,SECRET}` env pair.
+        let mut out = Vec::new();
+        for entry in ctx.config.artifactories.iter().flatten() {
+            let name_upper = entry
+                .name
+                .as_deref()
+                .unwrap_or("")
+                .to_uppercase()
+                .replace('-', "_");
+            if let Some(req) = crate::publisher_helpers::secret_requirement(
+                entry.username.as_deref(),
+                &format!("ARTIFACTORY_{}_USERNAME", name_upper),
+            ) {
+                out.push(req);
+            }
+            if let Some(req) = crate::publisher_helpers::secret_requirement(
+                entry.password.as_deref(),
+                &format!("ARTIFACTORY_{}_SECRET", name_upper),
+            ) {
+                out.push(req);
+            }
+        }
+        out
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let summary = publish_to_artifactory(ctx, &log)?;

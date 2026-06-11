@@ -649,6 +649,31 @@ impl anodizer_core::Publisher for DockerhubPublisher {
         Self::ROLLBACK_SCOPE
     }
 
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        let mut out = Vec::new();
+        for entry in ctx.config.dockerhub.iter().flatten() {
+            // Same resolution `run()` uses: password from `secret_name`
+            // (default DOCKER_PASSWORD); username from config (templated)
+            // with DOCKER_USERNAME as env fallback.
+            let secret = entry.secret_name.as_deref().unwrap_or("DOCKER_PASSWORD");
+            out.push(anodizer_core::EnvRequirement::EnvAllOf {
+                vars: vec![secret.to_string()],
+            });
+            match entry.username.as_deref().filter(|u| !u.is_empty()) {
+                Some(u) => {
+                    let refs = anodizer_core::env_preflight::template_env_refs(u);
+                    if !refs.is_empty() {
+                        out.push(anodizer_core::EnvRequirement::EnvAllOf { vars: refs });
+                    }
+                }
+                None => out.push(anodizer_core::EnvRequirement::EnvAllOf {
+                    vars: vec!["DOCKER_USERNAME".to_string()],
+                }),
+            }
+        }
+        out
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let targets = publish_to_dockerhub(ctx, &log)?;

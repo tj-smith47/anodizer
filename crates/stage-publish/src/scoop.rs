@@ -894,6 +894,20 @@ impl anodizer_core::Publisher for ScoopPublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.scoop.as_ref())
+            .flat_map(|s| {
+                crate::publisher_helpers::git_repo_requirements(
+                    ctx,
+                    s.repository.as_ref(),
+                    Some("SCOOP_BUCKET_TOKEN"),
+                )
+            })
+            .collect()
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let selected =

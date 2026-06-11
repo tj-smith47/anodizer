@@ -1382,6 +1382,19 @@ impl anodizer_core::Publisher for AurOurPublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.aur.as_ref())
+            .flat_map(|a| {
+                crate::publisher_helpers::aur_ssh_requirements(
+                    a.private_key.as_deref(),
+                    a.git_ssh_command.as_deref(),
+                )
+            })
+            .collect()
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let selected =
@@ -3657,11 +3670,10 @@ mod tests {
 
     /// A templated `aur.private_key` (`{{ .Env.AUR_SSH_KEY }}`) must be
     /// rendered to the env value before `aur_clone_repo` writes it to the
-    /// SSH key sidecar — the literal `{{` reaching the key file is the
+    /// SSH key file — the literal `{{` reaching the key file is the
     /// canonical `error in libcrypto` failure. The clone target is the local
     /// bare repo (git ignores `GIT_SSH_COMMAND` for a filesystem path), so the
-    /// clone still succeeds while the key write happens first and is
-    /// inspectable.
+    /// clone succeeds and the key persisted in `.git/` is inspectable.
     #[cfg(unix)]
     #[test]
     fn aur_clone_repo_renders_templated_private_key_before_write() {
@@ -3677,12 +3689,8 @@ mod tests {
         let parent = tempfile::tempdir().expect("parent");
         let dest = parent.path().join("clone-target");
         aur_clone_repo(&ctx, &aur_cfg, &bare_url, &dest, &log).expect("ssh clone ok");
-        let key_name = format!(
-            ".anodizer_ssh_{}",
-            dest.file_name().unwrap().to_string_lossy()
-        );
-        let key_path = dest.parent().unwrap().join(&key_name);
-        let body = std::fs::read_to_string(&key_path).expect("key sidecar written");
+        let key_path = dest.join(".git").join("anodizer_ssh_key");
+        let body = std::fs::read_to_string(&key_path).expect("persisted key written");
         assert_eq!(
             body, "RENDERED-AUR-KEY\n",
             "private_key must be the rendered env value, never the literal template"
