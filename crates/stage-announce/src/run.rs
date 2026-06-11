@@ -259,7 +259,12 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
 /// by a missing observability artifact.
 pub fn emit_summary(ctx: &mut Context) {
     let summary = anodizer_stage_publish::run_summary::RunSummary::from_context(ctx);
-    if let Some(path) = ctx.options.summary_json_path.clone() {
+    let path = ctx
+        .options
+        .summary_json_path
+        .clone()
+        .or_else(|| default_summary_path(ctx));
+    if let Some(path) = path {
         let log = ctx.logger("announce");
         match anodizer_stage_publish::run_summary::write_summary_json(&summary, &path) {
             Ok(()) => log.status(&format!("summary: wrote {}", path.display())),
@@ -285,6 +290,35 @@ pub fn emit_summary(ctx: &mut Context) {
             log.status(line);
         }
     }
+}
+
+/// Default on-disk location for the run summary when the operator did
+/// not pass `--summary-json`: `<dist>/run-<id>/summary.json`, next to
+/// the `report.json` the publish stage writes for the same run.
+///
+/// A real release must ALWAYS leave its publish state on disk — CI
+/// reads it post-mortem to decide whether a failed run published
+/// anything irreversible before firing destructive recovery (tag
+/// rollback). Gating the write on an explicit flag meant a failing
+/// `release --publish-only` exited with NO machine-readable publish
+/// state, and the recovery workflow rolled back a fully-published
+/// release.
+///
+/// `None` for snapshot / dry-run: those modes are not real releases
+/// and must not pollute `dist/run-*/` (mirrors the gating in
+/// `stage-publish::write_report_to_run_dir`). An explicit
+/// `--summary-json=<path>` still writes in every mode.
+fn default_summary_path(ctx: &Context) -> Option<std::path::PathBuf> {
+    if ctx.is_snapshot() || ctx.is_dry_run() {
+        return None;
+    }
+    let run_id = anodizer_stage_publish::derive_run_id(ctx);
+    Some(
+        ctx.config
+            .dist
+            .join(format!("run-{run_id}"))
+            .join("summary.json"),
+    )
 }
 
 #[cfg(test)]
@@ -738,14 +772,73 @@ mod summary_tests {
     }
 
     #[test]
-    fn emit_summary_skips_summary_when_path_unset() {
-        // summary_json_path = None => no write; the status table still
-        // prints to stderr but that's not asserted here (covered by the
-        // dedicated print_status_table test in stage-publish).
-        let mut ctx = ctx_with(ContextOptions::default(), None, None);
+    fn emit_summary_defaults_to_dist_run_dir_when_path_unset() {
+        // summary_json_path = None on a real (non-snapshot, non-dry-run)
+        // release => the summary still lands at the derived
+        // `<dist>/run-<id>/summary.json` default. Without git info the
+        // run id falls back to "local" (derive_run_id's documented
+        // final fallback).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = ctx_with(
+            ContextOptions::default(),
+            None,
+            Some(PublishReport::default()),
+        );
+        ctx.config.dist = tmp.path().to_path_buf();
         emit_summary(&mut ctx);
-        // The absence of a panic / error is the assertion; nothing to
-        // grep on disk because no path was configured.
+
+        let expected = tmp.path().join("run-local").join("summary.json");
+        assert!(
+            expected.exists(),
+            "summary.json must default to <dist>/run-<id>/ when --summary-json is unset"
+        );
+        let summary = parse_summary(&expected);
+        assert_eq!(summary.schema_version, RunSummary::CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn emit_summary_default_path_skipped_for_snapshot_and_dry_run() {
+        // Snapshot / dry-run are not real releases; without an explicit
+        // --summary-json they must not pollute `dist/run-*/` (mirrors
+        // write_report_to_run_dir's gating).
+        for (snapshot, dry_run) in [(true, false), (false, true)] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let opts = ContextOptions {
+                snapshot,
+                dry_run,
+                ..ContextOptions::default()
+            };
+            let mut ctx = ctx_with(opts, None, Some(PublishReport::default()));
+            ctx.config.dist = tmp.path().to_path_buf();
+            emit_summary(&mut ctx);
+
+            assert!(
+                !tmp.path().join("run-local").exists(),
+                "snapshot={snapshot} dry_run={dry_run}: no default summary write"
+            );
+        }
+    }
+
+    #[test]
+    fn emit_summary_explicit_path_wins_over_default() {
+        // An explicit --summary-json writes there (and ONLY there),
+        // even in snapshot mode where the default is suppressed.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let explicit = tmp.path().join("explicit-summary.json");
+        let opts = ContextOptions {
+            snapshot: true,
+            summary_json_path: Some(explicit.clone()),
+            ..ContextOptions::default()
+        };
+        let mut ctx = ctx_with(opts, None, Some(PublishReport::default()));
+        ctx.config.dist = tmp.path().to_path_buf();
+        emit_summary(&mut ctx);
+
+        assert!(explicit.exists(), "explicit path must be honored");
+        assert!(
+            !tmp.path().join("run-local").exists(),
+            "default run-dir write must not fire alongside an explicit path"
+        );
     }
 
     #[test]

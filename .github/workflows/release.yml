@@ -188,8 +188,17 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
 
+      # irreversibly_published != 'true' guards the one-way door: once a
+      # Submitter publisher (crates.io, chocolatey, winget, snapcraft, ...)
+      # accepted the version, that registry will never accept it again —
+      # deleting the tag and reverting the bump can only orphan the live
+      # release, never enable a clean same-version re-cut. A failure AFTER
+      # such a publish (e.g. post-publish verification) needs operator triage
+      # with the release intact, not automated destruction. Reversible
+      # publishers (release assets, blobs, tap/bucket commits) don't block:
+      # their state is deletable and the version can be re-cut.
       - name: Rollback on release failure
-        if: ${{ always() && needs.tag.outputs.is_republish != 'true' && (steps.release.outcome == 'failure' || steps.release.outcome == 'cancelled') }}
+        if: ${{ always() && needs.tag.outputs.is_republish != 'true' && (steps.release.outcome == 'failure' || steps.release.outcome == 'cancelled') && steps.release.outputs.irreversibly_published != 'true' }}
         uses: tj-smith47/anodizer-action@v1
         with:
           from-artifact: anodizer-linux

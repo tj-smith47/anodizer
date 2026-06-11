@@ -251,9 +251,14 @@ The replay path uses the same code that drives the rollback step inside
 unwound. Submitter publishers print the same warn-only diagnostics they would
 have written during the original run.
 
-## `--summary-json=<path>`
+## The run summary (`--summary-json=<path>`)
 
-Captures the audit trail of a run as a single JSON document:
+Every real release (non-snapshot, non-dry-run) writes the audit trail of the
+run to `<dist>/run-<id>/summary.json` — including when a stage fails, so a
+failed run always leaves machine-readable publish state for recovery tooling
+to inspect before anything destructive (like a tag rollback) fires.
+`--summary-json=<path>` redirects the document to an explicit path (and is
+honored in every mode, including `--snapshot` / `--dry-run`):
 
 ```bash
 anodizer release --summary-json=dist/run-summary.json
@@ -268,6 +273,9 @@ Shape:
   "tag": "v0.2.1",
   "submitter_gated": false,
   "announce_gated": false,
+  "publishers_succeeded": 1,
+  "publishers_failed": 1,
+  "irreversibly_published": false,
   "results": [
     {
       "name": "github-release",
@@ -292,6 +300,36 @@ CI consumers can diff this between runs to spot regressions in publisher
 reliability without parsing log output. `schema_version` is bumped on any
 breaking shape change; `#[serde(deny_unknown_fields)]` on the producer side
 keeps drift loud.
+
+`publishers_succeeded` / `publishers_failed` count outcomes that left durable
+published state (respectively, a `failed` outcome).
+`irreversibly_published` is the recovery verdict: `true` when any
+Submitter-group publisher's publish landed. Submitter targets (crates.io,
+chocolatey, winget, snapcraft, ...) never accept the same version twice, so
+once it flips the version is burned — a tag rollback can only orphan the live
+release, never enable a clean same-version re-cut. Even a `rolled-back`
+Submitter counts: `cargo yank` withdraws the artifact but does not reopen the
+version slot. Reversible publishers (release assets, blobs, tap/bucket/index
+commits) never set it; their state is deletable and the same version can be
+re-cut, so rollback stays available after they succeed.
+
+Recovery tooling consumes the flag at two layers:
+
+```yaml
+# CI (the anodizer-action exposes it as a step output):
+- name: Rollback on release failure
+  if: failure() && steps.release.outputs.irreversibly_published != 'true'
+```
+
+```bash
+# In-binary: `tag rollback` reads dist/run-*/summary.json itself and
+# refuses when the version is burned (override with --force):
+$ anodizer tag rollback
+Error: refusing to roll back — one-way-door publisher(s) already accepted these version(s):
+  v0.8.0: version burned at cargo, chocolatey
+...
+Fix forward instead: keep the tag, repair the failure, and cut the NEXT version
+```
 
 ## The outcome set
 
@@ -540,7 +578,7 @@ anodizer release \
 | `--rollback-only` | Reads a prior run report and re-attempts rollback only. No new publishing. | n/a |
 | `--from-run=<id>` | Run id whose `dist/run-<id>/report.json` to load when using `--rollback-only`. | n/a |
 | `--allow-rerun` | DANGEROUS: force `release` to re-run publish even when a prior `dist/run-<id>/report.json` exists. PR-based publishers (homebrew/scoop/nix/krew/MCP) will open duplicate PRs. Prefer `--rollback-only --from-run=<id>` first. | off |
-| `--summary-json=<path>` | Write the per-publisher run summary JSON to this path. | unset |
+| `--summary-json=<path>` | Write the per-publisher run summary JSON to this path. | `<dist>/run-<id>/summary.json` on real releases; unset (no write) for `--snapshot` / `--dry-run` |
 
 ## `anodizer notify`
 

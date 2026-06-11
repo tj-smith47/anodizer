@@ -337,6 +337,17 @@ mod tests {
     use std::collections::HashMap;
     use std::path::PathBuf;
 
+    /// `Pipeline::run` ends with a default summary write to
+    /// `<dist>/run-<id>/summary.json`; with the default relative
+    /// `./dist` and the crate root as test cwd that would land in the
+    /// working tree. Point `dist` at a tempdir; the returned guard
+    /// keeps it alive across the run.
+    fn isolate_dist(ctx: &mut Context) -> tempfile::TempDir {
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        ctx.config.dist = tmp.path().to_path_buf();
+        tmp
+    }
+
     /// No-op stage standing in for `BuildStage`: it shares the `"build"`
     /// name (so the pipeline's skip-set + guard plumbing treats it as the
     /// build stage) but produces no artifacts, mimicking a misconfigured
@@ -391,6 +402,7 @@ mod tests {
         let mut ctx = Context::new(binary_surface_config(), opts);
         ctx.artifacts.add(source_artifact());
 
+        let _dist_guard = isolate_dist(&mut ctx);
         let log = ctx.logger("pipeline-test");
         let err = p
             .run(&mut ctx, &log)
@@ -424,6 +436,7 @@ mod tests {
             size: None,
         });
 
+        let _dist_guard = isolate_dist(&mut ctx);
         let log = ctx.logger("pipeline-test");
         p.run(&mut ctx, &log)
             .expect("prebuilt binary satisfies the guard under --skip=build");
@@ -467,6 +480,7 @@ mod tests {
         p.add(Box::new(SpyPublishStage(published.clone())));
 
         let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        let _dist_guard = isolate_dist(&mut ctx);
         let log = ctx.logger("pipeline-test");
         let err = p
             .run(&mut ctx, &log)

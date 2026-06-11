@@ -75,6 +75,13 @@ pub struct RollbackOpts {
     pub sha: Option<String>,
     pub dry_run: bool,
     pub no_push: bool,
+    /// `--force`: override the published-state guard. Without it,
+    /// rollback refuses when the tag's run summary shows a one-way-door
+    /// (Submitter) publisher landed — the version is burned at a
+    /// registry that never accepts the same version twice — or, when no
+    /// summary exists, when the tag's GitHub release is published
+    /// (non-draft).
+    pub force: bool,
     pub scope: Scope,
     pub mode: Mode,
     /// Branch to push the revert commit to. `None` triggers
@@ -191,6 +198,15 @@ fn build_revert_message(target_sha: &str, deleted_tags: &[String], dry_run: bool
 const ANODIZE_REVERT_SUBJECT_PREFIX: &str = "Revert \"chore(release): ";
 
 pub fn run(opts: RollbackOpts) -> Result<()> {
+    run_with_gh(opts, std::path::Path::new("gh"))
+}
+
+/// Path-taking sibling of [`run`]: `gh_binary` is the `gh` CLI used by
+/// the published-state guard's GitHub-release fallback probe.
+/// Production passes `Path::new("gh")` (PATH lookup); tests point at a
+/// stub script so no global PATH mutation is needed (same seam
+/// convention as `core::git::gh_api_get_with_binary`).
+fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
     let cwd = std::env::current_dir()?;
     let log = StageLogger::new(
         "tag-rollback",
@@ -229,6 +245,19 @@ pub fn run(opts: RollbackOpts) -> Result<()> {
             opts.scope
         ));
         return Ok(());
+    }
+
+    // Published-state guard, BEFORE any mutation (including dry-run,
+    // so the preview reports the same refusal the real run would).
+    // A one-way-door (Submitter) publisher that landed for one of these
+    // tags burned the version: registries like crates.io / chocolatey /
+    // winget / snapcraft never accept the same version twice, so
+    // deleting the tag + reverting the bump can never lead to a clean
+    // same-version re-cut — only to an orphaned live release.
+    if opts.force {
+        log.warn("--force: skipping the published-state guard");
+    } else {
+        check_not_irreversibly_published(&cwd, gh_binary, &deletable, &log)?;
     }
 
     // Safety check (--mode=revert only). Non-bump commits on top of
@@ -405,6 +434,240 @@ fn resolve_push_branch(
             &bump_sha[..bump_sha.len().min(12)]
         ),
     }
+}
+
+/// Refuse rollback when the version is already burned at a one-way-door
+/// (Submitter group) publisher, by evidence strength:
+///
+/// 1. Run summaries on disk (`<dist>/run-*/summary.json`, plus
+///    `<dist>/<crate>/run-*/summary.json` in per-crate workspaces)
+///    whose `tag` matches a tag about to be deleted — the
+///    per-publisher truth written by the release run itself, including
+///    failed runs. A summary that shows only reversible publishers
+///    (github-release assets, blobs, tap/bucket/index commits)
+///    PERMITS rollback: their state can be deleted and the same
+///    version re-cut.
+/// 2. Only for tags with no matching summary (e.g. a fresh checkout
+///    that never ran the release): fall back to probing the GitHub
+///    Releases API for a published (non-draft) release at the tag.
+fn check_not_irreversibly_published(
+    cwd: &std::path::Path,
+    gh_binary: &std::path::Path,
+    tags: &[String],
+    log: &StageLogger,
+) -> Result<()> {
+    let summaries = collect_run_summaries(&resolve_dist_dir(cwd), log);
+    let mut burned: Vec<(String, Vec<String>)> = Vec::new();
+    let mut unsummarized: Vec<String> = Vec::new();
+    for tag in tags {
+        let matching: Vec<_> = summaries.iter().filter(|s| s.tag == *tag).collect();
+        if matching.is_empty() {
+            unsummarized.push(tag.clone());
+            continue;
+        }
+        let mut names: Vec<String> = matching
+            .iter()
+            .flat_map(|s| s.burned_submitter_names())
+            .collect();
+        names.sort();
+        names.dedup();
+        // `irreversibly_published` is the precomputed verdict;
+        // `burned_submitter_names` additionally catches summaries
+        // written before the flag existed.
+        if matching.iter().any(|s| s.irreversibly_published) || !names.is_empty() {
+            burned.push((tag.clone(), names));
+        } else {
+            log.status(&format!(
+                "run summary for {tag}: no one-way-door publisher landed — rollback permitted"
+            ));
+        }
+    }
+    if !burned.is_empty() {
+        let detail = burned
+            .iter()
+            .map(|(tag, names)| {
+                if names.is_empty() {
+                    format!("  {tag}: run summary records an irreversible publish")
+                } else {
+                    format!("  {tag}: version burned at {}", names.join(", "))
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        bail!(
+            "refusing to roll back — one-way-door publisher(s) already accepted these version(s):\n\
+             {detail}\n\
+             Those registries never accept the same version twice, so deleting the tag(s) \
+             and reverting the bump cannot lead to a clean same-version re-cut — it only \
+             orphans the live published state.\n\
+             Fix forward instead: keep the tag, repair the failure, and cut the NEXT version \
+             (or re-run the failed stages against this tag). Pass --force to override.",
+        );
+    }
+    if unsummarized.is_empty() {
+        return Ok(());
+    }
+    check_no_published_releases(cwd, gh_binary, &unsummarized, log)
+}
+
+/// Best-effort dist-dir resolution for the published-state guard: the
+/// repo config's `dist:` when a config is present and parseable, else
+/// the default `dist`. Relative values anchor at `cwd`. Best-effort
+/// because rollback is failure-recovery tooling — a broken or missing
+/// config must not stop it (the guard then simply finds no summaries
+/// and falls back to the GitHub release probe).
+fn resolve_dist_dir(cwd: &std::path::Path) -> std::path::PathBuf {
+    let dist = crate::pipeline::load_repo_config(cwd)
+        .map(|c| c.dist)
+        .unwrap_or_else(|_| std::path::PathBuf::from("dist"));
+    if dist.is_absolute() {
+        dist
+    } else {
+        cwd.join(dist)
+    }
+}
+
+/// Collect every parseable run summary under `<dist>/run-*/summary.json`
+/// (single-crate / lockstep layout) and `<dist>/<crate>/run-*/summary.json`
+/// (per-crate workspace layout). Unreadable or unparseable files warn
+/// and are skipped — they carry no usable evidence either way.
+fn collect_run_summaries(
+    dist: &std::path::Path,
+    log: &StageLogger,
+) -> Vec<anodizer_stage_publish::run_summary::RunSummary> {
+    fn run_dirs(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter(|e| {
+                e.file_name().to_string_lossy().starts_with("run-")
+                    && e.path().join("summary.json").is_file()
+            })
+            .map(|e| e.path())
+            .collect()
+    }
+
+    let mut dirs = run_dirs(dist);
+    if let Ok(entries) = std::fs::read_dir(dist) {
+        for entry in entries.flatten().filter(|e| e.path().is_dir()) {
+            dirs.extend(run_dirs(&entry.path()));
+        }
+    }
+
+    let mut out = Vec::new();
+    for dir in dirs {
+        let path = dir.join("summary.json");
+        match std::fs::read_to_string(&path)
+            .map_err(anyhow::Error::from)
+            .and_then(|text| Ok(serde_json::from_str(&text)?))
+        {
+            Ok(summary) => out.push(summary),
+            Err(e) => log.warn(&format!(
+                "ignoring unreadable run summary {}: {e:#}",
+                path.display()
+            )),
+        }
+    }
+    out
+}
+
+/// Outcome of probing GitHub for a release at a tag.
+#[derive(Debug)]
+enum ReleaseProbe {
+    /// A non-draft release exists — rollback must refuse.
+    Published,
+    /// No release, or only a draft (drafts are reversible).
+    NotBlocking,
+    /// The probe could not determine release state (gh missing, auth /
+    /// network error, ...). Carried message is logged; rollback
+    /// proceeds because this guard is defense-in-depth — blocking
+    /// legitimate failure-recovery on an offline `gh` would trade one
+    /// incident class for another.
+    Indeterminate(String),
+}
+
+/// Probe the GitHub Releases API for a release at `tag`.
+///
+/// `gh_binary` is the path to the `gh` CLI; production passes
+/// `Path::new("gh")` (PATH lookup), tests point at a stub script so no
+/// global PATH mutation is needed.
+fn probe_release_for_tag(
+    gh_binary: &std::path::Path,
+    owner: &str,
+    repo: &str,
+    tag: &str,
+) -> ReleaseProbe {
+    let endpoint = format!("/repos/{owner}/{repo}/releases/tags/{tag}");
+    match git::gh_api_get_with_binary(gh_binary, &endpoint, None) {
+        // Missing `draft` counts as published: an API response that
+        // omits the field gives no proof the release is reversible.
+        Ok(v) => match v.get("draft").and_then(serde_json::Value::as_bool) {
+            Some(true) => ReleaseProbe::NotBlocking,
+            Some(false) | None => ReleaseProbe::Published,
+        },
+        Err(e) => {
+            let msg = e.to_string();
+            // gh surfaces missing releases as `HTTP 404: Not Found`.
+            if msg.contains("HTTP 404") || msg.contains("Not Found") {
+                ReleaseProbe::NotBlocking
+            } else {
+                ReleaseProbe::Indeterminate(msg)
+            }
+        }
+    }
+}
+
+/// Refuse rollback when any tag about to be deleted carries a
+/// published (non-draft) GitHub release.
+///
+/// Fallback layer of [`check_not_irreversibly_published`], consulted
+/// only for tags with no run summary on disk: a published release is
+/// the strongest remaining signal that one-way-door publishers shipped
+/// alongside it. Indeterminate states (no GitHub-shaped origin, gh CLI
+/// missing, API errors other than 404) warn and proceed: the guard is
+/// defense-in-depth behind the CI-side `irreversibly_published` output
+/// gate, and a rollback that cannot reach GitHub is the local
+/// failure-recovery path that must keep working.
+fn check_no_published_releases(
+    cwd: &std::path::Path,
+    gh_binary: &std::path::Path,
+    tags: &[String],
+    log: &StageLogger,
+) -> Result<()> {
+    let (owner, repo) = match git::detect_github_repo_in(cwd) {
+        Ok(pair) => pair,
+        Err(e) => {
+            log.warn(&format!(
+                "published-release guard skipped — could not resolve a GitHub origin: {e}"
+            ));
+            return Ok(());
+        }
+    };
+    let mut published: Vec<&str> = Vec::new();
+    for tag in tags {
+        match probe_release_for_tag(gh_binary, &owner, &repo, tag) {
+            ReleaseProbe::Published => published.push(tag),
+            ReleaseProbe::NotBlocking => {}
+            ReleaseProbe::Indeterminate(msg) => log.warn(&format!(
+                "published-release guard inconclusive for {tag} (proceeding): {msg}"
+            )),
+        }
+    }
+    if !published.is_empty() {
+        bail!(
+            "refusing to roll back: published GitHub release(s) exist for: {} \
+             (and no run summary is available to prove nothing irreversible shipped).\n\
+             One-way-door publishers (crates.io, chocolatey, winget, snapcraft, ...) \
+             usually ship alongside a published release; if any did, the version is \
+             burned and deleting the tag(s) only orphans live published state.\n\
+             Fix forward instead: keep the tag, repair the failure, and cut the NEXT \
+             version. Pass --force to override the guard.",
+            published.join(", ")
+        );
+    }
+    Ok(())
 }
 
 /// Trim a SHA to the canonical 7-char short form for log output.
@@ -631,6 +894,7 @@ mod tests {
             sha,
             dry_run: false,
             no_push: true,
+            force: false,
             scope: Scope::All,
             mode: Mode::Revert,
             branch: None,
@@ -739,6 +1003,7 @@ mod tests {
             sha: None,
             dry_run: false,
             no_push: true,
+            force: false,
             scope: Scope::All,
             mode: Mode::Revert,
             branch: None,
@@ -778,6 +1043,7 @@ mod tests {
             sha: None,
             dry_run: false,
             no_push: true,
+            force: false,
             scope: Scope::All,
             mode: Mode::Revert,
             branch: None,
@@ -965,5 +1231,429 @@ mod tests {
 
         let b = resolve_push_branch(dir, &older_sha, Some("master")).unwrap();
         assert_eq!(b, "master");
+    }
+
+    // -----------------------------------------------------------------
+    // Published-release guard. Drives `check_no_published_releases`
+    // with a stub `gh` script in a tempdir (no PATH mutation) against a
+    // fixture repo whose origin is GitHub-shaped (local config only —
+    // no network is touched; the stub answers the API call).
+    // -----------------------------------------------------------------
+
+    /// Write an executable stub standing in for the `gh` CLI.
+    #[cfg(unix)]
+    fn write_gh_stub(dir: &Path, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("gh-stub");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}\n")).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    }
+
+    /// Fixture repo with a GitHub-shaped origin so
+    /// `detect_github_repo_in` resolves owner/repo without a network.
+    fn init_github_origin_repo(dir: &Path) {
+        let _ = init_bump_repo(dir, 0);
+        run_git(
+            dir,
+            &["remote", "add", "origin", "https://github.com/o/r.git"],
+        );
+    }
+
+    fn quiet_log() -> StageLogger {
+        StageLogger::new("test", Verbosity::Quiet)
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn guard_refuses_when_release_is_published() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo '{"id": 1, "draft": false}'"#);
+
+        let err =
+            check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log())
+                .expect_err("published release must block rollback");
+        let msg = err.to_string();
+        assert!(msg.contains("refusing to roll back"), "got: {msg}");
+        assert!(msg.contains("v1.0.0"), "must name the blocking tag: {msg}");
+        assert!(
+            msg.contains("--force"),
+            "must name the override flag: {msg}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn guard_allows_when_release_is_draft() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo '{"id": 1, "draft": true}'"#);
+
+        check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log())
+            .expect("draft release is reversible; rollback may proceed");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn guard_treats_missing_draft_field_as_published() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo '{"id": 1}'"#);
+
+        let err =
+            check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log())
+                .expect_err("a release whose draft state is unknown must block");
+        assert!(err.to_string().contains("refusing to roll back"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn guard_allows_when_no_release_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(
+            tmp.path(),
+            r#"echo 'gh: HTTP 404: Not Found (https://api.github.com/...)' >&2; exit 1"#,
+        );
+
+        check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log())
+            .expect("404 means no release; rollback may proceed");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn guard_proceeds_on_indeterminate_probe() {
+        // gh binary missing entirely — the guard is defense-in-depth
+        // and must not block offline failure-recovery.
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let missing = tmp.path().join("nonexistent-gh");
+
+        check_no_published_releases(tmp.path(), &missing, &["v1.0.0".to_string()], &quiet_log())
+            .expect("indeterminate probe must warn and proceed");
+    }
+
+    #[test]
+    fn guard_skips_when_origin_is_not_github() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _ = init_bump_repo(tmp.path(), 0);
+        // No origin remote at all → detect_github_repo_in errors →
+        // guard warns and proceeds.
+        check_no_published_releases(
+            tmp.path(),
+            Path::new("gh"),
+            &["v1.0.0".to_string()],
+            &quiet_log(),
+        )
+        .expect("non-GitHub origin must not block rollback");
+    }
+
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn run_refuses_rollback_when_release_is_published() {
+        // End-to-end through `run_with_gh`: the stub `gh` reports a
+        // published release for v1.0.0 → rollback must refuse before
+        // any mutation (tag intact, HEAD untouched).
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_github_origin_repo(dir);
+        let gh = write_gh_stub(dir, r#"echo '{"id": 1, "draft": false}'"#);
+
+        let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
+
+        let err = run_with_gh(opts_for(dir, None), &gh)
+            .expect_err("published release must refuse rollback");
+        assert!(err.to_string().contains("refusing to roll back"));
+
+        let tags = git::get_tags_at_head_in(dir).unwrap();
+        assert!(
+            tags.contains(&"v1.0.0".to_string()),
+            "tag must survive a refused rollback; got {tags:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    #[cfg(unix)]
+    fn run_force_bypasses_published_release_guard() {
+        // Same fixture, but --force: the guard is skipped (the stub gh
+        // would refuse) and the local rollback completes. The stub
+        // lives OUTSIDE the repo so the revert's dirty-tree check
+        // doesn't trip on an untracked file.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_github_origin_repo(dir);
+        let stub_dir = tempfile::tempdir().unwrap();
+        let _gh = write_gh_stub(stub_dir.path(), r#"echo '{"id": 1, "draft": false}'"#);
+
+        let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
+
+        let mut opts = opts_for(dir, None);
+        opts.force = true;
+        run(opts).expect("--force rollback must proceed without the guard");
+        let tags = git::get_tags_at_head_in(dir).unwrap();
+        assert!(
+            !tags.contains(&"v1.0.0".to_string()),
+            "tag must be deleted under --force"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Summary-based published-state guard: the run summary on disk is
+    // the primary evidence; the gh probe is consulted only for tags
+    // with no summary. Proven with gh stubs whose answer CONTRADICTS
+    // the summary, so the assertion pins which source decided.
+    // -----------------------------------------------------------------
+
+    /// Write a run summary for `tag` under the repo's dist tree.
+    /// `rel` is the run-dir path relative to dist (e.g. "run-v1.0.0"
+    /// or "mycrate/run-mycrate-v1.0.0"), `results` the per-publisher
+    /// rows. The top-level flags are computed the way the producer
+    /// computes them (via the public types), so these fixtures cannot
+    /// drift from the real writer's shape.
+    fn write_summary(
+        repo: &Path,
+        rel: &str,
+        tag: &str,
+        irreversibly_published: bool,
+        results: Vec<anodizer_stage_publish::run_summary::RunSummaryResult>,
+    ) {
+        use anodizer_stage_publish::run_summary::{
+            DeterminismAllowlist, RunSummary, write_summary_json,
+        };
+        let summary = RunSummary {
+            schema_version: RunSummary::CURRENT_SCHEMA_VERSION,
+            anodize_version: "0.0.0-test".to_string(),
+            tag: tag.to_string(),
+            submitter_gated: false,
+            announce_gated: false,
+            publishers_succeeded: 0,
+            publishers_failed: 0,
+            irreversibly_published,
+            results,
+            determinism_allowlist: DeterminismAllowlist::default(),
+        };
+        write_summary_json(&summary, &repo.join("dist").join(rel).join("summary.json"))
+            .expect("write summary fixture");
+    }
+
+    fn summary_result(
+        name: &str,
+        group: anodizer_core::publish_report::PublisherGroup,
+        status: &str,
+    ) -> anodizer_stage_publish::run_summary::RunSummaryResult {
+        anodizer_stage_publish::run_summary::RunSummaryResult {
+            name: name.to_string(),
+            group,
+            required: true,
+            status: status.to_string(),
+            evidence: None,
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn guard_refuses_when_summary_shows_irreversible_publish() {
+        use anodizer_core::publish_report::PublisherGroup;
+        // The gh stub answers 404 (no release — would PERMIT), so the
+        // refusal can only come from the summary: the summary is the
+        // primary evidence and must win.
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+        write_summary(
+            tmp.path(),
+            "run-v1.0.0",
+            "v1.0.0",
+            true,
+            vec![
+                summary_result("cargo", PublisherGroup::Submitter, "succeeded"),
+                summary_result(
+                    "chocolatey",
+                    PublisherGroup::Submitter,
+                    "pending-moderation",
+                ),
+                summary_result("github-release", PublisherGroup::Assets, "succeeded"),
+            ],
+        );
+
+        let err = check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string()],
+            &quiet_log(),
+        )
+        .expect_err("irreversible publish in the summary must block rollback");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("version burned at cargo, chocolatey"),
+            "got: {msg}"
+        );
+        assert!(
+            !msg.contains("github-release"),
+            "reversible publishers must not be blamed: {msg}"
+        );
+        assert!(
+            msg.contains("--force"),
+            "must name the override flag: {msg}"
+        );
+        assert!(
+            msg.contains("Fix forward"),
+            "must suggest fix-forward: {msg}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn guard_permits_when_summary_shows_only_reversible_publishers() {
+        use anodizer_core::publish_report::PublisherGroup;
+        // The gh stub reports a published release (would REFUSE), but
+        // the summary proves only reversible publishers landed — a
+        // same-version re-cut is still possible, so rollback proceeds
+        // and the probe is never consulted for this tag.
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo '{"id": 1, "draft": false}'"#);
+        write_summary(
+            tmp.path(),
+            "run-v1.0.0",
+            "v1.0.0",
+            false,
+            vec![
+                summary_result("github-release", PublisherGroup::Assets, "succeeded"),
+                summary_result("homebrew", PublisherGroup::Manager, "succeeded"),
+                summary_result(
+                    "cargo",
+                    PublisherGroup::Submitter,
+                    "skipped-submitter-gated",
+                ),
+            ],
+        );
+
+        check_not_irreversibly_published(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log())
+            .expect("reversible-only summary must permit rollback without probing GitHub");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn guard_refuses_on_legacy_summary_without_the_flag() {
+        // A summary written before `irreversibly_published` existed
+        // (raw JSON, field absent) still blocks via the per-result
+        // group/status rows.
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+        let dir = tmp.path().join("dist").join("run-v1.0.0");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("summary.json"),
+            r#"{
+                "schema_version": 1,
+                "anodize_version": "0.7.0",
+                "tag": "v1.0.0",
+                "submitter_gated": false,
+                "announce_gated": false,
+                "results": [{
+                    "name": "cargo",
+                    "group": "Submitter",
+                    "required": true,
+                    "status": "succeeded",
+                    "evidence": null
+                }],
+                "determinism_allowlist": {"compile_time": [], "runtime": []}
+            }"#,
+        )
+        .unwrap();
+
+        let err = check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string()],
+            &quiet_log(),
+        )
+        .expect_err("legacy summary with a landed Submitter must block");
+        assert!(err.to_string().contains("version burned at cargo"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn guard_falls_back_to_release_probe_when_no_summary_matches_the_tag() {
+        use anodizer_core::publish_report::PublisherGroup;
+        // A summary exists but for a DIFFERENT tag: the guarded tag has
+        // no summary evidence, so the gh probe decides — and it reports
+        // a published release, so rollback refuses.
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo '{"id": 1, "draft": false}'"#);
+        write_summary(
+            tmp.path(),
+            "run-v0.9.0",
+            "v0.9.0",
+            false,
+            vec![summary_result(
+                "github-release",
+                PublisherGroup::Assets,
+                "succeeded",
+            )],
+        );
+
+        let err = check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string()],
+            &quiet_log(),
+        )
+        .expect_err("unsummarized tag must fall back to the release probe");
+        assert!(
+            err.to_string()
+                .contains("published GitHub release(s) exist")
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn guard_reads_per_crate_summary_layout() {
+        use anodizer_core::publish_report::PublisherGroup;
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+        write_summary(
+            tmp.path(),
+            "mycrate/run-mycrate-v1.0.0",
+            "mycrate-v1.0.0",
+            true,
+            vec![summary_result(
+                "cargo",
+                PublisherGroup::Submitter,
+                "succeeded",
+            )],
+        );
+
+        let err = check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["mycrate-v1.0.0".to_string()],
+            &quiet_log(),
+        )
+        .expect_err("per-crate summary must be found and must block");
+        assert!(err.to_string().contains("version burned at cargo"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn guard_ignores_malformed_summary_and_falls_back_to_probe() {
+        // Unparseable summary carries no evidence: warn, then let the
+        // probe decide (404 here → rollback permitted).
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+        let dir = tmp.path().join("dist").join("run-v1.0.0");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("summary.json"), "not json {").unwrap();
+
+        check_not_irreversibly_published(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log())
+            .expect("malformed summary + 404 probe must permit rollback");
     }
 }

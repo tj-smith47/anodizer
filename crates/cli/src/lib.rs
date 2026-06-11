@@ -206,7 +206,7 @@ pub enum Commands {
         #[arg(
             long = "summary-json",
             value_name = "path",
-            help = "Write the per-publisher run summary JSON to this path."
+            help = "Write the per-publisher run summary JSON to this path. Without it, real (non-snapshot, non-dry-run) releases write <dist>/run-<id>/summary.json — even when a stage fails — so recovery tooling always has machine-readable publish state."
         )]
         summary_json: Option<PathBuf>,
         #[arg(
@@ -668,6 +668,11 @@ pub enum TagSub {
             help = "Skip remote tag delete and branch push (local-only)"
         )]
         no_push: bool,
+        #[arg(
+            long,
+            help = "Override the published-state guard: roll back even when the tag's run summary shows a one-way-door publisher (crates.io, chocolatey, winget, snapcraft, ...) accepted the version, or — when no summary exists — when a published (non-draft) GitHub release exists for the tag. Without it, rollback refuses because those registries never accept the same version twice: the version is burned and the only clean recovery is fixing forward"
+        )]
+        force: bool,
         #[arg(
             long,
             default_value = "all",

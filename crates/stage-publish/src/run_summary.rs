@@ -26,6 +26,36 @@ pub struct RunSummary {
     pub tag: String,
     pub submitter_gated: bool,
     pub announce_gated: bool,
+    /// Count of publishers whose outcome left durable published state
+    /// in the world: `succeeded`, `pending-moderation`,
+    /// `pending-validation`, `published-no-rollback`,
+    /// `rollback-failed` AND `rollback-skipped-no-scope` (in both, the
+    /// publish landed and nothing withdrew it — the state is presumed
+    /// live). The counting is intentionally conservative: when in
+    /// doubt, an outcome counts as published.
+    ///
+    /// `#[serde(default)]` keeps summaries written by older anodize
+    /// versions parseable by newer readers.
+    #[serde(default)]
+    pub publishers_succeeded: u32,
+    /// Count of publishers with a `failed` outcome.
+    #[serde(default)]
+    pub publishers_failed: u32,
+    /// True when any Submitter-group publisher's publish action landed
+    /// at the remote — the one-way door. Submitter targets (crates.io,
+    /// chocolatey, winget, snapcraft, ...) never accept the same
+    /// version twice, so once this is true the version is burned and a
+    /// same-version re-cut is impossible: recovery tooling must refuse
+    /// destructive rollback (tag delete, revert push) and fix forward
+    /// instead. Counts EVERY landed outcome, including `rolled-back` —
+    /// a cargo yank withdraws the artifact but does NOT reopen the
+    /// version slot. Reversible groups (Assets, Manager) never set
+    /// this; their state can be deleted and the same version re-cut.
+    ///
+    /// `#[serde(default)]` keeps summaries written by older anodize
+    /// versions parseable by newer readers.
+    #[serde(default)]
+    pub irreversibly_published: bool,
     pub results: Vec<RunSummaryResult>,
     pub determinism_allowlist: DeterminismAllowlist,
 }
@@ -125,12 +155,24 @@ impl RunSummary {
             ),
         };
 
+        let (publishers_succeeded, publishers_failed) = report
+            .map(|r| count_publish_state(&r.results))
+            .unwrap_or((0, 0));
+        let irreversibly_published = report.is_some_and(|r| {
+            r.results
+                .iter()
+                .any(|p| p.group == PublisherGroup::Submitter && outcome_landed(&p.outcome))
+        });
+
         Self {
             schema_version: Self::CURRENT_SCHEMA_VERSION,
             anodize_version: env!("CARGO_PKG_VERSION").to_string(),
             tag,
             submitter_gated: report.is_some_and(|r| r.submitter_gated),
             announce_gated: report.is_some_and(|r| r.announce_gated),
+            publishers_succeeded,
+            publishers_failed,
+            irreversibly_published,
             results,
             determinism_allowlist: DeterminismAllowlist {
                 compile_time,
@@ -138,6 +180,72 @@ impl RunSummary {
             },
         }
     }
+}
+
+impl RunSummary {
+    /// Names of Submitter-group publishers whose publish action landed —
+    /// the version-burning set behind
+    /// [`irreversibly_published`](Self::irreversibly_published).
+    ///
+    /// Read-side mirror of the build-side rule (status-string based, so
+    /// it works on deserialized summaries): every status except `failed`
+    /// and `skipped-*` means the publish reached the remote. Non-empty
+    /// on summaries written BEFORE the `irreversibly_published` field
+    /// existed too, so recovery tooling reading an old summary still
+    /// sees the burn.
+    pub fn burned_submitter_names(&self) -> Vec<String> {
+        self.results
+            .iter()
+            .filter(|r| r.group == PublisherGroup::Submitter && status_landed(&r.status))
+            .map(|r| r.name.clone())
+            .collect()
+    }
+}
+
+/// Status-string twin of [`outcome_landed`], for deserialized summaries
+/// where only the kebab-case status survives.
+fn status_landed(status: &str) -> bool {
+    status != "failed" && !status.starts_with("skipped-")
+}
+
+/// Fold per-publisher outcomes into the top-level
+/// `(publishers_succeeded, publishers_failed)` pair.
+///
+/// "Succeeded" means durable published state exists somewhere in the
+/// world that a destructive recovery (tag delete, revert push) would
+/// orphan. `RollbackFailed` and `RollbackSkippedNoScope` count as
+/// succeeded for that reason: the publish landed and nothing withdrew
+/// it, so the published state is presumed live. `RolledBack` does NOT
+/// count — the state was published and then verifiably withdrawn.
+fn count_publish_state(results: &[anodizer_core::publish_report::PublisherResult]) -> (u32, u32) {
+    let mut succeeded = 0u32;
+    let mut failed = 0u32;
+    for r in results {
+        match r.outcome {
+            PublisherOutcome::Succeeded
+            | PublisherOutcome::PendingModeration
+            | PublisherOutcome::PendingValidation
+            | PublisherOutcome::PublishedNoRollback
+            | PublisherOutcome::RollbackFailed(_)
+            | PublisherOutcome::RollbackSkippedNoScope => succeeded += 1,
+            PublisherOutcome::Failed(_) => failed += 1,
+            PublisherOutcome::Skipped(_) | PublisherOutcome::RolledBack => {}
+        }
+    }
+    (succeeded, failed)
+}
+
+/// True when the outcome records that the publish ACTION landed at the
+/// remote at some point — regardless of any later rollback. Only
+/// `skipped-*` (never ran) and `failed` (ran, did not land) are
+/// non-landed. Distinct from [`count_publish_state`]'s "durable state"
+/// rule: a `rolled-back` publisher has no live state left, but for a
+/// Submitter target the landing itself burned the version slot.
+fn outcome_landed(outcome: &PublisherOutcome) -> bool {
+    !matches!(
+        outcome,
+        PublisherOutcome::Skipped(_) | PublisherOutcome::Failed(_)
+    )
 }
 
 /// Map a `PublisherOutcome` to the kebab-case status string defined
@@ -292,6 +400,9 @@ mod tests {
             tag: "v1.2.3".to_string(),
             submitter_gated: true,
             announce_gated: false,
+            publishers_succeeded: 1,
+            publishers_failed: 0,
+            irreversibly_published: false,
             results: vec![
                 RunSummaryResult {
                     name: "github-release".to_string(),
@@ -347,6 +458,86 @@ mod tests {
         }"#;
         let parsed: std::result::Result<RunSummary, _> = serde_json::from_str(bad);
         assert!(parsed.is_err(), "unknown fields must be denied");
+    }
+
+    #[test]
+    fn run_summary_parses_legacy_json_without_publish_counts() {
+        // Summaries written before the publish-state counts existed
+        // must still deserialize; the counts default to zero.
+        let legacy = r#"{
+            "schema_version": 1,
+            "anodize_version": "0.0.0-test",
+            "tag": "v0.0.0",
+            "submitter_gated": false,
+            "announce_gated": false,
+            "results": [],
+            "determinism_allowlist": {"compile_time": [], "runtime": []}
+        }"#;
+        let parsed: RunSummary = serde_json::from_str(legacy).expect("legacy summary parses");
+        assert_eq!(parsed.publishers_succeeded, 0);
+        assert_eq!(parsed.publishers_failed, 0);
+        assert!(
+            !parsed.irreversibly_published,
+            "missing irreversibly_published must default to false"
+        );
+    }
+
+    fn result_in(group: PublisherGroup, outcome: PublisherOutcome) -> PublisherResult {
+        PublisherResult {
+            name: "p".to_string(),
+            group,
+            required: false,
+            outcome,
+            evidence: None,
+        }
+    }
+
+    #[test]
+    fn count_publish_state_classifies_every_outcome() {
+        let result = |outcome: PublisherOutcome| result_in(PublisherGroup::Manager, outcome);
+        let results = vec![
+            result(PublisherOutcome::Succeeded),
+            result(PublisherOutcome::PendingModeration),
+            result(PublisherOutcome::PendingValidation),
+            result(PublisherOutcome::PublishedNoRollback),
+            result(PublisherOutcome::RollbackFailed("boom".into())),
+            result(PublisherOutcome::Failed("boom".into())),
+            result(PublisherOutcome::Skipped(SkipReason::NotConfigured)),
+            result(PublisherOutcome::RolledBack),
+            result(PublisherOutcome::RollbackSkippedNoScope),
+        ];
+        let (succeeded, failed) = count_publish_state(&results);
+        assert_eq!(
+            succeeded, 6,
+            "published-state outcomes: Succeeded + 2 Pending + PublishedNoRollback \
+             + RollbackFailed + RollbackSkippedNoScope"
+        );
+        assert_eq!(failed, 1, "only Failed counts as failed");
+    }
+
+    #[test]
+    fn outcome_landed_classifies_every_outcome() {
+        // Landed = the publish action reached the remote at some point.
+        // Only never-ran (skipped) and ran-but-did-not-land (failed) are
+        // non-landed; a rolled-back Submitter publish still burned its
+        // version slot.
+        for (outcome, landed) in [
+            (PublisherOutcome::Succeeded, true),
+            (PublisherOutcome::PendingModeration, true),
+            (PublisherOutcome::PendingValidation, true),
+            (PublisherOutcome::PublishedNoRollback, true),
+            (PublisherOutcome::RollbackFailed("boom".into()), true),
+            (PublisherOutcome::RolledBack, true),
+            (PublisherOutcome::RollbackSkippedNoScope, true),
+            (PublisherOutcome::Failed("boom".into()), false),
+            (PublisherOutcome::Skipped(SkipReason::NotConfigured), false),
+        ] {
+            assert_eq!(
+                outcome_landed(&outcome),
+                landed,
+                "outcome_landed({outcome:?})"
+            );
+        }
     }
 
     #[test]
@@ -516,6 +707,9 @@ mod tests {
         assert_eq!(s.results.len(), 1);
         assert_eq!(s.results[0].status, "failed");
         assert_eq!(s.results[0].name, "homebrew");
+        assert_eq!(s.publishers_succeeded, 0);
+        assert_eq!(s.publishers_failed, 1);
+        assert!(!s.irreversibly_published);
     }
 
     #[test]
@@ -525,6 +719,105 @@ mod tests {
         assert!(s.results.is_empty());
         assert!(!s.submitter_gated);
         assert!(!s.announce_gated);
+        assert!(!s.irreversibly_published);
+    }
+
+    #[test]
+    fn irreversibly_published_keys_on_submitter_group_only() {
+        // A fully-successful run of REVERSIBLE publishers (Assets,
+        // Manager) must not flag the version as burned — every one of
+        // them can be deleted and the same version re-cut. The flag
+        // flips only when a Submitter (one-way-door) publish landed.
+        let mut ctx = anodizer_core::context::Context::test_fixture();
+        ctx.publish_report = Some(PublishReport {
+            submitter_gated: false,
+            announce_gated: false,
+            results: vec![
+                result_in(PublisherGroup::Assets, PublisherOutcome::Succeeded),
+                result_in(PublisherGroup::Manager, PublisherOutcome::Succeeded),
+                result_in(
+                    PublisherGroup::Submitter,
+                    PublisherOutcome::Skipped(SkipReason::SubmitterGated),
+                ),
+            ],
+        });
+        let s = RunSummary::from_context(&ctx);
+        assert_eq!(s.publishers_succeeded, 2);
+        assert!(
+            !s.irreversibly_published,
+            "reversible-group successes must not burn the version"
+        );
+
+        ctx.publish_report = Some(PublishReport {
+            submitter_gated: false,
+            announce_gated: false,
+            results: vec![result_in(
+                PublisherGroup::Submitter,
+                PublisherOutcome::Succeeded,
+            )],
+        });
+        let s = RunSummary::from_context(&ctx);
+        assert!(
+            s.irreversibly_published,
+            "Submitter success burns the version"
+        );
+    }
+
+    #[test]
+    fn irreversibly_published_counts_rolled_back_submitter() {
+        // cargo yank withdraws the artifact but the version slot stays
+        // burned — a same-version re-publish is rejected by crates.io.
+        let mut ctx = anodizer_core::context::Context::test_fixture();
+        ctx.publish_report = Some(PublishReport {
+            submitter_gated: false,
+            announce_gated: false,
+            results: vec![result_in(
+                PublisherGroup::Submitter,
+                PublisherOutcome::RolledBack,
+            )],
+        });
+        let s = RunSummary::from_context(&ctx);
+        assert!(s.irreversibly_published);
+    }
+
+    #[test]
+    fn burned_submitter_names_agrees_with_irreversibly_published() {
+        // The read-side (status-string) rule must agree with the
+        // build-side (outcome) rule across every outcome, through a full
+        // serialize → deserialize round-trip.
+        let all_outcomes = [
+            PublisherOutcome::Succeeded,
+            PublisherOutcome::PendingModeration,
+            PublisherOutcome::PendingValidation,
+            PublisherOutcome::PublishedNoRollback,
+            PublisherOutcome::RollbackFailed("boom".into()),
+            PublisherOutcome::RolledBack,
+            PublisherOutcome::RollbackSkippedNoScope,
+            PublisherOutcome::Failed("boom".into()),
+            PublisherOutcome::Skipped(SkipReason::SubmitterGated),
+            PublisherOutcome::Skipped(SkipReason::NotConfigured),
+            PublisherOutcome::Skipped(SkipReason::Snapshot),
+        ];
+        for outcome in all_outcomes {
+            let mut ctx = anodizer_core::context::Context::test_fixture();
+            ctx.publish_report = Some(PublishReport {
+                submitter_gated: false,
+                announce_gated: false,
+                results: vec![result_in(PublisherGroup::Submitter, outcome.clone())],
+            });
+            let s = RunSummary::from_context(&ctx);
+            let back: RunSummary =
+                serde_json::from_str(&serde_json::to_string(&s).expect("serialize"))
+                    .expect("deserialize");
+            assert_eq!(
+                back.irreversibly_published,
+                !back.burned_submitter_names().is_empty(),
+                "rules disagree for {outcome:?}"
+            );
+            if back.irreversibly_published {
+                assert_eq!(back.burned_submitter_names(), vec!["p".to_string()]);
+            }
+        }
     }
 
     #[test]
@@ -581,6 +874,9 @@ mod tests {
             tag: "v0.0.0".to_string(),
             submitter_gated: false,
             announce_gated: false,
+            publishers_succeeded: 1,
+            publishers_failed: 0,
+            irreversibly_published: false,
             results: vec![RunSummaryResult {
                 name: "custom-publisher-with-long-id".to_string(), // 29 chars
                 group: PublisherGroup::Manager,
@@ -625,6 +921,9 @@ mod tests {
             tag: "v0.0.0".to_string(),
             submitter_gated: false,
             announce_gated: false,
+            publishers_succeeded: 1,
+            publishers_failed: 0,
+            irreversibly_published: false,
             results: vec![RunSummaryResult {
                 name: long_name.clone(),
                 group: PublisherGroup::Assets,
