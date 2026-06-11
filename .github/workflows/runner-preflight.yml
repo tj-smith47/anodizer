@@ -1,4 +1,4 @@
-name: Runner preflight
+name: Runner canary (arc-anodizer)
 
 on:
   workflow_dispatch:
@@ -34,9 +34,15 @@ jobs:
       - name: Assert installed tool versions
         run: |
           set -euo pipefail
-          nfpm --version
-          makeself --version
-          snapcraft version
-          rpmbuild --version
-          cosign version
-          syft version
+          fail=0
+          for check in "nfpm --version" "makeself --version" "snapcraft version" "rpmbuild --version" "cosign version" "syft version"; do
+            tool="${check%% *}"
+            arg="${check#* }"
+            if "$tool" "$arg" >/dev/null 2>&1; then
+              echo "ok: $tool"
+            else
+              echo "::error::$tool version check failed ($check) — anodizer-action install did not provide it"
+              fail=1
+            fi
+          done
+          exit "$fail"

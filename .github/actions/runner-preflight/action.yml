@@ -22,13 +22,13 @@ runs:
         if test -n "${AWS_ACCESS_KEY_ID:-}"; then
           echo "ok: AWS_ACCESS_KEY_ID"
         else
-          echo "::error::AWS_ACCESS_KEY_ID is unset or empty"
+          echo "::error::AWS_ACCESS_KEY_ID empty — injected via envFrom secret minio-ci-creds on the arc-anodizer runner pod; check secret + pod spec"
           fail=1
         fi
         if test -n "${AWS_SECRET_ACCESS_KEY:-}"; then
           echo "ok: AWS_SECRET_ACCESS_KEY"
         else
-          echo "::error::AWS_SECRET_ACCESS_KEY is unset or empty"
+          echo "::error::AWS_SECRET_ACCESS_KEY empty — injected via envFrom secret minio-ci-creds on the arc-anodizer runner pod; check secret + pod spec"
           fail=1
         fi
         endpoint="$(grep '^MINIO_ENDPOINT=' .env.release | cut -d= -f2-)" || endpoint=""
@@ -44,14 +44,14 @@ runs:
         if sudo -n true 2>/dev/null; then
           echo "ok: sudo"
         else
-          echo "::error::passwordless sudo unavailable"
+          echo "::error::passwordless sudo unavailable (rebuild registry.jarvispro.io/arc-runner image with NOPASSWD sudoers entry)"
           fail=1
         fi
         for tool in git gh curl python3; do
           if command -v "$tool" >/dev/null 2>&1; then
             echo "ok: $tool"
           else
-            echo "::error::$tool not on PATH"
+            echo "::error::$tool not on PATH ($tool missing from arc-runner image)"
             fail=1
           fi
         done
