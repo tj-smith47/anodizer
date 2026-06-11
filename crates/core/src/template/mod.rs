@@ -39,6 +39,6 @@ pub use base_tera::ruby_escape_str;
 pub use render::{extract_artifact_ext, render};
 pub use static_render::{parse_static, render_static};
 pub use vars::{
-    PER_ARTIFACT_VARS, PER_TARGET_VARS, TemplateVars, clear_per_artifact_vars,
-    clear_per_target_vars,
+    BOOL_FIELDS, PER_ARTIFACT_VARS, PER_TARGET_VARS, TemplateVars, clear_per_artifact_vars,
+    clear_per_target_vars, find_stale_typed_compare,
 };

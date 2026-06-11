@@ -310,11 +310,10 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         ctx.populate_runtime_vars();
         ctx.populate_metadata_var()?;
 
-        // Set explicitly to "true"/"false" so `{% if IsPrepare %}` evaluates
-        // correctly in either branch (a missing var would short-circuit the
+        // Set explicitly in both branches so `{% if IsPrepare %}` evaluates
+        // correctly either way (a missing var would short-circuit the
         // truthy arm even when prepare mode is requested).
-        ctx.template_vars_mut()
-            .set("IsPrepare", if opts.prepare { "true" } else { "false" });
+        ctx.template_vars_mut().set_bool("IsPrepare", opts.prepare);
 
         // --rollback-only consumes a prior run's recorded state and never
         // builds; short-circuit before the env / git / hooks setup work
@@ -1211,7 +1210,7 @@ fn apply_nightly_template_vars(
     // `IsNightly` must be set first so `version_template`, `tag_name`,
     // and `name_template` can all branch on `{{ if .IsNightly }}…{{ end }}`
     // when rendered below.
-    ctx.template_vars_mut().set("IsNightly", "true");
+    ctx.template_vars_mut().set_bool("IsNightly", true);
 
     // Default: `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"`
     // — bumps the patch component and embeds the commit SHA so two nightly

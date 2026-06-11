@@ -3,7 +3,7 @@ use tera::Value;
 
 use super::base_tera::translate_go_time_format;
 use super::render::{extract_artifact_ext, render, render_with_env};
-use super::vars::TemplateVars;
+use super::vars::{TemplateVars, find_stale_typed_compare};
 use crate::env_source::MapEnvSource;
 
 fn test_vars() -> TemplateVars {
@@ -3870,4 +3870,161 @@ fn test_contains_any_filter_form_numeric_value_stringified() {
     )
     .unwrap();
     assert_eq!(result, "yes");
+}
+
+// ---------------------------------------------------------------------------
+// Typed bool/number template vars (set_bool / structured injection)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_bool_var_interpolates_as_true_false_strings() {
+    // `{{ IsSnapshot }}` users must keep getting "true"/"false" text after
+    // the switch from string injection to Value::Bool.
+    let mut vars = TemplateVars::new();
+    vars.set_bool("IsSnapshot", true);
+    assert_eq!(render("{{ IsSnapshot }}", &vars).unwrap(), "true");
+    vars.set_bool("IsSnapshot", false);
+    assert_eq!(render("{{ IsSnapshot }}", &vars).unwrap(), "false");
+    // Go-style spelling renders identically.
+    assert_eq!(render("{{ .IsSnapshot }}", &vars).unwrap(), "false");
+}
+
+#[test]
+fn test_bool_var_not_and_bare_if_evaluate_correctly() {
+    let mut vars = TemplateVars::new();
+
+    // Snapshot mode: `not IsSnapshot` false, bare truthiness true.
+    vars.set_bool("IsSnapshot", true);
+    assert_eq!(render("{{ not IsSnapshot }}", &vars).unwrap(), "false");
+    assert_eq!(
+        render("{% if IsSnapshot %}SNAP{% else %}REL{% endif %}", &vars).unwrap(),
+        "SNAP"
+    );
+
+    // Release mode: inverse.
+    vars.set_bool("IsSnapshot", false);
+    assert_eq!(render("{{ not IsSnapshot }}", &vars).unwrap(), "true");
+    assert_eq!(
+        render("{% if IsSnapshot %}SNAP{% else %}REL{% endif %}", &vars).unwrap(),
+        "REL"
+    );
+    // Go-style `{{ if not .IsSnapshot }}` via the preprocessor.
+    assert_eq!(
+        render("{{ if not .IsSnapshot }}REL{{ else }}SNAP{{ end }}", &vars).unwrap(),
+        "REL"
+    );
+}
+
+#[test]
+fn test_bool_vars_combine_with_and_or() {
+    let mut vars = TemplateVars::new();
+    vars.set_bool("IsSnapshot", false);
+    vars.set_bool("IsHarness", true);
+    assert_eq!(
+        render("{{ not IsSnapshot or IsHarness }}", &vars).unwrap(),
+        "true"
+    );
+    vars.set_bool("IsHarness", false);
+    assert_eq!(
+        render("{{ not IsSnapshot or IsHarness }}", &vars).unwrap(),
+        "true"
+    );
+    vars.set_bool("IsSnapshot", true);
+    assert_eq!(
+        render("{{ not IsSnapshot or IsHarness }}", &vars).unwrap(),
+        "false"
+    );
+}
+
+#[test]
+fn test_nightly_build_number_interpolates_and_compares() {
+    let mut vars = TemplateVars::new();
+    vars.set_structured("NightlyBuild", Value::from(42u64));
+    assert_eq!(render("{{ NightlyBuild }}", &vars).unwrap(), "42");
+    assert_eq!(
+        render(
+            "{% if NightlyBuild == 42 %}yes{% else %}no{% endif %}",
+            &vars
+        )
+        .unwrap(),
+        "yes"
+    );
+    assert_eq!(
+        render("{% if NightlyBuild > 0 %}yes{% else %}no{% endif %}", &vars).unwrap(),
+        "yes"
+    );
+}
+
+#[test]
+fn test_set_and_set_structured_are_mutually_exclusive() {
+    // A key must never resolve from both maps: whichever setter ran last
+    // owns the key, so a test overriding a typed flag with `set` (string)
+    // takes effect instead of being shadowed by the stale structured entry.
+    let mut vars = TemplateVars::new();
+    vars.set_bool("IsSnapshot", false);
+    vars.set("IsSnapshot", "true");
+    assert!(vars.get_structured("IsSnapshot").is_none());
+    // The "true"/"false" string-coercion heuristic keeps bool semantics.
+    assert_eq!(render("{{ not IsSnapshot }}", &vars).unwrap(), "false");
+
+    vars.set_bool("IsSnapshot", false);
+    assert!(vars.get("IsSnapshot").is_none());
+    assert_eq!(vars.get_structured("IsSnapshot"), Some(&Value::Bool(false)));
+}
+
+#[test]
+fn test_find_stale_typed_compare_detects_string_compares() {
+    for tpl in [
+        r#"{% if IsSnapshot == "false" %}true{% endif %}"#,
+        r#"{% if IsSnapshot == "false" or IsHarness == "true" %}true{% endif %}"#,
+        r#"{{ IsHarness != 'true' }}"#,
+        r#"{{ "true" == .IsNightly }}"#,
+        r#"{{ if eq .IsSnapshot "false" }}true{{ end }}"#,
+        r#"{{ if ne .IsDraft "true" }}x{{ end }}"#,
+        r#"{% if NightlyBuild == "0" %}first{% endif %}"#,
+    ] {
+        assert!(
+            find_stale_typed_compare(tpl).is_some(),
+            "must flag stale typed compare: {tpl}"
+        );
+    }
+}
+
+#[test]
+fn test_find_stale_typed_compare_allows_natural_and_unrelated_forms() {
+    for tpl in [
+        "{{ not IsSnapshot }}",
+        "{{ not IsSnapshot or IsHarness }}",
+        "{% if IsSnapshot %}snap{% endif %}",
+        "{{ if not .IsSnapshot }}rel{{ end }}",
+        r#"{% if SomeUserVar == "false" %}x{% endif %}"#,
+        r#"{% if GitTreeState == "dirty" %}x{% endif %}"#,
+        "{% if NightlyBuild == 0 %}first{% endif %}",
+        "{% if IsSnapshot == false %}rel{% endif %}",
+    ] {
+        assert!(
+            find_stale_typed_compare(tpl).is_none(),
+            "must not flag: {tpl}"
+        );
+    }
+}
+
+#[test]
+fn test_find_stale_typed_compare_ignores_namespaced_user_vars() {
+    // `Var.IsSnapshot` is a user custom var that merely shares the name;
+    // only the top-level typed flags are lint targets.
+    for tpl in [
+        r#"{% if Var.IsSnapshot == "false" %}x{% endif %}"#,
+        r#"{{ eq .Var.IsSnapshot "false" }}"#,
+    ] {
+        assert!(
+            find_stale_typed_compare(tpl).is_none(),
+            "must not flag namespaced user var: {tpl}"
+        );
+    }
+    // Snippet returned is the compare itself, not the leading boundary.
+    assert_eq!(
+        find_stale_typed_compare(r#"{% if IsSnapshot == "false" %}x{% endif %}"#),
+        Some(r#"IsSnapshot == "false""#)
+    );
 }

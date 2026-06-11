@@ -1090,7 +1090,7 @@ pub fn setup_context(ctx: &mut Context, config: &Config, log: &StageLogger) -> R
     // `commands/release/mod.rs`). Setting it unconditionally avoids a
     // "missing key" footgun in user templates that branch on
     // `{{ if IsPrepare }}`.
-    ctx.template_vars_mut().set("IsPrepare", "false");
+    ctx.template_vars_mut().set_bool("IsPrepare", false);
     setup_env(ctx, config, log)?;
     resolve_git_context(ctx, config, log)?;
     Ok(())

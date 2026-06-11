@@ -6531,6 +6531,72 @@ fn test_evaluate_if_condition_render_error_propagates() {
     );
 }
 
+#[test]
+fn test_evaluate_if_condition_rejects_stale_bool_string_compare() {
+    use super::evaluate_if_condition;
+    let render = |_: &str| -> anyhow::Result<String> {
+        panic!("render must not run for a rejected stale compare")
+    };
+    for stale in [
+        r#"{% if IsSnapshot == "false" or IsHarness == "true" %}true{% endif %}"#,
+        r#"{{ eq .IsSnapshot "false" }}"#,
+        r#"{% if NightlyBuild == "0" %}true{% endif %}"#,
+    ] {
+        let err = evaluate_if_condition(Some(stale), "sign config 'default'", render)
+            .expect_err("stale typed compare must hard-error, not silently skip");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("sign config 'default'") && chain.contains("never matches"),
+            "error must carry label + diagnostic for {stale}: {chain}",
+        );
+    }
+}
+
+#[test]
+fn test_string_or_bool_rejects_stale_bool_string_compare() {
+    let skip = StringOrBool::String(r#"{{ IsSnapshot == "true" }}"#.to_string());
+    let err = skip
+        .try_evaluates_to_true(|_| panic!("render must not run for a rejected stale compare"))
+        .expect_err("stale typed compare in skip-style fields must hard-error");
+    assert!(
+        format!("{err:#}").contains("never matches"),
+        "diagnostic must explain the type mismatch: {err:#}",
+    );
+}
+
+#[test]
+fn test_evaluate_if_condition_bool_vars_snapshot_vs_release() {
+    use super::evaluate_if_condition;
+    use crate::context::{Context, ContextOptions};
+
+    let eval = |snapshot: bool, tpl: &str| -> bool {
+        let opts = ContextOptions {
+            snapshot,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(Config::default(), opts);
+        ctx.git_info = None;
+        ctx.populate_git_vars();
+        evaluate_if_condition(Some(tpl), "t", |t| ctx.render_template(t)).unwrap()
+    };
+
+    // Go-style `{{ not .IsSnapshot }}`: proceed on release, skip on snapshot.
+    assert!(eval(false, "{{ not .IsSnapshot }}"));
+    assert!(!eval(true, "{{ not .IsSnapshot }}"));
+
+    // Bare truthiness: proceed on snapshot, skip on release.
+    assert!(eval(true, "{{ IsSnapshot }}"));
+    assert!(!eval(false, "{{ IsSnapshot }}"));
+
+    // Tera statement form.
+    assert!(eval(false, "{% if not IsSnapshot %}true{% endif %}"));
+    assert!(!eval(true, "{% if not IsSnapshot %}true{% endif %}"));
+
+    // The dogfood form: release or harness (IsHarness false here).
+    assert!(eval(false, "{{ not IsSnapshot or IsHarness }}"));
+    assert!(!eval(true, "{{ not IsSnapshot or IsHarness }}"));
+}
+
 // ---- F2: `disable` → `skip` serde aliases ----
 //
 // Imported docker_v2/snapcraft/nsis/msi/release configs use `disable:`;

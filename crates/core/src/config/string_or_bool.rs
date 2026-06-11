@@ -61,6 +61,7 @@ impl StringOrBool {
         match self {
             StringOrBool::Bool(b) => Ok(*b),
             StringOrBool::String(s) => {
+                reject_stale_typed_compare(s, "skip/enable expression")?;
                 let rendered = render(s)?;
                 Ok(matches!(rendered.trim(), "true" | "1"))
             }
@@ -72,6 +73,29 @@ impl Default for StringOrBool {
     fn default() -> Self {
         StringOrBool::Bool(false)
     }
+}
+
+/// Hard-error when a conditional template compares a typed (bool / number)
+/// injected variable to a quoted string (`IsSnapshot == "false"`,
+/// `eq .IsHarness "true"`, `NightlyBuild != "0"`, …).
+///
+/// Those variables are real Tera bools/numbers, and Tera does not coerce
+/// `Bool`/`Number` ↔ `str`, so the compare evaluates to `false` in *every*
+/// mode and the guarded resource silently skips. Failing loud here matches
+/// the render-failure contract below: a condition that can never do what it
+/// says is a config bug, not a skip.
+fn reject_stale_typed_compare(template: &str, label: &str) -> anyhow::Result<()> {
+    if let Some(snippet) = crate::template::find_stale_typed_compare(template) {
+        anyhow::bail!(
+            "{label}: `{snippet}` compares a typed template variable to a quoted string; \
+             these variables are real booleans/numbers, so the comparison never matches and \
+             the condition would silently evaluate false in every mode. Use the variable \
+             directly instead — e.g. `not IsSnapshot` for `IsSnapshot == \"false\"`, \
+             `IsHarness` for `IsHarness == \"true\"`, or an unquoted numeric compare for \
+             `NightlyBuild`."
+        );
+    }
+    Ok(())
 }
 
 /// Evaluate an `if:` conditional template.
@@ -105,6 +129,7 @@ pub fn evaluate_if_condition(
     if template.is_empty() {
         return Ok(true);
     }
+    reject_stale_typed_compare(template, label)?;
     let rendered = render(template).with_context(|| {
         format!("{label}: `if` template render failed (expression: {template})")
     })?;

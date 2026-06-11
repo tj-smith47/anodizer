@@ -122,6 +122,21 @@ If you hit a construct not covered here, open an issue with the failing template
 | `IsNightly` | `true` in nightly mode | `false` |
 | `ReleaseURL` | URL of created GitHub release | `https://github.com/...` |
 
+The `Is*` flags (`IsSnapshot`, `IsNightly`, `IsHarness`, `IsDraft`,
+`IsRelease`, `IsSingleTarget`, `IsMerging`, `IsGitDirty`, `IsGitClean`,
+`IsPrepare`) are real booleans, and `NightlyBuild` is a real number — use
+them directly:
+
+```yaml
+if: "{{ not IsSnapshot }}"            # skip on snapshots
+if: "{{ IsHarness }}"                 # only inside the determinism harness
+if: "{% if NightlyBuild > 0 %}true{% endif %}"
+```
+
+Comparing them to quoted strings (`IsSnapshot == "false"`) never matches —
+Tera does not coerce booleans to strings — so anodizer rejects such
+conditions with a hard error instead of silently skipping the stage.
+
 ### Time
 
 | Variable | Description | Example |

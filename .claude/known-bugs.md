@@ -12,6 +12,52 @@ cold without re-investigating.
 
 ## Open
 
+- [x] **`if:` boolean context vars are injected as strings, so `not IsSnapshot` /
+  bare `{% if IsSnapshot %}` silently misbehave (GoReleaser-migration footgun).** A
+  user-written `if: "{{ not .IsSnapshot }}"` renders `"false"` in EVERY mode — snapshot
+  *and* release — and the if-engine skips the stage with no warning. Root cause:
+  `IsSnapshot` / `IsNightly` / `IsHarness` / `IsDraft` / `NightlyBuild` are set via
+  `TemplateVars::set` (the string-only `vars: HashMap<String,String>`) in `Context`'s
+  var-injection (grep `set("IsHarness"` in `core/src/context.rs`) and in `core/src/hooks.rs`
+  (grep `set("IsSnapshot"`). Tera treats any non-empty
+  string — `"true"` AND `"false"` — as truthy, so `not "false"` → `false` → renders
+  `"false"` → skipped. This is NOT unavoidable Tera behavior: GoReleaser's Go templates
+  expose `.IsSnapshot` as a real bool where `{{ if .IsSnapshot }}` / `{{ not .IsSnapshot }}`
+  work, so a migrant writing `not .IsSnapshot` writes idiomatic code that fails silently.
+  Our own `.anodizer.yaml` and cfgd's only work because they use the explicit-compare
+  workaround `{% if IsSnapshot == "false" or IsHarness == "true" %}`.
+  **Fix:** inject these via the existing typed channel `TemplateVars::set_structured`
+  (`TemplateVars::set_structured` in `core/src/template/vars.rs`, already merged into the
+  Tera context as-is) as
+  `tera::Value::Bool` instead of `set`. Tera still renders `Value::Bool` as `"true"`/`"false"`
+  in interpolation, so `{{ IsSnapshot }}` and the if-engine's `"false"`-string falsy check
+  keep working, while `not` / `if` / `and` / `or` become correct.
+  **Scope:** a key can't live in both the string and structured maps (collision) — go
+  structured-only and update the internal string readers, which are all TESTS (grep
+  `get("IsSnapshot")` / `get("IsDraft")` / `get("IsNightly")` / `get("NightlyBuild")` in
+  the `core/src/context.rs` test module and `core/src/test_helpers/mod.rs` — re-point to
+  `get_structured`). No production code reads these via `.get()`.
+  **Consider also:** a strict-mode lint that hard-errors when an `if:` references a known-bool
+  var with bare-truthiness or `not`, so the silent-skip becomes loud for the next user.
+  **Migration hazard (must handle in the same change):** once these are real bools,
+  `IsSnapshot == "false"` (string compare) stops matching — Tera does not coerce `Bool` ↔
+  `str` — which silently RE-skips every stage using today's explicit-compare workaround,
+  including our own `.anodizer.yaml` and cfgd's sign stages. The fix must rewrite all
+  workaround sites to the natural `not IsSnapshot` form in the same release (and call the
+  break out in the changelog), or preserve string-compare equivalence; do not ship the bool
+  change alone.
+  **Found:** cfgd dogfooding audit 2026-06-10 — cfgd would have shipped unsigned releases
+  because all five sign-stage `if:` used the broken form.
+  **Resolved 2026-06-11** in `fix(core): inject Is* template vars as typed bools` — all
+  Is\* flags + NightlyBuild now `set_structured` (Bool/Number), `.anodizer.yaml` rewritten
+  to `{{ not IsSnapshot or IsHarness }}`, stale string-compares hard-error in
+  `evaluate_if_condition`/`try_evaluates_to_true`. Investigation inverted the root cause:
+  the `"true"/"false"` coercion in `build_tera_context` already made `not IsSnapshot`
+  work; the explicit-compare "workaround" was the broken form (Tera `Bool == str` never
+  matches) — confirmed live: v0.8.0 shipped with zero signature assets. cfgd's 5 sign-stage
+  sites (grep `IsSnapshot == "false"` in cfgd/.anodizer.yaml) still need the
+  consumer-side migration.
+
 - [ ] ⚠ autofix blocked — user-approved deferral at v0.8.0 ship (2026-06-11); needs its own multi-crate pass rewriting PATH-clobber tests onto the fake_tool seam. **Test-suite PATH race: global-PATH-clobbering tests vs spawn-via-PATH tests
   (intermittent `No such file or directory` flakes).** Observed 2026-06-10: in 2 of
   5 full `-p anodizer-stage-publish --lib` runs,
