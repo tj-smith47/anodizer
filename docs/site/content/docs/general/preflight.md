@@ -33,9 +33,13 @@ Secret **values** are never printed — only env-var names. Key material
 so the classic "key works locally but the CI secret lost its trailing
 newline" failure is caught before a publisher half-runs.
 
-Snapshot, dry-run, split, and announce-only invocations skip the
-preflight (no side effects to guard); `--no-preflight` overrides it
-explicitly.
+Snapshot and dry-run invocations skip the preflight (no upstream side
+effects to guard); `--split` skips it because split legs are
+operator-orchestrated partial pipelines. `--announce-only` runs a
+preflight scoped to the announce stage's requirements: announcers fire
+sequentially with real side effects, so a missing token aborts before the
+first post instead of after half the channels are notified.
+`--no-preflight` overrides it explicitly.
 
 ## Standalone command
 
@@ -57,7 +61,7 @@ carries a `kind` per failure (`missing_tool`, `missing_env`,
 
 | Surface | Derived requirements |
 |---------|---------------------|
-| `builds` | `cargo` (honors `$CARGO`) |
+| `builds` | `cargo` |
 | `nfpms` / `srpms` | `nfpm` / `rpmbuild` + signing key material from `signature:` blocks |
 | `snapcrafts` | `snapcraft`, `unsquashfs`; `SNAPCRAFT_STORE_CREDENTIALS` when `publish: true` |
 | `signs` / `binary_signs` / `docker_signs` | the signing `cmd`, env refs in args/stdin, `env://VAR` cosign keys validated as key material |
@@ -84,4 +88,5 @@ The per-platform bundler stages (`msis`, `nsis`, `pkgs`, `dmgs`,
 targets** include their platform — mirroring each stage's own run gate, so
 a Linux-only matrix never demands WiX. Announce requirements are checked in
 both the full and `--publish-only` scopes (the publish-only pipeline runs
-announce); `--announce-only` still skips the preflight entirely.
+announce), and `--announce-only` checks them alone — the only stage that
+mode runs.

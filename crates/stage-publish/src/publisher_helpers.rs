@@ -344,7 +344,11 @@ pub(crate) fn git_repo_requirements(
 /// `git_ssh_command` (both templated; `{{ .Env.AUR_SSH_KEY }}` is the
 /// canonical shape). A `private_key` that is exactly one env reference is
 /// declared as validatable key material; composite templates degrade to a
-/// presence check on the referenced vars.
+/// presence check on the referenced vars. A configured key without a
+/// custom `git_ssh_command` also demands the `ssh` binary: the clone path
+/// writes the key to disk and sets `GIT_SSH_COMMAND` to an `ssh -i …`
+/// invocation, which git spawns — a custom command replaces that
+/// invocation wholesale, so it lifts the demand.
 pub(crate) fn aur_ssh_requirements(
     private_key: Option<&str>,
     git_ssh_command: Option<&str>,
@@ -354,6 +358,11 @@ pub(crate) fn aur_ssh_requirements(
         name: "git".to_string(),
     }];
     if let Some(pk) = private_key.filter(|v| !v.is_empty()) {
+        if git_ssh_command.filter(|v| !v.is_empty()).is_none() {
+            out.push(anodizer_core::EnvRequirement::Tool {
+                name: "ssh".to_string(),
+            });
+        }
         if let Some(var) = sole_env_ref(pk) {
             out.push(anodizer_core::EnvRequirement::KeyEnv {
                 kind: anodizer_core::KeyKind::SshPrivate,
@@ -452,6 +461,56 @@ mod tests {
         assert!(msg.contains("publish.aur.private_key"), "{msg}");
         assert!(msg.contains("GIT_SSH_COMMAND"), "{msg}");
         assert!(!msg.contains("ANODIZER_GITHUB_TOKEN"), "{msg}");
+    }
+
+    /// A configured private key with no custom `git_ssh_command` rides the
+    /// default `ssh -i …` GIT_SSH_COMMAND, so the `ssh` binary itself must
+    /// be demanded alongside `git` and the key material.
+    #[test]
+    fn aur_ssh_requirements_default_key_demands_ssh_tool() {
+        let reqs = aur_ssh_requirements(Some("{{ .Env.AUR_SSH_KEY }}"), None);
+        assert!(
+            reqs.iter().any(|r| matches!(
+                r,
+                anodizer_core::EnvRequirement::Tool { name } if name == "ssh"
+            )),
+            "private key without git_ssh_command must demand ssh: {reqs:?}"
+        );
+        assert!(
+            reqs.iter().any(|r| matches!(
+                r,
+                anodizer_core::EnvRequirement::KeyEnv { var, .. } if var == "AUR_SSH_KEY"
+            )),
+            "private key env ref must still be demanded as key material: {reqs:?}"
+        );
+    }
+
+    /// A custom `git_ssh_command` replaces the default ssh invocation
+    /// wholesale (git spawns the configured command instead), so `ssh`
+    /// must not be demanded even when a private key is also set.
+    #[test]
+    fn aur_ssh_requirements_custom_ssh_command_lifts_ssh_tool() {
+        let ssh_demanded = |reqs: &[anodizer_core::EnvRequirement]| {
+            reqs.iter().any(|r| {
+                matches!(
+                    r,
+                    anodizer_core::EnvRequirement::Tool { name } if name == "ssh"
+                )
+            })
+        };
+        let reqs = aur_ssh_requirements(
+            Some("{{ .Env.AUR_SSH_KEY }}"),
+            Some("ssh-wrapper -o IdentityAgent=none"),
+        );
+        assert!(
+            !ssh_demanded(&reqs),
+            "custom git_ssh_command must lift the ssh demand: {reqs:?}"
+        );
+        let reqs = aur_ssh_requirements(None, Some("{{ .Env.AUR_SSH_CMD }}"));
+        assert!(
+            !ssh_demanded(&reqs),
+            "git_ssh_command without a key must not demand ssh: {reqs:?}"
+        );
     }
 
     #[test]

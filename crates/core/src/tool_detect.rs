@@ -13,19 +13,30 @@
 use std::io;
 use std::process::Command;
 
-/// Probe `<name> --version` and report whether the tool ran successfully.
+/// The version flag `<name>` answers with a zero exit. `--version` for
+/// almost everything; OpenSSH's `ssh` rejects `--version` (exit 255,
+/// usage text) and only supports `-V`.
+fn version_flag(name: &str) -> &'static str {
+    match name {
+        "ssh" => "-V",
+        _ => "--version",
+    }
+}
+
+/// Probe `<name> --version` (or the tool's own version flag, see
+/// [`version_flag`]) and report whether the tool ran successfully.
 ///
-/// `Ok(true)` — `<name> --version` ran and exited zero (tool available).
+/// `Ok(true)` — the probe ran and exited zero (tool available).
 /// `Ok(false)` — `<name>` ran but exited non-zero (installed but failing
-///   `--version`; rare, but possible for stub binaries or version-flag
-///   mismatches).
+///   the version flag; rare, but possible for stub binaries or
+///   version-flag mismatches).
 /// `Err(_)` — `<name>` could not be spawned (typically `NotFound` —
 ///   the binary is not on `PATH`). Distinct from `Ok(false)` so callers
 ///   can log the underlying `io::Error` at trace level. stdout/stderr
 ///   are silenced so a missing tool doesn't pollute the log.
 pub fn tool_available(name: &str) -> io::Result<bool> {
     Command::new(name)
-        .arg("--version")
+        .arg(version_flag(name))
         .current_dir(crate::path_util::probe_dir())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -33,10 +44,12 @@ pub fn tool_available(name: &str) -> io::Result<bool> {
         .map(|s| s.success())
 }
 
-/// Run `<name> --version` and return the first stdout line trimmed.
+/// Run the tool's version probe (see [`version_flag`]) and return the
+/// first output line trimmed.
 ///
 /// `Ok(Some(line))` — tool ran, exited zero, returns the first stdout
-///   line trimmed.
+///   line trimmed (first stderr line when stdout is empty — ssh prints
+///   its version to stderr).
 /// `Ok(None)` — tool ran but exited non-zero; no version string to
 ///   report.
 /// `Err(_)` — tool could not be spawned. Distinct from `Ok(None)` so
@@ -44,12 +57,17 @@ pub fn tool_available(name: &str) -> io::Result<bool> {
 ///   than collapsing every failure to "tool missing".
 pub fn tool_version(name: &str) -> io::Result<Option<String>> {
     let output = Command::new(name)
-        .arg("--version")
+        .arg(version_flag(name))
         .current_dir(crate::path_util::probe_dir())
         .output()?;
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(Some(stdout.lines().next().unwrap_or("").trim().to_string()))
+        let line = stdout.lines().next().unwrap_or("").trim().to_string();
+        if !line.is_empty() {
+            return Ok(Some(line));
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Ok(Some(stderr.lines().next().unwrap_or("").trim().to_string()))
     } else {
         Ok(None)
     }
@@ -96,5 +114,13 @@ mod tests {
             "nonexistent-binary-xyzzy",
             &["--version"]
         ));
+    }
+
+    /// ssh must probe with `-V` — OpenSSH exits 255 on `--version`, so
+    /// the default flag would report an installed ssh as missing.
+    #[test]
+    fn version_flag_maps_ssh_to_dash_v() {
+        assert_eq!(version_flag("ssh"), "-V");
+        assert_eq!(version_flag("git"), "--version");
     }
 }

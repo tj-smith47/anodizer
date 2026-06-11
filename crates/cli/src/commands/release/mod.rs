@@ -362,12 +362,17 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
 
     // Config-derived environment preflight: every enabled stage/publisher
     // declares its tools / env vars / endpoints / key material, and all
-    // failures are reported in one pass BEFORE any stage runs. Snapshot,
-    // dry-run, split, and announce-only modes skip it (no side effects to
-    // guard); `--publish-only` runs it — that mode is exactly the one whose
-    // missing secrets used to surface mid-publish.
-    if !opts.no_preflight && !opts.dry_run && !opts.snapshot && !opts.split && !opts.announce_only {
-        let scope = if opts.publish_only {
+    // failures are reported in one pass BEFORE any stage runs. Snapshot and
+    // dry-run skip it (no upstream side effects to guard); `--split` skips
+    // it (operator-orchestrated partial pipeline legs); `--publish-only`
+    // runs it — that mode is exactly the one whose missing secrets used to
+    // surface mid-publish. `--announce-only` checks announce requirements
+    // alone: announcers fire sequentially with real side effects, so a
+    // missing token must abort before the first channel posts.
+    if !opts.no_preflight && !opts.dry_run && !opts.snapshot && !opts.split {
+        let scope = if opts.announce_only {
+            crate::commands::preflight::PreflightScope::AnnounceOnly
+        } else if opts.publish_only {
             crate::commands::preflight::PreflightScope::PublishOnly
         } else {
             crate::commands::preflight::PreflightScope::Full

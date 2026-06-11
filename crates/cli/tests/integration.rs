@@ -5163,6 +5163,69 @@ crates:
     );
 }
 
+/// The environment preflight must abort `anodizer release` BEFORE any
+/// stage runs: a configured cargo publisher demands CARGO_REGISTRY_TOKEN,
+/// which is removed from the environment here, so the release must exit
+/// non-zero with the preflight bail on stderr and leave no `dist/run-*`
+/// directory behind — the publish stage persisting one would prove a
+/// stage ran past the failed check.
+#[test]
+fn release_env_preflight_failure_aborts_before_any_stage() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      cargo: {}
+"#,
+    );
+    init_git_repo(tmp.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["release"])
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("ANODIZER_GITHUB_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "release with an unsatisfiable preflight requirement must exit non-zero; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("environment failure(s)"),
+        "stderr must carry the preflight bail; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("CARGO_REGISTRY_TOKEN"),
+        "the failure report must name the missing env var; got: {stderr}"
+    );
+    // No stage ran: the publish stage writes `dist/run-<id>/` very early
+    // in its execution, so any run dir means the abort came too late.
+    let dist = tmp.path().join("dist");
+    if dist.exists() {
+        let run_dirs: Vec<String> = fs::read_dir(&dist)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("run-"))
+            .collect();
+        assert!(
+            run_dirs.is_empty(),
+            "preflight abort must precede every stage; found run dir(s): {run_dirs:?}\nstderr: {stderr}"
+        );
+    }
+}
+
 /// `--allow-nondeterministic foo` (no `=`) errors at the translation site.
 #[test]
 fn release_allow_nondeterministic_rejects_no_eq() {

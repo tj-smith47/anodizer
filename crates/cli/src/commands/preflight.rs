@@ -39,6 +39,10 @@ pub enum PreflightScope {
     /// publish/blob/snapcraft-publish/announce/verify-release only
     /// (mirrors `build_publish_only_pipeline`).
     PublishOnly,
+    /// `anodizer release --announce-only`: re-fires announcers against a
+    /// prior run's report — announce is the only stage that runs, so only
+    /// its requirements apply.
+    AnnounceOnly,
 }
 
 impl PreflightScope {
@@ -58,6 +62,7 @@ impl PreflightScope {
                     | "announce"
                     | "verify-release"
             ),
+            PreflightScope::AnnounceOnly => stage == "announce",
         }
     }
 }
@@ -74,16 +79,14 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
     };
     let runs = |stage: &str| -> bool { scope.includes(stage) && !ctx.should_skip(stage) };
 
-    // Build stage: the cargo invocation itself (honors the standard CARGO
-    // override the build stage resolves).
+    // Build stage: the run path spawns the literal `cargo` from PATH, so
+    // probe exactly that.
     if runs("build") {
-        let cargo = ctx
-            .env_var("CARGO")
-            .filter(|c| !c.is_empty())
-            .unwrap_or_else(|| "cargo".to_string());
         add(
             "stage:build",
-            vec![anodizer_core::EnvRequirement::Tool { name: cargo }],
+            vec![anodizer_core::EnvRequirement::Tool {
+                name: "cargo".to_string(),
+            }],
         );
     }
 
@@ -671,6 +674,44 @@ flatpaks:
         assert!(
             !reqs.iter().any(|r| r.source == "stage:announce"),
             "--skip=announce must drop announce requirements: {reqs:?}"
+        );
+    }
+
+    /// The announce-only scope collects the announce surface and nothing
+    /// else, even when builds and publishers are configured: announcers
+    /// are the only side effects `--announce-only` can produce, so their
+    /// secrets are the only thing its preflight may demand.
+    #[test]
+    fn announce_only_scope_collects_announce_requirements_alone() {
+        use anodizer_core::config::{AnnounceConfig, StringOrBool, TelegramAnnounce};
+        let top = crate_from_yaml(
+            r#"
+name: top
+publish:
+  scoop:
+    repository: { owner: o, name: bucket }
+"#,
+        );
+        let mut ctx = TestContextBuilder::new().crates(vec![top]).build();
+        ctx.config.announce = Some(AnnounceConfig {
+            telegram: Some(TelegramAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+
+        let reqs = collect_requirements(&ctx, PreflightScope::AnnounceOnly);
+        assert!(
+            reqs.iter().all(|r| r.source == "stage:announce"),
+            "announce-only scope must collect only announce requirements: {reqs:?}"
+        );
+        assert!(
+            reqs.iter().any(|r| matches!(
+                &r.requirement,
+                EnvRequirement::EnvAllOf { vars } if vars.contains(&"TELEGRAM_TOKEN".to_string())
+            )),
+            "enabled telegram announcer must demand its token: {reqs:?}"
         );
     }
 }
