@@ -665,6 +665,7 @@ fn ai_receives_flat_commit_list_not_grouped() {
             title: None,
             divider: None,
             scm_provider: None,
+            login_style: crate::render::LoginStyle::Bare,
         },
     )
     .expect("grouped render");
@@ -685,6 +686,7 @@ fn ai_receives_flat_commit_list_not_grouped() {
             title: None,
             divider: None,
             scm_provider: None,
+            login_style: crate::render::LoginStyle::Bare,
         },
     )
     .expect("flat render");

@@ -3984,9 +3984,10 @@ fn empty_login_falls_back_to_author_name() {
     assert!(!md.contains("()"), "no empty parens: {md:?}");
 }
 
-/// Non-empty `login` still renders the login (fallback only fires when empty).
+/// Non-empty `login` renders the `@login` mention (fallback only fires when
+/// empty). Bare style: the GitHub release body autolinks the mention itself.
 #[test]
-fn nonempty_login_renders_login() {
+fn nonempty_login_renders_bare_mention() {
     let mut commit = ci("feat: add X", "feat", "add X", "abc1234");
     commit.author_name = "Jane Roe".into();
     commit.login = "janeroe".into();
@@ -4005,12 +4006,126 @@ fn nonempty_login_renders_login() {
         None,
     );
     assert!(
-        md.contains("(janeroe)"),
-        "non-empty login must win over author name: {md:?}"
+        md.contains("(@janeroe)"),
+        "non-empty login must render the @login mention: {md:?}"
     );
     assert!(
         !md.contains("Jane Roe"),
         "author name must not leak when login is present: {md:?}"
+    );
+}
+
+/// Render through the canonical entry point with an explicit [`LoginStyle`].
+fn render_with_style(
+    grouped: &[GroupedCommits],
+    format: &str,
+    use_source: &str,
+    style: crate::render::LoginStyle,
+) -> String {
+    crate::render::render_changelog_with_provider(
+        grouped,
+        crate::render::ChangelogRenderOpts {
+            abbrev: 7,
+            format_template: if format.is_empty() {
+                None
+            } else {
+                Some(format)
+            },
+            logins: "",
+            use_source,
+            title: None,
+            divider: None,
+            scm_provider: None,
+            login_style: style,
+        },
+    )
+    .expect("render with style")
+}
+
+/// Linked style (on-disk `CHANGELOG.md`): a resolved login renders an
+/// explicit Markdown link, since nothing autolinks committed files.
+#[test]
+fn linked_style_renders_markdown_login_link() {
+    let mut commit = ci("feat: add X", "feat", "add X", "abc1234");
+    commit.author_name = "Jane Roe".into();
+    commit.login = "janeroe".into();
+    let grouped = vec![GroupedCommits::new("", vec![commit])];
+    let md = render_with_style(
+        &grouped,
+        "{{ .SHA }} {{ .Message }} ({{ .AuthorUsername }})",
+        "git",
+        crate::render::LoginStyle::Linked,
+    );
+    assert!(
+        md.contains("([@janeroe](https://github.com/janeroe))"),
+        "linked style must render an explicit Markdown link: {md:?}"
+    );
+}
+
+/// Linked style with NO login resolved must be byte-identical to the
+/// historical name-based rendering (the graceful-degradation contract).
+#[test]
+fn linked_style_unresolved_login_is_byte_identical_name_fallback() {
+    let mut commit = ci(
+        "fix: close audit gaps",
+        "fix",
+        "close audit gaps",
+        "ef88059e",
+    );
+    commit.full_hash = "ef88059e1234567890abcdef1234567890abcdef".into();
+    commit.author_name = "TJ Smith".into();
+    let grouped = vec![GroupedCommits::new("", vec![commit])];
+    let fmt = "* {{ .SHA }} {{ .Message }} ({{ .AuthorUsername }})";
+    let linked = render_with_style(&grouped, fmt, "git", crate::render::LoginStyle::Linked);
+    let bare = render_with_style(&grouped, fmt, "git", crate::render::LoginStyle::Bare);
+    assert_eq!(
+        linked, bare,
+        "with no login the two styles must agree byte-for-byte"
+    );
+    let line = linked
+        .lines()
+        .find(|l| l.contains("close audit gaps"))
+        .expect("bullet line present");
+    assert_eq!(line, "* ef88059 close audit gaps (TJ Smith)");
+}
+
+/// The default SCM format (`@{{ Login }}` with the name/email fallback) gets
+/// the linked rendering for free in kac style — same render path, no
+/// format-template duplication.
+#[test]
+fn default_scm_format_links_login_in_linked_style() {
+    let mut commit = ci("feat: add X", "feat", "add X", "abc1234");
+    commit.full_hash = "abc1234567890abcdef1234567890abcdef12345".into();
+    commit.author_name = "Octocat".into();
+    commit.author_email = "octocat@github.com".into();
+    commit.login = "octocat".into();
+    let grouped = vec![GroupedCommits::new("", vec![commit])];
+    let md = render_with_style(&grouped, "", "github", crate::render::LoginStyle::Linked);
+    assert!(
+        md.contains("([@octocat](https://github.com/octocat))"),
+        "default SCM format must link the login in kac style: {md:?}"
+    );
+}
+
+/// A template that prefixes its own `@` (the GR-ported
+/// `(@{{ .AuthorUsername }})` shape) must not double the `@` now that
+/// `AuthorUsername` carries the mention form.
+#[test]
+fn at_prefixed_author_username_does_not_double_at() {
+    let mut commit = ci("feat: add X", "feat", "add X", "abc1234");
+    commit.author_name = "Octocat".into();
+    commit.login = "octocat".into();
+    let grouped = vec![GroupedCommits::new("", vec![commit])];
+    let fmt = "{{ .SHA }} {{ .Message }} (@{{ .AuthorUsername }})";
+    let bare = render_with_style(&grouped, fmt, "git", crate::render::LoginStyle::Bare);
+    assert!(
+        bare.contains("(@octocat)") && !bare.contains("@@"),
+        "double @ must collapse: {bare:?}"
+    );
+    let linked = render_with_style(&grouped, fmt, "git", crate::render::LoginStyle::Linked);
+    assert!(
+        linked.contains("([@octocat](https://github.com/octocat))"),
+        "collapsed mention must still link in kac style: {linked:?}"
     );
 }
 

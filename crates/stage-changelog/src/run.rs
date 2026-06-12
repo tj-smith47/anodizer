@@ -154,9 +154,15 @@ impl Stage for super::ChangelogStage {
             opts.groups.clear();
         }
 
+        // One enricher for the whole run: its email→login memo is shared
+        // across every crate's changelog so a workspace release costs one
+        // GitHub API call per unique author email, not per crate.
+        let mut enricher = build_login_enricher(ctx, &use_source);
+
         let mut combined_markdown = String::new();
         for crate_cfg in &crates {
-            let mut markdown = render_crate_changelog(ctx, &log, crate_cfg, &opts, &use_source)?;
+            let mut markdown =
+                render_crate_changelog(ctx, &log, crate_cfg, &opts, &use_source, &mut enricher)?;
             if let Some(ref ai) = ai_cfg {
                 markdown = crate::ai::enhance_with_ai(ctx, ai, &markdown, &log)?;
             }
@@ -693,6 +699,41 @@ fn resolve_scope(
     )
 }
 
+/// Build the GitHub login enricher for this run, or `None` when enrichment
+/// cannot apply: a non-GitHub changelog source (`gitlab`/`gitea` logins live
+/// in a different namespace), no explicit token (no ambient-auth lookups, by
+/// contract — unauthenticated runs keep name-based rendering), or no
+/// derivable GitHub target (`release.github` config, falling back to the
+/// `origin` remote).
+fn build_login_enricher(
+    ctx: &Context,
+    use_source: &str,
+) -> Option<crate::enrich::LoginEnricher<'static>> {
+    if !crate::enrich::use_source_supports_github_logins(use_source) {
+        return None;
+    }
+    let token = ctx.options.token.clone().filter(|t| !t.is_empty())?;
+    let configured = ctx
+        .config
+        .crates
+        .iter()
+        .filter_map(|c| c.release.as_ref().and_then(|r| r.github.as_ref()))
+        .map(|g| (g.owner.clone(), g.name.clone()))
+        .find(|(o, n)| !o.is_empty() && !n.is_empty());
+    let root = ctx
+        .options
+        .project_root
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let (owner, repo) = crate::enrich::derive_github_target(
+        configured.as_ref().map(|(o, n)| (o.as_str(), n.as_str())),
+        &root,
+    )?;
+    Some(crate::enrich::LoginEnricher::for_github_repo(
+        owner, repo, token,
+    ))
+}
+
 /// Fetch commits for a crate via the configured SCM backend, with
 /// fallback-to-git on transient SCM API failures (strict mode escalates
 /// to an error). Returns `(commits, logins_str)`.
@@ -827,6 +868,7 @@ fn render_crate_changelog(
     crate_cfg: &anodizer_core::config::CrateConfig,
     opts: &ChangelogOpts,
     use_source: &str,
+    enricher: &mut Option<crate::enrich::LoginEnricher<'static>>,
 ) -> Result<String> {
     let crate_name = crate_cfg.name.clone();
     let use_github = use_source == "github";
@@ -922,6 +964,14 @@ fn render_crate_changelog(
     let mut sorted = filtered;
     sort_commits(&mut sorted, &opts.sort_order)?;
 
+    // Resolve GitHub logins for commits that arrived without one (the
+    // local-git backend, or SCM-API authors with no linked account). The
+    // run-wide enricher memoizes per email, and unresolved commits keep
+    // their byte-identical name-based rendering.
+    if let Some(e) = enricher.as_mut() {
+        e.enrich(&mut sorted);
+    }
+
     let grouped = if opts.groups.is_empty() {
         // No groups configured — render commits as a flat list without
         // any group heading. Only a "## Changes" heading is emitted
@@ -951,6 +1001,9 @@ fn render_crate_changelog(
             title: opts.title.as_deref(),
             divider: opts.divider.as_deref(),
             scm_provider: Some(&scm_provider),
+            // The stage body becomes the GitHub release body, where bare
+            // `@login` mentions are autolinked by GitHub itself.
+            login_style: crate::render::LoginStyle::Bare,
         },
     )
 }
@@ -1045,6 +1098,99 @@ mod github_native_empty_body_tests {
             !github_native_body_is_empty(body),
             "a body with actual notes must NOT be treated as empty"
         );
+    }
+}
+
+#[cfg(test)]
+mod login_enricher_gating_tests {
+    use super::build_login_enricher;
+    use anodizer_core::config::{CrateConfig, ReleaseConfig, ScmRepoConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    fn ctx_with(
+        token: Option<&str>,
+        github: Option<(&str, &str)>,
+        root: std::path::PathBuf,
+    ) -> anodizer_core::context::Context {
+        TestContextBuilder::new()
+            .project_name("test")
+            .token(token.map(str::to_string))
+            .project_root(root)
+            .crates(vec![CrateConfig {
+                name: "mylib".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                release: github.map(|(owner, name)| ReleaseConfig {
+                    github: Some(ScmRepoConfig {
+                        owner: owner.to_string(),
+                        name: name.to_string(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build()
+    }
+
+    /// No explicit token → no enricher, regardless of a configured GitHub
+    /// target: unauthenticated runs keep name-based rendering and never
+    /// attempt ambient-auth lookups.
+    #[test]
+    fn no_token_disables_enrichment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = ctx_with(None, Some(("octo", "repo")), tmp.path().to_path_buf());
+        assert!(build_login_enricher(&ctx, "git").is_none());
+        let ctx = ctx_with(Some(""), Some(("octo", "repo")), tmp.path().to_path_buf());
+        assert!(
+            build_login_enricher(&ctx, "git").is_none(),
+            "empty token counts as absent"
+        );
+    }
+
+    /// GitLab/Gitea changelog sources never enrich from GitHub (different
+    /// login namespaces), token or not.
+    #[test]
+    fn non_github_sources_disable_enrichment() {
+        let tmp = tempfile::tempdir().unwrap();
+        for src in ["gitlab", "gitea", "github-native"] {
+            let ctx = ctx_with(
+                Some("tok"),
+                Some(("octo", "repo")),
+                tmp.path().to_path_buf(),
+            );
+            assert!(
+                build_login_enricher(&ctx, src).is_none(),
+                "{src} must not enrich"
+            );
+        }
+    }
+
+    /// Token + configured `release.github` → enricher, for both the git and
+    /// github sources (the latter backfills authors the compare API returned
+    /// without a login).
+    #[test]
+    fn token_and_configured_target_enable_enrichment() {
+        let tmp = tempfile::tempdir().unwrap();
+        for src in ["git", "github"] {
+            let ctx = ctx_with(
+                Some("tok"),
+                Some(("octo", "repo")),
+                tmp.path().to_path_buf(),
+            );
+            assert!(
+                build_login_enricher(&ctx, src).is_some(),
+                "{src} must enrich"
+            );
+        }
+    }
+
+    /// Token but no configured target AND no GitHub remote (the project root
+    /// is not even a git repo) → no enricher.
+    #[test]
+    fn no_derivable_target_disables_enrichment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = ctx_with(Some("tok"), None, tmp.path().to_path_buf());
+        assert!(build_login_enricher(&ctx, "git").is_none());
     }
 }
 

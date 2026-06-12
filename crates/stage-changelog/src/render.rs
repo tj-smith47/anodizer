@@ -32,6 +32,20 @@ use crate::group::{
     sort_commits,
 };
 
+/// How a resolved GitHub login renders in the author-mention slot.
+///
+/// The same render path serves two sinks with different autolink behaviour:
+/// a GitHub release body autolinks bare `@login` mentions itself, while a
+/// committed `CHANGELOG.md` needs an explicit Markdown link to be clickable.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum LoginStyle {
+    /// Bare `@login` — for GitHub release bodies, where GitHub autolinks it.
+    #[default]
+    Bare,
+    /// `[@login](https://github.com/login)` — for on-disk Markdown.
+    Linked,
+}
+
 /// Per-call rendering options for [`render_changelog_with_provider`].
 ///
 /// Bundles the long parameter list so the public render entry point keeps a
@@ -47,6 +61,8 @@ pub(crate) struct ChangelogRenderOpts<'a> {
     /// Overrides `use_source` for newline selection only (matches
     /// the backend token type).
     pub scm_provider: Option<&'a str>,
+    /// How resolved logins render in the author-mention slot.
+    pub login_style: LoginStyle,
 }
 
 /// Compute the release-wide unique author-name set across every commit
@@ -80,6 +96,29 @@ fn collect_all_authors(grouped: &[GroupedCommits]) -> String {
     seen.into_iter().collect::<Vec<_>>().join(", ")
 }
 
+/// Release-wide unique login set across every commit in the rendered groups,
+/// joined with commas (the same shape the SCM compare-API fetchers produce
+/// for `AllLogins`). Used when the caller supplies no fetch-time login string
+/// — the local-git path, where logins arrive via GitHub-API enrichment on the
+/// commits themselves rather than from a compare response.
+fn collect_all_logins(grouped: &[GroupedCommits]) -> String {
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    fn walk(group: &GroupedCommits, seen: &mut std::collections::BTreeSet<String>) {
+        for commit in &group.commits {
+            if !commit.login.is_empty() {
+                seen.insert(commit.login.clone());
+            }
+        }
+        for sub in &group.subgroups {
+            walk(sub, seen);
+        }
+    }
+    for g in grouped {
+        walk(g, &mut seen);
+    }
+    seen.into_iter().collect::<Vec<_>>().join(",")
+}
+
 /// Inner render function that accepts an optional SCM provider override for
 /// newline handling, keyed on the backend token type, not
 /// the changelog source. When `scm_provider` is set, it overrides `use_source`
@@ -96,6 +135,7 @@ pub(crate) fn render_changelog_with_provider(
         title,
         divider,
         scm_provider,
+        login_style,
     } = opts;
     use anodizer_core::config::ChangelogConfig;
     // Build a transient ChangelogConfig with just the user-supplied
@@ -132,6 +172,16 @@ pub(crate) fn render_changelog_with_provider(
         out.push_str(&format!("## {}\n\n", changelog_title));
     }
     let all_authors = collect_all_authors(grouped);
+    // The SCM compare backends supply `logins` from their API response; the
+    // local-git path supplies an empty string, so derive `AllLogins` from the
+    // (possibly enriched) per-commit logins instead.
+    let derived_logins;
+    let logins = if logins.is_empty() {
+        derived_logins = collect_all_logins(grouped);
+        derived_logins.as_str()
+    } else {
+        logins
+    };
     let state = RenderGroupsState {
         abbrev,
         tmpl,
@@ -139,6 +189,7 @@ pub(crate) fn render_changelog_with_provider(
         all_authors: &all_authors,
         divider,
         newline,
+        login_style,
     };
     render_groups(&mut out, grouped, &state, 3)?;
     Ok(out)
@@ -158,6 +209,7 @@ struct RenderGroupsState<'a> {
     all_authors: &'a str,
     divider: Option<&'a str>,
     newline: &'a str,
+    login_style: LoginStyle,
 }
 
 impl<'a> RenderGroupsState<'a> {
@@ -199,15 +251,7 @@ fn render_groups(
             out.push_str(&format!("{} {}\n\n", hashes, group.title));
         }
         for commit in &group.commits {
-            render_commit_line(
-                out,
-                commit,
-                state.abbrev,
-                state.tmpl,
-                state.logins,
-                state.all_authors,
-                state.newline,
-            )?;
+            render_commit_line(out, commit, state)?;
         }
         // Render nested subgroups one level deeper (no divider at subgroup level).
         if !group.subgroups.is_empty() {
@@ -229,13 +273,15 @@ fn render_groups(
 /// user `format:` that begins with its own bullet renders one marker rather
 /// than a doubled `* *`.
 ///
-/// `AuthorUsername` falls back to the commit author name when the per-commit
-/// login is empty — the local-git changelog path leaves it empty since only
-/// the `github` backend resolves SCM usernames, and an empty
-/// `{{ .AuthorUsername }}` would otherwise render a bare `()`. The raw `Login`
-/// is left empty in that case so the default SCM format's
+/// `AuthorUsername` renders the `@login` mention when a per-commit login is
+/// known (from the SCM compare backends, or from GitHub-API enrichment of the
+/// local-git path) and falls back to the commit author name otherwise, so an
+/// empty `{{ .AuthorUsername }}` never renders a bare `()`. The raw `Login`
+/// stays empty when unresolved so the default SCM format's
 /// `{% if Login %}…{% else %}{{ AuthorName }} <{{ AuthorEmail }}>{% endif %}`
-/// branch still selects the `Name <email>` form.
+/// branch still selects the `Name <email>` form. Resolved logins additionally
+/// pass through [`style_login_mentions`], which links `@login` tokens under
+/// [`LoginStyle::Linked`] (on-disk changelogs).
 ///
 /// Template variables available:
 /// - `SHA` — full commit hash
@@ -247,8 +293,10 @@ fn render_groups(
 ///   keeps the flat fields for backward compatibility; new templates
 ///   should prefer the `AuthorsList` structured form.
 /// - `AuthorEmail` — commit author email (see `AuthorName` deprecation note).
-/// - `Login` — per-commit GitHub username (populated only with `github`
-///   backend; left empty otherwise so the default SCM format can branch on it)
+/// - `Login` — per-commit SCM username (populated by the `github`/`gitea`
+///   backends, or by GitHub-API enrichment when the local-git path targets a
+///   GitHub repo; left empty when unresolved so the default SCM format can
+///   branch on it)
 /// - `Authors` — comma-separated names for this commit (primary author +
 ///   `Co-Authored-By:` trailers). The per-entry
 ///   Authors template var.
@@ -267,12 +315,17 @@ fn render_groups(
 fn render_commit_line(
     out: &mut String,
     commit: &CommitInfo,
-    abbrev: i32,
-    tmpl: &str,
-    logins: &str,
-    all_authors: &str,
-    newline: &str,
+    state: &RenderGroupsState<'_>,
 ) -> Result<()> {
+    let &RenderGroupsState {
+        abbrev,
+        tmpl,
+        logins,
+        all_authors,
+        newline,
+        login_style,
+        divider: _,
+    } = state;
     let short_sha = if abbrev < 0 {
         // Negative abbrev (e.g. -1) means omit hash entirely.
         String::new()
@@ -312,21 +365,21 @@ fn render_commit_line(
     // so an empty `Login` is the signal that drives the `Name <email>`
     // fallback — overwriting it would suppress the email.
     vars.set("Login", &commit.login);
-    // Alias: the default format string when
-    // `use ∈ {github,gitlab,gitea}` is
-    // `"{{ .SHA }}: {{ .Message }} ({{ with .AuthorUsername }}@{{ . }}{{ else }}{{ .AuthorName }} <{{ .AuthorEmail }}>{{ end }})"`
-    // populated for
-    // `AuthorUsername` template var from the SCM commit author's username;
-    // anodizer surfaces the same datum under `AuthorUsername`. Unlike the
-    // raw `Login` (which the default SCM format branches on), this display
-    // alias falls back to the author name when the per-commit login is empty
-    // — the local-git `anodizer changelog` path never resolves SCM usernames,
-    // so a custom `({{ .AuthorUsername }})` reference would otherwise render a
-    // bare `()`.
+    // `AuthorUsername` is the DISPLAY alias: with a resolved login it carries
+    // the `@login` mention form (a GitHub release body autolinks it; the
+    // Linked style post-pass below turns it into an explicit Markdown link
+    // for on-disk changelogs); with no login it falls back to the author name
+    // so a `({{ .AuthorUsername }})` reference never renders a bare `()`.
+    // Unlike the raw `Login` (which the default SCM format branches on and
+    // prefixes with its own `@`), the mention form means templates ported
+    // from the `{{ with .AuthorUsername }}@{{ . }}{{ end }}` convention would
+    // double the `@` — `style_login_mentions` collapses that.
+    let mention;
     let author_username = if commit.login.is_empty() {
         commit.author_name.as_str()
     } else {
-        commit.login.as_str()
+        mention = format!("@{}", commit.login);
+        mention.as_str()
     };
     vars.set("AuthorUsername", author_username);
     // Per-entry `Authors` and `Logins` template vars: each entry gets its
@@ -397,6 +450,13 @@ fn render_commit_line(
             commit.hash
         )
     })?;
+    let rendered = if commit.login.is_empty() {
+        // No login resolved: the line is byte-identical to the historical
+        // name-based rendering — no mention post-pass may touch it.
+        rendered
+    } else {
+        style_login_mentions(&rendered, &commit.login, login_style)
+    };
     // De-dupe the leading bullet: when the user's `format:` already opens with
     // a Markdown list marker (`* ` / `- `, or the tab-separated form), emit it
     // verbatim instead of prepending a second `* ` (which yielded `* *`). The
@@ -414,6 +474,43 @@ fn render_commit_line(
         out.push_str(&format!("* {}{}", rendered, newline));
     }
     Ok(())
+}
+
+/// Post-render pass over one commit line for a RESOLVED `login`.
+///
+/// 1. Collapses `@@login` to `@login`: `AuthorUsername` now carries the
+///    `@login` mention form, so a template that prefixes its own `@` (the
+///    `{{ with .AuthorUsername }}@{{ . }}{{ end }}` convention) would
+///    otherwise double it.
+/// 2. Under [`LoginStyle::Linked`], rewrites each standalone `@login` token
+///    to `[@login](https://github.com/login)` so on-disk Markdown is
+///    clickable. Token boundaries keep a longer handle (`@loginx`), an
+///    email-ish `x@login`, or an already-linked `[@login](…)` untouched.
+fn style_login_mentions(line: &str, login: &str, style: LoginStyle) -> String {
+    let needle = format!("@{login}");
+    let line = line.replace(&format!("@@{login}"), &needle);
+    if style == LoginStyle::Bare {
+        return line;
+    }
+    let is_handle_char = |c: char| c.is_ascii_alphanumeric() || c == '-';
+    let mut out = String::with_capacity(line.len() + 32);
+    let mut rest = line.as_str();
+    while let Some(idx) = rest.find(&needle) {
+        let before = &rest[..idx];
+        let after = &rest[idx + needle.len()..];
+        let prev = before.chars().next_back();
+        let standalone = !matches!(prev, Some(c) if c == '[' || c == '@' || is_handle_char(c))
+            && !matches!(after.chars().next(), Some(c) if is_handle_char(c));
+        out.push_str(before);
+        if standalone {
+            out.push_str(&format!("[{needle}](https://github.com/{login})"));
+        } else {
+            out.push_str(&needle);
+        }
+        rest = after;
+    }
+    out.push_str(rest);
+    out
 }
 // ---------------------------------------------------------------------------
 // Public render API — produces a single staged changelog edit that can be
@@ -716,6 +813,25 @@ fn group_section_commits(
 
     sort_commits(&mut infos, cfg.resolved_sort()?)?;
 
+    // GitHub login enrichment for the on-disk changelog: resolve author
+    // emails to `@login` mentions when the release targets GitHub AND an
+    // explicit token is present (no token → name-based rendering, by
+    // contract). The per-call enricher is cheap — the email→login memo is
+    // process-wide in core, so a multi-crate `bump`/`tag` sync still costs
+    // one API call per unique author email. Failures keep name-based
+    // rendering.
+    if crate::enrich::use_source_supports_github_logins(cfg.resolved_use_source())
+        && let Some(token) = crate::enrich::token_from_env()
+    {
+        let configured = crate::enrich::configured_github_target(workspace_root);
+        if let Some((owner, repo)) = crate::enrich::derive_github_target(
+            configured.as_ref().map(|(o, n)| (o.as_str(), n.as_str())),
+            workspace_root,
+        ) {
+            crate::enrich::LoginEnricher::for_github_repo(owner, repo, token).enrich(&mut infos);
+        }
+    }
+
     let groups: Vec<ChangelogGroup> = cfg.groups.clone().unwrap_or_default();
     let grouped = if groups.is_empty() {
         if infos.is_empty() {
@@ -769,6 +885,9 @@ fn render_section_body(
             title: Some(""),
             divider: cfg.divider.as_deref(),
             scm_provider: None,
+            // On-disk Markdown gets no GitHub autolinking, so resolved
+            // logins render as explicit links.
+            login_style: LoginStyle::Linked,
         },
     )?;
     // `render_changelog_with_provider` always emits a `## <title>` line,
@@ -4063,6 +4182,77 @@ mod render_extra_tests {
         }
     }
 
+    // ---- style_login_mentions ----
+
+    /// Linked style rewrites a standalone mention; token boundaries protect
+    /// longer handles, email-ish text, and already-linked mentions.
+    #[test]
+    fn style_login_mentions_links_standalone_tokens_only() {
+        let linked = |s: &str| style_login_mentions(s, "ada", LoginStyle::Linked);
+        assert_eq!(
+            linked("fix: x (@ada)"),
+            "fix: x ([@ada](https://github.com/ada))"
+        );
+        // Longer handle: `@adamant` must not be split.
+        assert_eq!(linked("ping @adamant"), "ping @adamant");
+        // Email-ish: `x@ada` is not a mention.
+        assert_eq!(linked("mail x@ada now"), "mail x@ada now");
+        // Already linked: no double-wrapping.
+        assert_eq!(
+            linked("[@ada](https://github.com/ada)"),
+            "[@ada](https://github.com/ada)"
+        );
+        // Multiple standalone mentions all link.
+        assert_eq!(
+            linked("@ada and @ada"),
+            "[@ada](https://github.com/ada) and [@ada](https://github.com/ada)"
+        );
+    }
+
+    /// Both styles collapse the `@@login` a user template produces by
+    /// prefixing its own `@` to the mention-form `AuthorUsername`.
+    #[test]
+    fn style_login_mentions_collapses_double_at() {
+        assert_eq!(
+            style_login_mentions("x (@@ada)", "ada", LoginStyle::Bare),
+            "x (@ada)"
+        );
+        assert_eq!(
+            style_login_mentions("x (@@ada)", "ada", LoginStyle::Linked),
+            "x ([@ada](https://github.com/ada))"
+        );
+    }
+
+    /// Bare style leaves a standalone mention untouched (GitHub autolinks it).
+    #[test]
+    fn style_login_mentions_bare_is_passthrough() {
+        assert_eq!(
+            style_login_mentions("fix: x (@ada)", "ada", LoginStyle::Bare),
+            "fix: x (@ada)"
+        );
+    }
+
+    // ---- collect_all_logins ----
+
+    /// `AllLogins` derives from per-commit logins when the caller supplies no
+    /// fetch-time login string (the enriched local-git path): unique, sorted,
+    /// comma-joined like the SCM fetchers produce.
+    #[test]
+    fn collect_all_logins_unique_sorted() {
+        let mut a = commit("feat: a", "a1", "a1full");
+        a.login = "zoe".into();
+        let mut b = commit("fix: b", "b2", "b2full");
+        b.login = "ada".into();
+        let mut c = commit("fix: c", "c3", "c3full");
+        c.login = "zoe".into();
+        let grouped = vec![GroupedCommits {
+            title: String::new(),
+            commits: vec![a, b, c],
+            subgroups: Vec::new(),
+        }];
+        assert_eq!(collect_all_logins(&grouped), "ada,zoe");
+    }
+
     // ---- collect_all_authors ----
 
     #[test]
@@ -4522,6 +4712,7 @@ mod render_extra_tests {
             all_authors: "",
             divider: None,
             newline: "\n",
+            login_style: LoginStyle::Bare,
         };
         let groups = vec![GroupedCommits::new(
             "TooDeep",
@@ -4541,6 +4732,7 @@ mod render_extra_tests {
             all_authors: "",
             divider: None,
             newline: "\n",
+            login_style: LoginStyle::Bare,
         };
         let groups = vec![GroupedCommits::new(
             "Features",
