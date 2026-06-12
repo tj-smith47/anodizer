@@ -430,7 +430,7 @@ fn aur_check_skip_and_resolve_git_url(
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("aur: render skip template for '{}'", crate_name))?;
         if off {
-            log.status(&format!("aur: skipped for '{}'", crate_name));
+            log.status(&format!("skipped aur for '{}'", crate_name));
             return Ok(None);
         }
     }
@@ -442,7 +442,7 @@ fn aur_check_skip_and_resolve_git_url(
     )?;
     if !proceed {
         log.status(&format!(
-            "aur: skipping '{}' — `if` condition evaluated falsy",
+            "skipping aur for '{}' — `if` condition evaluated falsy",
             crate_name
         ));
         return Ok(None);
@@ -450,7 +450,7 @@ fn aur_check_skip_and_resolve_git_url(
 
     if crate::util::should_skip_upload(aur_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "aur: skipping upload for '{}' (skip_upload={})",
+            "skipping aur upload for '{}' (skip_upload={})",
             crate_name,
             aur_cfg
                 .skip_upload
@@ -771,7 +771,7 @@ fn aur_write_package_files(
     let pkgbuild_path = output_dir.join("PKGBUILD");
     std::fs::write(&pkgbuild_path, pkgbuild)
         .with_context(|| format!("aur: write PKGBUILD {}", pkgbuild_path.display()))?;
-    log.status(&format!("wrote AUR PKGBUILD: {}", pkgbuild_path.display()));
+    log.status(&format!("wrote AUR PKGBUILD {}", pkgbuild_path.display()));
 
     if let Some(content) = install_content {
         let install_path = output_dir.join(install_filename);
@@ -779,7 +779,7 @@ fn aur_write_package_files(
             format!("aur: write {} {}", install_filename, install_path.display())
         })?;
         log.status(&format!(
-            "wrote AUR install file: {}",
+            "wrote AUR install file {}",
             install_path.display()
         ));
     }
@@ -787,7 +787,7 @@ fn aur_write_package_files(
     let srcinfo_path = output_dir.join(".SRCINFO");
     std::fs::write(&srcinfo_path, srcinfo)
         .with_context(|| format!("aur: write .SRCINFO {}", srcinfo_path.display()))?;
-    log.status(&format!("wrote AUR .SRCINFO: {}", srcinfo_path.display()));
+    log.status(&format!("wrote AUR .SRCINFO {}", srcinfo_path.display()));
 
     Ok(())
 }
@@ -835,7 +835,7 @@ fn aur_commit_and_push(
         }
         util::CommitOutcome::NoChanges => {
             log.status(&format!(
-                "aur: nothing to push, package '{}' already up to date",
+                "nothing to push, aur package '{}' already up to date",
                 package_name
             ));
             false
@@ -989,7 +989,7 @@ pub(crate) fn render_aur_pkgbuild_and_srcinfo_for_crate(
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("aur: render skip template for '{}'", crate_name))?;
         if off {
-            log.status(&format!("aur: skipped for '{}'", crate_name));
+            log.status(&format!("skipped aur for '{}'", crate_name));
             return Ok(None);
         }
     }
@@ -1001,7 +1001,7 @@ pub(crate) fn render_aur_pkgbuild_and_srcinfo_for_crate(
     )?;
     if !proceed {
         log.status(&format!(
-            "aur: skipping '{}' — `if` condition evaluated falsy",
+            "skipping aur for '{}' — `if` condition evaluated falsy",
             crate_name
         ));
         return Ok(None);
@@ -1009,7 +1009,7 @@ pub(crate) fn render_aur_pkgbuild_and_srcinfo_for_crate(
 
     if crate::util::should_skip_upload(aur_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "aur: skipping upload for '{}' (skip_upload)",
+            "skipping aur upload for '{}' (skip_upload)",
             crate_name
         ));
         return Ok(None);
@@ -1302,7 +1302,7 @@ pub(crate) fn is_aur_per_crate_configured(ctx: &Context, crate_name: &str) -> bo
 /// substring an operator scans the log for.
 pub(crate) fn run_start_message(selected_total: usize) -> String {
     format!(
-        "aur: starting publish for {} selected crate(s)",
+        "starting aur publish for {} selected crate(s)",
         selected_total
     )
 }
@@ -1311,14 +1311,17 @@ pub(crate) fn run_start_message(selected_total: usize) -> String {
 /// Replaces what used to be a silent `continue` — operators need to see
 /// why a per-crate publish was a no-op rather than guess from a blank log.
 pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
-    format!("aur: skipping crate '{}' — no aur config block", crate_name)
+    format!(
+        "skipping aur for crate '{}' — no aur config block",
+        crate_name
+    )
 }
 
 /// Message emitted just before delegating to `publish_to_aur`. Anchors the
 /// AUR activity (PKGBUILD render, git clone, push) to a specific crate in
 /// the log so multi-crate workspaces are disambiguatable.
 pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
-    format!("aur: starting per-crate publish for '{}'", crate_name)
+    format!("starting per-crate aur publish for '{}'", crate_name)
 }
 
 /// Final summary emitted at publisher exit. `processed` is the count of
@@ -1327,7 +1330,7 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 /// paths for skip_upload/dry-run/etc., each of which logs its own status
 /// line).
 pub(crate) fn run_done_message(processed: usize) -> String {
-    format!("aur: completed — {} crate(s) processed", processed)
+    format!("finished aur publish — {} crate(s) processed", processed)
 }
 
 /// Decision predicate for the no-eligible-crates warning. True when the
@@ -1354,7 +1357,7 @@ pub(crate) fn should_warn_no_eligible(processed: usize, selected_len: usize) -> 
 /// hides the fact that nothing was pushed.
 pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     format!(
-        "aur: registered but 0 of {} effective crate(s) had an aur \
+        "aur publisher registered but 0 of {} effective crate(s) had an aur \
          config block — nothing pushed. Check that --crate / --all selects a \
          crate whose publish.aur block is set.",
         selected_total
@@ -1380,6 +1383,27 @@ impl anodizer_core::Publisher for AurOurPublisher {
 
     fn retain_on_rollback(&self) -> bool {
         Self::resolved_retain_on_rollback(self)
+    }
+
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.aur.as_ref())
+            .filter(|a| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    a.skip.as_ref(),
+                    a.skip_upload.as_ref(),
+                    a.if_condition.as_deref(),
+                )
+            })
+            .flat_map(|a| {
+                crate::publisher_helpers::aur_ssh_requirements(
+                    a.private_key.as_deref(),
+                    a.git_ssh_command.as_deref(),
+                )
+            })
+            .collect()
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
@@ -1473,7 +1497,7 @@ impl anodizer_core::Publisher for AurOurPublisher {
             .collect::<anyhow::Result<Vec<_>>>()?;
         let (reverted, failed) = run_revert_targets_parallel(&prepared, "aur", None, &log);
         log.status(&format!(
-            "aur: reverted {} repo(s), {} failure(s)",
+            "aur rollback reverted {} repo(s), {} failure(s)",
             reverted, failed
         ));
         Ok(())
@@ -1742,40 +1766,35 @@ mod publisher_tests {
     #[test]
     fn run_start_message_names_selected_total() {
         let msg = run_start_message(3);
-        assert!(msg.starts_with("aur:"), "{msg}");
-        assert!(msg.contains("starting publish"), "{msg}");
+        assert!(msg.starts_with("starting aur publish for"), "{msg}");
         assert!(msg.contains("3 selected"), "{msg}");
     }
 
     #[test]
     fn run_skip_unconfigured_message_names_crate() {
         let msg = run_skip_unconfigured_message("demo");
-        assert!(msg.starts_with("aur:"), "{msg}");
-        assert!(msg.contains("skipping crate 'demo'"), "{msg}");
+        assert!(msg.starts_with("skipping aur for crate 'demo'"), "{msg}");
         assert!(msg.contains("no aur config block"), "{msg}");
     }
 
     #[test]
     fn run_per_crate_start_message_names_crate() {
         let msg = run_per_crate_start_message("demo");
-        assert!(msg.starts_with("aur:"), "{msg}");
-        assert!(msg.contains("starting per-crate publish"), "{msg}");
+        assert!(msg.starts_with("starting per-crate aur publish"), "{msg}");
         assert!(msg.contains("'demo'"), "{msg}");
     }
 
     #[test]
     fn run_done_message_reports_processed_count() {
         let msg = run_done_message(2);
-        assert!(msg.starts_with("aur:"), "{msg}");
-        assert!(msg.contains("completed"), "{msg}");
+        assert!(msg.starts_with("finished aur publish"), "{msg}");
         assert!(msg.contains("2 crate(s) processed"), "{msg}");
     }
 
     #[test]
     fn run_no_eligible_crates_warning_names_remediation() {
         let msg = run_no_eligible_crates_warning(5);
-        assert!(msg.starts_with("aur:"), "{msg}");
-        assert!(msg.contains("registered"), "{msg}");
+        assert!(msg.starts_with("aur publisher registered"), "{msg}");
         assert!(msg.contains("0 of 5 effective"), "{msg}");
         assert!(msg.contains("nothing pushed"), "{msg}");
         assert!(msg.contains("--crate"), "{msg}");
@@ -3657,11 +3676,10 @@ mod tests {
 
     /// A templated `aur.private_key` (`{{ .Env.AUR_SSH_KEY }}`) must be
     /// rendered to the env value before `aur_clone_repo` writes it to the
-    /// SSH key sidecar — the literal `{{` reaching the key file is the
+    /// SSH key file — the literal `{{` reaching the key file is the
     /// canonical `error in libcrypto` failure. The clone target is the local
     /// bare repo (git ignores `GIT_SSH_COMMAND` for a filesystem path), so the
-    /// clone still succeeds while the key write happens first and is
-    /// inspectable.
+    /// clone succeeds and the key persisted in `.git/` is inspectable.
     #[cfg(unix)]
     #[test]
     fn aur_clone_repo_renders_templated_private_key_before_write() {
@@ -3677,12 +3695,8 @@ mod tests {
         let parent = tempfile::tempdir().expect("parent");
         let dest = parent.path().join("clone-target");
         aur_clone_repo(&ctx, &aur_cfg, &bare_url, &dest, &log).expect("ssh clone ok");
-        let key_name = format!(
-            ".anodizer_ssh_{}",
-            dest.file_name().unwrap().to_string_lossy()
-        );
-        let key_path = dest.parent().unwrap().join(&key_name);
-        let body = std::fs::read_to_string(&key_path).expect("key sidecar written");
+        let key_path = dest.join(".git").join("anodizer_ssh_key");
+        let body = std::fs::read_to_string(&key_path).expect("persisted key written");
         assert_eq!(
             body, "RENDERED-AUR-KEY\n",
             "private_key must be the rendered env value, never the literal template"

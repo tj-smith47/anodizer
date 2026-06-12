@@ -12,31 +12,108 @@ cold without re-investigating.
 
 ## Open
 
-- [ ] ⚠ autofix blocked — user-approved deferral at v0.8.0 ship (2026-06-11); needs its own multi-crate pass rewriting PATH-clobber tests onto the fake_tool seam. **Test-suite PATH race: global-PATH-clobbering tests vs spawn-via-PATH tests
-  (intermittent `No such file or directory` flakes).** Observed 2026-06-10: in 2 of
-  5 full `-p anodizer-stage-publish --lib` runs,
-  `schema_validation::aur::tests::workspace_lockstep_every_option_validates` failed
-  with `aur: run bash — No such file or directory (os error 2)`; passed in isolation
-  and in the other full runs. Root cause: tests that simulate missing tools set the
-  process-global `PATH` to an empty tempdir (`cargo.rs`
-  `cargo_yank_dry_run_path_clobber` block near `unsafe { set_var("PATH", empty.path()) }`,
-  `preflight.rs` equivalent, plus `npm/tests.rs` PATH prepends) while holding
-  `anodizer_core::test_helpers::env::env_mutex()`. The mutex serialises MUTATORS
-  against each other only — tests that SPAWN via PATH lookup (every
-  `schema_validation` external validator: bash/xmllint/dpkg-deb/rpm; any `git`/`gh`
-  fixture spawn) never take it, so a spawn racing the clobber window gets ENOENT.
-  Affects any crate using the pattern, not just stage-publish. Two candidate fixes:
-  (a) `env_mutex` → `RwLock` (mutators=write, spawners=read) — mechanical but every
-  spawning test must remember the read guard, so the bug regrows by drift;
-  (b) eliminate global PATH mutation: rewrite missing-tool/no-spawn tests against the
-  existing `test_helpers::fake_tool` / argv-log seam so "tool absent" and "must not
-  spawn" are representable without touching `PATH` — unrepresentable-by-construction,
-  preferred. Needs its own pass: inventory `set_var("PATH"` sites across crates,
-  pick (b) where the production seam allows, fall back to (a) read-guards only where
-  it doesn't. NOT addressed by the 2026-06-10 rename-resolution commits (e236fb17,
-  17bc6953, this session's review fix) — discovered while validating them.
-
 ## Resolved
+
+- [x] **`release.ids` silently drops signature/certificate/SBOM uploads —
+  RESOLVED 2026-06-11 (review-fix pass on fb7e5a16).** Found while building
+  the verify-release signature-expectation derivation:
+  `collect_release_upload_candidates` applied `matches_id_filter` to every
+  candidate, and `Signature`/`Certificate`/`Sbom` artifacts carried no `id`
+  metadata and were not in the always-pass list — any non-empty
+  `release.ids` excluded ALL of them and the release shipped unsigned,
+  silently. **Fixed:** derived artifacts now inherit their SUBJECT's verdict
+  — the sign/SBOM stages record `subject_kind` plus the subject's build `id`
+  on every Signature/Certificate/Sbom registration, and `matches_id_filter`
+  judges that record (always-pass subject → pass; otherwise the inherited id
+  must match; no record — project-wide `any` SBOMs, pre-fix metadata.json in
+  merge mode — passes rather than silently dropping). The verify-release
+  expectation derivation applies the same per-subject verdict (its previous
+  blanket "no expectations when ids set" mirror removed in the same change).
+  **Evidence:** core `artifact::tests::id_filter_*` (5 tests); upload-side
+  `test_release_upload_candidates_ids_filter_signatures_inherit_subject_verdict`
+  (subject-included sig+sbom upload, subject-excluded don't, checksum sigs
+  always do); stage-sign `sign_registrations_carry_subject_provenance` +
+  `release_ids_subject_verdict_filters_expectations`; verify-release
+  `derived_expectations_follow_subject_verdict_under_release_ids`.
+
+- [x] **Test-suite PATH race — RESOLVED 2026-06-11 (bc2e553e + review
+  pass).** Originally: tests simulating missing tools
+  replaced the process-global `PATH` with an empty tempdir under `env_mutex`,
+  which serialises mutators only — concurrent spawn-via-PATH tests
+  (schema_validation bash/xmllint/dpkg-deb/rpm, git/gh fixtures) hit the
+  window and got `No such file or directory` (observed 2026-06-10 in aur
+  workspace_lockstep, 2026-06-11 in chocolatey xmllint).
+  **Fixed (bc2e553e + 2026-06-11 review pass):** all three wholesale
+  empty-dir PATH replacements are gone — `preflight.rs`
+  dry_run_spawn_failure (→ `run_cargo_dry_run_with_binary` seam), `cargo.rs`
+  rollback_dry_run (→ prepended argv-recording stub + empty-log assertion),
+  `stage-blob/kms.rs` preflight_errors_when_cli_missing
+  (→ `preflight_kms_cli_with_binary` seam). No test can blind another's
+  spawn anymore; the observed ENOENT flakes are unreproducible by
+  construction. `npm/tests.rs` assessed: prepend-style (stub dir + original
+  PATH tail) inside `unsafe` under `env_mutex` — the sanctioned pattern, not
+  a clobber.
+  **Also fixed (same review pass):** the cross-group same-tool shadowing
+  hole — `cargo.rs` / `lib.rs` cargo-stub prepend tests relied on
+  `#[serial(cargo_stub_path)]` alone, a DIFFERENT serial_test group from
+  the unnamed-`#[serial]` fake-cargo dry-run tests in `preflight.rs`, so
+  their PATH windows could overlap. Every prepend mutator (`with_path`,
+  the inline `install_cargo_stub` sites, `lib.rs` dispatch-rollback) now
+  also holds `env_mutex` across mutate+spawn+restore, joining
+  `fake_tool::activate` and `npm/tests.rs` on the one canonical lock.
+  Nothing actionable remains; residual exposure is drift-only (a FUTURE
+  test that prepends a stub or spawns a stubbed tool without taking
+  `env_mutex` reopens the window — `fake_tool::activate`'s doc carries the
+  requirement).
+  Moved to Resolved 2026-06-11.
+
+
+- [x] **`if:` boolean context vars are injected as strings, so `not IsSnapshot` /
+  bare `{% if IsSnapshot %}` silently misbehave (GoReleaser-migration footgun).** A
+  user-written `if: "{{ not .IsSnapshot }}"` renders `"false"` in EVERY mode — snapshot
+  *and* release — and the if-engine skips the stage with no warning. Root cause:
+  `IsSnapshot` / `IsNightly` / `IsHarness` / `IsDraft` / `NightlyBuild` are set via
+  `TemplateVars::set` (the string-only `vars: HashMap<String,String>`) in `Context`'s
+  var-injection (grep `set("IsHarness"` in `core/src/context.rs`) and in `core/src/hooks.rs`
+  (grep `set("IsSnapshot"`). Tera treats any non-empty
+  string — `"true"` AND `"false"` — as truthy, so `not "false"` → `false` → renders
+  `"false"` → skipped. This is NOT unavoidable Tera behavior: GoReleaser's Go templates
+  expose `.IsSnapshot` as a real bool where `{{ if .IsSnapshot }}` / `{{ not .IsSnapshot }}`
+  work, so a migrant writing `not .IsSnapshot` writes idiomatic code that fails silently.
+  Our own `.anodizer.yaml` and cfgd's only work because they use the explicit-compare
+  workaround `{% if IsSnapshot == "false" or IsHarness == "true" %}`.
+  **Fix:** inject these via the existing typed channel `TemplateVars::set_structured`
+  (`TemplateVars::set_structured` in `core/src/template/vars.rs`, already merged into the
+  Tera context as-is) as
+  `tera::Value::Bool` instead of `set`. Tera still renders `Value::Bool` as `"true"`/`"false"`
+  in interpolation, so `{{ IsSnapshot }}` and the if-engine's `"false"`-string falsy check
+  keep working, while `not` / `if` / `and` / `or` become correct.
+  **Scope:** a key can't live in both the string and structured maps (collision) — go
+  structured-only and update the internal string readers, which are all TESTS (grep
+  `get("IsSnapshot")` / `get("IsDraft")` / `get("IsNightly")` / `get("NightlyBuild")` in
+  the `core/src/context.rs` test module and `core/src/test_helpers/mod.rs` — re-point to
+  `get_structured`). No production code reads these via `.get()`.
+  **Consider also:** a strict-mode lint that hard-errors when an `if:` references a known-bool
+  var with bare-truthiness or `not`, so the silent-skip becomes loud for the next user.
+  **Migration hazard (must handle in the same change):** once these are real bools,
+  `IsSnapshot == "false"` (string compare) stops matching — Tera does not coerce `Bool` ↔
+  `str` — which silently RE-skips every stage using today's explicit-compare workaround,
+  including our own `.anodizer.yaml` and cfgd's sign stages. The fix must rewrite all
+  workaround sites to the natural `not IsSnapshot` form in the same release (and call the
+  break out in the changelog), or preserve string-compare equivalence; do not ship the bool
+  change alone.
+  **Found:** cfgd dogfooding audit 2026-06-10 — cfgd would have shipped unsigned releases
+  because all five sign-stage `if:` used the broken form.
+  **Resolved 2026-06-11** in `fix(core): inject Is* template vars as typed bools` — all
+  Is\* flags + NightlyBuild now `set_structured` (Bool/Number), `.anodizer.yaml` rewritten
+  to `{{ not IsSnapshot or IsHarness }}`, stale string-compares hard-error in
+  `evaluate_if_condition`/`try_evaluates_to_true`. Investigation inverted the root cause:
+  the `"true"/"false"` coercion in `build_tera_context` already made `not IsSnapshot`
+  work; the explicit-compare "workaround" was the broken form (Tera `Bool == str` never
+  matches) — confirmed live: v0.8.0 shipped with zero signature assets. cfgd's 5 sign-stage
+  sites (grep `IsSnapshot == "false"` in cfgd/.anodizer.yaml) still need the
+  consumer-side migration.
+
 
   AUR SSH key EEXIST on retry.** On retry after a failed AUR publish, the file already existed
   from the prior run and `write_ssh_key_secure` (which opens with `O_CREAT|O_EXCL`) failed with

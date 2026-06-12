@@ -154,9 +154,7 @@ impl SourceStage {
                         .collect();
                     if expanded.is_empty() {
                         if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
-                            log.warn(&format!(
-                                "source: extra file pattern {pattern:?} matched no files"
-                            ));
+                            log.warn(&format!("extra file pattern {pattern:?} matched no files"));
                         }
                         vec![SourceFileEntry {
                             src: rendered_src,
@@ -170,7 +168,7 @@ impl SourceStage {
                 }
                 Err(e) => {
                     log.warn(&format!(
-                        "source: extra file pattern {pattern:?} is not a valid glob ({e}); \
+                        "extra file pattern {pattern:?} is not a valid glob ({e}); \
                          treating as literal path"
                     ));
                     vec![SourceFileEntry {

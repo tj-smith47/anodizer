@@ -49,7 +49,6 @@ jobs:
       tagged: ${{ steps.resolve.outputs.tagged }}
       dist_run_id: ${{ steps.resolve.outputs.dist_run_id }}
       run_determinism: ${{ steps.resolve.outputs.run_determinism }}
-      is_republish: ${{ steps.resolve.outputs.is_republish }}
       publish_from_artifact: ${{ steps.resolve.outputs.publish_from_artifact }}
       publish_version: ${{ steps.resolve.outputs.publish_version }}
     steps:
@@ -115,9 +114,6 @@ jobs:
           fetch-depth: 0
           ref: ${{ needs.tag.outputs.sha }}
 
-      - name: Preflight runner environment
-        uses: ./.github/actions/runner-preflight
-
       - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable branch
         with:
           toolchain: stable
@@ -165,7 +161,6 @@ jobs:
           echo "All ${#expected[@]} shards uploaded preserved dist."
 
       - name: Run anodizer release --publish-only
-        id: release
         uses: tj-smith47/anodizer-action@v1
         with:
           from-artifact: ${{ needs.tag.outputs.publish_from_artifact }}
@@ -188,17 +183,12 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
 
-      - name: Rollback on release failure
-        if: ${{ always() && needs.tag.outputs.is_republish != 'true' && (steps.release.outcome == 'failure' || steps.release.outcome == 'cancelled') }}
-        uses: tj-smith47/anodizer-action@v1
-        with:
-          from-artifact: anodizer-linux
-          artifact-run-id: auto
-          artifact-workflow: ci.yml
-          args: tag rollback ${{ needs.tag.outputs.sha }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-
+      # No workflow-side rollback step: the binary executes the
+      # `release.on_failure` policy in-process (rollback by default,
+      # auto-degrading to hold once any one-way-door publisher landed).
+      # A cancelled run cannot execute its own policy; recover manually
+      # with `anodizer tag rollback` / `release --rollback-only` after
+      # reading the uploaded summary.
       - name: Upload run summary
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1

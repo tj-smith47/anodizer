@@ -63,7 +63,7 @@ Run the full release pipeline
 | `--from-run` | — | — | Prior run id whose state to load when running --rollback-only. Loads <dist>/run-<id>/rollback.json if present (a prior replay's state), otherwise <dist>/run-<id>/report.json. Delete rollback.json to force a full re-roll. Must match the run_id format written by the release pipeline (alphanumeric, dot, dash, underscore; no path separators). |
 | `--allow-rerun` | — | — | DANGEROUS: force publish to proceed even when a prior dist/run-<id>/report.json exists for this tag. PR-based publishers (homebrew, scoop, nix, krew, MCP) will open DUPLICATE pull requests. Recover from partial failures with --rollback-only --from-run=<id> first. Cannot be combined with --rollback-only (which has its own idempotency). |
 | `--allow-nondeterministic` | — | — | Runtime non-determinism opt-out for a specific artifact (repeatable). Mutually exclusive with --strict. |
-| `--summary-json` | — | — | Write the per-publisher run summary JSON to this path. |
+| `--summary-json` | — | — | Write the per-publisher run summary JSON to this path. Without it, real (non-snapshot, non-dry-run) releases write <dist>/run-<id>/summary.json — even when a stage fails — so recovery tooling always has machine-readable publish state. |
 | `--allow-ai-failure` | — | — | If `changelog.ai` is configured and the AI provider fails, log a warning and keep the pre-AI release notes instead of aborting the release. |
 | `--split` | — | — | Run only the build stage for split CI fan-out (outputs artifacts JSON to dist/) |
 | `--merge` | — | — | Merge artifacts from split build jobs and resume the pipeline from post-build stages |
@@ -169,6 +169,19 @@ Generate shell completions
 Check availability of required external tools
 
 
+### `anodizer preflight`
+
+Verify the environment can run the configured release: required tools, env vars/secrets (presence only — values are never printed), endpoint reachability, docker daemon, and loadable key material, all derived from the resolved config. Every failure is reported in one pass and the exit code is non-zero when anything is missing. The same checks run automatically at the start of `anodizer release`
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--json` | — | — | Output the report as JSON |
+| `--publish-only` | — | — | Check only the publish-time surface (the stages `release --publish-only` runs), not artifact-producing stages |
+| `--skip` | — | — | Skip requirement collection for these stages (comma-separated, same names as release --skip) |
+| `--token` | — | — | GitHub token override; when set, GitHub token env-var requirements are treated as satisfied |
+
+
 ### `anodizer man`
 
 Generate man pages to stdout
@@ -230,6 +243,7 @@ Rollback anodize-managed tags at a SHA, then revert (or reset past) the bump com
 | `<sha>` | — | — | Commit SHA to roll back from. Defaults to HEAD. |
 | `--dry-run` | — | — | Print what would happen without mutating anything |
 | `--no-push` | — | — | Skip remote tag delete and branch push (local-only) |
+| `--force` | — | — | Override the published-state guard: roll back even when the tag's run summary shows a one-way-door publisher (crates.io, chocolatey, winget, snapcraft, ...) accepted the version, or — when no summary exists — when a published (non-draft) GitHub release exists for the tag. Without it, rollback refuses because those registries never accept the same version twice: the version is burned and the only clean recovery is fixing forward |
 | `--scope` | — | `all` | Tag-shape filter: all | lockstep | per-crate |
 | `--mode` | — | `revert` | Rollback strategy: revert (default; history-preserving) | reset (opt-in; rewrites history, requires --force-with-lease to push) |
 | `--branch` | — | — | Branch name to push the revert commit to. Required when HEAD is detached and no local branch points at it (typical CI tag-push context, where GITHUB_REF_NAME is the tag — not the bump-commit branch). Pass --branch master (or whichever branch the bump commit was created on). |

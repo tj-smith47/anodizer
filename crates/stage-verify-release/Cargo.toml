@@ -12,6 +12,8 @@ categories.workspace = true
 [dependencies]
 anodizer-core.workspace = true
 anodizer-stage-release.workspace = true
+anodizer-stage-sbom.workspace = true
+anodizer-stage-sign.workspace = true
 anyhow.workspace = true
 flate2.workspace = true
 object.workspace = true

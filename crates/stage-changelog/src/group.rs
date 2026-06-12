@@ -23,7 +23,8 @@ pub(crate) struct CommitInfo {
     pub full_hash: String,
     pub author_name: String,
     pub author_email: String,
-    /// GitHub/Gitea login (populated only when `use: github` or `use: gitea`).
+    /// SCM login (populated by `use: github` / `use: gitea`, or by GitHub-API
+    /// enrichment of the local-git path when the release targets GitHub).
     pub login: String,
     /// Co-author logins/names extracted from `Co-Authored-By:` trailers.
     pub co_authors: Vec<String>,
@@ -206,7 +207,7 @@ fn compile_filter_patterns(
         match Regex::new(p) {
             Ok(re) => patterns.push(re),
             Err(e) => log.warn(&format!(
-                "changelog: invalid {} regex {:?}: {} (skipping pattern)",
+                "invalid {} regex {:?}: {} (skipping pattern)",
                 kind, p, e
             )),
         }
@@ -416,6 +417,7 @@ pub(crate) fn render_changelog(
             title,
             divider,
             scm_provider: None,
+            login_style: crate::render::LoginStyle::Bare,
         },
     )
     .expect("test render_changelog: template render failed")

@@ -449,7 +449,7 @@ impl Stage for AttestStage {
                     let bytes = serialize_subjects_manifest(&subjects)?;
                     write_output(&path, &bytes, dry_run, &log)?;
                     log.status(&format!(
-                        "wrote attestation subjects manifest: {name} ({} subjects)",
+                        "wrote attestation subjects manifest {name} ({} subjects)",
                         subjects.len()
                     ));
                     // Metadata kind: the manifest is consumed by
@@ -465,7 +465,7 @@ impl Stage for AttestStage {
                     let bytes = serialize_statement(&stmt)?;
                     write_output(&path, &bytes, dry_run, &log)?;
                     log.status(&format!(
-                        "wrote in-toto SLSA provenance statement: {name} ({} subjects)",
+                        "wrote in-toto SLSA provenance statement {name} ({} subjects)",
                         subjects.len()
                     ));
                     // UploadableFile so the existing `signs:` loop signs it and

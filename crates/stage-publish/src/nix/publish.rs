@@ -100,7 +100,7 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
 
     run_formatter(ctx, nix_cfg, &nix_file, log)?;
 
-    log.status(&format!("wrote Nix expression: {}", nix_file.display()));
+    log.status(&format!("wrote Nix expression {}", nix_file.display()));
 
     // (Re)generate the root `flake.nix`, merging this package into the
     // set recovered from any prior committed flake. Without a root flake
@@ -113,7 +113,7 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
     // (honoring `nix.path`).
     let flake_rel = super::flake::write_flake(repo_path, name, &nix_path)?;
     log.status(&format!(
-        "wrote root flake: {}",
+        "wrote root flake {}",
         repo_path.join(flake_rel).display()
     ));
 
@@ -304,7 +304,7 @@ fn check_skip_guards(
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("nix: render skip template for '{}'", crate_name))?;
         if off {
-            log.status(&format!("nix: config skipped for '{}'", crate_name));
+            log.status(&format!("skipped nix config for '{}'", crate_name));
             return Ok(true);
         }
     }
@@ -315,14 +315,14 @@ fn check_skip_guards(
     )?;
     if !proceed {
         log.status(&format!(
-            "nix: skipping '{}' — `if` condition evaluated falsy",
+            "skipping nix for '{}' — `if` condition evaluated falsy",
             crate_name
         ));
         return Ok(true);
     }
     if util::should_skip_upload(nix_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "nix: skipping upload for '{}' (skip_upload={})",
+            "skipping nix upload for '{}' (skip_upload={})",
             crate_name,
             nix_cfg
                 .skip_upload
@@ -469,7 +469,7 @@ fn build_archive_tuples(
                 Ok(h) => h,
                 Err(e) => {
                     log.warn(&format!(
-                        "nix: failed to convert SHA256 to nix base32 for {}: {}; using raw hex",
+                        "failed to convert SHA256 to nix base32 for {}: {}; using raw hex",
                         a.url, e
                     ));
                     a.sha256.clone()
@@ -701,19 +701,22 @@ fn run_formatter(
                 .output()
             {
                 if !output.status.success() {
-                    ctx.strict_guard(log, &format!("nix: {} formatting failed", formatter))?;
+                    ctx.strict_guard(
+                        log,
+                        &format!("{} formatting failed for the nix expression", formatter),
+                    )?;
                 }
             } else {
                 ctx.strict_guard(
                     log,
-                    &format!("nix: {} not available, skipping format", formatter),
+                    &format!("skipping nix format — {} not available", formatter),
                 )?;
             }
         }
         _ => {
             ctx.strict_guard(
                 log,
-                &format!("nix: unknown formatter '{}', skipping", formatter),
+                &format!("skipping nix format — unknown formatter '{}'", formatter),
             )?;
         }
     }
@@ -799,7 +802,7 @@ fn finalize_publish(
         }
         util::CommitOutcome::NoChanges => {
             log.status(&format!(
-                "nix: nothing to push, expression for '{}' already up to date",
+                "nothing to push, nix expression for '{}' already up to date",
                 crate_name
             ));
         }

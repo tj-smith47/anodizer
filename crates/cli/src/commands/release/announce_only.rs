@@ -47,7 +47,7 @@ pub(super) fn run(
     let run_id = anodizer_stage_publish::derive_run_id(ctx);
     let report = anodizer_stage_publish::load_prior_report(ctx, &run_id)?;
     log.status(&format!(
-        "announce-only: loaded prior report (run_id={}, {} publisher result(s))",
+        "loaded prior report (run_id={}, {} publisher result(s))",
         run_id,
         report.results.len()
     ));

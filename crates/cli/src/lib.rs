@@ -206,7 +206,7 @@ pub enum Commands {
         #[arg(
             long = "summary-json",
             value_name = "path",
-            help = "Write the per-publisher run summary JSON to this path."
+            help = "Write the per-publisher run summary JSON to this path. Without it, real (non-snapshot, non-dry-run) releases write <dist>/run-<id>/summary.json — even when a stage fails — so recovery tooling always has machine-readable publish state."
         )]
         summary_json: Option<PathBuf>,
         #[arg(
@@ -359,6 +359,33 @@ pub enum Commands {
     },
     /// Check availability of required external tools
     Healthcheck,
+    /// Verify the environment can run the configured release: required
+    /// tools, env vars/secrets (presence only — values are never printed),
+    /// endpoint reachability, docker daemon, and loadable key material,
+    /// all derived from the resolved config. Every failure is reported in
+    /// one pass and the exit code is non-zero when anything is missing.
+    /// The same checks run automatically at the start of `anodizer release`.
+    Preflight {
+        #[arg(long, help = "Output the report as JSON")]
+        json: bool,
+        #[arg(
+            long,
+            help = "Check only the publish-time surface (the stages `release --publish-only` runs), not artifact-producing stages"
+        )]
+        publish_only: bool,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Skip requirement collection for these stages (comma-separated, same names as release --skip)"
+        )]
+        skip: Vec<String>,
+        #[arg(
+            long,
+            hide_env_values = true,
+            help = "GitHub token override; when set, GitHub token env-var requirements are treated as satisfied"
+        )]
+        token: Option<String>,
+    },
     /// Generate man pages to stdout
     Man,
     /// Output JSON Schema for .anodizer.yaml
@@ -668,6 +695,11 @@ pub enum TagSub {
             help = "Skip remote tag delete and branch push (local-only)"
         )]
         no_push: bool,
+        #[arg(
+            long,
+            help = "Override the published-state guard: roll back even when the tag's run summary shows a one-way-door publisher (crates.io, chocolatey, winget, snapcraft, ...) accepted the version, or — when no summary exists — when a published (non-draft) GitHub release exists for the tag. Without it, rollback refuses because those registries never accept the same version twice: the version is burned and the only clean recovery is fixing forward"
+        )]
+        force: bool,
         #[arg(
             long,
             default_value = "all",

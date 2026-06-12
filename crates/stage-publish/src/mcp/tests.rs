@@ -1024,3 +1024,122 @@ fn mcp_runs_when_manifest_has_no_oci_package() {
     }];
     assert!(mcp_image_owned_by_selected(&ctx));
 }
+
+#[test]
+fn render_strings_renders_header_values_but_not_names() {
+    // Transport header NAMES are literal protocol identifiers — published
+    // exactly as written, never template-rendered — while header VALUES
+    // are rendered. Pins the documented contract in both directions.
+    use anodizer_core::config::McpHeader;
+
+    let mut ctx = mcp_ctx(|mcp| {
+        mcp.packages[0].transport = McpTransport {
+            kind: McpTransportType::StreamableHttp,
+            url: "https://example.com/v1".to_string(),
+            headers: vec![McpHeader {
+                name: "X-{{ .Env.MCP_HDR }}".to_string(),
+                value: "Bearer {{ .Env.MCP_HDR }}".to_string(),
+            }],
+        };
+    });
+    ctx.template_vars_mut().set_env("MCP_HDR", "rendered");
+
+    let mut mcp = ctx.config.mcp.clone();
+    super::render_strings(&ctx, &mut mcp).expect("render_strings succeeds");
+
+    let header = &mcp.packages[0].transport.headers[0];
+    assert_eq!(
+        header.name, "X-{{ .Env.MCP_HDR }}",
+        "header name must stay byte-for-byte literal"
+    );
+    assert_eq!(
+        header.value, "Bearer rendered",
+        "header value must be template-rendered"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Preflight requirements
+// ---------------------------------------------------------------------------
+
+#[test]
+fn requirements_self_gate_on_name_and_skip() {
+    use anodizer_core::Publisher as _;
+    let publisher = super::publisher::McpPublisher::new();
+
+    let ctx = mcp_ctx(|mcp| {
+        mcp.name = None;
+    });
+    assert!(
+        publisher.requirements(&ctx).is_empty(),
+        "unset mcp.name must contribute no requirements"
+    );
+
+    let ctx = mcp_ctx(|mcp| {
+        mcp.skip = Some(StringOrBool::Bool(true));
+    });
+    assert!(
+        publisher.requirements(&ctx).is_empty(),
+        "skip: true must contribute no requirements"
+    );
+}
+
+#[test]
+fn requirements_follow_the_auth_method() {
+    use anodizer_core::EnvRequirement;
+    use anodizer_core::Publisher as _;
+    let publisher = super::publisher::McpPublisher::new();
+
+    // github + sole env-ref token: any-of ladder with the fallback var.
+    let ctx = mcp_ctx(|mcp| {
+        mcp.auth.method = McpAuthMethod::Github;
+        mcp.auth.token = "{{ .Env.MCP_PAT }}".to_string();
+    });
+    assert_eq!(
+        publisher.requirements(&ctx),
+        vec![EnvRequirement::EnvAnyOf {
+            vars: vec!["MCP_PAT".to_string(), "MCP_GITHUB_TOKEN".to_string()],
+        }]
+    );
+
+    // github + unset token: the env fallback is the only source.
+    let ctx = mcp_ctx(|mcp| {
+        mcp.auth.method = McpAuthMethod::Github;
+        mcp.auth.token = String::new();
+    });
+    assert_eq!(
+        publisher.requirements(&ctx),
+        vec![EnvRequirement::EnvAllOf {
+            vars: vec!["MCP_GITHUB_TOKEN".to_string()],
+        }]
+    );
+
+    // github-oidc: both Actions runtime vars, token ignored.
+    let ctx = mcp_ctx(|mcp| {
+        mcp.auth.method = McpAuthMethod::GithubOidc;
+    });
+    assert_eq!(
+        publisher.requirements(&ctx),
+        vec![EnvRequirement::EnvAllOf {
+            vars: vec![
+                "ACTIONS_ID_TOKEN_REQUEST_URL".to_string(),
+                "ACTIONS_ID_TOKEN_REQUEST_TOKEN".to_string(),
+            ],
+        }]
+    );
+
+    // none + literal pre-issued JWT (the mcp_ctx default): nothing to check.
+    let ctx = mcp_ctx(|_| {});
+    assert!(publisher.requirements(&ctx).is_empty());
+
+    // none + templated JWT: its env refs must be present.
+    let ctx = mcp_ctx(|mcp| {
+        mcp.auth.token = "{{ .Env.MCP_STATIC_JWT }}".to_string();
+    });
+    assert_eq!(
+        publisher.requirements(&ctx),
+        vec![EnvRequirement::EnvAllOf {
+            vars: vec!["MCP_STATIC_JWT".to_string()],
+        }]
+    );
+}

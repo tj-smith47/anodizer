@@ -517,8 +517,6 @@ crates:
           - git
         suggests:
           - upx
-        provides:
-          - anodizer
         file_name_template: "{{ ProjectName }}_{{ RawVersion }}_{{ Os }}_{{ Arch }}"
         contents:
           - src: LICENSE
@@ -727,11 +725,9 @@ signs:
       - "{{ Artifact }}"
     env:
       - "GPG_TTY={{ Env.GPG_TTY }}"
-    # Tera-correct: `not IsSnapshot` doesn't short-circuit because Tera treats
-    # both "true" and "false" as truthy non-empty strings. Compare explicitly
-    # so the rendered output is empty in snapshot mode (process.rs treats
-    # empty / "false" as skip) and "true" in release mode.
-    if: '{% if IsSnapshot == "false" or IsHarness == "true" %}true{% endif %}'
+    # IsSnapshot / IsHarness are real bools: sign in release mode, and inside
+    # the determinism harness (which provisions its own ephemeral keys).
+    if: "{{ not IsSnapshot or IsHarness }}"
 
 source:
   enabled: true
@@ -796,8 +792,8 @@ binary_signs:
       - "{{ Artifact }}"
     env:
       - "COSIGN_EXPERIMENTAL=1"
-    # See archive `signs:` block above for why this form is required.
-    if: '{% if IsSnapshot == "false" or IsHarness == "true" %}true{% endif %}'
+    # Sign in release mode, and inside the determinism harness (ephemeral keys).
+    if: "{{ not IsSnapshot or IsHarness }}"
 
 # Docker image signing
 docker_signs:
@@ -811,8 +807,8 @@ docker_signs:
       - "{{ Artifact }}"
     env:
       - "COSIGN_EXPERIMENTAL=1"
-    # See archive `signs:` block above for why this form is required.
-    if: '{% if IsSnapshot == "false" or IsHarness == "true" %}true{% endif %}'
+    # Sign in release mode, and inside the determinism harness (ephemeral keys).
+    if: "{{ not IsSnapshot or IsHarness }}"
 
 # Milestone closing — close GitHub milestones matching the release tag
 milestones:

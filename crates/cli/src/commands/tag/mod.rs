@@ -231,7 +231,9 @@ pub fn run(opts: TagOpts) -> Result<()> {
     let mut version_sync_enabled = false;
     let mut crate_version_files: Vec<String> = Vec::new();
     if let Some(ref crate_name) = opts.crate_name
-        && let Some(info) = load_crate_tag_info(&opts, &workspace_root_path, crate_name)
+        && let Some(info) = loaded_config
+            .as_ref()
+            .and_then(|c| load_crate_tag_info(c, crate_name))
     {
         cfg.tag_prefix = info.tag_prefix;
         crate_path = Some(info.path);
@@ -495,7 +497,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
         } else {
             format!("{}{}", cfg.tag_prefix, custom)
         };
-        log.verbose(&format!("using custom tag: {}", new_tag));
+        log.verbose(&format!("using custom tag {}", new_tag));
         let prev_for_custom = find_previous_tag(&cfg, git_config.as_ref()).ok().flatten();
         create_tag(
             &new_tag,
@@ -542,7 +544,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
     let prev_tag = find_previous_tag(&cfg, git_config.as_ref())?;
 
     log.verbose(&format!(
-        "previous tag: {}",
+        "previous tag = {}",
         prev_tag.as_deref().unwrap_or("(none)")
     ));
 
@@ -591,7 +593,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
 
     // Detect bump (with pre-major demotion applied to inferred bumps).
     let bump = detect_bump_demoted(&messages, &cfg, prev_tag.as_deref());
-    log.verbose(&format!("detected bump: {:?}", bump));
+    log.verbose(&format!("detected bump {:?}", bump));
 
     // The current manifest version for this tagging unit: the workspace
     // `[workspace.package].version` in lockstep mode, else the version-synced
@@ -865,10 +867,10 @@ pub fn run(opts: TagOpts) -> Result<()> {
             match anodizer_core::cargo_lock::cargo_update_workspace(Some(workspace_root_path.as_path())) {
                 Ok(true) => {}
                 Ok(false) => log.warn(
-                    "version-sync: `cargo update --workspace` exited non-zero; Cargo.lock may be stale",
+                    "`cargo update --workspace` exited non-zero after version sync; Cargo.lock may be stale",
                 ),
                 Err(e) => log.warn(&format!(
-                    "version-sync: could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
+                    "could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
                 )),
             }
 
@@ -1116,7 +1118,7 @@ fn apply_workspace_bump(
 
     if dry_run {
         log.status(&format!(
-            "(dry-run) workspace version-sync: would bump {} crate(s) → {}",
+            "(dry-run) would bump {} workspace crate(s) → {}",
             rows.iter().filter(|r| r.level != BumpLevel::Skip).count(),
             new_version
         ));
@@ -1145,10 +1147,10 @@ fn apply_workspace_bump(
     match anodizer_core::cargo_lock::cargo_update_workspace(Some(workspace_root)) {
         Ok(true) => {}
         Ok(false) => log.warn(
-            "version-sync: `cargo update --workspace` exited non-zero; Cargo.lock may be stale",
+            "`cargo update --workspace` exited non-zero after version sync; Cargo.lock may be stale",
         ),
         Err(e) => log.warn(&format!(
-            "version-sync: could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
+            "could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
         )),
     }
 
@@ -1228,7 +1230,11 @@ fn apply_workspace_bump(
         ),
     )?;
 
-    log.status(&format!("workspace version-sync: bumped → {}", new_version));
+    log.status(&format!(
+        "bumped {} workspace crate(s) → {}",
+        rows.iter().filter(|r| r.level != BumpLevel::Skip).count(),
+        new_version
+    ));
     Ok(true)
 }
 
@@ -1786,7 +1792,7 @@ fn run_per_crate_tag(
         match anodizer_core::cargo_lock::cargo_update_workspace(Some(workspace_root.as_path())) {
             Ok(_) => {}
             Err(e) => log.warn(&format!(
-                "version-sync: could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
+                "could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
             )),
         }
 
@@ -1962,9 +1968,15 @@ struct CrateTagInfo {
 /// When `--crate` is specified, look up the crate in top-level crates and
 /// workspace crates.  Returns the tag prefix (from `tag_template`) and the
 /// crate's `path` so change detection can be scoped to that directory.
-fn load_crate_tag_info(opts: &TagOpts, root: &Path, crate_name: &str) -> Option<CrateTagInfo> {
-    let config = load_config_at(opts, root)?;
-
+///
+/// Takes the command's single shared config load rather than re-loading:
+/// every `load_config_at` re-emits the static config-load warnings
+/// (moderation queue, legacy aliases), so a second load doubled them on
+/// the `--crate` path.
+fn load_crate_tag_info(
+    config: &anodizer_core::config::Config,
+    crate_name: &str,
+) -> Option<CrateTagInfo> {
     // Search top-level crates first, then workspace crates.
     let crate_cfg = config
         .crates
@@ -1986,7 +1998,7 @@ fn load_crate_tag_info(opts: &TagOpts, root: &Path, crate_name: &str) -> Option<
         .as_ref()
         .and_then(|vs| vs.enabled)
         .unwrap_or(false);
-    let version_files = resolve_version_files(Some(crate_cfg), Some(&config));
+    let version_files = resolve_version_files(Some(crate_cfg), Some(config));
     Some(CrateTagInfo {
         tag_prefix,
         path: crate_cfg.path.clone(),
@@ -2359,7 +2371,7 @@ fn rewrite_and_stage_version_files(
     for (outcome, rel) in outcomes.iter().zip(files.iter()) {
         if outcome.replacements > 0 {
             log.status(&format!(
-                "{}version_files: rewrote {} occurrence(s) of {} → {} in {}",
+                "{}rewrote {} occurrence(s) of {} → {} in {}",
                 if dry_run { "(dry-run) " } else { "" },
                 outcome.replacements,
                 old,
@@ -2371,7 +2383,7 @@ fn rewrite_and_stage_version_files(
             }
         } else {
             log.warn(&format!(
-                "version_files: enrolled file {} did not contain version {} (nothing rewritten)",
+                "enrolled version_files entry {} did not contain version {} (nothing rewritten)",
                 rel, old
             ));
         }

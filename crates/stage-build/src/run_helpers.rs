@@ -209,7 +209,7 @@ fn apply_source_mutations_with_resolver(
             {
                 if is_snapshot {
                     log.verbose(&format!(
-                        "version-sync: skipping {} (snapshot mode does not mutate source files)",
+                        "skipping version sync for {} (snapshot mode does not mutate source files)",
                         crate_cfg.path
                     ));
                 } else {
@@ -229,7 +229,7 @@ fn apply_source_mutations_with_resolver(
             {
                 if is_snapshot {
                     log.verbose(&format!(
-                        "binstall: skipping {} (snapshot mode does not mutate source files)",
+                        "skipping binstall metadata for {} (snapshot mode does not mutate source files)",
                         crate_cfg.path
                     ));
                 } else {
@@ -407,7 +407,7 @@ pub(crate) fn run_sequential(
             .as_ref()
             .context("build job has no cmd (programmer bug: planner should populate)")?;
         exec.log
-            .status(&format!("running: {} {}", cmd.program, cmd.args.join(" ")));
+            .status(&format!("running {} {}", cmd.program, cmd.args.join(" ")));
         let output = Command::new(&cmd.program)
             .args(&cmd.args)
             .envs(&cmd.env)
@@ -576,7 +576,7 @@ pub(crate) fn run_parallel(
                             )?;
                         }
 
-                        thread_log.status(&format!("running: {} {}", program, args.join(" ")));
+                        thread_log.status(&format!("running {} {}", program, args.join(" ")));
                         let output = Command::new(&program)
                             .args(&args)
                             .envs(&env)

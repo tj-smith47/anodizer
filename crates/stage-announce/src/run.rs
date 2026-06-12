@@ -192,7 +192,7 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
             return Ok(());
         }
         AnnounceDecision::SkipByIfCondition => {
-            log.status("announce: skipped — `if` condition evaluated falsy");
+            log.status("skipped — `if` condition evaluated falsy");
             return Ok(());
         }
         AnnounceDecision::GatedByReport { required_failures } => {
@@ -237,53 +237,62 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
     Ok(())
 }
 
-/// Write `--summary-json` (if configured) and pretty-print the
-/// per-publisher status table to stderr.
-///
-/// Called unconditionally at the end of `AnnounceStage::run` because
-/// the audit trail is most valuable when partial failures occur —
-/// dropping it on the early-return / gate-fire paths would defeat
-/// the point. Errors writing the file are warned, never fatal: a
-/// secondary observability channel must not be able to fail the
-/// release.
-/// End-of-pipeline run-summary emitter.
+/// End-of-pipeline run-summary emitter: write `summary.json` (and honor
+/// `--summary-json=<path>`), then print the per-publisher status rows
+/// to stderr.
 ///
 /// Always invoked by `Pipeline::run` at the very end (success or
-/// failure) so the per-publisher status table prints to stderr and
-/// `--summary-json=<path>` is honored regardless of whether the
-/// announce stage itself ran. Owned at the pipeline layer so
-/// `--skip=announce` does not silently drop the summary write.
+/// failure) — the audit trail is most valuable when partial failures
+/// occur, and owning it at the pipeline layer means `--skip=announce`
+/// does not silently drop the summary write.
 ///
 /// Best-effort: a `summary.json` write failure logs a warn but never
 /// escalates to a pipeline error — the release itself is unaffected
 /// by a missing observability artifact.
 pub fn emit_summary(ctx: &mut Context) {
     let summary = anodizer_stage_publish::run_summary::RunSummary::from_context(ctx);
-    if let Some(path) = ctx.options.summary_json_path.clone() {
+    let path = anodizer_stage_publish::run_summary::summary_path(ctx);
+    if let Some(path) = path {
         let log = ctx.logger("announce");
+        // One level in: no section is open here (the last stage's guard
+        // dropped), so without the bump this line would sit two columns
+        // left of every section's body bullets.
+        let _indent = anodizer_core::log::indent_one_level();
         match anodizer_stage_publish::run_summary::write_summary_json(&summary, &path) {
-            Ok(()) => log.status(&format!("summary: wrote {}", path.display())),
-            Err(err) => log.warn(&format!(
-                "summary: failed to write {}: {err}",
+            Ok(true) => log.status(&format!("wrote {}", path.display())),
+            Ok(false) => log.status(&format!(
+                "preserved existing {} (this run carries no publisher results)",
                 path.display()
             )),
+            Err(err) => log.warn(&format!("failed to write {}: {err}", path.display())),
         }
     }
-    // Always emit the per-publisher status table so non-CI runs see the
-    // outcome at a glance. Render into a buffer, then push each line
-    // through the StageLogger inside its own section so the table carries
-    // the unified `[stage]`/indent/theming and reads as one group in CI
-    // (`::group::publisher-summary`) rather than a raw flush-left block.
-    // Tagged `publisher-summary` (not `announce`) so the table body lines
-    // read `[publisher-summary]` under their own group rather than bleeding
-    // the pipeline-level `[announce]` tag inside `::group::publisher-summary`.
+    // Always emit the per-publisher status rows so non-CI runs see the
+    // outcome at a glance — kv rows under their own `Summary` section,
+    // keys padded to the widest so the value columns align. Tagged
+    // `publisher-summary` (not `announce`) so the section header reads
+    // `Summary` rather than the announce stage's phrase.
     let log = ctx.logger("publisher-summary");
-    let mut buf: Vec<u8> = Vec::new();
-    if anodizer_stage_publish::run_summary::print_status_table(&summary, &mut buf).is_ok() {
-        let _section = log.group("publisher-summary");
-        for line in String::from_utf8_lossy(&buf).lines() {
-            log.status(line);
-        }
+    // The report is installed only when the dispatcher finished;
+    // publish_attempted is set at stage entry. The pair separates the
+    // three placeholder causes: ran-with-zero-publishers, aborted by a
+    // pre-dispatch guard, and never started (snapshot / --skip).
+    let disposition = if ctx.publish_report().is_some() {
+        anodizer_stage_publish::run_summary::PublishDisposition::Ran
+    } else if ctx.publish_attempted() {
+        anodizer_stage_publish::run_summary::PublishDisposition::Aborted
+    } else {
+        anodizer_stage_publish::run_summary::PublishDisposition::Skipped
+    };
+    let rows = anodizer_stage_publish::run_summary::status_table_rows(&summary, disposition);
+    let key_width = rows
+        .iter()
+        .map(|(k, _)| k.chars().count())
+        .max()
+        .unwrap_or(0);
+    let _section = log.group("publisher-summary");
+    for (key, value) in &rows {
+        log.kv(key, value, key_width);
     }
 }
 
@@ -738,14 +747,151 @@ mod summary_tests {
     }
 
     #[test]
-    fn emit_summary_skips_summary_when_path_unset() {
-        // summary_json_path = None => no write; the status table still
-        // prints to stderr but that's not asserted here (covered by the
-        // dedicated print_status_table test in stage-publish).
-        let mut ctx = ctx_with(ContextOptions::default(), None, None);
+    fn emit_summary_defaults_to_dist_run_dir_when_path_unset() {
+        // summary_json_path = None on a real (non-snapshot, non-dry-run)
+        // release => the summary still lands at the derived
+        // `<dist>/run-<id>/summary.json` default. Without git info the
+        // run id falls back to "local" (derive_run_id's documented
+        // final fallback).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = ctx_with(
+            ContextOptions::default(),
+            None,
+            Some(PublishReport::default()),
+        );
+        ctx.config.dist = tmp.path().to_path_buf();
         emit_summary(&mut ctx);
-        // The absence of a panic / error is the assertion; nothing to
-        // grep on disk because no path was configured.
+
+        let expected = tmp.path().join("run-local").join("summary.json");
+        assert!(
+            expected.exists(),
+            "summary.json must default to <dist>/run-<id>/ when --summary-json is unset"
+        );
+        let summary = parse_summary(&expected);
+        assert_eq!(summary.schema_version, RunSummary::CURRENT_SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn emit_summary_default_path_skipped_for_snapshot_and_dry_run() {
+        // Snapshot / dry-run are not real releases; without an explicit
+        // --summary-json they must not pollute `dist/run-*/` (mirrors
+        // write_report_to_run_dir's gating).
+        for (snapshot, dry_run) in [(true, false), (false, true)] {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let opts = ContextOptions {
+                snapshot,
+                dry_run,
+                ..ContextOptions::default()
+            };
+            let mut ctx = ctx_with(opts, None, Some(PublishReport::default()));
+            ctx.config.dist = tmp.path().to_path_buf();
+            emit_summary(&mut ctx);
+
+            assert!(
+                !tmp.path().join("run-local").exists(),
+                "snapshot={snapshot} dry_run={dry_run}: no default summary write"
+            );
+        }
+    }
+
+    #[test]
+    fn emit_summary_explicit_path_wins_over_default() {
+        // An explicit --summary-json writes there (and ONLY there),
+        // even in snapshot mode where the default is suppressed.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let explicit = tmp.path().join("explicit-summary.json");
+        let opts = ContextOptions {
+            snapshot: true,
+            summary_json_path: Some(explicit.clone()),
+            ..ContextOptions::default()
+        };
+        let mut ctx = ctx_with(opts, None, Some(PublishReport::default()));
+        ctx.config.dist = tmp.path().to_path_buf();
+        emit_summary(&mut ctx);
+
+        assert!(explicit.exists(), "explicit path must be honored");
+        assert!(
+            !tmp.path().join("run-local").exists(),
+            "default run-dir write must not fire alongside an explicit path"
+        );
+    }
+
+    #[test]
+    fn emit_summary_default_path_writes_empty_summary_for_report_less_pipelines() {
+        // A real (non-snapshot) pipeline that fails BEFORE the publish
+        // stage — e.g. a release-asset upload error — exits with
+        // publish_report = None. It must STILL leave a default summary
+        // on disk (tag + empty results + irreversibly_published: false)
+        // so CI recovery has machine-readable proof that nothing was
+        // published. A run dir holding a prior REAL summary is protected
+        // by write_summary_json's preserve guard, not by skipping the
+        // write (see emit_summary_after_failed_release_preserves_burn_evidence).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = ctx_with(ContextOptions::default(), None, None);
+        ctx.config.dist = tmp.path().to_path_buf();
+        emit_summary(&mut ctx);
+
+        let expected = tmp.path().join("run-local").join("summary.json");
+        assert!(
+            expected.exists(),
+            "report-less real run must emit a default summary"
+        );
+        let summary = parse_summary(&expected);
+        assert!(
+            summary.results.is_empty(),
+            "no publisher dispatched -> empty results"
+        );
+        assert!(
+            !summary.irreversibly_published,
+            "nothing published -> not irreversible"
+        );
+    }
+
+    #[test]
+    fn emit_summary_after_failed_release_preserves_burn_evidence() {
+        // The clobber sequence: a failed release left a summary with a
+        // landed Submitter (burn evidence) at the default path; a
+        // standalone `announce` for the same tag then runs report-less.
+        // The original summary must survive byte-for-byte — the
+        // write-side preserve guard (results-bearing summaries are never
+        // overwritten by empty ones) protects it.
+        use anodizer_core::publish_report::{PublisherGroup, PublisherOutcome, PublisherResult};
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+
+        // The failed release run: cargo (Submitter) landed.
+        let mut release_ctx = ctx_with(ContextOptions::default(), None, None);
+        release_ctx.config.dist = tmp.path().to_path_buf();
+        release_ctx.publish_report = Some(PublishReport {
+            submitter_gated: false,
+            announce_gated: false,
+            results: vec![PublisherResult {
+                name: "cargo".to_string(),
+                group: PublisherGroup::Submitter,
+                required: true,
+                outcome: PublisherOutcome::Succeeded,
+                evidence: None,
+            }],
+        });
+        emit_summary(&mut release_ctx);
+        let path = tmp.path().join("run-local").join("summary.json");
+        let original = fs::read_to_string(&path).expect("release summary written");
+
+        // The follow-up announce-only run: same dist, no report — but
+        // pass an explicit summary path at the SAME location to prove
+        // the write-side guard holds even when the path gate is
+        // bypassed.
+        let mut announce_ctx = ctx_with(opts_with_summary_path(path.clone()), None, None);
+        announce_ctx.config.dist = tmp.path().to_path_buf();
+        emit_summary(&mut announce_ctx);
+
+        assert_eq!(
+            fs::read_to_string(&path).expect("summary still present"),
+            original,
+            "announce-after-failed-release must not clobber burn evidence"
+        );
+        let parsed: RunSummary = serde_json::from_str(&original).expect("parse");
+        assert!(parsed.irreversibly_published, "fixture must carry the burn");
     }
 
     #[test]
@@ -769,6 +915,54 @@ mod summary_tests {
         assert!(
             summary_path.exists(),
             "summary must be written even when AnnounceStage::run was skipped",
+        );
+    }
+
+    /// End-to-end abort-state pin: a REAL `PublishStage::run` that the
+    /// rerun guard refuses (prior `report.json` on disk for the same
+    /// run_id) must surface as the `aborted before dispatch` placeholder
+    /// row. This pins two things at once: the disposition derivation in
+    /// `emit_summary` AND that `set_publish_attempted()` fires BEFORE
+    /// the pre-dispatch guards — moving it below
+    /// `refuse_rerun_if_report_exists` (or deleting it) regresses the
+    /// row to the mislabeled "publish stages did not run".
+    #[test]
+    fn emit_summary_reports_abort_when_rerun_guard_refuses() {
+        use anodizer_core::log::LogCapture;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).expect("mkdir dist");
+        let mut ctx = anodizer_core::test_helpers::TestContextBuilder::new()
+            .tag("v1.0.0")
+            .dist(dist.clone())
+            .build();
+        // Prior run's report.json for the same run_id (the tag).
+        let run_dir = dist.join("run-v1.0.0");
+        std::fs::create_dir_all(&run_dir).expect("mkdir run dir");
+        std::fs::write(run_dir.join("report.json"), "{}").expect("seed report.json");
+
+        let capture = LogCapture::new();
+        ctx.with_log_capture(capture.clone());
+
+        let err = anodizer_stage_publish::PublishStage
+            .run(&mut ctx)
+            .expect_err("rerun guard must refuse with a prior report.json");
+        assert!(
+            err.to_string().contains("publish refusing to run"),
+            "abort must come from the rerun guard, not some other failure: {err:#}"
+        );
+        assert!(
+            ctx.publish_report().is_none(),
+            "a guard abort must not install a publish report"
+        );
+
+        emit_summary(&mut ctx);
+        let msgs: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+        assert!(
+            msgs.iter()
+                .any(|m| m == "publishers = none ran (publish stage aborted before dispatch)"),
+            "failure-path summary must name the abort cause; got {msgs:?}"
         );
     }
 }

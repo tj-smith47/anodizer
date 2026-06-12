@@ -474,7 +474,7 @@ fn submit_krew_release_webhook(
 
     if status.is_success() {
         log.status(&format!(
-            "krew: mode=bot-webhook plugin={} v{} submitted to {} ({})",
+            "submitted krew plugin {} v{} via bot-webhook to {} ({})",
             plugin_name,
             version,
             webhook_url,
@@ -485,7 +485,7 @@ fn submit_krew_release_webhook(
 
     if webhook_body_is_already_submitted(&resp_body) {
         log.status(&format!(
-            "krew: plugin={} v{} already submitted upstream — treating as \
+            "krew plugin {} v{} already submitted upstream — treating as \
              idempotent no-op (webhook HTTP {})",
             plugin_name, version, status
         ));
@@ -863,7 +863,7 @@ pub fn publish_to_krew(
             .with_context(|| format!("krew: render skip template for '{}'", crate_name))?;
         if off {
             log.status(&format!(
-                "krew: skipping config for '{}' (skip=true)",
+                "skipping krew config for '{}' (skip=true)",
                 crate_name
             ));
             return Ok(KrewPublishOutcome::skipped());
@@ -876,14 +876,14 @@ pub fn publish_to_krew(
     )?;
     if !proceed {
         log.status(&format!(
-            "krew: skipping '{}' — `if` condition evaluated falsy",
+            "skipping krew for '{}' — `if` condition evaluated falsy",
             crate_name
         ));
         return Ok(KrewPublishOutcome::skipped());
     }
     if util::should_skip_upload(krew_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "krew: skipping upload for '{}' (skip_upload={})",
+            "skipping krew upload for '{}' (skip_upload={})",
             crate_name,
             krew_cfg
                 .skip_upload
@@ -991,7 +991,10 @@ pub fn publish_to_krew(
         submit_krew_release_webhook(&webhook_url, &request, plugin_name, &version, log)?;
         return Ok(KrewPublishOutcome { pushed: false });
     }
-    log.status(&format!("krew: mode=pr-direct plugin={}", plugin_name));
+    log.status(&format!(
+        "publishing krew plugin '{}' via pr-direct",
+        plugin_name
+    ));
 
     let tmp_dir = tempfile::tempdir().context("krew: create temp dir")?;
     let repo_path = tmp_dir.path();
@@ -1017,7 +1020,7 @@ pub fn publish_to_krew(
         .with_context(|| format!("krew: write manifest {}", manifest_file.display()))?;
 
     log.status(&format!(
-        "wrote Krew plugin manifest: {}",
+        "wrote Krew plugin manifest {}",
         manifest_file.display()
     ));
 
@@ -1051,7 +1054,7 @@ pub fn publish_to_krew(
         }
         util::CommitOutcome::NoChanges => {
             log.status(&format!(
-                "krew: nothing to push, manifest for '{}' already up to date",
+                "nothing to push, krew manifest for '{}' already up to date",
                 plugin_name
             ));
             false
@@ -3113,7 +3116,7 @@ pub(crate) fn is_krew_per_crate_configured(ctx: &Context, crate_name: &str) -> b
 /// substring an operator scans the log for.
 pub(crate) fn run_start_message(selected_total: usize) -> String {
     format!(
-        "krew: starting publish for {} selected crate(s)",
+        "starting krew publish for {} selected crate(s)",
         selected_total
     )
 }
@@ -3123,7 +3126,7 @@ pub(crate) fn run_start_message(selected_total: usize) -> String {
 /// why a per-crate publish was a no-op rather than guess from a blank log.
 pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
     format!(
-        "krew: skipping crate '{}' — no krew config block",
+        "skipping krew for crate '{}' — no krew config block",
         crate_name
     )
 }
@@ -3133,7 +3136,7 @@ pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
 /// to a specific crate in the log so multi-crate workspaces are
 /// disambiguatable.
 pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
-    format!("krew: starting per-crate publish for '{}'", crate_name)
+    format!("starting per-crate krew publish for '{}'", crate_name)
 }
 
 /// Final summary emitted at publisher exit. `processed` is the count of
@@ -3141,7 +3144,7 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 /// count of successful PRs — `publish_to_krew` has its own skip paths for
 /// skip_upload/dry-run/etc., each of which logs its own status line).
 pub(crate) fn run_done_message(processed: usize) -> String {
-    format!("krew: completed — {} crate(s) processed", processed)
+    format!("finished krew publish — {} crate(s) processed", processed)
 }
 
 /// Decision predicate for the no-eligible-crates warning. True when the
@@ -3168,7 +3171,7 @@ pub(crate) fn should_warn_no_eligible(processed: usize, selected_len: usize) -> 
 /// hides the fact that nothing was pushed.
 pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     format!(
-        "krew: registered but 0 of {} effective crate(s) had a krew \
+        "krew publisher registered but 0 of {} effective crate(s) had a krew \
          config block — nothing pushed. Check that --crate / --all selects a \
          crate whose publish.krew block is set.",
         selected_total
@@ -3194,6 +3197,32 @@ impl anodizer_core::Publisher for KrewPublisher {
 
     fn retain_on_rollback(&self) -> bool {
         Self::resolved_retain_on_rollback(self)
+    }
+
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // Both krew flows need a token (PR-direct for the clone+PR, bot/auto
+        // for the index probe + webhook), and the PR-direct flow clones
+        // with git. `git` is declared unconditionally because `auto` mode
+        // can resolve to PR-direct at run time.
+        anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.krew.as_ref())
+            .filter(|k| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    k.skip.as_ref(),
+                    k.skip_upload.as_ref(),
+                    k.if_condition.as_deref(),
+                )
+            })
+            .flat_map(|k| {
+                crate::publisher_helpers::git_repo_requirements(
+                    ctx,
+                    k.repository.as_ref(),
+                    Some("KREW_INDEX_TOKEN"),
+                )
+            })
+            .collect()
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
@@ -3309,7 +3338,7 @@ impl anodizer_core::Publisher for KrewPublisher {
         for t in &targets {
             let Some(token) = resolve_token(t) else {
                 log.warn(&format!(
-                    "krew: no token resolvable for {} (env var ${} / \
+                    "no krew token resolvable for {} (env var ${} / \
                      ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN all unset); \
                      skipping rollback for this target",
                     t.target,
@@ -3333,7 +3362,7 @@ impl anodizer_core::Publisher for KrewPublisher {
                     // failure mode — not the misleading "no PR found,
                     // verify manually" that previously fired here.
                     log.warn(&format!(
-                        "krew: failed to query upstream {}/{} for open PRs ({}); \
+                        "failed to query krew upstream {}/{} for open PRs ({}); \
                          {} — manual cleanup required",
                         t.upstream_owner, t.upstream_repo, t.target, e
                     ));
@@ -3342,7 +3371,7 @@ impl anodizer_core::Publisher for KrewPublisher {
             };
             if pr_numbers.is_empty() {
                 log.warn(&format!(
-                    "krew: no open PRs found for head={}:{} against {}/{}; \
+                    "no open krew PRs found for head={}:{} against {}/{}; \
                      verify manually",
                     t.fork_owner, t.branch, t.upstream_owner, t.upstream_repo,
                 ));
@@ -3386,7 +3415,7 @@ impl anodizer_core::Publisher for KrewPublisher {
                             job.upstream_owner, job.upstream_repo, job.pr_number
                         );
                         log.status(&format!(
-                            "krew: closing PR {} ({})",
+                            "closing krew PR {} ({})",
                             job.target_label, pr_url
                         ));
                         let outcome = crate::util::close_pr_via_api(
@@ -3404,7 +3433,7 @@ impl anodizer_core::Publisher for KrewPublisher {
                                 let mut c = crate::util::lock_recover(counts, &log, "krew");
                                 c.1 += 1;
                                 log.status(&format!(
-                                    "krew: PR {} ({}) already closed/deleted upstream — \
+                                    "krew PR {} ({}) already closed/deleted upstream — \
                                      rollback noticed the existing state",
                                     job.target_label, pr_url
                                 ));
@@ -3434,12 +3463,12 @@ impl anodizer_core::Publisher for KrewPublisher {
         let (closed, already_closed, failed) = match counts.into_inner() {
             Ok(c) => c,
             Err(poisoned) => {
-                log.warn("krew: mutex poisoned by worker panic; reporting counters as-of poison");
+                log.warn("krew mutex poisoned by worker panic; reporting counters as-of poison");
                 poisoned.into_inner()
             }
         };
         log.status(&format!(
-            "krew: closed {}, already-closed {}, failed {}",
+            "krew rollback closed {}, already-closed {}, failed {}",
             closed, already_closed, failed
         ));
         Ok(())
@@ -3553,7 +3582,7 @@ mod publisher_tests {
 
         let warns = capture.warn_messages();
         assert!(
-            warns.iter().any(|m| m.contains("no token resolvable")
+            warns.iter().any(|m| m.contains("no krew token resolvable")
                 && m.contains("demo")
                 && m.contains("KREW_INDEX_TOKEN")),
             "expected a no-token warn naming the target + env var; got: {warns:?}"
@@ -3704,40 +3733,35 @@ mod publisher_tests {
     #[test]
     fn run_start_message_names_selected_total() {
         let msg = run_start_message(3);
-        assert!(msg.starts_with("krew:"), "{msg}");
-        assert!(msg.contains("starting publish"), "{msg}");
+        assert!(msg.starts_with("starting krew publish for"), "{msg}");
         assert!(msg.contains("3 selected"), "{msg}");
     }
 
     #[test]
     fn run_skip_unconfigured_message_names_crate() {
         let msg = run_skip_unconfigured_message("demo");
-        assert!(msg.starts_with("krew:"), "{msg}");
-        assert!(msg.contains("skipping crate 'demo'"), "{msg}");
+        assert!(msg.starts_with("skipping krew for crate 'demo'"), "{msg}");
         assert!(msg.contains("no krew config block"), "{msg}");
     }
 
     #[test]
     fn run_per_crate_start_message_names_crate() {
         let msg = run_per_crate_start_message("demo");
-        assert!(msg.starts_with("krew:"), "{msg}");
-        assert!(msg.contains("starting per-crate publish"), "{msg}");
+        assert!(msg.starts_with("starting per-crate krew publish"), "{msg}");
         assert!(msg.contains("'demo'"), "{msg}");
     }
 
     #[test]
     fn run_done_message_reports_processed_count() {
         let msg = run_done_message(2);
-        assert!(msg.starts_with("krew:"), "{msg}");
-        assert!(msg.contains("completed"), "{msg}");
+        assert!(msg.starts_with("finished krew publish"), "{msg}");
         assert!(msg.contains("2 crate(s) processed"), "{msg}");
     }
 
     #[test]
     fn run_no_eligible_crates_warning_names_remediation() {
         let msg = run_no_eligible_crates_warning(5);
-        assert!(msg.starts_with("krew:"), "{msg}");
-        assert!(msg.contains("registered"), "{msg}");
+        assert!(msg.starts_with("krew publisher registered"), "{msg}");
         assert!(msg.contains("0 of 5 effective"), "{msg}");
         assert!(msg.contains("nothing pushed"), "{msg}");
         assert!(msg.contains("--crate"), "{msg}");

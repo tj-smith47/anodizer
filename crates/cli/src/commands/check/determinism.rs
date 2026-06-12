@@ -20,7 +20,8 @@ use anodizer_core::{
 };
 use anyhow::{Context, Result};
 
-pub fn run(args: CheckDeterminismArgs) -> Result<()> {
+pub fn run(args: CheckDeterminismArgs, verbose: bool, debug: bool, quiet: bool) -> Result<()> {
+    let verbosity = Verbosity::from_flags(quiet, verbose, debug);
     let repo_root = std::env::current_dir().context("resolving repo root")?;
 
     // `--inject-drift` is a test-only flag gated by
@@ -56,12 +57,49 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
         ))
     });
 
+    // `--preserve-dist=<path>` may be relative; resolve against the
+    // repo root so the harness has an absolute target. The repo_root
+    // is `current_dir`, so a relative `--preserve-dist=./preserved-dist`
+    // lands at `<cwd>/preserved-dist` — what a CI step expects when
+    // passing the flag verbatim.
+    //
+    // The per-crate subdir append (`<base>/<crate>`) for multi-crate
+    // workspaces is applied internally by the harness from
+    // `crate_name` — doing it again here would double-prefix to
+    // `<base>/<crate>/<crate>` and break the
+    // upload/merge/`detect_dist_layout` flow.
+    let preserve_dist = args.preserve_dist.as_ref().map(|p| {
+        if p.is_absolute() {
+            p.clone()
+        } else {
+            repo_root.join(p)
+        }
+    });
+
     // The harness emits its own per-stage warnings/notes through the shared
-    // logger; this dispatcher owns only the opening section header + the run
-    // configuration summary (targets / stages / runs) as aligned `kv` rows.
-    let log = StageLogger::new("check", Verbosity::Normal);
-    log.step("Checking", "determinism");
-    emit_run_summary(&log, targets.as_deref(), &stages, args.runs);
+    // logger; this dispatcher owns the run's section (header + the full
+    // run-configuration summary as aligned `kv` rows, one level beneath it).
+    // It is the single printer of these parameters — the child release
+    // subprocess and any wrapping CI script must not repeat them.
+    let log = StageLogger::new("check", verbosity);
+    let _section = log.group("check-determinism");
+    emit_run_summary(
+        &log,
+        targets.as_deref(),
+        &stages,
+        args.runs,
+        preserve_dist.as_deref(),
+        args.crate_name.as_deref(),
+    );
+
+    // One config load for every best-effort probe below (signature
+    // allow-list, all-prebuilt short-circuit, docker-backend hint).
+    // Besides the obvious DRY, the load is the emission point for
+    // static-config warnings (legacy aliases, submitter `required: true`)
+    // — loading once means they print once per invocation instead of
+    // once per probe. Best-effort: a missing/unparseable config yields
+    // `None` and the real error surfaces from the pipeline itself.
+    let repo_config = crate::pipeline::load_repo_config(&repo_root).ok();
 
     // Seed the compile-time allow-list from the centralized
     // DeterminismState (single source of truth); the runtime allow-list
@@ -86,28 +124,12 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
     // regardless of the user's chosen `signature:` naming scheme (e.g.
     // cfgd's `{{ .Artifact }}.cosign.bundle`, which would otherwise fall
     // through `infer_stage_from_path` to `unknown` and count as drift).
-    allowlist
-        .runtime
-        .extend(derive_signature_allowlist_entries(&repo_root));
-
-    // `--preserve-dist=<path>` may be relative; resolve against the
-    // repo root so the harness has an absolute target. The repo_root
-    // is `current_dir`, so a relative `--preserve-dist=./preserved-dist`
-    // lands at `<cwd>/preserved-dist` — what a CI step expects when
-    // passing the flag verbatim.
-    //
-    // The per-crate subdir append (`<base>/<crate>`) for multi-crate
-    // workspaces is applied internally by the harness from
-    // `crate_name` — doing it again here would double-prefix to
-    // `<base>/<crate>/<crate>` and break the
-    // upload/merge/`detect_dist_layout` flow.
-    let preserve_dist = args.preserve_dist.as_ref().map(|p| {
-        if p.is_absolute() {
-            p.clone()
-        } else {
-            repo_root.join(p)
-        }
-    });
+    allowlist.runtime.extend(
+        repo_config
+            .as_ref()
+            .map(signature_allowlist_entries_from_config)
+            .unwrap_or_default(),
+    );
 
     // Fallback only — production runs always have a sibling metadata.json
     // that wins. A missing or malformed one would otherwise emit anodizer's
@@ -130,7 +152,11 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
     // the cargo targets need the rebuild, and the prebuilt artifacts
     // appear in both runs at the same staged path with identical bytes
     // (so they fall through the diff cleanly).
-    if all_builds_prebuilt_in_repo(&repo_root) {
+    if repo_config
+        .as_ref()
+        .map(anodizer_core::config::all_builds_prebuilt)
+        .unwrap_or(false)
+    {
         eprintln!(
             "{}",
             render_note(
@@ -147,7 +173,7 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
     // probing reproducibility against a binary the operator will never
     // ship. Failure to load the config (missing file, parse error) is
     // soft: the docker stage falls through to its existing buildx path.
-    let docker_backend_hint = detect_docker_backend_hint(&repo_root);
+    let docker_backend_hint = repo_config.as_ref().and_then(detect_docker_backend_hint);
 
     let harness = Harness {
         repo_root: repo_root.clone(),
@@ -164,6 +190,7 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
         child_snapshot,
         docker_backend_hint,
         crate_name: args.crate_name.clone(),
+        verbosity,
     };
 
     let report = harness.run()?;
@@ -176,13 +203,15 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
         serde_json::to_string_pretty(&report).context("serializing determinism report to JSON")?;
     std::fs::write(&report_path, json)
         .with_context(|| format!("writing report to {}", report_path.display()))?;
-    eprintln!(
-        "{}",
-        render_note(&format!(
-            "wrote determinism report to {}",
-            report_path.display()
-        ))
-    );
+    if verbosity > Verbosity::Quiet {
+        eprintln!(
+            "{}",
+            render_note(&format!(
+                "wrote determinism report to {}",
+                report_path.display()
+            ))
+        );
+    }
 
     if report.drift_count > 0 {
         eprintln!(
@@ -323,13 +352,22 @@ fn commit_short(commit: &str) -> String {
 }
 
 /// Emit the run-configuration summary beneath the `Checking determinism`
-/// header as aligned `kv` detail rows (targets / stages / runs). `targets`
-/// is `None` when the operator did not pass `--targets` (the harness resolves
-/// the project's full target list), rendered as `all (from config)` so the
-/// row is never blank.
-fn emit_run_summary(log: &StageLogger, targets: Option<&[String]>, stages: &[StageId], runs: u32) {
-    // Pad every key to the widest so the value column lines up across rows.
-    const KEY_WIDTH: usize = "targets".len();
+/// header as aligned `kv` detail rows (targets / stages / runs, plus
+/// preserve-dist / crate when set). `targets` is `None` when the operator
+/// did not pass `--targets` (the harness resolves the project's full target
+/// list), rendered as `all (from config)` so the row is never blank.
+///
+/// This is the only printer of these parameters: callers (including the
+/// `anodizer-action` wrapper) must not echo their own copy of the header
+/// or the parameter rows.
+fn emit_run_summary(
+    log: &StageLogger,
+    targets: Option<&[String]>,
+    stages: &[StageId],
+    runs: u32,
+    preserve_dist: Option<&std::path::Path>,
+    crate_name: Option<&str>,
+) {
     let targets_value = match targets {
         Some(t) if !t.is_empty() => t.join(", "),
         _ => "all (from config)".to_string(),
@@ -339,9 +377,24 @@ fn emit_run_summary(log: &StageLogger, targets: Option<&[String]>, stages: &[Sta
         .map(|s| s.as_str())
         .collect::<Vec<_>>()
         .join(", ");
-    log.kv("targets", &targets_value, KEY_WIDTH);
-    log.kv("stages", &stages_value, KEY_WIDTH);
-    log.kv("runs", &runs.to_string(), KEY_WIDTH);
+    let preserve_value = preserve_dist.map(|p| p.display().to_string());
+
+    let mut rows: Vec<(&str, &str)> = vec![("targets", targets_value.as_str())];
+    rows.push(("stages", stages_value.as_str()));
+    let runs_value = runs.to_string();
+    rows.push(("runs", runs_value.as_str()));
+    if let Some(ref v) = preserve_value {
+        rows.push(("preserve-dist", v.as_str()));
+    }
+    if let Some(name) = crate_name {
+        rows.push(("crate", name));
+    }
+    // Pad every key to the widest EMITTED key so the value column lines up
+    // across rows without reserving width for absent optional rows.
+    let key_width = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+    for (key, value) in rows {
+        log.kv(key, value, key_width);
+    }
 }
 
 /// Resolve the harness's `child_snapshot` flag.
@@ -411,16 +464,7 @@ fn signature_suffix(template: &str) -> Option<String> {
 /// fall through to `unknown` and be counted as drift. Deriving the
 /// suffixes from config keeps the harness correct for any naming scheme.
 ///
-/// Best-effort: a missing / unparseable config yields no entries (the
-/// harness still runs; real config errors surface elsewhere).
-fn derive_signature_allowlist_entries(repo_root: &std::path::Path) -> Vec<AllowListEntry> {
-    match crate::pipeline::load_repo_config(repo_root).ok() {
-        Some(cfg) => signature_allowlist_entries_from_config(&cfg),
-        None => Vec::new(),
-    }
-}
-
-/// Pure core of [`derive_signature_allowlist_entries`]: collect the
+/// Pure: collect the
 /// distinct signature suffixes configured across top-level and per-
 /// workspace `signs:` / `binary_signs:`, and map each to a `*<suffix>`
 /// allow-list entry. Factored out so the suffix logic is unit-testable
@@ -464,35 +508,15 @@ fn signature_allowlist_entries_from_config(
         .collect()
 }
 
-/// Returns `true` when every configured build entry on every crate uses
-/// `builder: prebuilt`. The harness short-circuits in that case because
-/// there is nothing to rebuild — re-stat()-ing the same staged file twice
-/// would just produce two identical hashes.
-///
-/// Soft on errors: a missing or unparseable config falls through to
-/// `false` so the existing harness flow surfaces the real error.
-fn all_builds_prebuilt_in_repo(repo_root: &std::path::Path) -> bool {
-    crate::pipeline::load_repo_config(repo_root)
-        .ok()
-        .as_ref()
-        .map(anodizer_core::config::all_builds_prebuilt)
-        .unwrap_or(false)
-}
-
 /// Probe the project's `dockers_v2[*].use` field for a `"podman"` opt-in.
 ///
 /// Returns `Some("podman")` when any `dockers_v2` entry under any crate
 /// (or the project-level `defaults.dockers_v2`) sets `use: podman`,
-/// `Some("buildx")` when only buildx is configured, and `None` when the
-/// config can't be loaded (missing / parse error) or no `dockers_v2`
-/// entries exist. The harness consults the hint to decide whether to
-/// short-circuit its `docker buildx`-based reproducibility probe.
-///
-/// Best-effort: a parse failure here MUST NOT block the harness — config
-/// validation surfaces elsewhere in the pipeline with a more actionable
-/// error. The fallthrough simply runs the legacy buildx probe.
-fn detect_docker_backend_hint(repo_root: &std::path::Path) -> Option<String> {
-    let cfg = crate::pipeline::load_repo_config(repo_root).ok()?;
+/// `Some("buildx")` when only buildx is configured, and `None` when no
+/// `dockers_v2` entries exist. The harness consults the hint to decide
+/// whether to short-circuit its `docker buildx`-based reproducibility
+/// probe.
+fn detect_docker_backend_hint(cfg: &anodizer_core::config::Config) -> Option<String> {
     let mut saw_buildx = false;
     let mut iter: Vec<&Option<String>> = Vec::new();
     if let Some(ref defaults) = cfg.defaults

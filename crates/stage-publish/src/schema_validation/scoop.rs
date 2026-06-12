@@ -66,7 +66,7 @@ impl PublisherSchemaValidator for ScoopSchemaValidator {
             };
             if !crate_has_scoop_artifacts(ctx, crate_name, &scoop_cfg) {
                 log.verbose(&format!(
-                    "scoop: crate '{}' produced no Windows archive artifact in this \
+                    "crate '{}' produced no Windows archive artifact for scoop in this \
                      snapshot shard; skipping schema validation",
                     crate_name
                 ));

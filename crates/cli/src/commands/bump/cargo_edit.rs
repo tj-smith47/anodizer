@@ -304,11 +304,11 @@ fn rewrite_member_dependencies(
             for (dep_name, new_ver) in bumped {
                 if rewrite_dep_entry(tbl, dep_name, new_ver) {
                     log.verbose(&format!(
-                        "{}: {} {} = \"{}\"",
-                        manifest_path.display(),
+                        "rewrote {} {} = \"{}\" in {}",
                         section,
                         dep_name,
-                        new_ver
+                        new_ver,
+                        manifest_path.display()
                     ));
                     changed = true;
                 }
@@ -324,11 +324,11 @@ fn rewrite_member_dependencies(
                         for (dep_name, new_ver) in bumped {
                             if rewrite_dep_entry(tbl, dep_name, new_ver) {
                                 log.verbose(&format!(
-                                    "{}: target.{} {} = \"{}\"",
-                                    manifest_path.display(),
+                                    "rewrote target.{} {} = \"{}\" in {}",
                                     section,
                                     dep_name,
-                                    new_ver
+                                    new_ver,
+                                    manifest_path.display()
                                 ));
                                 changed = true;
                             }
@@ -370,7 +370,7 @@ fn rewrite_workspace_dependencies(
     for (dep_name, new_ver) in bumped {
         if rewrite_dep_entry(ws_deps, dep_name, new_ver) {
             log.verbose(&format!(
-                "root: [workspace.dependencies] {} = \"{}\"",
+                "updated root [workspace.dependencies] {} = \"{}\"",
                 dep_name, new_ver
             ));
             changed = true;

@@ -314,7 +314,7 @@ fn plan_build_jobs(
                     }]
                 } else {
                     log.status(&format!(
-                        "skipping crate '{}' — no builds configured and no binary target found",
+                        "skipping build for crate '{}' — no builds configured and no binary target found",
                         crate_cfg.name
                     ));
                     continue;
@@ -439,7 +439,7 @@ fn plan_build_jobs(
                             anodizer_core::partial::find_runtime_target(single, &original)
                     {
                         log.verbose(&format!(
-                            "--single-target: host '{}' matched configured target '{}' via alias table",
+                            "host '{}' matched configured target '{}' via alias table (--single-target)",
                             single, matched
                         ));
                         targets.push(matched);
@@ -463,7 +463,7 @@ fn plan_build_jobs(
                 targets = partial.filter_targets(&targets);
                 if had_targets && targets.is_empty() {
                     log.verbose(&format!(
-                        "split: no targets match partial filter for {}/{}, skipping",
+                        "no targets match partial filter for {}/{}, skipping",
                         crate_cfg.name, binary_name_raw
                     ));
                     continue;
@@ -915,7 +915,7 @@ fn plan_prebuilt_build(
             && let Some(matched) = anodizer_core::partial::find_runtime_target(single, &original)
         {
             log.verbose(&format!(
-                "--single-target: host '{}' matched configured prebuilt target '{}' via alias table",
+                "host '{}' matched configured prebuilt target '{}' via alias table (--single-target)",
                 single, matched
             ));
             targets.push(matched);
@@ -935,7 +935,7 @@ fn plan_prebuilt_build(
         targets = partial.filter_targets(&targets);
         if targets.is_empty() {
             log.verbose(&format!(
-                "split: no prebuilt targets match partial filter for {}/{}, skipping",
+                "no prebuilt targets match partial filter for {}/{}, skipping",
                 crate_cfg.name, binary_field
             ));
             return Ok(());

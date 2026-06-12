@@ -51,7 +51,7 @@ fn sync_fork(
         &format!("{label}: git fetch upstream"),
     ) {
         log.warn(&format!(
-            "{label}: fork sync: fetch upstream failed, continuing without sync: {e}"
+            "failed to fetch upstream for {label} fork sync; continuing without sync: {e}"
         ));
         return;
     }
@@ -65,7 +65,7 @@ fn sync_fork(
         &format!("{label}: git rebase upstream"),
     ) {
         log.warn(&format!(
-            "{label}: fork sync: rebase failed, aborting rebase and continuing: {e}"
+            "failed to rebase {label} fork onto upstream; aborting rebase and continuing: {e}"
         ));
         // Abort the failed rebase so the repo is in a clean state.
         let _ = run_cmd_in(
@@ -101,7 +101,7 @@ fn gh_is_available() -> bool {
 /// the publish log and the actionable remediation pointer at the end.
 pub(crate) fn pr_exists_skip_warn_message(label: &str, head: &str) -> String {
     format!(
-        "{label}: PR for '{head}' already exists — skipping \
+        "{label} PR for '{head}' already exists — skipping \
          (set update_existing_pr: true to update the PR in place)"
     )
 }
@@ -110,7 +110,7 @@ pub(crate) fn pr_exists_skip_warn_message(label: &str, head: &str) -> String {
 /// exists, `update_existing_pr` is true, and the force-push to the
 /// existing branch succeeded.
 pub(crate) fn pr_exists_update_status_message(label: &str, head: &str) -> String {
-    format!("{label}: PR for '{head}' already exists — updated in place")
+    format!("{label} PR for '{head}' already exists — updated in place")
 }
 
 // ---------------------------------------------------------------------------
@@ -205,7 +205,7 @@ fn create_pr_via_gh_cli(
             .output();
         match pr_result {
             Ok(output) if output.status.success() => {
-                log.status(&format!("{label}: PR submitted via gh CLI"));
+                log.status(&format!("submitted {label} PR via gh CLI"));
                 return None;
             }
             Ok(output) => {
@@ -223,7 +223,7 @@ fn create_pr_via_gh_cli(
                             &format!("{label}: git push --force-with-lease (update existing PR)"),
                         ) {
                             log.warn(&format!(
-                                "{label}: update_existing_pr=true but force-push failed: {e}"
+                                "failed to force-push {label} PR branch (update_existing_pr=true): {e}"
                             ));
                         } else {
                             log.status(&pr_exists_update_status_message(label, head));
@@ -242,13 +242,13 @@ fn create_pr_via_gh_cli(
                     break;
                 }
                 log.warn(&format!(
-                    "{label}: gh pr create attempt {attempt}/3 hit transient error; retrying..."
+                    "gh pr create for {label} hit transient error (attempt {attempt}/3); retrying..."
                 ));
                 std::thread::sleep(std::time::Duration::from_secs(5 * attempt));
             }
             Err(e) => {
                 let msg = format!(
-                    "{label}: could not run gh to create PR: {e} -- you may need to create the PR manually"
+                    "could not run gh to create the {label} PR: {e} -- you may need to create the PR manually"
                 );
                 log.warn(&msg);
                 // Silent-fail would let dispatch record Succeeded.
@@ -259,7 +259,7 @@ fn create_pr_via_gh_cli(
         }
     }
     let msg = format!(
-        "{label}: gh pr create exited with {} -- you may need to create the PR manually{}",
+        "gh pr create for {label} exited with {} -- you may need to create the PR manually{}",
         last_status
             .map(|s| s.to_string())
             .unwrap_or_else(|| "unknown status".to_string()),
@@ -319,7 +319,7 @@ fn create_pr_via_api_with_env<E: EnvSource + ?Sized>(
     let client = match anodizer_core::http::blocking_client(std::time::Duration::from_secs(30)) {
         Ok(c) => c,
         Err(e) => {
-            let msg = format!("{label}: build HTTP client: {e}");
+            let msg = format!("failed to build HTTP client for {label}: {e}");
             log.warn(&msg);
             // Silent-fail = dispatch records Succeeded; return Failed instead.
             return Some(PublisherOutcome::Failed(msg));
@@ -333,7 +333,7 @@ fn create_pr_via_api_with_env<E: EnvSource + ?Sized>(
         .send();
     match result {
         Ok(resp) if resp.status().is_success() => {
-            log.status(&format!("{label}: PR submitted via GitHub API"));
+            log.status(&format!("submitted {label} PR via GitHub API"));
             None
         }
         Ok(resp) => {
@@ -346,7 +346,7 @@ fn create_pr_via_api_with_env<E: EnvSource + ?Sized>(
             if status.as_u16() == 422 && body_text.contains("already exists") {
                 if update_existing_pr {
                     log.warn(&format!(
-                        "{label}: PR for '{head}' already exists and update_existing_pr=true \
+                        "{label} PR for '{head}' already exists and update_existing_pr=true \
                          was requested, but the API transport cannot force-push; \
                          install `gh` CLI to update the PR in place"
                     ));
@@ -356,14 +356,14 @@ fn create_pr_via_api_with_env<E: EnvSource + ?Sized>(
                 return Some(PublisherOutcome::PendingValidation);
             }
             let msg = format!(
-                "{label}: GitHub API PR creation returned {status} -- you may need to create the PR manually\n{body_text}"
+                "GitHub API PR creation for {label} returned {status} -- you may need to create the PR manually\n{body_text}"
             );
             log.warn(&msg);
             Some(PublisherOutcome::Failed(msg))
         }
         Err(e) => {
             let msg = format!(
-                "{label}: GitHub API PR creation failed: {e} -- you may need to create the PR manually"
+                "GitHub API PR creation for {label} failed: {e} -- you may need to create the PR manually"
             );
             log.warn(&msg);
             Some(PublisherOutcome::Failed(msg))
@@ -514,7 +514,7 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
             &format!("{label}: git push (post-sync)"),
         ) {
             log.warn(&format!(
-                "{label}: fork sync: force-push after rebase failed, PR may have conflicts: {e}"
+                "failed to force-push {label} fork after rebase; PR may have conflicts: {e}"
             ));
         }
     }
@@ -543,7 +543,7 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
         }
         PrTransport::NoneAvailable => {
             let msg = format!(
-                "{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"
+                "cannot create the {label} PR automatically -- neither `gh` CLI nor a token is available"
             );
             log.warn(&msg);
             // Silent-fail (returning None here) would let dispatch
@@ -690,7 +690,7 @@ pub(crate) fn submit_pr_via_gh_with_opts_with_env<E: EnvSource + ?Sized>(
                 create_pr_via_api_with_env(&upstream, &spec, tok, label, log, env)
             } else {
                 let msg = format!(
-                    "{label}: cannot parse upstream repo slug '{upstream_repo}' for API fallback"
+                    "cannot parse upstream repo slug '{upstream_repo}' for the {label} API fallback"
                 );
                 log.warn(&msg);
                 Some(PublisherOutcome::Failed(msg))
@@ -698,7 +698,7 @@ pub(crate) fn submit_pr_via_gh_with_opts_with_env<E: EnvSource + ?Sized>(
         }
         PrTransport::NoneAvailable => {
             let msg = format!(
-                "{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"
+                "cannot create the {label} PR automatically -- neither `gh` CLI nor a token is available"
             );
             log.warn(&msg);
             // Silent-fail (returning None here) would let dispatch

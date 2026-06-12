@@ -4,11 +4,12 @@
 use serde::Deserialize;
 
 // Inline items from config/mod.rs
+use super::WorkspaceConfig;
 use super::{Config, ERR_DEFAULTS_AXIS_MISMATCH, IncludeFilePath, IncludeSpec, IncludeUrlConfig};
 use super::{
     validate_changelog_groups_depth, validate_changelog_paths, validate_defaults_axis,
-    validate_format_overrides, validate_homebrew_cask_url_template, validate_tag_sort,
-    validate_version,
+    validate_format_overrides, validate_homebrew_cask_url_template, validate_on_failure_root_only,
+    validate_tag_sort, validate_version,
 };
 
 // Items re-exported from config submodules (all reachable as super::ItemName
@@ -24,7 +25,7 @@ use super::{
 };
 use super::{
     ForceTokenKind, GitHubUrlsConfig, GitLabUrlsConfig, GiteaUrlsConfig, MakeLatestConfig,
-    ReleaseConfig,
+    OnFailureConfig, ReleaseConfig,
 };
 use super::{HumanDuration, StringOrBool};
 use super::{
@@ -844,6 +845,101 @@ fn test_release_resolved_bool_user_values_win() {
     assert!(cfg.resolved_replace_existing_artifacts());
     assert!(cfg.resolved_include_meta());
     assert!(cfg.resolved_use_existing_draft());
+}
+
+#[test]
+fn test_release_resolved_on_failure_defaults_to_rollback() {
+    let cfg = ReleaseConfig::default();
+    assert_eq!(cfg.resolved_on_failure(), OnFailureConfig::Rollback);
+}
+
+#[test]
+fn test_release_on_failure_parses_both_values() {
+    for (yaml, expected) in [
+        ("on_failure: rollback", OnFailureConfig::Rollback),
+        ("on_failure: hold", OnFailureConfig::Hold),
+    ] {
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.resolved_on_failure(), expected, "yaml: {yaml}");
+    }
+}
+
+#[test]
+fn test_release_on_failure_rejects_unknown_value() {
+    let err = serde_yaml_ng::from_str::<ReleaseConfig>("on_failure: explode").unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("rollback") && msg.contains("hold"),
+        "error must name the valid set, got: {msg}"
+    );
+}
+
+#[test]
+fn test_validate_on_failure_root_only_accepts_root_setting() {
+    let config = Config {
+        project_name: "test".into(),
+        release: Some(ReleaseConfig {
+            on_failure: Some(OnFailureConfig::Hold),
+            ..Default::default()
+        }),
+        crates: vec![CrateConfig {
+            name: "app".into(),
+            path: ".".into(),
+            tag_template: "v{{ .Version }}".into(),
+            release: Some(ReleaseConfig::default()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    validate_on_failure_root_only(&config).expect("root-level on_failure is the supported shape");
+}
+
+#[test]
+fn test_validate_on_failure_root_only_rejects_crate_level_setting() {
+    let config = Config {
+        project_name: "test".into(),
+        crates: vec![CrateConfig {
+            name: "app".into(),
+            path: ".".into(),
+            tag_template: "v{{ .Version }}".into(),
+            release: Some(ReleaseConfig {
+                on_failure: Some(OnFailureConfig::Hold),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let err = validate_on_failure_root_only(&config)
+        .expect_err("crate-level on_failure must be rejected");
+    assert!(err.contains("app"), "must name the offender: {err}");
+    assert!(err.contains("root-level"), "must explain the rule: {err}");
+    assert!(err.contains("top-level"), "must point at the fix: {err}");
+}
+
+#[test]
+fn test_validate_on_failure_root_only_rejects_workspace_crate_setting() {
+    let config = Config {
+        project_name: "test".into(),
+        workspaces: Some(vec![WorkspaceConfig {
+            name: "ws".into(),
+            crates: vec![CrateConfig {
+                name: "ws-member".into(),
+                path: "crates/member".into(),
+                tag_template: "member-v{{ .Version }}".into(),
+                release: Some(ReleaseConfig {
+                    on_failure: Some(OnFailureConfig::Rollback),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let err = validate_on_failure_root_only(&config)
+        .expect_err("workspace-crate on_failure must be rejected");
+    assert!(err.contains("ws-member"), "must name the offender: {err}");
 }
 
 // ---- ChangelogConfig resolved_*() accessors (lazy-defaults policy) ----
@@ -6529,6 +6625,72 @@ fn test_evaluate_if_condition_render_error_propagates() {
         chain.contains("publisher 'foo'") && chain.contains("template render failed"),
         "render error must carry label + diagnostic: {chain}",
     );
+}
+
+#[test]
+fn test_evaluate_if_condition_rejects_stale_bool_string_compare() {
+    use super::evaluate_if_condition;
+    let render = |_: &str| -> anyhow::Result<String> {
+        panic!("render must not run for a rejected stale compare")
+    };
+    for stale in [
+        r#"{% if IsSnapshot == "false" or IsHarness == "true" %}true{% endif %}"#,
+        r#"{{ eq .IsSnapshot "false" }}"#,
+        r#"{% if NightlyBuild == "0" %}true{% endif %}"#,
+    ] {
+        let err = evaluate_if_condition(Some(stale), "sign config 'default'", render)
+            .expect_err("stale typed compare must hard-error, not silently skip");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("sign config 'default'") && chain.contains("never matches"),
+            "error must carry label + diagnostic for {stale}: {chain}",
+        );
+    }
+}
+
+#[test]
+fn test_string_or_bool_rejects_stale_bool_string_compare() {
+    let skip = StringOrBool::String(r#"{{ IsSnapshot == "true" }}"#.to_string());
+    let err = skip
+        .try_evaluates_to_true(|_| panic!("render must not run for a rejected stale compare"))
+        .expect_err("stale typed compare in skip-style fields must hard-error");
+    assert!(
+        format!("{err:#}").contains("never matches"),
+        "diagnostic must explain the type mismatch: {err:#}",
+    );
+}
+
+#[test]
+fn test_evaluate_if_condition_bool_vars_snapshot_vs_release() {
+    use super::evaluate_if_condition;
+    use crate::context::{Context, ContextOptions};
+
+    let eval = |snapshot: bool, tpl: &str| -> bool {
+        let opts = ContextOptions {
+            snapshot,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(Config::default(), opts);
+        ctx.git_info = None;
+        ctx.populate_git_vars();
+        evaluate_if_condition(Some(tpl), "t", |t| ctx.render_template(t)).unwrap()
+    };
+
+    // Go-style `{{ not .IsSnapshot }}`: proceed on release, skip on snapshot.
+    assert!(eval(false, "{{ not .IsSnapshot }}"));
+    assert!(!eval(true, "{{ not .IsSnapshot }}"));
+
+    // Bare truthiness: proceed on snapshot, skip on release.
+    assert!(eval(true, "{{ IsSnapshot }}"));
+    assert!(!eval(false, "{{ IsSnapshot }}"));
+
+    // Tera statement form.
+    assert!(eval(false, "{% if not IsSnapshot %}true{% endif %}"));
+    assert!(!eval(true, "{% if not IsSnapshot %}true{% endif %}"));
+
+    // The dogfood form: release or harness (IsHarness false here).
+    assert!(eval(false, "{{ not IsSnapshot or IsHarness }}"));
+    assert!(!eval(true, "{{ not IsSnapshot or IsHarness }}"));
 }
 
 // ---- F2: `disable` → `skip` serde aliases ----

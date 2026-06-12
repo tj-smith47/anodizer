@@ -463,7 +463,7 @@ fn render_harvest_command(
 fn run_harvest(cmd: &str, harvest_dir: &Path, log: &anodizer_core::log::StageLogger) -> Result<()> {
     std::fs::create_dir_all(harvest_dir)
         .with_context(|| format!("appimage: create harvest dir {}", harvest_dir.display()))?;
-    log.status(&format!("harvesting AppImage runtime: {cmd}"));
+    log.status(&format!("harvesting AppImage runtime via `{cmd}`"));
     let output = Command::new("sh")
         .arg("-c")
         .arg(cmd)
@@ -539,7 +539,7 @@ fn execute_appimage_job(
         job.update_information.as_deref(),
     );
 
-    thread_log.status(&format!("creating AppImage: {}", job.filename));
+    thread_log.status(&format!("creating AppImage {}", job.filename));
 
     // Run with the AppDir's parent as cwd: linuxdeploy writes the output
     // `.AppImage` into the current dir, so a per-job dir keeps parallel jobs
@@ -860,7 +860,7 @@ fn collect_config_jobs(
             .unwrap_or_else(|| primary.name.clone());
 
         if dry_run {
-            log.status(&format!("(dry-run) would create AppImage: {filename}"));
+            log.status(&format!("(dry-run) would create AppImage {filename}"));
             continue;
         }
 
@@ -890,3 +890,23 @@ fn collect_config_jobs(
 
 #[cfg(test)]
 mod tests;
+
+/// Environment requirements for the appimage stage: the `linuxdeploy`
+/// binary whenever any `appimages:` entry is active (entries whose `skip`
+/// evaluates true are inert).
+pub fn env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    let any = ctx.config.appimages.iter().any(|cfg| {
+        !cfg.skip.as_ref().is_some_and(|s| {
+            s.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                .unwrap_or(false)
+        })
+    });
+    if !any {
+        return Vec::new();
+    }
+    vec![anodizer_core::EnvRequirement::Tool {
+        name: "linuxdeploy".to_string(),
+    }]
+}

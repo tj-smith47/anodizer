@@ -120,6 +120,56 @@ impl Stage for MsiStage {
     }
 }
 
+/// Environment requirements for the msi stage: when any active `msis:`
+/// entry exists and the configured build targets include Windows, the WiX
+/// toolchain resolved by the same policy the build uses (explicit
+/// `version:` > `.wxs` namespace sniff > installed-tool probe) — `wix` for
+/// v4, `candle` + `light` for v3.
+pub fn env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    if !anodizer_core::env_preflight::configured_build_targets(ctx)
+        .iter()
+        .any(|t| anodizer_core::target::is_windows(t))
+    {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    for krate in anodizer_core::env_preflight::crate_universe(&ctx.config) {
+        for cfg in krate.msis.iter().flatten() {
+            if anodizer_core::env_preflight::entry_inactive(
+                ctx,
+                cfg.skip.as_ref(),
+                None,
+                cfg.if_condition.as_deref(),
+            ) {
+                continue;
+            }
+            // Render the wxs path like the build does; an unrenderable
+            // template falls through to the installed-tool probe.
+            let wxs = cfg
+                .wxs
+                .as_deref()
+                .map(|raw| ctx.render_template(raw).unwrap_or_else(|_| raw.to_string()))
+                .unwrap_or_default();
+            match wix::resolve_wix_version_quiet(cfg, &wxs) {
+                WixVersion::V4 => out.push(anodizer_core::EnvRequirement::Tool {
+                    name: "wix".to_string(),
+                }),
+                WixVersion::V3 => {
+                    out.push(anodizer_core::EnvRequirement::Tool {
+                        name: "candle".to_string(),
+                    });
+                    out.push(anodizer_core::EnvRequirement::Tool {
+                        name: "light".to_string(),
+                    });
+                }
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests {

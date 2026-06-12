@@ -86,7 +86,7 @@ pub(super) fn detect_dist_layout(dist: &Path, log: &StageLogger) -> Result<DistL
                 // the reason so an operator debugging an unexpected Flat-vs-
                 // PerCrate choice isn't left guessing why an entry was skipped.
                 log.verbose(&format!(
-                    "publish-only: stat of dist entry {} failed: {e}; treating as non-directory",
+                    "stat of dist entry {} failed: {e}; treating as non-directory",
                     entry.path().display()
                 ));
                 false
@@ -131,7 +131,7 @@ pub(super) fn crate_subdir_has_manifest(dist: &Path, crate_name: &str, log: &Sta
             // debugging an unexpected layout choice isn't left guessing
             // why a present subdir was skipped.
             log.verbose(&format!(
-                "publish-only --crate: scanning {} for context manifests failed: {e}; \
+                "failed to scan {} for context manifests: {e}; \
                  treating crate '{crate_name}' as having no per-crate subdir",
                 subdir.display()
             ));
@@ -146,22 +146,43 @@ pub(super) fn crate_subdir_has_manifest(dist: &Path, crate_name: &str, log: &Sta
 const SIGN_ENV_VARS: &[&str] = &["COSIGN_KEY", "GPG_PRIVATE_KEY"];
 const GITHUB_TOKEN_ENV_VARS: &[&str] = &["GITHUB_TOKEN", "ANODIZER_GITHUB_TOKEN"];
 
-/// Knobs the dispatcher hands to `publish_only::run`. Reduces the
-/// number of positional arguments and lets the dispatch site speak
-/// in terms of flag intent (`no_preflight`) rather than the threaded
-/// `--<flag>` boolean it came from.
+/// Knobs the dispatcher hands to `publish_only::run`. The credential
+/// preflight is NOT among them: [`credential_preflight_gate`] runs in
+/// the dispatcher (`commands/release/mod.rs`) before the failure-policy
+/// boundary, so nothing inside this module re-checks credentials.
 pub(super) struct RunOpts {
     pub dry_run: bool,
-    /// `--no-preflight`: skip the credential preflight as well as the
-    /// publisher-state preflight. Operator opt-out for the case
-    /// where they know what they're doing and want the mid-pipeline
-    /// failure to surface instead.
-    pub no_preflight: bool,
-    /// True when the dispatcher already handled the credential preflight
-    /// upstream, so per-iteration meta-logs should stay quiet. Set by
-    /// `run_per_crate` for each inner iteration; defaults to false for
-    /// direct callers (flat layout / single-crate publish-only).
-    pub silent_meta: bool,
+}
+
+/// Publish-only credential gate, invoked by the dispatcher in
+/// `commands/release/mod.rs` alongside the env and publisher-state
+/// preflights — i.e. BEFORE the `release.on_failure` policy boundary.
+/// A missing token or signing key aborts with zero mutations and must
+/// surface as fix-and-re-run; routing it through the policy would let
+/// a plain env mistake trigger a destructive rollback of a tag the
+/// run never touched.
+///
+/// `--dry-run` skips the check so operators can preview the pipeline
+/// without secrets; `--no-preflight` is the explicit opt-out for the
+/// rare case where the operator wants the mid-pipeline failure instead.
+pub(super) fn credential_preflight_gate(
+    ctx: &Context,
+    dry_run: bool,
+    no_preflight: bool,
+    log: &StageLogger,
+) -> Result<()> {
+    if dry_run {
+        log.verbose("(dry-run) skipping production-credential preflight");
+        return Ok(());
+    }
+    if no_preflight {
+        log.warn(
+            "credential preflight skipped via --no-preflight; \
+             missing credentials will fail mid-pipeline (no idempotent recovery)",
+        );
+        return Ok(());
+    }
+    preflight_credentials(|k| ctx.env_var(k))
 }
 
 /// `--publish-only` entry point. Wired from `commands/release/mod.rs::run`
@@ -180,9 +201,9 @@ pub(super) fn run(
 }
 
 /// Iterate per-crate subdirs in topo order, running the publish-only pipeline
-/// once per crate. Credential preflight fires once before the loop; the
-/// artifact registry is reset between crates so each pipeline sees only
-/// that crate's preserved artifacts.
+/// once per crate. The artifact registry is reset between crates so each
+/// pipeline sees only that crate's preserved artifacts. (Credentials were
+/// already gated upstream by [`credential_preflight_gate`].)
 ///
 /// `crate_order` is already topo-sorted by the caller (see `mod.rs`).
 pub(super) fn run_per_crate(
@@ -194,22 +215,10 @@ pub(super) fn run_per_crate(
     crate_order: Vec<String>,
 ) -> Result<()> {
     log.status(&format!(
-        "publish-only (per-crate): iterating {} crate(s): {}",
+        "iterating {} crate(s) in per-crate publish-only mode — {}",
         crate_order.len(),
         crate_order.join(", ")
     ));
-
-    // Credential preflight fires once before any state mutation.
-    if opts.dry_run {
-        log.verbose("(dry-run) skipping production-credential preflight");
-    } else if opts.no_preflight {
-        log.warn(
-            "credential preflight skipped via --no-preflight; \
-             missing credentials will fail mid-pipeline (no idempotent recovery)",
-        );
-    } else {
-        preflight_credentials(|k| ctx.env_var(k))?;
-    }
 
     // Build a name → WorkspaceConfig index up-front so each iteration
     // can apply the right overlay in O(1). Workspace-based configs leave
@@ -269,7 +278,7 @@ pub(super) fn run_per_crate(
     for crate_name in &crate_order {
         let crate_dist = dist_base.join(crate_name);
         log.status(&format!(
-            "publish-only: publishing crate '{crate_name}' from {}",
+            "publishing crate '{crate_name}' from {}",
             crate_dist.display()
         ));
         // Rewind the config fields `apply_workspace_overlay` mutates
@@ -287,11 +296,22 @@ pub(super) fn run_per_crate(
         // prior crate's re-anchored version and render its tag / release
         // title / artifact names against the WRONG version.
         guard.reset_version_vars();
+        // Rewind `ReleaseURL` so a URL the prior crate's release stage set
+        // can't leak into a crate whose own release never derives one.
+        guard.reset_release_url();
         let ctx = guard.ctx_mut();
         // Reset the artifact registry before each crate so artifacts
         // from a prior crate's pipeline don't leak into the next one's
         // sign/upload.
         ctx.artifacts = ArtifactRegistry::new();
+        // Reset the prior iteration's publish outcome: each crate's
+        // pipeline-end summary and required-failure gate must reflect
+        // THIS crate only. A leftover report would render crate A's
+        // publisher rows under crate B's Summary (and re-gate crate A's
+        // failures), and a leftover publish_attempted would mislabel a
+        // skipped publish as "aborted before dispatch".
+        ctx.publish_report = None;
+        ctx.publish_attempted = false;
         // Reset skip_stages to the original baseline before re-applying
         // the workspace overlay so a skip from a prior iteration's
         // workspace doesn't leak forward.
@@ -331,8 +351,6 @@ pub(super) fn run_per_crate(
         apply_per_crate_tag(ctx, config, crate_name, log);
         let per_crate_opts = RunOpts {
             dry_run: opts.dry_run,
-            no_preflight: true,
-            silent_meta: true,
         };
         run_one_crate_dist(ctx, config, log, &per_crate_opts, crate_dist)?;
     }
@@ -363,6 +381,7 @@ struct PerCrateOverlayGuard<'a> {
     saved_skip_stages: Vec<String>,
     saved_tag: Option<String>,
     saved_previous_tag: Option<String>,
+    saved_release_url: Option<String>,
     saved_version_vars: Vec<(&'static str, Option<String>)>,
     saved_overlay: OverlayFields,
 }
@@ -433,6 +452,7 @@ impl<'a> PerCrateOverlayGuard<'a> {
         let saved_skip_stages = ctx.options.skip_stages.clone();
         let saved_tag = ctx.template_vars().get("Tag").cloned();
         let saved_previous_tag = ctx.template_vars().get("PreviousTag").cloned();
+        let saved_release_url = ctx.template_vars().get("ReleaseURL").cloned();
         let saved_version_vars = VERSION_TEMPLATE_VARS
             .iter()
             .map(|&k| (k, ctx.template_vars().get(k).cloned()))
@@ -445,6 +465,7 @@ impl<'a> PerCrateOverlayGuard<'a> {
             saved_skip_stages,
             saved_tag,
             saved_previous_tag,
+            saved_release_url,
             saved_version_vars,
             saved_overlay,
         }
@@ -485,6 +506,21 @@ impl<'a> PerCrateOverlayGuard<'a> {
         }
     }
 
+    /// Rewind `ReleaseURL` to the captured baseline. Call at the start of
+    /// each iteration: the release stage sets the var per crate, but only
+    /// on paths that resolve a repo — a crate whose release is skipped or
+    /// has no resolvable repo would otherwise inherit the PRIOR crate's
+    /// URL, and its metadata.json / announce templates would point at a
+    /// foreign crate's release.
+    fn reset_release_url(&mut self) {
+        match &self.saved_release_url {
+            Some(v) => self.ctx.template_vars_mut().set("ReleaseURL", v),
+            None => {
+                self.ctx.template_vars_mut().unset("ReleaseURL");
+            }
+        }
+    }
+
     /// Reborrow the wrapped `&mut Context` for one loop iteration.
     /// Bypasses the borrow that would otherwise pin the original `ctx`
     /// alias for the entire lifetime of the guard.
@@ -520,6 +556,12 @@ impl Drop for PerCrateOverlayGuard<'_> {
             Some(prev) => self.ctx.template_vars_mut().set("PreviousTag", &prev),
             None => {
                 self.ctx.template_vars_mut().unset("PreviousTag");
+            }
+        }
+        match self.saved_release_url.take() {
+            Some(url) => self.ctx.template_vars_mut().set("ReleaseURL", &url),
+            None => {
+                self.ctx.template_vars_mut().unset("ReleaseURL");
             }
         }
         for (key, value) in std::mem::take(&mut self.saved_version_vars) {
@@ -583,7 +625,7 @@ fn apply_per_crate_version(
         Ok(sv) => sv,
         Err(e) => {
             log.verbose(&format!(
-                "publish-only: preserved version '{version}' for crate '{crate_name}' \
+                "preserved version '{version}' for crate '{crate_name}' \
                  is not strict semver ({e}); leaving Version vars unchanged"
             ));
             return;
@@ -644,7 +686,7 @@ fn apply_per_crate_tag(ctx: &mut Context, config: &Config, crate_name: &str, log
         Ok(_) => return,
         Err(e) => {
             log.warn(&format!(
-                "publish-only: failed to render tag_template '{tag_template}' for crate '{crate_name}': {e}"
+                "failed to render tag_template '{tag_template}' for crate '{crate_name}': {e}"
             ));
             return;
         }
@@ -666,7 +708,7 @@ fn apply_per_crate_tag(ctx: &mut Context, config: &Config, crate_name: &str, log
             ctx.template_vars_mut().unset("PreviousTag");
         }
         Err(e) => log.verbose(&format!(
-            "publish-only: previous-tag lookup for crate '{crate_name}' failed: {e}"
+            "previous-tag lookup for crate '{crate_name}' failed: {e}"
         )),
     }
 }
@@ -687,8 +729,6 @@ fn merge_workspace_skip(into: &mut Vec<String>, ws_skip: &[String]) {
 
 /// Inner body of the publish-only pipeline for a single dist root.
 /// Called by both `run()` (flat layout) and `run_per_crate()` (per-crate layout).
-/// `opts.no_preflight` is set by `run_per_crate` after it handles
-/// credential checking centrally; `run()` passes the caller's opts directly.
 fn run_one_crate_dist(
     ctx: &mut Context,
     config: &Config,
@@ -696,32 +736,6 @@ fn run_one_crate_dist(
     opts: &RunOpts,
     dist: PathBuf,
 ) -> Result<()> {
-    // ── Pre-flight credential check ────────────────────────────────────
-    // Bail BEFORE any state mutation: a credential miss this late
-    // (mid-pipeline) leaves a partially-uploaded release behind with no
-    // idempotent recovery. Dry-run skips so operators can preview the
-    // pipeline without secrets; `--no-preflight` is the explicit
-    // operator opt-out for the rare case where they want the
-    // mid-pipeline failure instead.
-    //
-    // `silent_meta` is set by `run_per_crate` after it ran preflight
-    // once before the loop — repeating the warn per crate iteration is
-    // noise.
-    if opts.dry_run {
-        if !opts.silent_meta {
-            log.verbose("(dry-run) skipping production-credential preflight");
-        }
-    } else if opts.no_preflight {
-        if !opts.silent_meta {
-            log.warn(
-                "credential preflight skipped via --no-preflight; \
-                 missing credentials will fail mid-pipeline (no idempotent recovery)",
-            );
-        }
-    } else {
-        preflight_credentials(|k| ctx.env_var(k))?;
-    }
-
     // ── Load preserved-dist context ────────────────────────────────────
     // Two manifest families live in `<dist>/`:
     //   - `artifacts.json` / `artifacts-<shard>.json`: the canonical
@@ -751,7 +765,7 @@ fn run_one_crate_dist(
     let shard_count = preserved_contexts.len();
 
     log.status(&format!(
-        "publish-only: loaded {} context manifest(s) (version={}, commit={}, targets=[{}], {} artifact(s))",
+        "loaded {} context manifest(s) (version={}, commit={}, targets=[{}], {} artifact(s))",
         shard_count,
         preserved.version,
         short_commit_str(&preserved.commit),
@@ -822,7 +836,7 @@ fn run_one_crate_dist(
     ctx.artifacts.dedupe_targetless_duplicates();
 
     log.status(&format!(
-        "publish-only: rehydrated {} artifact(s) from {} artifacts manifest(s)",
+        "rehydrated {} artifact(s) from {} artifacts manifest(s)",
         ctx.artifacts.all().len(),
         artifact_manifests.len(),
     ));
@@ -1023,7 +1037,7 @@ fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
     }
     let count = stale_paths.len();
     log.status(&format!(
-        "publish-only: stripping {count} ephemeral signature/certificate artifact(s) before re-sign"
+        "stripping {count} ephemeral signature/certificate artifact(s) before re-sign"
     ));
     // Registry FIRST, then disk. If the process is signaled between
     // the two steps, a retry sees a consistent state: the registry
@@ -1043,7 +1057,7 @@ fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
             Ok(()) => disk_removed += 1,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => log.warn(&format!(
-                "publish-only: failed to delete stale signature {}: {} \
+                "failed to delete stale signature {}: {} \
                  (continuing; SignStage will overwrite or fail loudly)",
                 p.display(),
                 e
@@ -1058,7 +1072,7 @@ fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
     // disk — registry entries can outlive their files when the
     // post-pipeline runs partial writes).
     log.status(&format!(
-        "publish-only: stripped {count} ephemeral signature artifact(s) from registry \
+        "stripped {count} ephemeral signature artifact(s) from registry \
          ({disk_removed} also deleted from disk)"
     ));
 }
@@ -1523,7 +1537,7 @@ fn cleanup_shard_manifests(dist: &Path, log: &StageLogger) {
         Ok(e) => e,
         Err(e) => {
             log.warn(&format!(
-                "publish-only: failed to read {} for shard-manifest cleanup: {} \
+                "failed to read {} for shard-manifest cleanup: {} \
                  (a retry may trip the unsuffixed-vs-suffixed collision check)",
                 dist.display(),
                 e,
@@ -1542,7 +1556,7 @@ fn cleanup_shard_manifests(dist: &Path, log: &StageLogger) {
             let path = entry.path();
             if let Err(e) = std::fs::remove_file(&path) {
                 log.warn(&format!(
-                    "publish-only: failed to remove shard manifest {}: {} \
+                    "failed to remove shard manifest {}: {} \
                      (a retry may trip the unsuffixed-vs-suffixed collision check)",
                     path.display(),
                     e
@@ -2421,8 +2435,9 @@ mod tests {
         use anodizer_core::config::Config;
         use anodizer_core::context::{Context, ContextOptions};
 
+        let tmp = tempfile::tempdir().unwrap();
         let mut config = Config::default();
-        let original_dist = std::path::PathBuf::from("/tmp/anodize-publish-only-restore-test/dist");
+        let original_dist = tmp.path().join("dist");
         config.dist = original_dist.clone();
         let mut ctx = Context::new(config.clone(), ContextOptions::default());
 
@@ -2430,18 +2445,12 @@ mod tests {
         // will iterate to the first crate, then `run_one_crate_dist`
         // will fail at `detect_dist_layout` / preserved-context discovery.
         // The dist-restore logic must still fire on the Err branch.
-        let dist_base = std::path::PathBuf::from(
-            "/tmp/anodize-publish-only-restore-test/nonexistent-dist-base",
-        );
+        let dist_base = tmp.path().join("missing");
         let log = anodizer_core::log::StageLogger::new(
             "publish-only-restore-test",
             anodizer_core::log::Verbosity::Quiet,
         );
-        let opts = RunOpts {
-            dry_run: true,
-            no_preflight: true,
-            silent_meta: false,
-        };
+        let opts = RunOpts { dry_run: true };
         let result = run_per_crate(
             &mut ctx,
             &config,
@@ -2458,6 +2467,264 @@ mod tests {
             ctx.config.dist, original_dist,
             "ctx.config.dist must be restored after the iteration (Ok or Err) \
              so the per-iteration override never leaks into the caller's context"
+        );
+    }
+
+    /// Seed `<dist_base>/<name>/` with a minimal but valid EMPTY
+    /// preserved dist (zero artifacts, commit `deadbeef`) so a
+    /// `run_per_crate` iteration over `name` runs the real publish-only
+    /// pipeline to completion in dry-run mode.
+    fn seed_valid_preserved_dist(dist_base: &std::path::Path, name: &str) {
+        let crate_dist = dist_base.join(name);
+        std::fs::create_dir_all(&crate_dist).unwrap();
+        std::fs::write(
+            crate_dist.join("context.json"),
+            r#"{"artifacts":[],"targets":[],"version":"0.0.0","commit":"deadbeef"}"#,
+        )
+        .unwrap();
+        std::fs::write(crate_dist.join("artifacts.json"), "[]").unwrap();
+    }
+
+    /// Build the dry-run `Context` matching [`seed_valid_preserved_dist`]'s
+    /// commit/version so the preserved-context cross-checks pass.
+    fn preserved_dist_ctx(
+        config: &anodizer_core::config::Config,
+    ) -> anodizer_core::context::Context {
+        use anodizer_core::context::{Context, ContextOptions};
+        let mut ctx = Context::new(
+            config.clone(),
+            ContextOptions {
+                dry_run: true,
+                ..ContextOptions::default()
+            },
+        );
+        ctx.template_vars_mut().set("FullCommit", "deadbeef");
+        ctx.template_vars_mut().set("Version", "0.0.0");
+        ctx.template_vars_mut().set("Tag", "v0.0.0");
+        ctx
+    }
+
+    /// Each per-crate iteration owns its publish outcome: a leftover
+    /// `publish_report` / `publish_attempted` from a prior iteration (or
+    /// an outer run) would render the wrong publisher rows under the
+    /// next crate's Summary, re-gate the prior crate's failures, and
+    /// mislabel a skipped publish as "aborted before dispatch". The loop
+    /// must clear both at EVERY iteration top, not once before the loop.
+    ///
+    /// Two-crate fixture: crate 'a' carries a minimal but valid empty
+    /// preserved dist, so iteration 1 runs the real publish-only
+    /// pipeline (`PublishStage::run` marks `publish_attempted` before
+    /// its guards). Crate 'b' has no subdir, so iteration 2 fails at
+    /// preserved-context discovery — AFTER its loop-top reset. A reset
+    /// hoisted above the loop would clear only the pre-seeded outer
+    /// state and leave iteration 1's outcome behind, failing the final
+    /// asserts — this pins the per-iteration placement, not just
+    /// outer-stale clearing.
+    #[test]
+    fn run_per_crate_resets_publish_outcome_each_iteration() {
+        use anodizer_core::config::Config;
+        use anodizer_core::publish_report::PublishReport;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dist_base = tmp.path().join("dist");
+        seed_valid_preserved_dist(&dist_base, "a");
+
+        let config = Config {
+            dist: dist_base.clone(),
+            ..Config::default()
+        };
+        let mut ctx = preserved_dist_ctx(&config);
+        // Pre-seed stale OUTER state as well: a loop-hoisted reset would
+        // clear this much, so the distinguishing signal below stays
+        // iteration 1's freshly-set outcome.
+        ctx.set_publish_report(PublishReport::default());
+        ctx.set_publish_attempted();
+
+        let log = anodizer_core::log::StageLogger::new(
+            "publish-only-reset-test",
+            anodizer_core::log::Verbosity::Quiet,
+        );
+        let opts = RunOpts { dry_run: true };
+        let err = run_per_crate(
+            &mut ctx,
+            &config,
+            &log,
+            opts,
+            dist_base.clone(),
+            vec!["a".to_string(), "b".to_string()],
+        )
+        .expect_err("iteration 2 must fail on the absent dist/b subdir");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&dist_base.join("b").display().to_string()),
+            "iteration 1 must succeed and iteration 2 must be the failing one \
+             (otherwise this test never observes the per-iteration reset); got: {chain}"
+        );
+        assert!(
+            ctx.publish_report().is_none(),
+            "iteration 1's publish_report must be cleared at iteration 2's top"
+        );
+        assert!(
+            !ctx.publish_attempted(),
+            "iteration 1's publish_attempted must be cleared at iteration 2's top"
+        );
+    }
+
+    /// Vacuity guard for the reset test above: prove the fixture's
+    /// single successful iteration really exercises the
+    /// `set_publish_attempted` setter. If `PublishStage::run` ever stops
+    /// marking the attempt unconditionally (today it fires right after
+    /// the snapshot guard), the reset test would degrade into asserting
+    /// "still-cleared state stayed cleared" without noticing — this
+    /// assert catches that drift loudly.
+    #[test]
+    fn run_per_crate_pipeline_marks_publish_attempted() {
+        use anodizer_core::config::Config;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dist_base = tmp.path().join("dist");
+        seed_valid_preserved_dist(&dist_base, "a");
+
+        let config = Config {
+            dist: dist_base.clone(),
+            ..Config::default()
+        };
+        let mut ctx = preserved_dist_ctx(&config);
+        let log = anodizer_core::log::StageLogger::new(
+            "publish-only-vacuity-test",
+            anodizer_core::log::Verbosity::Quiet,
+        );
+        let opts = RunOpts { dry_run: true };
+        run_per_crate(
+            &mut ctx,
+            &config,
+            &log,
+            opts,
+            dist_base,
+            vec!["a".to_string()],
+        )
+        .expect("single valid-crate iteration must run the pipeline to completion");
+        assert!(
+            ctx.publish_attempted(),
+            "the fixture's pipeline run must mark publish_attempted — \
+             otherwise the reset test's distinguishing signal is gone"
+        );
+    }
+
+    /// Build a crate config with a GitHub release block so a per-crate
+    /// dry-run iteration drives the release stage's `ReleaseURL`
+    /// derivation end-to-end.
+    fn released_crate_cfg(name: &str, tag_template: &str) -> anodizer_core::config::CrateConfig {
+        anodizer_core::config::CrateConfig {
+            name: name.to_string(),
+            tag_template: tag_template.to_string(),
+            release: Some(anodizer_core::config::ReleaseConfig {
+                github: Some(anodizer_core::config::ScmRepoConfig {
+                    owner: "acme".to_string(),
+                    name: "widget".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Workspace per-crate mode, end-to-end through the real publish-only
+    /// pipeline in dry-run: each crate's `dist/<crate>/metadata.json` must
+    /// carry that crate's OWN release URL (derived from its own per-crate
+    /// tag), not the prior iteration's. This is the file the action-side
+    /// `release-url` output reads via `.release_url`.
+    #[test]
+    #[serial_test::serial]
+    fn run_per_crate_metadata_carries_per_crate_release_url() {
+        use anodizer_core::config::Config;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dist_base = tmp.path().join("dist");
+        seed_valid_preserved_dist(&dist_base, "a");
+        seed_valid_preserved_dist(&dist_base, "b");
+
+        let config = Config {
+            dist: dist_base.clone(),
+            crates: vec![
+                released_crate_cfg("a", "a-v{{ Version }}"),
+                released_crate_cfg("b", "b-v{{ Version }}"),
+            ],
+            ..Config::default()
+        };
+        let mut ctx = preserved_dist_ctx(&config);
+        // The changelog stage shells to git in the process cwd; skip it so
+        // the test stays hermetic — the surface under test is the release
+        // stage's URL derivation + the metadata write.
+        ctx.options.skip_stages = vec!["changelog".to_string()];
+
+        let log = anodizer_core::log::StageLogger::new(
+            "publish-only-release-url-test",
+            anodizer_core::log::Verbosity::Quiet,
+        );
+        let opts = RunOpts { dry_run: true };
+        run_per_crate(
+            &mut ctx,
+            &config,
+            &log,
+            opts,
+            dist_base.clone(),
+            vec!["a".to_string(), "b".to_string()],
+        )
+        .expect("both per-crate dry-run iterations must complete");
+
+        for name in ["a", "b"] {
+            let body = std::fs::read_to_string(dist_base.join(name).join("metadata.json")).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let expected_tag = format!("{name}-v0.0.0");
+            assert_eq!(
+                json["tag"], expected_tag,
+                "crate '{name}' metadata must carry its own tag"
+            );
+            assert_eq!(
+                json["release_url"],
+                format!("https://github.com/acme/widget/releases/tag/{expected_tag}"),
+                "crate '{name}' metadata must carry its OWN release URL"
+            );
+        }
+        assert!(
+            ctx.template_vars().get("ReleaseURL").is_none(),
+            "guard Drop must restore the caller's pre-loop (unset) ReleaseURL"
+        );
+    }
+
+    /// `reset_release_url` must rewind `ReleaseURL` to the captured
+    /// baseline at every iteration top, and the guard's Drop must restore
+    /// it for the caller — otherwise a crate whose release stage never
+    /// derives a URL (skipped stage, no resolvable repo) inherits the
+    /// prior crate's URL into its metadata.json / announce templates.
+    #[test]
+    fn per_crate_overlay_guard_resets_release_url() {
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        assert!(ctx.template_vars().get("ReleaseURL").is_none());
+        {
+            let mut guard = PerCrateOverlayGuard::capture(&mut ctx);
+            // Simulate iteration 1's release stage setting the var.
+            guard
+                .ctx_mut()
+                .set_release_url("https://github.com/acme/widget/releases/tag/a-v0.0.0");
+            // Iteration 2's loop-top reset must rewind to the unset baseline.
+            guard.reset_release_url();
+            assert!(
+                guard.ctx_mut().template_vars().get("ReleaseURL").is_none(),
+                "loop-top reset must rewind ReleaseURL to the pre-loop baseline"
+            );
+            // Iteration 2 sets its own URL; Drop must still restore the baseline.
+            guard
+                .ctx_mut()
+                .set_release_url("https://github.com/acme/widget/releases/tag/b-v0.0.0");
+        }
+        assert!(
+            ctx.template_vars().get("ReleaseURL").is_none(),
+            "guard Drop must restore the caller's pre-loop (unset) ReleaseURL"
         );
     }
 
@@ -3095,6 +3362,7 @@ mod tests {
             ctx.template_vars_mut().set("Version", "0.4.0");
             ctx.template_vars_mut().set("Tag", "core-v0.4.0");
             ctx.template_vars_mut().set("FullCommit", "deadbeef");
+            ctx.set_release_url("https://github.com/acme/cfgd/releases/tag/core-v0.4.0");
 
             let path =
                 crate::commands::helpers::write_metadata_json(&ctx, &config, &quiet_log()).unwrap();
@@ -3121,6 +3389,11 @@ mod tests {
             );
             assert_eq!(json["version"], "0.4.0");
             assert_eq!(json["project_name"], "cfgd");
+            assert_eq!(
+                json["release_url"], "https://github.com/acme/cfgd/releases/tag/core-v0.4.0",
+                "per-crate metadata must carry this crate's own release URL \
+                 (the action-side `release-url` output reads `.release_url`)"
+            );
         }
     }
 

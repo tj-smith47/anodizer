@@ -258,7 +258,8 @@ pub struct McpTransport {
     pub url: String,
 
     /// HTTP headers attached to a remote transport's requests. Each entry is
-    /// a `{ name, value }` pair; the `value` is templated, so a header can
+    /// a `{ name, value }` pair; the `name` is a literal protocol identifier
+    /// (never templated), while the `value` is templated, so a header can
     /// carry a secret such as `value: "Bearer {{ Env.MCP_TOKEN }}"`. Omitted
     /// entirely for `stdio` and for remote transports with no headers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -270,7 +271,9 @@ pub struct McpTransport {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct McpHeader {
-    /// Header name (e.g. `Authorization`).
+    /// Header name (e.g. `Authorization`). Literal — header names are
+    /// protocol identifiers and are published exactly as written, with no
+    /// template rendering. Use templates in `value` instead.
     pub name: String,
 
     /// Header value. Templated, so it can reference an environment variable —

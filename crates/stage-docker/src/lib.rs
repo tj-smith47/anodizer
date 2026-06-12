@@ -100,3 +100,28 @@ impl Default for DockerStage {
 
 #[cfg(test)]
 mod tests;
+
+/// Environment requirements for the docker stage: the `docker` CLI plus a
+/// reachable daemon whenever any crate declares `dockers_v2:`.
+pub fn env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    let any = anodizer_core::env_preflight::crate_universe(&ctx.config)
+        .into_iter()
+        .flat_map(|c| c.dockers_v2.iter().flatten())
+        .any(|d| {
+            !d.skip.as_ref().is_some_and(|v| {
+                v.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                    .unwrap_or(false)
+            })
+        });
+    if !any {
+        return Vec::new();
+    }
+    vec![
+        anodizer_core::EnvRequirement::Tool {
+            name: "docker".to_string(),
+        },
+        anodizer_core::EnvRequirement::DockerDaemon,
+    ]
+}

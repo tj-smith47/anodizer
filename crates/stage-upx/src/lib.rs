@@ -115,7 +115,7 @@ impl Stage for UpxStage {
                 }
                 ctx.strict_guard(
                     &log,
-                    &format!("upx: binary '{}' not found, skipping compression", binary),
+                    &format!("skipping upx compression — binary '{}' not found", binary),
                 )?;
                 continue;
             }
@@ -149,7 +149,7 @@ impl Stage for UpxStage {
                 ctx.strict_guard(
                     &log,
                     &format!(
-                        "upx[{}]: no matching binary artifacts to compress",
+                        "no matching binary artifacts to compress (upx[{}])",
                         id_label
                     ),
                 )?;
@@ -197,8 +197,8 @@ impl Stage for UpxStage {
                 let target_label = target.as_deref().unwrap_or("unknown");
 
                 thread_log.status(&format!(
-                    "[{}] compressing {} (target: {})",
-                    id_label, artifact_str, target_label,
+                    "compressing {} (target: {}) (upx[{}])",
+                    artifact_str, target_label, id_label,
                 ));
 
                 let size_before = match std::fs::metadata(artifact_path) {
@@ -254,10 +254,10 @@ impl Stage for UpxStage {
 
                     if KNOWN_EXCEPTIONS.iter().any(|ex| combined.contains(ex)) {
                         thread_log.warn(&format!(
-                            "[{}] skipping {} (target: {}): {}",
-                            id_label,
+                            "skipping {} (target: {}) (upx[{}]): {}",
                             artifact_str,
                             target_label,
+                            id_label,
                             combined.trim(),
                         ));
                     } else {
@@ -296,6 +296,30 @@ impl Stage for UpxStage {
 
         Ok(())
     }
+}
+
+/// Environment requirements for the upx stage: each enabled `upx:` entry's
+/// binary (default `upx`). `enabled` defaults to false, matching `run`;
+/// a template that fails to render is treated as enabled so a broken
+/// expression surfaces in the stage, not as a silently skipped preflight.
+pub fn env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    let mut out = Vec::new();
+    for cfg in &ctx.config.upx {
+        let enabled = match cfg.enabled.as_ref() {
+            Some(v) => v
+                .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                .unwrap_or(true),
+            None => false,
+        };
+        if enabled {
+            out.push(anodizer_core::EnvRequirement::Tool {
+                name: cfg.binary.clone(),
+            });
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -890,5 +914,342 @@ crates: []
     fn test_stage_name() {
         let stage = UpxStage;
         assert_eq!(stage.name(), "upx");
+    }
+
+    // -----------------------------------------------------------------------
+    // validate_compress tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_compress_accepts_valid_levels() {
+        validate_compress(None).unwrap();
+        validate_compress(Some("")).unwrap();
+        validate_compress(Some("best")).unwrap();
+        for level in ["1", "2", "3", "4", "5", "6", "7", "8", "9"] {
+            validate_compress(Some(level)).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_validate_compress_rejects_invalid_levels() {
+        for bad in ["0", "10", "fast", "BEST"] {
+            let err = validate_compress(Some(bad)).unwrap_err().to_string();
+            assert!(err.contains("is invalid"), "{bad}: {err}");
+            assert!(err.contains(bad), "{bad}: {err}");
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // env_requirements tests
+    // -----------------------------------------------------------------------
+
+    fn ctx_with_upx(upx: Vec<UpxConfig>) -> anodizer_core::context::Context {
+        TestContextBuilder::new().upx(upx).build()
+    }
+
+    #[test]
+    fn test_env_requirements_lists_enabled_binary() {
+        let ctx = ctx_with_upx(vec![UpxConfig {
+            enabled: Some(anodizer_core::config::StringOrBool::Bool(true)),
+            binary: "custom-upx".to_string(),
+            ..Default::default()
+        }]);
+        let reqs = env_requirements(&ctx);
+        assert_eq!(reqs.len(), 1);
+        match &reqs[0] {
+            anodizer_core::EnvRequirement::Tool { name } => assert_eq!(name, "custom-upx"),
+            other => panic!("expected Tool requirement, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_env_requirements_skips_disabled_and_default() {
+        let ctx = ctx_with_upx(vec![
+            UpxConfig::default(),
+            UpxConfig {
+                enabled: Some(anodizer_core::config::StringOrBool::Bool(false)),
+                ..Default::default()
+            },
+        ]);
+        assert!(env_requirements(&ctx).is_empty());
+    }
+
+    #[test]
+    fn test_env_requirements_treats_broken_template_as_enabled() {
+        // A template that fails to render must surface the binary as a
+        // requirement so the error is reported by the stage, not hidden by
+        // a silently skipped preflight.
+        let ctx = ctx_with_upx(vec![UpxConfig {
+            enabled: Some(anodizer_core::config::StringOrBool::String(
+                "{{ bogus_unclosed".to_string(),
+            )),
+            binary: "upx".to_string(),
+            ..Default::default()
+        }]);
+        assert_eq!(env_requirements(&ctx).len(), 1);
+    }
+
+    // -----------------------------------------------------------------------
+    // Live-run tests (stubbed upx binary via FakeToolDir)
+    // -----------------------------------------------------------------------
+
+    #[cfg(unix)]
+    mod live_run {
+        use super::*;
+        use anodizer_core::config::StringOrBool;
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+        struct LiveFixture {
+            _tmp: tempfile::TempDir,
+            tools: FakeToolDir,
+            binary_path: std::path::PathBuf,
+        }
+
+        impl LiveFixture {
+            /// One on-disk binary artifact plus an installed `upx` stub the
+            /// config can address by absolute path (no PATH mutation needed).
+            fn new(artifact_contents: &[u8]) -> Self {
+                let tmp = tempfile::tempdir().unwrap();
+                let binary_path = tmp.path().join("myapp");
+                std::fs::write(&binary_path, artifact_contents).unwrap();
+                let tools = FakeToolDir::new();
+                Self {
+                    _tmp: tmp,
+                    tools,
+                    binary_path,
+                }
+            }
+
+            fn upx_binary(&self) -> String {
+                self.tools.tool_path("upx").to_string_lossy().into_owned()
+            }
+
+            fn ctx(
+                &self,
+                cfg_overrides: impl FnOnce(&mut UpxConfig),
+            ) -> anodizer_core::context::Context {
+                let mut cfg = UpxConfig {
+                    enabled: Some(StringOrBool::Bool(true)),
+                    binary: self.upx_binary(),
+                    ..Default::default()
+                };
+                cfg_overrides(&mut cfg);
+                let mut ctx = TestContextBuilder::new().upx(vec![cfg]).build();
+                ctx.artifacts.add(Artifact {
+                    kind: ArtifactKind::Binary,
+                    name: "myapp".to_string(),
+                    path: self.binary_path.clone(),
+                    target: Some("x86_64-unknown-linux-gnu".to_string()),
+                    crate_name: "test".to_string(),
+                    metadata: Default::default(),
+                    size: None,
+                });
+                ctx
+            }
+        }
+
+        #[test]
+        fn live_run_passes_all_flags_in_order() {
+            let fx = LiveFixture::new(b"0123456789");
+            fx.tools.tool("upx").install();
+            let mut ctx = fx.ctx(|cfg| {
+                cfg.compress = Some("best".to_string());
+                cfg.lzma = Some(true);
+                cfg.brute = Some(true);
+                cfg.args = vec!["--ultra-brute".to_string()];
+            });
+
+            UpxStage.run(&mut ctx).expect("live run succeeds");
+
+            let calls = fx.tools.calls("upx");
+            assert_eq!(calls.len(), 1);
+            assert_eq!(
+                calls[0],
+                vec![
+                    "--quiet",
+                    "--best",
+                    "--lzma",
+                    "--brute",
+                    "--ultra-brute",
+                    &fx.binary_path.to_string_lossy(),
+                ]
+            );
+        }
+
+        #[test]
+        fn live_run_numeric_compress_level_uses_dash_n() {
+            let fx = LiveFixture::new(b"0123456789");
+            fx.tools.tool("upx").install();
+            let mut ctx = fx.ctx(|cfg| cfg.compress = Some("7".to_string()));
+
+            UpxStage.run(&mut ctx).expect("live run succeeds");
+
+            let calls = fx.tools.calls("upx");
+            assert_eq!(
+                calls[0],
+                vec!["--quiet", "-7", &fx.binary_path.to_string_lossy() as &str]
+            );
+        }
+
+        #[test]
+        fn live_run_compresses_universal_binaries_too() {
+            let fx = LiveFixture::new(b"0123456789");
+            fx.tools.tool("upx").install();
+            let mut ctx = fx.ctx(|_| {});
+            let universal = fx._tmp.path().join("myapp-universal");
+            std::fs::write(&universal, b"fat-binary-bytes").unwrap();
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::UniversalBinary,
+                name: "myapp-universal".to_string(),
+                path: universal,
+                target: Some("universal-apple-darwin".to_string()),
+                crate_name: "test".to_string(),
+                metadata: Default::default(),
+                size: None,
+            });
+
+            UpxStage.run(&mut ctx).expect("live run succeeds");
+            assert_eq!(fx.tools.call_count("upx"), 2);
+        }
+
+        #[test]
+        fn live_run_known_exception_skips_artifact_without_error() {
+            let fx = LiveFixture::new(b"0123456789");
+            fx.tools
+                .tool("upx")
+                .stderr("upx: myapp: CantPackException: superfluous data\n")
+                .exit(2)
+                .install();
+            let mut ctx = fx.ctx(|_| {});
+
+            UpxStage
+                .run(&mut ctx)
+                .expect("known UPX exceptions must skip, not fail");
+            assert_eq!(fx.tools.call_count("upx"), 1);
+            // Artifact untouched by the skip.
+            assert_eq!(std::fs::read(&fx.binary_path).unwrap(), b"0123456789");
+        }
+
+        #[test]
+        fn live_run_unknown_failure_propagates_error() {
+            let fx = LiveFixture::new(b"0123456789");
+            fx.tools
+                .tool("upx")
+                .stderr("upx: fatal: disk on fire\n")
+                .exit(1)
+                .install();
+            let mut ctx = fx.ctx(|_| {});
+
+            let err = UpxStage.run(&mut ctx).unwrap_err().to_string();
+            assert!(
+                err.contains("disk on fire") || err.contains("exit"),
+                "{err}"
+            );
+        }
+
+        #[test]
+        fn live_run_zero_byte_artifact_bails() {
+            let fx = LiveFixture::new(b"");
+            fx.tools.tool("upx").install();
+            let mut ctx = fx.ctx(|_| {});
+
+            let err = format!("{:#}", UpxStage.run(&mut ctx).unwrap_err());
+            assert!(err.contains("zero bytes"), "{err}");
+            assert!(!fx.tools.was_called("upx"), "must bail before spawning");
+        }
+
+        #[test]
+        fn live_run_missing_artifact_file_bails_on_stat() {
+            let fx = LiveFixture::new(b"0123456789");
+            fx.tools.tool("upx").install();
+            std::fs::remove_file(&fx.binary_path).unwrap();
+            let mut ctx = fx.ctx(|_| {});
+
+            let err = format!("{:#}", UpxStage.run(&mut ctx).unwrap_err());
+            assert!(err.contains("cannot stat artifact"), "{err}");
+        }
+
+        #[test]
+        fn live_run_invalid_compress_level_bails_before_spawn() {
+            let fx = LiveFixture::new(b"0123456789");
+            fx.tools.tool("upx").install();
+            let mut ctx = fx.ctx(|cfg| cfg.compress = Some("turbo".to_string()));
+
+            let err = UpxStage.run(&mut ctx).unwrap_err().to_string();
+            assert!(err.contains("is invalid"), "{err}");
+            assert!(!fx.tools.was_called("upx"));
+        }
+
+        #[test]
+        fn live_run_missing_binary_skips_with_warning_when_not_required() {
+            let fx = LiveFixture::new(b"0123456789");
+            // No stub installed: the configured absolute path does not exist.
+            let mut ctx = fx.ctx(|cfg| cfg.required = false);
+
+            UpxStage
+                .run(&mut ctx)
+                .expect("non-required missing upx is a warn-and-skip");
+            assert_eq!(std::fs::read(&fx.binary_path).unwrap(), b"0123456789");
+        }
+
+        #[test]
+        fn live_run_no_matching_artifacts_warns_and_continues() {
+            let fx = LiveFixture::new(b"0123456789");
+            fx.tools.tool("upx").install();
+            let mut ctx = fx.ctx(|cfg| {
+                cfg.targets = Some(vec!["aarch64-*".to_string()]);
+            });
+
+            UpxStage
+                .run(&mut ctx)
+                .expect("no-match is a warn, not an error");
+            assert!(!fx.tools.was_called("upx"));
+        }
+
+        #[test]
+        fn live_run_broken_enabled_template_errors() {
+            let fx = LiveFixture::new(b"0123456789");
+            fx.tools.tool("upx").install();
+            let mut ctx = fx.ctx(|cfg| {
+                cfg.enabled = Some(StringOrBool::String("{{ bogus_unclosed".to_string()));
+            });
+
+            let err = format!("{:#}", UpxStage.run(&mut ctx).unwrap_err());
+            assert!(err.contains("render enabled template"), "{err}");
+            assert!(!fx.tools.was_called("upx"));
+        }
+
+        #[test]
+        fn dry_run_logs_flags_without_spawning() {
+            let fx = LiveFixture::new(b"0123456789");
+            fx.tools.tool("upx").install();
+            let mut cfg = UpxConfig {
+                enabled: Some(StringOrBool::Bool(true)),
+                binary: fx.upx_binary(),
+                compress: Some("9".to_string()),
+                lzma: Some(true),
+                brute: Some(true),
+                args: vec!["--ultra-brute".to_string()],
+                ..Default::default()
+            };
+            cfg.id = Some("dry".to_string());
+            let mut ctx = TestContextBuilder::new()
+                .dry_run(true)
+                .upx(vec![cfg])
+                .build();
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: "myapp".to_string(),
+                path: fx.binary_path.clone(),
+                target: Some("x86_64-unknown-linux-gnu".to_string()),
+                crate_name: "test".to_string(),
+                metadata: Default::default(),
+                size: None,
+            });
+
+            UpxStage.run(&mut ctx).expect("dry run succeeds");
+            assert!(!fx.tools.was_called("upx"), "dry-run must not spawn upx");
+            assert_eq!(std::fs::read(&fx.binary_path).unwrap(), b"0123456789");
+        }
     }
 }

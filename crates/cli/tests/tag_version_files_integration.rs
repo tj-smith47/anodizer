@@ -186,7 +186,7 @@ crates:
 
     // The rewrite was previewed (count logged) but nothing was written.
     assert!(
-        stderr.contains("version_files: rewrote 1 occurrence(s) of 0.1.0 → 0.1.1 in Chart.yaml"),
+        stderr.contains("rewrote 1 occurrence(s) of 0.1.0 → 0.1.1 in Chart.yaml"),
         "expected a dry-run version_files preview line: {stderr}"
     );
     assert_eq!(read(root, "Chart.yaml"), "appVersion: v0.1.0\n");

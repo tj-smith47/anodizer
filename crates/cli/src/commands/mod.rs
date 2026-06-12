@@ -11,6 +11,7 @@ pub mod helpers;
 pub mod init;
 pub mod jsonschema;
 pub mod notify;
+pub mod preflight;
 pub mod publish_cmd;
 pub mod publisher;
 pub mod release;

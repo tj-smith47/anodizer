@@ -316,6 +316,27 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
         Self::ROLLBACK_SCOPE
     }
 
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // GitHub release creation + asset upload authenticate via the
+        // same ladder the stage uses: explicit `--token` option, else
+        // ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN. Self-gates on a `release:`
+        // block existing anywhere in the crate universe so ungated
+        // requirement collection never demands a token from a config that
+        // creates no release.
+        let configured = anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .any(|c| c.release.is_some());
+        if !configured || ctx.options.token.as_deref().is_some_and(|t| !t.is_empty()) {
+            return Vec::new();
+        }
+        vec![anodizer_core::EnvRequirement::EnvAnyOf {
+            vars: vec![
+                "ANODIZER_GITHUB_TOKEN".to_string(),
+                "GITHUB_TOKEN".to_string(),
+            ],
+        }]
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         // Existing ReleaseStage::run body is unchanged per the
         // release-resilience contract. We delegate to it for the
@@ -385,7 +406,7 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
                     handles.push(s.spawn(move || {
                         let release_outcome = if let Some(id) = target.release_id {
                             log.status(&format!(
-                                "{}: delete release {} (id={}) from {}/{}",
+                                "deleting {} release {} (id={}) from {}/{}",
                                 GithubReleasePublisher::PUBLISHER_NAME,
                                 target.tag,
                                 id,
@@ -406,7 +427,7 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
                             // delete (it would 404 anyway). Treat as
                             // already-absent for the counter.
                             log.status(&format!(
-                                "{}: no captured release id for {} on {}/{}; \
+                                "no captured {} release id for {} on {}/{}; \
                                  skipping release delete (tag delete still attempted)",
                                 GithubReleasePublisher::PUBLISHER_NAME,
                                 target.tag,
@@ -421,7 +442,7 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
                         // so the tag is also reverted; 404 buckets as
                         // already-absent.
                         log.status(&format!(
-                            "{}: delete tag refs/tags/{} from {}/{}",
+                            "deleting {} tag refs/tags/{} from {}/{}",
                             GithubReleasePublisher::PUBLISHER_NAME,
                             target.tag,
                             target.owner,
@@ -499,7 +520,7 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
         }
 
         log.status(&format!(
-            "{}: deleted {} release(s), {} already-absent, {} failed; \
+            "{} rollback deleted {} release(s), {} already-absent, {} failed; \
              deleted {} tag(s), {} already-absent, {} failed",
             Self::PUBLISHER_NAME,
             release_deleted,
@@ -533,7 +554,7 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
 /// without reaching across the crate boundary.
 fn rollback_failure_msg(step: &str, tag: &str, owner: &str, repo: &str, err: &str) -> String {
     format!(
-        "github-release: {step} delete failed for {tag} on {owner}/{repo}: {err}; \
+        "github-release {step} delete failed for {tag} on {owner}/{repo}: {err}; \
          manual cleanup required at https://github.com/{owner}/{repo}/releases/tag/{tag}; \
          check $GITHUB_TOKEN is set in this shell or the configured \
          ANODIZER_GITHUB_TOKEN fallback"

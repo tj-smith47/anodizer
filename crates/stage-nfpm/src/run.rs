@@ -229,7 +229,7 @@ fn process_nfpm_format(
         ctx.strict_guard(
             log,
             &format!(
-                "nfpm: skipping format '{}' for target '{}': architecture not supported",
+                "skipping nfpm format '{}' for target '{}' — architecture not supported",
                 format, triple
             ),
         )?;
@@ -460,7 +460,7 @@ fn should_skip_nfpm_config(
         ctx.strict_guard(
             log,
             &format!(
-                "nfpm config '{}': no output formats configured, skipping",
+                "skipping nfpm config '{}' — no output formats configured",
                 nfpm_id_for_log
             ),
         )?;
@@ -470,7 +470,7 @@ fn should_skip_nfpm_config(
     let maintainer = nfpm_cfg.maintainer.as_deref().unwrap_or("");
     if maintainer.is_empty() {
         log.warn(&format!(
-            "nfpm config '{}': maintainer is empty (required for deb packages)",
+            "maintainer is empty for nfpm config '{}' (required for deb packages)",
             nfpm_id_for_log
         ));
     }
@@ -594,7 +594,7 @@ fn build_platform_groups(
     if filtered.is_empty() && !linux_binaries.is_empty() {
         let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
         log.warn(&format!(
-            "nfpm config '{}': ids filter matched no binaries, skipping",
+            "skipping nfpm config '{}' — ids filter matched no binaries",
             nfpm_id
         ));
         return None;
@@ -653,7 +653,7 @@ fn resolve_format_os_arch(
                 Some(("iphoneos-arm64".to_string(), base_arch.to_string()))
             } else {
                 log.status(&format!(
-                    "skipping ios for format '{}': only deb is supported",
+                    "skipping ios for format '{}' — only deb is supported",
                     format
                 ));
                 None
@@ -662,7 +662,7 @@ fn resolve_format_os_arch(
         "aix" => {
             if base_arch != "ppc64" {
                 log.status(&format!(
-                    "skipping aix/{}: only ppc64 is supported",
+                    "skipping aix/{} — only ppc64 is supported",
                     base_arch
                 ));
                 return None;
@@ -671,7 +671,7 @@ fn resolve_format_os_arch(
                 Some(("aix7.2".to_string(), "ppc".to_string()))
             } else {
                 log.status(&format!(
-                    "skipping aix for format '{}': only rpm is supported",
+                    "skipping aix for format '{}' — only rpm is supported",
                     format
                 ));
                 None
@@ -722,6 +722,7 @@ pub(crate) fn render_and_generate_nfpm_yaml(
     setup_lintian_overrides(&mut rendered_cfg, format, pkg_name, arch, dist, dry_run)?;
 
     let render_target = crate::generate::NfpmRenderTarget {
+        pkg_name,
         os,
         arch,
         target,
@@ -1129,7 +1130,7 @@ fn build_nfpm_job(
         match anodizer_core::util::parse_mod_timestamp(&rendered_mtime) {
             Ok(mt) => (Some(mt), Some(rendered_mtime)),
             Err(e) => {
-                log.warn(&format!("nfpm: invalid mtime '{rendered_mtime}': {e}"));
+                log.warn(&format!("invalid nfpm mtime '{rendered_mtime}': {e}"));
                 (None, None)
             }
         }
@@ -1178,7 +1179,7 @@ fn execute_nfpm_jobs(
     let run_job = |job: &NfpmJob| -> Result<Artifact> {
         let thread_log = anodizer_core::log::StageLogger::new("nfpm", verbosity);
 
-        thread_log.status(&format!("running: {}", job.cmd_args.join(" ")));
+        thread_log.status(&format!("running {}", job.cmd_args.join(" ")));
 
         let output = Command::new(&job.cmd_args[0])
             .args(&job.cmd_args[1..])
@@ -1194,13 +1195,13 @@ fn execute_nfpm_jobs(
         if let Some(mt) = job.mtime {
             if let Err(e) = anodizer_core::util::set_file_mtime(&job.pkg_path, mt) {
                 thread_log.warn(&format!(
-                    "nfpm: failed to apply mtime to {}: {}",
+                    "failed to apply mtime to {}: {}",
                     job.pkg_path.display(),
                     e
                 ));
             } else if let Some(ref repr) = job.mtime_repr {
                 thread_log.verbose(&format!(
-                    "nfpm: applied mtime={repr} to {}",
+                    "applied mtime={repr} to {}",
                     job.pkg_path.display()
                 ));
             }
@@ -1301,6 +1302,10 @@ pub fn nfpm_yaml_configs_for_crate(
             continue;
         };
 
+        // Same name resolution the live build threads to the YAML's `name:`,
+        // so the offline-validated config is byte-identical to the shipped one.
+        let pkg_name = resolve_pkg_name(nfpm_cfg, &ctx.config.project_name, crate_name);
+
         for (target, binary_paths, lib_paths) in &platform_groups {
             let (base_os, base_arch) = target
                 .as_deref()
@@ -1323,6 +1328,7 @@ pub fn nfpm_yaml_configs_for_crate(
                 }
 
                 let render_target = crate::generate::NfpmRenderTarget {
+                    pkg_name: &pkg_name,
                     os: &os,
                     arch: &arch,
                     target: target.as_deref(),

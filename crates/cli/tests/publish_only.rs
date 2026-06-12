@@ -398,10 +398,22 @@ fn publish_only_conflicts_with_merge_at_clap_level() {
 // ---------------------------------------------------------------------------
 
 /// Without `--dry-run`, `--publish-only` must bail on missing
-/// credentials BEFORE any state mutation (load, strip, sign). We can't
-/// observe "no state mutation" from outside the binary, but we can
-/// assert the failure mode + that the error mentions both gate env
-/// vars.
+/// credentials BEFORE any state mutation (load, strip, sign). Two
+/// layers guard this, in firing order:
+///
+/// 1. the config-derived environment preflight in
+///    `commands/release/mod.rs`, which collects the github-release
+///    token ladder from the fixture's `release:` block and aborts
+///    citing the missing env var NAMES plus the surfaces that demand
+///    them;
+/// 2. `preflight_credentials` at the top of `publish_only::run`, the
+///    coarser unconditional gate that layer 1 pre-empts for the
+///    missing-token case.
+///
+/// The assertions pin layer 1's exact output — the var list, the
+/// needed-by attribution, and the abort bail — and that layer 2's
+/// message does NOT appear: seeing "missing release token" would mean
+/// the env preflight failed to fire first.
 #[test]
 fn publish_only_preflight_credentials_required_in_non_dry_run() {
     if !tool_on_path("git") {
@@ -421,12 +433,8 @@ fn publish_only_preflight_credentials_required_in_non_dry_run() {
     // pass. `env_clear` is too aggressive (kills PATH on Windows); the
     // explicit removes are surgical.
     //
-    // Deliberately do NOT pass `--no-preflight`: that flag now (per
-    // Phase-2 review I3) suppresses BOTH the publisher-state
-    // preflight AND the credential preflight, defeating this test.
-    // The publisher-state preflight auto-skips for `--publish-only`
-    // (per Phase-2 review I2 — see `should_run_preflight_auto`), so
-    // the credential preflight fires first and fails closed.
+    // Deliberately do NOT pass `--no-preflight`: it suppresses both
+    // preflight layers, defeating this test.
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["release", "--publish-only"])
         .env_remove("COSIGN_KEY")
@@ -443,17 +451,30 @@ fn publish_only_preflight_credentials_required_in_non_dry_run() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("publish-only")
-            && (stderr.contains("missing release token") || stderr.contains("GITHUB_TOKEN")),
-        "expected credential preflight error citing the missing env var; got:\n{stderr}"
+        stderr.contains(
+            "none of the env var(s) [ANODIZER_GITHUB_TOKEN, GITHUB_TOKEN] is set and non-empty"
+        ),
+        "env preflight must name every missing token env var; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("[needed by: stage:release, publish:github-release]"),
+        "env preflight must attribute the requirement to its consumers; got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("environment failure(s)"),
+        "env preflight must abort with its failure bail; got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("missing release token"),
+        "the env preflight must pre-empt the publish-only credential gate; got:\n{stderr}"
     );
 }
 
-/// I3 coverage: `--no-preflight` must suppress the credential
-/// preflight (operator opt-out for the rare case where they want
-/// the mid-pipeline failure to surface instead). Without this,
-/// `--no-preflight` would only skip the publisher-state preflight,
-/// which is inconsistent operator-facing behavior.
+/// `--no-preflight` must suppress the credential preflight (operator
+/// opt-out for the rare case where they want the mid-pipeline failure
+/// to surface instead). Without this, `--no-preflight` would only skip
+/// the publisher-state preflight, which is inconsistent
+/// operator-facing behavior.
 #[test]
 fn publish_only_no_preflight_suppresses_credential_check() {
     if !tool_on_path("git") {

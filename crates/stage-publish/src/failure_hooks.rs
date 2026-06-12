@@ -236,6 +236,57 @@ mod tests {
         }
     }
 
+    /// Lockstep workspace (multiple crates, no per-crate scoping):
+    /// `defaults.publish.on_error` is append-merged by `apply_defaults`
+    /// into every crate, and the firing path runs the resolved per-crate
+    /// list — the crate's own hook first, the defaults hook after it.
+    #[test]
+    fn on_error_lockstep_defaults_append_merge_fires_both_hooks_in_order() {
+        use anodizer_core::config::{Config, Defaults, PublishDefaults};
+        use anodizer_core::defaults_merge::apply_defaults;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("fired.txt");
+        let out_str = out.display().to_string().replace('\\', "/");
+
+        let crate_publish = PublishConfig {
+            on_error: Some(vec![cmd_hook(&format!(
+                "printf 'crate-hook\\n' >> {out_str}"
+            ))]),
+            ..Default::default()
+        };
+        let mut config = Config {
+            crates: vec![
+                crate_with_publish("a", crate_publish),
+                crate_with_publish("b", PublishConfig::default()),
+            ],
+            defaults: Some(Defaults {
+                publish: Some(PublishDefaults {
+                    on_error: Some(vec![cmd_hook(&format!(
+                        "printf 'default-hook\\n' >> {out_str}"
+                    ))]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        apply_defaults(&mut config);
+
+        let ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(config.crates.clone())
+            .build();
+        let res = result("homebrew", PublisherGroup::Manager, true);
+        fire_on_error(&ctx, &res, "tap push rejected", false, &log());
+
+        let body = std::fs::read_to_string(&out).expect("hooks must have written output");
+        assert_eq!(
+            body, "crate-hook\ndefault-hook\n",
+            "per-crate hook fires first, append-merged defaults hook after"
+        );
+    }
+
     #[test]
     fn on_error_fires_with_publisher_error_and_version_vars() {
         let dir = tempfile::tempdir().expect("tempdir");

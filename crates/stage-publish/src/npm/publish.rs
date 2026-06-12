@@ -311,7 +311,7 @@ pub(crate) fn version_already_published(
         Ok(o) => o,
         Err(e) => {
             log.warn(&format!(
-                "npm: could not probe '{}@{}' on {} (spawn failed: {}); \
+                "could not probe npm for '{}@{}' on {} (spawn failed: {}); \
                  refusing to publish blind — fix the npm CLI and retry",
                 name, version, registry, e
             ));
@@ -331,7 +331,7 @@ pub(crate) fn version_already_published(
         return Ok(false);
     }
     log.warn(&format!(
-        "npm: idempotency probe for '{}@{}' on {} was inconclusive (not a 404): {}; \
+        "npm idempotency probe for '{}@{}' on {} was inconclusive (not a 404): {}; \
          refusing to publish blind to a 72h-irreversible registry — retry once the \
          registry is healthy",
         name,
@@ -544,7 +544,7 @@ pub fn publish_to_npm(
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .context("npm: render skip template")?;
         if off {
-            log.status("npm: skipping — skip evaluates true");
+            log.status("skipping npm — skip evaluates true");
             return Ok(());
         }
     }
@@ -554,7 +554,7 @@ pub fn publish_to_npm(
         |t| ctx.render_template(t),
     )?;
     if !proceed {
-        log.status("npm: skipping — `if` condition evaluated falsy");
+        log.status("skipping npm — `if` condition evaluated falsy");
         return Ok(());
     }
 
@@ -691,7 +691,7 @@ fn publish_postinstall(
     let binaries = super::manifest::collect_platform_binaries(ctx, cfg, &pkg_name, &version, log)?;
     if binaries.is_empty() {
         log.warn(&format!(
-            "npm: '{}' has no archive artifacts matching any node platform/cpu pair; \
+            "npm package '{}' has no archive artifacts matching any node platform/cpu pair; \
              nothing to publish",
             pkg_name
         ));
@@ -754,7 +754,7 @@ fn publish_one_tarball(
 ) -> Result<Option<NpmTarget>> {
     if version_already_published(&staged.package, version, cfg_dir, registry, log)? {
         log.status(&format!(
-            "npm: '{}@{}' already published to {} — skipping (idempotent re-run)",
+            "'{}@{}' already published to {} — skipping (idempotent re-run)",
             staged.package, version, registry
         ));
         return Ok(Some(NpmTarget {
@@ -801,7 +801,7 @@ fn run_npm_publish(
     retry_sync(policy, |attempt| {
         if attempt > 1 {
             log.warn(&format!(
-                "npm: publish attempt {}/{} failed (transient), retrying…",
+                "npm publish attempt {}/{} failed (transient), retrying…",
                 attempt - 1,
                 max_attempts
             ));
@@ -819,7 +819,7 @@ fn run_npm_publish(
             cmd.arg("--access").arg(a);
         }
         log.status(&format!(
-            "npm: publish {} --registry {} --tag {}",
+            "running npm publish {} --registry {} --tag {}",
             tarball.display(),
             registry,
             dist_tag
@@ -871,7 +871,7 @@ pub(crate) fn run_npm_unpublish(
         .arg(registry)
         .arg("--force");
     log.status(&format!(
-        "npm: unpublish {}@{} --registry {}",
+        "running npm unpublish {}@{} --registry {}",
         package, version, registry
     ));
     let out = cmd

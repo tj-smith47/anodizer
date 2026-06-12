@@ -177,7 +177,7 @@ pub(crate) fn warn_project_markers_in_extra_files(
             .unwrap_or(file);
         if PROJECT_MARKERS.contains(&filename) {
             log.warn(&format!(
-                "{}: extra_files contains '{}' which looks like a project root marker — \
+                "extra_files for {} contains '{}' which looks like a project root marker — \
                  this likely shouldn't be in a Docker image",
                 label, file
             ));

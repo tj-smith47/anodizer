@@ -22,7 +22,7 @@ Three independently-toggleable checks:
 
 | Check | What it catches | Needs |
 |---|---|---|
-| **asset-existence** | A produced artifact that never made it onto the published release (the partial uploads GitHub silently tolerates) | network |
+| **asset-existence** | A produced artifact that never made it onto the published release (the partial uploads GitHub silently tolerates), **and** a signature / SBOM asset your `signs:` / `sboms:` config demands that was never produced at all (a silently no-op'd sign or SBOM stage) | network |
 | **install smoke-test** | A `.deb` / `.rpm` / `.apk` that won't install or whose binary won't run `--version` | Docker |
 | **libc ceiling** | A glibc-linked `.deb` that requires a glibc newer than your support floor | — |
 
@@ -77,6 +77,38 @@ Error: verify-release: post-publish verification found 1 issue(s);
 Extra assets on the release (orphans from a prior re-cut) are reported as an
 advisory, never a failure on their own.
 
+### Config-derived signature / SBOM expectations
+
+The produced set alone cannot catch a sign or SBOM stage that silently
+produced **nothing** — there is no registered artifact to miss. So the check
+additionally derives, from your resolved config plus the artifact set, the
+signature / certificate / SBOM asset names that **should** exist:
+
+- each `signs:` entry contributes one signature (and one certificate, when
+  `certificate:` is set) per artifact its `artifacts:`/`ids:` filters select,
+  named by its `signature:` template;
+- each `sboms:` entry contributes its rendered `documents:` names per matched
+  artifact.
+
+No new config is required — the expectations come from what anodizer already
+knows. A release missing them fails with the exact names:
+
+```
+- crate 'myapp': 2 signature/SBOM asset(s) required by the resolved signs/sboms
+  config were never uploaded (the producing stage registered no such artifact):
+  myapp_1.0.0_checksums.txt.sig, myapp_1.0.0_linux_amd64.tar.gz.cdx.json
+```
+
+Intentional skips create **no** expectations: a sign config whose `if:`
+evaluated falsy or whose `artifacts: none` disabled it (the run's own skip
+record is consulted first as the authoritative account of what this run
+decided), an SBOM config whose `skip:` evaluated truthy, or a whole stage
+skipped via `--skip=sign` / `--skip=sbom`. SBOM `documents:` containing glob
+patterns are not predictable from config and create no expectations either.
+Under a `release.ids` upload filter, expectations follow the SUBJECT's
+verdict — a signature or SBOM is expected exactly when the artifact it
+derives from is uploaded.
+
 ## (b) install smoke-test
 
 ```yaml
@@ -89,17 +121,33 @@ verify_release:
 ```
 
 For each produced Linux package, anodizer runs the install + a version check in
-a pinned container:
+a fresh pinned container, with the container platform pinned to the package's
+**build architecture**:
 
 ```bash
-docker run --rm -v <pkg>:/pkg/<pkg>:ro debian:12 \
-  sh -c "dpkg -i /pkg/<pkg> || (apt-get update && apt-get -y -f install) && myapp --version"
+docker run --rm --platform linux/arm64 \
+  --mount type=bind,source=<pkg>,destination=/pkg/<pkg>,readonly debian:12 \
+  sh -c "dpkg -i '/pkg/<pkg>' || (apt-get update && apt-get -y -f install) && 'myapp' --version"
 ```
 
 Per-package install commands: `.deb` → `dpkg -i` (with an `apt-get -f` dependency
 fixup), `.rpm` → `rpm -i --nodeps`, `.apk` → `apk add --allow-untrusted`. Each
 image defaults to a sane base (`debian:stable-slim`, `fedora:latest`,
 `alpine:latest`); override only the ones you care about.
+
+The `--platform` pin comes from the package's build target — an arm64 `.deb`
+is installed in an arm64 container, never the runner's native one. Running a
+non-native platform needs cross-arch emulation (qemu/binfmt) on the Docker
+host; anodizer probes for it once per platform and, when it is missing,
+**fails that package's smoke-test loudly** instead of reporting a misleading
+in-container arch error or silently skipping the coverage:
+
+```
+- crate 'myapp': install smoke-test failed for myapp_1.0.0_linux_arm64.deb on debian:stable-slim:
+  cannot run linux/arm64 containers on this linux/amd64 host: cross-arch emulation (qemu/binfmt)
+  is unavailable. Install it (e.g. `docker run --privileged --rm tonistiigi/binfmt --install all`)
+  or run install_smoke on a linux/arm64 runner. The package was NOT smoke-tested.
+```
 
 When **Docker is unavailable**, the smoke-test is **skipped with a notice** —
 it does not hard-fail the gate, and asset-existence and libc-ceiling still run:

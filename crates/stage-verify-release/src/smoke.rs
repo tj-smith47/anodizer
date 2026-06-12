@@ -102,6 +102,154 @@ pub struct SmokeJob {
     pub pkg_name: String,
     /// The installed binary name to version-check (`<bin> --version`).
     pub binary: String,
+    /// Docker platform spec (`linux/arm64`, …) derived from the package's
+    /// build target. `Some` pins every container run to the package's
+    /// architecture; `None` (host build with no triple) runs on the daemon
+    /// default.
+    pub platform: Option<String>,
+}
+
+/// Map a Rust target triple to the Docker platform spec (`linux/<arch>`)
+/// its package must be installed under.
+///
+/// Returns `None` for non-Linux triples (no Linux package to smoke-test) and
+/// for architectures with no known Docker platform name — the caller then
+/// omits `--platform`, preserving the daemon-default behavior.
+///
+/// Pinning the platform matters even for native packages: `docker run` with a
+/// bare tag reuses whatever variant of that tag was pulled last, so an arm64
+/// smoke run would re-tag e.g. `alpine:latest` to the arm64 variant and a
+/// subsequent unpinned amd64 run would inherit the wrong-arch image.
+pub fn docker_platform(target_triple: &str) -> Option<String> {
+    if !anodizer_core::target::is_linux(target_triple) {
+        return None;
+    }
+    let (_, arch) = anodizer_core::target::map_target(target_triple);
+    let docker_arch = match arch.as_str() {
+        "amd64" => "amd64",
+        "arm64" => "arm64",
+        "386" => "386",
+        "armv7" => "arm/v7",
+        "armv6" => "arm/v6",
+        "s390x" => "s390x",
+        "ppc64le" => "ppc64le",
+        "riscv64" => "riscv64",
+        "loong64" => "loong64",
+        _ => return None,
+    };
+    Some(format!("linux/{docker_arch}"))
+}
+
+/// The host's Docker platform spec (`linux/<arch>`), or `None` when the host
+/// CPU has no known Docker platform name.
+fn host_docker_platform() -> Option<String> {
+    host_docker_platform_for(std::env::consts::ARCH)
+}
+
+/// Pure mapping seam for [`host_docker_platform`]: Rust `target_arch` name →
+/// Docker platform spec.
+fn host_docker_platform_for(rust_arch: &str) -> Option<String> {
+    let docker_arch = match rust_arch {
+        "x86_64" => "amd64",
+        "aarch64" => "arm64",
+        "x86" => "386",
+        "s390x" => "s390x",
+        "powerpc64" => "ppc64le",
+        "riscv64" => "riscv64",
+        "loongarch64" => "loong64",
+        _ => return None,
+    };
+    Some(format!("linux/{docker_arch}"))
+}
+
+/// Whether `platform` matches the host's native Docker platform. `false`
+/// (forcing an emulation probe) when the host platform is unknown — the
+/// probe, not an assumption, then decides whether the job can run.
+fn platform_is_native(platform: &str) -> bool {
+    host_docker_platform().is_some_and(|host| host == platform)
+}
+
+/// The platform a smoke job pins its container to: the package's build
+/// target when it maps to a Docker platform, otherwise the HOST platform.
+/// The host fallback matters because a prior cross-arch pull re-tags the
+/// shared image tag (e.g. `alpine:latest`) to the foreign variant — an
+/// unpinned job would inherit that poisoned tag. `None` only when neither
+/// the target nor the host CPU has a known Docker platform name.
+pub(crate) fn job_platform(target_triple: Option<&str>) -> Option<String> {
+    target_triple
+        .and_then(docker_platform)
+        .or_else(host_docker_platform)
+}
+
+/// `docker run` argv probing whether `platform` containers can execute on
+/// this daemon: runs the image's `true` binary under the requested platform.
+fn build_emulation_probe_argv(platform: &str, image: &str) -> Vec<String> {
+    vec![
+        "run".to_string(),
+        "--rm".to_string(),
+        "--platform".to_string(),
+        platform.to_string(),
+        image.to_string(),
+        "true".to_string(),
+    ]
+}
+
+/// Probe whether the daemon can execute `platform` containers of `image`:
+/// `None` when the probe run succeeds, `Some(probe output)` when it fails.
+///
+/// Cached per (platform, image): one image lacking a variant for an
+/// architecture (a pull failure, not missing emulation) must not poison the
+/// verdict for other images that do publish that variant. A failed probe
+/// means every smoke job for that (platform, image) must FAIL loudly rather
+/// than report a misleading in-container arch error or silently drop
+/// coverage.
+fn emulation_probe_failure(platform: &str, image: &str) -> Option<String> {
+    type ProbeCache = std::collections::HashMap<(String, String), Option<String>>;
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<ProbeCache>> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    let key = (platform.to_string(), image.to_string());
+    if let Some(known) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return known.clone();
+    }
+    let failure = match Command::new("docker")
+        .args(build_emulation_probe_argv(platform, image))
+        .current_dir(anodizer_core::path_util::probe_dir())
+        .output()
+    {
+        Ok(out) if out.status.success() => None,
+        Ok(out) => Some(output_detail(&out)),
+        Err(e) => Some(format!(
+            "spawning the `docker run` platform probe failed: {e}"
+        )),
+    };
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, failure.clone());
+    failure
+}
+
+/// The loud, actionable failure detail for a smoke job whose platform probe
+/// failed. An `exec format error` in the probe output is the missing
+/// qemu/binfmt signature and gets the emulation remediation; any other
+/// failure (image pull, daemon error) is reported as a probe failure so the
+/// operator isn't sent chasing binfmt for a network problem. The raw probe
+/// output is always appended.
+fn emulation_unavailable_detail(platform: &str, probe_detail: &str) -> String {
+    let host = host_docker_platform().unwrap_or_else(|| "unknown".to_string());
+    let cause = if probe_detail.contains("exec format error") {
+        format!(
+            "cross-arch emulation (qemu/binfmt) is unavailable. Install it (e.g. \
+             `docker run --privileged --rm tonistiigi/binfmt --install all`) or run \
+             install_smoke on a {platform} runner"
+        )
+    } else {
+        format!("the {platform} platform probe failed (image pull or daemon error)")
+    };
+    format!(
+        "cannot run {platform} containers on this {host} host: {cause}. \
+         The package was NOT smoke-tested. Probe output: {probe_detail}"
+    )
 }
 
 /// Construct the full `docker run ...` argv for a smoke job.
@@ -131,16 +279,26 @@ pub fn build_smoke_argv(job: &SmokeJob) -> Vec<String> {
         job.host_pkg_path, container_path
     );
     let script = smoke_script(job, &container_path);
-    vec![
-        "run".to_string(),
-        "--rm".to_string(),
+    let mut argv = vec!["run".to_string(), "--rm".to_string()];
+    push_platform_flag(&mut argv, job);
+    argv.extend([
         "--mount".to_string(),
         mount,
         job.image.clone(),
         "sh".to_string(),
         "-c".to_string(),
         script,
-    ]
+    ]);
+    argv
+}
+
+/// Append `--platform <spec>` when the job carries a platform, pinning the
+/// container (and any image pull) to the package's architecture.
+fn push_platform_flag(argv: &mut Vec<String>, job: &SmokeJob) {
+    if let Some(platform) = &job.platform {
+        argv.push("--platform".to_string());
+        argv.push(platform.clone());
+    }
 }
 
 /// The container path a copy-strategy smoke job installs from. The package is
@@ -155,13 +313,15 @@ fn copy_container_path(job: &SmokeJob) -> String {
 /// `--mount` — the package arrives via [`build_copy_cp_argv`].
 fn build_copy_create_argv(job: &SmokeJob) -> Vec<String> {
     let script = smoke_script(job, &copy_container_path(job));
-    vec![
-        "create".to_string(),
+    let mut argv = vec!["create".to_string()];
+    push_platform_flag(&mut argv, job);
+    argv.extend([
         job.image.clone(),
         "sh".to_string(),
         "-c".to_string(),
         script,
-    ]
+    ]);
+    argv
 }
 
 /// `docker cp` argv: stream the host package into the created container at its
@@ -266,9 +426,15 @@ fn probe_mount_strategy(probe_image: &str) -> MountStrategy {
         return MountStrategy::Copy;
     }
     let abs = std::fs::canonicalize(&sentinel).unwrap_or_else(|_| sentinel.clone());
-    let argv = [
-        "run".to_string(),
-        "--rm".to_string(),
+    let mut argv = vec!["run".to_string(), "--rm".to_string()];
+    // Pin the probe to the host platform: a prior cross-arch pull may have
+    // re-tagged the shared image tag to a foreign variant, and an unpinned
+    // probe would then run (and fail on) the wrong-arch image.
+    if let Some(host) = host_docker_platform() {
+        argv.push("--platform".to_string());
+        argv.push(host);
+    }
+    argv.extend([
         "--mount".to_string(),
         format!(
             "type=bind,source={},destination=/probe,readonly",
@@ -277,7 +443,7 @@ fn probe_mount_strategy(probe_image: &str) -> MountStrategy {
         probe_image.to_string(),
         "cat".to_string(),
         "/probe".to_string(),
-    ];
+    ]);
     let out = Command::new("docker")
         .args(&argv)
         .current_dir(&dir)
@@ -305,6 +471,14 @@ pub fn strategy_label(probe_image: &str) -> &'static str {
 /// failed install/version-check is a reported defect, not a spawn error);
 /// returns `Err` only when `docker` itself could not be spawned.
 pub fn run_smoke(job: &SmokeJob) -> anyhow::Result<SmokeOutcome> {
+    if let Some(platform) = &job.platform
+        && !platform_is_native(platform)
+        && let Some(probe_detail) = emulation_probe_failure(platform, &job.image)
+    {
+        return Ok(SmokeOutcome::Failed {
+            detail: emulation_unavailable_detail(platform, &probe_detail),
+        });
+    }
     match mount_strategy(&job.image) {
         MountStrategy::BindMount => run_smoke_bind(job),
         MountStrategy::Copy => run_smoke_copy(job),
@@ -393,6 +567,7 @@ mod tests {
             host_pkg_path: "/dist/myapp_1.0_amd64.deb".to_string(),
             pkg_name: "myapp_1.0_amd64.deb".to_string(),
             binary: bin.to_string(),
+            platform: None,
         }
     }
 
@@ -453,6 +628,7 @@ mod tests {
             host_pkg_path: "/dist/myapp.rpm".to_string(),
             pkg_name: "myapp.rpm".to_string(),
             binary: "myapp".to_string(),
+            platform: None,
         });
         let script = argv.last().unwrap();
         assert!(
@@ -470,6 +646,7 @@ mod tests {
             host_pkg_path: "/dist/myapp.apk".to_string(),
             pkg_name: "myapp.apk".to_string(),
             binary: "myapp".to_string(),
+            platform: None,
         });
         let script = argv.last().unwrap();
         assert!(
@@ -490,6 +667,7 @@ mod tests {
             host_pkg_path: "/dist/evil.deb".to_string(),
             pkg_name: "evil; rm -rf /.deb".to_string(),
             binary: "app$(touch pwned)".to_string(),
+            platform: None,
         };
         let argv = build_smoke_argv(&job);
         let script = argv.last().unwrap();
@@ -521,6 +699,7 @@ mod tests {
             host_pkg_path: "/dist/v1:2/myapp.deb".to_string(),
             pkg_name: "myapp.deb".to_string(),
             binary: "myapp".to_string(),
+            platform: None,
         });
         assert!(
             argv.iter().any(|a| a
@@ -593,6 +772,7 @@ mod tests {
             host_pkg_path: "/dist/myapp.rpm".to_string(),
             pkg_name: "myapp.rpm".to_string(),
             binary: "myapp".to_string(),
+            platform: None,
         });
         assert!(
             rpm.last()
@@ -608,6 +788,7 @@ mod tests {
             host_pkg_path: "/dist/myapp.apk".to_string(),
             pkg_name: "myapp.apk".to_string(),
             binary: "myapp".to_string(),
+            platform: None,
         });
         assert!(
             apk.last()
@@ -615,6 +796,156 @@ mod tests {
                 .starts_with("apk add --allow-untrusted '/myapp.apk'"),
             "{:?}",
             apk.last()
+        );
+    }
+
+    #[test]
+    fn docker_platform_maps_linux_triples() {
+        for (triple, want) in [
+            ("x86_64-unknown-linux-gnu", "linux/amd64"),
+            ("x86_64-unknown-linux-musl", "linux/amd64"),
+            ("aarch64-unknown-linux-gnu", "linux/arm64"),
+            ("aarch64-unknown-linux-musl", "linux/arm64"),
+            ("i686-unknown-linux-gnu", "linux/386"),
+            ("armv7-unknown-linux-gnueabihf", "linux/arm/v7"),
+            ("armv6l-unknown-linux-gnueabihf", "linux/arm/v6"),
+            ("s390x-unknown-linux-gnu", "linux/s390x"),
+            ("powerpc64le-unknown-linux-gnu", "linux/ppc64le"),
+            ("riscv64gc-unknown-linux-gnu", "linux/riscv64"),
+            ("loongarch64-unknown-linux-gnu", "linux/loong64"),
+        ] {
+            assert_eq!(
+                docker_platform(triple).as_deref(),
+                Some(want),
+                "triple {triple}"
+            );
+        }
+    }
+
+    #[test]
+    fn docker_platform_rejects_non_linux_and_unknown() {
+        // No Linux package exists for these — no platform to pin.
+        assert_eq!(docker_platform("aarch64-apple-darwin"), None);
+        assert_eq!(docker_platform("x86_64-pc-windows-msvc"), None);
+        assert_eq!(docker_platform("aarch64-linux-android"), None);
+        // Linux but no Docker platform name — omit the flag, don't guess.
+        assert_eq!(docker_platform("sparc64-unknown-linux-gnu"), None);
+    }
+
+    #[test]
+    fn host_docker_platform_mapping() {
+        assert_eq!(
+            host_docker_platform_for("x86_64").as_deref(),
+            Some("linux/amd64")
+        );
+        assert_eq!(
+            host_docker_platform_for("aarch64").as_deref(),
+            Some("linux/arm64")
+        );
+        assert_eq!(host_docker_platform_for("sparc64"), None);
+    }
+
+    #[test]
+    fn run_argv_pins_platform_when_set() {
+        let mut j = job("alpine:3.20", PackageType::Apk, "myapp");
+        j.platform = Some("linux/arm64".to_string());
+        let argv = build_smoke_argv(&j);
+        let pos = argv.iter().position(|a| a == "--platform").unwrap();
+        assert_eq!(argv[pos + 1], "linux/arm64");
+        // The flag must precede the image (docker run options come first).
+        let img_pos = argv.iter().position(|a| a == "alpine:3.20").unwrap();
+        assert!(pos < img_pos, "--platform after image: {argv:?}");
+    }
+
+    #[test]
+    fn run_argv_omits_platform_when_unset() {
+        let argv = build_smoke_argv(&job("alpine:3.20", PackageType::Apk, "myapp"));
+        assert!(
+            !argv.contains(&"--platform".to_string()),
+            "no platform flag for host builds: {argv:?}"
+        );
+    }
+
+    #[test]
+    fn copy_create_argv_pins_platform_when_set() {
+        let mut j = job("debian:12", PackageType::Deb, "myapp");
+        j.platform = Some("linux/arm64".to_string());
+        let argv = build_copy_create_argv(&j);
+        let pos = argv.iter().position(|a| a == "--platform").unwrap();
+        assert_eq!(argv[pos + 1], "linux/arm64");
+        let img_pos = argv.iter().position(|a| a == "debian:12").unwrap();
+        assert!(pos < img_pos, "--platform after image: {argv:?}");
+
+        let bare = build_copy_create_argv(&job("debian:12", PackageType::Deb, "myapp"));
+        assert!(!bare.contains(&"--platform".to_string()));
+    }
+
+    #[test]
+    fn emulation_probe_argv_runs_true_under_platform() {
+        assert_eq!(
+            build_emulation_probe_argv("linux/arm64", "alpine:latest"),
+            vec![
+                "run".to_string(),
+                "--rm".to_string(),
+                "--platform".to_string(),
+                "linux/arm64".to_string(),
+                "alpine:latest".to_string(),
+                "true".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn emulation_unavailable_detail_is_actionable() {
+        // The binfmt signature gets the emulation remediation.
+        let detail =
+            emulation_unavailable_detail("linux/arm64", "exec /bin/true: exec format error");
+        assert!(detail.contains("linux/arm64"), "{detail}");
+        assert!(detail.contains("qemu/binfmt"), "{detail}");
+        assert!(detail.contains("tonistiigi/binfmt"), "{detail}");
+        assert!(detail.contains("NOT smoke-tested"), "{detail}");
+        assert!(
+            detail.contains("exec /bin/true: exec format error"),
+            "raw probe output appended: {detail}"
+        );
+    }
+
+    #[test]
+    fn emulation_detail_distinguishes_pull_failures_from_missing_binfmt() {
+        // A pull/daemon error must NOT send the operator chasing binfmt.
+        let detail = emulation_unavailable_detail(
+            "linux/arm64",
+            "manifest for myimage:latest not found: manifest unknown",
+        );
+        assert!(
+            !detail.contains("qemu/binfmt"),
+            "no binfmt remediation for a pull failure: {detail}"
+        );
+        assert!(
+            detail.contains("image pull or daemon error"),
+            "names the real failure class: {detail}"
+        );
+        assert!(
+            detail.contains("manifest unknown"),
+            "raw probe output appended: {detail}"
+        );
+        assert!(detail.contains("NOT smoke-tested"), "{detail}");
+    }
+
+    #[test]
+    fn job_platform_prefers_target_then_host() {
+        // A mapped target wins over the host platform.
+        assert_eq!(
+            job_platform(Some("aarch64-unknown-linux-gnu")).as_deref(),
+            Some("linux/arm64")
+        );
+        // No target (host build) → the host platform, so the job never runs
+        // a foreign variant left behind on a shared tag by a cross-arch pull.
+        assert_eq!(job_platform(None), host_docker_platform());
+        // Unmappable target → host fallback too.
+        assert_eq!(
+            job_platform(Some("sparc64-unknown-linux-gnu")),
+            host_docker_platform()
         );
     }
 
@@ -628,6 +959,7 @@ mod tests {
             host_pkg_path: "/dist/evil.deb".to_string(),
             pkg_name: "evil; rm -rf /.deb".to_string(),
             binary: "app$(touch pwned)".to_string(),
+            platform: None,
         });
         let script = argv.last().unwrap();
         assert!(

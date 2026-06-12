@@ -455,7 +455,7 @@ pub fn host_buildable_targets(host: &str, configured: &[String]) -> (Vec<String>
 /// was skipped.
 ///
 /// Example:
-/// `host-targets: skipping 3 target(s) not buildable on this linux host:
+/// `skipping 3 target(s) not buildable on this linux host (--host-targets):
 /// aarch64-apple-darwin, x86_64-apple-darwin (apple targets require a macOS
 /// host); x86_64-pc-windows-msvc (windows-msvc targets require a Windows host)`
 pub fn host_targets_skip_message(host: &str, skipped: &[String]) -> Option<String> {
@@ -464,7 +464,7 @@ pub fn host_targets_skip_message(host: &str, skipped: &[String]) -> Option<Strin
     }
     let (host_os, _) = crate::target::map_target(host);
     Some(format!(
-        "host-targets: skipping {} target(s) not buildable on this {} host: {}",
+        "skipping {} target(s) not buildable on this {} host (--host-targets): {}",
         skipped.len(),
         host_os,
         host_targets_skip_reasons(host, skipped),

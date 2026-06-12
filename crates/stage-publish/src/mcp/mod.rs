@@ -89,7 +89,7 @@ pub(crate) fn publish_to_mcp(ctx: &mut Context, log: &StageLogger) -> Result<Opt
         // verbose (not status): this fires on N-1 of N crate passes in a
         // workspace, so promoting it to status would flood normal output.
         log.verbose(
-            "mcp: skipping — none of the selected crates own the OCI image \
+            "skipping mcp — none of the selected crates own the OCI image \
              referenced by the mcp manifest (runs on the owning crate's pass)",
         );
         ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
@@ -234,7 +234,7 @@ pub(crate) fn publish_with_registry(
     // `MCP_GITHUB_TOKEN`. Log the resolution path (NOT the token value) so a
     // user debugging an auth failure can see what anodizer tried.
     if mcp_rendered.auth.method == McpAuthMethod::Github && mcp_rendered.auth.token.is_empty() {
-        log.status("mcp: auth.token empty, falling back to MCP_GITHUB_TOKEN env var");
+        log.status("auth.token empty, falling back to MCP_GITHUB_TOKEN env var");
     }
 
     // ---- Build + authenticate ----
@@ -332,7 +332,7 @@ fn render_mcp_config(ctx: &Context) -> Result<McpRenderOutcome> {
     if ctx.config.mcp.name.as_deref().unwrap_or("").is_empty() {
         return Ok(McpRenderOutcome::Skipped(McpSkip {
             reason: anodizer_core::SkipReason::NotConfigured,
-            message: "mcp: skipping — no mcp.name configured",
+            message: "skipping mcp — no mcp.name configured",
         }));
     }
     let mut mcp_rendered: McpConfig = ctx.config.mcp.clone();
@@ -343,7 +343,7 @@ fn render_mcp_config(ctx: &Context) -> Result<McpRenderOutcome> {
         if off {
             return Ok(McpRenderOutcome::Skipped(McpSkip {
                 reason: anodizer_core::SkipReason::NotApplicable,
-                message: "mcp: skipping — skip evaluates true",
+                message: "skipping mcp — skip evaluates true",
             }));
         }
     }
@@ -355,7 +355,7 @@ fn render_mcp_config(ctx: &Context) -> Result<McpRenderOutcome> {
     if !proceed {
         return Ok(McpRenderOutcome::Skipped(McpSkip {
             reason: anodizer_core::SkipReason::NotApplicable,
-            message: "mcp: skipping — `if` condition evaluated falsy",
+            message: "skipping mcp — `if` condition evaluated falsy",
         }));
     }
 
@@ -875,7 +875,7 @@ fn publish_payload(
                 && is_duplicate_version_rejection(*status, raw_body)
             {
                 log.status(&format!(
-                    "mcp: skipping '{}' on {} — version already published (registry \
+                    "skipping mcp '{}' on {} — version already published (registry \
                      rejected duplicate version)",
                     name, registry_url
                 ));
@@ -892,10 +892,10 @@ fn publish_payload(
         .and_then(|r| r.meta.official.map(|o| o.status))
         .unwrap_or_default();
     if status.is_empty() {
-        log.status(&format!("mcp: published '{}' to {}", name, registry_url));
+        log.status(&format!("published '{}' to {}", name, registry_url));
     } else {
         log.status(&format!(
-            "mcp: published '{}' to {} (status={})",
+            "published '{}' to {} (status={})",
             name, registry_url, status
         ));
     }

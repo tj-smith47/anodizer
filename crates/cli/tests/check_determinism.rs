@@ -188,7 +188,7 @@ fn inject_drift_hidden_from_help() {
 // on PATH so the suite stays green on minimal hosts.
 
 mod common;
-use common::{bootstrap_minimal_cargo_repo, tool_on_path};
+use common::{bootstrap_minimal_cargo_repo, host_triple, run_git, tool_on_path};
 
 /// End-to-end drift-injection integration test (I12). Synthesizes a
 /// minimal cargo workspace, drives the harness with `--runs=2
@@ -278,4 +278,208 @@ fn inject_drift_archive_reports_drift_on_minimal_workspace() {
         "at least one drift row should be an archive artifact; got: {:?}",
         report.drift.iter().map(|d| &d.artifact).collect::<Vec<_>>()
     );
+}
+
+/// Regression pin for the v0.9.0 release failure: the harness's replica
+/// pipelines run on credential-less runners (the run paths skip what's
+/// absent; nothing publishes), so the config-derived env preflight must be
+/// disabled for the children by construction. The fixture mirrors the live
+/// shape: HEAD at a tag (non-snapshot child), an nfpm apk signature whose
+/// key env var is deliberately unset, and submitter publishers configured
+/// `required: true`. Pre-fix this run aborted with
+/// `Error: preflight: N check(s) failed` from determinism run 0.
+///
+/// Also pins the console contract:
+/// - the `Checking determinism` header + parameter block print exactly once
+///   (one formatter — the binary's; wrappers must not echo their own), and
+/// - the static-config moderation-queue warnings print exactly once per
+///   invocation (not once per config probe × replica build — they printed
+///   4× in the live run).
+#[test]
+fn harness_skips_env_preflight_and_prints_header_and_config_warnings_once() {
+    if !tool_on_path("cargo") || !tool_on_path("git") {
+        eprintln!(
+            "SKIP harness_skips_env_preflight_and_prints_header_and_config_warnings_once: \
+             cargo or git missing from PATH"
+        );
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path();
+    bootstrap_minimal_cargo_repo(repo, "anodize-preflight-fixture");
+
+    let host = host_triple();
+    let yaml = format!(
+        r#"crates:
+  - name: anodize-preflight-fixture
+    path: .
+    tag_template: "v{{{{ Version }}}}"
+    builds:
+      - id: anodize-preflight-fixture
+        binary: anodize-preflight-fixture
+        targets:
+          - {host}
+    nfpms:
+      - id: default
+        formats:
+          - apk
+        maintainer: "Test <test@test.com>"
+        description: "preflight fixture"
+        apk:
+          signature:
+            key_file: "{{{{ .Env.APK_PRIVATE_KEY_PATH }}}}"
+    publish:
+      chocolatey:
+        required: true
+      winget:
+        required: true
+"#,
+    );
+    fs::write(repo.join(".anodizer.yaml"), yaml).unwrap();
+    run_git(repo, &["add", "-A"]);
+    run_git(repo, &["commit", "-q", "-m", "preflight fixture config"]);
+    // HEAD at a tag → the harness auto-selects a NON-snapshot child (the
+    // live tag-push shape), which is exactly the mode that ran the env
+    // preflight pre-fix.
+    run_git(repo, &["tag", "v0.1.0"]);
+
+    let report_path = repo.join("det.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "check",
+            "determinism",
+            "--runs",
+            "2",
+            "--stages",
+            "build,archive,nfpm",
+            "--report",
+        ])
+        .arg(&report_path)
+        .current_dir(repo)
+        // The unsatisfiable preflight requirement: the apk signature's
+        // key env var is absent, as on a credential-less CI runner.
+        .env_remove("APK_PRIVATE_KEY_PATH")
+        // Force plain output: under GITHUB_ACTIONS/CI the binary forces
+        // color, and the ANSI reset between the bold section verb and
+        // its message would break `matches("Checking determinism")`.
+        // NO_COLOR wins over every color override.
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("invoking anodize check determinism");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "harness must not preflight-fail in a credential-less env; \
+         stdout={} stderr={stderr}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    // Both env-preflight failure shapes: the bail error value keeps the
+    // `preflight:` lead; the report header renders `N of M preflight
+    // check(s) failed:`. A bare `preflight` needle is too wide — the
+    // fixture crate name itself contains the word.
+    assert!(
+        !stderr.contains("preflight:") && !stderr.contains("preflight check(s) failed"),
+        "no env-preflight failure may surface from replica children: {stderr}"
+    );
+    // Guard against a vacuous pass: the children must have actually driven
+    // the build pipeline (one `Building binaries` section per run), not
+    // short-circuited on the tags-at-HEAD no-op path.
+    assert!(
+        !stderr.contains("no release tags at HEAD"),
+        "children must select the fixture crate from the tag, not no-op: {stderr}"
+    );
+    // The build stage announces the compile as `running cargo zigbuild …`
+    // (zigbuild on PATH) or `running cargo build …` (fallback); one per
+    // child run. Anchoring on verb + subcommand keeps unrelated
+    // `running cargo <other>` body lines (e.g. a publish dry-run probe)
+    // out of the count.
+    let builds = stderr.matches("running cargo zigbuild").count()
+        + stderr.matches("running cargo build").count();
+    assert_eq!(
+        builds, 2,
+        "expected one cargo build invocation per run (runs=2), got {builds}:\n{stderr}"
+    );
+
+    let header_count = stderr.matches("Checking determinism").count();
+    assert_eq!(
+        header_count, 1,
+        "`Checking determinism` header must print exactly once, got {header_count}:\n{stderr}"
+    );
+
+    for publisher in ["chocolatey", "winget"] {
+        let needle = format!("publisher '{publisher}' submits to an external moderation queue");
+        let count = stderr.matches(needle.as_str()).count();
+        assert_eq!(
+            count, 1,
+            "moderation-queue warning for {publisher} must print exactly once \
+             per invocation, got {count}:\n{stderr}"
+        );
+    }
+}
+
+/// `-q` (the global quiet flag) must silence the harness's own output —
+/// the `Checking determinism` header, the kv summary rows, and the
+/// `run N of M` bullets — and propagate to the child release
+/// subprocesses so their section headers are silenced too. Errors stay
+/// audible (separate path: `log.error` / `render_error` are
+/// unconditional), so a green quiet run produces an (almost) empty
+/// stderr.
+#[test]
+fn quiet_flag_silences_harness_run_bullets_and_children() {
+    if !tool_on_path("cargo") || !tool_on_path("git") {
+        eprintln!(
+            "SKIP quiet_flag_silences_harness_run_bullets_and_children: \
+             cargo or git missing from PATH"
+        );
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path();
+    bootstrap_minimal_cargo_repo(repo, "anodize-quiet-fixture");
+
+    let report_path = repo.join("det.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "-q",
+            "check",
+            "determinism",
+            "--runs",
+            "1",
+            "--stages",
+            "build",
+            "--report",
+        ])
+        .arg(&report_path)
+        .current_dir(repo)
+        // Plain output so absence assertions can't be confused by ANSI
+        // styling inserted under CI-forced color.
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("invoking anodize -q check determinism");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "quiet run must still succeed; stdout={} stderr={stderr}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    assert!(
+        report_path.exists(),
+        "quiet run must still write the report"
+    );
+    for needle in [
+        "Checking determinism",
+        "run 1 of 1",
+        "Building binaries",
+        "running cargo",
+        "wrote determinism report",
+    ] {
+        assert!(
+            !stderr.contains(needle),
+            "-q must silence `{needle}`; stderr:\n{stderr}"
+        );
+    }
 }

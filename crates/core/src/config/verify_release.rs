@@ -47,7 +47,12 @@ pub struct VerifyReleaseConfig {
     /// daemon.
     pub enabled: bool,
     /// Assert that every produced artifact has a matching uploaded asset on
-    /// the published release. Default `true` (no extra config: anodizer
+    /// the published release, and that every signature / certificate / SBOM
+    /// asset the resolved `signs:` / `sboms:` config demands exists there too
+    /// (derived from config + the artifact set, so a sign or SBOM stage that
+    /// silently produced nothing still fails the gate with the exact missing
+    /// names; intentional skips — `if:` falsy, `skip:` truthy, `--skip=sign` —
+    /// create no expectations). Default `true` (no extra config: anodizer
     /// already knows the produced set and can fetch the release's asset list).
     /// Independent of Docker and the network smoke-test.
     pub assert_assets: bool,

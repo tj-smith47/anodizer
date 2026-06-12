@@ -127,14 +127,9 @@ pub(crate) fn find_matching_override<'a>(
 // Default targets — used when neither build.targets nor defaults.targets is set
 // ---------------------------------------------------------------------------
 
-pub(crate) const DEFAULT_TARGETS: &[&str] = &[
-    "x86_64-unknown-linux-gnu",
-    "x86_64-apple-darwin",
-    "aarch64-apple-darwin",
-    "x86_64-pc-windows-msvc",
-    "aarch64-pc-windows-msvc",
-    "aarch64-unknown-linux-gnu",
-];
+// Canonical list lives in core so preflight's target derivation can never
+// drift from the build stage's.
+pub(crate) use anodizer_core::target::DEFAULT_TARGETS;
 
 // ---------------------------------------------------------------------------
 // Known Rust target triples (Tier 1 + Tier 2) for validation

@@ -173,7 +173,7 @@ pub(crate) fn check_cloudsmith_package_exists(
     log: &StageLogger,
 ) -> Result<CloudsmithPackageState> {
     log.verbose(&format!(
-        "cloudsmith: checking existing package for '{}' (query={})",
+        "checking existing cloudsmith package for '{}' (query={})",
         art_name, query
     ));
     let result = retry_request("packages/list", art_name, policy, log, || {
@@ -191,7 +191,7 @@ pub(crate) fn check_cloudsmith_package_exists(
             // upload rather than spuriously bail. The error has already been
             // shaped (and any bearer tokens redacted) by retry_request.
             log.warn(&format!(
-                "cloudsmith: could not query existing packages for '{}' ({}); attempting upload anyway",
+                "could not query existing cloudsmith packages for '{}' ({}); attempting upload anyway",
                 art_name, err
             ));
             return Ok(CloudsmithPackageState::NotFound);
@@ -222,7 +222,7 @@ where
         |attempt| {
             if attempt > 1 {
                 log.verbose(&format!(
-                    "cloudsmith: retrying {label} for '{art_name}' (attempt {attempt})"
+                    "retrying cloudsmith {label} for '{art_name}' (attempt {attempt})"
                 ));
             }
             build_send()
@@ -269,7 +269,7 @@ fn stage_cloudsmith_file(
         "method": "post",
     });
 
-    log.verbose(&format!("[step 1/3] POST {}", files_create_url));
+    log.verbose(&format!("POST {} (step 1 of 3)", files_create_url));
     let (_create_status, create_body) =
         retry_request("files/create", art_name, policy, log, || {
             client
@@ -319,7 +319,7 @@ fn stage_cloudsmith_file(
     // added here. The fields returned in step 1 (policy, signature, key, ...)
     // MUST be included as multipart form text parts exactly as given, and the
     // actual file goes under the `file` key (not `package_file`).
-    log.verbose(&format!("[step 2/3] POST {} (presigned)", presigned_url));
+    log.verbose(&format!("POST {} (presigned, step 2 of 3)", presigned_url));
     // Multipart Form is move-only, so we rebuild it on every retry attempt.
     // Cloning `file_bytes` and `upload_fields` per-attempt is the price of
     // retriability; the bytes are already in memory.
@@ -394,7 +394,7 @@ pub(crate) fn publish_to_cloudsmith(
                 .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                 .with_context(|| "cloudsmith: render skip template")?;
             if off {
-                log.status("cloudsmith: entry skipped");
+                log.status("skipping cloudsmith entry — skip evaluates true");
                 continue;
             }
         }
@@ -405,7 +405,7 @@ pub(crate) fn publish_to_cloudsmith(
             |t| ctx.render_template(t),
         )?;
         if !proceed {
-            log.status("cloudsmith: entry skipped — `if` condition evaluated falsy");
+            log.status("skipping cloudsmith entry — `if` condition evaluated falsy");
             continue;
         }
 
@@ -514,21 +514,24 @@ pub(crate) fn publish_to_cloudsmith(
                 "(dry-run) would upload packages to CloudSmith org '{}' repo '{}' at {}",
                 organization, repository, sample_url
             ));
-            log.status(&format!("(dry-run) formats filter: {:?}", formats));
+            log.status(&format!("(dry-run) would filter to formats {:?}", formats));
             if let Some(ref ids) = entry.ids {
-                log.status(&format!("(dry-run) build ID filter: {:?}", ids));
+                log.status(&format!("(dry-run) would filter to build IDs {:?}", ids));
             }
             if !distributions.is_empty() {
-                log.status(&format!("(dry-run) distributions: {:?}", distributions));
+                log.status(&format!(
+                    "(dry-run) would publish to distributions {:?}",
+                    distributions
+                ));
             }
             if let Some(ref comp) = component {
-                log.status(&format!("(dry-run) component: {}", comp));
+                log.status(&format!("(dry-run) would use component {}", comp));
             }
             if republish {
-                log.status("(dry-run) republish: true");
+                log.status("(dry-run) would republish existing versions");
             }
             log.status(&format!(
-                "(dry-run) credential env var: {}",
+                "(dry-run) would read credentials from {}",
                 secret_name_rendered
             ));
             log.status(&format!("(dry-run) {} artifacts matched", artifacts.len()));
@@ -551,7 +554,7 @@ pub(crate) fn publish_to_cloudsmith(
 
         if artifacts.is_empty() {
             log.status(&format!(
-                "cloudsmith: no matching artifacts for org '{}' repo '{}' (formats: {:?})",
+                "no matching cloudsmith artifacts for org '{}' repo '{}' (formats: {:?})",
                 organization, repository, formats
             ));
             continue;
@@ -561,7 +564,7 @@ pub(crate) fn publish_to_cloudsmith(
             .context("cloudsmith: failed to build HTTP client")?;
 
         log.status(&format!(
-            "cloudsmith: uploading {} packages to org '{}' repo '{}'",
+            "uploading {} packages to cloudsmith org '{}' repo '{}'",
             artifacts.len(),
             organization,
             repository
@@ -638,7 +641,7 @@ pub(crate) fn publish_to_cloudsmith(
                 )? {
                     CloudsmithPackageState::SkipIdempotent => {
                         log.status(&format!(
-                            "cloudsmith: skipping '{}' — already uploaded with matching md5",
+                            "skipping '{}' — already uploaded with matching md5",
                             art_name
                         ));
                         continue;
@@ -707,7 +710,7 @@ pub(crate) fn publish_to_cloudsmith(
                 .filter(|_| COMPONENT_BEARING_FORMATS.contains(&fmt));
             if component.is_some() && component_for_format.is_none() {
                 log.verbose(&format!(
-                    "cloudsmith: component is set but format '{}' does not accept a component; dropping",
+                    "cloudsmith component is set but format '{}' does not accept a component; dropping",
                     fmt
                 ));
             }
@@ -743,7 +746,7 @@ pub(crate) fn publish_to_cloudsmith(
                 }
 
                 log.verbose(&format!(
-                    "[step 3/3] POST {} (identifier={}, distro={:?})",
+                    "POST {} (identifier={}, distro={:?}, step 3 of 3)",
                     package_upload_url, identifier, distro
                 ));
                 let label = format!("packages/upload/{}", fmt);
@@ -779,7 +782,7 @@ pub(crate) fn publish_to_cloudsmith(
                             return Err(err);
                         }
                         log.warn(&format!(
-                            "cloudsmith: step-3 returned {:?} for '{}'; re-checking remote to \
+                            "cloudsmith step-3 returned {:?} for '{}'; re-checking remote to \
                              decide between idempotent skip and real conflict",
                             status_in_chain, art_name
                         ));
@@ -795,7 +798,7 @@ pub(crate) fn publish_to_cloudsmith(
                         )? {
                             CloudsmithPackageState::SkipIdempotent => {
                                 let msg = format!(
-                                    "cloudsmith: '{}' already landed with matching md5 \
+                                    "'{}' already landed on cloudsmith with matching md5 \
                                      (concurrent uploader); treating as idempotent skip",
                                     art_name
                                 );
@@ -859,7 +862,7 @@ pub(crate) fn publish_to_cloudsmith(
         }
 
         log.status(&format!(
-            "cloudsmith: upload complete for org '{}' repo '{}'",
+            "cloudsmith upload complete for org '{}' repo '{}'",
             organization, repository
         ));
     }
@@ -950,7 +953,7 @@ pub(crate) fn decode_cloudsmith_targets(
 /// this helper is reached only when `target.slug` is `None`.
 pub(crate) fn cloudsmith_manual_cleanup_msg(target: &CloudsmithTarget) -> String {
     format!(
-        "cloudsmith: manually withdraw '{}' from {}/{} (per-package slug not surfaced in evidence; delete via the Cloudsmith dashboard)",
+        "manually withdraw '{}' from cloudsmith {}/{} (per-package slug not surfaced in evidence; delete via the Cloudsmith dashboard)",
         target.filename, target.org, target.repo
     )
 }
@@ -970,6 +973,32 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
 
     fn rollback_scope_needed(&self) -> Option<&'static str> {
         Self::ROLLBACK_SCOPE
+    }
+
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // Same env-var-name resolution the upload path uses: a (templated)
+        // `secret_name` per entry, defaulting to CLOUDSMITH_TOKEN.
+        ctx.config
+            .cloudsmiths
+            .iter()
+            .flatten()
+            .filter(|entry| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    entry.skip.as_ref(),
+                    None,
+                    entry.if_condition.as_deref(),
+                )
+            })
+            .map(|entry| {
+                let var = crate::util::resolve_secret_name(
+                    ctx,
+                    entry.secret_name.as_deref(),
+                    "CLOUDSMITH_TOKEN",
+                );
+                anodizer_core::EnvRequirement::EnvAllOf { vars: vec![var] }
+            })
+            .collect()
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
@@ -1021,7 +1050,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
         let token = ctx.env_var("CLOUDSMITH_API_KEY");
         if token.is_none() {
             log.warn(
-                "cloudsmith: CLOUDSMITH_API_KEY not set; emitting manual-cleanup checklist instead of DELETE",
+                "CLOUDSMITH_API_KEY not set; emitting manual-cleanup checklist instead of DELETE",
             );
         }
 
@@ -1057,7 +1086,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
                 target.repo,
                 slug
             );
-            log.status(&format!("cloudsmith: DELETE {}", url));
+            log.status(&format!("DELETE {}", url));
             let label = "packages/delete";
             match retry_request(label, &target.filename, &policy, &log, || {
                 client
@@ -1076,7 +1105,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
                         // unreachable, but guard it defensively.
                         failed += 1;
                         log.warn(&format!(
-                            "cloudsmith: DELETE {} returned HTTP {} (manual cleanup may be required)",
+                            "DELETE {} returned HTTP {} (manual cleanup may be required)",
                             url, status
                         ));
                     }
@@ -1088,14 +1117,11 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
                     let msg = format!("{err:#}");
                     if msg.contains("HTTP 404") || msg.contains("HTTP 410") {
                         already_absent += 1;
-                        log.status(&format!(
-                            "cloudsmith: DELETE {} already absent (404/410)",
-                            url
-                        ));
+                        log.status(&format!("DELETE {} already absent (404/410)", url));
                     } else {
                         failed += 1;
                         log.warn(&format!(
-                            "cloudsmith: DELETE {} failed ({}); manual cleanup may be required",
+                            "DELETE {} failed ({}); manual cleanup may be required",
                             url, err
                         ));
                     }
@@ -1104,7 +1130,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
         }
 
         log.status(&format!(
-            "cloudsmith: rollback complete — {} deleted, {} already absent, {} failed, {} warn-only (slug/token unavailable)",
+            "cloudsmith rollback complete — {} deleted, {} already absent, {} failed, {} warn-only (slug/token unavailable)",
             deleted, already_absent, failed, warn_only
         ));
         Ok(())

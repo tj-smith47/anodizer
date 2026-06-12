@@ -82,7 +82,7 @@ impl AnnounceSentMarker {
                 Ok(r) => r,
                 Err(e) => {
                     log.debug(&format!(
-                        "announce: ignoring unreadable sent-marker {}: {e}",
+                        "ignoring unreadable sent-marker {}: {e}",
                         path.display()
                     ));
                     SentRecord {
@@ -123,7 +123,7 @@ impl AnnounceSentMarker {
             && let Err(e) = std::fs::create_dir_all(parent)
         {
             log.warn(&format!(
-                "announce: could not create dir for sent-marker {}: {e}",
+                "could not create dir for sent-marker {}: {e}",
                 self.path.display()
             ));
             return;
@@ -132,12 +132,12 @@ impl AnnounceSentMarker {
             Ok(body) => {
                 if let Err(e) = std::fs::write(&self.path, body) {
                     log.warn(&format!(
-                        "announce: could not write sent-marker {}: {e}",
+                        "could not write sent-marker {}: {e}",
                         self.path.display()
                     ));
                 }
             }
-            Err(e) => log.warn(&format!("announce: could not serialize sent-marker: {e}")),
+            Err(e) => log.warn(&format!("could not serialize sent-marker: {e}")),
         }
     }
 }

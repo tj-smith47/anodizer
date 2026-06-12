@@ -46,10 +46,19 @@ use anodizer_core::{
 /// failed. `fail_fast` defaults to `false`: the dispatcher continues
 /// past a failed publisher so the resulting report enumerates every
 /// outcome for the release summary.
+///
+/// `persist_snapshots` defaults to `false` (unit tests drive `dispatch`
+/// with fixture contexts whose `dist` must stay untouched); the
+/// production `PublishStage` sets it to `true` so
+/// [`crate::run_summary::persist_summary_snapshot`] rewrites
+/// `summary.json` after every publisher — a hard kill mid-publish then
+/// still leaves the last-known publish state on disk for recovery
+/// tooling.
 #[derive(Debug, Clone, Copy)]
 pub struct DispatchOptions {
     pub fail_fast: bool,
     pub gate_submitter: bool,
+    pub persist_snapshots: bool,
 }
 
 impl Default for DispatchOptions {
@@ -57,6 +66,7 @@ impl Default for DispatchOptions {
         Self {
             fail_fast: false,
             gate_submitter: true,
+            persist_snapshots: false,
         }
     }
 }
@@ -70,6 +80,19 @@ pub fn dispatch(
     ctx: &mut Context,
     opts: &DispatchOptions,
 ) -> anyhow::Result<PublishReport> {
+    // Best-effort durable snapshot of the in-progress report; a write
+    // failure must never fail the publish itself (the summary is a
+    // secondary observability channel), so it degrades to a warning.
+    let snapshot = |ctx: &Context, report: &PublishReport| {
+        if !opts.persist_snapshots {
+            return;
+        }
+        if let Err(err) = crate::run_summary::persist_summary_snapshot(ctx, report) {
+            ctx.logger("publish")
+                .warn(&format!("summary snapshot write failed: {err:#}"));
+        }
+    };
+
     let mut report = PublishReport::default();
     let group_order = crate::registry::group_dispatch_order();
 
@@ -97,6 +120,7 @@ pub fn dispatch(
                     evidence: None,
                 });
                 report.submitter_gated = true;
+                snapshot(ctx, &report);
                 continue;
             }
 
@@ -114,6 +138,7 @@ pub fn dispatch(
                     outcome: PublisherOutcome::Skipped(SkipReason::Nightly),
                     evidence: None,
                 });
+                snapshot(ctx, &report);
                 continue;
             }
             // Test-harness short-circuit: when the operator listed this
@@ -172,6 +197,7 @@ pub fn dispatch(
                 evidence,
             };
             report.results.push(result);
+            snapshot(ctx, &report);
             if failed && opts.fail_fast {
                 break 'outer;
             }
@@ -194,6 +220,95 @@ mod tests {
             .expect("dispatch returns Ok for empty input");
         assert!(report.results.is_empty());
         assert!(!report.submitter_gated);
+    }
+
+    /// Publisher whose `run()` proves the previous publisher's result was
+    /// already durable on disk BEFORE this publisher started — i.e. the
+    /// dispatch loop snapshots after each publisher, not only at the end.
+    struct AssertsPriorSnapshot;
+
+    impl Publisher for AssertsPriorSnapshot {
+        fn name(&self) -> &str {
+            "second"
+        }
+        fn group(&self) -> PublisherGroup {
+            PublisherGroup::Manager
+        }
+        fn required(&self) -> bool {
+            false
+        }
+        fn skips_on_nightly(&self) -> bool {
+            false
+        }
+        fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
+            let path = crate::run_summary::summary_path(ctx)
+                .expect("summary path resolves for a real (non-snapshot) run");
+            let raw = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("snapshot missing at {}: {e}", path.display()));
+            let summary: crate::run_summary::RunSummary =
+                serde_json::from_str(&raw).expect("snapshot parses as RunSummary");
+            assert_eq!(
+                summary.results.len(),
+                1,
+                "first publisher's result persisted"
+            );
+            assert_eq!(summary.results[0].name, "first");
+            Ok(anodizer_core::PublishEvidence::new("second".to_string()))
+        }
+        fn rollback(
+            &self,
+            _ctx: &mut Context,
+            _evidence: &anodizer_core::PublishEvidence,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn persist_snapshots_writes_summary_after_each_publisher() {
+        let mut ctx = Context::test_fixture();
+        let dist = tempfile::tempdir().expect("tempdir");
+        ctx.config.dist = dist.path().to_path_buf();
+
+        let publishers: Vec<Box<dyn Publisher>> = vec![
+            fake("first", PublisherGroup::Assets, false, FakeOutcome::Succeed),
+            Box::new(AssertsPriorSnapshot),
+        ];
+        let opts = DispatchOptions {
+            persist_snapshots: true,
+            ..DispatchOptions::default()
+        };
+        let report = dispatch(&publishers, &mut ctx, &opts).expect("dispatch succeeds");
+        assert_eq!(report.results.len(), 2);
+
+        let path = crate::run_summary::summary_path(&ctx).expect("summary path resolves");
+        let raw = std::fs::read_to_string(&path).expect("final snapshot exists");
+        let summary: crate::run_summary::RunSummary =
+            serde_json::from_str(&raw).expect("final snapshot parses");
+        assert_eq!(summary.results.len(), 2);
+    }
+
+    #[test]
+    fn snapshots_disabled_by_default_leave_dist_untouched() {
+        let mut ctx = Context::test_fixture();
+        let dist = tempfile::tempdir().expect("tempdir");
+        ctx.config.dist = dist.path().to_path_buf();
+
+        let publishers: Vec<Box<dyn Publisher>> = vec![fake(
+            "first",
+            PublisherGroup::Assets,
+            false,
+            FakeOutcome::Succeed,
+        )];
+        dispatch(&publishers, &mut ctx, &DispatchOptions::default()).expect("dispatch succeeds");
+
+        let entries: Vec<_> = std::fs::read_dir(dist.path())
+            .expect("read_dir dist")
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "default dispatch options must not write into dist: {entries:?}"
+        );
     }
 
     #[test]
@@ -502,6 +617,7 @@ mod tests {
         let opts = DispatchOptions {
             fail_fast: false,
             gate_submitter: false,
+            ..DispatchOptions::default()
         };
         let report = dispatch(&publishers, &mut ctx, &opts).expect("dispatch returns Ok");
         assert!(!report.submitter_gated);
@@ -533,6 +649,7 @@ mod tests {
         let opts = DispatchOptions {
             fail_fast: true,
             gate_submitter: true,
+            ..DispatchOptions::default()
         };
         let report = dispatch(&publishers, &mut ctx, &opts)
             .expect("fail_fast still returns Ok with the partial report");

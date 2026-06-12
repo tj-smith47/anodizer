@@ -750,6 +750,17 @@ fn test_e2e_snapshot_release_produces_artifacts() {
         "dist/ should contain metadata.json, found: {:?}",
         entries
     );
+
+    // Snapshot with `--skip=release` never derives a release URL; the key
+    // must still be present (action-side `jq '.release_url // empty'`
+    // contract) and empty, matching the sibling keys' absent-value shape.
+    let metadata: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dist_dir.join("metadata.json")).unwrap()).unwrap();
+    assert_eq!(
+        metadata["release_url"], "",
+        "snapshot metadata.json must carry an empty release_url when no \
+         release was created"
+    );
 }
 
 /// E2E: `anodizer release --prepare` produces the same skip-stage behaviour
@@ -764,33 +775,37 @@ fn test_e2e_snapshot_release_produces_artifacts() {
 fn test_release_prepare_matches_explicit_skip() {
     let host = detect_host_target();
 
-    // We extract the set of stages the pipeline reported as skipped.
+    // Extracts the set of stages the pipeline reported as skipped.
     //
-    // The output refactor moved the stage name out of the message and into
-    // the per-line stage tag (now gone — format B). A pipeline-level skip
-    // now reads `   • <stage> skipped` (operator/mode `--skip`) or
-    // `   • <stage> skipped (no binaries)` (binary-dependent stage with no
-    // binaries) — both emitted by `Pipeline::run` via `status`. The stage
-    // name is the first whitespace-delimited token of the body; the rest is
-    // the verdict. We return the stage token so the assertions below can
-    // match `release` / `publish` / `announce` directly.
+    // Pipeline-level skips are consolidated into kv rows: consecutive
+    // skipped stages buffer up and flush as `   • skipped  a, b, c`
+    // (operator/mode `--skip`) or `   • skipped  a, b, c (no binaries)`
+    // (binary-dependent stages with no binaries) — both emitted by
+    // `Pipeline::run` via `kv`. The value is a comma-separated stage
+    // list, split into names so the assertions below can match
+    // `release` / `publish` / `announce` directly.
     //
     // Per-crate / per-config body notes (e.g. `no gitlab config ...,
     // skipping`) are progress lines inside a running stage, not a stage
-    // skip, so only the two exact verdict strings qualify.
+    // skip; anchoring on the kv key pad (`skipped` + at least two spaces)
+    // keeps them out — notes like `skipped (snapshot mode)` have a single
+    // space and don't match.
     fn extract_skipped_stages(stderr: &str) -> std::collections::BTreeSet<String> {
         stderr
             .lines()
             .filter_map(|line| {
                 let line = strip_ansi(line);
                 let body = line.trim_start().strip_prefix("• ")?;
-                let (stage, verdict) = body.split_once(' ')?;
-                if verdict == "skipped" || verdict == "skipped (no binaries)" {
-                    Some(stage.to_string())
-                } else {
-                    None
-                }
+                let names = body.strip_prefix("skipped  ")?.trim_start();
+                let names = names.strip_suffix(" (no binaries)").unwrap_or(names);
+                Some(
+                    names
+                        .split(", ")
+                        .map(|stage| stage.to_string())
+                        .collect::<Vec<_>>(),
+                )
             })
+            .flatten()
             .collect()
     }
 
@@ -4171,7 +4186,8 @@ crates:
 
     // milestone pre-flight emits the resolved target on stderr.
     assert!(
-        stderr.contains("milestone:") && stderr.contains("cross-axis-owner/cross-axis-repo"),
+        stderr.contains("will close milestone")
+            && stderr.contains("cross-axis-owner/cross-axis-repo"),
         "stderr should log the milestone pre-flight target, got:\n{}",
         stderr
     );
@@ -4826,7 +4842,7 @@ crates:
 
     // Seed dist/run-fixt/report.json with a Succeeded Manager entry
     // whose name does not match any publisher in this minimal config.
-    // We don't need real publisher dispatch — only that the replay
+    // Real publisher dispatch is not needed — only that the replay
     // path runs end-to-end and writes rollback.json.
     let run_dir = tmp.path().join("dist").join("run-fixt");
     fs::create_dir_all(&run_dir).unwrap();
@@ -5019,19 +5035,27 @@ crates:
 }
 
 /// E2E regression: a required-publisher failure in real-release mode
-/// (not snapshot, not dry-run) must surface as a non-zero exit even
-/// though the pipeline body returned `Ok`. Pinned at
-/// `crates/cli/src/commands/release/mod.rs` (the
-/// `gate_required_failures(&ctx)?` call after the pipeline returns).
-/// If that call is dropped, the simulated cargo failure rides through
-/// to exit 0 and this test fails.
+/// (not snapshot, not dry-run) must surface as a non-zero exit. Two
+/// gates defend this, in layers:
 ///
-/// The bail message lives in `gate_required_failures` and
-/// reads `"release pipeline finished but {N} required publisher(s)
+/// 1. The publish stage itself errors (`bail_on_required_failures` in
+///    `crates/stage-publish/src/lib.rs`), after dispatch, rollback
+///    bookkeeping, and report/summary persistence complete — so the
+///    pipeline body returns `Err` and this is the gate that normally
+///    fires.
+/// 2. `gate_required_failures(&ctx)?` in
+///    `crates/cli/src/commands/release/mod.rs` remains as the outer
+///    defense: if the stage-level gate were removed, it would still
+///    convert the recorded failure to a non-zero exit. Both gates must
+///    be dropped before the simulated cargo failure rides through to
+///    exit 0 and this test fails.
+///
+/// Both gates phrase the bail as `"... {N} required publisher(s)
 /// failed: {names}. ..."` — so this test asserts both `"required
-/// publisher"` and `"cargo"` appear in stderr. It also confirms
-/// `report.json` was persisted *before* the gate fired so operators
-/// can replay rollback via `--rollback-only --from-run=<id>`.
+/// publisher"` and `"cargo"` appear in stderr without pinning which
+/// layer fired. It also confirms `report.json` was persisted *before*
+/// the gate fired so operators can replay rollback via
+/// `--rollback-only --from-run=<id>`.
 #[test]
 fn release_required_publisher_failure_gates_exit_code() {
     let tmp = TempDir::new().unwrap();
@@ -5153,6 +5177,69 @@ crates:
         !stderr.contains("required publisher(s) failed"),
         "gate bail message must NOT appear for non-required failure; got: {stderr}"
     );
+}
+
+/// The environment preflight must abort `anodizer release` BEFORE any
+/// stage runs: a configured cargo publisher demands CARGO_REGISTRY_TOKEN,
+/// which is removed from the environment here, so the release must exit
+/// non-zero with the preflight bail on stderr and leave no `dist/run-*`
+/// directory behind — the publish stage persisting one would prove a
+/// stage ran past the failed check.
+#[test]
+fn release_env_preflight_failure_aborts_before_any_stage() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      cargo: {}
+"#,
+    );
+    init_git_repo(tmp.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["release"])
+        .env_remove("CARGO_REGISTRY_TOKEN")
+        .env_remove("ANODIZER_GITHUB_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "release with an unsatisfiable preflight requirement must exit non-zero; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("environment failure(s)"),
+        "stderr must carry the preflight bail; got: {stderr}"
+    );
+    assert!(
+        stderr.contains("CARGO_REGISTRY_TOKEN"),
+        "the failure report must name the missing env var; got: {stderr}"
+    );
+    // No stage ran: the publish stage writes `dist/run-<id>/` very early
+    // in its execution, so any run dir means the abort came too late.
+    let dist = tmp.path().join("dist");
+    if dist.exists() {
+        let run_dirs: Vec<String> = fs::read_dir(&dist)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with("run-"))
+            .collect();
+        assert!(
+            run_dirs.is_empty(),
+            "preflight abort must precede every stage; found run dir(s): {run_dirs:?}\nstderr: {stderr}"
+        );
+    }
 }
 
 /// `--allow-nondeterministic foo` (no `=`) errors at the translation site.

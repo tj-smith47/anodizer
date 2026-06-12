@@ -17,6 +17,15 @@ use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
+/// Whether output contains a changelog-STAGE skip line ("skipping
+/// changelog (snapshot mode...)" / "skipping changelog — `skip` ...").
+/// Deliberately tighter than `contains("skipping changelog")` so the
+/// changelog.ai line ("skipping changelog.ai enhancement ...") from an
+/// AI-configured fixture can never false-match.
+fn mentions_changelog_stage_skip(s: &str) -> bool {
+    s.contains("skipping changelog (") || s.contains("skipping changelog —")
+}
+
 fn anodizer() -> Command {
     Command::new(env!("CARGO_BIN_EXE_anodizer"))
 }
@@ -636,7 +645,7 @@ fn real_single_crate_tag_bump_subject_matches_exclude_prefix() {
 /// Bare `changelog --format release-notes` (no positional, no `--snapshot`) with
 /// the last tag BEHIND HEAD must render the pending last-tag..HEAD window — the
 /// same set kac/json show for the identical state — with NO release-time guards:
-/// no tag-at-HEAD error, no `changelog skipped` line.
+/// no tag-at-HEAD error, no `skipping changelog` line.
 #[test]
 fn bare_release_notes_renders_pending_window_no_guards() {
     let tmp = single_crate_repo();
@@ -655,7 +664,7 @@ fn bare_release_notes_renders_pending_window_no_guards() {
         r.stderr
     );
     assert!(
-        !r.stdout.contains("changelog skipped") && !r.stderr.contains("changelog skipped"),
+        !mentions_changelog_stage_skip(&r.stdout) && !mentions_changelog_stage_skip(&r.stderr),
         "bare preview must NOT hit the snapshot-skip gate: {}\n{}",
         r.stdout,
         r.stderr
@@ -715,7 +724,7 @@ fn lockstep_release_notes_renders_pending_window_no_guards() {
         r.stderr
     );
     assert!(
-        !r.stdout.contains("changelog skipped") && !r.stderr.contains("changelog skipped"),
+        !mentions_changelog_stage_skip(&r.stdout) && !mentions_changelog_stage_skip(&r.stderr),
         "lockstep preview must NOT hit the snapshot-skip gate: {}\n{}",
         r.stdout,
         r.stderr
@@ -742,7 +751,7 @@ fn snapshot_release_notes_renders_without_config_opt_in() {
         r.stdout, r.stderr
     );
     assert!(
-        !r.stdout.contains("changelog skipped") && !r.stderr.contains("changelog skipped"),
+        !mentions_changelog_stage_skip(&r.stdout) && !mentions_changelog_stage_skip(&r.stderr),
         "the standalone command must bypass the `changelog.snapshot` gate: {}\n{}",
         r.stdout,
         r.stderr
@@ -1557,7 +1566,7 @@ crates:
 /// A single-crate repo configured `changelog.use: github-native` with a
 /// `release.github` repo. The standalone `changelog --format release-notes`
 /// must render LOCAL scm bullets (the pending window), emit the one-line
-/// "previewing from local git" note, require NO token, and be NON-empty.
+/// "previewing changelog from local git" note, require NO token, and be NON-empty.
 fn github_native_repo() -> TempDir {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
@@ -1621,7 +1630,7 @@ fn github_native_release_notes_previews_from_local_git() {
         "github-native preview must NOT require a token: {stderr}"
     );
     assert!(
-        stderr.contains("previewing from local git"),
+        stderr.contains("previewing changelog from local git"),
         "github-native preview must emit the one-line fallback note: {stderr}"
     );
     assert!(
@@ -2112,14 +2121,15 @@ fn config_shape_matrix_renders_all_formats() {
             );
         }
         assert!(
-            !rn.stdout.contains("changelog skipped") && !rn.stderr.contains("changelog skipped"),
+            !mentions_changelog_stage_skip(&rn.stdout)
+                && !mentions_changelog_stage_skip(&rn.stderr),
             "[{label}] release-notes must not hit the snapshot-skip gate: {}\n{}",
             rn.stdout,
             rn.stderr
         );
         if is_ghnative {
             assert!(
-                rn.stderr.contains("previewing from local git"),
+                rn.stderr.contains("previewing changelog from local git"),
                 "[{label}] github-native release-notes must emit the local-git note: {}",
                 rn.stderr
             );
@@ -2160,8 +2170,8 @@ fn config_shape_matrix_renders_all_formats() {
             snap.stdout, snap.stderr
         );
         assert!(
-            !snap.stdout.contains("changelog skipped")
-                && !snap.stderr.contains("changelog skipped"),
+            !mentions_changelog_stage_skip(&snap.stdout)
+                && !mentions_changelog_stage_skip(&snap.stderr),
             "[{label}] snapshot release-notes must bypass the config gate: {}\n{}",
             snap.stdout,
             snap.stderr

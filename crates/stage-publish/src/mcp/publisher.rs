@@ -138,7 +138,7 @@ fn rollback_one_target(
     match result {
         Ok(_) => {
             log.status(&format!(
-                "mcp: marked '{}@{}' as deleted on {}",
+                "marked mcp '{}@{}' as deleted on {}",
                 target.server_name, target.version, target.registry_url,
             ));
             Ok(RollbackOutcome::Restored)
@@ -165,7 +165,7 @@ fn rollback_one_target(
                 ),
                 _ => return Err(err),
             };
-            log.warn(&format!("mcp: rollback degraded to warn: {}", reason));
+            log.warn(&format!("mcp rollback degraded to warn — {}", reason));
             Ok(RollbackOutcome::DegradedToWarn)
         }
     }
@@ -183,6 +183,60 @@ impl anodizer_core::Publisher for McpPublisher {
     }
     fn rollback_scope_needed(&self) -> Option<&'static str> {
         Self::ROLLBACK_SCOPE
+    }
+
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        use anodizer_core::config::McpAuthMethod;
+        let cfg = &ctx.config.mcp;
+        if cfg.name.as_deref().unwrap_or("").is_empty()
+            || crate::publisher_helpers::entry_inactive(
+                ctx,
+                cfg.skip.as_ref(),
+                None,
+                cfg.if_condition.as_deref(),
+            )
+        {
+            return Vec::new();
+        }
+        match cfg.auth.method {
+            // Anonymous publish needs no credential; a templated static-JWT
+            // override still declares its env refs so a half-set CI secret
+            // fails preflight instead of silently degrading to anonymous.
+            McpAuthMethod::None => {
+                let refs = anodizer_core::env_preflight::template_env_refs(&cfg.auth.token);
+                if refs.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![anodizer_core::EnvRequirement::EnvAllOf { vars: refs }]
+                }
+            }
+            // PAT exchange: rendered `auth.token` with an MCP_GITHUB_TOKEN
+            // env fallback when it renders empty — a sole `{{ .Env.X }}`
+            // therefore forms an any-of ladder with the fallback.
+            McpAuthMethod::Github => {
+                if let Some(var) = anodizer_core::env_preflight::sole_env_ref(&cfg.auth.token) {
+                    vec![anodizer_core::EnvRequirement::EnvAnyOf {
+                        vars: vec![var, "MCP_GITHUB_TOKEN".to_string()],
+                    }]
+                } else {
+                    crate::publisher_helpers::secret_requirement(
+                        Some(cfg.auth.token.as_str()),
+                        "MCP_GITHUB_TOKEN",
+                    )
+                    .into_iter()
+                    .collect()
+                }
+            }
+            // The OIDC id-token is fetched from the Actions runtime; both
+            // request vars are injected by GitHub only when the workflow
+            // has `id-token: write`.
+            McpAuthMethod::GithubOidc => vec![anodizer_core::EnvRequirement::EnvAllOf {
+                vars: vec![
+                    "ACTIONS_ID_TOKEN_REQUEST_URL".to_string(),
+                    "ACTIONS_ID_TOKEN_REQUEST_TOKEN".to_string(),
+                ],
+            }],
+        }
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
@@ -230,7 +284,7 @@ impl anodizer_core::Publisher for McpPublisher {
                 Err(e) => {
                     failed += 1;
                     log.warn(&format!(
-                        "mcp: failed to mark '{}@{}' as deleted on {}: {:#}; \
+                        "failed to mark mcp '{}@{}' as deleted on {}: {:#}; \
                          verify and restore manually via the registry admin UI",
                         t.server_name, t.version, t.registry_url, e
                     ));
@@ -238,7 +292,7 @@ impl anodizer_core::Publisher for McpPublisher {
             }
         }
         log.status(&format!(
-            "mcp: rollback marked {} version(s) as deleted, {} degraded-to-warn, {} failure(s)",
+            "mcp rollback marked {} version(s) as deleted, {} degraded-to-warn, {} failure(s)",
             deleted, degraded, failed
         ));
         Ok(())

@@ -548,7 +548,7 @@ impl BlobStage {
                             remote_key,
                         );
                         log.status(&format!(
-                            "[dry-run] would upload {} -> {}",
+                            "(dry-run) would upload {} -> {}",
                             local_path.display(),
                             remote,
                         ));
@@ -1049,7 +1049,7 @@ mod run_tests {
 
         let lines: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
         assert!(
-            lines.iter().any(|l| l.contains("[dry-run]")
+            lines.iter().any(|l| l.contains("(dry-run)")
                 && l.contains("demo-releases/artifacts/v1.0.0/myapp-v1.0.0.tar.gz")),
             "dry-run must log the templated bucket+directory+key target; got: {lines:?}"
         );

@@ -18,6 +18,11 @@
 //!    ✗ aarch64-…   build failed    ← FAILURE line           (failure)
 //! ```
 //!
+//! Body lines belonging to a [`StageLogger::group`] section additionally
+//! carry the section's 2-space nesting indent, so a header's own detail
+//! rows sit one level beneath it (the indents in the sketch above are
+//! relative, not absolute columns).
+//!
 //! - **Section headers** ([`StageLogger::step`] / [`StageLogger::group`]) put a
 //!   bold-green present-participle verb (the leading word of the stage's
 //!   [`stage_header`] phrase) right-aligned in a fixed 12-column gutter, then
@@ -56,6 +61,7 @@
 
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use colored::Colorize;
@@ -72,6 +78,42 @@ use colored::Colorize;
 /// The depth is therefore a property of "where the main thread is in the
 /// run", not of any individual logger clone or worker.
 static SECTION_DEPTH: AtomicUsize = AtomicUsize::new(0);
+
+/// Env var carrying a parent `anodizer` process's visual nesting depth.
+///
+/// The determinism harness spawns child `anodizer release` subprocesses
+/// whose stderr is inherited, so the child's lines interleave directly
+/// into the parent's stream. Without an inherited base depth the child's
+/// section headers would render flush-left, visually escaping the
+/// parent's open section. The parent exports its depth here; the child
+/// reads it once (see [`base_depth`]) and offsets every indent by it.
+pub const LOG_DEPTH_ENV: &str = "ANODIZER_LOG_DEPTH";
+
+/// Base nesting depth inherited from a parent process via
+/// [`LOG_DEPTH_ENV`], parsed once on first use. Zero when the var is
+/// absent or unparseable (a standalone process indents from column 0).
+static BASE_DEPTH: OnceLock<usize> = OnceLock::new();
+
+/// Parse the inherited base depth from a raw [`LOG_DEPTH_ENV`] value.
+/// Lenient by design: a missing or malformed value degrades to 0 (the
+/// standalone-process default) rather than failing — indentation is
+/// presentation, never worth aborting a release over.
+fn parse_base_depth(raw: Option<&str>) -> usize {
+    raw.and_then(|v| v.trim().parse().ok()).unwrap_or(0)
+}
+
+/// The process's inherited base depth (see [`LOG_DEPTH_ENV`]).
+fn base_depth() -> usize {
+    *BASE_DEPTH.get_or_init(|| parse_base_depth(std::env::var(LOG_DEPTH_ENV).ok().as_deref()))
+}
+
+/// Current absolute nesting depth: the inherited base plus every open
+/// section. This is the value [`indent`] renders and the value a parent
+/// exports (offset for the child's nesting) when spawning a subprocess
+/// whose stderr joins this process's stream.
+pub fn current_depth() -> usize {
+    base_depth() + SECTION_DEPTH.load(Ordering::Relaxed)
+}
 
 /// A section header that has been opened ([`StageLogger::group`]) but not yet
 /// printed. The header line is deferred until the section actually emits a
@@ -220,6 +262,7 @@ pub fn stage_header(stage: &str) -> &'static str {
         "announce" => "Announcing release",
         "verify-release" => "Verifying release",
         "publisher-summary" => "Summary",
+        "check-determinism" => "Checking determinism",
         "finalize" => "Finalizing",
         "prepare" => "Preparing",
         _ => "Running",
@@ -281,7 +324,34 @@ pub fn render_note(msg: &str) -> String {
 /// the same indent a library warn fired mid-stage would otherwise lack,
 /// keeping it aligned with the surrounding body lines.
 pub fn indent() -> String {
-    "  ".repeat(SECTION_DEPTH.load(Ordering::Relaxed))
+    "  ".repeat(current_depth())
+}
+
+/// RAII guard returned by [`indent_one_level`]. Removes the extra indent
+/// level when dropped.
+#[must_use = "dropping the guard immediately removes the extra indent"]
+pub struct IndentGuard {
+    _private: (),
+}
+
+impl Drop for IndentGuard {
+    fn drop(&mut self) {
+        SECTION_DEPTH.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Deepen the body indent by one level WITHOUT opening a section header.
+///
+/// For rows that must align with the body bullets of sibling sections
+/// while no section is open — e.g. the pipeline's consolidated
+/// `skipped  a, b, c` row, which prints between stage sections (the
+/// previous stage's guard has already dropped) but should sit at the
+/// same column as those sections' own `•` lines instead of two columns
+/// to their left. Unlike [`StageLogger::group`] this pushes no pending
+/// header, so nothing extra ever prints.
+pub fn indent_one_level() -> IndentGuard {
+    SECTION_DEPTH.fetch_add(1, Ordering::Relaxed);
+    IndentGuard { _private: () }
 }
 
 /// RAII guard returned by [`StageLogger::group`]. Closes the section
@@ -294,12 +364,17 @@ pub struct SectionGuard {
 
 impl Drop for SectionGuard {
     fn drop(&mut self) {
+        // Take the PENDING lock BEFORE decrementing the depth: a
+        // flush_pending observer on another thread serializes on this
+        // lock, so it sees the depth decrement and the pop as one
+        // transition instead of a window where the depth is already
+        // lowered but the section's pending header is still queued.
+        let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
         SECTION_DEPTH.fetch_sub(1, Ordering::Relaxed);
         // Remove this section's pending entry (LIFO matches nesting). An
         // unflushed entry means the section emitted no body line — a no-op
         // stage — so dropping it without printing is exactly the desired
         // "no-op stages print nothing" behavior.
-        let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
         pending.pop();
     }
 }
@@ -441,7 +516,7 @@ impl Verbosity {
 ///     .with_env(env_pairs);                       // attach env for redact
 /// log.status("compiling for x86_64-unknown-linux-gnu");
 /// log.verbose(&format!("RUSTFLAGS={}", flags));
-/// log.debug(&format!("full env: {:?}", env));
+/// log.debug(&format!("full env = {:?}", env));
 /// ```
 #[derive(Clone)]
 pub struct StageLogger {
@@ -760,7 +835,7 @@ impl StageLogger {
         let (verb, msg) = self.split_header(title);
         let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
         pending.push(PendingHeader {
-            depth: SECTION_DEPTH.load(Ordering::Relaxed),
+            depth: current_depth(),
             verb: verb.to_string(),
             msg: msg.to_string(),
             flushed: false,
@@ -1068,17 +1143,70 @@ mod tests {
         // indentation (not a collapsible `::group::` block) conveys nesting.
         let _guard = SECTION_TEST_LOCK.lock().unwrap();
         let log = StageLogger::new("build", Verbosity::Normal);
-        assert_eq!(indent(), "");
+        // Relative to the inherited base so an exported ANODIZER_LOG_DEPTH
+        // in the test environment shifts every expectation uniformly.
+        let base = "  ".repeat(base_depth());
+        assert_eq!(indent(), base);
         {
             let _outer = log.group("build");
-            assert_eq!(indent(), "  ");
+            assert_eq!(indent(), format!("{base}  "));
             {
                 let _inner = log.group("sign");
-                assert_eq!(indent(), "    ");
+                assert_eq!(indent(), format!("{base}    "));
             }
-            assert_eq!(indent(), "  ");
+            assert_eq!(indent(), format!("{base}  "));
         }
-        assert_eq!(indent(), "");
+        assert_eq!(indent(), base);
+    }
+
+    #[test]
+    fn test_indent_one_level_adds_depth_without_pending_header() {
+        // The header-less guard must deepen the indent (so the row aligns
+        // with sibling sections' body bullets) without registering a
+        // pending header that a later body line could spuriously flush.
+        let _guard = SECTION_TEST_LOCK.lock().unwrap();
+        let start = SECTION_DEPTH.load(Ordering::Relaxed);
+        let pending_before = PENDING.lock().unwrap().len();
+        {
+            let _indent = indent_one_level();
+            assert_eq!(SECTION_DEPTH.load(Ordering::Relaxed), start + 1);
+            assert_eq!(
+                PENDING.lock().unwrap().len(),
+                pending_before,
+                "indent_one_level must not push a pending header"
+            );
+            assert_eq!(indent(), "  ".repeat(current_depth()));
+        }
+        assert_eq!(SECTION_DEPTH.load(Ordering::Relaxed), start);
+    }
+
+    #[test]
+    fn test_parse_base_depth_accepts_valid_and_degrades_invalid() {
+        // A subprocess child inherits a numeric depth; anything else
+        // (absent, junk, negative) degrades to the standalone default 0 —
+        // indentation must never abort a run.
+        assert_eq!(parse_base_depth(Some("3")), 3);
+        assert_eq!(parse_base_depth(Some(" 2 ")), 2);
+        assert_eq!(parse_base_depth(Some("0")), 0);
+        assert_eq!(parse_base_depth(Some("-1")), 0);
+        assert_eq!(parse_base_depth(Some("abc")), 0);
+        assert_eq!(parse_base_depth(Some("")), 0);
+        assert_eq!(parse_base_depth(None), 0);
+    }
+
+    #[test]
+    fn test_current_depth_tracks_sections() {
+        // `current_depth` = inherited base (0 in tests — the env var is
+        // not set under cargo test) + open sections; it is the value a
+        // parent exports to children via LOG_DEPTH_ENV.
+        let _guard = SECTION_TEST_LOCK.lock().unwrap();
+        let log = StageLogger::new("build", Verbosity::Normal);
+        let start = current_depth();
+        {
+            let _outer = log.group("build");
+            assert_eq!(current_depth(), start + 1);
+        }
+        assert_eq!(current_depth(), start);
     }
 
     #[test]
@@ -1432,17 +1560,21 @@ mod tests {
             }
             out
         };
+        // Relative to the live indent so an exported ANODIZER_LOG_DEPTH
+        // (or a section left open by a parallel test) cannot skew the
+        // absolute column.
+        let prefix = indent();
         assert_eq!(
             strip(StageLogger::render_body(MARKER_DETAIL, "x")),
-            "   • x"
+            format!("{prefix}   • x")
         );
         assert_eq!(
             strip(StageLogger::render_body(MARKER_SUCCESS, "ok")),
-            "   ✓ ok"
+            format!("{prefix}   ✓ ok")
         );
         assert_eq!(
             strip(StageLogger::render_body(MARKER_FAILURE, "bad")),
-            "   ✗ bad"
+            format!("{prefix}   ✗ bad")
         );
     }
 

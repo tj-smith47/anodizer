@@ -145,17 +145,17 @@ fn copy_extra_files(
                 if let Some(info) = info {
                     if info.mode.is_some() {
                         log.warn(&format!(
-                            "app_bundles: extra_files info.mode is not used for app bundles (ignored for src '{src}')"
+                            "extra_files info.mode is not used for app bundles (ignored for src '{src}')"
                         ));
                     }
                     if info.owner.is_some() {
                         log.warn(&format!(
-                            "app_bundles: extra_files info.owner is not used for app bundles (ignored for src '{src}')"
+                            "extra_files info.owner is not used for app bundles (ignored for src '{src}')"
                         ));
                     }
                     if info.group.is_some() {
                         log.warn(&format!(
-                            "app_bundles: extra_files info.group is not used for app bundles (ignored for src '{src}')"
+                            "extra_files info.group is not used for app bundles (ignored for src '{src}')"
                         ));
                     }
                 }
@@ -717,6 +717,16 @@ impl Stage for AppBundleStage {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+/// Environment requirements for the appbundle stage: none. The stage
+/// assembles the `.app` directory layout with pure file operations — no
+/// external tool, env var, or endpoint is consumed. Declared explicitly so
+/// the preflight aggregation covers every pipeline stage by construction.
+pub fn env_requirements(
+    _ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    Vec::new()
+}
 
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]

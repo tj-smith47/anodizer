@@ -118,7 +118,7 @@ impl Stage for ArchiveStage {
             && let Err(e) = fs::remove_dir_all(&staging_root)
         {
             log.verbose(&format!(
-                "archive: could not remove templated_files staging dir '{}': {e}",
+                "could not remove templated_files staging dir '{}': {e}",
                 staging_root.display()
             ));
         }
@@ -325,7 +325,7 @@ fn archive_one_config(
         )?;
         if !proceed {
             log.status(&format!(
-                "archives[{archive_id}]: skipped — `if` condition evaluated falsy"
+                "skipping archives[{archive_id}] — `if` condition evaluated falsy"
             ));
             continue;
         }
@@ -354,8 +354,8 @@ fn archive_one_config(
                 .map(|ids| format!(" matching ids {ids:?}"))
                 .unwrap_or_default();
             log.warn(&format!(
-                "archive[{archive_id}]: crate {crate_name} has no binaries{id_filter_desc} \
-             — skipping (set `meta: true` if this is intentional)"
+                "skipping archives[{archive_id}] — crate {crate_name} has no \
+             binaries{id_filter_desc} (set `meta: true` if this is intentional)"
             ));
             continue;
         }

@@ -519,7 +519,7 @@ fn wait_for_workspace_deps_to_appear(
         .context("publish: wait_for_workspace_deps build HTTP client")?;
 
     log.status(&format!(
-        "wait_for_workspace_deps: gating publish of '{}' on {} workspace dep(s)",
+        "gating publish of '{}' on {} workspace dep(s)",
         crate_name,
         deps.len()
     ));
@@ -531,26 +531,24 @@ fn wait_for_workspace_deps_to_appear(
     for (name, version) in deps {
         let url = sparse_index_url(name);
         log.status(&format!(
-            "wait_for_workspace_deps: waiting for {name}@{version} on crates.io (timeout {}s)",
+            "waiting for {name}@{version} on crates.io (timeout {}s)",
             max_wait.as_secs()
         ));
         loop {
             match probe_dep_on_index(&client, &url, version) {
                 Ok(true) => {
                     log.status(&format!(
-                        "wait_for_workspace_deps: {name}@{version} available — \
+                        "{name}@{version} available — \
                          continuing publish of '{crate_name}'"
                     ));
                     break;
                 }
                 Ok(false) => {
-                    log.verbose(&format!(
-                        "wait_for_workspace_deps: {name}@{version} not yet on index — retrying"
-                    ));
+                    log.verbose(&format!("{name}@{version} not yet on index — retrying"));
                 }
                 Err(e) => {
                     log.verbose(&format!(
-                        "wait_for_workspace_deps: probe error for {name}@{version}: {e:#} — retrying"
+                        "probe error for {name}@{version}: {e:#} — retrying"
                     ));
                 }
             }
@@ -931,10 +929,10 @@ pub(crate) fn check_publish_set_completeness(
                 // positively prove absence, so do not hard-fail — but surface
                 // it so a real gap isn't swallowed silently.
                 log.warn(&format!(
-                    "publish dep-guard: crate '{publishing}' depends on workspace crate \
-                     '{dep_name}'{alias_note} which is not in the cargo publish set, and no \
-                     required version could be resolved to verify it is on crates.io; verify \
-                     manually"
+                    "crate '{publishing}' depends on workspace crate \
+                     '{dep_name}'{alias_note} which is not in the cargo publish set, and the \
+                     publish dep-guard could not resolve a required version to verify it is \
+                     on crates.io; verify manually"
                 ));
                 continue;
             }
@@ -942,8 +940,8 @@ pub(crate) fn check_publish_set_completeness(
             match index_probe(&dep_name, &probe_version) {
                 DepIndexState::Present => {
                     log.verbose(&format!(
-                        "publish dep-guard: '{publishing}' dep '{dep_name}@{probe_version}' is \
-                         not in the publish set but is already on crates.io — ok"
+                        "publish dep-guard confirmed '{publishing}' dep '{dep_name}@{probe_version}' is \
+                         not in the publish set but is already on crates.io"
                     ));
                 }
                 DepIndexState::Absent => {
@@ -967,7 +965,7 @@ pub(crate) fn check_publish_set_completeness(
                 }
                 DepIndexState::Unknown => {
                     log.warn(&format!(
-                        "publish dep-guard: could not determine crates.io state for '{publishing}' \
+                        "publish dep-guard could not determine crates.io state for '{publishing}' \
                          dep '{dep_name}@{probe_version}'{alias_note} (transient index error); not \
                          failing the guard on an inconclusive probe — verify the dep is published \
                          if the real `cargo publish` fails"
@@ -1069,14 +1067,14 @@ fn run_cargo_publish_with_retry(
 
         if attempt >= PUBLISH_PROPAGATION_RETRIES {
             log.warn(&format!(
-                "{label}: propagation-style failure persists after {attempt} attempts; surfacing"
+                "propagation-style failure for {label} persists after {attempt} attempts; surfacing"
             ));
             last_output = Some(output);
             break;
         }
 
         log.status(&format!(
-            "{label}: sparse-index propagation lag detected (attempt {}/{}); retrying in {}s",
+            "sparse-index propagation lag detected for {label} (attempt {}/{}); retrying in {}s",
             attempt,
             PUBLISH_PROPAGATION_RETRIES,
             backoff.as_secs()
@@ -1342,7 +1340,10 @@ pub(crate) fn cargo_publish_plan(
                     .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                     .with_context(|| format!("cargo: render skip template for '{}'", c.name))?;
                 if off {
-                    log.status(&format!("cargo: skipped for '{}' (skip=true)", c.name));
+                    log.status(&format!(
+                        "skipped cargo publish for '{}' (skip=true)",
+                        c.name
+                    ));
                     continue;
                 }
             }
@@ -1353,7 +1354,7 @@ pub(crate) fn cargo_publish_plan(
             )?;
             if !proceed {
                 log.status(&format!(
-                    "cargo: skipping '{}' — `if` condition evaluated falsy",
+                    "skipping cargo publish for '{}' — `if` condition evaluated falsy",
                     c.name
                 ));
                 continue;
@@ -1588,7 +1589,7 @@ fn publish_to_cargo_with(
                 workspace_deps_for_crate(&manifest_path, &workspace_names, &mut ws_root_cache);
             if deps.is_empty() {
                 log.verbose(&format!(
-                    "wait_for_workspace_deps: '{name}' has no workspace-internal deps with \
+                    "'{name}' has no workspace-internal deps with \
                      a literal version pin — gate is a no-op"
                 ));
             } else {
@@ -1598,7 +1599,7 @@ fn publish_to_cargo_with(
         }
 
         let cmd = publish_command(name, cargo_cfg);
-        log.status(&format!("running: {}", cmd.join(" ")));
+        log.status(&format!("running {}", cmd.join(" ")));
 
         // Defense in depth: even though poll_crates_io_index already waits
         // for the prior crate to land on the index edge anodizer queries,
@@ -1635,7 +1636,7 @@ fn publish_to_cargo_with(
         };
         if yank_version.is_empty() {
             log.warn(&format!(
-                "cargo: published '{name}' with no resolvable version; it CANNOT be \
+                "cargo published '{name}' with no resolvable version; it CANNOT be \
                  auto-yanked on rollback — verify and `cargo yank` it manually if a \
                  later crate fails this run"
             ));
@@ -1700,7 +1701,7 @@ simple_publisher!(
 /// dispatch table can't silently report success on a no-op run.
 pub(crate) fn run_start_message(selected_total: usize) -> String {
     format!(
-        "cargo: starting publish for {} selected crate(s)",
+        "starting cargo publish for {} selected crate(s)",
         selected_total
     )
 }
@@ -1711,7 +1712,7 @@ pub(crate) fn run_start_message(selected_total: usize) -> String {
 /// Mirrors `run_per_crate_start_message` on every other per-crate
 /// publisher (homebrew, scoop, nix, aur, krew).
 pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
-    format!("cargo: starting per-crate publish for '{}'", crate_name)
+    format!("starting per-crate cargo publish for '{}'", crate_name)
 }
 
 /// Operator-visible done line, emitted after `publish_to_cargo` returns
@@ -1720,7 +1721,7 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 /// dry-run paths all count as processed — they're successful runs of
 /// the correct code path).
 pub(crate) fn run_done_message(processed: usize) -> String {
-    format!("cargo: completed — {} crate(s) processed", processed)
+    format!("finished cargo publish — {} crate(s) processed", processed)
 }
 
 /// Warning emitted when the publisher was registered (at least one
@@ -1729,8 +1730,8 @@ pub(crate) fn run_done_message(processed: usize) -> String {
 /// out by `--crate` / `--all` selection).
 pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     format!(
-        "cargo: registered but 0 of {} effective crate(s) had a publish.cargo \
-         block selected — nothing pushed. Check that --crate / --all selects a \
+        "cargo publisher registered but 0 of {} effective crate(s) had a cargo \
+         config block — nothing pushed. Check that --crate / --all selects a \
          crate whose publish.cargo block is set.",
         selected_total
     )
@@ -1763,6 +1764,34 @@ impl anodizer_core::Publisher for CargoPublisher {
 
     fn skips_on_nightly(&self) -> bool {
         true
+    }
+
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // `cargo publish` resolves the crates.io token from
+        // CARGO_REGISTRY_TOKEN; the run path spawns the literal `cargo`
+        // from PATH, so probe exactly that.
+        let configured = anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.cargo.as_ref())
+            .any(|cargo| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    cargo.skip.as_ref(),
+                    None,
+                    cargo.if_condition.as_deref(),
+                )
+            });
+        if !configured {
+            return Vec::new();
+        }
+        vec![
+            anodizer_core::EnvRequirement::Tool {
+                name: "cargo".to_string(),
+            },
+            anodizer_core::EnvRequirement::EnvAllOf {
+                vars: vec!["CARGO_REGISTRY_TOKEN".to_string()],
+            },
+        ]
     }
 
     fn programmatic_rollback_on_failure(&self, evidence: &anodizer_core::PublishEvidence) -> bool {
@@ -1849,7 +1878,7 @@ impl anodizer_core::Publisher for CargoPublisher {
             // failure to recover. (Verbose, not a scary warn: an empty
             // record is the normal shape when the failing publisher never
             // reached its first successful `cargo publish`.)
-            log.verbose("cargo: no crates published this run; rollback is a no-op");
+            log.verbose("no crates published this run; cargo rollback is a no-op");
             return Ok(());
         }
         let mut yanked = 0usize;
@@ -1885,10 +1914,7 @@ impl anodizer_core::Publisher for CargoPublisher {
                 .as_deref()
                 .or(t.index.as_deref())
                 .unwrap_or("crates.io");
-            log.status(&format!(
-                "cargo: yank {} {} ({})",
-                t.name, t.version, target
-            ));
+            log.status(&format!("yanking {} {} ({})", t.name, t.version, target));
             let output = Command::new("cargo").args(&args).output()?;
             if output.status.success() {
                 yanked += 1;
@@ -1904,7 +1930,7 @@ impl anodizer_core::Publisher for CargoPublisher {
             }
         }
         log.status(&format!(
-            "cargo: yanked {} crate(s), {} failure(s)",
+            "cargo rollback yanked {} crate(s), {} failure(s)",
             yanked, failed
         ));
         Ok(())
@@ -2013,32 +2039,28 @@ mod publisher_tests {
     #[test]
     fn run_start_message_names_selected_total() {
         let msg = run_start_message(3);
-        assert!(msg.starts_with("cargo:"), "{msg}");
-        assert!(msg.contains("starting publish"), "{msg}");
+        assert!(msg.starts_with("starting cargo publish for"), "{msg}");
         assert!(msg.contains("3 selected"), "{msg}");
     }
 
     #[test]
     fn run_per_crate_start_message_names_crate() {
         let msg = run_per_crate_start_message("demo");
-        assert!(msg.starts_with("cargo:"), "{msg}");
-        assert!(msg.contains("starting per-crate publish"), "{msg}");
+        assert!(msg.starts_with("starting per-crate cargo publish"), "{msg}");
         assert!(msg.contains("'demo'"), "{msg}");
     }
 
     #[test]
     fn run_done_message_reports_processed_count() {
         let msg = run_done_message(2);
-        assert!(msg.starts_with("cargo:"), "{msg}");
-        assert!(msg.contains("completed"), "{msg}");
+        assert!(msg.starts_with("finished cargo publish"), "{msg}");
         assert!(msg.contains("2 crate(s) processed"), "{msg}");
     }
 
     #[test]
     fn run_no_eligible_crates_warning_names_remediation() {
         let msg = run_no_eligible_crates_warning(5);
-        assert!(msg.starts_with("cargo:"), "{msg}");
-        assert!(msg.contains("registered"), "{msg}");
+        assert!(msg.starts_with("cargo publisher registered"), "{msg}");
         assert!(msg.contains("0 of 5 effective"), "{msg}");
         assert!(msg.contains("nothing pushed"), "{msg}");
         assert!(msg.contains("--crate"), "{msg}");
@@ -2741,7 +2763,10 @@ mod tests {
         // written executable that another test thread forks across in the
         // window before its write fd is closed trips ETXTBSY ("Text file
         // busy") on execve; `sh` is a long-lived binary and the stub is only
-        // read, so the race cannot occur.
+        // read, so the race cannot occur. When the test itself execs the
+        // stub, use
+        // `anodizer_core::test_helpers::fake_tool::output_retrying_etxtbsy`
+        // instead of sh-routing.
         let cmd = vec![
             "sh".to_string(),
             stub.display().to_string(),
@@ -3522,22 +3547,22 @@ lib.workspace = true
     fn run_start_and_done_messages_carry_counts() {
         assert_eq!(
             run_start_message(3),
-            "cargo: starting publish for 3 selected crate(s)"
+            "starting cargo publish for 3 selected crate(s)"
         );
         assert_eq!(
             run_per_crate_start_message("cfgd-core"),
-            "cargo: starting per-crate publish for 'cfgd-core'"
+            "starting per-crate cargo publish for 'cfgd-core'"
         );
         assert_eq!(
             run_done_message(2),
-            "cargo: completed — 2 crate(s) processed"
+            "finished cargo publish — 2 crate(s) processed"
         );
     }
 
     #[test]
     fn run_no_eligible_crates_warning_names_the_total() {
         let w = run_no_eligible_crates_warning(5);
-        assert!(w.starts_with("cargo: registered but 0 of 5 effective crate(s)"));
+        assert!(w.starts_with("cargo publisher registered but 0 of 5 effective crate(s)"));
         assert!(w.contains("--crate / --all"));
     }
 
@@ -3747,7 +3772,7 @@ lib.workspace = true
             .into_iter()
             .filter(|(lvl, _)| *lvl == LogLevel::Status)
             .filter_map(|(_, m)| {
-                m.strip_prefix("cargo: starting per-crate publish for '")
+                m.strip_prefix("starting per-crate cargo publish for '")
                     .and_then(|rest| rest.strip_suffix('\''))
                     .map(str::to_string)
             })
@@ -4344,16 +4369,20 @@ lib.workspace = true
     }
 
     /// Dry-run rollback takes the `is_dry_run` branch: it returns Ok WITHOUT
-    /// spawning `cargo`. "No spawn" is proven by pointing PATH at an empty
-    /// dir, so any reached `cargo yank` would fail with not-found at
-    /// `Command::output()?`; the Ok result therefore witnesses the dry-run
-    /// short-circuit firing before the loop. Gated unix: mutates PATH and
-    /// uses unix paths.
+    /// spawning `cargo`. "No spawn" is proven by shadowing `cargo` with the
+    /// argv-recording stub: any reached `cargo yank` would land in the argv
+    /// log, so an empty log witnesses the dry-run short-circuit firing
+    /// before the loop. The stub is PREPENDED to PATH (never a wholesale
+    /// replacement, which would make every concurrent PATH-resolved spawn
+    /// in this binary flaky). Gated unix: mutates PATH and uses unix paths.
     #[cfg(unix)]
     #[test]
     fn rollback_dry_run_returns_ok_without_spawning_cargo() {
         use anodizer_core::Publisher;
-        let empty = tempfile::tempdir().expect("tempdir");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let argv_log = tmp.path().join("argv.log");
+        let new_path =
+            super::partial_rollback_tests::install_cargo_stub(tmp.path(), &argv_log, "none");
         let mut ctx = TestContextBuilder::new()
             .tag("v1.0.0")
             .dry_run(true)
@@ -4381,7 +4410,7 @@ lib.workspace = true
             .unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var("PATH").ok();
         // SAFETY: serialised by env_mutex; paired with the restore below.
-        unsafe { std::env::set_var("PATH", empty.path()) };
+        unsafe { std::env::set_var("PATH", &new_path) };
         let rb = CargoPublisher::new().rollback(&mut ctx, &evidence);
         // SAFETY: restore PATH (paired with the set above).
         unsafe {
@@ -4391,6 +4420,10 @@ lib.workspace = true
             }
         }
         rb.expect("dry-run rollback must short-circuit to Ok before spawning");
+        assert!(
+            super::partial_rollback_tests::read_argv_log(&argv_log).is_empty(),
+            "dry-run rollback must never spawn cargo"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -4646,7 +4679,7 @@ mod partial_rollback_tests {
     /// (other publishes, `cargo yank`) exits 0. Returns a PATH value with
     /// the stub dir prepended; the caller installs it under a `#[serial]`
     /// guard and restores the prior value.
-    fn install_cargo_stub(dir: &Path, argv_log: &Path, fail_crate: &str) -> String {
+    pub(super) fn install_cargo_stub(dir: &Path, argv_log: &Path, fail_crate: &str) -> String {
         let stub = dir.join("cargo");
         let script = format!(
             "#!/bin/sh\n\
@@ -4670,7 +4703,7 @@ mod partial_rollback_tests {
 
     /// Read the stub's recorded argv lines (empty vec when the stub never
     /// ran / the log was never created).
-    fn read_argv_log(path: &Path) -> Vec<String> {
+    pub(super) fn read_argv_log(path: &Path) -> Vec<String> {
         std::fs::read_to_string(path)
             .unwrap_or_default()
             .lines()
@@ -4757,8 +4790,14 @@ mod partial_rollback_tests {
         let mut record: Vec<CargoYankTarget> = Vec::new();
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "crate-b");
+        let _env = anodizer_core::test_helpers::env::env_mutex()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Read the previous PATH under the lock so a concurrent mutator
+        // cannot interleave between the read and the set below.
         let prev_path = std::env::var("PATH").ok();
-        // SAFETY: env mutation is single-threaded within this serial group.
+        // SAFETY: serialised by env_mutex above (shared with every other
+        // PATH mutator) plus this test's serial group; paired restore below.
         unsafe { std::env::set_var("PATH", &new_path) };
         let result = publish_to_cargo_with(
             &mut ctx,
@@ -4839,8 +4878,14 @@ mod partial_rollback_tests {
         // and encoding whatever it recorded before the bail.
         let log = StageLogger::new("publish-test", anodizer_core::log::Verbosity::Normal);
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "crate-b");
+        let _env = anodizer_core::test_helpers::env::env_mutex()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Read the previous PATH under the lock so a concurrent mutator
+        // cannot interleave between the read and the set below.
         let prev_path = std::env::var("PATH").ok();
-        // SAFETY: env mutation is single-threaded within this serial group.
+        // SAFETY: serialised by env_mutex above (shared with every other
+        // PATH mutator) plus this test's serial group; paired restore below.
         unsafe { std::env::set_var("PATH", &new_path) };
 
         let mut record: Vec<CargoYankTarget> = Vec::new();
@@ -4907,8 +4952,14 @@ mod partial_rollback_tests {
         evidence.extra = encode_cargo_yank_targets(&[]);
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "none");
+        let _env = anodizer_core::test_helpers::env::env_mutex()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Read the previous PATH under the lock so a concurrent mutator
+        // cannot interleave between the read and the set below.
         let prev_path = std::env::var("PATH").ok();
-        // SAFETY: env mutation is single-threaded within this serial group.
+        // SAFETY: serialised by env_mutex above (shared with every other
+        // PATH mutator) plus this test's serial group; paired restore below.
         unsafe { std::env::set_var("PATH", &new_path) };
 
         let publisher = CargoPublisher::new();
@@ -4956,9 +5007,14 @@ mod partial_rollback_tests {
     /// restoring the previous value afterward. Keeps the set/restore pairing
     /// out of each test body.
     fn with_path<R>(new_path: &str, f: impl FnOnce() -> R) -> R {
+        let _env = anodizer_core::test_helpers::env::env_mutex()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var("PATH").ok();
-        // SAFETY: callers hold the `#[serial(cargo_stub_path)]` guard, so the
-        // process-global PATH is mutated single-threaded; paired restore below.
+        // SAFETY: serialised by env_mutex above (shared with every other
+        // PATH mutator in the workspace, including fake_tool::activate)
+        // plus the callers' `#[serial(cargo_stub_path)]` guard; paired
+        // restore below.
         unsafe { std::env::set_var("PATH", new_path) };
         let out = f();
         // SAFETY: restore the prior PATH (paired with the set above).
@@ -5389,8 +5445,14 @@ mod partial_rollback_tests {
              -> Result<Option<String>> { Ok(Some("deadbeef".to_string())) };
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "none");
+        let _env = anodizer_core::test_helpers::env::env_mutex()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // Read the previous PATH under the lock so a concurrent mutator
+        // cannot interleave between the read and the set below.
         let prev_path = std::env::var("PATH").ok();
-        // SAFETY: single-threaded within this #[serial] group.
+        // SAFETY: serialised by env_mutex above (shared with every other
+        // PATH mutator) plus this test's serial group; paired restore below.
         unsafe { std::env::set_var("PATH", &new_path) };
 
         let mut record: Vec<CargoYankTarget> = Vec::new();

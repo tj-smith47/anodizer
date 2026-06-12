@@ -16,6 +16,7 @@ pub mod docker_build;
 pub mod docker_detect;
 pub mod env;
 pub mod env_expand;
+pub mod env_preflight;
 pub mod env_source;
 pub mod extrafiles;
 pub mod fs_atomic;
@@ -55,6 +56,10 @@ pub mod version_files;
 pub use determinism::DeterminismState;
 pub use determinism_report::{
     AllowList, AllowListEntry, ArtifactRow, CURRENT_SCHEMA_VERSION, DeterminismReport, DriftRow,
+};
+pub use env_preflight::{
+    EnvCheckFailure, EnvPreflightReport, EnvProbes, EnvRequirement, FailureKind, KeyKind,
+    SourcedRequirement,
 };
 pub use env_source::{EnvSource, MapEnvSource, ProcessEnvSource};
 pub use publish_evidence::{PublishEvidence, PublishEvidenceExtra};

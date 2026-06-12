@@ -1922,14 +1922,13 @@ fn test_binary_signature_no_duplicate_suffix_has_dot_sig() {
     ctx.template_vars_mut().set("Mips", "");
 
     let sign_cfg = SignConfig::default();
-    let log = ctx.logger("test");
+    let _log = ctx.logger("test");
 
     // The artifact path already contains the platform suffix (anodize flat layout).
     let result = resolve_signature_path(
         &sign_cfg,
         "/dist/myapp_linux_amd64",
         &ctx,
-        &log,
         SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
     )
     .unwrap();
@@ -1985,13 +1984,12 @@ fn test_binary_signs_signature_default_adds_dot_sig() {
         output: None,
         if_condition: None,
     };
-    let log = ctx.logger("test");
+    let _log = ctx.logger("test");
     // artifact_path already contains the platform suffix (anodize flat layout)
     let result = resolve_signature_path(
         &sign_cfg,
         "/dist/myapp_linux_amd64",
         &ctx,
-        &log,
         SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
     )
     .unwrap();
@@ -2022,13 +2020,12 @@ fn test_binary_signs_signature_arm_artifact_gets_dot_sig() {
         output: None,
         if_condition: None,
     };
-    let log = ctx.logger("test");
+    let _log = ctx.logger("test");
     // artifact_path already contains the platform suffix (anodize flat layout)
     let result = resolve_signature_path(
         &sign_cfg,
         "/dist/myapp_linux_armv6",
         &ctx,
-        &log,
         SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
     )
     .unwrap();
@@ -2059,13 +2056,12 @@ fn test_binary_signs_signature_amd64v2_artifact_gets_dot_sig() {
         output: None,
         if_condition: None,
     };
-    let log = ctx.logger("test");
+    let _log = ctx.logger("test");
     // artifact_path already contains the platform+level suffix (anodize flat layout)
     let result = resolve_signature_path(
         &sign_cfg,
         "/dist/myapp_linux_amd64v2",
         &ctx,
-        &log,
         SignConfig::DEFAULT_BINARY_SIGNATURE_TEMPLATE,
     )
     .unwrap();
@@ -2089,13 +2085,12 @@ fn test_normal_signs_uses_simple_default() {
         output: None,
         if_condition: None,
     };
-    let log = ctx.logger("test");
+    let _log = ctx.logger("test");
     // Normal signs default → simple {{ .Artifact }}.sig.
     let result = resolve_signature_path(
         &sign_cfg,
         "/dist/myapp.tar.gz",
         &ctx,
-        &log,
         SignConfig::DEFAULT_SIGNATURE_TEMPLATE,
     )
     .unwrap();
@@ -2272,6 +2267,117 @@ fn test_binary_signs_arm_target_splits_arch_correctly() {
         "signature name must NOT contain armv7v7 double-suffix: got '{}'",
         sigs[0].name
     );
+}
+
+#[test]
+fn test_binary_signs_register_target_qualified_names_per_target() {
+    use anodizer_core::artifact::Artifact;
+
+    // Per-target binaries share a basename and differ only by directory
+    // (the preserved-bin layout), so without target qualification every
+    // target's signature would register under the same name.
+    let binary_sign_cfg = SignConfig {
+        id: None,
+        artifacts: Some("binary".to_string()),
+        cmd: Some("true".to_string()),
+        args: Some(vec![]),
+        signature: None,
+        stdin: None,
+        stdin_file: None,
+        ids: None,
+        env: None,
+        certificate: Some("{{ .Artifact }}.pem".to_string()),
+        output: None,
+        if_condition: None,
+    };
+    let mut ctx = TestContextBuilder::new()
+        .binary_signs(vec![binary_sign_cfg])
+        .dry_run(true)
+        .build();
+
+    let binary = |triple: &str, basename: &str| Artifact {
+        kind: ArtifactKind::Binary,
+        name: basename.to_string(),
+        path: std::path::PathBuf::from(format!("/dist/_preserved-bin/{triple}/{basename}")),
+        target: Some(triple.to_string()),
+        crate_name: "test".to_string(),
+        metadata: Default::default(),
+        size: None,
+    };
+    ctx.artifacts
+        .add(binary("x86_64-unknown-linux-gnu", "anodizer"));
+    ctx.artifacts
+        .add(binary("aarch64-apple-darwin", "anodizer"));
+    ctx.artifacts
+        .add(binary("x86_64-pc-windows-msvc", "anodizer.exe"));
+
+    let log = ctx.logger("binary-sign");
+    let binary_sign_configs = ctx.config.binary_signs.clone();
+    process_sign_configs(
+        &binary_sign_configs,
+        &mut ctx,
+        &log,
+        ArtifactFilter::BinaryOnly,
+        "binary-sign",
+    )
+    .expect("binary-sign run");
+
+    let mut sig_names: Vec<String> = ctx
+        .artifacts
+        .by_kind(ArtifactKind::Signature)
+        .iter()
+        .map(|a| a.name.clone())
+        .collect();
+    sig_names.sort();
+    assert_eq!(
+        sig_names,
+        vec![
+            "anodizer-aarch64-apple-darwin.sig",
+            "anodizer-x86_64-unknown-linux-gnu.sig",
+            "anodizer.exe-x86_64-pc-windows-msvc.sig",
+        ],
+        "each target's signature must register under a distinct name"
+    );
+
+    let mut cert_names: Vec<String> = ctx
+        .artifacts
+        .by_kind(ArtifactKind::Certificate)
+        .iter()
+        .map(|a| a.name.clone())
+        .collect();
+    cert_names.sort();
+    assert_eq!(
+        cert_names,
+        vec![
+            "anodizer-aarch64-apple-darwin.pem",
+            "anodizer-x86_64-unknown-linux-gnu.pem",
+            "anodizer.exe-x86_64-pc-windows-msvc.pem",
+        ],
+        "each target's certificate must register under a distinct name"
+    );
+
+    for kind in [ArtifactKind::Signature, ArtifactKind::Certificate] {
+        for art in ctx.artifacts.by_kind(kind) {
+            assert!(
+                art.target.is_some(),
+                "{kind:?} '{}' must carry its subject binary's target",
+                art.name
+            );
+            assert!(
+                art.name.contains(art.target.as_deref().unwrap_or_default()),
+                "{kind:?} name '{}' must embed its target '{}'",
+                art.name,
+                art.target.as_deref().unwrap_or_default()
+            );
+            // The on-disk path keeps the bare basename: only the registry
+            // name is qualified, the signer wrote next to the binary.
+            assert!(
+                art.path.to_string_lossy().contains("_preserved-bin"),
+                "{kind:?} path '{}' must stay inside the per-target directory",
+                art.path.display()
+            );
+        }
+    }
 }
 
 // -----------------------------------------------------------------------
@@ -2629,4 +2735,49 @@ fn gpg_signature_byte_stable_for_same_sde() {
     //
     // Blocked on: a preflight that fails fast on gpg < 2.0.10 (no
     // `--faked-system-time` support).
+}
+
+#[test]
+fn docker_sign_zero_match_ids_filter_warns_loudly() {
+    // A docker_signs config whose ids filter eliminates every selected
+    // docker artifact silently signs nothing — the stage must warn.
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::DockerSignConfig;
+
+    let docker_signs = vec![DockerSignConfig {
+        cmd: Some("echo".to_string()),
+        args: Some(vec!["sign".to_string(), "{{ .Artifact }}".to_string()]),
+        artifacts: Some("all".to_string()),
+        ids: Some(vec!["no-such-id".to_string()]),
+        ..Default::default()
+    }];
+
+    let mut ctx = TestContextBuilder::new().dry_run(true).build();
+    ctx.config.docker_signs = Some(docker_signs);
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::DockerImage,
+        name: String::new(),
+        path: std::path::PathBuf::from("ghcr.io/myorg/prod:latest"),
+        target: None,
+        crate_name: "test".to_string(),
+        metadata: {
+            let mut m = std::collections::HashMap::new();
+            m.insert("id".to_string(), "prod-image".to_string());
+            m
+        },
+        size: None,
+    });
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+
+    DockerSignStage.run(&mut ctx).expect("docker-sign run");
+
+    assert!(
+        capture
+            .warn_messages()
+            .iter()
+            .any(|m| m.contains("matched no docker artifacts")),
+        "zero-match docker ids filter must warn: {:?}",
+        capture.all_messages()
+    );
 }

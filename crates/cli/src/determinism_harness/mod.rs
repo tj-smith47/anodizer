@@ -58,6 +58,7 @@ pub use installer_detect::installer_stages;
 
 use anodizer_core::git::worktree::Worktree;
 use anodizer_core::harness_signing::EphemeralSigningKeys;
+use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::{AllowList, ArtifactRow, CURRENT_SCHEMA_VERSION, DeterminismReport, DriftRow};
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -158,9 +159,9 @@ pub enum StageId {
     /// Skipped (no drift, no artifact rows) when the worktree has no
     /// `Dockerfile` at its root — keeps the stage harmless for repos
     /// that wire docker via config but didn't bootstrap one. Skipped
-    /// (with a one-line eprintln) when `docker buildx` is not reachable
-    /// on the host so the harness stays usable on machines without
-    /// Docker installed.
+    /// (with a one-line warning through the harness logger) when
+    /// `docker buildx` is not reachable on the host so the harness
+    /// stays usable on machines without Docker installed.
     Docker,
     /// MSI installer reproducibility probe (Windows).
     ///
@@ -351,6 +352,12 @@ pub struct Harness {
     /// preserved by `--preserve-dist` are immediately shippable via
     /// `anodize release --publish-only`.
     pub child_snapshot: bool,
+    /// Operator-selected output verbosity (global `--quiet` /
+    /// `--verbose` / `--debug` flags). Drives the harness's own logger
+    /// (the `run N of M` bullets) and is forwarded to each child
+    /// `anodize release` subprocess so the whole interleaved stream
+    /// honors one verbosity contract.
+    pub verbosity: Verbosity,
     /// Backend hint forwarded from the CLI dispatcher's reading of the
     /// project's `dockers_v2[*].use` field. `Some("podman")` causes
     /// [`Harness::run_docker_stage`] to short-circuit with an explanatory
@@ -421,16 +428,16 @@ impl Harness {
         // their own gates downstream).
         let gate = installer_detect::filter_available_installer_stages(&effective_stages);
         let effective_stages = gate.available;
+        // Routed through the harness logger (not a bare eprintln) so
+        // `-q` silences these like every other harness line.
+        let warn_log = StageLogger::new("check-determinism", self.verbosity);
         for (stage, tool) in &gate.skipped {
-            eprintln!(
-                "{}",
-                anodizer_core::log::render_warning(&format!(
-                    "installer stage `{}` requested but `{}` is not on PATH; \
-                     skipping for this run (no artifacts emitted)",
-                    stage.as_str(),
-                    tool
-                ))
-            );
+            warn_log.warn(&format!(
+                "installer stage `{}` requested but `{}` is not on PATH; \
+                 skipping for this run (no artifacts emitted)",
+                stage.as_str(),
+                tool
+            ));
         }
 
         // Provision once: both runs must sign with identical key
@@ -483,7 +490,14 @@ impl Harness {
                 }
             });
 
+        // Emits the per-run delimiter bullets inside the dispatcher's
+        // `Checking determinism` section; the child subprocess's own
+        // sections nest beneath each bullet via the inherited log depth
+        // (see `determinism_runner::build_subprocess_command`).
+        let log = StageLogger::new("check-determinism", self.verbosity);
+
         for run_idx in 0..self.runs {
+            log.detail(&format!("run {} of {}", run_idx + 1, self.runs));
             // Defensive: prior aborted runs may have left the dir behind;
             // `git worktree add` would reject a populated target.
             let _ = std::fs::remove_dir_all(&worktree_path);
@@ -536,17 +550,14 @@ impl Harness {
                                 )
                             })
                             .collect();
-                        eprintln!(
-                            "{}",
-                            anodizer_core::log::render_warning(&format!(
-                                "--inject-drift={} matched no artifact on run {}; \
-                                 discovered artifacts ({}):\n{}",
-                                stage,
-                                run_idx,
-                                artifacts.len(),
-                                summary.join("\n")
-                            ))
-                        );
+                        StageLogger::new("check-determinism", self.verbosity).warn(&format!(
+                            "--inject-drift={} matched no artifact on run {}; \
+                             discovered artifacts ({}):\n{}",
+                            stage,
+                            run_idx,
+                            artifacts.len(),
+                            summary.join("\n")
+                        ));
                     }
                 }
             }
@@ -560,15 +571,14 @@ impl Harness {
             // below so the artifact zip stays compact.
             if let Some(parent) = self.report_path.parent() {
                 let dump_root = parent.join("drift-bins").join(format!("run-{}", run_idx));
-                copy_artifacts_to_dump(worktree.path(), &artifacts, &dump_root).with_context(
-                    || {
+                copy_artifacts_to_dump(worktree.path(), &artifacts, &dump_root, &log)
+                    .with_context(|| {
                         format!(
                             "dumping artifacts to {} for determinism run {}",
                             dump_root.display(),
                             run_idx
                         )
-                    },
-                )?;
+                    })?;
             }
             // Preserve run-0's dist tree to the operator-supplied path
             // BEFORE the next iteration's `remove_dir_all` (or this
@@ -597,7 +607,7 @@ impl Harness {
                 // preserved tree (binaries live outside `dist/` in the
                 // worktree and are otherwise lost when the worktree is
                 // dropped).
-                preserve_raw_binaries(worktree.path(), dest).with_context(|| {
+                preserve_raw_binaries(worktree.path(), dest, &log).with_context(|| {
                     format!(
                         "preserving raw binaries from {} into {}",
                         worktree.path().display(),
@@ -629,7 +639,7 @@ impl Harness {
         // only path can rehydrate.
         if let Some(dest) = effective_preserve_dest.as_ref() {
             if report.drift_count > 0 {
-                remove_preserved_on_drift(dest);
+                remove_preserved_on_drift(dest, &log);
             } else {
                 write_preserved_dist_context(
                     dest,
@@ -638,6 +648,7 @@ impl Harness {
                         harness_targets: self.targets.as_deref(),
                         version_hint: &self.version_hint,
                     },
+                    &log,
                 )
                 .with_context(|| {
                     format!(
@@ -696,13 +707,16 @@ impl Harness {
         let exe = anodizer_core::determinism_runner::current_anodize_binary()?;
         let extra_skip = compute_extra_skip(effective_stages);
         anodizer_core::determinism_runner::run_build_pipeline_subprocess(
-            &exe,
-            worktree_path,
-            env,
-            self.targets.as_deref(),
-            &extra_skip,
-            self.child_snapshot,
-            self.crate_name.as_deref(),
+            &anodizer_core::determinism_runner::ChildInvocation {
+                anodize_binary: &exe,
+                worktree_path,
+                env,
+                targets: self.targets.as_deref(),
+                extra_skip: &extra_skip,
+                snapshot: self.child_snapshot,
+                crate_name: self.crate_name.as_deref(),
+                verbosity: self.verbosity,
+            },
         )
     }
 
@@ -780,8 +794,9 @@ impl Harness {
     /// points at a non-default path (and for the cargo-package /
     /// cargo-only test fixtures that share the same harness binary).
     ///
-    /// Skipped (with `eprintln!`) when `docker buildx` is not reachable
-    /// on the host. The harness is run on minimal images (e.g. the docs
+    /// Skipped (with a warning through the harness logger, so `-q`
+    /// silences it) when `docker buildx` is not reachable on the
+    /// host. The harness is run on minimal images (e.g. the docs
     /// build container) that legitimately do not have Docker installed;
     /// failing the whole harness there would block unrelated stages from
     /// completing.
@@ -798,27 +813,26 @@ impl Harness {
         // clear message, rather than spawn `docker buildx` and hand the
         // operator a misleading "this image is reproducible" signal that
         // covers a binary they will never actually publish.
+        // These warnings go through the harness logger so `-q` governs
+        // them like every other harness line; the docker-buildx child's
+        // own output below is inherited stderr and is NOT governed by
+        // the flag (BuildKit has no equivalent quiet passthrough here).
+        let log = StageLogger::new("check-determinism", self.verbosity);
         if self.docker_backend_hint.as_deref() == Some("podman") {
-            eprintln!(
-                "{}",
-                anodizer_core::log::render_warning(
-                    "docker stage requested but project config has `use: podman` \
-                     (Linux-only); the determinism harness only probes BuildKit-based \
-                     builds, so the docker stage is skipped for this run. Verify podman \
-                     image byte-stability outside the harness."
-                )
+            log.warn(
+                "docker stage requested but project config has `use: podman` \
+                 (Linux-only); the determinism harness only probes BuildKit-based \
+                 builds, so the docker stage is skipped for this run. Verify podman \
+                 image byte-stability outside the harness.",
             );
             return Ok(());
         }
         match anodizer_core::docker_detect::buildx_available() {
             Ok(true) => {}
             Ok(false) | Err(_) => {
-                eprintln!(
-                    "{}",
-                    anodizer_core::log::render_warning(
-                        "docker stage requested but `docker buildx` is not available on PATH; \
-                         skipping for this run (no artifacts emitted)"
-                    )
+                log.warn(
+                    "docker stage requested but `docker buildx` is not available on PATH; \
+                     skipping for this run (no artifacts emitted)",
                 );
                 return Ok(());
             }
@@ -1011,6 +1025,7 @@ mod tests {
             child_snapshot: true,
             docker_backend_hint: None,
             crate_name: None,
+            verbosity: Verbosity::Normal,
         }
     }
 

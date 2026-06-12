@@ -89,7 +89,7 @@ pub fn generate_binstall_metadata(
     let log = ctx.logger("build");
     if dry_run {
         log.status(&format!(
-            "(dry-run) binstall: would update [package.metadata.binstall] in {}",
+            "(dry-run) would update [package.metadata.binstall] in {}",
             cargo_toml_path.display()
         ));
         return Ok(());
@@ -151,7 +151,7 @@ pub fn generate_binstall_metadata(
         .with_context(|| format!("failed to write {}", cargo_toml_path.display()))?;
 
     log.status(&format!(
-        "binstall: updated [package.metadata.binstall] in {}",
+        "updated [package.metadata.binstall] in {}",
         cargo_toml_path.display()
     ));
 

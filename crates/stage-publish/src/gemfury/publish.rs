@@ -265,7 +265,7 @@ pub(crate) fn version_already_published(
         package,
         version
     );
-    log.verbose(&format!("gemfury: probe GET {}", url));
+    log.verbose(&format!("probing GET {}", url));
     let scope = format!("gemfury probe for {}@{}", package, version);
     let result = retry_http_blocking(
         &scope,
@@ -298,7 +298,7 @@ pub(crate) fn version_already_published(
                 return Ok(false);
             }
             log.warn(&format!(
-                "gemfury: idempotency probe for '{}@{}' was inconclusive (not a 404): {}; \
+                "gemfury idempotency probe for '{}@{}' was inconclusive (not a 404): {}; \
                  refusing to publish blind to a registry that is irreversible for up to 72h — \
                  retry once Fury is healthy",
                 package,
@@ -340,7 +340,7 @@ pub fn publish_to_gemfury(
             .id
             .clone()
             .unwrap_or_else(|| format!("gemfury[{}]", idx));
-        log.status(&format!("gemfury: processing '{}'", label));
+        log.status(&format!("processing gemfury package '{}'", label));
 
         // ---- Skip gate ----
         if let Some(skip) = cfg.skip.as_ref() {
@@ -348,7 +348,7 @@ pub fn publish_to_gemfury(
                 .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                 .context("gemfury: render skip template")?;
             if off {
-                log.status("gemfury: entry skipped — skip evaluates true");
+                log.status("skipping gemfury entry — skip evaluates true");
                 continue;
             }
         }
@@ -358,7 +358,7 @@ pub fn publish_to_gemfury(
             |t| ctx.render_template(t),
         )?;
         if !proceed {
-            log.status("gemfury: entry skipped — `if` condition evaluated falsy");
+            log.status("skipping gemfury entry — `if` condition evaluated falsy");
             continue;
         }
 
@@ -419,7 +419,7 @@ pub fn publish_to_gemfury(
 
         if artifacts.is_empty() {
             log.status(&format!(
-                "gemfury: no matching artifacts for account '{}' (formats: {:?})",
+                "no matching gemfury artifacts for account '{}' (formats: {:?})",
                 account, formats
             ));
             continue;
@@ -471,14 +471,14 @@ pub fn publish_to_gemfury(
                 log,
             )? {
                 log.status(&format!(
-                    "gemfury: '{}@{}' already on account '{}' — skipping (idempotent)",
+                    "'{}@{}' already on gemfury account '{}' — skipping (idempotent)",
                     fury_pkg, version, account
                 ));
                 continue;
             }
 
             log.status(&format!(
-                "gemfury: pushing {} ({}) -> {} (account '{}')",
+                "pushing {} ({}) -> {} (gemfury account '{}')",
                 art_name, format, push_url, account
             ));
 
@@ -495,7 +495,7 @@ pub fn publish_to_gemfury(
             retry_sync(&policy, |attempt| {
                 if attempt > 1 {
                     log.warn(&format!(
-                        "gemfury: push attempt {}/{} failed (transient), retrying…",
+                        "gemfury push attempt {}/{} failed (transient), retrying…",
                         attempt - 1,
                         max_attempts
                     ));
@@ -562,7 +562,7 @@ pub fn publish_to_gemfury(
             // did not place it, so rollback must not delete it.
             if conflict_skipped.get() {
                 log.status(&format!(
-                    "gemfury: '{}@{}' already on account '{}' (push conflict) — treated as idempotent",
+                    "'{}@{}' already on gemfury account '{}' (push conflict) — treated as idempotent",
                     fury_pkg, version, account
                 ));
                 continue;
@@ -583,7 +583,7 @@ pub fn publish_to_gemfury(
         }
 
         log.status(&format!(
-            "gemfury: push complete for account '{}' ({} artifact(s))",
+            "gemfury push complete for account '{}' ({} artifact(s))",
             account,
             artifacts.len()
         ));
@@ -611,7 +611,7 @@ pub fn delete_version(
         package,
         version
     );
-    log.status(&format!("gemfury: DELETE {}", url));
+    log.status(&format!("DELETE {}", url));
     let scope = format!("gemfury delete for {}@{}", package, version);
     retry_http_blocking(
         &scope,

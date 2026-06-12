@@ -363,6 +363,12 @@ pub struct Context {
     /// stages) consult this to apply the submitter-gate / announce-gate
     /// rules — see `PublishReport::any_failed`.
     pub publish_report: Option<PublishReport>,
+    /// Whether `PublishStage::run` entered its body this run. Set before
+    /// the pre-dispatch guards (rerun refusal, runtime allowlist), so a
+    /// guard abort leaves this `true` with `publish_report` still `None`
+    /// — the summary placeholder row uses the pair to distinguish
+    /// "publish skipped" from "publish aborted before dispatch".
+    pub publish_attempted: bool,
     /// SOURCE_DATE_EPOCH seed + non-determinism allow-list state for the
     /// run. `None` until a stage (typically `BuildStage`) seeds it from
     /// `resolve_reproducible_epoch(commit_timestamp)`; downstream stages
@@ -452,6 +458,7 @@ impl Context {
             token_type: ScmTokenType::GitHub,
             skip_memento: crate::pipe_skip::SkipMemento::new(),
             publish_report: None,
+            publish_attempted: false,
             determinism: None,
             pending_outcome: None,
             pending_evidence: None,
@@ -547,6 +554,19 @@ impl Context {
     /// or `None` if the publish stage hasn't run yet (or was skipped).
     pub fn publish_report(&self) -> Option<&PublishReport> {
         self.publish_report.as_ref()
+    }
+
+    /// Whether the publish stage entered its body this run (even if it
+    /// aborted before dispatching any publisher).
+    pub fn publish_attempted(&self) -> bool {
+        self.publish_attempted
+    }
+
+    /// Record that the publish stage entered its body. Called by
+    /// `PublishStage::run` ahead of its pre-dispatch guards so guard
+    /// aborts are distinguishable from a skipped stage.
+    pub fn set_publish_attempted(&mut self) {
+        self.publish_attempted = true;
     }
 
     /// Store the publisher dispatch report. Overwrites any prior value.
@@ -685,7 +705,10 @@ impl Context {
     /// per-stage copy-paste.
     pub fn skip_in_snapshot(&self, log: &crate::log::StageLogger, stage: &str) -> bool {
         if self.is_snapshot() {
-            log.status(&format!("{}: skipped (snapshot mode)", stage));
+            // The stage name stays in the line: this guard fires on direct
+            // stage invocation, where no pipeline section header has named
+            // the stage yet.
+            log.status(&format!("skipping {stage} (snapshot mode)"));
             true
         } else {
             false
@@ -705,7 +728,7 @@ impl Context {
                 if self.options.strict {
                     anyhow::bail!("{}: failed to render template: {} (strict mode)", label, e);
                 }
-                log.warn(&format!("{}: failed to render template: {}", label, e));
+                log.warn(&format!("failed to render template for {}: {}", label, e));
                 Ok(template.to_string())
             }
         }
@@ -859,10 +882,8 @@ impl Context {
             self.template_vars.set("CommitDate", &info.commit_date);
             self.template_vars
                 .set("CommitTimestamp", &info.commit_timestamp);
-            self.template_vars
-                .set("IsGitDirty", if info.dirty { "true" } else { "false" });
-            self.template_vars
-                .set("IsGitClean", if info.dirty { "false" } else { "true" });
+            self.template_vars.set_bool("IsGitDirty", info.dirty);
+            self.template_vars.set_bool("IsGitClean", !info.dirty);
             self.template_vars
                 .set("GitTreeState", if info.dirty { "dirty" } else { "clean" });
             self.template_vars.set("GitURL", &info.remote_url);
@@ -977,34 +998,22 @@ impl Context {
             0
         };
         self.template_vars
-            .set("NightlyBuild", &nightly_build.to_string());
+            .set_structured("NightlyBuild", tera::Value::from(nightly_build));
 
-        self.template_vars.set(
-            "IsSnapshot",
-            if self.options.snapshot {
-                "true"
-            } else {
-                "false"
-            },
-        );
-        self.template_vars.set(
-            "IsNightly",
-            if self.options.nightly {
-                "true"
-            } else {
-                "false"
-            },
-        );
+        // Mode flags are injected as real bools (not "true"/"false" strings)
+        // so `not IsSnapshot` / `IsSnapshot == false` / bare `{% if … %}`
+        // forms all evaluate correctly; `{{ IsSnapshot }}` interpolation
+        // still renders "true"/"false".
+        self.template_vars
+            .set_bool("IsSnapshot", self.options.snapshot);
+        self.template_vars
+            .set_bool("IsNightly", self.options.nightly);
         // Surfaced to user `if_condition:` templates so stages can
         // selectively run inside the determinism harness even when
-        // `IsSnapshot == "false"` would otherwise skip them.
-        self.template_vars.set(
+        // `not IsSnapshot` would otherwise skip them.
+        self.template_vars.set_bool(
             "IsHarness",
-            if self.env_var("ANODIZER_IN_DETERMINISM_HARNESS").is_some() {
-                "true"
-            } else {
-                "false"
-            },
+            self.env_var("ANODIZER_IN_DETERMINISM_HARNESS").is_some(),
         );
         // Wire IsDraft from `release.draft`.
         let is_draft = self
@@ -1013,27 +1022,16 @@ impl Context {
             .as_ref()
             .and_then(|r| r.draft)
             .unwrap_or(false);
+        self.template_vars.set_bool("IsDraft", is_draft);
         self.template_vars
-            .set("IsDraft", if is_draft { "true" } else { "false" });
-        self.template_vars.set(
-            "IsSingleTarget",
-            if self.options.single_target.is_some() {
-                "true"
-            } else {
-                "false"
-            },
-        );
+            .set_bool("IsSingleTarget", self.options.single_target.is_some());
 
         // Pro addition: IsRelease — true if this is a regular release (not snapshot, not nightly).
         let is_release = !self.options.snapshot && !self.options.nightly;
-        self.template_vars
-            .set("IsRelease", if is_release { "true" } else { "false" });
+        self.template_vars.set_bool("IsRelease", is_release);
 
         // Pro addition: IsMerging — true if running with --merge flag.
-        self.template_vars.set(
-            "IsMerging",
-            if self.options.merge { "true" } else { "false" },
-        );
+        self.template_vars.set_bool("IsMerging", self.options.merge);
     }
 
     /// Populate time-related template variables.
@@ -1435,8 +1433,8 @@ mod tests {
         ctx.git_info = None;
         ctx.populate_git_vars();
         assert_eq!(
-            ctx.template_vars().get("NightlyBuild"),
-            Some(&"0".to_string())
+            ctx.template_vars().get_structured("NightlyBuild"),
+            Some(&tera::Value::from(0u64))
         );
     }
 
@@ -1550,7 +1548,10 @@ mod tests {
         ctx.populate_git_vars();
 
         let v = ctx.template_vars();
-        assert_eq!(v.get("IsGitDirty"), Some(&"false".to_string()));
+        assert_eq!(
+            v.get_structured("IsGitDirty"),
+            Some(&tera::Value::Bool(false))
+        );
         assert_eq!(v.get("GitTreeState"), Some(&"clean".to_string()));
     }
 
@@ -1562,7 +1563,10 @@ mod tests {
         ctx.populate_git_vars();
 
         let v = ctx.template_vars();
-        assert_eq!(v.get("IsGitDirty"), Some(&"true".to_string()));
+        assert_eq!(
+            v.get_structured("IsGitDirty"),
+            Some(&tera::Value::Bool(true))
+        );
         assert_eq!(v.get("GitTreeState"), Some(&"dirty".to_string()));
     }
 
@@ -1578,8 +1582,8 @@ mod tests {
         ctx.populate_git_vars();
 
         assert_eq!(
-            ctx.template_vars().get("IsSnapshot"),
-            Some(&"true".to_string())
+            ctx.template_vars().get_structured("IsSnapshot"),
+            Some(&tera::Value::Bool(true))
         );
 
         // Non-snapshot
@@ -1593,8 +1597,8 @@ mod tests {
         ctx2.populate_git_vars();
 
         assert_eq!(
-            ctx2.template_vars().get("IsSnapshot"),
-            Some(&"false".to_string())
+            ctx2.template_vars().get_structured("IsSnapshot"),
+            Some(&tera::Value::Bool(false))
         );
     }
 
@@ -1606,8 +1610,8 @@ mod tests {
         ctx.populate_git_vars();
 
         assert_eq!(
-            ctx.template_vars().get("IsDraft"),
-            Some(&"false".to_string())
+            ctx.template_vars().get_structured("IsDraft"),
+            Some(&tera::Value::Bool(false))
         );
     }
 
@@ -1722,12 +1726,12 @@ mod tests {
         ctx.populate_git_vars();
 
         assert_eq!(
-            ctx.template_vars().get("IsSnapshot"),
-            Some(&"true".to_string())
+            ctx.template_vars().get_structured("IsSnapshot"),
+            Some(&tera::Value::Bool(true))
         );
         assert_eq!(
-            ctx.template_vars().get("IsDraft"),
-            Some(&"false".to_string())
+            ctx.template_vars().get_structured("IsDraft"),
+            Some(&tera::Value::Bool(false))
         );
         // Git-specific vars should NOT be set
         assert_eq!(ctx.template_vars().get("Tag"), None);
@@ -1745,8 +1749,8 @@ mod tests {
         ctx.populate_git_vars();
 
         assert_eq!(
-            ctx.template_vars().get("IsNightly"),
-            Some(&"true".to_string()),
+            ctx.template_vars().get_structured("IsNightly"),
+            Some(&tera::Value::Bool(true)),
             "IsNightly should be 'true' when nightly mode is active"
         );
         assert!(ctx.is_nightly(), "is_nightly() should return true");
@@ -1760,8 +1764,8 @@ mod tests {
         ctx.populate_git_vars();
 
         assert_eq!(
-            ctx.template_vars().get("IsNightly"),
-            Some(&"false".to_string()),
+            ctx.template_vars().get_structured("IsNightly"),
+            Some(&tera::Value::Bool(false)),
             "IsNightly should default to 'false'"
         );
         assert!(
@@ -1799,8 +1803,8 @@ mod tests {
         ctx.populate_git_vars();
 
         assert_eq!(
-            ctx.template_vars().get("IsNightly"),
-            Some(&"true".to_string()),
+            ctx.template_vars().get_structured("IsNightly"),
+            Some(&tera::Value::Bool(true)),
             "IsNightly should be set even without git info"
         );
     }
@@ -1813,8 +1817,8 @@ mod tests {
         ctx.populate_git_vars();
 
         assert_eq!(
-            ctx.template_vars().get("IsGitClean"),
-            Some(&"true".to_string())
+            ctx.template_vars().get_structured("IsGitClean"),
+            Some(&tera::Value::Bool(true))
         );
     }
 
@@ -1826,8 +1830,8 @@ mod tests {
         ctx.populate_git_vars();
 
         assert_eq!(
-            ctx.template_vars().get("IsGitClean"),
-            Some(&"false".to_string())
+            ctx.template_vars().get_structured("IsGitClean"),
+            Some(&tera::Value::Bool(false))
         );
     }
 
@@ -1904,8 +1908,8 @@ mod tests {
         ctx.populate_git_vars();
 
         assert_eq!(
-            ctx.template_vars().get("IsSingleTarget"),
-            Some(&"false".to_string())
+            ctx.template_vars().get_structured("IsSingleTarget"),
+            Some(&tera::Value::Bool(false))
         );
     }
 
@@ -1921,8 +1925,8 @@ mod tests {
         ctx.populate_git_vars();
 
         assert_eq!(
-            ctx.template_vars().get("IsSingleTarget"),
-            Some(&"true".to_string())
+            ctx.template_vars().get_structured("IsSingleTarget"),
+            Some(&tera::Value::Bool(true))
         );
     }
 
@@ -2158,8 +2162,8 @@ mod tests {
         ctx.populate_git_vars();
 
         assert_eq!(
-            ctx.template_vars().get("IsRelease"),
-            Some(&"true".to_string())
+            ctx.template_vars().get_structured("IsRelease"),
+            Some(&tera::Value::Bool(true))
         );
     }
 
@@ -2175,8 +2179,8 @@ mod tests {
         ctx.populate_git_vars();
 
         assert_eq!(
-            ctx.template_vars().get("IsRelease"),
-            Some(&"false".to_string())
+            ctx.template_vars().get_structured("IsRelease"),
+            Some(&tera::Value::Bool(false))
         );
     }
 
@@ -2192,8 +2196,8 @@ mod tests {
         ctx.populate_git_vars();
 
         assert_eq!(
-            ctx.template_vars().get("IsRelease"),
-            Some(&"false".to_string())
+            ctx.template_vars().get_structured("IsRelease"),
+            Some(&tera::Value::Bool(false))
         );
     }
 
@@ -2209,8 +2213,8 @@ mod tests {
         ctx.populate_git_vars();
 
         assert_eq!(
-            ctx.template_vars().get("IsMerging"),
-            Some(&"true".to_string())
+            ctx.template_vars().get_structured("IsMerging"),
+            Some(&tera::Value::Bool(true))
         );
     }
 
@@ -2222,8 +2226,8 @@ mod tests {
         ctx.populate_git_vars();
 
         assert_eq!(
-            ctx.template_vars().get("IsMerging"),
-            Some(&"false".to_string())
+            ctx.template_vars().get_structured("IsMerging"),
+            Some(&tera::Value::Bool(false))
         );
     }
 
@@ -2497,8 +2501,8 @@ mod tests {
         ctx.populate_git_vars();
 
         assert_eq!(
-            ctx.template_vars().get("IsRelease"),
-            Some(&"true".to_string())
+            ctx.template_vars().get_structured("IsRelease"),
+            Some(&tera::Value::Bool(true))
         );
     }
 
@@ -2514,8 +2518,8 @@ mod tests {
         ctx.populate_git_vars();
 
         assert_eq!(
-            ctx.template_vars().get("IsMerging"),
-            Some(&"true".to_string())
+            ctx.template_vars().get_structured("IsMerging"),
+            Some(&tera::Value::Bool(true))
         );
     }
 

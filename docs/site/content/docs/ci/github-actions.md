@@ -31,21 +31,19 @@ jobs:
           fetch-depth: 0    # full history for changelog generation
 
       - uses: tj-smith47/anodizer-action@v1
-        id: release
         with:
           auto-install: true
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+```
 
-      # Recommended: roll back the tag + revert the bump on failure so the
-      # next CI run isn't poisoned. See `tag rollback` in Release Resilience.
-      - name: Rollback on release failure
-        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: anodizer tag rollback "$GITHUB_SHA"
+That one step is the whole release job. Before any stage runs, anodizer verifies the environment with a config-derived [preflight](@/docs/general/preflight.md) (required tools, secrets, key material, endpoints), and on a pipeline failure it executes the [`release.on_failure` policy](@/docs/advanced/release-resilience.md#release-on-failure-the-in-process-failure-policy) in-process — rolling back the tag and version bump by default, auto-degrading to `hold` once any one-way-door publisher (crates.io, chocolatey, ...) has landed. Failure policy lives in `.anodizer.yaml`, not in workflow steps:
+
+```yaml
+# .anodizer.yaml
+release:
+  on_failure: rollback   # rollback | hold; default rollback
 ```
 
 `auto-install: true` reads `.anodizer.yaml` and installs whatever the configured stages need. To pin dependencies explicitly, replace it with `install: nfpm,cosign,zig,...`.
@@ -54,7 +52,6 @@ jobs:
 
 ```yaml
 - uses: tj-smith47/anodizer-action@v1
-  id: release
   with:
     auto-install: true
     gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
@@ -64,14 +61,9 @@ jobs:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
     COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
-
-- name: Rollback on release failure
-  if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
-  env:
-    GH_TOKEN: ${{ secrets.GH_PAT }}
-    GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-  run: anodizer tag rollback "$GITHUB_SHA"
 ```
+
+The preflight parses every configured key (GPG, cosign, SSH) before any stage runs, so a truncated or newline-mangled CI secret aborts the release instead of failing a publisher halfway through.
 
 ## Auto-tag on push to main
 
@@ -180,7 +172,6 @@ jobs:
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
-        id: release
         with:
           auto-install: true
           docker-registry: ghcr.io
@@ -190,12 +181,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
-      - name: Rollback on release failure
-        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: anodizer tag rollback "$GITHUB_SHA"
 ```
 
 ## Reuse a CI-built anodizer binary across workflows

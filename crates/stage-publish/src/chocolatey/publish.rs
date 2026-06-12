@@ -142,7 +142,7 @@ pub fn publish_to_chocolatey(
     let api_key = resolve_api_key(ctx, choco_cfg, log)?;
     if api_key.is_empty() {
         log.warn(&format!(
-            "chocolatey: no API key for '{}', skipping push",
+            "no chocolatey API key for '{}', skipping push",
             crate_name
         ));
         return Ok(false);
@@ -427,7 +427,7 @@ fn select_windows_artifacts<'a>(
                 // the operator sees why their arm64 build wasn't packaged
                 // (rather than silently failing on the consumer's machine).
                 log.status(&format!(
-                    "chocolatey: skipping artifact '{}' for '{}' — arch '{}' is not \
+                    "skipping chocolatey artifact '{}' for '{}' — arch '{}' is not \
                      supported by chocolatey (only amd64/386)",
                     a.name(),
                     crate_name,
@@ -698,11 +698,11 @@ fn stage_package(
     })?;
 
     log.status(&format!(
-        "wrote Chocolatey nuspec: {}",
+        "wrote Chocolatey nuspec {}",
         nuspec_path.display()
     ));
     log.status(&format!(
-        "wrote Chocolatey install script: {}",
+        "wrote Chocolatey install script {}",
         install_path.display()
     ));
 
@@ -710,7 +710,7 @@ fn stage_package(
     // A nupkg is a ZIP containing the nuspec, tools/, and OPC metadata files.
     let nupkg_path = pkg_dir.join(format!("{}.{}.nupkg", pkg_name, version));
     create_nupkg(pkg_name, version, &nuspec_path, &tools_dir, &nupkg_path)?;
-    log.status(&format!("created nupkg: {}", nupkg_path.display()));
+    log.status(&format!("created nupkg {}", nupkg_path.display()));
 
     Ok(StagedPackage {
         _tmp_dir: tmp_dir,
@@ -802,7 +802,7 @@ fn handle_feed_state(
                     .unwrap_or(false);
                 if do_republish {
                     log.status(&format!(
-                        "chocolatey: '{}-{}' {} (PackageStatus={}, Published={}); \
+                        "chocolatey package '{}-{}' {} (PackageStatus={}, Published={}); \
                          republish_in_moderation=true — replacing in-moderation copy.",
                         pkg_name, version, reason, status_label, published_label
                     ));
@@ -818,7 +818,7 @@ fn handle_feed_state(
                     return Ok(None);
                 } else {
                     log.warn(&format!(
-                        "chocolatey: '{}-{}' {} (PackageStatus={}, Published={}); \
+                        "chocolatey package '{}-{}' {} (PackageStatus={}, Published={}); \
                          skipping push — set republish_in_moderation: true to replace \
                          the in-moderation copy. The gallery will not list the package \
                          until it transitions to Approved.",
@@ -837,7 +837,7 @@ fn handle_feed_state(
             let local = compute_nupkg_hash(nupkg_path, &algorithm)?;
             if local == hash {
                 log.status(&format!(
-                    "chocolatey: skipping '{}-{}' — already published (hash match)",
+                    "skipping chocolatey '{}-{}' — already published (hash match)",
                     pkg_name, version
                 ));
                 return Ok(Some(false));
@@ -863,7 +863,7 @@ fn handle_feed_state(
             // a recognizable message if the version is truly immutable, and
             // that surfaces as a real error.
             log.warn(&format!(
-                "chocolatey: '{}-{}' exists on feed but hash was unavailable; \
+                "chocolatey package '{}-{}' exists on feed but hash was unavailable; \
                  attempting push so any conflict surfaces as a real error",
                 pkg_name, version
             ));
@@ -967,7 +967,7 @@ mod tests {
         let msgs = cap.all_messages();
         assert!(
             msgs.iter()
-                .any(|(_, m)| m.contains("skipped") && m.contains("mytool")),
+                .any(|(_, m)| m.contains("skipping") && m.contains("mytool")),
             "expected skip status, got {msgs:?}"
         );
     }
@@ -1934,7 +1934,7 @@ mod tests {
             capture
                 .warn_messages()
                 .iter()
-                .any(|m| m.contains("no API key") && m.contains("mytool")),
+                .any(|m| m.contains("no chocolatey API key") && m.contains("mytool")),
             "expected no-API-key warn; got {:?}",
             capture.all_messages()
         );
@@ -2035,7 +2035,7 @@ mod tests {
         let status_label = "Submitted";
         let published_label = "2026-01-01";
         let msg = format!(
-            "chocolatey: '{}-{}' {} (PackageStatus={}, Published={}); \
+            "chocolatey package '{}-{}' {} (PackageStatus={}, Published={}); \
              skipping push — set republish_in_moderation: true to replace \
              the in-moderation copy. The gallery will not list the package \
              until it transitions to Approved.",
@@ -2055,7 +2055,7 @@ mod tests {
         let status_label = "Submitted";
         let published_label = "2026-01-01";
         let msg = format!(
-            "chocolatey: '{}-{}' {} (PackageStatus={}, Published={}); \
+            "chocolatey package '{}-{}' {} (PackageStatus={}, Published={}); \
              republish_in_moderation=true — replacing in-moderation copy.",
             pkg_name, version, reason, status_label, published_label
         );

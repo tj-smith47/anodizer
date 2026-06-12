@@ -103,6 +103,80 @@ impl Stage for NotarizeStage {
     }
 }
 
+/// Environment requirements for the notarize stage, mirroring its run
+/// gates: nothing when the top-level `skip:` is truthy; per active
+/// `macos:` entry the cross-platform `rcodesign` plus the env refs of the
+/// templated certificate / password / App Store Connect fields; per active
+/// `macos_native:` entry `codesign` + `xcrun` plus the env refs of the
+/// templated identity / keychain / profile fields. Both toolchains run on
+/// whatever host executes the release (rcodesign is cross-platform; a
+/// `macos_native` config on a non-mac host would fail at run time, and
+/// preflight reports exactly that). Values are never echoed — only
+/// referenced env-var names.
+pub fn env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    use anodizer_core::env_preflight::template_env_refs;
+    let Some(cfg) = ctx.config.notarize.as_ref() else {
+        return Vec::new();
+    };
+    if anodizer_core::env_preflight::entry_inactive(ctx, cfg.skip.as_ref(), None, None) {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let push_refs = |out: &mut Vec<anodizer_core::EnvRequirement>, value: Option<&str>| {
+        if let Some(v) = value {
+            let refs = template_env_refs(v);
+            if !refs.is_empty() {
+                out.push(anodizer_core::EnvRequirement::EnvAllOf { vars: refs });
+            }
+        }
+    };
+    for entry in cfg.macos.iter().flatten() {
+        // Unrenderable skip counts as active: over-collect.
+        if entry
+            .should_skip(|s| ctx.render_template(s))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        out.push(anodizer_core::EnvRequirement::Tool {
+            name: "rcodesign".to_string(),
+        });
+        if let Some(sign) = entry.sign.as_ref() {
+            push_refs(&mut out, sign.certificate.as_deref());
+            push_refs(&mut out, sign.password.as_deref());
+        }
+        if let Some(notarize) = entry.notarize.as_ref() {
+            push_refs(&mut out, notarize.issuer_id.as_deref());
+            push_refs(&mut out, notarize.key.as_deref());
+            push_refs(&mut out, notarize.key_id.as_deref());
+        }
+    }
+    for entry in cfg.macos_native.iter().flatten() {
+        if entry
+            .should_skip(|s| ctx.render_template(s))
+            .unwrap_or(false)
+        {
+            continue;
+        }
+        out.push(anodizer_core::EnvRequirement::Tool {
+            name: "codesign".to_string(),
+        });
+        out.push(anodizer_core::EnvRequirement::Tool {
+            name: "xcrun".to_string(),
+        });
+        if let Some(sign) = entry.sign.as_ref() {
+            push_refs(&mut out, sign.identity.as_deref());
+            push_refs(&mut out, sign.keychain.as_deref());
+        }
+        if let Some(notarize) = entry.notarize.as_ref() {
+            push_refs(&mut out, notarize.profile_name.as_deref());
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests {

@@ -105,7 +105,7 @@ impl PublisherSchemaValidator for NfpmSchemaValidator {
                     render_build_matched_nfpm_configs(ctx, crate_name, &artifact_version)?;
                 if configs.is_empty() {
                     log.verbose(&format!(
-                        "nfpm: crate '{}' produced no nfpm config in this snapshot \
+                        "crate '{}' produced no nfpm config in this snapshot \
                          shard (skipped or no eligible artifact); skipping schema validation",
                         crate_name
                     ));
@@ -201,7 +201,7 @@ fn validate_built_packages(
         // here — the primary schema floor already covered the rendered config.
         if !path.exists() {
             log.verbose(&format!(
-                "nfpm: package {} not built in this run; relying on the config \
+                "nfpm package {} not built in this run; relying on the config \
                  schema floor",
                 path.display()
             ));
@@ -229,7 +229,7 @@ fn validate_built_packages(
                     findings.extend(check_deb_control(path, &expected)?);
                 } else {
                     log.verbose(
-                        "nfpm: dpkg-deb not on PATH; relying on the nfpm config schema floor \
+                        "dpkg-deb not on PATH — relying on the nfpm config schema floor \
                          for .deb validation",
                     );
                 }
@@ -239,7 +239,7 @@ fn validate_built_packages(
                     findings.extend(check_rpm_control(path, &expected)?);
                 } else {
                     log.verbose(
-                        "nfpm: rpm not on PATH; relying on the nfpm config schema floor \
+                        "rpm not on PATH — relying on the nfpm config schema floor \
                          for .rpm validation",
                     );
                 }

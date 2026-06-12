@@ -592,10 +592,7 @@ fn run_preflight_inner(
 
         // ---- cargo -------------------------------------------------------
         if publish.cargo.is_some() {
-            log.verbose(&format!(
-                "preflight: checking cargo for '{}@{}'",
-                krate.name, version
-            ));
+            log.verbose(&format!("checking cargo for '{}@{}'", krate.name, version));
             let checker = factory.cargo(policy);
             let state = checker.check(&krate.name, &version);
             report.push(PreflightEntry {
@@ -615,7 +612,7 @@ fn run_preflight_inner(
                 .to_string();
             let pkg_name = choco_cfg.name.as_deref().unwrap_or(&krate.name).to_string();
             log.verbose(&format!(
-                "preflight: checking chocolatey for '{}@{}'",
+                "checking chocolatey for '{}@{}'",
                 pkg_name, version
             ));
             let checker = factory.chocolatey(source, policy);
@@ -637,10 +634,7 @@ fn run_preflight_inner(
                 .unwrap_or(&krate.name)
                 .to_string();
             let token = util::resolve_repo_token(ctx, winget_cfg.repository.as_ref(), None);
-            log.verbose(&format!(
-                "preflight: checking winget for '{}@{}'",
-                pkg_id, version
-            ));
+            log.verbose(&format!("checking winget for '{}@{}'", pkg_id, version));
             let checker = factory.winget(token, policy);
             let state = checker.check(&pkg_id, &version);
             report.push(PreflightEntry {
@@ -658,10 +652,7 @@ fn run_preflight_inner(
                 .as_deref()
                 .map(|n| n.to_string())
                 .unwrap_or_else(|| format!("{}-bin", krate.name));
-            log.verbose(&format!(
-                "preflight: checking AUR for '{}@{}'",
-                pkg_name, version
-            ));
+            log.verbose(&format!("checking AUR for '{}@{}'", pkg_name, version));
             let checker = factory.aur(policy);
             let state = checker.check(&pkg_name, &version);
             report.push(PreflightEntry {
@@ -886,9 +877,7 @@ fn check_partial_publish(
     let mut first_clean: Option<(String, String)> = None;
 
     for (name, version) in to_publish {
-        log.verbose(&format!(
-            "publish-sim: checking crates.io state for '{name}@{version}'"
-        ));
+        log.verbose(&format!("checking crates.io state for '{name}@{version}'"));
         match index_query(name, version) {
             PublisherState::Published => {
                 if first_published.is_none() {
@@ -912,7 +901,7 @@ fn check_partial_publish(
             // state conservatively as "present" so a mixed set still aborts.
             other => {
                 log.verbose(&format!(
-                    "publish-sim: '{name}@{version}' reported {other}; treating as published"
+                    "'{name}@{version}' reported {other}; treating as published"
                 ));
                 if first_published.is_none() {
                     first_published = Some((name.clone(), version.clone()));
@@ -965,7 +954,9 @@ fn simulate_dry_run_publishes(
             continue;
         }
 
-        log.verbose(&format!("publish-sim: cargo publish --dry-run -p {name}"));
+        log.verbose(&format!(
+            "running cargo publish --dry-run -p {name} (publish simulation)"
+        ));
         match dry_run_runner(name) {
             DryRunOutcome::Ok => {}
             DryRunOutcome::BenignSiblingMissing(detail) => {
@@ -975,7 +966,7 @@ fn simulate_dry_run_publishes(
                 // failure that would also break the real publish — abort.
                 if in_set.iter().any(|sib| detail.contains(sib)) {
                     log.verbose(&format!(
-                        "publish-sim: '{name}' dry-run resolved a not-yet-published sibling \
+                        "'{name}' dry-run resolved a not-yet-published sibling \
                          ({detail}); benign — the real publish orders siblings first"
                     ));
                 } else {
@@ -999,7 +990,7 @@ fn simulate_dry_run_publishes(
             }
             DryRunOutcome::Unavailable(detail) => {
                 log.warn(&format!(
-                    "publish-sim: skipping `cargo publish --dry-run -p {name}` ({detail}); \
+                    "skipping `cargo publish --dry-run -p {name}` ({detail}); \
                      relying on the partial-publish index check alone"
                 ));
             }
@@ -1013,9 +1004,24 @@ fn simulate_dry_run_publishes(
 /// [`DryRunOutcome::Unavailable`] so the caller degrades gracefully rather
 /// than failing the release on a missing toolchain.
 fn run_cargo_dry_run(crate_name: &str, log: &StageLogger) -> DryRunOutcome {
+    run_cargo_dry_run_with_binary(std::path::Path::new("cargo"), crate_name, log)
+}
+
+/// Path-taking sibling of [`run_cargo_dry_run`]: `cargo_binary` is the
+/// binary to spawn. Production passes `Path::new("cargo")` (PATH
+/// lookup); tests point at a nonexistent path to exercise the
+/// spawn-failure branch without clobbering the process-wide `PATH`
+/// (which would make every concurrent PATH-resolved spawn in the test
+/// binary flaky). Same seam convention as
+/// `core::git::gh_api_get_with_binary`.
+fn run_cargo_dry_run_with_binary(
+    cargo_binary: &std::path::Path,
+    crate_name: &str,
+    log: &StageLogger,
+) -> DryRunOutcome {
     use std::process::Command;
 
-    let output = Command::new("cargo")
+    let output = Command::new(cargo_binary)
         .args(["publish", "--dry-run", "-p", crate_name])
         .output();
 
@@ -1030,7 +1036,7 @@ fn run_cargo_dry_run(crate_name: &str, log: &StageLogger) -> DryRunOutcome {
 
     let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
     log.verbose(&format!(
-        "publish-sim: `cargo publish --dry-run -p {crate_name}` exited non-zero:\n{}",
+        "`cargo publish --dry-run -p {crate_name}` exited non-zero:\n{}",
         anodizer_core::redact::redact_bearer_tokens(stderr.trim_end())
     ));
     classify_dry_run_stderr(&stderr)
@@ -3043,30 +3049,18 @@ mod tests {
         }
 
         #[test]
-        #[serial_test::serial]
         fn dry_run_spawn_failure_is_unavailable() {
-            use anodizer_core::test_helpers::env::env_mutex;
+            // A nonexistent cargo binary makes the spawn fail (cargo
+            // absent / not on PATH). The runner must degrade to
+            // Unavailable — never abort the release on a missing
+            // toolchain — and carry the spawn-error reason so the warn
+            // line is honest. Driven through the binary-path seam:
+            // emptying the process-wide PATH instead would make every
+            // concurrent PATH-resolved spawn in this binary flaky.
+            let tmp = tempfile::TempDir::new().expect("temp dir");
+            let missing = tmp.path().join("nonexistent-cargo");
 
-            // Point PATH at an empty dir so `Command::new("cargo")` fails to
-            // spawn (cargo absent / not on PATH). The runner must degrade to
-            // Unavailable — never abort the release on a missing toolchain —
-            // and carry the spawn-error reason so the warn line is honest.
-            let empty = tempfile::TempDir::new().expect("temp dir");
-            let _lock = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
-            let prior = std::env::var_os("PATH");
-            // SAFETY: serialised by `_lock` (held for the test body) and the
-            // `#[serial]` attribute; PATH is restored before the lock drops.
-            unsafe { std::env::set_var("PATH", empty.path()) };
-
-            let out = run_cargo_dry_run("anodizer-core", &quiet_log());
-
-            // SAFETY: same serialisation guarantees as the set_var above.
-            unsafe {
-                match prior {
-                    Some(p) => std::env::set_var("PATH", p),
-                    None => std::env::remove_var("PATH"),
-                }
-            }
+            let out = run_cargo_dry_run_with_binary(&missing, "anodizer-core", &quiet_log());
 
             match out {
                 DryRunOutcome::Unavailable(reason) => {

@@ -113,7 +113,7 @@ fn render_aur_source_inner(
             .unwrap_or_default();
         if owner.is_empty() {
             log.warn(&format!(
-                "{}: could not extract owner from GitURL; set url_template explicitly",
+                "could not extract owner from GitURL for {}; set url_template explicitly",
                 label
             ));
         }
@@ -443,13 +443,13 @@ fn publish_aur_source_entry(
     match outcome {
         util::CommitOutcome::Pushed => {
             log.status(&format!(
-                "{}: package '{}' pushed to {}",
-                label, pkg_name, git_url
+                "pushed package '{}' for {} to {}",
+                pkg_name, label, git_url
             ));
         }
         util::CommitOutcome::NoChanges => {
             log.status(&format!(
-                "{}: nothing to push, package '{}' already up to date",
+                "nothing to push for {} — package '{}' already up to date",
                 label, pkg_name
             ));
         }
@@ -980,6 +980,49 @@ impl anodizer_core::Publisher for AurSourcePublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // Both config homes: per-crate `publish.aur_source` and the
+        // top-level `aur_sources:` block (the same union
+        // `is_aur_source_configured` gates dispatch on).
+        let per_crate = anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.aur_source.as_ref())
+            .filter(|a| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    a.skip.as_ref(),
+                    a.skip_upload.as_ref(),
+                    a.if_condition.as_deref(),
+                )
+            })
+            .flat_map(|a| {
+                crate::publisher_helpers::aur_ssh_requirements(
+                    a.private_key.as_deref(),
+                    a.git_ssh_command.as_deref(),
+                )
+            });
+        let top_level = ctx
+            .config
+            .aur_sources
+            .iter()
+            .flatten()
+            .filter(|a| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    a.skip.as_ref(),
+                    a.skip_upload.as_ref(),
+                    a.if_condition.as_deref(),
+                )
+            })
+            .flat_map(|a| {
+                crate::publisher_helpers::aur_ssh_requirements(
+                    a.private_key.as_deref(),
+                    a.git_ssh_command.as_deref(),
+                )
+            });
+        per_crate.chain(top_level).collect()
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let mut targets: Vec<AurSourceTarget> = Vec::new();
@@ -1059,14 +1102,14 @@ impl anodizer_core::Publisher for AurSourcePublisher {
         }
         for t in &targets {
             log.warn(&format!(
-                "upstream-aur: force-push to '{}' at tag '{}' is irreversible \
+                "upstream-aur force-push to '{}' at tag '{}' is irreversible \
                  without AUR maintainer coordination; verify state at \
                  https://aur.archlinux.org/packages/{} (git URL: {})",
                 t.package, t.tag, t.package, t.git_url
             ));
         }
         log.status(&format!(
-            "upstream-aur: {} force-push(es) recorded; irreversible",
+            "upstream-aur recorded {} force-push(es); irreversible",
             targets.len()
         ));
         Ok(())
@@ -2505,12 +2548,8 @@ crates:
         let dest = parent.path().join("clone");
         util::clone_repo_ssh(&bare_url, Some(&rendered), None, &dest, "aur_source", &log)
             .expect("clone with rendered key must succeed");
-        let key_name = format!(
-            ".anodizer_ssh_{}",
-            dest.file_name().unwrap().to_string_lossy()
-        );
-        let key_path = parent.path().join(&key_name);
-        let written = std::fs::read_to_string(&key_path).expect("key sidecar must be written");
+        let key_path = dest.join(".git").join("anodizer_ssh_key");
+        let written = std::fs::read_to_string(&key_path).expect("persisted key must be written");
         assert_eq!(
             written.trim_end_matches('\n'),
             key_value.trim_end_matches('\n'),

@@ -53,7 +53,7 @@ pub(super) fn refresh_artifact_checksums(ctx: &mut Context, log: &anodizer_core:
             }
             Err(e) => {
                 log.warn(&format!(
-                    "notarize: failed to refresh sha256 for {}: {}",
+                    "failed to refresh sha256 for {}: {}",
                     artifact.path.display(),
                     e
                 ));

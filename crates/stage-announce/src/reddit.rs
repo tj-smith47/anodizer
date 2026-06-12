@@ -190,7 +190,7 @@ fn log_rate_limit(headers: &reqwest::header::HeaderMap, log: &StageLogger) {
     }
     let remaining_num = remaining.as_deref().and_then(|s| s.parse::<f64>().ok());
     let line = format!(
-        "reddit rate limit: used={} remaining={} reset_in={}s",
+        "reddit rate limit used={} remaining={} reset_in={}s",
         used.as_deref().unwrap_or("?"),
         remaining.as_deref().unwrap_or("?"),
         reset.as_deref().unwrap_or("?"),

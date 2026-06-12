@@ -175,22 +175,34 @@ pub(super) fn resolve_wix_version(
     wxs_path: &str,
     log: &anodizer_core::log::StageLogger,
 ) -> WixVersion {
+    if let Some(ver_str) = &msi_cfg.version
+        && WixVersion::from_config_str(ver_str).is_none()
+    {
+        log.status(&format!(
+            "unrecognized WiX version '{}', auto-detecting",
+            ver_str
+        ));
+    }
+    resolve_wix_version_quiet(msi_cfg, wxs_path)
+}
+
+/// Log-free form of [`resolve_wix_version`] — identical policy (explicit
+/// config > `.wxs` namespace sniff > installed-tool probe) so preflight's
+/// tool requirement can never drift from the version the build would use.
+pub fn resolve_wix_version_quiet(
+    msi_cfg: &anodizer_core::config::MsiConfig,
+    wxs_path: &str,
+) -> WixVersion {
     let detect_from_wxs_or_tools = || {
         fs::read_to_string(wxs_path)
             .map(|c| WixVersion::detect_from_wxs(&c))
             .unwrap_or_else(|_| WixVersion::detect_from_tools())
     };
-    if let Some(ver_str) = &msi_cfg.version {
-        WixVersion::from_config_str(ver_str).unwrap_or_else(|| {
-            log.status(&format!(
-                "unrecognized WiX version '{}', auto-detecting",
-                ver_str
-            ));
-            detect_from_wxs_or_tools()
-        })
-    } else {
-        detect_from_wxs_or_tools()
-    }
+    msi_cfg
+        .version
+        .as_deref()
+        .and_then(WixVersion::from_config_str)
+        .unwrap_or_else(detect_from_wxs_or_tools)
 }
 
 /// Render each `extensions:` template entry through Tera, dropping empties

@@ -78,7 +78,7 @@ pub(crate) fn fetch_gitlab_commits(
         )
     };
 
-    log.status(&format!("fetching commits from GitLab API: {}", url));
+    log.status(&format!("fetching commits from {}", url));
 
     let client = reqwest::blocking::Client::builder()
         .user_agent(anodizer_core::http::USER_AGENT)

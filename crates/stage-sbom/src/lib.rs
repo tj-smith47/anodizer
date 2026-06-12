@@ -17,6 +17,124 @@ use anodizer_core::config::SbomConfig;
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
 
+mod expected;
+
+pub use expected::expected_sbom_assets;
+
+/// One artifact an SBOM config selected: path, metadata, build target, and
+/// kind. The kind is `None` only for the synthetic whole-project subject of
+/// `artifacts: any` (which catalogs the source tree, not one artifact).
+type SbomSubject = (
+    PathBuf,
+    HashMap<String, String>,
+    Option<String>,
+    Option<ArtifactKind>,
+);
+
+/// Map a typed (non-`any`, non-`binary`) `artifacts:` filter value to the
+/// artifact kind it selects. Shared by both generation modes and the
+/// expected-asset derivation so the selection cannot drift between them.
+pub(crate) fn typed_artifact_kind(artifacts_type: &str, id: &str) -> Result<ArtifactKind> {
+    match artifacts_type {
+        "source" => Ok(ArtifactKind::SourceArchive),
+        "archive" => Ok(ArtifactKind::Archive),
+        "package" => Ok(ArtifactKind::LinuxPackage),
+        "diskimage" => Ok(ArtifactKind::DiskImage),
+        "installer" => Ok(ArtifactKind::Installer),
+        other => bail!(
+            "sbom[{}]: unknown artifacts type '{}'. Valid values are: \
+             source, archive, package, diskimage, installer, binary, any",
+            id,
+            other
+        ),
+    }
+}
+
+/// Build the per-artifact template-variable overlay used to render SBOM
+/// `documents:` / `args:` / `env:` templates (`ArtifactName`, `ArtifactExt`,
+/// `ArtifactID`, and `Os`/`Arch`/`Target` when the artifact has a build
+/// target).
+///
+/// Returns a CLONE of the context's vars with the bindings applied — the
+/// shared context is never mutated, so one artifact's `Os`/`Arch`/`Target`
+/// cannot leak into the next artifact (or into downstream stages). Shared by
+/// both generation modes and the expected-asset derivation so all three
+/// render with identical bindings.
+pub(crate) fn artifact_template_vars(
+    ctx: &Context,
+    artifact_path: &Path,
+    artifact_meta: &HashMap<String, String>,
+    artifact_target: Option<&str>,
+) -> anodizer_core::template::TemplateVars {
+    let artifact_name = artifact_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("artifact");
+    let mut vars = ctx.template_vars().clone();
+    vars.set("ArtifactName", artifact_name);
+    vars.set(
+        "ArtifactExt",
+        artifact_meta
+            .get("ext")
+            .filter(|s| !s.is_empty())
+            .map(|s| s.as_str())
+            .unwrap_or_else(|| anodizer_core::template::extract_artifact_ext(artifact_name)),
+    );
+    vars.set(
+        "ArtifactID",
+        artifact_meta.get("id").map(|s| s.as_str()).unwrap_or(""),
+    );
+    let target = artifact_target.or_else(|| artifact_meta.get("target").map(String::as_str));
+    if let Some(target) = target {
+        let (os, arch) = anodizer_core::target::map_target(target);
+        vars.set("Os", &os);
+        vars.set("Arch", &arch);
+        vars.set("Target", target);
+    }
+    vars
+}
+
+/// Warn when a configured `ids:` filter is the reason an SBOM config matched
+/// nothing — a typo'd build id would otherwise silently no-op the config.
+fn warn_ids_eliminated_all(
+    log: &anodizer_core::log::StageLogger,
+    id: &str,
+    ids: Option<&[String]>,
+    pre_filter: usize,
+    post_filter: usize,
+) {
+    if anodizer_core::artifact::ids_filter_eliminated_all(ids, pre_filter, post_filter) {
+        log.warn(&format!(
+            "ids filter {:?} on sbom[{}] matched no artifacts — this config will \
+             produce NO SBOMs",
+            ids.unwrap_or(&[]),
+            id
+        ));
+    }
+}
+
+/// Detect the built-in SBOM format (and its file extension) from the
+/// `documents:` templates' trailing extension chain.
+/// `mytool-spdx-companion.cdx.json` resolves to CycloneDX because the
+/// trailing extension is `.cdx.json`; a raw substring match on the marketing
+/// word in the basename would flip to SPDX and produce a
+/// CycloneDX-by-name / SPDX-by-payload file.
+pub(crate) fn builtin_format_and_extension(documents: &[String]) -> (&'static str, &'static str) {
+    let mut detected = ("cyclonedx", "cdx.json");
+    for d in documents {
+        let lower = d.to_lowercase();
+        if lower.ends_with(".spdx.json") || lower.ends_with(".spdx") {
+            detected = ("spdx", "spdx.json");
+            break;
+        }
+        if lower.ends_with(".cdx.json") || lower.ends_with(".cyclonedx.json") {
+            detected = ("cyclonedx", "cdx.json");
+            break;
+        }
+    }
+    detected
+}
+
 // ---------------------------------------------------------------------------
 // Built-in SBOM generation (Rust-specific)
 // ---------------------------------------------------------------------------
@@ -259,7 +377,7 @@ pub fn find_cargo_lock(start_dir: &Path) -> Result<PathBuf> {
 
 /// Get the repository root via `git rev-parse --show-toplevel`.
 fn get_repo_root(log: &anodizer_core::log::StageLogger) -> Result<PathBuf> {
-    log.debug("running: git rev-parse --show-toplevel");
+    log.debug("running git rev-parse --show-toplevel");
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .output()
@@ -334,12 +452,32 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
         && d.try_evaluates_to_true(|s| ctx.render_template(s))
             .with_context(|| format!("sbom[{}]: evaluate skip expression", id))?
     {
-        log.status(&format!("sbom[{}]: skipped", id));
+        log.status(&format!(
+            "skipping sbom[{}] — `skip` condition evaluated truthy",
+            id
+        ));
         return Ok(());
     }
 
     // Determine if this is a built-in (no external command) or subprocess model
     let use_builtin = sbom_cfg.cmd.is_none() && sbom_cfg.args.is_none();
+
+    // When artifacts != "any", multiple SBOM output documents are
+    // unsupported in BOTH modes: each document name is rendered per-artifact
+    // and would clobber on collision (and built-in mode would silently
+    // truncate to documents[0]). Rejected before the mode dispatch so the
+    // built-in path cannot silently ignore explicit user config.
+    {
+        let artifacts_type = sbom_cfg.resolved_artifacts();
+        let documents = sbom_cfg.resolved_documents(artifacts_type);
+        if artifacts_type != "any" && documents.len() > 1 {
+            anyhow::bail!(
+                "sbom[{}]: multiple SBOM outputs when artifacts={:?} is unsupported",
+                id,
+                artifacts_type
+            );
+        }
+    }
 
     if use_builtin {
         return run_sbom_builtin(ctx, dist, sbom_cfg, &project_name, &version);
@@ -350,17 +488,6 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
     let artifacts_type = sbom_cfg.resolved_artifacts();
 
     let documents = sbom_cfg.resolved_documents(artifacts_type);
-
-    // when artifacts != "any", multiple
-    // SBOM output documents are unsupported because each document name is
-    // rendered per-artifact and would clobber on collision.
-    if artifacts_type != "any" && documents.len() > 1 {
-        anyhow::bail!(
-            "sbom[{}]: multiple SBOM outputs when artifacts={:?} is unsupported",
-            id,
-            artifacts_type
-        );
-    }
 
     let args = sbom_cfg.resolved_args(cmd);
 
@@ -377,82 +504,93 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
     // artifact selection).
     // Without this, each per-arch Binary *plus* its UploadableBinary registration
     // would produce its own SBOM at the same path, causing file collisions.
-    let matching_artifacts: Vec<(PathBuf, HashMap<String, String>, Option<String>)> =
-        match artifacts_type {
-            "any" => vec![],
-            "binary" => ctx
-                .artifacts
-                .binary_like_dedup()
+    let matching_artifacts: Vec<SbomSubject> = match artifacts_type {
+        "any" => vec![],
+        "binary" => {
+            let candidates = ctx.artifacts.binary_like_dedup();
+            let pre_ids = candidates.len();
+            let matched: Vec<SbomSubject> = candidates
                 .into_iter()
                 .filter(|a| matches_id_filter(a, sbom_cfg.ids.as_deref()))
-                .map(|a| (a.path.clone(), a.metadata.clone(), a.target.clone()))
-                .collect(),
-            _ => {
-                let kind = match artifacts_type {
-                    "source" => ArtifactKind::SourceArchive,
-                    "archive" => ArtifactKind::Archive,
-                    "package" => ArtifactKind::LinuxPackage,
-                    "diskimage" => ArtifactKind::DiskImage,
-                    "installer" => ArtifactKind::Installer,
-                    other => anyhow::bail!(
-                        "sbom[{}]: unknown artifacts type '{}'. Valid values are: \
-                         source, archive, package, diskimage, installer, binary, any",
-                        id,
-                        other
+                .map(|a| {
+                    (
+                        a.path.clone(),
+                        a.metadata.clone(),
+                        a.target.clone(),
+                        Some(a.kind),
+                    )
+                })
+                .collect();
+            warn_ids_eliminated_all(&log, id, sbom_cfg.ids.as_deref(), pre_ids, matched.len());
+            matched
+        }
+        _ => {
+            let kind = typed_artifact_kind(artifacts_type, id)?;
+
+            let pre_ids = ctx
+                .artifacts
+                .all()
+                .iter()
+                .filter(|a| a.kind == kind)
+                .count();
+            let matched: Vec<SbomSubject> = ctx
+                .artifacts
+                .all()
+                .iter()
+                .filter(|a| a.kind == kind)
+                .filter(|a| matches_id_filter(a, sbom_cfg.ids.as_deref()))
+                .map(|a| {
+                    (
+                        a.path.clone(),
+                        a.metadata.clone(),
+                        a.target.clone(),
+                        Some(a.kind),
+                    )
+                })
+                .collect();
+            warn_ids_eliminated_all(&log, id, sbom_cfg.ids.as_deref(), pre_ids, matched.len());
+
+            if matched.is_empty() {
+                ctx.strict_guard(
+                    &log,
+                    &format!(
+                        "skipping SBOM generation — no matching '{}' artifacts found (sbom[{}])",
+                        artifacts_type, id
                     ),
-                };
-
-                let matched: Vec<(PathBuf, HashMap<String, String>, Option<String>)> = ctx
-                    .artifacts
-                    .all()
-                    .iter()
-                    .filter(|a| a.kind == kind)
-                    .filter(|a| matches_id_filter(a, sbom_cfg.ids.as_deref()))
-                    .map(|a| (a.path.clone(), a.metadata.clone(), a.target.clone()))
-                    .collect();
-
-                if matched.is_empty() {
-                    ctx.strict_guard(
-                        &log,
-                        &format!(
-                            "sbom[{}]: no matching '{}' artifacts found, skipping",
-                            id, artifacts_type
-                        ),
-                    )?;
-                    return Ok(());
-                }
-
-                matched
+                )?;
+                return Ok(());
             }
-        };
+
+            matched
+        }
+    };
 
     if ctx.is_dry_run() {
         if artifacts_type == "any" {
             log.status(&format!(
-                "(dry-run) sbom[{}]: would run '{}' for all artifacts",
-                id, cmd
+                "(dry-run) would run '{}' for all artifacts (sbom[{}])",
+                cmd, id
             ));
         } else {
-            for (path, _, _) in &matching_artifacts {
+            for (path, _, _, _) in &matching_artifacts {
                 log.status(&format!(
-                    "(dry-run) sbom[{}]: would run '{}' on {}",
-                    id,
+                    "(dry-run) would run '{}' on {} (sbom[{}])",
                     cmd,
-                    path.display()
+                    path.display(),
+                    id
                 ));
             }
         }
         return Ok(());
     }
 
-    let artifact_list: Vec<(PathBuf, HashMap<String, String>, Option<String>)> =
-        if artifacts_type == "any" {
-            vec![(PathBuf::new(), HashMap::new(), None)]
-        } else {
-            matching_artifacts
-        };
+    let artifact_list: Vec<SbomSubject> = if artifacts_type == "any" {
+        vec![(PathBuf::new(), HashMap::new(), None, None)]
+    } else {
+        matching_artifacts
+    };
 
-    for (artifact_path, artifact_meta, artifact_target) in &artifact_list {
+    for (artifact_path, artifact_meta, artifact_target, artifact_kind) in &artifact_list {
         let artifact_rel = if artifact_path.as_os_str().is_empty() {
             String::new()
         } else {
@@ -463,39 +601,16 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                 .to_string()
         };
 
-        let artifact_name = artifact_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("artifact");
-        ctx.template_vars_mut().set("ArtifactName", artifact_name);
-        ctx.template_vars_mut().set(
-            "ArtifactExt",
-            artifact_meta
-                .get("ext")
-                .filter(|s| !s.is_empty())
-                .map(|s| s.as_str())
-                .unwrap_or_else(|| anodizer_core::template::extract_artifact_ext(artifact_name)),
+        let vars = artifact_template_vars(
+            ctx,
+            artifact_path,
+            artifact_meta,
+            artifact_target.as_deref(),
         );
-        ctx.template_vars_mut().set(
-            "ArtifactID",
-            artifact_meta.get("id").map(|s| s.as_str()).unwrap_or(""),
-        );
-
-        if let Some(target) = artifact_target {
-            let (os, arch) = anodizer_core::target::map_target(target);
-            ctx.template_vars_mut().set("Os", &os);
-            ctx.template_vars_mut().set("Arch", &arch);
-            ctx.template_vars_mut().set("Target", target);
-        } else if let Some(target) = artifact_meta.get("target") {
-            let (os, arch) = anodizer_core::target::map_target(target);
-            ctx.template_vars_mut().set("Os", &os);
-            ctx.template_vars_mut().set("Arch", &arch);
-            ctx.template_vars_mut().set("Target", target);
-        }
 
         let mut rendered_docs: Vec<String> = Vec::new();
         for doc_tpl in &documents {
-            let rendered = ctx.render_template(doc_tpl).with_context(|| {
+            let rendered = anodizer_core::template::render(doc_tpl, &vars).with_context(|| {
                 format!(
                     "sbom[{}]: failed to render document template '{}'",
                     id, doc_tpl
@@ -530,25 +645,23 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                 s = s.replace(&format!("$document{}", i), doc);
             }
             s = s.replace("$document", &first_doc);
-            let rendered_arg = ctx
-                .render_template(&s)
+            let rendered_arg = anodizer_core::template::render(&s, &vars)
                 .with_context(|| format!("sbom[{}]: failed to render arg template '{}'", id, s))?;
             rendered_args.push(rendered_arg);
         }
 
         let mut rendered_env: Vec<(String, String)> = Vec::with_capacity(env_vars.len());
         for (k, v) in &env_vars {
-            let rendered_val = ctx
-                .render_template(v)
+            let rendered_val = anodizer_core::template::render(v, &vars)
                 .with_context(|| format!("sbom[{}]: failed to render env template '{}'", id, v))?;
             rendered_env.push((k.clone(), rendered_val));
         }
 
         log.status(&format!(
-            "sbom[{}]: running {} {}",
-            id,
+            "running {} {} (sbom[{}])",
             cmd,
-            rendered_args.join(" ")
+            rendered_args.join(" "),
+            id
         ));
 
         let mut command = Command::new(cmd);
@@ -610,6 +723,22 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
 
                 let mut metadata = HashMap::new();
                 metadata.insert("sbom_id".to_string(), id.to_string());
+                // Subject provenance: the SBOM inherits its subject's
+                // verdict record so the release `ids:` filter gives it the
+                // same upload verdict as the artifact it catalogs.
+                if let Some(kind) = artifact_kind {
+                    let (subject_kind, inherited_id) =
+                        anodizer_core::artifact::subject_verdict_record(*kind, artifact_meta);
+                    if let Some(subject_kind) = subject_kind {
+                        metadata.insert(
+                            anodizer_core::artifact::SUBJECT_KIND_META.to_string(),
+                            subject_kind,
+                        );
+                    }
+                    if let Some(subject_id) = inherited_id {
+                        metadata.insert("id".to_string(), subject_id);
+                    }
+                }
 
                 let name = match_path
                     .file_name()
@@ -635,8 +764,6 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
             );
         }
     }
-
-    anodizer_core::template::clear_per_artifact_vars(ctx.template_vars_mut());
 
     Ok(())
 }
@@ -667,32 +794,12 @@ fn run_sbom_builtin(
     let artifacts_type = sbom_cfg.resolved_artifacts();
     let documents = sbom_cfg.resolved_documents(artifacts_type);
 
-    // Detect format from the document's extension chain rather than a raw
-    // substring match. `mytool-spdx-companion.cdx.json` should resolve to
-    // CycloneDX because the trailing extension is `.cdx.json`; the prior
-    // `.contains("spdx")` heuristic flipped to SPDX based on the marketing
-    // word in the basename and produced a malformed CycloneDX-by-name /
-    // SPDX-by-payload file.
-    let format = {
-        let mut detected = "cyclonedx";
-        for d in &documents {
-            let lower = d.to_lowercase();
-            if lower.ends_with(".spdx.json") || lower.ends_with(".spdx") {
-                detected = "spdx";
-                break;
-            }
-            if lower.ends_with(".cdx.json") || lower.ends_with(".cyclonedx.json") {
-                detected = "cyclonedx";
-                break;
-            }
-        }
-        detected
-    };
+    let (format, builtin_extension) = builtin_format_and_extension(&documents);
 
     if ctx.is_dry_run() {
         log.status(&format!(
-            "(dry-run) sbom[{}]: would generate {} SBOM for {}",
-            id, format, project_name
+            "(dry-run) would generate {} SBOM for {} (sbom[{}])",
+            format, project_name, id
         ));
         return Ok(());
     }
@@ -709,9 +816,9 @@ fn run_sbom_builtin(
 
     let packages = parse_cargo_lock(&cargo_lock_content)?;
     log.status(&format!(
-        "sbom[{}]: parsed {} packages from Cargo.lock",
-        id,
-        packages.len()
+        "parsed {} packages from Cargo.lock (sbom[{}])",
+        packages.len(),
+        id
     ));
 
     // Deterministic inputs: the same release tag must produce byte-identical
@@ -734,9 +841,9 @@ fn run_sbom_builtin(
         chrono::DateTime::<chrono::Utc>::from_timestamp(state.sde, 0)
             .map(|dt| dt.to_rfc3339())
             .unwrap_or_else(|| {
-                log.status(&format!(
-                    "sbom[{}]: warn — SOURCE_DATE_EPOCH {} out of range; falling back to CommitDate",
-                    id, state.sde
+                log.warn(&format!(
+                    "SOURCE_DATE_EPOCH {} out of range for sbom[{}]; falling back to CommitDate",
+                    state.sde, id
                 ));
                 ctx.template_vars()
                     .get("CommitDate")
@@ -746,34 +853,24 @@ fn run_sbom_builtin(
     } else if let Some(cd) = ctx.template_vars().get("CommitDate").cloned() {
         cd
     } else {
-        log.status(&format!(
-            "sbom[{}]: warn — no SOURCE_DATE_EPOCH or CommitDate; SBOM timestamp will not be reproducible",
+        log.warn(&format!(
+            "no SOURCE_DATE_EPOCH or CommitDate for sbom[{}]; SBOM timestamp will not be reproducible",
             id
         ));
         anodizer_core::sde::resolve_now().to_rfc3339()
     };
     let namespace_uuid = deterministic_uuid_from(&format!("{}-{}", project_name, version));
 
-    let (sbom_json, extension) = match format {
-        "cyclonedx" => (
-            generate_cyclonedx(project_name, version, &timestamp, &packages)?,
-            "cdx.json",
-        ),
-        "spdx" => (
-            generate_spdx(
-                project_name,
-                version,
-                &timestamp,
-                &namespace_uuid,
-                &packages,
-            )?,
-            "spdx.json",
-        ),
-        _ => bail!(
-            "sbom[{}]: unsupported format '{}' (use cyclonedx or spdx)",
-            id,
-            format
-        ),
+    let extension = builtin_extension;
+    let sbom_json = match format {
+        "spdx" => generate_spdx(
+            project_name,
+            version,
+            &timestamp,
+            &namespace_uuid,
+            &packages,
+        )?,
+        _ => generate_cyclonedx(project_name, version, &timestamp, &packages)?,
     };
 
     let json_string = serde_json::to_string_pretty(&sbom_json)
@@ -782,39 +879,53 @@ fn run_sbom_builtin(
     // Filter artifacts to write the SBOM next to. Mirrors the external
     // (syft) path's artifact-filter shape so swapping `cmd:` in and out
     // of the config doesn't change the user-visible artifact set.
-    let matching_artifacts: Vec<(PathBuf, HashMap<String, String>, Option<String>)> =
-        match artifacts_type {
-            "any" => vec![(PathBuf::new(), HashMap::new(), None)],
-            "binary" => ctx
-                .artifacts
-                .binary_like_dedup()
+    let matching_artifacts: Vec<SbomSubject> = match artifacts_type {
+        "any" => vec![(PathBuf::new(), HashMap::new(), None, None)],
+        "binary" => {
+            let candidates = ctx.artifacts.binary_like_dedup();
+            let pre_ids = candidates.len();
+            let matched: Vec<SbomSubject> = candidates
                 .into_iter()
                 .filter(|a| matches_id_filter(a, sbom_cfg.ids.as_deref()))
-                .map(|a| (a.path.clone(), a.metadata.clone(), a.target.clone()))
-                .collect(),
-            _ => {
-                let kind = match artifacts_type {
-                    "source" => ArtifactKind::SourceArchive,
-                    "archive" => ArtifactKind::Archive,
-                    "package" => ArtifactKind::LinuxPackage,
-                    "diskimage" => ArtifactKind::DiskImage,
-                    "installer" => ArtifactKind::Installer,
-                    other => bail!(
-                        "sbom[{}]: unknown artifacts type '{}'. Valid values are: \
-                         source, archive, package, diskimage, installer, binary, any",
-                        id,
-                        other
-                    ),
-                };
-                ctx.artifacts
-                    .all()
-                    .iter()
-                    .filter(|a| a.kind == kind)
-                    .filter(|a| matches_id_filter(a, sbom_cfg.ids.as_deref()))
-                    .map(|a| (a.path.clone(), a.metadata.clone(), a.target.clone()))
-                    .collect()
-            }
-        };
+                .map(|a| {
+                    (
+                        a.path.clone(),
+                        a.metadata.clone(),
+                        a.target.clone(),
+                        Some(a.kind),
+                    )
+                })
+                .collect();
+            warn_ids_eliminated_all(&log, id, sbom_cfg.ids.as_deref(), pre_ids, matched.len());
+            matched
+        }
+        _ => {
+            let kind = typed_artifact_kind(artifacts_type, id)?;
+            let pre_ids = ctx
+                .artifacts
+                .all()
+                .iter()
+                .filter(|a| a.kind == kind)
+                .count();
+            let matched: Vec<SbomSubject> = ctx
+                .artifacts
+                .all()
+                .iter()
+                .filter(|a| a.kind == kind)
+                .filter(|a| matches_id_filter(a, sbom_cfg.ids.as_deref()))
+                .map(|a| {
+                    (
+                        a.path.clone(),
+                        a.metadata.clone(),
+                        a.target.clone(),
+                        Some(a.kind),
+                    )
+                })
+                .collect();
+            warn_ids_eliminated_all(&log, id, sbom_cfg.ids.as_deref(), pre_ids, matched.len());
+            matched
+        }
+    };
 
     if matching_artifacts.is_empty() {
         // Mirror the external path's strict-guard behavior: a configured
@@ -823,8 +934,8 @@ fn run_sbom_builtin(
         ctx.strict_guard(
             &log,
             &format!(
-                "sbom[{}]: no matching '{}' artifacts found, skipping",
-                id, artifacts_type
+                "skipping SBOM generation — no matching '{}' artifacts found (sbom[{}])",
+                artifacts_type, id
             ),
         )?;
         return Ok(());
@@ -836,7 +947,7 @@ fn run_sbom_builtin(
     // the same file N times.
     let mut written_paths: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
 
-    for (artifact_path, artifact_meta, artifact_target) in &matching_artifacts {
+    for (artifact_path, artifact_meta, artifact_target, artifact_kind) in &matching_artifacts {
         let output_path = if artifacts_type == "any" {
             // Legacy global-SBOM filename: `<project>-<version>.<ext>`.
             let filename = format!("{}-{}.{}", project_name, version, extension);
@@ -845,36 +956,12 @@ fn run_sbom_builtin(
             // Per-artifact: render `documents[0]` with `ArtifactName`
             // bound to the matched archive. Matches the external path's
             // template surface so config templates port verbatim.
-            let artifact_name = artifact_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("artifact");
-            ctx.template_vars_mut().set("ArtifactName", artifact_name);
-            ctx.template_vars_mut().set(
-                "ArtifactExt",
-                artifact_meta
-                    .get("ext")
-                    .filter(|s| !s.is_empty())
-                    .map(|s| s.as_str())
-                    .unwrap_or_else(|| {
-                        anodizer_core::template::extract_artifact_ext(artifact_name)
-                    }),
+            let vars = artifact_template_vars(
+                ctx,
+                artifact_path,
+                artifact_meta,
+                artifact_target.as_deref(),
             );
-            ctx.template_vars_mut().set(
-                "ArtifactID",
-                artifact_meta.get("id").map(|s| s.as_str()).unwrap_or(""),
-            );
-            if let Some(target) = artifact_target {
-                let (os, arch) = anodizer_core::target::map_target(target);
-                ctx.template_vars_mut().set("Os", &os);
-                ctx.template_vars_mut().set("Arch", &arch);
-                ctx.template_vars_mut().set("Target", target);
-            } else if let Some(target) = artifact_meta.get("target") {
-                let (os, arch) = anodizer_core::target::map_target(target);
-                ctx.template_vars_mut().set("Os", &os);
-                ctx.template_vars_mut().set("Arch", &arch);
-                ctx.template_vars_mut().set("Target", target);
-            }
 
             let doc_tpl = documents.first().ok_or_else(|| {
                 anyhow::anyhow!(
@@ -884,7 +971,7 @@ fn run_sbom_builtin(
                     artifacts_type
                 )
             })?;
-            let rendered = ctx.render_template(doc_tpl).with_context(|| {
+            let rendered = anodizer_core::template::render(doc_tpl, &vars).with_context(|| {
                 format!(
                     "sbom[{}]: failed to render document template '{}'",
                     id, doc_tpl
@@ -918,11 +1005,27 @@ fn run_sbom_builtin(
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        log.status(&format!("sbom[{}]: wrote {} ({})", id, name, format));
+        log.status(&format!("wrote {} for sbom[{}] ({})", name, id, format));
 
         let mut metadata = HashMap::new();
         metadata.insert("format".to_string(), format.to_string());
         metadata.insert("sbom_id".to_string(), id.to_string());
+        // Subject provenance: the SBOM inherits its subject's verdict
+        // record so the release `ids:` filter gives it the same upload
+        // verdict as the artifact it catalogs.
+        if let Some(kind) = artifact_kind {
+            let (subject_kind, inherited_id) =
+                anodizer_core::artifact::subject_verdict_record(*kind, artifact_meta);
+            if let Some(subject_kind) = subject_kind {
+                metadata.insert(
+                    anodizer_core::artifact::SUBJECT_KIND_META.to_string(),
+                    subject_kind,
+                );
+            }
+            if let Some(subject_id) = inherited_id {
+                metadata.insert("id".to_string(), subject_id);
+            }
+        }
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Sbom,
@@ -935,9 +1038,36 @@ fn run_sbom_builtin(
         });
     }
 
-    anodizer_core::template::clear_per_artifact_vars(ctx.template_vars_mut());
-
     Ok(())
+}
+
+/// Environment requirements for the sbom stage: each active `sboms:` entry's
+/// generator command (default `syft`) plus env vars referenced by its
+/// templated args/env. Entries whose `skip` evaluates true are inert.
+pub fn env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    use anodizer_core::env_preflight::template_env_refs;
+    let mut out = Vec::new();
+    for cfg in &ctx.config.sboms {
+        let skipped = cfg.skip.as_ref().is_some_and(|s| {
+            s.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                .unwrap_or(false)
+        });
+        if skipped {
+            continue;
+        }
+        out.push(anodizer_core::EnvRequirement::Tool {
+            name: cfg.resolved_cmd().to_string(),
+        });
+        for s in cfg.args.iter().flatten().chain(cfg.env.iter().flatten()) {
+            let refs = template_env_refs(s);
+            if !refs.is_empty() {
+                out.push(anodizer_core::EnvRequirement::EnvAllOf { vars: refs });
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]

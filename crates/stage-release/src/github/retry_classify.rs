@@ -20,9 +20,9 @@
 //! Returns `(wrapped, status)` so callers can also surface the status code
 //! in their log lines.
 //!
-//! Behaviour matches the upload retry path in `mod.rs` (see the
-//! `Hyper`/`Http`/`Service`/`Other`/`Serde`/`Json` arm of the `else if`
-//! ladder in the upload retry's `Err(err)` handler) — extracted here so
+//! Behaviour matches the upload retry path (see the
+//! `Hyper`/`Http`/`Service`/`Other`/`Serde`/`Json` arm of
+//! `upload_outcome::classify_upload_attempt`) — extracted here so
 //! the un-draft retry inherits the same classification without copy-paste
 //! drift.
 //!

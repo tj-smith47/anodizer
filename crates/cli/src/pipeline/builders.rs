@@ -357,6 +357,17 @@ mod tests {
         p.to_string_lossy().replace('\\', "/")
     }
 
+    /// `Pipeline::run` ends with a default summary write to
+    /// `<dist>/run-<id>/summary.json`; with the default relative
+    /// `./dist` and the crate root as test cwd that would land in the
+    /// working tree. Point `dist` at a tempdir; the returned guard
+    /// keeps it alive across the run.
+    fn isolate_dist(ctx: &mut anodizer_core::context::Context) -> TempDir {
+        let tmp = TempDir::new().expect("tempdir");
+        ctx.config.dist = tmp.path().to_path_buf();
+        tmp
+    }
+
     // -----------------------------------------------------------------------
     // Stage-order invariants
     //
@@ -802,6 +813,7 @@ mod tests {
         ctx.template_vars_mut().set("Tag", "v9.9.9-test");
         add_sentinel_archive(&mut ctx);
 
+        let _dist_guard = isolate_dist(&mut ctx);
         let log = ctx.logger("pipeline-test");
         let result = p.run(&mut ctx, &log);
 
@@ -864,6 +876,7 @@ mod tests {
         let mut ctx = anodizer_core::context::Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v9.9.9-test");
 
+        let _dist_guard = isolate_dist(&mut ctx);
         let log = ctx.logger("pipeline-test");
         p.run(&mut ctx, &log)
             .expect("pipeline must succeed when before-publish is skipped");
@@ -874,7 +887,7 @@ mod tests {
         );
     }
 
-    /// Dry-run shape: the hook runner logs `[dry-run] before-publish hook: ...`
+    /// Dry-run shape: the hook runner logs `(dry-run) would run before-publish hook ...`
     /// instead of spawning the subprocess. Verified by asking the stage to
     /// run with a `exit 1` hook under dry-run; if the subprocess actually
     /// fired the pipeline would Err.
@@ -907,6 +920,7 @@ mod tests {
         ctx.template_vars_mut().set("Tag", "v9.9.9-test");
         add_sentinel_archive(&mut ctx);
 
+        let _dist_guard = isolate_dist(&mut ctx);
         let log = ctx.logger("pipeline-test");
         p.run(&mut ctx, &log)
             .expect("dry-run before_publish hook must NOT execute the subprocess");
@@ -941,6 +955,7 @@ mod tests {
         ctx.template_vars_mut().set("IsSnapshot", "false");
         add_sentinel_archive(&mut ctx);
 
+        let _dist_guard = isolate_dist(&mut ctx);
         let log = ctx.logger("pipeline-test");
         p.run(&mut ctx, &log)
             .expect("falsy `if:` must skip the hook so the exit-1 cmd never spawns");
@@ -973,6 +988,7 @@ mod tests {
         ctx.template_vars_mut().set("Tag", "v9.9.9-test");
         add_sentinel_archive(&mut ctx);
 
+        let _dist_guard = isolate_dist(&mut ctx);
         let log = ctx.logger("pipeline-test");
         // The subprocess returns 0 and prints to stdout — the run must succeed.
         // `output: true` plumbing is identical to the shared `run_hooks` path
@@ -1010,6 +1026,7 @@ mod tests {
         ctx.template_vars_mut().set("Tag", "v9.9.9-test");
         add_sentinel_archive(&mut ctx);
 
+        let _dist_guard = isolate_dist(&mut ctx);
         let log = ctx.logger("pipeline-test");
         p.run(&mut ctx, &log)
             .expect("per-hook env must reach the subprocess");
@@ -1097,6 +1114,7 @@ before_publish:
             });
         }
 
+        let _dist_guard = isolate_dist(&mut ctx);
         let log = ctx.logger("pipeline-test");
         p.run(&mut ctx, &log)
             .expect("per-artifact iteration must succeed");
@@ -1159,6 +1177,7 @@ before_publish:
             });
         }
 
+        let _dist_guard = isolate_dist(&mut ctx);
         let log = ctx.logger("pipeline-test");
         p.run(&mut ctx, &log).expect("ids filter must not error");
 
@@ -1223,6 +1242,7 @@ before_publish:
             size: None,
         });
 
+        let _dist_guard = isolate_dist(&mut ctx);
         let log = ctx.logger("pipeline-test");
         p.run(&mut ctx, &log)
             .expect("archive filter must not error");
@@ -1284,6 +1304,7 @@ before_publish:
             size: None,
         });
 
+        let _dist_guard = isolate_dist(&mut ctx);
         let log = ctx.logger("pipeline-test");
         p.run(&mut ctx, &log)
             .expect("template-vars hook must succeed");
@@ -1362,6 +1383,7 @@ before_publish:
             });
         }
 
+        let _dist_guard = isolate_dist(&mut ctx);
         let log = ctx.logger("pipeline-test");
         let result = p.run(&mut ctx, &log);
         assert!(
@@ -1430,6 +1452,7 @@ before_publish:
             });
         }
 
+        let _dist_guard = isolate_dist(&mut ctx);
         let log = ctx.logger("pipeline-test");
         p.run(&mut ctx, &log)
             .expect("default-all filter must fire for every artifact");
@@ -1493,6 +1516,7 @@ before_publish:
         ctx.template_vars_mut().set("Tag", "v9.9.9-test");
         ctx.publish_report = Some(anodizer_core::publish_report::PublishReport::default());
 
+        let _dist_guard = isolate_dist(&mut ctx);
         let log = ctx.logger("pipeline-test");
         let result = p.run(&mut ctx, &log);
 
@@ -1503,6 +1527,135 @@ before_publish:
         assert!(
             summary_path.exists(),
             "summary.json must be written even when the inner pipeline body returns Err",
+        );
+    }
+
+    #[test]
+    fn pipeline_writes_default_summary_with_publish_state_on_post_publish_failure() {
+        // The 2026-06-11 v0.8.0 incident: `release --publish-only` ran
+        // every publisher to success, then the verify-release stage
+        // failed — and NO summary.json landed on disk because nothing
+        // passed `--summary-json`. CI then had no machine-readable
+        // publish state and rolled back a fully-published release.
+        // Pin the fix: without an explicit path, a failing pipeline
+        // still writes `<dist>/run-<id>/summary.json` carrying the
+        // per-publisher outcomes and the top-level publish counts.
+        use anodizer_core::context::ContextOptions;
+        use anodizer_core::publish_report::{
+            PublishReport, PublisherGroup, PublisherOutcome, PublisherResult,
+        };
+
+        struct FailingVerifyStage;
+        impl anodizer_core::stage::Stage for FailingVerifyStage {
+            fn name(&self) -> &str {
+                "verify-release"
+            }
+            fn run(&self, _ctx: &mut anodizer_core::context::Context) -> anyhow::Result<()> {
+                anyhow::bail!("post-publish verification found issues")
+            }
+        }
+
+        let mut p = Pipeline::new();
+        p.add(Box::new(FailingVerifyStage));
+
+        let config = anodizer_core::config::Config {
+            project_name: "myapp".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = anodizer_core::context::Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+        let mut report = PublishReport::default();
+        report.results.push(PublisherResult {
+            name: "cargo".to_string(),
+            group: PublisherGroup::Submitter,
+            required: true,
+            outcome: PublisherOutcome::Succeeded,
+            evidence: None,
+        });
+        ctx.publish_report = Some(report);
+
+        let _dist_guard = isolate_dist(&mut ctx);
+        let log = ctx.logger("pipeline-test");
+        let result = p.run(&mut ctx, &log);
+        assert!(result.is_err(), "verify-release failure must propagate");
+
+        // No git info in the fixture → derive_run_id falls back to "local".
+        let summary_path = ctx.config.dist.join("run-local").join("summary.json");
+        assert!(
+            summary_path.exists(),
+            "default <dist>/run-<id>/summary.json must be written on stage failure"
+        );
+        let parsed: anodizer_stage_publish::run_summary::RunSummary =
+            serde_json::from_str(&fs::read_to_string(&summary_path).expect("read summary"))
+                .expect("parse summary");
+        assert_eq!(parsed.publishers_succeeded, 1);
+        assert_eq!(parsed.publishers_failed, 0);
+        assert_eq!(parsed.results.len(), 1);
+        assert_eq!(parsed.results[0].status, "succeeded");
+        assert!(
+            parsed.irreversibly_published,
+            "a landed Submitter (cargo) must mark the version burned"
+        );
+    }
+
+    #[test]
+    fn pipeline_writes_default_summary_on_release_stage_failure_before_publish() {
+        // The 2026-06-11 v0.9.0 incident: the RELEASE stage failed on an
+        // asset upload AFTER the GitHub release was created, the publish
+        // stage never ran (publish_report = None), and no summary.json
+        // landed on disk — CI's "Upload run summary" step found nothing
+        // and recovery had no machine-readable state. Pin the fix: any
+        // real (non-snapshot) pipeline failure after tag resolution
+        // writes the default summary, carrying the tag, an EMPTY
+        // publisher table, and irreversibly_published: false.
+        use anodizer_core::context::ContextOptions;
+
+        struct FailingReleaseStage;
+        impl anodizer_core::stage::Stage for FailingReleaseStage {
+            fn name(&self) -> &str {
+                "release"
+            }
+            fn run(&self, _ctx: &mut anodizer_core::context::Context) -> anyhow::Result<()> {
+                anyhow::bail!("release: upload artifact 'x.tar.zst.sha256' to release 'v9.9.9'")
+            }
+        }
+
+        let mut p = Pipeline::new();
+        p.add(Box::new(FailingReleaseStage));
+
+        let config = anodizer_core::config::Config {
+            project_name: "myapp".to_string(),
+            ..Default::default()
+        };
+        let mut ctx = anodizer_core::context::Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v9.9.9-test");
+        // The release stage failed before publish: NO publish_report.
+        assert!(ctx.publish_report.is_none());
+
+        let _dist_guard = isolate_dist(&mut ctx);
+        let log = ctx.logger("pipeline-test");
+        let result = p.run(&mut ctx, &log);
+        assert!(result.is_err(), "release-stage failure must propagate");
+
+        // No git info in the fixture → derive_run_id falls back to "local".
+        let summary_path = ctx.config.dist.join("run-local").join("summary.json");
+        assert!(
+            summary_path.exists(),
+            "default summary.json must be written on a pre-publish stage failure"
+        );
+        let parsed: anodizer_stage_publish::run_summary::RunSummary =
+            serde_json::from_str(&fs::read_to_string(&summary_path).expect("read summary"))
+                .expect("parse summary");
+        assert_eq!(parsed.tag, "v9.9.9-test", "summary must carry the tag");
+        assert!(
+            parsed.results.is_empty(),
+            "publish never ran -> empty publisher table"
+        );
+        assert_eq!(parsed.publishers_succeeded, 0);
+        assert_eq!(parsed.publishers_failed, 0);
+        assert!(
+            !parsed.irreversibly_published,
+            "nothing published -> recovery may roll back safely"
         );
     }
 
@@ -1534,6 +1687,7 @@ before_publish:
         ctx.template_vars_mut().set("Tag", "v9.9.9-test");
         ctx.publish_report = Some(anodizer_core::publish_report::PublishReport::default());
 
+        let _dist_guard = isolate_dist(&mut ctx);
         let log = ctx.logger("pipeline-test");
         p.run(&mut ctx, &log).expect("pipeline run");
 

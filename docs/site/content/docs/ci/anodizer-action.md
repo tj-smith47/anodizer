@@ -123,6 +123,7 @@ the caller needing to know the harness CLI. See
 | `part` | Semver part bumped: `major` / `minor` / `patch` / `none` / `custom`. |
 | `tagged` | `'true'` when this run cut a new tag (`new-tag` non-empty and differs from `old-tag`), `'false'` on a no-op. Gate downstream release jobs on `if: needs.<job>.outputs.tagged == 'true'` for single-crate / lockstep repos (the lockstep counterpart to the per-crate `crates != '[]'` gate). |
 | `head-sha` | Commit at HEAD after `anodizer tag --push` (the tag target — the version-sync bump commit, or the original HEAD when no bump was needed). Check this out in downstream jobs so the tree matches the tag. |
+| `irreversibly_published` | `'true'` when the run summary records a one-way-door publisher (crates.io, chocolatey, winget, snapcraft, ...) whose publish landed — the version is burned. Forensic signal for **custom** recovery steps; the default failure handling is anodizer's in-process `release.on_failure` policy, which already refuses to roll back past one-way doors, so most workflows never read this. Gate any manual destructive step on `steps.<id>.outputs.irreversibly_published != 'true'`. |
 
 ## Common patterns
 
@@ -146,7 +147,6 @@ jobs:
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
-        id: release
         with:
           auto-install: true
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
@@ -154,13 +154,9 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
-      - name: Rollback on release failure
-        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: anodizer tag rollback "$GITHUB_SHA"
 ```
+
+No failure-handling steps are needed: `anodizer release` runs a config-derived [preflight](@/docs/general/preflight.md) before any stage and executes the [`release.on_failure` policy](@/docs/advanced/release-resilience.md#release-on-failure-the-in-process-failure-policy) in-process on a pipeline failure.
 
 ### Auto-tag on push to main
 
@@ -249,12 +245,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - if: steps.anodizer.outputs.has-builds == 'false'
         run: echo "Library-only crate — no binary artifacts produced."
-      - name: Rollback on release failure
-        if: (failure() || cancelled()) && steps.anodizer.outputs.has-builds == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: anodizer tag rollback "$GITHUB_SHA"
 ```
 
 Note: `resolve-workspace: true` runs `anodizer resolve-tag` and exposes the crate name via `steps.<id>.outputs.workspace`. You'll typically wire that into the `--crate` arg of `args`.

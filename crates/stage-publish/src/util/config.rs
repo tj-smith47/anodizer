@@ -42,7 +42,7 @@ pub(crate) fn all_crates(ctx: &Context) -> Vec<CrateConfig> {
                 if let Some(existing) = acc.iter().find(|e| e.name == c.name) {
                     if existing.path != c.path {
                         log.warn(&format!(
-                            "all_crates: workspace '{}' crate '{}' path '{}' shadowed by \
+                            "workspace '{}' crate '{}' path '{}' shadowed by \
                              prior entry with path '{}'; workspace entry dropped (name \
                              collision with different paths — likely a config mistake)",
                             ws.name, c.name, c.path, existing.path
@@ -156,8 +156,9 @@ pub(crate) fn resolve_token(ctx: &Context, env_var: Option<&str>) -> Option<Stri
         .clone()
         .and_then(non_empty)
         .or_else(|| env_var.and_then(|v| ctx.env_var(v)).and_then(non_empty))
-        .or_else(|| ctx.env_var("ANODIZER_GITHUB_TOKEN").and_then(non_empty))
-        .or_else(|| ctx.env_var("GITHUB_TOKEN").and_then(non_empty))
+        .or_else(|| {
+            anodizer_core::git::resolve_github_token_with_env(None, &|key| ctx.env_var(key))
+        })
 }
 
 // ---------------------------------------------------------------------------
@@ -244,7 +245,9 @@ pub(crate) fn should_skip_publisher_with_if(
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("{label}: render skip template"))?;
         if off {
-            log.status(&format!("{label}: skipped"));
+            log.status(&format!(
+                "skipping {label} — `skip` condition evaluated truthy"
+            ));
             return Ok(true);
         }
     }
@@ -254,7 +257,7 @@ pub(crate) fn should_skip_publisher_with_if(
     // never skip a prerelease, regressing the documented `skip_upload: auto`
     // semantics.
     if skip_upload.is_some() && should_skip_upload(skip_upload, ctx, log)? {
-        log.status(&format!("{label}: skipping upload (skip_upload)"));
+        log.status(&format!("skipping {label} upload (skip_upload)"));
         return Ok(true);
     }
     let proceed = anodizer_core::config::evaluate_if_condition(if_condition, label, |t| {
@@ -262,7 +265,7 @@ pub(crate) fn should_skip_publisher_with_if(
     })?;
     if !proceed {
         log.status(&format!(
-            "{label}: skipped — `if` condition evaluated falsy"
+            "skipping {label} — `if` condition evaluated falsy"
         ));
         return Ok(true);
     }

@@ -34,7 +34,10 @@ fn resolve_milestone_for_close(
         .render_template(name_template)
         .context("milestone: render name_template")?;
     if milestone_name.is_empty() {
-        ctx.strict_guard(log, "milestone: name_template rendered to empty — skipping")?;
+        ctx.strict_guard(
+            log,
+            "skipping milestone close — name_template rendered to empty",
+        )?;
         return Ok(None);
     }
     // Prefer `ctx.token_type` when choosing among mixed-provider configs so
@@ -43,7 +46,7 @@ fn resolve_milestone_for_close(
     if owner.is_empty() || repo_name.is_empty() {
         ctx.strict_guard(
             log,
-            "milestone: repo owner/name not resolvable — skipping close",
+            "skipping milestone close — repo owner/name not resolvable",
         )?;
         return Ok(None);
     }
@@ -68,7 +71,7 @@ pub(super) fn preflight_milestones(
     for milestone_cfg in milestones {
         if let Some(target) = resolve_milestone_for_close(milestone_cfg, ctx, log)? {
             log.status(&format!(
-                "milestone: will close '{}' on {}/{}",
+                "will close milestone '{}' on {}/{}",
                 target.name, target.owner, target.repo_name
             ));
         }
@@ -183,7 +186,7 @@ pub(super) fn close_milestones(
                     );
                 }
                 log.warn(&format!(
-                    "milestone: could not close '{}': {}",
+                    "could not close milestone '{}': {}",
                     milestone_name, e
                 ));
             }

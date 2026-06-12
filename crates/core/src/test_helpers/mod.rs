@@ -730,8 +730,8 @@ mod tests {
     fn test_builder_dirty_flag() {
         let ctx = TestContextBuilder::new().dirty(true).build();
         assert_eq!(
-            ctx.template_vars().get("IsGitDirty"),
-            Some(&"true".to_string())
+            ctx.template_vars().get_structured("IsGitDirty"),
+            Some(&tera::Value::Bool(true))
         );
         assert_eq!(
             ctx.template_vars().get("GitTreeState"),
@@ -750,8 +750,8 @@ mod tests {
         let ctx = TestContextBuilder::new().snapshot(true).build();
         assert!(ctx.is_snapshot());
         assert_eq!(
-            ctx.template_vars().get("IsSnapshot"),
-            Some(&"true".to_string())
+            ctx.template_vars().get_structured("IsSnapshot"),
+            Some(&tera::Value::Bool(true))
         );
     }
 

@@ -32,6 +32,20 @@ use crate::group::{
     sort_commits,
 };
 
+/// How a resolved GitHub login renders in the author-mention slot.
+///
+/// The same render path serves two sinks with different autolink behaviour:
+/// a GitHub release body autolinks bare `@login` mentions itself, while a
+/// committed `CHANGELOG.md` needs an explicit Markdown link to be clickable.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub(crate) enum LoginStyle {
+    /// Bare `@login` — for GitHub release bodies, where GitHub autolinks it.
+    #[default]
+    Bare,
+    /// `[@login](https://github.com/login)` — for on-disk Markdown.
+    Linked,
+}
+
 /// Per-call rendering options for [`render_changelog_with_provider`].
 ///
 /// Bundles the long parameter list so the public render entry point keeps a
@@ -47,6 +61,8 @@ pub(crate) struct ChangelogRenderOpts<'a> {
     /// Overrides `use_source` for newline selection only (matches
     /// the backend token type).
     pub scm_provider: Option<&'a str>,
+    /// How resolved logins render in the author-mention slot.
+    pub login_style: LoginStyle,
 }
 
 /// Compute the release-wide unique author-name set across every commit
@@ -80,6 +96,29 @@ fn collect_all_authors(grouped: &[GroupedCommits]) -> String {
     seen.into_iter().collect::<Vec<_>>().join(", ")
 }
 
+/// Release-wide unique login set across every commit in the rendered groups,
+/// joined with commas (the same shape the SCM compare-API fetchers produce
+/// for `AllLogins`). Used when the caller supplies no fetch-time login string
+/// — the local-git path, where logins arrive via GitHub-API enrichment on the
+/// commits themselves rather than from a compare response.
+fn collect_all_logins(grouped: &[GroupedCommits]) -> String {
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    fn walk(group: &GroupedCommits, seen: &mut std::collections::BTreeSet<String>) {
+        for commit in &group.commits {
+            if !commit.login.is_empty() {
+                seen.insert(commit.login.clone());
+            }
+        }
+        for sub in &group.subgroups {
+            walk(sub, seen);
+        }
+    }
+    for g in grouped {
+        walk(g, &mut seen);
+    }
+    seen.into_iter().collect::<Vec<_>>().join(",")
+}
+
 /// Inner render function that accepts an optional SCM provider override for
 /// newline handling, keyed on the backend token type, not
 /// the changelog source. When `scm_provider` is set, it overrides `use_source`
@@ -96,6 +135,7 @@ pub(crate) fn render_changelog_with_provider(
         title,
         divider,
         scm_provider,
+        login_style,
     } = opts;
     use anodizer_core::config::ChangelogConfig;
     // Build a transient ChangelogConfig with just the user-supplied
@@ -132,6 +172,16 @@ pub(crate) fn render_changelog_with_provider(
         out.push_str(&format!("## {}\n\n", changelog_title));
     }
     let all_authors = collect_all_authors(grouped);
+    // The SCM compare backends supply `logins` from their API response; the
+    // local-git path supplies an empty string, so derive `AllLogins` from the
+    // (possibly enriched) per-commit logins instead.
+    let derived_logins;
+    let logins = if logins.is_empty() {
+        derived_logins = collect_all_logins(grouped);
+        derived_logins.as_str()
+    } else {
+        logins
+    };
     let state = RenderGroupsState {
         abbrev,
         tmpl,
@@ -139,6 +189,7 @@ pub(crate) fn render_changelog_with_provider(
         all_authors: &all_authors,
         divider,
         newline,
+        login_style,
     };
     render_groups(&mut out, grouped, &state, 3)?;
     Ok(out)
@@ -158,6 +209,7 @@ struct RenderGroupsState<'a> {
     all_authors: &'a str,
     divider: Option<&'a str>,
     newline: &'a str,
+    login_style: LoginStyle,
 }
 
 impl<'a> RenderGroupsState<'a> {
@@ -199,15 +251,7 @@ fn render_groups(
             out.push_str(&format!("{} {}\n\n", hashes, group.title));
         }
         for commit in &group.commits {
-            render_commit_line(
-                out,
-                commit,
-                state.abbrev,
-                state.tmpl,
-                state.logins,
-                state.all_authors,
-                state.newline,
-            )?;
+            render_commit_line(out, commit, state)?;
         }
         // Render nested subgroups one level deeper (no divider at subgroup level).
         if !group.subgroups.is_empty() {
@@ -229,13 +273,15 @@ fn render_groups(
 /// user `format:` that begins with its own bullet renders one marker rather
 /// than a doubled `* *`.
 ///
-/// `AuthorUsername` falls back to the commit author name when the per-commit
-/// login is empty — the local-git changelog path leaves it empty since only
-/// the `github` backend resolves SCM usernames, and an empty
-/// `{{ .AuthorUsername }}` would otherwise render a bare `()`. The raw `Login`
-/// is left empty in that case so the default SCM format's
+/// `AuthorUsername` renders the `@login` mention when a per-commit login is
+/// known (from the SCM compare backends, or from GitHub-API enrichment of the
+/// local-git path) and falls back to the commit author name otherwise, so an
+/// empty `{{ .AuthorUsername }}` never renders a bare `()`. The raw `Login`
+/// stays empty when unresolved so the default SCM format's
 /// `{% if Login %}…{% else %}{{ AuthorName }} <{{ AuthorEmail }}>{% endif %}`
-/// branch still selects the `Name <email>` form.
+/// branch still selects the `Name <email>` form. Resolved logins additionally
+/// pass through [`style_login_mentions`], which links `@login` tokens under
+/// [`LoginStyle::Linked`] (on-disk changelogs).
 ///
 /// Template variables available:
 /// - `SHA` — full commit hash
@@ -247,8 +293,10 @@ fn render_groups(
 ///   keeps the flat fields for backward compatibility; new templates
 ///   should prefer the `AuthorsList` structured form.
 /// - `AuthorEmail` — commit author email (see `AuthorName` deprecation note).
-/// - `Login` — per-commit GitHub username (populated only with `github`
-///   backend; left empty otherwise so the default SCM format can branch on it)
+/// - `Login` — per-commit SCM username (populated by the `github`/`gitea`
+///   backends, or by GitHub-API enrichment when the local-git path targets a
+///   GitHub repo; left empty when unresolved so the default SCM format can
+///   branch on it)
 /// - `Authors` — comma-separated names for this commit (primary author +
 ///   `Co-Authored-By:` trailers). The per-entry
 ///   Authors template var.
@@ -267,12 +315,17 @@ fn render_groups(
 fn render_commit_line(
     out: &mut String,
     commit: &CommitInfo,
-    abbrev: i32,
-    tmpl: &str,
-    logins: &str,
-    all_authors: &str,
-    newline: &str,
+    state: &RenderGroupsState<'_>,
 ) -> Result<()> {
+    let &RenderGroupsState {
+        abbrev,
+        tmpl,
+        logins,
+        all_authors,
+        newline,
+        login_style,
+        divider: _,
+    } = state;
     let short_sha = if abbrev < 0 {
         // Negative abbrev (e.g. -1) means omit hash entirely.
         String::new()
@@ -297,36 +350,47 @@ fn render_commit_line(
             .map(|s| s.to_string())
             .unwrap_or_else(|| commit.full_hash.clone())
     };
+    // Every free-text input is stripped of the mention sentinel before it can
+    // reach the template, so the only sentinel spans in the rendered line are
+    // the ones this function substitutes — coincidental `@login` text in a
+    // commit subject can never be mistaken for an author mention, and a
+    // crafted sentinel in a commit message can never trigger styling.
+    let description = strip_mention_sentinels(&commit.description);
+    let author_name = strip_mention_sentinels(&commit.author_name);
+    let author_email = strip_mention_sentinels(&commit.author_email);
+    let login = strip_mention_sentinels(&commit.login);
     let mut vars = TemplateVars::new();
     // SHA respects the `abbrev` config.
     // `short_sha` is already computed with abbrev applied above; use it here
     // so templates referencing {{ .SHA }} honor the user's abbreviation.
     vars.set("SHA", &short_sha);
     vars.set("ShortSHA", &short_sha);
-    vars.set("Message", &commit.description);
-    vars.set("AuthorName", &commit.author_name);
-    vars.set("AuthorEmail", &commit.author_email);
-    // `Login` stays the raw backend datum (empty unless the github backend
-    // resolved a username): the default SCM format branches on it
-    // (`{% if Login %}@{{ Login }}{% else %}{{ AuthorName }} <{{ AuthorEmail }}>{% endif %}`),
-    // so an empty `Login` is the signal that drives the `Name <email>`
-    // fallback — overwriting it would suppress the email.
-    vars.set("Login", &commit.login);
-    // Alias: the default format string when
-    // `use ∈ {github,gitlab,gitea}` is
-    // `"{{ .SHA }}: {{ .Message }} ({{ with .AuthorUsername }}@{{ . }}{{ else }}{{ .AuthorName }} <{{ .AuthorEmail }}>{{ end }})"`
-    // populated for
-    // `AuthorUsername` template var from the SCM commit author's username;
-    // anodizer surfaces the same datum under `AuthorUsername`. Unlike the
-    // raw `Login` (which the default SCM format branches on), this display
-    // alias falls back to the author name when the per-commit login is empty
-    // — the local-git `anodizer changelog` path never resolves SCM usernames,
-    // so a custom `({{ .AuthorUsername }})` reference would otherwise render a
-    // bare `()`.
-    let author_username = if commit.login.is_empty() {
-        commit.author_name.as_str()
+    vars.set("Message", &description);
+    vars.set("AuthorName", &author_name);
+    vars.set("AuthorEmail", &author_email);
+    // `Login` stays the raw backend datum (empty unless an SCM backend or
+    // login enrichment resolved a username): the default SCM format branches
+    // on it (`{% if Login %}{{ AuthorUsername }}{% else %}{{ AuthorName }}
+    // <{{ AuthorEmail }}>{% endif %}`), so an empty `Login` is the signal
+    // that drives the `Name <email>` fallback — overwriting it would
+    // suppress the email.
+    vars.set("Login", &login);
+    // `AuthorUsername` is the DISPLAY alias: with a resolved login it carries
+    // the `@login` mention form, framed in sentinels so the post-render pass
+    // styles exactly this renderer-substituted span (a GitHub release body
+    // autolinks the bare mention; the Linked style turns it into an explicit
+    // Markdown link for on-disk changelogs). With no login it falls back to
+    // the author name so a `({{ .AuthorUsername }})` reference never renders
+    // a bare `()`. Unlike the raw `Login`, the mention form means templates
+    // ported from the `{{ with .AuthorUsername }}@{{ . }}{{ end }}`
+    // convention would double the `@` — `style_login_mentions` collapses the
+    // literal `@` directly before the span.
+    let mention;
+    let author_username = if login.is_empty() {
+        author_name.as_ref()
     } else {
-        commit.login.as_str()
+        mention = format!("{MENTION_SENTINEL}@{login}{MENTION_SENTINEL}");
+        mention.as_str()
     };
     vars.set("AuthorUsername", author_username);
     // Per-entry `Authors` and `Logins` template vars: each entry gets its
@@ -344,19 +408,19 @@ fn render_commit_line(
     // Co-author trailers contribute Name only (email is in the raw trailer
     // string; Username is unknown without an extra SCM API hit — left empty).
     let mut authors_list: Vec<JsonValue> = Vec::new();
-    if !commit.author_name.is_empty() {
+    if !author_name.is_empty() {
         let mut obj = serde_json::Map::new();
-        obj.insert("Name".into(), JsonValue::String(commit.author_name.clone()));
-        obj.insert(
-            "Email".into(),
-            JsonValue::String(commit.author_email.clone()),
-        );
-        obj.insert("Username".into(), JsonValue::String(commit.login.clone()));
+        obj.insert("Name".into(), JsonValue::String(author_name.to_string()));
+        obj.insert("Email".into(), JsonValue::String(author_email.to_string()));
+        obj.insert("Username".into(), JsonValue::String(login.to_string()));
         authors_list.push(JsonValue::Object(obj));
     }
     for ca in &commit.co_authors {
         let mut obj = serde_json::Map::new();
-        obj.insert("Name".into(), JsonValue::String(ca.clone()));
+        obj.insert(
+            "Name".into(),
+            JsonValue::String(strip_mention_sentinels(ca).into_owned()),
+        );
         obj.insert("Email".into(), JsonValue::String(String::new()));
         obj.insert("Username".into(), JsonValue::String(String::new()));
         authors_list.push(JsonValue::Object(obj));
@@ -374,8 +438,8 @@ fn render_commit_line(
     // just the primary unless the trailer itself was a `<user@github>`
     // login form (left as future work).
     let mut commit_logins: Vec<String> = Vec::new();
-    if !commit.login.is_empty() {
-        commit_logins.push(commit.login.clone());
+    if !login.is_empty() {
+        commit_logins.push(login.to_string());
     }
     vars.set("Logins", &commit_logins.join(", "));
     // `Logins` as a structured list too — symmetric with `AuthorsList`
@@ -389,14 +453,26 @@ fn render_commit_line(
         .map(|s| JsonValue::String(s.clone()))
         .collect();
     vars.set_structured("LoginsList", JsonValue::Array(logins_list));
-    vars.set("AllLogins", logins);
-    vars.set("AllAuthors", all_authors);
+    vars.set("AllLogins", &strip_mention_sentinels(logins));
+    vars.set("AllAuthors", &strip_mention_sentinels(all_authors));
     let rendered = template::render(tmpl, &vars).with_context(|| {
         format!(
             "changelog: render commit format template '{tmpl}' for commit {}",
             commit.hash
         )
     })?;
+    let rendered = if login.is_empty() {
+        // No login resolved: no sentinel span was substituted, so the line is
+        // byte-identical to the historical name-based rendering. The strip is
+        // a defensive no-op (inputs are sanitized above) that guarantees the
+        // sentinel can never leak on this path either.
+        match strip_mention_sentinels(&rendered) {
+            std::borrow::Cow::Borrowed(_) => rendered,
+            std::borrow::Cow::Owned(stripped) => stripped,
+        }
+    } else {
+        style_login_mentions(&rendered, &login, login_style)
+    };
     // De-dupe the leading bullet: when the user's `format:` already opens with
     // a Markdown list marker (`* ` / `- `, or the tab-separated form), emit it
     // verbatim instead of prepending a second `* ` (which yielded `* *`). The
@@ -414,6 +490,59 @@ fn render_commit_line(
         out.push_str(&format!("* {}{}", rendered, newline));
     }
     Ok(())
+}
+
+/// Frames the renderer-substituted author mention inside the rendered line so
+/// the post-render styling pass can target exactly that span. `U+0001` is a
+/// control character that cannot legitimately appear in commit metadata; every
+/// free-text input is stripped of it before templating
+/// ([`strip_mention_sentinels`]), so a span can only originate from the
+/// renderer's own `AuthorUsername` substitution — never from coincidental or
+/// crafted text.
+const MENTION_SENTINEL: char = '\u{1}';
+
+/// Remove [`MENTION_SENTINEL`] characters from a free-text input before it is
+/// handed to the template engine. Borrows when the input is already clean
+/// (the overwhelmingly common case), so the byte-identical fallback contract
+/// costs no allocation.
+fn strip_mention_sentinels(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.contains(MENTION_SENTINEL) {
+        std::borrow::Cow::Owned(s.replace(MENTION_SENTINEL, ""))
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
+}
+
+/// Post-render pass over one commit line for a RESOLVED `login`.
+///
+/// Styles exactly the sentinel-framed mention span the renderer substituted
+/// for `AuthorUsername` — free text mentioning `@login` is untouchable by
+/// construction (inputs are sentinel-stripped before templating):
+///
+/// 1. Consumes a literal `@` directly before the span: a template that
+///    prefixes its own `@` (the `{{ with .AuthorUsername }}@{{ . }}{{ end }}`
+///    convention) would otherwise double it.
+/// 2. Replaces the span with the styled mention — bare `@login` under
+///    [`LoginStyle::Bare`] (GitHub autolinks it in release bodies), or
+///    `[@login](https://github.com/login)` under [`LoginStyle::Linked`] for
+///    on-disk Markdown.
+/// 3. Strips any residual sentinel so it can never leak: a template filter
+///    (`upper` / `slice` / ...) applied to `AuthorUsername` can mangle a span
+///    past recognition, in which case the mention degrades to its unstyled
+///    text rather than emitting control characters.
+fn style_login_mentions(line: &str, login: &str, style: LoginStyle) -> String {
+    let span = format!("{MENTION_SENTINEL}@{login}{MENTION_SENTINEL}");
+    let styled = match style {
+        LoginStyle::Bare => format!("@{login}"),
+        LoginStyle::Linked => format!("[@{login}](https://github.com/{login})"),
+    };
+    let line = line.replace(&format!("@{span}"), &span);
+    let line = line.replace(&span, &styled);
+    if line.contains(MENTION_SENTINEL) {
+        line.replace(MENTION_SENTINEL, "")
+    } else {
+        line
+    }
 }
 // ---------------------------------------------------------------------------
 // Public render API — produces a single staged changelog edit that can be
@@ -716,6 +845,27 @@ fn group_section_commits(
 
     sort_commits(&mut infos, cfg.resolved_sort()?)?;
 
+    // GitHub login enrichment for the on-disk changelog: resolve author
+    // emails to `@login` mentions when the release targets GitHub AND a
+    // token resolves through the standard chain (`bump`/`tag`/`changelog`
+    // expose no `--token` flag, so explicit is `None` here and the env links
+    // `ANODIZER_GITHUB_TOKEN` → `GITHUB_TOKEN` carry the chain; no token →
+    // name-based rendering, by contract). The per-call enricher is cheap —
+    // the email→login memo is process-wide in core, so a multi-crate
+    // `bump`/`tag` sync still costs one API call per unique author email.
+    // Failures keep name-based rendering.
+    if crate::enrich::use_source_supports_github_logins(cfg.resolved_use_source())
+        && let Some(token) = anodizer_core::git::resolve_github_token(None)
+    {
+        let configured = crate::enrich::configured_github_target(workspace_root);
+        if let Some((owner, repo)) = crate::enrich::derive_github_target(
+            configured.as_ref().map(|(o, n)| (o.as_str(), n.as_str())),
+            workspace_root,
+        ) {
+            crate::enrich::LoginEnricher::for_github_repo(owner, repo, token).enrich(&mut infos);
+        }
+    }
+
     let groups: Vec<ChangelogGroup> = cfg.groups.clone().unwrap_or_default();
     let grouped = if groups.is_empty() {
         if infos.is_empty() {
@@ -769,6 +919,9 @@ fn render_section_body(
             title: Some(""),
             divider: cfg.divider.as_deref(),
             scm_provider: None,
+            // On-disk Markdown gets no GitHub autolinking, so resolved
+            // logins render as explicit links.
+            login_style: LoginStyle::Linked,
         },
     )?;
     // `render_changelog_with_provider` always emits a `## <title>` line,
@@ -4063,6 +4216,95 @@ mod render_extra_tests {
         }
     }
 
+    // ---- style_login_mentions ----
+
+    /// The sentinel-framed span the renderer substitutes for `AuthorUsername`.
+    fn span(login: &str) -> String {
+        format!("{MENTION_SENTINEL}@{login}{MENTION_SENTINEL}")
+    }
+
+    /// Only the sentinel-framed span is styled; identical-looking free text
+    /// (a coincidental `@login` in the commit subject) is untouched in BOTH
+    /// styles, because it carries no sentinel.
+    #[test]
+    fn style_login_mentions_styles_only_the_sentinel_span() {
+        let line = format!("remove @ada usage ({})", span("ada"));
+        assert_eq!(
+            style_login_mentions(&line, "ada", LoginStyle::Linked),
+            "remove @ada usage ([@ada](https://github.com/ada))"
+        );
+        assert_eq!(
+            style_login_mentions(&line, "ada", LoginStyle::Bare),
+            "remove @ada usage (@ada)"
+        );
+    }
+
+    /// A template-supplied literal `@` directly before the span is consumed
+    /// (the GR-ported `@{{ .AuthorUsername }}` shape), in both styles.
+    #[test]
+    fn style_login_mentions_collapses_template_at_before_span() {
+        let line = format!("x (@{})", span("ada"));
+        assert_eq!(
+            style_login_mentions(&line, "ada", LoginStyle::Bare),
+            "x (@ada)"
+        );
+        assert_eq!(
+            style_login_mentions(&line, "ada", LoginStyle::Linked),
+            "x ([@ada](https://github.com/ada))"
+        );
+    }
+
+    /// A mangled span (a template filter ate one sentinel) degrades to its
+    /// unstyled text — the sentinel itself must never reach the output.
+    #[test]
+    fn style_login_mentions_never_leaks_sentinels() {
+        let half = format!("{MENTION_SENTINEL}@ADA");
+        let line = format!("x ({half})");
+        for style in [LoginStyle::Bare, LoginStyle::Linked] {
+            let out = style_login_mentions(&line, "ada", style);
+            assert!(
+                !out.contains(MENTION_SENTINEL),
+                "sentinel leaked ({style:?}): {out:?}"
+            );
+            assert_eq!(out, "x (@ADA)");
+        }
+    }
+
+    // ---- strip_mention_sentinels ----
+
+    /// Clean input borrows (no allocation, byte-identical); dirty input has
+    /// every sentinel removed.
+    #[test]
+    fn strip_mention_sentinels_borrows_clean_and_cleans_dirty() {
+        assert!(matches!(
+            strip_mention_sentinels("plain text"),
+            std::borrow::Cow::Borrowed("plain text")
+        ));
+        let dirty = format!("a{MENTION_SENTINEL}b{MENTION_SENTINEL}c");
+        assert_eq!(strip_mention_sentinels(&dirty), "abc");
+    }
+
+    // ---- collect_all_logins ----
+
+    /// `AllLogins` derives from per-commit logins when the caller supplies no
+    /// fetch-time login string (the enriched local-git path): unique, sorted,
+    /// comma-joined like the SCM fetchers produce.
+    #[test]
+    fn collect_all_logins_unique_sorted() {
+        let mut a = commit("feat: a", "a1", "a1full");
+        a.login = "zoe".into();
+        let mut b = commit("fix: b", "b2", "b2full");
+        b.login = "ada".into();
+        let mut c = commit("fix: c", "c3", "c3full");
+        c.login = "zoe".into();
+        let grouped = vec![GroupedCommits {
+            title: String::new(),
+            commits: vec![a, b, c],
+            subgroups: Vec::new(),
+        }];
+        assert_eq!(collect_all_logins(&grouped), "ada,zoe");
+    }
+
     // ---- collect_all_authors ----
 
     #[test]
@@ -4522,6 +4764,7 @@ mod render_extra_tests {
             all_authors: "",
             divider: None,
             newline: "\n",
+            login_style: LoginStyle::Bare,
         };
         let groups = vec![GroupedCommits::new(
             "TooDeep",
@@ -4541,6 +4784,7 @@ mod render_extra_tests {
             all_authors: "",
             divider: None,
             newline: "\n",
+            login_style: LoginStyle::Bare,
         };
         let groups = vec![GroupedCommits::new(
             "Features",

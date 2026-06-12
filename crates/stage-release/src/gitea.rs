@@ -528,7 +528,7 @@ pub(crate) fn gitea_upload_action(
 
 /// Look up an existing release attachment by name and return its byte size.
 ///
-/// Mirrors the GitHub backend's `find_release_asset_size`. Used by the
+/// Mirrors the GitHub backend's `find_release_asset_probe`. Used by the
 /// preemptive-delete path's idempotency check: when the remote asset's
 /// size matches the local file, the upload is treated as an idempotent
 /// no-op so the published bytes are not mutated (immutable-
@@ -846,7 +846,7 @@ pub(crate) fn run_gitea_backend(
                 let file_name = result
                     .context("gitea: upload task panicked")?
                     .context("gitea: upload task failed")?;
-                log.verbose(&format!("uploaded artifact: {}", file_name));
+                log.verbose(&format!("uploaded artifact {}", file_name));
             }
         }
 

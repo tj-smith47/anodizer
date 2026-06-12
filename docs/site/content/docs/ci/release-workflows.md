@@ -33,6 +33,14 @@ When `.anodizer.yaml` contains a non-empty `workspaces:` block, that wins over `
 
 `anodizer tag` detects which crates have changed since their last tag, bumps versions, creates per-crate tags in one commit, and pushes everything atomically. The `crates` step output (a JSON array of crate names) lets downstream jobs skip entirely when nothing changed and drive matrix entries when something did.
 
+Every strategy below is two steps end-to-end: tag, then release. Environment validation and failure handling are in-process — `anodizer release` runs a config-derived [preflight](@/docs/general/preflight.md) before any stage, and on a pipeline failure executes the [`release.on_failure` policy](@/docs/advanced/release-resilience.md#release-on-failure-the-in-process-failure-policy) (tag + bump rollback by default, auto-degrading to `hold` once a one-way-door publisher has landed). No preflight or rollback steps belong in the workflow YAML:
+
+```yaml
+# .anodizer.yaml
+release:
+  on_failure: rollback   # rollback | hold; default rollback
+```
+
 ## Canonical strategies
 
 ### Strategy A — Single crate
@@ -89,7 +97,6 @@ jobs:
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
-        id: release
         with:
           auto-install: true
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
@@ -97,12 +104,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
-      - name: Rollback on release failure
-        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: anodizer tag rollback "$GITHUB_SHA"
 ```
 
 **Concurrency:** `group: release-${{ github.repository }}` — serializes the one run; `cancel-in-progress: false` so a release in flight is never killed.
@@ -174,7 +175,6 @@ jobs:
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
-        id: release
         with:
           auto-install: true
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
@@ -183,12 +183,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Rollback on release failure
-        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: anodizer tag rollback "$GITHUB_SHA"
 ```
 
 **Concurrency:** same group key as A — one live run per repo.
@@ -280,7 +274,6 @@ jobs:
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
-        id: release
         with:
           auto-install: true
           download-dist: true
@@ -290,12 +283,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Rollback on release failure
-        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: anodizer tag rollback "$GITHUB_SHA"
 ```
 
 **Concurrency:** one live run per repo; the determinism matrix runs in parallel within the run.
@@ -398,7 +385,6 @@ jobs:
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
-        id: release
         with:
           auto-install: true
           download-dist: true
@@ -408,12 +394,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Rollback on release failure
-        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: anodizer tag rollback "$GITHUB_SHA"
 ```
 
 **Concurrency:** one live run per repo.
@@ -482,7 +462,6 @@ jobs:
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
-        id: release
         with:
           auto-install: true
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
@@ -491,12 +470,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Rollback on release failure
-        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: anodizer tag rollback "$GITHUB_SHA"
 ```
 
 **Concurrency:** `group: release-${{ github.repository }}` — the repo-wide key serializes concurrent tag pushes. Do not use `group: release-${{ github.ref_name }}`; that creates one group per tag ref, allowing parallel runs that race at the registry.
@@ -611,7 +584,6 @@ jobs:
         with:
           fetch-depth: 0
       - uses: tj-smith47/anodizer-action@v1
-        id: release
         with:
           from-artifact: anodizer-linux
           artifact-run-id: auto
@@ -625,12 +597,6 @@ jobs:
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-      - name: Rollback on release failure
-        if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
-        env:
-          GH_TOKEN: ${{ secrets.GH_PAT }}
-          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-        run: anodizer tag rollback "$GITHUB_SHA"
 ```
 
 **Concurrency:** repo-wide group in `release.yml`; CI can fan out freely.

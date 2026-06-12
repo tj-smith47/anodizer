@@ -454,7 +454,7 @@ fn prepare_v2_config(
     // Check disable — skip when template evaluates to true.
     if is_docker_v2_skipped(&v2_cfg.skip, ctx)? {
         log.status(&format!(
-            "dockers_v2[{}]: skipping config for crate {} (skip=true)",
+            "skipping dockers_v2[{}] for crate {} (skip=true)",
             idx, krate.name
         ));
         return Ok(());
@@ -486,7 +486,7 @@ fn prepare_v2_config(
     })?;
     if rendered_dockerfile.trim().is_empty() {
         log.status(&format!(
-            "dockers_v2[{}]: skipping crate {} — dockerfile template rendered empty",
+            "skipping dockers_v2[{}] for crate {} — dockerfile template rendered empty",
             idx, krate.name
         ));
         return Ok(());
@@ -539,7 +539,7 @@ fn prepare_v2_config(
             Ok(opt) => opt,
             Err(e) => {
                 log.warn(&format!(
-                    "dockers_v2[{}]: could not parse base image from {}: {:#}",
+                    "could not parse base image for dockers_v2[{}] from {}: {:#}",
                     idx, rendered_dockerfile, e
                 ));
                 None
@@ -632,7 +632,7 @@ fn prepare_v2_config(
             HookRunContext::new(dry_run, log, Some(&hook_vars)),
         ) {
             log.warn(&format!(
-                "{}: pre-hook failed; skipping this config's build (other configs continue): {:#}",
+                "pre-hook {} failed; skipping this config's build (other configs continue): {:#}",
                 pre_label, e
             ));
             pre_hook_errors.push(e);
@@ -740,7 +740,7 @@ fn queue_v2_build_for_platforms(
 
     if image_tags.is_empty() {
         log.warn(&format!(
-            "dockers_v2[{}]: no image tags produced for crate {} (images or tags resolved to empty); skipping",
+            "skipping dockers_v2[{}] for crate {} — no image tags produced (images or tags resolved to empty)",
             idx, krate.name
         ));
         return Ok(());
@@ -883,7 +883,7 @@ fn queue_v2_build_for_platforms(
         log.status(&format!("(dry-run) would run: {}", cmd_args.join(" ")));
         if max_attempts > 1 {
             log.status(&format!(
-                "(dry-run) retry: up to {} attempts, base delay {:?}{}",
+                "(dry-run) would retry up to {} attempts, base delay {:?}{}",
                 max_attempts,
                 base_delay,
                 match max_delay {
@@ -1088,7 +1088,7 @@ pub(crate) fn process_docker_manifest(
     // errors.
     if v2_multiplatform_tags.contains(&manifest_name) {
         log.status(&format!(
-            "docker: skipping manifest '{}' — already pushed as multi-arch by dockers_v2",
+            "skipping manifest '{}' — already pushed as multi-arch by dockers_v2",
             manifest_name
         ));
         return Ok(());
@@ -1107,7 +1107,7 @@ pub(crate) fn process_docker_manifest(
         })?;
         if img.trim().is_empty() {
             log.warn(&format!(
-                "docker: manifest image_template '{}' rendered to empty string, skipping",
+                "manifest image_template '{}' rendered to empty string, skipping",
                 tmpl
             ));
             continue;
@@ -1268,7 +1268,7 @@ pub(crate) fn build_manifest_create_cmd(
     for img in rendered_images {
         if let Some(digest) = find_image_digest(new_artifacts, img) {
             let pinned = format!("{}@{}", img, digest);
-            log.verbose(&format!("manifest: pinning {} to digest {}", img, digest));
+            log.verbose(&format!("pinning manifest {} to digest {}", img, digest));
             create_cmd.push(pinned);
         } else {
             // "Did you mean?" — find closest matching image by edit distance.
@@ -1336,7 +1336,7 @@ fn run_manifest_create_with_retry(
                 max_attempts,
             ));
         }
-        log.status(&format!("running: {}", create_cmd.join(" ")));
+        log.status(&format!("running {}", create_cmd.join(" ")));
         let mut create_command = Command::new(&create_cmd[0]);
         create_command.args(&create_cmd[1..]);
         for (key, value) in manifest_env_vars {
@@ -1403,7 +1403,7 @@ fn run_manifest_push_with_retry(
                 max_attempts,
             ));
         }
-        log.status(&format!("running: {}", push_cmd.join(" ")));
+        log.status(&format!("running {}", push_cmd.join(" ")));
         let mut push_command = Command::new(&push_cmd[0]);
         push_command.args(&push_cmd[1..]);
         for (key, value) in manifest_env_vars {
@@ -1516,7 +1516,7 @@ pub(crate) fn write_combined_digest_file(
         ));
     } else {
         log.status(&format!(
-            "wrote combined digest file: {}",
+            "wrote combined digest file {}",
             digest_file.display()
         ));
     }

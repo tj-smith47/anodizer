@@ -931,13 +931,36 @@ fn linux_packages_resolves_absolute_path_and_basename() {
 
     let pkgs = linux_packages(&ctx, "app");
     assert_eq!(pkgs.len(), 1, "the one LinuxPackage artifact is returned");
-    let (abs, name) = &pkgs[0];
+    let (abs, name, target) = &pkgs[0];
     assert!(abs.is_absolute(), "path is absolute: {}", abs.display());
     assert_eq!(name, "pkg_amd64.deb", "basename surfaced for the caller");
+    assert_eq!(target, &None, "host build carries no target triple");
     // A non-existent crate must yield no packages (per-crate isolation).
     assert!(
         linux_packages(&ctx, "other").is_empty(),
         "packages are isolated per crate"
+    );
+
+    // A target-built package surfaces its triple so the smoke-test can pin
+    // the container platform to the package's architecture.
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::LinuxPackage,
+        name: "pkg_arm64.deb".to_string(),
+        path: path.clone(),
+        target: Some("aarch64-unknown-linux-gnu".to_string()),
+        crate_name: "app".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+    let pkgs = linux_packages(&ctx, "app");
+    let arm = pkgs
+        .iter()
+        .find(|(_, n, _)| n == "pkg_arm64.deb")
+        .expect("arm64 package present");
+    assert_eq!(
+        arm.2.as_deref().and_then(docker_platform).as_deref(),
+        Some("linux/arm64"),
+        "triple maps to the docker platform the smoke job pins"
     );
 }
 
@@ -968,5 +991,541 @@ fn extract_deb_main_elf_picks_largest_elf_member() {
     assert!(
         extract_deb_main_elf(&txt).expect("read").is_none(),
         "a non-ar file degrades to None, not an error"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Config-derived signature/SBOM expectations (the v0.8.0 gap)
+// ---------------------------------------------------------------------------
+
+/// The repo's own `signs:` shape — gpg over checksum artifacts, gated on the
+/// release-mode condition that silently mis-evaluated in v0.8.0.
+fn checksum_gpg_sign() -> anodizer_core::config::SignConfig {
+    anodizer_core::config::SignConfig {
+        id: Some("default".to_string()),
+        artifacts: Some("checksum".to_string()),
+        cmd: Some("gpg".to_string()),
+        if_condition: Some("{{ not IsSnapshot or IsHarness }}".to_string()),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn derived_expectations_include_per_artifact_sigs_when_signing_enabled() {
+    let mut ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![published_crate("app", None)])
+        .build();
+    ctx.config.signs = vec![checksum_gpg_sign()];
+    add_artifact(&mut ctx, ArtifactKind::Checksum, "app_checksums.txt", "app");
+    add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
+
+    let derived = config_expected_asset_names(&ctx, "app", None).expect("derivation");
+    assert_eq!(derived, vec!["app_checksums.txt.sig".to_string()]);
+}
+
+#[test]
+fn derived_expectations_empty_when_signing_not_configured() {
+    let mut ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![published_crate("app", None)])
+        .build();
+    add_artifact(&mut ctx, ArtifactKind::Checksum, "app_checksums.txt", "app");
+    let derived = config_expected_asset_names(&ctx, "app", None).expect("derivation");
+    assert!(derived.is_empty());
+}
+
+#[test]
+fn derived_expectations_empty_when_sign_skipped_by_condition() {
+    let mut ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![published_crate("app", None)])
+        .build();
+    ctx.config.signs = vec![anodizer_core::config::SignConfig {
+        if_condition: Some("false".to_string()),
+        ..checksum_gpg_sign()
+    }];
+    add_artifact(&mut ctx, ArtifactKind::Checksum, "app_checksums.txt", "app");
+    let derived = config_expected_asset_names(&ctx, "app", None).expect("derivation");
+    assert!(
+        derived.is_empty(),
+        "an if: that evaluated false must not create expectations"
+    );
+}
+
+#[test]
+fn derived_expectations_empty_when_run_recorded_intentional_skip() {
+    let mut ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![published_crate("app", None)])
+        .build();
+    ctx.config.signs = vec![checksum_gpg_sign()];
+    add_artifact(&mut ctx, ArtifactKind::Checksum, "app_checksums.txt", "app");
+    // The run's own skip record is the authoritative waiver.
+    ctx.remember_skip("sign", "default", "`if` condition evaluated falsy");
+    let derived = config_expected_asset_names(&ctx, "app", None).expect("derivation");
+    assert!(derived.is_empty());
+}
+
+#[test]
+fn derived_expectations_follow_subject_verdict_under_release_ids() {
+    // A signature inherits its SUBJECT's release.ids verdict: a sig of an
+    // ids-excluded archive is not expected, a sig of an ids-included archive
+    // is, and checksum-file sigs (always-pass subjects) are always expected.
+    let mut ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![published_crate("app", None)])
+        .build();
+    ctx.config.signs = vec![anodizer_core::config::SignConfig {
+        artifacts: Some("all".to_string()),
+        ..checksum_gpg_sign()
+    }];
+    add_artifact(&mut ctx, ArtifactKind::Checksum, "app_checksums.txt", "app");
+    let mut keep = HashMap::new();
+    keep.insert("id".to_string(), "keep".to_string());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        name: "keep.tar.gz".to_string(),
+        path: std::path::PathBuf::from("keep.tar.gz"),
+        target: None,
+        crate_name: "app".to_string(),
+        metadata: keep,
+        size: None,
+    });
+    let mut drop_meta = HashMap::new();
+    drop_meta.insert("id".to_string(), "drop".to_string());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        name: "drop.tar.gz".to_string(),
+        path: std::path::PathBuf::from("drop.tar.gz"),
+        target: None,
+        crate_name: "app".to_string(),
+        metadata: drop_meta,
+        size: None,
+    });
+
+    let ids = vec!["keep".to_string()];
+    let derived = config_expected_asset_names(&ctx, "app", Some(&ids)).expect("derivation");
+    assert_eq!(
+        derived,
+        vec![
+            "app_checksums.txt.sig".to_string(),
+            "keep.tar.gz.sig".to_string()
+        ],
+        "checksum + ids-included subjects expected; ids-excluded subject not"
+    );
+}
+
+#[test]
+fn derived_expectations_resolve_per_crate() {
+    // Workspace modes: each published crate's expectations come from its own
+    // artifacts only.
+    let mut ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![
+            published_crate("crate-a", None),
+            published_crate("crate-b", None),
+        ])
+        .build();
+    ctx.config.signs = vec![checksum_gpg_sign()];
+    add_artifact(
+        &mut ctx,
+        ArtifactKind::Checksum,
+        "a_checksums.txt",
+        "crate-a",
+    );
+    add_artifact(
+        &mut ctx,
+        ArtifactKind::Checksum,
+        "b_checksums.txt",
+        "crate-b",
+    );
+
+    let a = config_expected_asset_names(&ctx, "crate-a", None).expect("derivation");
+    let b = config_expected_asset_names(&ctx, "crate-b", None).expect("derivation");
+    assert_eq!(a, vec!["a_checksums.txt.sig".to_string()]);
+    assert_eq!(b, vec!["b_checksums.txt.sig".to_string()]);
+}
+
+#[test]
+fn unsigned_release_fails_listing_missing_signature_assets() {
+    // THE v0.8.0 regression: signing configured and not skipped, but the
+    // sign stage registered nothing (no Signature artifacts in the registry)
+    // and the published release stores none. The gate previously PASSED;
+    // it must now fail naming the exact missing signature assets.
+    let (addr, _log) = spawn_release_route(&["app.tar.gz", "app_checksums.txt"]);
+
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    ctx.config.signs = vec![checksum_gpg_sign()];
+    add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
+    add_artifact(&mut ctx, ArtifactKind::Checksum, "app_checksums.txt", "app");
+
+    let err = VerifyReleaseStage
+        .run(&mut ctx)
+        .expect_err("missing config-required signature assets must fail the gate");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("app_checksums.txt.sig"),
+        "error names the missing signature asset: {msg}"
+    );
+    assert!(
+        msg.contains("required by the resolved signs/sboms config"),
+        "error explains the expectation source: {msg}"
+    );
+    assert!(
+        msg.contains(PUBLISHED_NOTE),
+        "error carries the already-published note: {msg}"
+    );
+}
+
+#[test]
+fn signed_release_with_uploaded_sigs_passes() {
+    // Healthy case: signing configured AND the sig asset is on the release.
+    // No Signature artifact needs to be in the registry for the gate to pass —
+    // the published set satisfies the config-derived expectation.
+    let (addr, _log) =
+        spawn_release_route(&["app.tar.gz", "app_checksums.txt", "app_checksums.txt.sig"]);
+
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    ctx.config.signs = vec![checksum_gpg_sign()];
+    add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
+    add_artifact(&mut ctx, ArtifactKind::Checksum, "app_checksums.txt", "app");
+
+    assert!(
+        VerifyReleaseStage.run(&mut ctx).is_ok(),
+        "expected signature present on the release => gate passes"
+    );
+}
+
+#[test]
+fn skipped_sign_stage_does_not_fail_unsigned_release() {
+    // --skip=sign is explicit operator intent: the release is knowingly
+    // unsigned and the gate must not demand signatures.
+    let (addr, _log) = spawn_release_route(&["app.tar.gz", "app_checksums.txt"]);
+
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    ctx.config.signs = vec![checksum_gpg_sign()];
+    ctx.options.skip_stages.push("sign".to_string());
+    add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
+    add_artifact(&mut ctx, ArtifactKind::Checksum, "app_checksums.txt", "app");
+
+    assert!(VerifyReleaseStage.run(&mut ctx).is_ok());
+}
+
+#[test]
+fn sbom_expectations_fail_when_configured_sboms_never_uploaded() {
+    // sboms: configured per-archive, but neither the registry nor the
+    // release has the SBOM => the gate fails naming the missing document.
+    let (addr, _log) = spawn_release_route(&["app.tar.gz"]);
+
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    ctx.config.project_name = "app".to_string();
+    ctx.config.sboms = vec![anodizer_core::config::SbomConfig {
+        documents: Some(vec!["{{ .ArtifactName }}.cdx.json".to_string()]),
+        artifacts: Some("archive".to_string()),
+        ..Default::default()
+    }];
+    add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
+
+    let err = VerifyReleaseStage
+        .run(&mut ctx)
+        .expect_err("missing config-required SBOM assets must fail the gate");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("app.tar.gz.cdx.json"),
+        "error names the missing SBOM asset: {msg}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// v0.8.0 mirror — the live failure, reproduced byte-for-byte
+// ---------------------------------------------------------------------------
+
+/// The COMPLETE asset list of the real published v0.8.0 release (fetched via
+/// `gh release view v0.8.0 --json assets` on 2026-06-11). Zero signature
+/// assets: the sign stage was silently skipped by the Is*-string-compare
+/// template-typing bug, and the gate passed because its expectations were
+/// registry-derived.
+const V080_PUBLISHED_ASSETS: &[&str] = &[
+    "anodizer-0.8.0-darwin-amd64-extra.tar.xz",
+    "anodizer-0.8.0-darwin-amd64-extra.tar.xz.cdx.json",
+    "anodizer-0.8.0-darwin-amd64-extra.tar.xz.cdx.json.sha256",
+    "anodizer-0.8.0-darwin-amd64-extra.tar.xz.sha256",
+    "anodizer-0.8.0-darwin-amd64-extra.tar.zst",
+    "anodizer-0.8.0-darwin-amd64-extra.tar.zst.cdx.json",
+    "anodizer-0.8.0-darwin-amd64-extra.tar.zst.cdx.json.sha256",
+    "anodizer-0.8.0-darwin-amd64-extra.tar.zst.sha256",
+    "anodizer-0.8.0-darwin-amd64.tar.gz",
+    "anodizer-0.8.0-darwin-amd64.tar.gz.cdx.json",
+    "anodizer-0.8.0-darwin-amd64.tar.gz.cdx.json.sha256",
+    "anodizer-0.8.0-darwin-amd64.tar.gz.sha256",
+    "anodizer-0.8.0-darwin-arm64-extra.tar.xz",
+    "anodizer-0.8.0-darwin-arm64-extra.tar.xz.cdx.json",
+    "anodizer-0.8.0-darwin-arm64-extra.tar.xz.cdx.json.sha256",
+    "anodizer-0.8.0-darwin-arm64-extra.tar.xz.sha256",
+    "anodizer-0.8.0-darwin-arm64-extra.tar.zst",
+    "anodizer-0.8.0-darwin-arm64-extra.tar.zst.cdx.json",
+    "anodizer-0.8.0-darwin-arm64-extra.tar.zst.cdx.json.sha256",
+    "anodizer-0.8.0-darwin-arm64-extra.tar.zst.sha256",
+    "anodizer-0.8.0-darwin-arm64.tar.gz",
+    "anodizer-0.8.0-darwin-arm64.tar.gz.cdx.json",
+    "anodizer-0.8.0-darwin-arm64.tar.gz.cdx.json.sha256",
+    "anodizer-0.8.0-darwin-arm64.tar.gz.sha256",
+    "anodizer_0.8.0_linux_amd64.apk",
+    "anodizer_0.8.0_linux_amd64.apk.sha256",
+    "anodizer_0.8.0_linux_amd64.deb",
+    "anodizer_0.8.0_linux_amd64.deb.sha256",
+    "anodizer-0.8.0-linux-amd64-extra.tar.xz",
+    "anodizer-0.8.0-linux-amd64-extra.tar.xz.cdx.json",
+    "anodizer-0.8.0-linux-amd64-extra.tar.xz.cdx.json.sha256",
+    "anodizer-0.8.0-linux-amd64-extra.tar.xz.sha256",
+    "anodizer-0.8.0-linux-amd64-extra.tar.zst",
+    "anodizer-0.8.0-linux-amd64-extra.tar.zst.cdx.json",
+    "anodizer-0.8.0-linux-amd64-extra.tar.zst.cdx.json.sha256",
+    "anodizer-0.8.0-linux-amd64-extra.tar.zst.sha256",
+    "anodizer-0.8.0-linux-amd64-installer.run",
+    "anodizer-0.8.0-linux-amd64-installer.run.sha256",
+    "anodizer_0.8.0_linux_amd64.rpm",
+    "anodizer_0.8.0_linux_amd64.rpm.sha256",
+    "anodizer-0.8.0-linux-amd64.tar.gz",
+    "anodizer-0.8.0-linux-amd64.tar.gz.cdx.json",
+    "anodizer-0.8.0-linux-amd64.tar.gz.cdx.json.sha256",
+    "anodizer-0.8.0-linux-amd64.tar.gz.sha256",
+    "anodizer_0.8.0_linux_arm64.apk",
+    "anodizer_0.8.0_linux_arm64.apk.sha256",
+    "anodizer_0.8.0_linux_arm64.deb",
+    "anodizer_0.8.0_linux_arm64.deb.sha256",
+    "anodizer-0.8.0-linux-arm64-extra.tar.xz",
+    "anodizer-0.8.0-linux-arm64-extra.tar.xz.cdx.json",
+    "anodizer-0.8.0-linux-arm64-extra.tar.xz.cdx.json.sha256",
+    "anodizer-0.8.0-linux-arm64-extra.tar.xz.sha256",
+    "anodizer-0.8.0-linux-arm64-extra.tar.zst",
+    "anodizer-0.8.0-linux-arm64-extra.tar.zst.cdx.json",
+    "anodizer-0.8.0-linux-arm64-extra.tar.zst.cdx.json.sha256",
+    "anodizer-0.8.0-linux-arm64-extra.tar.zst.sha256",
+    "anodizer-0.8.0-linux-arm64-installer.run",
+    "anodizer-0.8.0-linux-arm64-installer.run.sha256",
+    "anodizer_0.8.0_linux_arm64.rpm",
+    "anodizer_0.8.0_linux_arm64.rpm.sha256",
+    "anodizer-0.8.0-linux-arm64.tar.gz",
+    "anodizer-0.8.0-linux-arm64.tar.gz.cdx.json",
+    "anodizer-0.8.0-linux-arm64.tar.gz.cdx.json.sha256",
+    "anodizer-0.8.0-linux-arm64.tar.gz.sha256",
+    "anodizer-0.8.0-source.tar.gz",
+    "anodizer-0.8.0-source.tar.gz.sha256",
+    "anodizer-0.8.0-windows-amd64-extra.tgz",
+    "anodizer-0.8.0-windows-amd64-extra.tgz.cdx.json",
+    "anodizer-0.8.0-windows-amd64-extra.tgz.cdx.json.sha256",
+    "anodizer-0.8.0-windows-amd64-extra.tgz.sha256",
+    "anodizer-0.8.0-windows-amd64.zip",
+    "anodizer-0.8.0-windows-amd64.zip.cdx.json",
+    "anodizer-0.8.0-windows-amd64.zip.cdx.json.sha256",
+    "anodizer-0.8.0-windows-amd64.zip.sha256",
+    "anodizer-0.8.0-windows-arm64-extra.tgz",
+    "anodizer-0.8.0-windows-arm64-extra.tgz.cdx.json",
+    "anodizer-0.8.0-windows-arm64-extra.tgz.cdx.json.sha256",
+    "anodizer-0.8.0-windows-arm64-extra.tgz.sha256",
+    "anodizer-0.8.0-windows-arm64.zip",
+    "anodizer-0.8.0-windows-arm64.zip.cdx.json",
+    "anodizer-0.8.0-windows-arm64.zip.cdx.json.sha256",
+    "anodizer-0.8.0-windows-arm64.zip.sha256",
+    "anodizer.1",
+    "anodizer-apk-signing-key.rsa.pub",
+    "attestation-subjects.json",
+    "install.sh",
+    "install.sh.sha256",
+    "metadata.json",
+];
+
+/// Map a v0.8.0 asset name to the artifact kind the real run registered it
+/// under. Suffix order matters: `.cdx.json.sha256` is a Checksum, not an Sbom.
+fn v080_kind(name: &str) -> ArtifactKind {
+    if name.ends_with(".sha256") {
+        ArtifactKind::Checksum
+    } else if name.ends_with(".cdx.json") {
+        ArtifactKind::Sbom
+    } else if name.ends_with(".apk") || name.ends_with(".deb") || name.ends_with(".rpm") {
+        ArtifactKind::LinuxPackage
+    } else if name.ends_with(".run") {
+        ArtifactKind::Makeself
+    } else if name.ends_with("-source.tar.gz") {
+        ArtifactKind::SourceArchive
+    } else if name.ends_with(".tar.gz")
+        || name.ends_with(".tar.xz")
+        || name.ends_with(".tar.zst")
+        || name.ends_with(".tgz")
+        || name.ends_with(".zip")
+    {
+        ArtifactKind::Archive
+    } else {
+        ArtifactKind::UploadableFile
+    }
+}
+
+/// Register the v0.8.0 produced artifact set (exactly the published assets —
+/// the upload itself was complete; only the signatures were never produced).
+fn register_v080_produced_set(ctx: &mut Context, crate_name: &str) {
+    for name in V080_PUBLISHED_ASSETS {
+        add_artifact(ctx, v080_kind(name), name, crate_name);
+    }
+}
+
+/// The repo's real `sboms:` shape (built-in CycloneDX per archive).
+fn real_sboms_config() -> Vec<anodizer_core::config::SbomConfig> {
+    vec![anodizer_core::config::SbomConfig {
+        id: Some("default".to_string()),
+        documents: Some(vec!["{{ .ArtifactName }}.cdx.json".to_string()]),
+        artifacts: Some("archive".to_string()),
+        ..Default::default()
+    }]
+}
+
+#[test]
+fn v080_mirror_unsigned_release_fails_listing_all_42_missing_sigs() {
+    // Full-fidelity reproduction of the v0.8.0 live failure: the real
+    // published asset list, the real signs/sboms config shapes (including
+    // the release-mode if: condition), and a registry holding exactly what
+    // that run produced — everything EXCEPT signatures. The gate must fail
+    // demanding one .sig per checksum asset (42), and must NOT complain
+    // about the SBOMs (they were produced and uploaded).
+    let (addr, _log) = spawn_release_route(V080_PUBLISHED_ASSETS);
+
+    let mut ctx = asset_ctx(addr, vec![published_crate("anodizer", None)]);
+    ctx.config.project_name = "anodizer".to_string();
+    ctx.config.signs = vec![checksum_gpg_sign()];
+    ctx.config.sboms = real_sboms_config();
+    register_v080_produced_set(&mut ctx, "anodizer");
+
+    let err = VerifyReleaseStage
+        .run(&mut ctx)
+        .expect_err("the unsigned v0.8.0 asset set must fail the gate");
+    let msg = format!("{err:#}");
+
+    assert!(
+        msg.contains("42 signature/SBOM asset(s) required by the resolved signs/sboms config"),
+        "exactly the 42 missing checksum signatures are demanded: {msg}"
+    );
+    assert!(
+        msg.contains("anodizer-0.8.0-linux-amd64.tar.gz.sha256.sig"),
+        "missing sig assets are named precisely: {msg}"
+    );
+    assert!(
+        msg.contains("install.sh.sha256.sig"),
+        "extra-file checksum sigs are demanded too: {msg}"
+    );
+    assert!(
+        !msg.contains("produced artifact(s) missing"),
+        "every produced artifact IS on the release; only config-derived \
+         expectations are missing: {msg}"
+    );
+    assert!(
+        !msg.contains(".cdx.json,") && !msg.contains(".cdx.json\n"),
+        "uploaded SBOMs must not be reported missing: {msg}"
+    );
+}
+
+#[test]
+#[ignore = "live read-only probe of the real v0.8.0 GitHub release; needs GITHUB_TOKEN. \
+            Run: cargo test -p anodizer-stage-verify-release --lib -- --ignored live_v080"]
+fn live_v080_real_release_fails_missing_signature_assets() {
+    // Live evidence path: same context as the mirror test but fetching the
+    // REAL release assets from api.github.com (read-only GET). There is no
+    // standalone CLI entry that runs the gate against an existing release,
+    // so this is the closest real-code-path probe.
+    let token = std::env::var("GITHUB_TOKEN")
+        .or_else(|_| std::env::var("GH_TOKEN"))
+        .expect("GITHUB_TOKEN required for the live probe");
+
+    let yaml = "name: anodizer\npath: .\ntag_template: \"v{{ .Version }}\"\n\
+                release:\n  github: { owner: tj-smith47, name: anodizer }\n";
+    let crate_cfg: CrateConfig = serde_yaml_ng::from_str(yaml).expect("valid crate yaml");
+
+    let mut ctx = TestContextBuilder::new()
+        .tag("v0.8.0")
+        .token(Some(token))
+        .crates(vec![crate_cfg])
+        .build();
+    ctx.config.project_name = "anodizer".to_string();
+    ctx.config.verify_release = VerifyReleaseConfig {
+        enabled: true,
+        assert_assets: true,
+        glibc_ceiling: None,
+        install_smoke: None,
+    };
+    ctx.config.signs = vec![checksum_gpg_sign()];
+    ctx.config.sboms = real_sboms_config();
+    register_v080_produced_set(&mut ctx, "anodizer");
+
+    let err = VerifyReleaseStage
+        .run(&mut ctx)
+        .expect_err("the real v0.8.0 release is unsigned and must fail the gate");
+    let msg = format!("{err:#}");
+    eprintln!("live v0.8.0 verify-release output:\n{msg}");
+    assert!(
+        msg.contains("42 signature/SBOM asset(s) required by the resolved signs/sboms config"),
+        "live release is missing exactly the 42 checksum signatures: {msg}"
+    );
+    assert!(
+        msg.contains("anodizer-0.8.0-linux-amd64.tar.gz.sha256.sig"),
+        "live error names the missing sig assets: {msg}"
+    );
+}
+
+#[test]
+fn gate_demands_sig_of_subjectless_sbom_under_release_ids() {
+    // release.ids + a project-wide (subject-less) SBOM + signs over sboms:
+    // the any-SBOM uploads regardless of the ids filter, so its signature
+    // must be expected — transitively record-less, never stranded behind a
+    // subject_kind:"sbom"/empty-id record. The sig of an ids-EXCLUDED
+    // archive's SBOM must NOT be expected.
+    let (addr, _log) = spawn_release_route(&["keep.tar.gz", "project.cdx.json"]);
+
+    let yaml = "name: app\npath: .\ntag_template: \"v{{ .Version }}\"\n\
+                release:\n  github: { owner: me, name: repo }\n  ids: [keep]\n";
+    let crate_cfg: CrateConfig = serde_yaml_ng::from_str(yaml).expect("valid crate yaml");
+    let mut ctx = asset_ctx(addr, vec![crate_cfg]);
+    ctx.config.signs = vec![anodizer_core::config::SignConfig {
+        artifacts: Some("sbom".to_string()),
+        ..checksum_gpg_sign()
+    }];
+
+    let mut add_with_meta = |kind: ArtifactKind, name: &str, meta: &[(&str, &str)]| {
+        ctx.artifacts.add(Artifact {
+            kind,
+            name: name.to_string(),
+            path: std::path::PathBuf::from(name),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: meta
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+            size: None,
+        });
+    };
+    add_with_meta(ArtifactKind::Archive, "keep.tar.gz", &[("id", "keep")]);
+    add_with_meta(
+        ArtifactKind::Sbom,
+        "project.cdx.json",
+        &[("sbom_id", "default")],
+    );
+    add_with_meta(ArtifactKind::Archive, "drop.zip", &[("id", "drop")]);
+    add_with_meta(
+        ArtifactKind::Sbom,
+        "drop.zip.cdx.json",
+        &[("subject_kind", "archive"), ("id", "drop")],
+    );
+
+    let err = VerifyReleaseStage
+        .run(&mut ctx)
+        .expect_err("missing sig of the uploaded any-SBOM must fail the gate");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("project.cdx.json.sig"),
+        "the subject-less SBOM's signature is demanded: {msg}"
+    );
+    assert!(
+        !msg.contains("drop.zip.cdx.json.sig"),
+        "the excluded archive's SBOM sig must NOT be demanded: {msg}"
     );
 }

@@ -26,8 +26,71 @@ pub struct RunSummary {
     pub tag: String,
     pub submitter_gated: bool,
     pub announce_gated: bool,
+    /// Count of publishers whose outcome left durable published state
+    /// in the world: `succeeded`, `pending-moderation`,
+    /// `pending-validation`, `published-no-rollback`,
+    /// `rollback-failed` AND `rollback-skipped-no-scope` (in both, the
+    /// publish landed and nothing withdrew it — the state is presumed
+    /// live). The counting is intentionally conservative: when in
+    /// doubt, an outcome counts as published.
+    ///
+    /// `#[serde(default)]` keeps summaries written by older anodize
+    /// versions parseable by newer readers.
+    #[serde(default)]
+    pub publishers_succeeded: u32,
+    /// Count of publishers with a `failed` outcome.
+    #[serde(default)]
+    pub publishers_failed: u32,
+    /// True when any Submitter-group publisher's publish action landed
+    /// at the remote — the one-way door. Submitter targets (crates.io,
+    /// chocolatey, winget, snapcraft, ...) never accept the same
+    /// version twice, so once this is true the version is burned and a
+    /// same-version re-cut is impossible: recovery tooling must refuse
+    /// destructive rollback (tag delete, revert push) and fix forward
+    /// instead. Counts EVERY landed outcome, including `rolled-back` —
+    /// a cargo yank withdraws the artifact but does NOT reopen the
+    /// version slot. Reversible groups (Assets, Manager) never set
+    /// this; their state can be deleted and the same version re-cut.
+    ///
+    /// `#[serde(default)]` keeps summaries written by older anodize
+    /// versions parseable by newer readers.
+    #[serde(default)]
+    pub irreversibly_published: bool,
+    /// Outcome of the in-process failure policy (`release.on_failure`),
+    /// recorded after a release-pipeline failure so the summary states
+    /// which recovery path the run took. `None` on successful runs and
+    /// on summaries written before the policy executed.
+    ///
+    /// `#[serde(default)]` keeps summaries written by older anodize
+    /// versions parseable by newer readers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_policy: Option<FailurePolicyRecord>,
     pub results: Vec<RunSummaryResult>,
     pub determinism_allowlist: DeterminismAllowlist,
+}
+
+/// What the in-process failure policy decided and executed after a
+/// release-pipeline failure. See `release.on_failure`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FailurePolicyRecord {
+    /// Configured policy: `rollback` or `hold`.
+    pub configured: String,
+    /// Action actually taken: `rolled-back`, `held`, or
+    /// `rollback-failed` (rollback was attempted and refused/errored;
+    /// state is effectively held).
+    pub action: String,
+    /// True when a configured `rollback` degraded to hold because a
+    /// one-way-door publisher had already landed.
+    pub degraded: bool,
+    /// Submitter-group publishers whose publish landed and burned the
+    /// version (the degrade evidence). Empty unless `degraded`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub burned_publishers: Vec<String>,
+    /// Error from the rollback execution when `action` is
+    /// `rollback-failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollback_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -75,7 +138,17 @@ impl RunSummary {
     /// `ctx.options.runtime_nondeterministic_allowlist` so the operator
     /// still gets an audit row in the summary.
     pub fn from_context(ctx: &Context) -> Self {
-        let report = ctx.publish_report.as_ref();
+        Self::from_context_with_report(ctx, ctx.publish_report.as_ref())
+    }
+
+    /// Like [`from_context`](Self::from_context) but with an explicit
+    /// report, for callers that hold the in-progress `PublishReport`
+    /// before it is installed on the `Context` (the dispatch loop's
+    /// per-publisher snapshot writes).
+    pub fn from_context_with_report(
+        ctx: &Context,
+        report: Option<&anodizer_core::publish_report::PublishReport>,
+    ) -> Self {
         let results = report
             .map(|r| {
                 r.results
@@ -125,12 +198,25 @@ impl RunSummary {
             ),
         };
 
+        let (publishers_succeeded, publishers_failed) = report
+            .map(|r| count_publish_state(&r.results))
+            .unwrap_or((0, 0));
+        let irreversibly_published = report.is_some_and(|r| {
+            r.results
+                .iter()
+                .any(|p| p.group == PublisherGroup::Submitter && outcome_landed(&p.outcome))
+        });
+
         Self {
             schema_version: Self::CURRENT_SCHEMA_VERSION,
             anodize_version: env!("CARGO_PKG_VERSION").to_string(),
             tag,
             submitter_gated: report.is_some_and(|r| r.submitter_gated),
             announce_gated: report.is_some_and(|r| r.announce_gated),
+            publishers_succeeded,
+            publishers_failed,
+            irreversibly_published,
+            failure_policy: None,
             results,
             determinism_allowlist: DeterminismAllowlist {
                 compile_time,
@@ -138,6 +224,72 @@ impl RunSummary {
             },
         }
     }
+}
+
+impl RunSummary {
+    /// Names of Submitter-group publishers whose publish action landed —
+    /// the version-burning set behind
+    /// [`irreversibly_published`](Self::irreversibly_published).
+    ///
+    /// Read-side mirror of the build-side rule (status-string based, so
+    /// it works on deserialized summaries): every status except `failed`
+    /// and `skipped-*` means the publish reached the remote. Non-empty
+    /// on summaries written BEFORE the `irreversibly_published` field
+    /// existed too, so recovery tooling reading an old summary still
+    /// sees the burn.
+    pub fn burned_submitter_names(&self) -> Vec<String> {
+        self.results
+            .iter()
+            .filter(|r| r.group == PublisherGroup::Submitter && status_landed(&r.status))
+            .map(|r| r.name.clone())
+            .collect()
+    }
+}
+
+/// Status-string twin of [`outcome_landed`], for deserialized summaries
+/// where only the kebab-case status survives.
+fn status_landed(status: &str) -> bool {
+    status != "failed" && !status.starts_with("skipped-")
+}
+
+/// Fold per-publisher outcomes into the top-level
+/// `(publishers_succeeded, publishers_failed)` pair.
+///
+/// "Succeeded" means durable published state exists somewhere in the
+/// world that a destructive recovery (tag delete, revert push) would
+/// orphan. `RollbackFailed` and `RollbackSkippedNoScope` count as
+/// succeeded for that reason: the publish landed and nothing withdrew
+/// it, so the published state is presumed live. `RolledBack` does NOT
+/// count — the state was published and then verifiably withdrawn.
+fn count_publish_state(results: &[anodizer_core::publish_report::PublisherResult]) -> (u32, u32) {
+    let mut succeeded = 0u32;
+    let mut failed = 0u32;
+    for r in results {
+        match r.outcome {
+            PublisherOutcome::Succeeded
+            | PublisherOutcome::PendingModeration
+            | PublisherOutcome::PendingValidation
+            | PublisherOutcome::PublishedNoRollback
+            | PublisherOutcome::RollbackFailed(_)
+            | PublisherOutcome::RollbackSkippedNoScope => succeeded += 1,
+            PublisherOutcome::Failed(_) => failed += 1,
+            PublisherOutcome::Skipped(_) | PublisherOutcome::RolledBack => {}
+        }
+    }
+    (succeeded, failed)
+}
+
+/// True when the outcome records that the publish ACTION landed at the
+/// remote at some point — regardless of any later rollback. Only
+/// `skipped-*` (never ran) and `failed` (ran, did not land) are
+/// non-landed. Distinct from [`count_publish_state`]'s "durable state"
+/// rule: a `rolled-back` publisher has no live state left, but for a
+/// Submitter target the landing itself burned the version slot.
+fn outcome_landed(outcome: &PublisherOutcome) -> bool {
+    !matches!(
+        outcome,
+        PublisherOutcome::Skipped(_) | PublisherOutcome::Failed(_)
+    )
 }
 
 /// Map a `PublisherOutcome` to the kebab-case status string defined
@@ -169,7 +321,22 @@ fn outcome_to_status_string(outcome: &PublisherOutcome) -> String {
 /// Write the run summary JSON to the given path. Creates parent
 /// directories if missing. Pretty-prints so operators reading the
 /// file directly do not have to pipe through `jq`.
-pub fn write_summary_json(summary: &RunSummary, path: &Path) -> Result<()> {
+///
+/// Returns `true` when the summary was written, `false` when an
+/// existing file was PRESERVED: a summary with no publisher results
+/// never overwrites one that has them. Report-less pipelines
+/// (standalone `announce`, `release --split`) resolve the same tag —
+/// and therefore the same run dir — as the release run that preceded
+/// them; letting their empty summary clobber the real one would erase
+/// the burn evidence the rollback guard keys on (fail-open).
+pub fn write_summary_json(summary: &RunSummary, path: &Path) -> Result<bool> {
+    if summary.results.is_empty()
+        && let Ok(existing) = fs::read_to_string(path)
+        && serde_json::from_str::<RunSummary>(&existing)
+            .is_ok_and(|prior| !prior.results.is_empty())
+    {
+        return Ok(false);
+    }
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -183,27 +350,176 @@ pub fn write_summary_json(summary: &RunSummary, path: &Path) -> Result<()> {
     let text = serde_json::to_string_pretty(summary).context("serialize run summary")?;
     anodizer_core::fs_atomic::atomic_write_str(path, &text)
         .with_context(|| format!("write run summary to {}", path.display()))?;
-    Ok(())
+    Ok(true)
 }
 
-/// Pretty-print a per-publisher status table to the supplied writer
-/// (typically `stderr`).
+/// Resolve where this run's `summary.json` belongs.
 ///
-/// Output shape (operator-facing):
+/// An explicit `--summary-json=<path>` wins in every mode. Otherwise the
+/// default is `<dist>/run-<id>/summary.json` (next to the publish stage's
+/// `report.json` for the same run; `<dist>` is the per-crate dist in
+/// per-crate workspace mode, so each published crate gets its own
+/// summary), suppressed only for snapshot / dry-run pipelines — those are
+/// not real releases and must not pollute `dist/run-*/`.
+///
+/// The default deliberately does NOT require `ctx.publish_report`: a real
+/// release that fails BEFORE the publish stage (tag resolution, build,
+/// release-asset upload) must still leave machine-readable state on disk —
+/// CI reads the summary post-mortem to decide whether destructive recovery
+/// (tag rollback) is safe, and "no file" forces it to guess. A report-less
+/// summary carries the tag, empty publisher results, and
+/// `irreversibly_published: false`. Report-less pipelines that share a run
+/// dir with a prior real run (standalone `announce`, `release --split`)
+/// cannot erase that run's publish state: [`write_summary_json`] refuses
+/// to clobber a results-bearing summary with an empty one.
+pub fn summary_path(ctx: &Context) -> Option<std::path::PathBuf> {
+    if let Some(explicit) = ctx.options.summary_json_path.clone() {
+        return Some(explicit);
+    }
+    if ctx.is_snapshot() || ctx.is_dry_run() {
+        return None;
+    }
+    let run_id = crate::derive_run_id(ctx);
+    Some(
+        ctx.config
+            .dist
+            .join(format!("run-{run_id}"))
+            .join("summary.json"),
+    )
+}
+
+/// Persist a point-in-time summary for an in-progress publish run.
+///
+/// Called by the dispatch loop after every publisher completes so a
+/// hard kill (SIGKILL, OOM, runner eviction) mid-publish still leaves
+/// the last-known per-publisher state on disk for recovery tooling.
+/// The pipeline-end `emit_summary` rewrite supersedes the final
+/// snapshot on every orderly exit (success or Err).
+///
+/// No-op when [`summary_path`] resolves to `None` (snapshot / dry-run).
+pub fn persist_summary_snapshot(
+    ctx: &Context,
+    report: &anodizer_core::publish_report::PublishReport,
+) -> Result<()> {
+    let Some(path) = summary_path(ctx) else {
+        return Ok(());
+    };
+    let summary = RunSummary::from_context_with_report(ctx, Some(report));
+    write_summary_json(&summary, &path).map(|_| ())
+}
+
+/// Every `summary.json` under `<dist>/run-*/` (single-crate / lockstep
+/// layout) and `<dist>/<crate>/run-*/` (per-crate workspace layout).
+/// The two layouts are the writer-side contract of [`summary_path`]:
+/// per-crate publish runs re-anchor `dist` onto `dist/<crate>/`, so a
+/// reader that wants the whole run's evidence must walk both levels.
+pub fn collect_run_summary_paths(dist: &Path) -> Vec<std::path::PathBuf> {
+    fn summaries_in(dir: &Path) -> Vec<std::path::PathBuf> {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("run-"))
+            .map(|e| e.path().join("summary.json"))
+            .filter(|p| p.is_file())
+            .collect()
+    }
+
+    let mut paths = summaries_in(dist);
+    if let Ok(entries) = fs::read_dir(dist) {
+        for entry in entries.flatten().filter(|e| e.path().is_dir()) {
+            paths.extend(summaries_in(&entry.path()));
+        }
+    }
+    paths
+}
+
+/// Stamp `record` onto every parseable run summary under `dist` (both
+/// layout levels — see [`collect_run_summary_paths`]) and rewrite them
+/// in place. Returns the number of summaries updated. Unreadable or
+/// unparseable files are skipped via `warn`: the record is a secondary
+/// observability channel and must never mask the release failure that
+/// triggered it.
+pub fn record_failure_policy(
+    dist: &Path,
+    record: &FailurePolicyRecord,
+    warn: &mut dyn FnMut(&str),
+) -> usize {
+    let mut updated = 0;
+    for path in collect_run_summary_paths(dist) {
+        let parsed: Result<RunSummary> = fs::read_to_string(&path)
+            .map_err(anyhow::Error::from)
+            .and_then(|text| Ok(serde_json::from_str(&text)?));
+        match parsed {
+            Ok(mut summary) => {
+                summary.failure_policy = Some(record.clone());
+                match write_summary_json(&summary, &path) {
+                    Ok(_) => updated += 1,
+                    Err(e) => warn(&format!(
+                        "failure-policy record write failed for {}: {e:#}",
+                        path.display()
+                    )),
+                }
+            }
+            Err(e) => warn(&format!(
+                "failure-policy record skipped unreadable summary {}: {e:#}",
+                path.display()
+            )),
+        }
+    }
+    updated
+}
+
+/// How far the publish stage got this run, for the zero-results
+/// placeholder row in [`status_table_rows`].
+///
+/// Derived at summary time from the `(publish_attempted, publish_report)`
+/// context pair: report present means [`Ran`](Self::Ran); attempted with
+/// no report means a pre-dispatch guard aborted the stage; neither means
+/// the stage never started (snapshot / `--skip=publish`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishDisposition {
+    /// Publish stages never started — operator skip (snapshot mode /
+    /// `--skip=publish`), a stage set that excludes publish, or an
+    /// earlier stage failing before publish was reached. The context
+    /// pair cannot distinguish these, so the row wording stays neutral:
+    /// "did not run".
+    Skipped,
+    /// The publish stage started but aborted before dispatching any
+    /// publisher (e.g. rerun refusal, runtime allowlist validation).
+    Aborted,
+    /// The publisher dispatcher ran to completion.
+    Ran,
+}
+
+/// Build the end-of-pipeline per-publisher status rows as `(key, value)`
+/// pairs in the log's kv register — the caller feeds each pair to
+/// `StageLogger::kv` with a shared key width so the value column aligns.
+///
+/// Output shape once rendered (operator-facing):
 ///
 /// ```text
-/// Publisher status:
-///   name              group     required  status
-///   github-release    Assets    true      succeeded
-///   homebrew          Manager   false     failed
-///   cargo             Submitter true      skipped-submitter-gated
-///
-/// Run flags: submitter_gated=false announce_gated=true
+/// • github-release   Assets     required  succeeded
+/// • homebrew         Manager    optional  failed
+/// • cargo            Submitter  required  skipped-submitter-gated
+/// • run flags        submitter_gated=false announce_gated=true
 /// ```
-pub fn print_status_table(
+///
+/// With zero publisher results a single placeholder row stands in for
+/// the per-publisher block, so the summary still states *why* it is
+/// empty instead of rendering a bare header. `disposition` selects the
+/// cause — skipped stage, pre-dispatch abort, and a zero-publisher
+/// configuration read very differently to an operator:
+///
+/// ```text
+/// • publishers   none ran (publish stages did not run)
+/// • run flags    submitter_gated=false announce_gated=false
+/// ```
+pub fn status_table_rows(
     summary: &RunSummary,
-    out: &mut dyn std::io::Write,
-) -> std::io::Result<()> {
+    disposition: PublishDisposition,
+) -> Vec<(String, String)> {
     // Cap the name column so a pathological publisher name (e.g. an
     // operator pastes a URL into `publishers.custom[].name`) cannot
     // blow out the terminal width in CI logs. 40 chars covers every
@@ -230,53 +546,43 @@ pub fn print_status_table(
         }
     };
 
-    let name_width = summary
-        .results
-        .iter()
-        .map(|r| truncate_name(&r.name).chars().count())
-        .max()
-        .unwrap_or(0)
-        .max("name".len());
-    let group_width = summary
-        .results
-        .iter()
-        .map(|r| format!("{:?}", r.group).len())
-        .max()
-        .unwrap_or(0)
-        .max("group".len());
-    let required_width = "required".len();
-
-    writeln!(out, "Publisher status:")?;
-    writeln!(
-        out,
-        "  {:<nw$} {:<gw$} {:<rw$} status",
-        "name",
-        "group",
-        "required",
-        nw = name_width,
-        gw = group_width,
-        rw = required_width,
-    )?;
-    for r in &summary.results {
-        writeln!(
-            out,
-            "  {:<nw$} {:<gw$} {:<rw$} {}",
-            truncate_name(&r.name),
-            format!("{:?}", r.group),
-            r.required,
-            r.status,
-            nw = name_width,
-            gw = group_width,
-            rw = required_width,
-        )?;
+    let mut rows: Vec<(String, String)> = Vec::new();
+    if summary.results.is_empty() {
+        let why = match disposition {
+            PublishDisposition::Ran => "none ran (no publishers configured)",
+            PublishDisposition::Aborted => "none ran (publish stage aborted before dispatch)",
+            PublishDisposition::Skipped => "none ran (publish stages did not run)",
+        };
+        rows.push(("publishers".to_string(), why.to_string()));
+    } else {
+        let group_width = summary
+            .results
+            .iter()
+            .map(|r| format!("{:?}", r.group).len())
+            .max()
+            .unwrap_or(0);
+        for r in &summary.results {
+            // "required" and "optional" are both 8 chars, so the status
+            // column aligns without padding the requirement cell.
+            let requirement = if r.required { "required" } else { "optional" };
+            rows.push((
+                truncate_name(&r.name),
+                format!(
+                    "{:<group_width$}  {requirement}  {}",
+                    format!("{:?}", r.group),
+                    r.status,
+                ),
+            ));
+        }
     }
-    writeln!(out)?;
-    writeln!(
-        out,
-        "Run flags: submitter_gated={} announce_gated={}",
-        summary.submitter_gated, summary.announce_gated,
-    )?;
-    Ok(())
+    rows.push((
+        "run flags".to_string(),
+        format!(
+            "submitter_gated={} announce_gated={}",
+            summary.submitter_gated, summary.announce_gated,
+        ),
+    ));
+    rows
 }
 
 #[cfg(test)]
@@ -292,6 +598,10 @@ mod tests {
             tag: "v1.2.3".to_string(),
             submitter_gated: true,
             announce_gated: false,
+            publishers_succeeded: 1,
+            publishers_failed: 0,
+            irreversibly_published: false,
+            failure_policy: None,
             results: vec![
                 RunSummaryResult {
                     name: "github-release".to_string(),
@@ -347,6 +657,86 @@ mod tests {
         }"#;
         let parsed: std::result::Result<RunSummary, _> = serde_json::from_str(bad);
         assert!(parsed.is_err(), "unknown fields must be denied");
+    }
+
+    #[test]
+    fn run_summary_parses_legacy_json_without_publish_counts() {
+        // Summaries written before the publish-state counts existed
+        // must still deserialize; the counts default to zero.
+        let legacy = r#"{
+            "schema_version": 1,
+            "anodize_version": "0.0.0-test",
+            "tag": "v0.0.0",
+            "submitter_gated": false,
+            "announce_gated": false,
+            "results": [],
+            "determinism_allowlist": {"compile_time": [], "runtime": []}
+        }"#;
+        let parsed: RunSummary = serde_json::from_str(legacy).expect("legacy summary parses");
+        assert_eq!(parsed.publishers_succeeded, 0);
+        assert_eq!(parsed.publishers_failed, 0);
+        assert!(
+            !parsed.irreversibly_published,
+            "missing irreversibly_published must default to false"
+        );
+    }
+
+    fn result_in(group: PublisherGroup, outcome: PublisherOutcome) -> PublisherResult {
+        PublisherResult {
+            name: "p".to_string(),
+            group,
+            required: false,
+            outcome,
+            evidence: None,
+        }
+    }
+
+    #[test]
+    fn count_publish_state_classifies_every_outcome() {
+        let result = |outcome: PublisherOutcome| result_in(PublisherGroup::Manager, outcome);
+        let results = vec![
+            result(PublisherOutcome::Succeeded),
+            result(PublisherOutcome::PendingModeration),
+            result(PublisherOutcome::PendingValidation),
+            result(PublisherOutcome::PublishedNoRollback),
+            result(PublisherOutcome::RollbackFailed("boom".into())),
+            result(PublisherOutcome::Failed("boom".into())),
+            result(PublisherOutcome::Skipped(SkipReason::NotConfigured)),
+            result(PublisherOutcome::RolledBack),
+            result(PublisherOutcome::RollbackSkippedNoScope),
+        ];
+        let (succeeded, failed) = count_publish_state(&results);
+        assert_eq!(
+            succeeded, 6,
+            "published-state outcomes: Succeeded + 2 Pending + PublishedNoRollback \
+             + RollbackFailed + RollbackSkippedNoScope"
+        );
+        assert_eq!(failed, 1, "only Failed counts as failed");
+    }
+
+    #[test]
+    fn outcome_landed_classifies_every_outcome() {
+        // Landed = the publish action reached the remote at some point.
+        // Only never-ran (skipped) and ran-but-did-not-land (failed) are
+        // non-landed; a rolled-back Submitter publish still burned its
+        // version slot.
+        for (outcome, landed) in [
+            (PublisherOutcome::Succeeded, true),
+            (PublisherOutcome::PendingModeration, true),
+            (PublisherOutcome::PendingValidation, true),
+            (PublisherOutcome::PublishedNoRollback, true),
+            (PublisherOutcome::RollbackFailed("boom".into()), true),
+            (PublisherOutcome::RolledBack, true),
+            (PublisherOutcome::RollbackSkippedNoScope, true),
+            (PublisherOutcome::Failed("boom".into()), false),
+            (PublisherOutcome::Skipped(SkipReason::NotConfigured), false),
+        ] {
+            assert_eq!(
+                outcome_landed(&outcome),
+                landed,
+                "outcome_landed({outcome:?})"
+            );
+        }
     }
 
     #[test]
@@ -516,6 +906,9 @@ mod tests {
         assert_eq!(s.results.len(), 1);
         assert_eq!(s.results[0].status, "failed");
         assert_eq!(s.results[0].name, "homebrew");
+        assert_eq!(s.publishers_succeeded, 0);
+        assert_eq!(s.publishers_failed, 1);
+        assert!(!s.irreversibly_published);
     }
 
     #[test]
@@ -525,6 +918,105 @@ mod tests {
         assert!(s.results.is_empty());
         assert!(!s.submitter_gated);
         assert!(!s.announce_gated);
+        assert!(!s.irreversibly_published);
+    }
+
+    #[test]
+    fn irreversibly_published_keys_on_submitter_group_only() {
+        // A fully-successful run of REVERSIBLE publishers (Assets,
+        // Manager) must not flag the version as burned — every one of
+        // them can be deleted and the same version re-cut. The flag
+        // flips only when a Submitter (one-way-door) publish landed.
+        let mut ctx = anodizer_core::context::Context::test_fixture();
+        ctx.publish_report = Some(PublishReport {
+            submitter_gated: false,
+            announce_gated: false,
+            results: vec![
+                result_in(PublisherGroup::Assets, PublisherOutcome::Succeeded),
+                result_in(PublisherGroup::Manager, PublisherOutcome::Succeeded),
+                result_in(
+                    PublisherGroup::Submitter,
+                    PublisherOutcome::Skipped(SkipReason::SubmitterGated),
+                ),
+            ],
+        });
+        let s = RunSummary::from_context(&ctx);
+        assert_eq!(s.publishers_succeeded, 2);
+        assert!(
+            !s.irreversibly_published,
+            "reversible-group successes must not burn the version"
+        );
+
+        ctx.publish_report = Some(PublishReport {
+            submitter_gated: false,
+            announce_gated: false,
+            results: vec![result_in(
+                PublisherGroup::Submitter,
+                PublisherOutcome::Succeeded,
+            )],
+        });
+        let s = RunSummary::from_context(&ctx);
+        assert!(
+            s.irreversibly_published,
+            "Submitter success burns the version"
+        );
+    }
+
+    #[test]
+    fn irreversibly_published_counts_rolled_back_submitter() {
+        // cargo yank withdraws the artifact but the version slot stays
+        // burned — a same-version re-publish is rejected by crates.io.
+        let mut ctx = anodizer_core::context::Context::test_fixture();
+        ctx.publish_report = Some(PublishReport {
+            submitter_gated: false,
+            announce_gated: false,
+            results: vec![result_in(
+                PublisherGroup::Submitter,
+                PublisherOutcome::RolledBack,
+            )],
+        });
+        let s = RunSummary::from_context(&ctx);
+        assert!(s.irreversibly_published);
+    }
+
+    #[test]
+    fn burned_submitter_names_agrees_with_irreversibly_published() {
+        // The read-side (status-string) rule must agree with the
+        // build-side (outcome) rule across every outcome, through a full
+        // serialize → deserialize round-trip.
+        let all_outcomes = [
+            PublisherOutcome::Succeeded,
+            PublisherOutcome::PendingModeration,
+            PublisherOutcome::PendingValidation,
+            PublisherOutcome::PublishedNoRollback,
+            PublisherOutcome::RollbackFailed("boom".into()),
+            PublisherOutcome::RolledBack,
+            PublisherOutcome::RollbackSkippedNoScope,
+            PublisherOutcome::Failed("boom".into()),
+            PublisherOutcome::Skipped(SkipReason::SubmitterGated),
+            PublisherOutcome::Skipped(SkipReason::NotConfigured),
+            PublisherOutcome::Skipped(SkipReason::Snapshot),
+        ];
+        for outcome in all_outcomes {
+            let mut ctx = anodizer_core::context::Context::test_fixture();
+            ctx.publish_report = Some(PublishReport {
+                submitter_gated: false,
+                announce_gated: false,
+                results: vec![result_in(PublisherGroup::Submitter, outcome.clone())],
+            });
+            let s = RunSummary::from_context(&ctx);
+            let back: RunSummary =
+                serde_json::from_str(&serde_json::to_string(&s).expect("serialize"))
+                    .expect("deserialize");
+            assert_eq!(
+                back.irreversibly_published,
+                !back.burned_submitter_names().is_empty(),
+                "rules disagree for {outcome:?}"
+            );
+            if back.irreversibly_published {
+                assert_eq!(back.burned_submitter_names(), vec!["p".to_string()]);
+            }
+        }
     }
 
     #[test]
@@ -545,79 +1037,202 @@ mod tests {
         let path = tmp.path().join("summary.json");
         fs::write(&path, "stale").expect("seed");
         let s = populated_summary();
-        write_summary_json(&s, &path).expect("write");
+        assert!(write_summary_json(&s, &path).expect("write"), "must write");
         let back: RunSummary =
             serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
         assert_eq!(back, s);
     }
 
     #[test]
-    fn print_status_table_renders_human_readable() {
-        let s = populated_summary();
-        let mut buf: Vec<u8> = Vec::new();
-        print_status_table(&s, &mut buf).expect("print");
-        let text = String::from_utf8(buf).expect("utf8");
-        assert!(text.contains("Publisher status:"), "header missing: {text}");
-        assert!(text.contains("succeeded"), "succeeded row missing: {text}");
+    fn write_summary_json_preserves_results_bearing_file_from_empty_summary() {
+        // A report-less summary (results: []) must never clobber an
+        // existing summary that carries publisher results — that file
+        // is the burn evidence the rollback guard keys on.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("summary.json");
+        let real = populated_summary();
+        assert!(write_summary_json(&real, &path).expect("seed real summary"));
+
+        let mut empty = populated_summary();
+        empty.results.clear();
+        empty.publishers_succeeded = 0;
+        empty.irreversibly_published = false;
         assert!(
-            text.contains("skipped-submitter-gated"),
-            "submitter-gated row missing: {text}"
+            !write_summary_json(&empty, &path).expect("preserve must not error"),
+            "empty summary over results-bearing file must be skipped"
+        );
+
+        let back: RunSummary =
+            serde_json::from_str(&fs::read_to_string(&path).expect("read")).expect("parse");
+        assert_eq!(back, real, "original summary must survive");
+
+        // Empty-over-empty (and empty-over-missing) still writes: there
+        // is no evidence to protect.
+        let empty_path = tmp.path().join("fresh.json");
+        assert!(write_summary_json(&empty, &empty_path).expect("write fresh"));
+        assert!(write_summary_json(&empty, &empty_path).expect("rewrite empty over empty"));
+    }
+
+    #[test]
+    fn status_table_rows_render_per_publisher_and_run_flags() {
+        let s = populated_summary();
+        let rows = status_table_rows(&s, PublishDisposition::Ran);
+        // One row per publisher result, plus the trailing run-flags row.
+        assert_eq!(rows.len(), s.results.len() + 1, "rows: {rows:?}");
+        assert!(
+            rows.iter().any(|(_, v)| v.contains("succeeded")),
+            "succeeded row missing: {rows:?}"
         );
         assert!(
-            text.contains("Run flags: submitter_gated=true announce_gated=false"),
-            "run-flags line missing: {text}"
+            rows.iter()
+                .any(|(_, v)| v.contains("skipped-submitter-gated")),
+            "submitter-gated row missing: {rows:?}"
+        );
+        // The required bool renders as the words required/optional, not
+        // true/false.
+        assert!(
+            rows.iter()
+                .any(|(_, v)| v.contains("required") || v.contains("optional")),
+            "requirement cell missing: {rows:?}"
+        );
+        assert_eq!(
+            rows.last().expect("non-empty"),
+            &(
+                "run flags".to_string(),
+                "submitter_gated=true announce_gated=false".to_string()
+            ),
+            "run-flags row must close the table: {rows:?}"
         );
     }
 
     #[test]
-    fn print_status_table_widens_for_long_publisher_names() {
-        // 25-char publisher name (longer than the historical 20-char
-        // fixed width). The header and the row must agree on column
-        // boundaries: the `group` header should start at the same
-        // offset as the row's group column.
+    fn status_table_rows_empty_results_state_why() {
+        // Zero publisher results must yield an explicit placeholder row,
+        // not an empty table — the operator should read WHY nothing is
+        // listed.
         let s = RunSummary {
             schema_version: RunSummary::CURRENT_SCHEMA_VERSION,
             anodize_version: "0.0.0-test".to_string(),
             tag: "v0.0.0".to_string(),
             submitter_gated: false,
             announce_gated: false,
-            results: vec![RunSummaryResult {
-                name: "custom-publisher-with-long-id".to_string(), // 29 chars
-                group: PublisherGroup::Manager,
-                required: false,
-                status: "succeeded".to_string(),
-                evidence: None,
-            }],
+            publishers_succeeded: 0,
+            publishers_failed: 0,
+            irreversibly_published: false,
+            failure_policy: None,
+            results: vec![],
             determinism_allowlist: DeterminismAllowlist::default(),
         };
-        let mut buf: Vec<u8> = Vec::new();
-        print_status_table(&s, &mut buf).expect("print");
-        let text = String::from_utf8(buf).expect("utf8");
-        let lines: Vec<&str> = text.lines().collect();
-        // Lines: "Publisher status:", header, row.
-        let header = lines[1];
-        let row = lines[2];
-        // Find `group` in header and `Manager` in row; their starting
-        // byte offsets must match (column alignment).
-        let header_group_at = header.find("group").expect("group header present");
-        let row_group_at = row.find("Manager").expect("Manager cell present");
+        let rows = status_table_rows(&s, PublishDisposition::Skipped);
         assert_eq!(
-            header_group_at, row_group_at,
-            "header `group` column at {header_group_at} must align with row `Manager` cell at \
-             {row_group_at}\nheader: {header:?}\nrow:    {row:?}",
+            rows,
+            vec![
+                (
+                    "publishers".to_string(),
+                    "none ran (publish stages did not run)".to_string()
+                ),
+                (
+                    "run flags".to_string(),
+                    "submitter_gated=false announce_gated=false".to_string()
+                ),
+            ],
         );
-        // And the full long name must appear (no truncation at this length).
-        assert!(
-            row.contains("custom-publisher-with-long-id"),
-            "long name must render untruncated: {row:?}",
+        // Same empty results, but publish actually ran: the cause is a
+        // zero-publisher configuration, not a skipped stage.
+        let rows = status_table_rows(&s, PublishDisposition::Ran);
+        assert_eq!(
+            rows.first().expect("placeholder row"),
+            &(
+                "publishers".to_string(),
+                "none ran (no publishers configured)".to_string()
+            ),
         );
     }
 
     #[test]
-    fn print_status_table_truncates_extremely_long_names() {
-        // 60-char publisher name exceeds the 40-char cap; the rendered
-        // row must replace the tail with an ellipsis so the remaining
-        // columns still line up in the CI log.
+    fn status_table_rows_empty_results_abort_state_why() {
+        // A pre-dispatch guard abort (rerun refusal, runtime allowlist)
+        // is neither "skipped" nor "zero publishers configured"; the
+        // placeholder row must name the abort so the failure-path
+        // summary doesn't mislabel the cause.
+        let s = RunSummary {
+            schema_version: RunSummary::CURRENT_SCHEMA_VERSION,
+            anodize_version: "0.0.0-test".to_string(),
+            tag: "v0.0.0".to_string(),
+            submitter_gated: false,
+            announce_gated: false,
+            publishers_succeeded: 0,
+            publishers_failed: 0,
+            irreversibly_published: false,
+            failure_policy: None,
+            results: vec![],
+            determinism_allowlist: DeterminismAllowlist::default(),
+        };
+        let rows = status_table_rows(&s, PublishDisposition::Aborted);
+        assert_eq!(
+            rows.first().expect("placeholder row"),
+            &(
+                "publishers".to_string(),
+                "none ran (publish stage aborted before dispatch)".to_string()
+            ),
+        );
+    }
+
+    #[test]
+    fn status_table_rows_keep_long_names_untruncated_under_cap() {
+        // 29-char publisher name (longer than the historical 20-char
+        // fixed width but under the 40-char cap) must survive as the row
+        // key verbatim; the caller pads keys to the widest one so the
+        // value column aligns.
+        let s = RunSummary {
+            schema_version: RunSummary::CURRENT_SCHEMA_VERSION,
+            anodize_version: "0.0.0-test".to_string(),
+            tag: "v0.0.0".to_string(),
+            submitter_gated: false,
+            announce_gated: false,
+            publishers_succeeded: 1,
+            publishers_failed: 0,
+            irreversibly_published: false,
+            failure_policy: None,
+            results: vec![
+                RunSummaryResult {
+                    name: "custom-publisher-with-long-id".to_string(), // 29 chars
+                    group: PublisherGroup::Manager,
+                    required: false,
+                    status: "succeeded".to_string(),
+                    evidence: None,
+                },
+                RunSummaryResult {
+                    name: "gh".to_string(),
+                    group: PublisherGroup::Assets,
+                    required: true,
+                    status: "succeeded".to_string(),
+                    evidence: None,
+                },
+            ],
+            determinism_allowlist: DeterminismAllowlist::default(),
+        };
+        let rows = status_table_rows(&s, PublishDisposition::Ran);
+        // The full long name is the row key, untruncated at this length.
+        assert_eq!(
+            rows[0].0, "custom-publisher-with-long-id",
+            "long name must survive as the key untruncated: {rows:?}"
+        );
+        // Within the values, the group cell is padded to the widest group
+        // so the requirement/status columns align across rows.
+        let req_at = |v: &str| v.find("required").or_else(|| v.find("optional"));
+        assert_eq!(
+            req_at(&rows[0].1),
+            req_at(&rows[1].1),
+            "requirement column must align across rows: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn status_table_rows_truncate_extremely_long_names() {
+        // 60-char publisher name exceeds the 40-char cap; the row key
+        // must replace the tail with an ellipsis so the caller's key
+        // padding (and thus the value column) stays bounded in CI logs.
         let long_name = "x".repeat(60);
         let s = RunSummary {
             schema_version: RunSummary::CURRENT_SCHEMA_VERSION,
@@ -625,6 +1240,10 @@ mod tests {
             tag: "v0.0.0".to_string(),
             submitter_gated: false,
             announce_gated: false,
+            publishers_succeeded: 1,
+            publishers_failed: 0,
+            irreversibly_published: false,
+            failure_policy: None,
             results: vec![RunSummaryResult {
                 name: long_name.clone(),
                 group: PublisherGroup::Assets,
@@ -634,32 +1253,22 @@ mod tests {
             }],
             determinism_allowlist: DeterminismAllowlist::default(),
         };
-        let mut buf: Vec<u8> = Vec::new();
-        print_status_table(&s, &mut buf).expect("print");
-        let text = String::from_utf8(buf).expect("utf8");
+        let rows = status_table_rows(&s, PublishDisposition::Ran);
+        let key = &rows[0].0;
         assert!(
-            !text.contains(&long_name),
-            "full 60-char name must NOT appear verbatim: {text}",
+            !key.contains(&long_name),
+            "full 60-char name must NOT appear verbatim: {key:?}",
         );
         assert!(
-            text.contains('…'),
-            "ellipsis must mark the truncation: {text}",
+            key.ends_with('…'),
+            "ellipsis must mark the truncation: {key:?}"
         );
-        // Header and row must still align — compare by visual (char)
-        // offset, not byte offset, since `…` is a 3-byte UTF-8 char.
-        let lines: Vec<&str> = text.lines().collect();
-        let header = lines[1];
-        let row = lines[2];
-        let char_offset = |line: &str, needle: &str| -> usize {
-            let byte_at = line.find(needle).expect("needle present");
-            line[..byte_at].chars().count()
-        };
-        let header_group_at = char_offset(header, "group");
-        let row_group_at = char_offset(row, "Assets");
+        // The cap is in chars (the `…` is one char), so the key stays at
+        // the 40-char visual width.
         assert_eq!(
-            header_group_at, row_group_at,
-            "truncated row must still align (char offsets): header {header_group_at} vs row \
-             {row_group_at}\nheader: {header:?}\nrow:    {row:?}",
+            key.chars().count(),
+            40,
+            "truncated key must sit at the 40-char cap: {key:?}"
         );
     }
 
@@ -668,5 +1277,111 @@ mod tests {
         let ctx = anodizer_core::context::Context::test_fixture();
         let s = RunSummary::from_context(&ctx);
         assert_eq!(s.anodize_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn missing_failure_policy_field_defaults_to_none() {
+        // Summaries written before the failure-policy field existed must
+        // stay parseable by newer readers.
+        let mut value = serde_json::to_value(populated_summary()).unwrap();
+        value.as_object_mut().unwrap().remove("failure_policy");
+        let parsed: RunSummary = serde_json::from_value(value).unwrap();
+        assert!(parsed.failure_policy.is_none());
+    }
+
+    #[test]
+    fn failure_policy_record_round_trips() {
+        let mut summary = populated_summary();
+        summary.failure_policy = Some(FailurePolicyRecord {
+            configured: "rollback".to_string(),
+            action: "held".to_string(),
+            degraded: true,
+            burned_publishers: vec!["cargo".to_string()],
+            rollback_error: None,
+        });
+        let text = serde_json::to_string(&summary).unwrap();
+        let parsed: RunSummary = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed, summary);
+        // Optional sub-fields stay off the wire when empty.
+        assert!(!text.contains("rollback_error"));
+    }
+
+    #[test]
+    fn collect_run_summary_paths_walks_both_layouts() {
+        let dist = tempfile::tempdir().unwrap();
+        let root_run = dist.path().join("run-v1.0.0");
+        let crate_run = dist.path().join("crate-a").join("run-crate-a-v1.0.0");
+        for dir in [&root_run, &crate_run] {
+            fs::create_dir_all(dir).unwrap();
+            fs::write(dir.join("summary.json"), "{}").unwrap();
+        }
+        // Distractors that must NOT be picked up: a non-run dir and a
+        // run dir without a summary.
+        fs::create_dir_all(dist.path().join("not-a-run")).unwrap();
+        fs::create_dir_all(dist.path().join("run-empty")).unwrap();
+
+        let mut paths = collect_run_summary_paths(dist.path());
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                crate_run.join("summary.json"),
+                root_run.join("summary.json")
+            ]
+        );
+    }
+
+    #[test]
+    fn record_failure_policy_stamps_every_summary_in_both_layouts() {
+        let dist = tempfile::tempdir().unwrap();
+        let root_path = dist.path().join("run-v1.0.0").join("summary.json");
+        let crate_path = dist
+            .path()
+            .join("crate-a")
+            .join("run-crate-a-v1.0.0")
+            .join("summary.json");
+        write_summary_json(&populated_summary(), &root_path).unwrap();
+        write_summary_json(&populated_summary(), &crate_path).unwrap();
+
+        let record = FailurePolicyRecord {
+            configured: "rollback".to_string(),
+            action: "rolled-back".to_string(),
+            degraded: false,
+            burned_publishers: vec![],
+            rollback_error: None,
+        };
+        let mut warnings: Vec<String> = Vec::new();
+        let updated =
+            record_failure_policy(dist.path(), &record, &mut |m| warnings.push(m.to_string()));
+        assert_eq!(updated, 2, "warnings: {warnings:?}");
+        for path in [&root_path, &crate_path] {
+            let parsed: RunSummary =
+                serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+            assert_eq!(parsed.failure_policy.as_ref(), Some(&record));
+            // Stamping must not disturb the publish results.
+            assert_eq!(parsed.results.len(), 2);
+        }
+    }
+
+    #[test]
+    fn record_failure_policy_skips_unparseable_summary_with_warning() {
+        let dist = tempfile::tempdir().unwrap();
+        let bad = dist.path().join("run-v1.0.0").join("summary.json");
+        fs::create_dir_all(bad.parent().unwrap()).unwrap();
+        fs::write(&bad, "not json").unwrap();
+
+        let record = FailurePolicyRecord {
+            configured: "hold".to_string(),
+            action: "held".to_string(),
+            degraded: false,
+            burned_publishers: vec![],
+            rollback_error: None,
+        };
+        let mut warnings: Vec<String> = Vec::new();
+        let updated =
+            record_failure_policy(dist.path(), &record, &mut |m| warnings.push(m.to_string()));
+        assert_eq!(updated, 0);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("summary"), "got: {warnings:?}");
     }
 }

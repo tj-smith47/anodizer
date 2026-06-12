@@ -84,11 +84,11 @@ fn collect_chocolatey_target(ctx: &Context, crate_name: &str) -> Option<Chocolat
 
 /// Message emitted at publisher entry. Names how many crates the publisher
 /// is iterating over. Factored into a helper so tests can pin the exact
-/// substring an operator scans the log for ("chocolatey: starting publish
+/// substring an operator scans the log for ("starting chocolatey publish
 /// for ...").
 pub(crate) fn run_start_message(selected_total: usize) -> String {
     format!(
-        "chocolatey: starting publish for {} selected crate(s)",
+        "starting chocolatey publish for {} selected crate(s)",
         selected_total
     )
 }
@@ -99,7 +99,7 @@ pub(crate) fn run_start_message(selected_total: usize) -> String {
 /// blank log.
 pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
     format!(
-        "chocolatey: skipping crate '{}' — no chocolatey config block",
+        "skipping chocolatey for crate '{}' — no chocolatey config block",
         crate_name
     )
 }
@@ -109,10 +109,7 @@ pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
 /// to a specific crate in the log so multi-crate workspaces are
 /// disambiguatable.
 pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
-    format!(
-        "chocolatey: starting per-crate publish for '{}'",
-        crate_name
-    )
+    format!("starting per-crate chocolatey publish for '{}'", crate_name)
 }
 
 /// Final summary emitted at publisher exit. `processed` is the count of
@@ -121,7 +118,10 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 /// skip paths for moderation/hash-match/dry-run/etc., each of which logs
 /// its own status line).
 pub(crate) fn run_done_message(processed: usize) -> String {
-    format!("chocolatey: completed — {} crate(s) processed", processed)
+    format!(
+        "finished chocolatey publish — {} crate(s) processed",
+        processed
+    )
 }
 
 /// Warning emitted when the publisher was registered (at least one
@@ -138,7 +138,7 @@ pub(crate) fn run_done_message(processed: usize) -> String {
 /// pushed.
 pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     format!(
-        "chocolatey: registered but 0 of {} effective crate(s) had a chocolatey \
+        "chocolatey publisher registered but 0 of {} effective crate(s) had a chocolatey \
          config block — nothing pushed. Check that --crate / --all selects a \
          crate whose publish.chocolatey block is set.",
         selected_total
@@ -165,6 +165,30 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
 
     fn retain_on_rollback(&self) -> bool {
         Self::resolved_retain_on_rollback(self)
+    }
+
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // Mirrors `resolve_api_key`: templated `api_key` from config, else
+        // the CHOCOLATEY_API_KEY env var. The push itself is plain HTTPS
+        // (no choco CLI).
+        anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.chocolatey.as_ref())
+            .filter(|ch| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    ch.skip.as_ref(),
+                    None,
+                    ch.if_condition.as_deref(),
+                )
+            })
+            .filter_map(|ch| {
+                crate::publisher_helpers::secret_requirement(
+                    ch.api_key.as_deref(),
+                    "CHOCOLATEY_API_KEY",
+                )
+            })
+            .collect()
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
@@ -262,7 +286,7 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
         // of the pipeline.
         for t in &targets {
             log.warn(&format!(
-                "chocolatey: manual withdrawal required for '{}' version '{}'; \
+                "manual chocolatey withdrawal required for '{}' version '{}'; \
                  visit https://community.chocolatey.org/packages/{} and use the \
                  'Maintain' UI to withdraw the submission (only the package \
                  owner can drive this; the push API key does not authorize \
@@ -271,7 +295,7 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
             ));
         }
         log.status(&format!(
-            "chocolatey: {} package(s) require manual withdrawal",
+            "{} chocolatey package(s) require manual withdrawal",
             targets.len()
         ));
         Ok(())
@@ -446,40 +470,41 @@ mod publisher_tests {
     #[test]
     fn run_start_message_names_selected_total() {
         let msg = run_start_message(3);
-        assert!(msg.starts_with("chocolatey:"), "{msg}");
-        assert!(msg.contains("starting publish"), "{msg}");
+        assert!(msg.starts_with("starting chocolatey publish for"), "{msg}");
         assert!(msg.contains("3 selected"), "{msg}");
     }
 
     #[test]
     fn run_skip_unconfigured_message_names_crate() {
         let msg = run_skip_unconfigured_message("demo");
-        assert!(msg.starts_with("chocolatey:"), "{msg}");
-        assert!(msg.contains("skipping crate 'demo'"), "{msg}");
+        assert!(
+            msg.starts_with("skipping chocolatey for crate 'demo'"),
+            "{msg}"
+        );
         assert!(msg.contains("no chocolatey config block"), "{msg}");
     }
 
     #[test]
     fn run_per_crate_start_message_names_crate() {
         let msg = run_per_crate_start_message("demo");
-        assert!(msg.starts_with("chocolatey:"), "{msg}");
-        assert!(msg.contains("starting per-crate publish"), "{msg}");
+        assert!(
+            msg.starts_with("starting per-crate chocolatey publish"),
+            "{msg}"
+        );
         assert!(msg.contains("'demo'"), "{msg}");
     }
 
     #[test]
     fn run_done_message_reports_processed_count() {
         let msg = run_done_message(2);
-        assert!(msg.starts_with("chocolatey:"), "{msg}");
-        assert!(msg.contains("completed"), "{msg}");
+        assert!(msg.starts_with("finished chocolatey publish"), "{msg}");
         assert!(msg.contains("2 crate(s) processed"), "{msg}");
     }
 
     #[test]
     fn run_no_eligible_crates_warning_names_remediation() {
         let msg = run_no_eligible_crates_warning(5);
-        assert!(msg.starts_with("chocolatey:"), "{msg}");
-        assert!(msg.contains("registered"), "{msg}");
+        assert!(msg.starts_with("chocolatey publisher registered"), "{msg}");
         assert!(msg.contains("0 of 5 effective"), "{msg}");
         assert!(msg.contains("nothing pushed"), "{msg}");
         // The warning must point the operator at the remediation surface
@@ -495,7 +520,7 @@ mod publisher_tests {
         // The warn helper must not panic or omit the remediation text in
         // this shape.
         let msg = run_no_eligible_crates_warning(0);
-        assert!(msg.starts_with("chocolatey:"), "{msg}");
+        assert!(msg.starts_with("chocolatey publisher registered"), "{msg}");
         assert!(msg.contains("0 of 0 effective"), "{msg}");
         assert!(msg.contains("nothing pushed"), "{msg}");
         assert!(msg.contains("--crate"), "{msg}");

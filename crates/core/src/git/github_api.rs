@@ -1,6 +1,8 @@
 use anyhow::{Context as _, Result, bail};
+use std::collections::HashMap;
 use std::path::Path;
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
 
 use super::git_output_in;
 use super::remote::detect_github_repo_in;
@@ -43,6 +45,115 @@ pub fn gh_api_get_with_binary(
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     serde_json::from_str(&stdout).context("failed to parse gh api response")
+}
+
+/// Cache key for [`COMMIT_LOGIN_CACHE`]: `(owner, repo, author_email)`.
+type LoginCacheKey = (String, String, String);
+
+/// Process-wide memo of commit-author login lookups. Failed lookups are
+/// cached as `None` so an offline / unauthenticated run costs at most one
+/// API attempt per unique author email, even when several CLI entry points
+/// render changelogs for many crates in the same invocation.
+static COMMIT_LOGIN_CACHE: OnceLock<Mutex<HashMap<LoginCacheKey, Option<String>>>> =
+    OnceLock::new();
+
+/// Resolve a commit author's GitHub login from a representative commit SHA
+/// via `GET /repos/{owner}/{repo}/commits/{sha}` → `.author.login`.
+///
+/// Best-effort by design: any failure (no `gh`, no auth, offline, unknown
+/// SHA, commit email not linked to a GitHub account) returns `None` with at
+/// most a debug-level trace — callers fall back to name-based rendering and
+/// must never fail a release pipeline over a missing login.
+///
+/// Results (including failures) are memoized process-wide per
+/// `(owner, repo, email)`, so each unique author email costs one API call
+/// per run regardless of how many commits or crates reference it.
+pub fn commit_author_login(
+    owner: &str,
+    repo: &str,
+    email: &str,
+    sha: &str,
+    token: Option<&str>,
+) -> Option<String> {
+    commit_author_login_with_binary(Path::new("gh"), owner, repo, email, sha, token)
+}
+
+/// Path-taking sibling of [`commit_author_login`] so tests can point at a
+/// missing or stub binary without mutating `PATH`.
+pub fn commit_author_login_with_binary(
+    gh_binary: &Path,
+    owner: &str,
+    repo: &str,
+    email: &str,
+    sha: &str,
+    token: Option<&str>,
+) -> Option<String> {
+    if owner.is_empty() || repo.is_empty() || email.is_empty() || sha.is_empty() {
+        return None;
+    }
+    let key = (owner.to_string(), repo.to_string(), email.to_string());
+    let cache = COMMIT_LOGIN_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    // A poisoned lock only means another thread panicked mid-insert; the map
+    // itself is still a valid memo, so recover it rather than panic here.
+    {
+        let guard = match cache.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if let Some(hit) = guard.get(&key) {
+            return hit.clone();
+        }
+    }
+    let endpoint = format!("/repos/{owner}/{repo}/commits/{sha}");
+    let resolved = match gh_api_get_with_binary(gh_binary, &endpoint, token) {
+        Ok(v) => v
+            .pointer("/author/login")
+            .and_then(|l| l.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        Err(e) => {
+            tracing::debug!(
+                "commit_author_login: lookup for {} failed (keeping name-based rendering): {}",
+                email,
+                e
+            );
+            None
+        }
+    };
+    let mut guard = match cache.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    guard.insert(key, resolved.clone());
+    resolved
+}
+
+/// Resolve the GitHub token for API calls through the codebase-standard
+/// chain: explicit value (CLI flag / context option) → `ANODIZER_GITHUB_TOKEN`
+/// → `GITHUB_TOKEN`. Empty strings count as absent at every link — GitHub
+/// Actions materializes missing secrets as `""`, which must not
+/// short-circuit the fallback to the next link.
+///
+/// `env` is the injectable env source (pass `Context::env_var` or a
+/// map-backed closure in tests) so the chain is testable without mutating
+/// process env.
+pub fn resolve_github_token_with_env(
+    explicit: Option<&str>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
+    explicit
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .or_else(|| env("ANODIZER_GITHUB_TOKEN").and_then(non_empty))
+        .or_else(|| env("GITHUB_TOKEN").and_then(non_empty))
+}
+
+/// Process-env wrapper of [`resolve_github_token_with_env`] for call sites
+/// without a `Context` (e.g. the `bump`/`tag` changelog-sync write path,
+/// whose commands expose no `--token` flag).
+pub fn resolve_github_token(explicit: Option<&str>) -> Option<String> {
+    resolve_github_token_with_env(explicit, &|key| std::env::var(key).ok())
 }
 
 /// Redact secrets from `gh` CLI stderr before interpolating into a bail
@@ -227,7 +338,7 @@ pub fn create_tag_via_github_api_in(
 ) -> Result<()> {
     if dry_run {
         log.status(&format!(
-            "(dry-run) would create tag via GitHub API: {} (\"{}\")",
+            "(dry-run) would create tag {} via GitHub API (\"{}\")",
             tag, message
         ));
         return Ok(());
@@ -329,6 +440,111 @@ mod tests {
         let stderr = "plain error message without credentials";
         let redacted = redact_gh_stderr(stderr, Some(""));
         assert_eq!(redacted, stderr);
+    }
+
+    /// A missing `gh` binary must degrade to `None` (never an error/panic):
+    /// the changelog pipeline keeps name-based rendering. The failure is
+    /// memoized, so the second call returns the cached `None` without
+    /// re-attempting a spawn.
+    #[test]
+    fn commit_author_login_missing_binary_degrades_to_none_and_caches() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("nonexistent-gh");
+        let first = commit_author_login_with_binary(
+            &missing,
+            "owner-cal-test",
+            "repo-cal-test",
+            "a@example.com",
+            "0123456789abcdef0123456789abcdef01234567",
+            None,
+        );
+        assert_eq!(first, None, "missing binary must yield None");
+        // Cached-failure path: same (owner, repo, email) key short-circuits
+        // before any spawn attempt.
+        let second = commit_author_login_with_binary(
+            &missing,
+            "owner-cal-test",
+            "repo-cal-test",
+            "a@example.com",
+            "fedcba9876543210fedcba9876543210fedcba98",
+            None,
+        );
+        assert_eq!(second, None);
+    }
+
+    /// Empty inputs short-circuit to `None` without touching the cache or
+    /// spawning anything.
+    #[test]
+    fn commit_author_login_empty_inputs_are_none() {
+        let gh = Path::new("gh");
+        assert_eq!(
+            commit_author_login_with_binary(gh, "", "r", "e", "s", None),
+            None
+        );
+        assert_eq!(
+            commit_author_login_with_binary(gh, "o", "", "e", "s", None),
+            None
+        );
+        assert_eq!(
+            commit_author_login_with_binary(gh, "o", "r", "", "s", None),
+            None
+        );
+        assert_eq!(
+            commit_author_login_with_binary(gh, "o", "r", "e", "", None),
+            None
+        );
+    }
+
+    /// Chain order: explicit beats `ANODIZER_GITHUB_TOKEN` beats
+    /// `GITHUB_TOKEN`; empty strings are absent at every link. Uses a
+    /// map-backed env closure — no process-env mutation, no network.
+    #[test]
+    fn resolve_github_token_chain_order_and_empty_filtering() {
+        let env_with = |pairs: &[(&str, &str)]| {
+            let map: HashMap<String, String> = pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            move |key: &str| map.get(key).cloned()
+        };
+
+        let both = env_with(&[
+            ("ANODIZER_GITHUB_TOKEN", "anod-tok"),
+            ("GITHUB_TOKEN", "gh-tok"),
+        ]);
+        assert_eq!(
+            resolve_github_token_with_env(Some("explicit-tok"), &both),
+            Some("explicit-tok".to_string()),
+            "explicit token must win over both env vars"
+        );
+        assert_eq!(
+            resolve_github_token_with_env(None, &both),
+            Some("anod-tok".to_string()),
+            "ANODIZER_GITHUB_TOKEN must win over GITHUB_TOKEN"
+        );
+
+        let gh_only = env_with(&[("GITHUB_TOKEN", "gh-tok")]);
+        assert_eq!(
+            resolve_github_token_with_env(None, &gh_only),
+            Some("gh-tok".to_string()),
+            "GITHUB_TOKEN alone must resolve (the CI-gap pin)"
+        );
+        assert_eq!(
+            resolve_github_token_with_env(Some(""), &gh_only),
+            Some("gh-tok".to_string()),
+            "empty explicit token must fall through to env"
+        );
+
+        let empty_anod = env_with(&[("ANODIZER_GITHUB_TOKEN", ""), ("GITHUB_TOKEN", "gh-tok")]);
+        assert_eq!(
+            resolve_github_token_with_env(None, &empty_anod),
+            Some("gh-tok".to_string()),
+            "empty ANODIZER_GITHUB_TOKEN (GHA missing-secret materialization) must not short-circuit"
+        );
+
+        let none = env_with(&[]);
+        assert_eq!(resolve_github_token_with_env(None, &none), None);
+        assert_eq!(resolve_github_token_with_env(Some(""), &none), None);
     }
 
     /// `gh_api_get_with_binary` must surface a user-actionable spawn

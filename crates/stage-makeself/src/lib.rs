@@ -365,7 +365,7 @@ fn execute_makeself_job(
         packaging_date.as_deref(),
     );
 
-    thread_log.status(&format!("creating makeself package: {}", job.filename));
+    thread_log.status(&format!("creating makeself package {}", job.filename));
 
     let output = Command::new("makeself")
         .args(&args)
@@ -735,7 +735,7 @@ fn build_makeself_platform_job(
 
     if dry_run {
         log.status(&format!(
-            "(dry-run) would create makeself package: {}",
+            "(dry-run) would create makeself package {}",
             filename
         ));
         return Ok(());
@@ -803,6 +803,26 @@ fn resolve_extra_file_pairs(
             (src.to_path_buf(), dest_name)
         })
         .collect()
+}
+
+/// Environment requirements for the makeself stage: the `makeself` binary
+/// whenever any `makeselfs:` entry is active (entries whose `skip`
+/// evaluates true are inert).
+pub fn env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    let any = ctx.config.makeselfs.iter().any(|cfg| {
+        !cfg.skip.as_ref().is_some_and(|s| {
+            s.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                .unwrap_or(false)
+        })
+    });
+    if !any {
+        return Vec::new();
+    }
+    vec![anodizer_core::EnvRequirement::Tool {
+        name: "makeself".to_string(),
+    }]
 }
 
 // ---------------------------------------------------------------------------

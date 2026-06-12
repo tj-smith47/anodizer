@@ -84,7 +84,7 @@ fn validate_nightly_config(ctx: &Context, log: &anodizer_core::log::StageLogger)
     // promoted nightly: each run replaces the prior draft before it publishes.
     if nightly_cfg.draft == Some(true) && nightly_cfg.resolved_keep_last() == Some(1) {
         log.warn(
-            "release: nightly with both draft=true and a keep_last:1 retention \
+            "nightly with both draft=true and a keep_last:1 retention \
              (keep_single_release) — no published nightly release will exist \
              (each run replaces a prior draft)",
         );
@@ -279,7 +279,7 @@ fn warn_tag_override_divergence(
         && pushed_tag != tag
     {
         log.warn(&format!(
-            "release: release.tag override '{}' differs from pushed git tag '{}' (crate '{}') — GitHub will create a new tag at the target commit",
+            "release.tag override '{}' differs from pushed git tag '{}' (crate '{}') — GitHub will create a new tag at the target commit",
             tag, pushed_tag, crate_name
         ));
     }
@@ -325,7 +325,7 @@ fn ensure_release_url(
     let url = compose_release_url(ctx.token_type, &download_base, &repo.owner, &repo.name, tag);
     ctx.set_release_url(&url);
     ctx.logger("release").verbose(&format!(
-        "release: derived default ReleaseURL '{url}' for crate '{crate_name}'"
+        "derived default ReleaseURL '{url}' for crate '{crate_name}'"
     ));
     Ok(())
 }
@@ -378,7 +378,7 @@ fn assemble_artifact_entries(
     if let Some(ids) = ids_filter {
         if artifact_entries.is_empty() {
             log.warn(&format!(
-                "release: ids filter {:?} matched zero artifacts for crate '{}' \
+                "ids filter {:?} matched zero artifacts for crate '{}' \
                  (the release will be created with no uploaded files; check \
                  the ids match a configured build/archive id)",
                 ids, crate_cfg.name
@@ -433,7 +433,7 @@ fn assemble_artifact_entries(
             );
         } else {
             log.warn(&format!(
-                "include_meta: {} not found at {}",
+                "include_meta file {} not found at {}",
                 meta_name,
                 meta_path.display()
             ));
@@ -953,13 +953,13 @@ fn handle_dry_run(
         for (path, custom_name) in s.artifact_entries {
             if let Some(name) = custom_name {
                 log.status(&format!(
-                    "(dry-run)   would upload artifact: {} (as '{}')",
+                    "(dry-run)   would upload artifact {} (as '{}')",
                     path.display(),
                     name,
                 ));
             } else {
                 log.status(&format!(
-                    "(dry-run)   would upload artifact: {}",
+                    "(dry-run)   would upload artifact {}",
                     path.display()
                 ));
             }

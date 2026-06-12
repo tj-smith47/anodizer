@@ -491,7 +491,9 @@ fn run() {
                 cli.debug,
                 cli.quiet,
             ),
-            CheckCmd::Determinism(args) => commands::check::determinism::run(args),
+            CheckCmd::Determinism(args) => {
+                commands::check::determinism::run(args, cli.verbose, cli.debug, cli.quiet)
+            }
             CheckCmd::VersionFiles => commands::check::version_files::run(
                 cli.config.as_deref(),
                 cli.verbose,
@@ -535,6 +537,21 @@ fn run() {
         }),
         Commands::Completion { shell } => commands::completion::run(shell),
         Commands::Healthcheck => commands::healthcheck::run(),
+        Commands::Preflight {
+            json,
+            skip,
+            publish_only,
+            token,
+        } => commands::preflight::run(commands::preflight::PreflightOpts {
+            config_override: cli.config.clone(),
+            json,
+            skip,
+            publish_only,
+            token,
+            quiet: cli.quiet,
+            verbose: cli.verbose,
+            debug: cli.debug,
+        }),
         Commands::Man => {
             let cmd = anodizer_cli::build_cli();
             let man = clap_mangen::Man::new(cmd);
@@ -578,6 +595,7 @@ fn run() {
                 sha,
                 dry_run: rb_dry_run,
                 no_push: rb_no_push,
+                force,
                 scope,
                 mode,
                 branch,
@@ -605,6 +623,7 @@ fn run() {
                         sha,
                         dry_run: rb_dry_run,
                         no_push: rb_no_push,
+                        force,
                         scope,
                         mode,
                         branch,
@@ -1110,6 +1129,7 @@ mod tests {
             "deadbeef",
             "--dry-run",
             "--no-push",
+            "--force",
             "--scope",
             "lockstep",
             "--mode",
@@ -1128,6 +1148,7 @@ mod tests {
                     sha,
                     dry_run,
                     no_push,
+                    force,
                     scope,
                     mode,
                     branch,
@@ -1138,6 +1159,7 @@ mod tests {
             assert_eq!(sha.as_deref(), Some("deadbeef"));
             assert!(dry_run);
             assert!(no_push);
+            assert!(force);
             assert_eq!(scope, "lockstep");
             assert_eq!(mode, "reset");
             assert_eq!(branch.as_deref(), Some("master"));

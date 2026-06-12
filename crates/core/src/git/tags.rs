@@ -445,7 +445,7 @@ pub fn create_and_push_tag_in(
 ) -> Result<()> {
     if dry_run {
         log.status(&format!(
-            "(dry-run) would create tag: {} (\"{}\")",
+            "(dry-run) would create tag {} (\"{}\")",
             tag, message
         ));
         return Ok(());
@@ -476,7 +476,7 @@ pub fn create_tag_local_only(
 ) -> Result<()> {
     if dry_run {
         log.status(&format!(
-            "(dry-run) would create local tag: {} (\"{}\")",
+            "(dry-run) would create local tag {} (\"{}\")",
             tag, message
         ));
         return Ok(());

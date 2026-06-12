@@ -8,7 +8,14 @@
 //!   asset on the published release ([`asset_check`]). The produced set is
 //!   derived for free from `release_uploadable_kinds()` + the artifact
 //!   registry (no new config); the published set is fetched live via
-//!   [`anodizer_stage_release::fetch_published_asset_names`].
+//!   [`anodizer_stage_release::fetch_published_asset_names`]. The expected
+//!   set additionally includes the signature / certificate / SBOM asset
+//!   names the resolved `signs:` / `sboms:` config demands
+//!   ([`anodizer_stage_sign::expected_signature_assets`],
+//!   [`anodizer_stage_sbom::expected_sbom_assets`]) — derived from config +
+//!   the artifact set rather than from the producing stages' registrations,
+//!   so a sign/SBOM stage that silently produced nothing still fails the
+//!   gate with the exact missing names.
 //! - **install smoke-test** — each Linux package is installed in a pinned
 //!   container and `<bin> --version` is run ([`smoke`]). Skipped with a
 //!   notice when Docker is unavailable.
@@ -40,7 +47,8 @@ pub use libc_check::{
     max_glibc_requirement,
 };
 pub use smoke::{
-    PackageType, SmokeJob, SmokeOutcome, build_smoke_argv, docker_available, run_smoke,
+    PackageType, SmokeJob, SmokeOutcome, build_smoke_argv, docker_available, docker_platform,
+    run_smoke,
 };
 
 use anodizer_core::artifact::ArtifactKind;
@@ -78,7 +86,7 @@ impl Stage for VerifyReleaseStage {
         // runs never created one, so there is nothing to verify.
         if ctx.is_dry_run() || ctx.is_snapshot() {
             ctx.logger(STAGE_NAME)
-                .verbose("verify-release: dry-run/snapshot — no published release to verify");
+                .verbose("dry-run/snapshot — no published release to verify");
             return Ok(());
         }
 
@@ -98,7 +106,7 @@ impl Stage for VerifyReleaseStage {
             .collect();
 
         if crates.is_empty() {
-            log.verbose("verify-release: no crates with a release block; nothing to verify");
+            log.verbose("no crates with a release block; nothing to verify");
             return Ok(());
         }
 
@@ -117,7 +125,7 @@ impl Stage for VerifyReleaseStage {
         };
         if smoke_enabled && !docker_ok {
             log.status(
-                "verify-release: Docker unavailable — skipping install smoke-test \
+                "Docker unavailable — skipping install smoke-test \
                  (asset-existence and libc-ceiling still run)",
             );
         }
@@ -140,12 +148,12 @@ impl Stage for VerifyReleaseStage {
         }
 
         if issues.is_empty() {
-            log.status("verify-release: all post-publish checks passed");
+            log.status("all post-publish checks passed");
             return Ok(());
         }
 
         for issue in &issues {
-            log.warn(&format!("verify-release: {issue}"));
+            log.warn(issue);
         }
         anyhow::bail!(
             "verify-release: post-publish verification found {} issue(s); {}:\n  - {}",
@@ -176,8 +184,7 @@ fn crate_binary_name(crate_cfg: &CrateConfig) -> String {
 /// and cannot drift: an artifact the release stage filtered OUT by `ids` is
 /// not reported as a missing asset here. The asset name is resolved exactly as
 /// the upload path resolves it — the custom destination name when set,
-/// otherwise the file's basename. Rule #11: zero new config, no hand-maintained
-/// list.
+/// otherwise the file's basename.
 fn produced_asset_names(ctx: &Context, crate_name: &str, ids: Option<&[String]>) -> Vec<String> {
     let mut names: Vec<String> = anodizer_stage_release::collect_release_upload_candidates(
         ctx, crate_name, ids,
@@ -193,6 +200,41 @@ fn produced_asset_names(ctx: &Context, crate_name: &str, ids: Option<&[String]>)
     names.sort();
     names.dedup();
     names
+}
+
+/// Asset names the published release must ALSO carry per the resolved
+/// `signs:` / `sboms:` config, derived from config + the artifact set — NOT
+/// from the producing stages' registrations.
+///
+/// This is the gate's defense against a configured stage silently producing
+/// nothing: the v0.8.0 release shipped with zero signature assets and the
+/// produced-vs-published diff passed, because the silently-skipped sign stage
+/// had registered no `Signature` artifacts and the produced set is
+/// registry-derived. Expectations here come from the config itself, so a
+/// no-op sign/SBOM stage yields a precise missing-asset failure.
+///
+/// Intentional skips create no expectations (see the derivation modules for
+/// the full waiver order): the run's own skip record is consulted first as
+/// the authoritative account of what THIS run decided, with the config's
+/// `if:` / `skip:` re-evaluated only as a fallback.
+fn config_expected_asset_names(
+    ctx: &Context,
+    crate_name: &str,
+    release_ids: Option<&[String]>,
+) -> Result<Vec<String>> {
+    // `release_ids` mirrors the upload path's id-filter semantics: derived
+    // artifacts inherit their SUBJECT's verdict (`matches_id_filter`), so a
+    // signature/SBOM is expected exactly when the artifact it derives from
+    // is uploaded.
+    let mut names = anodizer_stage_sign::expected_signature_assets(ctx, crate_name, release_ids)?;
+    names.extend(anodizer_stage_sbom::expected_sbom_assets(
+        ctx,
+        crate_name,
+        release_ids,
+    )?);
+    names.sort();
+    names.dedup();
+    Ok(names)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -223,25 +265,74 @@ fn verify_one_crate(
             Ok(Some(published)) => {
                 let produced =
                     produced_asset_names(ctx, &crate_cfg.name, release_cfg.ids.as_deref());
-                let diff = diff_assets(&produced, &published);
-                if diff.has_missing() {
+                // Config-derived expectations (signatures / SBOMs). A
+                // derivation error is itself a finding — never a silent pass.
+                let derived = match config_expected_asset_names(
+                    ctx,
+                    &crate_cfg.name,
+                    release_cfg.ids.as_deref(),
+                ) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        issues.push(format!(
+                            "could not derive expected signature/SBOM assets \
+                                 from config for crate '{}': {e:#}",
+                            crate_cfg.name
+                        ));
+                        Vec::new()
+                    }
+                };
+                let mut all_expected = produced.clone();
+                all_expected.extend(derived);
+                all_expected.sort();
+                all_expected.dedup();
+
+                let diff = diff_assets(&all_expected, &published);
+                let produced_set: std::collections::BTreeSet<&str> =
+                    produced.iter().map(String::as_str).collect();
+                let (missing_produced, missing_derived): (Vec<&String>, Vec<&String>) = diff
+                    .missing
+                    .iter()
+                    .partition(|name| produced_set.contains(name.as_str()));
+                if !missing_produced.is_empty() {
                     issues.push(format!(
-                        "crate '{}': {} produced artifact(s) missing from the published \
-                         release: {}",
+                        "{1} produced artifact(s) missing from the published \
+                         release for crate '{0}': {2}",
                         crate_cfg.name,
-                        diff.missing.len(),
-                        diff.missing.join(", ")
+                        missing_produced.len(),
+                        missing_produced
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ));
-                } else {
-                    log.verbose(&format!(
-                        "verify-release: crate '{}' all {} asset(s) present",
+                }
+                if !missing_derived.is_empty() {
+                    issues.push(format!(
+                        "{1} signature/SBOM asset(s) required by the resolved \
+                         signs/sboms config were never uploaded for crate '{0}' \
+                         (the producing stage registered no such artifact): {2}",
                         crate_cfg.name,
-                        produced.len()
+                        missing_derived.len(),
+                        missing_derived
+                            .iter()
+                            .map(|s| s.as_str())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    ));
+                }
+                if !diff.has_missing() {
+                    log.verbose(&format!(
+                        "crate '{}' all {} asset(s) present \
+                         ({} config-derived)",
+                        crate_cfg.name,
+                        all_expected.len(),
+                        all_expected.len() - produced.len()
                     ));
                 }
                 if !diff.orphan.is_empty() {
                     log.verbose(&format!(
-                        "verify-release: crate '{}' {} orphan asset(s) on release (advisory): {}",
+                        "crate '{}' {} orphan asset(s) on release (advisory): {}",
                         crate_cfg.name,
                         diff.orphan.len(),
                         diff.orphan.join(", ")
@@ -250,7 +341,7 @@ fn verify_one_crate(
             }
             Ok(None) => {
                 log.verbose(&format!(
-                    "verify-release: crate '{}' no GitHub release configured — \
+                    "crate '{}' no GitHub release configured — \
                      skipping asset-existence",
                     crate_cfg.name
                 ));
@@ -259,7 +350,7 @@ fn verify_one_crate(
                 // Failing to fetch the live release is itself a post-publish
                 // signal worth surfacing, not a silent skip.
                 issues.push(format!(
-                    "crate '{}': could not fetch published release assets: {e}",
+                    "could not fetch published release assets for crate '{}': {e}",
                     crate_cfg.name
                 ));
             }
@@ -273,7 +364,7 @@ fn verify_one_crate(
     if cfg.glibc_check_enabled()
         && let Some(ceiling) = cfg.glibc_ceiling.as_deref()
     {
-        for (path, name) in linux_packages(ctx, &crate_cfg.name) {
+        for (path, name, _) in linux_packages(ctx, &crate_cfg.name) {
             if !name.to_ascii_lowercase().ends_with(".deb") {
                 continue;
             }
@@ -289,7 +380,7 @@ fn verify_one_crate(
         && let Some(smoke_cfg) = cfg.install_smoke.as_ref()
     {
         let binary = crate_binary_name(crate_cfg);
-        for (path, name) in linux_packages(ctx, &crate_cfg.name) {
+        for (path, name, target) in linux_packages(ctx, &crate_cfg.name) {
             let Some(pt) = PackageType::from_filename(&name) else {
                 continue;
             };
@@ -304,10 +395,11 @@ fn verify_one_crate(
                 host_pkg_path: path.to_string_lossy().to_string(),
                 pkg_name: name.clone(),
                 binary: binary.clone(),
+                platform: smoke::job_platform(target.as_deref()),
             };
             if !*smoke_strategy_logged {
                 log.verbose(&format!(
-                    "verify-release: install-smoke strategy: {}",
+                    "using install-smoke strategy {}",
                     smoke::strategy_label(&job.image)
                 ));
                 *smoke_strategy_logged = true;
@@ -315,19 +407,19 @@ fn verify_one_crate(
             match smoke::run_smoke(&job) {
                 Ok(SmokeOutcome::Passed) => {
                     log.verbose(&format!(
-                        "verify-release: crate '{}' smoke OK: {name} on {image}",
+                        "crate '{}' smoke passed ({name} on {image})",
                         crate_cfg.name
                     ));
                 }
                 Ok(SmokeOutcome::Failed { detail }) => {
                     issues.push(format!(
-                        "crate '{}': install smoke-test failed for {name} on {image}: {detail}",
+                        "install smoke-test failed for crate '{}' ({name} on {image}): {detail}",
                         crate_cfg.name
                     ));
                 }
                 Err(e) => {
                     issues.push(format!(
-                        "crate '{}': install smoke-test could not run for {name}: {e}",
+                        "install smoke-test could not run for crate '{}' ({name}): {e}",
                         crate_cfg.name
                     ));
                 }
@@ -350,7 +442,7 @@ fn check_one_deb_libc(
         Ok(Some(bytes)) => bytes,
         Ok(None) => {
             log.verbose(&format!(
-                "verify-release: crate '{crate_name}' {} has no inspectable ELF — \
+                "crate '{crate_name}' {} has no inspectable ELF — \
                  skipping libc check",
                 deb_path.display()
             ));
@@ -358,7 +450,7 @@ fn check_one_deb_libc(
         }
         Err(e) => {
             issues.push(format!(
-                "crate '{crate_name}': could not read {} for libc check: {e}",
+                "could not read {} of crate '{crate_name}' for the libc check: {e}",
                 deb_path.display()
             ));
             return;
@@ -367,46 +459,52 @@ fn check_one_deb_libc(
     match libc_check::check_glibc_ceiling(&elf_bytes, ceiling) {
         Ok(LibcCheckOutcome::NoGlibcRequirement) => {
             log.verbose(&format!(
-                "verify-release: crate '{crate_name}' {} has no glibc requirement \
+                "crate '{crate_name}' {} has no glibc requirement \
                  (static/musl) — skipped",
                 deb_path.display()
             ));
         }
         Ok(LibcCheckOutcome::WithinCeiling { max }) => {
             log.verbose(&format!(
-                "verify-release: crate '{crate_name}' {} requires glibc {max} (<= {ceiling})",
+                "crate '{crate_name}' {} requires glibc {max} (<= {ceiling})",
                 deb_path.display()
             ));
         }
         Ok(LibcCheckOutcome::ExceedsCeiling { max, ceiling }) => {
             issues.push(format!(
-                "crate '{crate_name}': {} requires glibc {max}, exceeding the configured \
-                 ceiling {ceiling}",
+                "{} of crate '{crate_name}' requires glibc {max}, exceeding the \
+                 configured ceiling {ceiling}",
                 deb_path.display()
             ));
         }
         Err(e) => {
             issues.push(format!(
-                "crate '{crate_name}': libc check failed for {}: {e}",
+                "libc check failed for {} of crate '{crate_name}': {e}",
                 deb_path.display()
             ));
         }
     }
 }
 
-/// All Linux-package artifacts for a crate as `(absolute_path, basename)`.
+/// All Linux-package artifacts for a crate as `(absolute_path, basename,
+/// build_target)`.
 ///
 /// The path is canonicalized (falling back to the registered path) so both
 /// consumers work: the libc check reads the file, and the smoke-test
 /// bind-mounts it into a container (which requires an absolute host path).
-/// Callers filter by extension at the call site.
-fn linux_packages(ctx: &Context, crate_name: &str) -> Vec<(std::path::PathBuf, String)> {
+/// The target triple (when the package was built for one) lets the smoke-test
+/// pin its container to the package's architecture. Callers filter by
+/// extension at the call site.
+fn linux_packages(
+    ctx: &Context,
+    crate_name: &str,
+) -> Vec<(std::path::PathBuf, String, Option<String>)> {
     ctx.artifacts
         .by_kind_and_crate(ArtifactKind::LinuxPackage, crate_name)
         .into_iter()
         .map(|a| {
             let abs = std::fs::canonicalize(&a.path).unwrap_or_else(|_| a.path.clone());
-            (abs, a.name.clone())
+            (abs, a.name.clone(), a.target.clone())
         })
         .collect()
 }
@@ -434,3 +532,21 @@ mod deb;
 
 #[cfg(test)]
 mod tests;
+
+/// Environment requirements for the verify-release stage: the `docker` CLI
+/// plus a reachable daemon when the install smoke-test is configured (the
+/// only part of the gate that shells out).
+pub fn env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    let vr = &ctx.config.verify_release;
+    if !vr.enabled || vr.install_smoke.is_none() {
+        return Vec::new();
+    }
+    vec![
+        anodizer_core::EnvRequirement::Tool {
+            name: "docker".to_string(),
+        },
+        anodizer_core::EnvRequirement::DockerDaemon,
+    ]
+}

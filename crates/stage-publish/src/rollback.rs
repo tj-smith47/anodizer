@@ -82,12 +82,12 @@ pub fn run(
         .collect();
 
     if target_indices.is_empty() {
-        log.status("rollback: no rollback targets recorded");
+        log.status("no rollback targets recorded");
         return;
     }
 
     log.status(&format!(
-        "rollback: dispatching {} target(s)",
+        "dispatching rollback for {} target(s)",
         target_indices.len()
     ));
 
@@ -112,7 +112,7 @@ pub fn run(
         // Find the publisher by name.
         let Some(publisher) = publishers.iter().find(|p| p.name() == name_owned) else {
             log.warn(&format!(
-                "rollback: publisher '{}' not in current registry; skipping rollback",
+                "publisher '{}' not in current registry; skipping rollback",
                 name_owned,
             ));
             failed += 1;
@@ -124,7 +124,7 @@ pub fn run(
         // Publisher opted out of rollback — leave its work in place.
         if publisher.retain_on_rollback() {
             log.status(&format!(
-                "rollback: skipping '{}' — retain_on_rollback is set",
+                "skipping rollback for '{}' — retain_on_rollback is set",
                 name_owned
             ));
             continue;
@@ -161,7 +161,7 @@ pub fn run(
             _ => String::new(),
         };
 
-        log.status(&format!("rollback: invoking '{}'", name_owned));
+        log.status(&format!("invoking rollback for '{}'", name_owned));
         match publisher.rollback(ctx, &evidence_owned) {
             Ok(()) => {
                 rolled_back += 1;
@@ -173,13 +173,13 @@ pub fn run(
                 failed += 1;
                 let msg = format!("{:#}", err);
                 report.results[i].outcome = PublisherOutcome::RollbackFailed(msg.clone());
-                log.warn(&format!("rollback: '{}' failed: {}", name_owned, msg));
+                log.warn(&format!("rollback for '{}' failed: {}", name_owned, msg));
             }
         }
     }
 
     log.status(&format!(
-        "rollback: {} rolled back, {} failed, {} skipped-no-scope",
+        "rollback complete — {} rolled back, {} failed, {} skipped-no-scope",
         rolled_back, failed, skipped_no_scope,
     ));
 }

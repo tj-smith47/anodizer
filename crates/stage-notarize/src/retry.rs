@@ -138,7 +138,7 @@ pub(super) fn run_with_retry(
         // Exponential backoff: 30s, 60s.
         let delay = NOTARIZE_INITIAL_DELAY * 2u32.pow(attempt);
         log.warn(&format!(
-            "notarize: {} attempt {}/{} hit a transient error; retrying in {}s",
+            "{} attempt {}/{} hit a transient error; retrying in {}s",
             label,
             try_n,
             NOTARIZE_RETRY_ATTEMPTS,
@@ -210,7 +210,7 @@ pub(super) fn run_status_with_retry(
         }
         let delay = NOTARIZE_INITIAL_DELAY * 2u32.pow(attempt);
         log.warn(&format!(
-            "notarize: {} attempt {}/{} failed; retrying in {}s",
+            "{} attempt {}/{} failed; retrying in {}s",
             label,
             try_n,
             NOTARIZE_RETRY_ATTEMPTS,
@@ -248,11 +248,11 @@ pub(super) fn check_notarize_output(
         // Even on success, check for status keywords to provide accurate logging
         if combined_lower.contains("status: accepted") || combined_lower.contains("status: success")
         {
-            log.status(&format!("notarize: {} succeeded (accepted)", label));
+            log.status(&format!("{} succeeded (accepted)", label));
         } else if combined_lower.contains("timeout") {
             // timeout is non-fatal (logs info, no error)
             log.warn(&format!(
-                "notarize: {} timed out (submission may still be processing)",
+                "{} timed out (submission may still be processing)",
                 label
             ));
         }
@@ -276,7 +276,7 @@ pub(super) fn check_notarize_output(
     if combined_lower.contains("timeout") || combined_lower.contains("timed out") {
         // timeout is non-fatal (info log, not error)
         log.warn(&format!(
-            "notarize: {} timed out waiting for Apple response (submission may still be processing)",
+            "{} timed out waiting for Apple response (submission may still be processing)",
             label
         ));
         return Ok(());

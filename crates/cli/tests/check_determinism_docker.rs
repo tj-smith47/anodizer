@@ -49,7 +49,8 @@ use common::{bootstrap_minimal_cargo_repo, tool_on_path};
 
 /// `--stages=docker` must be accepted by the parser even on hosts
 /// without docker installed. The harness's per-run loop then no-ops
-/// when buildx is unreachable (logging an `eprintln!` warn), so the
+/// when buildx is unreachable (warning through the harness logger,
+/// which `-q` silences), so the
 /// report still gets written with `stages_under_test` including
 /// `"docker"`.
 ///

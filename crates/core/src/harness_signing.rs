@@ -355,4 +355,289 @@ mod tests {
     fn parse_fingerprint_none_when_no_fpr_record() {
         assert!(parse_fingerprint("sec:u:255:22::1730000000:::u::\n").is_none());
     }
+
+    #[test]
+    fn parse_fingerprint_skips_short_fpr_field() {
+        assert!(parse_fingerprint("fpr:::::::::ABCD:\n").is_none());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod provision_tests {
+    use super::*;
+    use crate::test_helpers::fake_tool::FakeToolDir;
+
+    const FAKE_FPR: &str = "ABCDEF1234567890ABCDEF1234567890ABCDEF12";
+
+    /// Run the provisioner expecting failure; returns the full anyhow chain.
+    /// (A `Debug` bound on [`EphemeralSigningKeys`] is deliberately avoided —
+    /// it would let the cosign private key reach debug logs.)
+    fn provision_err(sde: i64) -> String {
+        match provision_ephemeral_keys(sde) {
+            Ok(_) => panic!("expected provisioning to fail"),
+            Err(e) => format!("{e:#}"),
+        }
+    }
+
+    /// `cosign` stub: succeeds on `version` and writes the keypair files
+    /// (into its CWD — the provision tempdir) on `generate-key-pair`.
+    fn stub_cosign_ok(tools: &FakeToolDir) {
+        tools
+            .tool("cosign")
+            .script(
+                "case \"$1\" in\n\
+                 version) exit 0 ;;\n\
+                 generate-key-pair)\n\
+                   printf '%s' 'FAKE-ENCRYPTED-COSIGN-PEM' > cosign.key\n\
+                   printf '%s' 'FAKE-COSIGN-PUB' > cosign.pub\n\
+                   exit 0 ;;\n\
+                 *) exit 1 ;;\n\
+                 esac",
+            )
+            .install();
+    }
+
+    /// `gpg` stub covering the four argv shapes the provisioner issues:
+    /// `--version`, `--batch --gen-key <file>`, `--list-secret-keys
+    /// --with-colons`, `--batch --armor --export-secret-keys <fpr>`.
+    fn stub_gpg_ok(tools: &FakeToolDir) {
+        tools
+            .tool("gpg")
+            .script(format!(
+                "if [ \"$1\" = '--version' ]; then exit 0; fi\n\
+                 if [ \"$1\" = '--list-secret-keys' ]; then printf 'fpr:::::::::{FAKE_FPR}:\\n'; exit 0; fi\n\
+                 if [ \"$2\" = '--gen-key' ]; then exit 0; fi\n\
+                 if [ \"$2\" = '--armor' ]; then printf 'FAKE-ARMORED-SECRET-KEY\\n'; exit 0; fi\n\
+                 exit 9"
+            ))
+            .install();
+        tools.tool("gpgconf").install();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn provision_happy_path_yields_keys_and_config() {
+        let tools = FakeToolDir::new();
+        stub_cosign_ok(&tools);
+        stub_gpg_ok(&tools);
+        let _g = tools.activate();
+
+        // 2025-01-01T00:00:00Z
+        let keys = provision_ephemeral_keys(1735689600).expect("provision succeeds");
+
+        assert_eq!(keys.cosign_key_contents, "FAKE-ENCRYPTED-COSIGN-PEM");
+        assert_eq!(keys.cosign_password, "anodize-harness");
+        assert_eq!(keys.gpg_fingerprint, FAKE_FPR);
+        assert_eq!(
+            std::fs::read_to_string(&keys.gpg_key_path).unwrap(),
+            "FAKE-ARMORED-SECRET-KEY\n"
+        );
+        assert!(keys.gnupg_home.is_dir());
+        assert_eq!(
+            std::fs::read_to_string(keys.gnupg_home.join("gpg-agent.conf")).unwrap(),
+            "allow-loopback-pinentry\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(keys.gnupg_home.join("gpg.conf")).unwrap(),
+            "pinentry-mode loopback\n"
+        );
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let home_mode = std::fs::metadata(&keys.gnupg_home)
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(home_mode & 0o777, 0o700, "GNUPGHOME must be 0700");
+            let key_mode = std::fs::metadata(&keys.gpg_key_path)
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(key_mode & 0o777, 0o600, "exported key must be 0600");
+        }
+
+        let cosign_calls = tools.calls("cosign");
+        assert_eq!(cosign_calls[0], vec!["version"]);
+        assert_eq!(cosign_calls[1], vec!["generate-key-pair"]);
+
+        let gpg_calls = tools.calls("gpg");
+        assert_eq!(gpg_calls[0], vec!["--version"]);
+        assert_eq!(gpg_calls[1][..2], ["--batch", "--gen-key"]);
+        // The batch file handed to gen-key pins the key's creation time to
+        // the SDE so faked-system-time signs see a usable key.
+        let batch = std::fs::read_to_string(&gpg_calls[1][2]).unwrap();
+        assert!(batch.contains("Creation-Date: 20250101T000000"), "{batch}");
+        assert!(batch.contains("Key-Curve: ed25519"), "{batch}");
+        assert!(batch.contains("%no-protection"), "{batch}");
+        assert_eq!(gpg_calls[2], vec!["--list-secret-keys", "--with-colons"]);
+        assert_eq!(
+            gpg_calls[3],
+            vec!["--batch", "--armor", "--export-secret-keys", FAKE_FPR]
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn provision_bails_when_cosign_unavailable() {
+        let tools = FakeToolDir::new();
+        // `cosign version` failing is treated the same as cosign missing.
+        tools.tool("cosign").exit(1).install();
+        stub_gpg_ok(&tools);
+        let _g = tools.activate();
+
+        let err = provision_err(0);
+        assert!(
+            err.contains("`cosign` not on PATH or failed to run"),
+            "{err}"
+        );
+        assert!(err.contains("Install cosign"), "{err}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn provision_bails_when_cosign_keygen_fails() {
+        let tools = FakeToolDir::new();
+        tools
+            .tool("cosign")
+            .script(
+                "case \"$1\" in\n\
+                 version) exit 0 ;;\n\
+                 *) echo 'keygen exploded' 1>&2; exit 3 ;;\n\
+                 esac",
+            )
+            .install();
+        stub_gpg_ok(&tools);
+        let _g = tools.activate();
+
+        let err = provision_err(0);
+        assert!(err.contains("cosign generate-key-pair failed"), "{err}");
+        assert!(err.contains("keygen exploded"), "{err}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn provision_bails_when_cosign_key_file_missing() {
+        let tools = FakeToolDir::new();
+        // generate-key-pair "succeeds" but writes no cosign.key.
+        tools.tool("cosign").install();
+        stub_gpg_ok(&tools);
+        let _g = tools.activate();
+
+        let err = provision_err(0);
+        assert!(err.contains("read cosign key"), "{err}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn provision_bails_when_gpg_unavailable() {
+        let tools = FakeToolDir::new();
+        stub_cosign_ok(&tools);
+        tools.tool("gpg").exit(1).install();
+        tools.tool("gpgconf").install();
+        let _g = tools.activate();
+
+        let err = provision_err(0);
+        assert!(err.contains("`gpg` not on PATH or failed to run"), "{err}");
+        assert!(err.contains("Install GnuPG"), "{err}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn provision_bails_on_out_of_range_sde() {
+        let tools = FakeToolDir::new();
+        stub_cosign_ok(&tools);
+        stub_gpg_ok(&tools);
+        let _g = tools.activate();
+
+        let err = provision_err(i64::MAX);
+        assert!(err.contains("out of range"), "{err}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn provision_bails_when_gen_key_fails() {
+        let tools = FakeToolDir::new();
+        stub_cosign_ok(&tools);
+        tools
+            .tool("gpg")
+            .script(
+                "if [ \"$1\" = '--version' ]; then exit 0; fi\n\
+                 echo 'agent_genkey failed' 1>&2; exit 2",
+            )
+            .install();
+        tools.tool("gpgconf").install();
+        let _g = tools.activate();
+
+        let err = provision_err(0);
+        assert!(err.contains("gpg --gen-key failed"), "{err}");
+        assert!(err.contains("agent_genkey failed"), "{err}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn provision_bails_when_list_secret_keys_fails() {
+        let tools = FakeToolDir::new();
+        stub_cosign_ok(&tools);
+        tools
+            .tool("gpg")
+            .script(
+                "if [ \"$1\" = '--version' ]; then exit 0; fi\n\
+                 if [ \"$2\" = '--gen-key' ]; then exit 0; fi\n\
+                 if [ \"$1\" = '--list-secret-keys' ]; then echo 'keyring locked' 1>&2; exit 2; fi\n\
+                 exit 9",
+            )
+            .install();
+        tools.tool("gpgconf").install();
+        let _g = tools.activate();
+
+        let err = provision_err(0);
+        assert!(err.contains("gpg --list-secret-keys failed"), "{err}");
+        assert!(err.contains("keyring locked"), "{err}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn provision_bails_when_fingerprint_unparseable() {
+        let tools = FakeToolDir::new();
+        stub_cosign_ok(&tools);
+        tools
+            .tool("gpg")
+            .script(
+                "if [ \"$1\" = '--version' ]; then exit 0; fi\n\
+                 if [ \"$2\" = '--gen-key' ]; then exit 0; fi\n\
+                 if [ \"$1\" = '--list-secret-keys' ]; then printf 'sec:u:255:22::0:::u::\\n'; exit 0; fi\n\
+                 exit 9",
+            )
+            .install();
+        tools.tool("gpgconf").install();
+        let _g = tools.activate();
+
+        let err = provision_err(0);
+        assert!(
+            err.contains("could not parse gpg --list-secret-keys"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn provision_bails_when_export_fails() {
+        let tools = FakeToolDir::new();
+        stub_cosign_ok(&tools);
+        tools
+            .tool("gpg")
+            .script(format!(
+                "if [ \"$1\" = '--version' ]; then exit 0; fi\n\
+                 if [ \"$2\" = '--gen-key' ]; then exit 0; fi\n\
+                 if [ \"$1\" = '--list-secret-keys' ]; then printf 'fpr:::::::::{FAKE_FPR}:\\n'; exit 0; fi\n\
+                 if [ \"$2\" = '--armor' ]; then echo 'export denied' 1>&2; exit 2; fi\n\
+                 exit 9"
+            ))
+            .install();
+        tools.tool("gpgconf").install();
+        let _g = tools.activate();
+
+        let err = provision_err(0);
+        assert!(err.contains("gpg --export-secret-keys failed"), "{err}");
+        assert!(err.contains("export denied"), "{err}");
+    }
 }

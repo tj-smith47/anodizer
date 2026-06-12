@@ -245,7 +245,7 @@ pub(crate) fn enhance_with_ai(
 
     // Skip AI enhancement in snapshot mode — cost containment.
     if ctx.is_snapshot() {
-        log.status("changelog.ai: skipped (snapshot mode)");
+        log.status("skipping changelog.ai enhancement (snapshot mode)");
         return Ok(body.to_owned());
     }
 
@@ -260,7 +260,7 @@ pub(crate) fn enhance_with_ai(
     let provider = make_provider(provider_name, env)?;
 
     log.status(&format!(
-        "changelog.ai: enhancing release notes via {} (model: {})",
+        "enhancing release notes via {} (model: {})",
         provider_name,
         ai_cfg.model.as_deref().unwrap_or(provider.default_model())
     ));
@@ -271,7 +271,7 @@ pub(crate) fn enhance_with_ai(
             if ctx.options.allow_ai_failure {
                 let redacted = log.redact(&format!("{err:#}"));
                 log.warn(&format!(
-                    "changelog.ai: provider error (--allow-ai-failure set, keeping original notes): {redacted}"
+                    "changelog.ai provider failed; keeping original notes (--allow-ai-failure): {redacted}"
                 ));
                 Ok(body.to_owned())
             } else {

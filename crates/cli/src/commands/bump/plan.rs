@@ -93,24 +93,19 @@ fn parse_positional(arg: &Option<String>) -> Result<Positional> {
 }
 
 /// Walk the workspace and build the plan.
-pub fn build_plan(workspace_root: &Path, opts: &BumpOpts) -> Result<Vec<PlanRow>> {
+///
+/// `anodizer_cfg` is the command's single shared `.anodizer.yaml` load
+/// (`None` when the repo has no config) — used so per-crate `tag_template`
+/// overrides bump's `<crate-name>-v` fallback. Without it, crates whose tag
+/// is bare `v{{ Version }}` (e.g. cfgd's primary crate) match no tag and
+/// inference scans all-of-history instead of the just-released range.
+pub fn build_plan(
+    workspace_root: &Path,
+    opts: &BumpOpts,
+    anodizer_cfg: Option<&anodizer_core::config::Config>,
+) -> Result<Vec<PlanRow>> {
     let ws = cargo_edit::load_workspace(workspace_root)?;
     let positional = parse_positional(&opts.level_or_version)?;
-    // Optional `.anodizer.yaml` lookup so per-crate `tag_template` overrides
-    // bump's `<crate-name>-v` fallback. Without this, crates whose tag is
-    // bare `v{{ Version }}` (e.g. cfgd's primary crate) match no tag and
-    // inference scans all-of-history instead of the just-released range.
-    let anodizer_cfg: Option<anodizer_core::config::Config> = {
-        let cfg_path = match opts.config_override.as_deref() {
-            Some(p) => p.to_path_buf(),
-            None => workspace_root.join(".anodizer.yaml"),
-        };
-        if cfg_path.is_file() {
-            crate::pipeline::load_config(&cfg_path).ok()
-        } else {
-            None
-        }
-    };
 
     // Filter set of crates to consider.
     let mut targets: Vec<&cargo_edit::MemberInfo> = Vec::new();

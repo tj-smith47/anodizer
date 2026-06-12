@@ -25,7 +25,7 @@ fn cask_skip_gates_trip(
         .or(hb_cfg.skip_upload.as_ref());
     if crate::util::should_skip_upload(effective_skip, ctx, log)? {
         log.status(&format!(
-            "homebrew cask: skipping upload for '{}' (skip_upload={})",
+            "skipping homebrew cask upload for '{}' (skip_upload={})",
             crate_name,
             effective_skip.map(|v| v.as_str()).unwrap_or("")
         ));
@@ -45,7 +45,7 @@ fn cask_skip_gates_trip(
     )?;
     if !proceed {
         log.status(&format!(
-            "homebrew cask: skipping '{}' — `if` condition evaluated falsy",
+            "skipping homebrew cask for '{}' — `if` condition evaluated falsy",
             crate_name
         ));
         return Ok(true);
@@ -159,7 +159,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
     let cask_path = casks_dir.join(format!("{}.rb", cask_result.cask_name));
     std::fs::write(&cask_path, &cask_result.content)
         .with_context(|| format!("homebrew cask: write cask file {}", cask_path.display()))?;
-    log.status(&format!("wrote Homebrew cask: {}", cask_path.display()));
+    log.status(&format!("wrote Homebrew cask {}", cask_path.display()));
 
     // `alternative_names:` versioned-file emission. Each entry that
     // renders to a token containing `@` (e.g. `myapp@1.2.3`) becomes its
@@ -175,7 +175,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
                 alt_path.display()
             )
         })?;
-        log.status(&format!("wrote Homebrew cask: {}", alt_path.display()));
+        log.status(&format!("wrote Homebrew cask {}", alt_path.display()));
         written_paths.push(alt_path);
     }
 
@@ -212,7 +212,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         }
         crate::util::CommitOutcome::NoChanges => {
             log.status(&format!(
-                "homebrew cask: nothing to push, cask '{}' already up to date",
+                "nothing to push for homebrew cask — '{}' already up to date",
                 cask_result.cask_name
             ));
         }

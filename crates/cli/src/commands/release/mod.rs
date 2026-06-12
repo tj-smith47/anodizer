@@ -1,4 +1,5 @@
 mod announce_only;
+mod failure_policy;
 mod milestones;
 mod publish_only;
 mod split;
@@ -156,12 +157,12 @@ pub struct ReleaseOpts {
 ///
 /// - `--no-preflight` always wins → false.
 /// - `--snapshot` / `--dry-run` / `--split` skip → no upstream side effects.
-/// - `--publish-only` skips → the publish-only branch does its own
-///   credential preflight at the top of `publish_only::run`; running
-///   the publisher-state preflight here first would make network
-///   calls (chocolatey/winget/cargo/aur state probes) before the
-///   credential gate, defeating the "fail before any mutation"
-///   property the spec requires.
+/// - `--publish-only` skips → that mode has its own credential gate
+///   (`publish_only::credential_preflight_gate`, run by the dispatcher
+///   right after this check); running the publisher-state preflight
+///   implicitly would make network calls (chocolatey/winget/cargo/aur
+///   state probes) before the credential gate, defeating the "fail
+///   before any mutation" property the spec requires.
 /// - `publish` in `skip` → caller opted out of one-way doors.
 /// - otherwise → true.
 ///
@@ -310,11 +311,10 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         ctx.populate_runtime_vars();
         ctx.populate_metadata_var()?;
 
-        // Set explicitly to "true"/"false" so `{% if IsPrepare %}` evaluates
-        // correctly in either branch (a missing var would short-circuit the
+        // Set explicitly in both branches so `{% if IsPrepare %}` evaluates
+        // correctly either way (a missing var would short-circuit the
         // truthy arm even when prepare mode is requested).
-        ctx.template_vars_mut()
-            .set("IsPrepare", if opts.prepare { "true" } else { "false" });
+        ctx.template_vars_mut().set_bool("IsPrepare", opts.prepare);
 
         // --rollback-only consumes a prior run's recorded state and never
         // builds; short-circuit before the env / git / hooks setup work
@@ -361,10 +361,69 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         }
     }
 
+    // Config-derived environment preflight: every enabled stage/publisher
+    // declares its tools / env vars / endpoints / key material, and all
+    // failures are reported in one pass BEFORE any stage runs. Snapshot and
+    // dry-run skip it (no upstream side effects to guard); `--split` skips
+    // it (operator-orchestrated partial pipeline legs); `--publish-only`
+    // runs it — that mode is exactly the one whose missing secrets used to
+    // surface mid-publish. `--announce-only` checks announce requirements
+    // alone: announcers fire sequentially with real side effects, so a
+    // missing token must abort before the first channel posts.
+    //
+    // Both preflights run BEFORE the failure-policy boundary below: they
+    // abort with zero mutations, so a missing secret must surface as
+    // "fix and re-run", never as a destructive rollback of a tag the
+    // run did not touch.
+    if !opts.no_preflight && !opts.dry_run && !opts.snapshot && !opts.split {
+        let scope = if opts.announce_only {
+            crate::commands::preflight::PreflightScope::AnnounceOnly
+        } else if opts.publish_only {
+            crate::commands::preflight::PreflightScope::PublishOnly
+        } else {
+            crate::commands::preflight::PreflightScope::Full
+        };
+        let report = crate::commands::preflight::run_env_preflight(&ctx, scope, &log);
+        if !report.ok() {
+            anyhow::bail!(
+                "preflight: {} environment failure(s) across {} check(s); \
+                 fix the issues above or re-run with --no-preflight to override",
+                report.failures.len(),
+                report.checks
+            );
+        }
+    }
+
     if run_publisher_preflight(&mut ctx, &opts, &log)? {
         return Ok(());
     }
 
+    // Third zero-mutation gate, publish-only specific: the release token
+    // + production signing key check. Hoisted here (out of the
+    // publish_only module) for the same reason as the two preflights
+    // above — a credential miss must never reach the failure policy.
+    if opts.publish_only {
+        publish_only::credential_preflight_gate(&ctx, opts.dry_run, opts.no_preflight, &log)?;
+    }
+
+    // Every mode below routes its outcome through the in-process failure
+    // policy (`release.on_failure`): on a pipeline failure the binary
+    // itself decides rollback vs hold instead of leaving a summary for a
+    // workflow-side `if:` chain to act on.
+    let result = dispatch_release_modes(&mut ctx, &config, &opts, &log);
+    failure_policy::finish(&ctx, &opts, &log, result)
+}
+
+/// Run the selected release mode (publish-only / announce-only / split /
+/// merge / full pipeline). Split out of [`run`] so the caller can route
+/// every mode's failure through [`failure_policy::finish`] uniformly,
+/// while the zero-mutation preflight gates stay outside that boundary.
+fn dispatch_release_modes(
+    ctx: &mut Context,
+    config: &Config,
+    opts: &ReleaseOpts,
+    log: &StageLogger,
+) -> Result<()> {
     if opts.publish_only {
         // --publish-only consumes the preserved dist tree (artifacts.json /
         // context.json) rather than git tags-at-HEAD. Crate selection comes
@@ -374,8 +433,6 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         let dist = config.dist.clone();
         let run_opts = publish_only::RunOpts {
             dry_run: opts.dry_run,
-            no_preflight: opts.no_preflight,
-            silent_meta: false,
         };
         // When --crate is given, prefer the matching per-crate dist
         // subdir (`dist/<crate>/`) when one exists so the publish reads
@@ -387,11 +444,11 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             let with_subdir: Vec<String> = opts
                 .crate_names
                 .iter()
-                .filter(|name| publish_only::crate_subdir_has_manifest(&dist, name, &log))
+                .filter(|name| publish_only::crate_subdir_has_manifest(&dist, name, log))
                 .cloned()
                 .collect();
             if with_subdir.is_empty() {
-                return publish_only::run(&mut ctx, &config, &log, run_opts);
+                return publish_only::run(ctx, config, log, run_opts);
             }
             // Fail closed on a partial match. When SOME requested crates
             // have a per-crate subdir and some don't, silently publishing
@@ -423,28 +480,28 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
                     with_subdir.join(", "),
                 );
             }
-            let all_known = flatten_known_crates(&config);
+            let all_known = flatten_known_crates(config);
             let sorted = topo_sort_selected(&all_known, &with_subdir);
             let order = if sorted.is_empty() {
                 with_subdir
             } else {
                 sorted
             };
-            return publish_only::run_per_crate(&mut ctx, &config, &log, run_opts, dist, order);
+            return publish_only::run_per_crate(ctx, config, log, run_opts, dist, order);
         }
         // Detect layout and dispatch.
-        match publish_only::detect_dist_layout(&dist, &log)? {
+        match publish_only::detect_dist_layout(&dist, log)? {
             publish_only::DistLayout::Flat => {
-                return publish_only::run(&mut ctx, &config, &log, run_opts);
+                return publish_only::run(ctx, config, log, run_opts);
             }
             publish_only::DistLayout::PerCrate(subdirs) => {
                 // Topo-sort discovered crate names so depends_on ordering
                 // is respected. Fall back to alphabetical when none of the
                 // discovered names match any configured crate.
-                let all_known = flatten_known_crates(&config);
+                let all_known = flatten_known_crates(config);
                 let sorted = topo_sort_selected(&all_known, &subdirs);
                 let order = if sorted.is_empty() { subdirs } else { sorted };
-                return publish_only::run_per_crate(&mut ctx, &config, &log, run_opts, dist, order);
+                return publish_only::run_per_crate(ctx, config, log, run_opts, dist, order);
             }
             publish_only::DistLayout::Ambiguous { crate_subdirs } => {
                 anyhow::bail!(
@@ -460,26 +517,26 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     }
 
     if opts.announce_only {
-        return announce_only::run(&mut ctx, &config, &log, opts.dry_run);
+        return announce_only::run(ctx, config, log, opts.dry_run);
     }
 
     if opts.split {
-        return split::run_split(&mut ctx, &config, &log);
+        return split::run_split(ctx, config, log);
     }
 
     if opts.merge {
-        return split::run_merge(&mut ctx, &config, &log, opts.dry_run, None);
+        return split::run_merge(ctx, config, log, opts.dry_run, None);
     }
 
     let p = pipeline::build_release_pipeline();
-    let result = p.run(&mut ctx, &log);
+    let result = p.run(ctx, log);
 
     if result.is_ok() {
-        run_post_pipeline(&mut ctx, &config, opts.dry_run, &log)?;
+        run_post_pipeline(ctx, config, opts.dry_run, log)?;
     }
 
     if result.is_ok() {
-        gate_required_failures(&ctx)?;
+        gate_required_failures(ctx)?;
     }
 
     result
@@ -701,7 +758,7 @@ fn map_head_tags_to_crates(
         log.verbose("no tags at HEAD — release no-op");
         return Ok(Vec::new());
     }
-    log.verbose(&format!("tags at HEAD: {}", head_tags.join(", ")));
+    log.verbose(&format!("tags at HEAD = {}", head_tags.join(", ")));
     Ok(select_crates_for_tags(&head_tags, all_known_crates, log))
 }
 
@@ -1211,7 +1268,7 @@ fn apply_nightly_template_vars(
     // `IsNightly` must be set first so `version_template`, `tag_name`,
     // and `name_template` can all branch on `{{ if .IsNightly }}…{{ end }}`
     // when rendered below.
-    ctx.template_vars_mut().set("IsNightly", "true");
+    ctx.template_vars_mut().set_bool("IsNightly", true);
 
     // Default: `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"`
     // — bumps the patch component and embeds the commit SHA so two nightly
@@ -1264,7 +1321,7 @@ fn apply_nightly_template_vars(
     ctx.template_vars_mut().set("ReleaseName", &release_name);
 
     log.verbose(&format!(
-        "nightly: version={}, tag={}, name={}",
+        "nightly version={}, tag={}, name={}",
         nightly_version, nightly_tag, release_name
     ));
     Ok(())
@@ -1298,7 +1355,7 @@ fn apply_snapshot_template_vars(
     ctx.template_vars_mut().set("Version", &rendered_name);
     ctx.template_vars_mut().set("ReleaseName", &rendered_name);
     log.verbose(&format!(
-        "snapshot: version={}, release_name={}",
+        "snapshot version={}, release_name={}",
         rendered_name, rendered_name
     ));
     Ok(())
@@ -1322,7 +1379,7 @@ fn run_publisher_preflight(
     // Preflight probes publisher state ahead of a publish; an already-published
     // release has no pending one-way-door transitions to guard against.
     if opts.announce_only {
-        log.status("preflight skipped: --announce-only does not publish");
+        log.status("skipping preflight (--announce-only does not publish)");
         return Ok(false);
     }
     let should_run_preflight = should_run_preflight_auto(
@@ -1339,7 +1396,7 @@ fn run_publisher_preflight(
 
     let report = anodizer_stage_publish::preflight::run_preflight(ctx, log)?;
     if report.entries.is_empty() {
-        log.verbose("preflight: no one-way-door publishers configured; skipping check");
+        log.verbose("no one-way-door publishers configured; skipping one-way-door preflight");
     } else {
         // Route the report through the stage logger (same channel as every
         // other status string in this function) instead of a raw `print!` so
@@ -1380,7 +1437,7 @@ fn run_publisher_preflight(
         );
     }
     log.status(&format!(
-        "preflight: {} publisher(s) clean",
+        "preflight found {} publisher(s) clean",
         report.clean_count()
     ));
     // `--preflight` is a check-only mode: signal early-exit to the caller.
@@ -1555,7 +1612,7 @@ fn detect_changed_crates(
                 .is_some_and(|pfx| pfx.iter().any(|p| p.contains("{{")));
         if has_templates {
             log.debug(
-                "note: ignore_tags/ignore_tag_prefixes templates not rendered during \
+                "ignore_tags/ignore_tag_prefixes templates not rendered during \
                  change detection (template vars not yet available)",
             );
         }
@@ -2498,9 +2555,9 @@ mod tests {
     #[test]
     fn should_run_preflight_auto_publish_only_skips() {
         // `--publish-only` must skip the publisher-state preflight so
-        // the credential preflight (which lives inside
-        // `publish_only::run`) gets first crack at bailing before any
-        // network call.
+        // the credential gate (`publish_only::credential_preflight_gate`,
+        // run by the dispatcher right after this check) gets first crack
+        // at bailing before any network call.
         assert!(!should_run_preflight_auto(
             false, false, false, false, true, false
         ));
@@ -2783,7 +2840,10 @@ mod tests {
         let mut ctx = Context::new(config.clone(), ContextOptions::default());
         ctx.template_vars_mut().set("Version", "0.103.0");
         ctx.template_vars_mut().set("Base", "0.103.0");
-        ctx.template_vars_mut().set("NightlyBuild", "42");
+        // serde_json::Value IS tera::Value (re-export), matching production's
+        // Value::Number injection in populate_git_vars.
+        ctx.template_vars_mut()
+            .set_structured("NightlyBuild", serde_json::Value::from(42u64));
         ctx.template_vars_mut().set("ProjectName", "myproj");
         ctx.template_vars_mut().set("ShortCommit", "a1b2c3");
         apply_nightly_template_vars(&mut ctx, &config, &make_nightly_log()).unwrap();

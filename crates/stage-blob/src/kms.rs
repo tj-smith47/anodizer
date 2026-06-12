@@ -86,7 +86,18 @@ pub(crate) fn preflight_kms_cli(provider: KmsProvider) -> Result<()> {
         KmsProvider::Azure => "az",
         KmsProvider::ServerSide => return Ok(()),
     };
-    std::process::Command::new(tool)
+    preflight_kms_cli_with_binary(std::path::Path::new(tool), tool)
+}
+
+/// Path-taking sibling of [`preflight_kms_cli`]: `binary` is what gets
+/// spawned, `tool` the operator-facing CLI name for diagnostics.
+/// Production passes `Path::new(<tool>)` (PATH lookup); tests point at
+/// a nonexistent path to exercise the missing-CLI branch without
+/// clobbering the process-wide `PATH` (which would make every
+/// concurrent PATH-resolved spawn in the test binary flaky). Same seam
+/// convention as `stage-publish`'s `run_cargo_dry_run_with_binary`.
+fn preflight_kms_cli_with_binary(binary: &std::path::Path, tool: &str) -> Result<()> {
+    std::process::Command::new(binary)
         .arg("--version")
         .current_dir(anodizer_core::path_util::probe_dir())
         .stdout(std::process::Stdio::null())
@@ -357,29 +368,17 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
     fn preflight_errors_when_cli_missing() {
-        // Replace PATH with an empty temp dir (not *prepend* — that would
-        // leave a host-installed `aws` reachable later in PATH and flake).
-        // The probe spawn must then fail and surface the "not found on PATH"
-        // context. PATH is restored after the body regardless of outcome.
-        let empty = tempfile::TempDir::new().expect("temp dir");
-        let _lock = anodizer_core::test_helpers::env::env_mutex()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        let prior = std::env::var_os("PATH");
-        // SAFETY: serialised by the env mutex held above; restored below.
-        unsafe { std::env::set_var("PATH", empty.path()) };
+        // A nonexistent binary path exercises the spawn-failure branch
+        // and must surface the "not found on PATH" context. Driven
+        // through the binary-path seam: replacing the process-wide PATH
+        // instead would make every concurrent PATH-resolved spawn in
+        // this test binary flaky.
+        let tmp = tempfile::TempDir::new().expect("temp dir");
+        let missing = tmp.path().join("nonexistent-aws");
 
-        let result = preflight_kms_cli(KmsProvider::Aws);
-
-        // SAFETY: same mutex still held; restore the original PATH.
-        match prior {
-            Some(p) => unsafe { std::env::set_var("PATH", p) },
-            None => unsafe { std::env::remove_var("PATH") },
-        }
-
-        let err = result.expect_err("missing aws CLI must surface as an error");
+        let err = preflight_kms_cli_with_binary(&missing, "aws")
+            .expect_err("missing aws CLI must surface as an error");
         let msg = format!("{err:#}");
         assert!(
             msg.contains("aws") && msg.contains("PATH"),

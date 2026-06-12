@@ -86,7 +86,7 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
                 if let Some(hb_cfg) = hb_cfg.as_ref() {
                     if !crate_has_homebrew_archives(ctx, hb_cfg, crate_name) {
                         log.verbose(&format!(
-                            "homebrew: crate '{}' produced no archive artifact in this snapshot \
+                            "crate '{}' produced no archive artifact for homebrew in this snapshot \
                              shard; skipping formula schema validation",
                             crate_name
                         ));
@@ -320,7 +320,7 @@ fn validate_ruby_syntax(ruby: &str, log: &StageLogger) -> Result<Vec<SchemaFindi
             tool: "ruby",
             flags: &["-c"],
             files: &[(RUBY_TEMP_NAME, ruby)],
-            skip_message: "homebrew: ruby not on PATH; relying on the structural Ruby floor for \
+            skip_message: "ruby not on PATH — relying on the structural Ruby floor for \
                  syntax validation",
             empty_fallback: "ruby -c reported the generated Ruby invalid but emitted no parseable diagnostic",
         },

@@ -390,7 +390,7 @@ fn log_msi_dry_run(
     rendered_extensions: &[String],
 ) {
     log.status(&format!(
-        "(dry-run) would build MSI: {} (WiX {:?}) for crate {} target {:?}",
+        "(dry-run) would build MSI {} (WiX {:?}) for crate {} target {:?}",
         msi_filename, wix_version, crate_name, target
     ));
     if let Some(ts) = rendered_mod_timestamp {
@@ -404,7 +404,7 @@ fn log_msi_dry_run(
         }
     }
     for ext in rendered_extensions {
-        log.status(&format!("(dry-run) would add WiX extension: -ext {ext}"));
+        log.status(&format!("(dry-run) would add WiX extension -ext {ext}"));
     }
 }
 
@@ -497,14 +497,14 @@ fn execute_msi_build(
             }
             WixVersion::V3 => {
                 log.status(&format!(
-                    "note: mod_timestamp={ts} noted; WiX v3 has limited \
+                    "mod_timestamp={ts} noted; WiX v3 has limited \
                      timestamp support (applied to .wxs and output .msi)"
                 ));
             }
         }
     }
 
-    log.status(&format!("running: {}", commands.primary.join(" ")));
+    log.status(&format!("running {}", commands.primary.join(" ")));
     let output = Command::new(&commands.primary[0])
         .args(&commands.primary[1..])
         .output()
@@ -517,7 +517,7 @@ fn execute_msi_build(
     log.check_output(output, &commands.primary[0])?;
 
     if let Some(link_cmd) = &commands.link {
-        log.status(&format!("running: {}", link_cmd.join(" ")));
+        log.status(&format!("running {}", link_cmd.join(" ")));
         let output = Command::new(&link_cmd[0])
             .args(&link_cmd[1..])
             .output()

@@ -99,7 +99,7 @@ fn run_guard(config: &Config, repo_root: &Path, log: &StageLogger) -> Result<()>
                     checked += 1;
                     let present = results.first().map(|(_, p)| *p).unwrap_or(false);
                     if present {
-                        log.verbose(&format!("OK: {file} contains {version}"));
+                        log.verbose(&format!("{file} contains {version}"));
                     } else {
                         findings.push(format!("STALE: {file} (expected {version}, not found)"));
                     }

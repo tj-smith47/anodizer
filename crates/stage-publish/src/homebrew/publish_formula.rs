@@ -420,7 +420,7 @@ fn clone_tap_and_write_formula(
         .with_context(|| format!("homebrew: write formula {}", formula_path.display()))?;
 
     log.status(&format!(
-        "wrote Homebrew formula: {}",
+        "wrote Homebrew formula {}",
         formula_path.display()
     ));
     Ok(formula_path)
@@ -458,7 +458,7 @@ pub(crate) fn render_same_tap_cask_for_crate(
     };
     if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "homebrew cask: skipping upload for '{}' (skip_upload={})",
+            "skipping homebrew cask upload for '{}' (skip_upload={})",
             crate_name,
             cask_cfg
                 .skip_upload
@@ -506,7 +506,7 @@ fn maybe_write_cask_into_tap(
     let cask_path = casks_dir.join(format!("{}.rb", cask_result.cask_name));
     std::fs::write(&cask_path, &cask_result.content)
         .with_context(|| format!("homebrew cask: write cask file {}", cask_path.display()))?;
-    log.status(&format!("wrote Homebrew cask: {}", cask_path.display()));
+    log.status(&format!("wrote Homebrew cask {}", cask_path.display()));
 
     // Versioned alt-name files. Each emits a sibling `.rb` so users can
     // `brew install <pkg>@<version>` for a pinned/downgrade install path.
@@ -519,7 +519,7 @@ fn maybe_write_cask_into_tap(
                 alt_path.display()
             )
         })?;
-        log.status(&format!("wrote Homebrew cask: {}", alt_path.display()));
+        log.status(&format!("wrote Homebrew cask {}", alt_path.display()));
         versioned_paths.push(alt_path);
     }
 
@@ -598,7 +598,7 @@ fn commit_files_to_tap(
         }
         crate::util::CommitOutcome::NoChanges => {
             log.status(&format!(
-                "homebrew: nothing to push, formula for '{}' already up to date",
+                "nothing to push, homebrew formula for '{}' already up to date",
                 ident.formula_name
             ));
         }
@@ -700,7 +700,7 @@ pub(crate) fn render_homebrew_formula_for_crate(
 
     if crate::util::should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "homebrew: skipping upload for '{}' (skip_upload={})",
+            "skipping homebrew upload for '{}' (skip_upload={})",
             crate_name,
             hb_cfg
                 .skip_upload
@@ -718,7 +718,7 @@ pub(crate) fn render_homebrew_formula_for_crate(
     )?;
     if !proceed {
         log.status(&format!(
-            "homebrew: skipping '{}' — `if` condition evaluated falsy",
+            "skipping homebrew for '{}' — `if` condition evaluated falsy",
             crate_name
         ));
         return Ok(None);
@@ -834,7 +834,7 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
 
     if crate::util::should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "homebrew: skipping upload for '{}' (skip_upload={})",
+            "skipping homebrew upload for '{}' (skip_upload={})",
             crate_name,
             hb_cfg
                 .skip_upload
@@ -852,7 +852,7 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
     )?;
     if !proceed {
         log.status(&format!(
-            "homebrew: skipping '{}' — `if` condition evaluated falsy",
+            "skipping homebrew for '{}' — `if` condition evaluated falsy",
             crate_name
         ));
         return Ok(false);

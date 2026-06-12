@@ -1859,6 +1859,12 @@ fn v2_digest_log_split_emits_images_and_digest_as_separate_fields() {
 
     // Both fields are independently addressable: a log scraper can match
     // `images=…` and `digest=…` without splitting on `@`.
+    assert_eq!(
+        line,
+        "created images — images=ghcr.io/owner/app:v1.0.0,ghcr.io/owner/app:latest \
+         digest=sha256:deadbeef",
+        "log line should lead verb-led and expose both kv fields",
+    );
     assert!(
         line.contains("images=ghcr.io/owner/app:v1.0.0,ghcr.io/owner/app:latest"),
         "log line should expose `images=` field with comma-joined tags: {line}",

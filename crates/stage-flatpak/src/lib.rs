@@ -502,7 +502,7 @@ fn stage_work_dir(
 fn run_flatpak_job(job: &FlatpakJob, verbosity: anodizer_core::log::Verbosity) -> Result<Artifact> {
     let thread_log = anodizer_core::log::StageLogger::new("flatpak", verbosity);
 
-    thread_log.status(&format!("running: {}", job.builder_args.join(" ")));
+    thread_log.status(&format!("running {}", job.builder_args.join(" ")));
     let output = Command::new(&job.builder_args[0])
         .args(&job.builder_args[1..])
         .current_dir(&job.work_dir)
@@ -515,7 +515,7 @@ fn run_flatpak_job(job: &FlatpakJob, verbosity: anodizer_core::log::Verbosity) -
         })?;
     thread_log.check_output(output, "flatpak-builder")?;
 
-    thread_log.status(&format!("running: {}", job.bundle_args.join(" ")));
+    thread_log.status(&format!("running {}", job.bundle_args.join(" ")));
     let output = Command::new(&job.bundle_args[0])
         .args(&job.bundle_args[1..])
         .current_dir(&job.work_dir)
@@ -870,6 +870,38 @@ impl Stage for FlatpakStage {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+/// Environment requirements for the flatpak stage: `flatpak-builder` and
+/// `flatpak` (build-bundle) when any active `flatpaks:` entry exists and
+/// the configured build targets include Linux (the stage only bundles
+/// linux binaries).
+pub fn env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    if !anodizer_core::env_preflight::configured_build_targets(ctx)
+        .iter()
+        .any(|t| anodizer_core::target::is_linux(t))
+    {
+        return Vec::new();
+    }
+    let configured = anodizer_core::env_preflight::crate_universe(&ctx.config)
+        .into_iter()
+        .flat_map(|c| c.flatpaks.iter().flatten())
+        .any(|cfg| {
+            !anodizer_core::env_preflight::entry_inactive(ctx, cfg.skip.as_ref(), None, None)
+        });
+    if !configured {
+        return Vec::new();
+    }
+    vec![
+        anodizer_core::EnvRequirement::Tool {
+            name: "flatpak-builder".to_string(),
+        },
+        anodizer_core::EnvRequirement::Tool {
+            name: "flatpak".to_string(),
+        },
+    ]
+}
 
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]

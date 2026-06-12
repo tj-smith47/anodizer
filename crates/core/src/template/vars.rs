@@ -41,23 +41,42 @@ impl TemplateVars {
     }
 
     pub fn set(&mut self, key: &str, value: &str) {
+        // A key must never live in both the string and structured maps: the
+        // structured map wins at Tera-context build time, so a stale
+        // structured entry would silently shadow this write (e.g. a test
+        // overriding `IsSnapshot` on a fully-constructed `Context`).
+        self.structured.remove(key);
         self.vars.insert(key.to_string(), value.to_string());
     }
 
-    /// Remove a regular template variable. Returns `true` if the key was
-    /// present. Use when a value is logically *undefined* for downstream
-    /// renders — distinct from `set(key, "")` which keeps the key with an
-    /// empty string. Strict-mode template rendering can distinguish defined-
-    /// empty from undefined; the latter is the correct shape for per-config
-    /// vars (e.g. `BaseImage`) that should not bleed across iterations.
-    pub fn unset(&mut self, key: &str) -> bool {
-        self.vars.remove(key).is_some()
+    /// Set a boolean template variable as a real `tera::Value::Bool` so that
+    /// `{% if Var %}` / `not Var` / `and` / `or` evaluate it as a bool while
+    /// `{{ Var }}` interpolation still renders `"true"` / `"false"`.
+    pub fn set_bool(&mut self, key: &str, value: bool) {
+        self.set_structured(key, Value::Bool(value));
     }
 
-    /// Remove a structured (non-string) template variable. Mirrors `unset`
-    /// for the structured map. Returns `true` if the key was present.
+    /// Remove a template variable. Returns `true` if the key was present.
+    /// Use when a value is logically *undefined* for downstream renders —
+    /// distinct from `set(key, "")` which keeps the key with an empty
+    /// string. Strict-mode template rendering can distinguish defined-
+    /// empty from undefined; the latter is the correct shape for per-config
+    /// vars (e.g. `BaseImage`) that should not bleed across iterations.
+    ///
+    /// Removes from both the string and structured maps so "unset" means
+    /// gone regardless of which setter last owned the key — same
+    /// one-map-per-key invariant the setters enforce.
+    pub fn unset(&mut self, key: &str) -> bool {
+        let in_vars = self.vars.remove(key).is_some();
+        let in_structured = self.structured.remove(key).is_some();
+        in_vars || in_structured
+    }
+
+    /// Remove a structured (non-string) template variable. Alias of
+    /// [`unset`](Self::unset) kept for call-site clarity; both removers
+    /// clear the key from every map.
     pub fn unset_structured(&mut self, key: &str) -> bool {
-        self.structured.remove(key).is_some()
+        self.unset(key)
     }
 
     pub fn get(&self, key: &str) -> Option<&String> {
@@ -96,6 +115,9 @@ impl TemplateVars {
     /// Used for complex types like arrays of maps (`Artifacts`) or nested maps
     /// (`Metadata`) that cannot be represented as flat key=value strings.
     pub fn set_structured(&mut self, key: &str, value: Value) {
+        // Mirror of `set`: evict any string-map entry so a key can never
+        // resolve differently depending on which map a reader consults.
+        self.vars.remove(key);
         self.structured.insert(key.to_string(), value);
     }
 
@@ -188,6 +210,68 @@ pub fn clear_per_artifact_vars(tv: &mut TemplateVars) {
 /// correctly. Without this, they would be strings and `"1" != 1`.
 pub(super) const NUMERIC_FIELDS: &[&str] =
     &["Major", "Minor", "Patch", "Timestamp", "CommitTimestamp"];
+
+/// Template variables anodizer injects as real `tera::Value::Bool` values.
+/// `{% if Var %}` / `not Var` evaluate them as bools; `{{ Var }}` renders
+/// `"true"` / `"false"`. Comparing one to a quoted string (`Var == "false"`)
+/// never matches — Tera does not coerce `Bool` ↔ `str` — so such compares
+/// are rejected by [`find_stale_typed_compare`].
+pub const BOOL_FIELDS: &[&str] = &[
+    "IsSnapshot",
+    "IsNightly",
+    "IsHarness",
+    "IsDraft",
+    "IsRelease",
+    "IsSingleTarget",
+    "IsMerging",
+    "IsGitDirty",
+    "IsGitClean",
+    "IsPrepare",
+];
+
+/// Typed (non-string) injected fields beyond the bools: `NightlyBuild` is a
+/// `tera::Value::Number`, so string compares against it never match either.
+const TYPED_NON_STRING_FIELDS: &[&str] = &["NightlyBuild"];
+
+/// Regex matching a quoted-string comparison against one of the typed
+/// (bool / number) injected fields, in either Tera infix form
+/// (`IsSnapshot == "false"`, `"true" != .IsHarness`) or Go template form
+/// (`eq .IsSnapshot "false"`, `ne "true" .IsNightly`). Built lazily from
+/// `BOOL_FIELDS` + `TYPED_NON_STRING_FIELDS` so the lint can never drift
+/// from the injection list.
+static STALE_TYPED_COMPARE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    let names = BOOL_FIELDS
+        .iter()
+        .chain(TYPED_NON_STRING_FIELDS)
+        .copied()
+        .collect::<Vec<_>>()
+        .join("|");
+    let var = format!(r"\.?(?:{names})\b");
+    let quoted = r#"(?:"[^"]*"|'[^']*')"#;
+    // The leading `(?:^|[^\w.])` boundary keeps namespaced user vars that
+    // merely share a suffix (`Var.IsSnapshot`) from matching; the offending
+    // snippet itself is capture group 1.
+    crate::util::static_regex(&format!(
+        r"(?:^|[^\w.])({var}\s*(?:==|!=)\s*{quoted}|{quoted}\s*(?:==|!=)\s*{var}|(?:eq|ne)\s+(?:{var}\s+{quoted}|{quoted}\s+{var}))"
+    ))
+});
+
+/// Detect a quoted-string comparison against a typed (bool / number)
+/// injected template variable, returning the offending snippet.
+///
+/// `IsSnapshot` and friends are real bools in the Tera context, so
+/// `IsSnapshot == "false"` evaluates to `false` in *every* mode and the
+/// guarded stage silently skips. Configs migrated from the era when these
+/// were strings (or written against Go template semantics) carry exactly
+/// this pattern; rejecting it loudly at evaluation time converts a silent
+/// mis-skip into an actionable error. Write `IsSnapshot` / `not IsSnapshot`
+/// (or a numeric compare for `NightlyBuild`) instead.
+pub fn find_stale_typed_compare(template: &str) -> Option<&str> {
+    STALE_TYPED_COMPARE_RE
+        .captures(template)
+        .and_then(|c| c.get(1))
+        .map(|m| m.as_str())
+}
 
 /// Regex matching `Env.VARNAME` references in a preprocessed template.
 /// Used to discover env var keys referenced by the template so they can be

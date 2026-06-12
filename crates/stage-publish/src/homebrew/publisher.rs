@@ -134,7 +134,7 @@ fn collect_run_targets(ctx: &Context) -> Vec<HomebrewTarget> {
 /// substring an operator scans the log for.
 pub(crate) fn run_start_message(selected_total: usize) -> String {
     format!(
-        "homebrew: starting publish for {} selected crate(s)",
+        "starting homebrew publish for {} selected crate(s)",
         selected_total
     )
 }
@@ -144,7 +144,7 @@ pub(crate) fn run_start_message(selected_total: usize) -> String {
 /// why a per-crate publish was a no-op rather than guess from a blank log.
 pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
     format!(
-        "homebrew: skipping crate '{}' — no homebrew config block",
+        "skipping homebrew for crate '{}' — no homebrew config block",
         crate_name
     )
 }
@@ -154,7 +154,7 @@ pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
 /// specific crate in the log so multi-crate workspaces are
 /// disambiguatable.
 pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
-    format!("homebrew: starting per-crate publish for '{}'", crate_name)
+    format!("starting per-crate homebrew publish for '{}'", crate_name)
 }
 
 /// Final summary emitted at publisher exit. `processed` is the count of
@@ -163,7 +163,10 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 /// skip paths for skip_upload/dry-run/etc., each of which logs its own
 /// status line).
 pub(crate) fn run_done_message(processed: usize) -> String {
-    format!("homebrew: completed — {} crate(s) processed", processed)
+    format!(
+        "finished homebrew publish — {} crate(s) processed",
+        processed
+    )
 }
 
 /// Decision predicate for the no-eligible-crates warning. True when the
@@ -198,7 +201,7 @@ pub(crate) fn should_warn_no_eligible(processed: usize, selected_len: usize) -> 
 /// pushed.
 pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     format!(
-        "homebrew: registered but 0 of {} effective crate(s) had a homebrew \
+        "homebrew publisher registered but 0 of {} effective crate(s) had a homebrew \
          config block — nothing pushed. Check that --crate / --all selects a \
          crate whose publish.homebrew block is set.",
         selected_total
@@ -228,6 +231,44 @@ impl anodizer_core::Publisher for HomebrewPublisher {
 
     fn retain_on_rollback(&self) -> bool {
         Self::resolved_retain_on_rollback(self)
+    }
+
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        let mut out = Vec::new();
+        let formula_repos = anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.homebrew.as_ref())
+            .filter(|h| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    None,
+                    h.skip_upload.as_ref(),
+                    h.if_condition.as_deref(),
+                )
+            })
+            .map(|h| h.repository.as_ref());
+        let cask_repos = ctx
+            .config
+            .homebrew_casks
+            .iter()
+            .flatten()
+            .filter(|c| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    None,
+                    c.skip_upload.as_ref(),
+                    c.if_condition.as_deref(),
+                )
+            })
+            .map(|c| c.repository.as_ref());
+        for repo in formula_repos.chain(cask_repos) {
+            out.extend(crate::publisher_helpers::git_repo_requirements(
+                ctx,
+                repo,
+                Some("HOMEBREW_TAP_TOKEN"),
+            ));
+        }
+        out
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
@@ -373,7 +414,7 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         let (reverted, failed) =
             run_revert_targets_parallel(&prepared, "homebrew", Some(env_hint), &log);
         log.status(&format!(
-            "homebrew: reverted {} tap(s), {} failure(s)",
+            "homebrew rollback reverted {} tap(s), {} failure(s)",
             reverted, failed
         ));
         Ok(())
@@ -645,40 +686,41 @@ mod publisher_tests {
     #[test]
     fn run_start_message_names_selected_total() {
         let msg = run_start_message(3);
-        assert!(msg.starts_with("homebrew:"), "{msg}");
-        assert!(msg.contains("starting publish"), "{msg}");
+        assert!(msg.starts_with("starting homebrew publish for"), "{msg}");
         assert!(msg.contains("3 selected"), "{msg}");
     }
 
     #[test]
     fn run_skip_unconfigured_message_names_crate() {
         let msg = run_skip_unconfigured_message("demo");
-        assert!(msg.starts_with("homebrew:"), "{msg}");
-        assert!(msg.contains("skipping crate 'demo'"), "{msg}");
+        assert!(
+            msg.starts_with("skipping homebrew for crate 'demo'"),
+            "{msg}"
+        );
         assert!(msg.contains("no homebrew config block"), "{msg}");
     }
 
     #[test]
     fn run_per_crate_start_message_names_crate() {
         let msg = run_per_crate_start_message("demo");
-        assert!(msg.starts_with("homebrew:"), "{msg}");
-        assert!(msg.contains("starting per-crate publish"), "{msg}");
+        assert!(
+            msg.starts_with("starting per-crate homebrew publish"),
+            "{msg}"
+        );
         assert!(msg.contains("'demo'"), "{msg}");
     }
 
     #[test]
     fn run_done_message_reports_processed_count() {
         let msg = run_done_message(2);
-        assert!(msg.starts_with("homebrew:"), "{msg}");
-        assert!(msg.contains("completed"), "{msg}");
+        assert!(msg.starts_with("finished homebrew publish"), "{msg}");
         assert!(msg.contains("2 crate(s) processed"), "{msg}");
     }
 
     #[test]
     fn run_no_eligible_crates_warning_names_remediation() {
         let msg = run_no_eligible_crates_warning(5);
-        assert!(msg.starts_with("homebrew:"), "{msg}");
-        assert!(msg.contains("registered"), "{msg}");
+        assert!(msg.starts_with("homebrew publisher registered"), "{msg}");
         assert!(msg.contains("0 of 5 effective"), "{msg}");
         assert!(msg.contains("nothing pushed"), "{msg}");
         assert!(msg.contains("--crate"), "{msg}");

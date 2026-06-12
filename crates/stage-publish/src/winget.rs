@@ -533,7 +533,7 @@ fn resolve_winget_publisher_name<'a>(
                 );
             }
             log.warn(&format!(
-                "winget: publisher not explicitly set for '{}'; falling back to repo owner '{}'",
+                "winget publisher not explicitly set for '{}'; falling back to repo owner '{}'",
                 crate_name, repo_owner
             ));
             Ok(repo_owner)
@@ -1453,7 +1453,7 @@ fn submit_winget_manifests(
         }
         util::CommitOutcome::NoChanges => {
             log.status(&format!(
-                "winget: nothing to push, manifest for '{}' already up to date",
+                "nothing to push, winget manifest for '{}' already up to date",
                 package_id
             ));
         }
@@ -1620,11 +1620,11 @@ fn collect_winget_target(
 
 /// Message emitted at publisher entry. Names how many crates the publisher
 /// is iterating over. Factored into a helper so tests can pin the exact
-/// substring an operator scans the log for ("winget: starting publish
+/// substring an operator scans the log for ("starting winget publish
 /// for ...").
 pub(crate) fn run_start_message(selected_total: usize) -> String {
     format!(
-        "winget: starting publish for {} selected crate(s)",
+        "starting winget publish for {} selected crate(s)",
         selected_total
     )
 }
@@ -1635,7 +1635,7 @@ pub(crate) fn run_start_message(selected_total: usize) -> String {
 /// log.
 pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
     format!(
-        "winget: skipping crate '{}' — no winget config block",
+        "skipping winget for crate '{}' — no winget config block",
         crate_name
     )
 }
@@ -1645,7 +1645,7 @@ pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
 /// PR submission) to a specific crate in the log so multi-crate
 /// workspaces are disambiguatable.
 pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
-    format!("winget: starting per-crate publish for '{}'", crate_name)
+    format!("starting per-crate winget publish for '{}'", crate_name)
 }
 
 /// Final summary emitted at publisher exit. `processed` is the count of
@@ -1654,7 +1654,7 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 /// paths for skip_upload/dry-run/etc., each of which logs its own status
 /// line, and the gh CLI submission helper logs its own success/warn).
 pub(crate) fn run_done_message(processed: usize) -> String {
-    format!("winget: completed — {} crate(s) processed", processed)
+    format!("finished winget publish — {} crate(s) processed", processed)
 }
 
 /// Warning emitted when the publisher was registered (at least one
@@ -1671,7 +1671,7 @@ pub(crate) fn run_done_message(processed: usize) -> String {
 /// pushed.
 pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     format!(
-        "winget: registered but 0 of {} effective crate(s) had a winget \
+        "winget publisher registered but 0 of {} effective crate(s) had a winget \
          config block — nothing pushed. Check that --crate / --all selects a \
          crate whose publish.winget block is set.",
         selected_total
@@ -1698,6 +1698,28 @@ impl anodizer_core::Publisher for WingetPublisher {
 
     fn retain_on_rollback(&self) -> bool {
         Self::resolved_retain_on_rollback(self)
+    }
+
+    fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.winget.as_ref())
+            .filter(|w| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    None,
+                    w.skip_upload.as_ref(),
+                    w.if_condition.as_deref(),
+                )
+            })
+            .flat_map(|w| {
+                crate::publisher_helpers::git_repo_requirements(
+                    ctx,
+                    w.repository.as_ref(),
+                    Some("WINGET_PKGS_TOKEN"),
+                )
+            })
+            .collect()
     }
 
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
@@ -1776,7 +1798,7 @@ impl anodizer_core::Publisher for WingetPublisher {
         // and close the PR manually.
         for t in &targets {
             log.warn(&format!(
-                "winget: manual PR closure required for '{}' version '{}'; \
+                "manual winget PR closure required for '{}' version '{}'; \
                  visit https://github.com/{}/{}/pulls?q=is%3Apr+head%3A{}%3A{} \
                  and close the PR (winget validation cannot be reliably \
                  cancelled programmatically mid-flight)",
@@ -1784,7 +1806,7 @@ impl anodizer_core::Publisher for WingetPublisher {
             ));
         }
         log.status(&format!(
-            "winget: {} PR(s) require manual closure",
+            "{} winget PR(s) require manual closure",
             targets.len()
         ));
         Ok(())
@@ -2189,40 +2211,38 @@ mod publisher_tests {
     #[test]
     fn run_start_message_names_selected_total() {
         let msg = run_start_message(3);
-        assert!(msg.starts_with("winget:"), "{msg}");
-        assert!(msg.contains("starting publish"), "{msg}");
+        assert!(msg.starts_with("starting winget publish for"), "{msg}");
         assert!(msg.contains("3 selected"), "{msg}");
     }
 
     #[test]
     fn run_skip_unconfigured_message_names_crate() {
         let msg = run_skip_unconfigured_message("demo");
-        assert!(msg.starts_with("winget:"), "{msg}");
-        assert!(msg.contains("skipping crate 'demo'"), "{msg}");
+        assert!(msg.starts_with("skipping winget for crate 'demo'"), "{msg}");
         assert!(msg.contains("no winget config block"), "{msg}");
     }
 
     #[test]
     fn run_per_crate_start_message_names_crate() {
         let msg = run_per_crate_start_message("demo");
-        assert!(msg.starts_with("winget:"), "{msg}");
-        assert!(msg.contains("starting per-crate publish"), "{msg}");
+        assert!(
+            msg.starts_with("starting per-crate winget publish"),
+            "{msg}"
+        );
         assert!(msg.contains("'demo'"), "{msg}");
     }
 
     #[test]
     fn run_done_message_reports_processed_count() {
         let msg = run_done_message(2);
-        assert!(msg.starts_with("winget:"), "{msg}");
-        assert!(msg.contains("completed"), "{msg}");
+        assert!(msg.starts_with("finished winget publish"), "{msg}");
         assert!(msg.contains("2 crate(s) processed"), "{msg}");
     }
 
     #[test]
     fn run_no_eligible_crates_warning_names_remediation() {
         let msg = run_no_eligible_crates_warning(5);
-        assert!(msg.starts_with("winget:"), "{msg}");
-        assert!(msg.contains("registered"), "{msg}");
+        assert!(msg.starts_with("winget publisher registered"), "{msg}");
         assert!(msg.contains("0 of 5 effective"), "{msg}");
         assert!(msg.contains("nothing pushed"), "{msg}");
         // The warning must point the operator at the remediation surface
@@ -2238,7 +2258,7 @@ mod publisher_tests {
         // The warn helper must not panic or omit the remediation text in
         // this shape.
         let msg = run_no_eligible_crates_warning(0);
-        assert!(msg.starts_with("winget:"), "{msg}");
+        assert!(msg.starts_with("winget publisher registered"), "{msg}");
         assert!(msg.contains("0 of 0 effective"), "{msg}");
         assert!(msg.contains("nothing pushed"), "{msg}");
         assert!(msg.contains("--crate"), "{msg}");

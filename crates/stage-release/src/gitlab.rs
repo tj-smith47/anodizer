@@ -998,7 +998,7 @@ pub(crate) fn run_gitlab_backend(
                 let file_name = result
                     .context("gitlab: upload task panicked")?
                     .context("gitlab: upload task failed")?;
-                log.verbose(&format!("uploaded artifact: {}", file_name));
+                log.verbose(&format!("uploaded artifact {}", file_name));
             }
         }
 

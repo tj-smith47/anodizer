@@ -17,6 +17,7 @@ This guide walks through:
 - The three publisher groups (Assets / Manager / Submitter) and why dispatch order matters.
 - The Submitter gate that prevents irreversible publishers from firing after a required failure.
 - The `--rollback` flag and per-publisher rollback shapes.
+- `release.on_failure` — the in-process policy that rolls back (or holds) the tag and version bump when a run fails, with no workflow-side steps.
 - `--fail-fast` and how it differs from the default collect-then-decide behavior.
 - `--rollback-only --from-run=<id>` for replaying rollback against a prior run report.
 - `--summary-json=<path>` for capturing the audit trail.
@@ -229,6 +230,79 @@ ending up with a consistent set of Assets even if one Manager publisher
 hiccups. Use `--fail-fast` only when you want loud diagnostics and have a
 human ready to retry.
 
+## `release.on_failure` — the in-process failure policy
+
+When a `release` / `release --publish-only` / `release --merge` run fails,
+the binary itself decides what happens next — no summary-parsing `if:` chain
+is needed in workflow YAML:
+
+```yaml
+release:
+  on_failure: rollback   # rollback | hold; default rollback
+```
+
+| Value | Behavior on a pipeline failure |
+|---|---|
+| `rollback` | Deletes the run's release tag(s) and reverts the version-bump commit — the same execution path as `anodizer tag rollback` — so the same version can be re-cut after the fix lands. |
+| `hold` | Leaves tags, commits, and published state in place for forensics. Exit is still nonzero; recover with `release --rollback-only --from-run=<id>` and/or `tag rollback` once investigated. |
+
+This policy operates on the git-level state (`tag` + bump commit). It is
+independent of the per-publisher [`--rollback`](#the-rollback-flag)
+machinery, which unwinds individual publishers' uploads inside the publish
+stage and runs first either way.
+
+### Automatic degrade past one-way doors
+
+`rollback` degrades to `hold` the moment ANY one-way-door (Submitter-group)
+publisher has landed — regardless of config. crates.io, chocolatey, winget,
+snapcraft and friends never accept the same version twice: the version is
+burned, deleting the tag could only orphan the live published state, and
+fix-forward is the only path. The degrade message names the publishers that
+burned the version:
+
+```
+[failure-policy] ⚠ on_failure=rollback DEGRADED to hold: one-way-door
+publisher(s) already accepted this version: cargo, chocolatey. ...
+Fix forward: keep the tag, revert reversible publishers with
+`anodizer release --rollback-only --from-run=<id>` if needed, repair the
+failure, and cut the NEXT version.
+```
+
+The evidence comes from the run's own summaries — every
+`dist/run-*/summary.json` plus `dist/<crate>/run-*/summary.json`, so a crate
+that published irreversibly before a later crate failed (per-crate workspace
+mode) still degrades the whole run. The shared `tag rollback` path keeps its
+own published-state guard as a second layer: it additionally probes the
+GitHub Releases API for tags with no local summary, which is what protects
+re-publish runs of an already-live release.
+
+### Scope and recording
+
+The policy is a root-level `release:` setting: in workspace configs
+(lockstep or per-crate) the top-level `release.on_failure` governs the whole
+run, and setting it in a crate-level `release:` block is a config-load
+error. It does not fire for `--dry-run`, `--snapshot`, `--prepare`, `--split`,
+`--announce-only`, `--rollback-only`, or `--preflight` — none of those may
+destroy release state.
+
+Whichever path runs is recorded in the run summary so the audit artifact
+states how the failure was handled:
+
+```json
+"failure_policy": {
+  "configured": "rollback",
+  "action": "held",
+  "degraded": true,
+  "burned_publishers": ["cargo"]
+}
+```
+
+`action` is `rolled-back`, `held`, or `rollback-failed` (rollback was
+attempted but refused or errored — state is effectively held; the error text
+lands in `rollback_error`). A killed run (SIGKILL, runner eviction) cannot
+execute its own policy; the per-publisher summary snapshots persisted during
+dispatch are the forensics trail for manual recovery in that case.
+
 ## `--rollback-only --from-run=<id>`
 
 Anodizer writes a structured run report to `dist/run-<id>/report.json` after
@@ -251,9 +325,14 @@ The replay path uses the same code that drives the rollback step inside
 unwound. Submitter publishers print the same warn-only diagnostics they would
 have written during the original run.
 
-## `--summary-json=<path>`
+## The run summary (`--summary-json=<path>`)
 
-Captures the audit trail of a run as a single JSON document:
+Every real release (non-snapshot, non-dry-run) writes the audit trail of the
+run to `<dist>/run-<id>/summary.json` — including when a stage fails, so a
+failed run always leaves machine-readable publish state for recovery tooling
+to inspect before anything destructive (like a tag rollback) fires.
+`--summary-json=<path>` redirects the document to an explicit path (and is
+honored in every mode, including `--snapshot` / `--dry-run`):
 
 ```bash
 anodizer release --summary-json=dist/run-summary.json
@@ -268,6 +347,9 @@ Shape:
   "tag": "v0.2.1",
   "submitter_gated": false,
   "announce_gated": false,
+  "publishers_succeeded": 1,
+  "publishers_failed": 1,
+  "irreversibly_published": false,
   "results": [
     {
       "name": "github-release",
@@ -292,6 +374,49 @@ CI consumers can diff this between runs to spot regressions in publisher
 reliability without parsing log output. `schema_version` is bumped on any
 breaking shape change; `#[serde(deny_unknown_fields)]` on the producer side
 keeps drift loud.
+
+`publishers_succeeded` / `publishers_failed` count outcomes that left durable
+published state (respectively, a `failed` outcome).
+`irreversibly_published` is the recovery verdict: `true` when any
+Submitter-group publisher's publish landed. Submitter targets (crates.io,
+chocolatey, winget, snapcraft, ...) never accept the same version twice, so
+once it flips the version is burned — a tag rollback can only orphan the live
+release, never enable a clean same-version re-cut. Even a `rolled-back`
+Submitter counts: `cargo yank` withdraws the artifact but does not reopen the
+version slot. Reversible publishers (release assets, blobs, tap/bucket/index
+commits) never set it; their state is deletable and the same version can be
+re-cut, so rollback stays available after they succeed.
+
+Recovery tooling consumes the flag at two layers — both in-process by
+default:
+
+```bash
+# 1. The release run itself: the in-process `release.on_failure` policy
+#    degrades rollback to hold the moment the flag would flip (see above).
+
+# 2. Manual recovery: `tag rollback` reads dist/run-*/summary.json itself
+#    and refuses when the version is burned (override with --force):
+$ anodizer tag rollback
+Error: refusing to roll back — one-way-door publisher(s) already accepted these version(s):
+  v0.8.0: version burned at cargo, chocolatey
+...
+Fix forward instead: keep the tag, repair the failure, and cut the NEXT version
+```
+
+For workflows that add their own destructive recovery steps anyway, the
+anodizer-action exposes the flag as a step output to gate on:
+
+```yaml
+# Advanced — custom workflow-level recovery (not needed by default).
+# The id: on the release step is what makes steps.release.* resolvable.
+- uses: tj-smith47/anodizer-action@v1
+  id: release
+  with:
+    args: release
+
+- name: Custom recovery
+  if: always() && (steps.release.outcome == 'failure' || steps.release.outcome == 'cancelled') && steps.release.outputs.irreversibly_published != 'true'
+```
 
 ## The outcome set
 
@@ -449,12 +574,34 @@ anodizer tag rollback --no-push "$GITHUB_SHA"
 | `--no-push` | off | Mutate locally; skip the remote tag-delete and revert-commit push |
 | `--scope` | `all` | `all` (lockstep + per-crate) \| `lockstep` (`vX.Y.Z` only) \| `per-crate` (`<crate>-vX.Y.Z` only) |
 | `--mode` | `revert` | `revert` (history-preserving `git revert --no-edit`, default) \| `reset` (history-rewriting `git reset --hard <sha>~1`; requires force-push to land) |
+| `--force` | off | Override the published-state guard (below). For operators who are CERTAIN nothing irreversible shipped — e.g. offline recovery of a release that died before publish |
 | `--branch` | auto | Branch to push the revert to. Auto-resolved from `git branch -r --contains <bump_sha>` so the bump SHA itself (not "the default branch right now") drives the lookup — race-immune to default-branch movement. Falls back to `HEAD` resolution for local-only repos. Pass `--branch` to override |
 
 **SHA-derivation:** the bump SHA is the anchor for both the tag lookup AND
 the branch resolution. There is no `--default-branch` flag and no API call
 to `repos/<owner>/<repo>` — the rollback can run on a detached HEAD as long
 as the bump SHA is reachable from at least one remote branch.
+
+**Published-state guard:** before touching anything (including in
+`--dry-run`), rollback checks whether the version is already burned at a
+one-way-door publisher, by evidence strength:
+
+1. **Run summaries** (`<dist>/run-*/summary.json`, per-crate
+   `<dist>/<crate>/run-*/summary.json`) whose `tag` matches a tag being
+   rolled back. A landed Submitter-group publisher → refuse, naming the
+   publishers; only-reversible publishers → proceed.
+2. **GitHub release probe** — only for tags with NO summary on disk. A
+   published (non-draft) release → refuse. An **unanswerable probe**
+   (gh missing, auth/network error) also refuses — fail closed: with no
+   summary and no probe answer there is zero evidence the version is safe
+   to destroy. An **unresolvable `origin`** (none configured, or git
+   erroring) refuses for the same reason. The single fail-open bound: a
+   resolvable origin that is not `github.com`-shaped (GitLab, Gitea, a
+   file path, a GitHub Enterprise host) proceeds with a warning — the
+   probe targets the github.com Releases API, which cannot host a release
+   for such a remote, so run summaries are the only evidence layer there.
+
+`--force` overrides the whole guard for genuinely-offline recovery.
 
 **Safety check:** under the default `--mode=revert`, anodize hard-fails when
 non-bump commits sit between HEAD and the target SHA. (Anodize's own prior
@@ -463,22 +610,17 @@ recognised so re-runs of the same rollback are idempotent.) Use
 `--mode=reset` to force history rewrite when you genuinely want the
 intervening commits gone too.
 
-**Workflow integration:** anodizer's own `release.yml` wires this as the
-default `if: failure() || cancelled()` step on the release job:
-
-```yaml
-- name: Rollback on release failure
-  if: (failure() || cancelled()) && steps.release.outcome != 'skipped'
-  env:
-    GH_TOKEN: ${{ secrets.GH_PAT }}
-    GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-  run: anodizer tag rollback "$GITHUB_SHA"
-```
-
-The `id: release` on the release step is what makes `steps.release.outcome`
-resolvable; the `steps.release.outcome != 'skipped'` guard prevents the
-rollback from running when the release step itself was skipped (e.g.,
-`workflow_dispatch` with a `if:` that didn't match).
+**Workflow integration:** none needed. A failed `anodizer release` executes
+the same rollback path itself via the in-process
+[`release.on_failure` policy](#release-on-failure-the-in-process-failure-policy),
+already gated on the one-way-door evidence — a workflow-level rollback step
+would only race it. `tag rollback` is the **manual** recovery command: run it
+from an operator shell (or a one-off `workflow_dispatch` job) when a run was
+killed before it could execute its own policy, or when `on_failure: hold`
+deliberately left the tag in place for forensics. Workflows that still wire a
+custom destructive step must gate it on the action's `irreversibly_published`
+output (see above) so a post-publish failure never triggers automated
+destruction of a live release.
 
 `tag rollback` complements `release --rollback-only` rather than replacing
 it: use `--rollback-only` to unwind individual publisher state (reversible
@@ -540,7 +682,7 @@ anodizer release \
 | `--rollback-only` | Reads a prior run report and re-attempts rollback only. No new publishing. | n/a |
 | `--from-run=<id>` | Run id whose `dist/run-<id>/report.json` to load when using `--rollback-only`. | n/a |
 | `--allow-rerun` | DANGEROUS: force `release` to re-run publish even when a prior `dist/run-<id>/report.json` exists. PR-based publishers (homebrew/scoop/nix/krew/MCP) will open duplicate PRs. Prefer `--rollback-only --from-run=<id>` first. | off |
-| `--summary-json=<path>` | Write the per-publisher run summary JSON to this path. | unset |
+| `--summary-json=<path>` | Write the per-publisher run summary JSON to this path. | `<dist>/run-<id>/summary.json` on real releases; unset (no write) for `--snapshot` / `--dry-run` |
 
 ## `anodizer notify`
 

@@ -474,4 +474,386 @@ mod tests {
         assert!(audience_from_registry_url("   ").is_err());
         assert!(audience_from_registry_url("not-a-url").is_err());
     }
+
+    #[test]
+    fn audience_rejects_url_without_host() {
+        // `data:` URLs parse but carry no authority component, so there is
+        // no host to derive an audience claim from.
+        let err = audience_from_registry_url("data:text/plain,x")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("missing host"), "{err}");
+    }
+
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    use anodizer_core::MapEnvSource;
+    use anodizer_core::config::McpAuthMethod;
+    use anodizer_core::retry::RetryPolicy;
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder_with;
+
+    /// Tight policy so retry tests complete in milliseconds rather than the
+    /// production 10-attempt / 10s-base cascade.
+    fn fast_policy() -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: 2,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(5),
+        }
+    }
+
+    fn http_response(status_line: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn empty_env() -> Arc<MapEnvSource> {
+        Arc::new(MapEnvSource::new())
+    }
+
+    // -- NoneAuthProvider ---------------------------------------------------
+
+    #[test]
+    fn none_provider_returns_static_token_without_network() {
+        let p = NoneAuthProvider {
+            registry_url: "http://127.0.0.1:1".to_string(),
+            token: "preissued-jwt".to_string(),
+            policy: fast_policy(),
+        };
+        p.login().expect("default login is a no-op");
+        assert_eq!(p.get_token().unwrap(), "preissued-jwt");
+    }
+
+    #[test]
+    fn none_provider_exchanges_via_auth_none() {
+        let (addr, calls) = spawn_oneshot_http_responder_with(|_| {
+            vec![http_response(
+                "200 OK",
+                r#"{"registry_token":"anon-reg-jwt"}"#,
+            )]
+        });
+        let p = NoneAuthProvider {
+            // Trailing slash exercises the trim_end_matches('/') join.
+            registry_url: format!("http://{addr}/"),
+            token: String::new(),
+            policy: fast_policy(),
+        };
+        assert_eq!(p.get_token().unwrap(), "anon-reg-jwt");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn none_provider_missing_registry_token_errors() {
+        let (addr, _calls) =
+            spawn_oneshot_http_responder_with(|_| vec![http_response("200 OK", "{}")]);
+        let p = NoneAuthProvider {
+            registry_url: format!("http://{addr}"),
+            token: String::new(),
+            policy: fast_policy(),
+        };
+        let err = p.get_token().unwrap_err().to_string();
+        assert!(err.contains("missing registry_token"), "{err}");
+    }
+
+    #[test]
+    fn none_provider_unparseable_body_errors() {
+        let (addr, _calls) =
+            spawn_oneshot_http_responder_with(|_| vec![http_response("200 OK", "not-json")]);
+        let p = NoneAuthProvider {
+            registry_url: format!("http://{addr}"),
+            token: String::new(),
+            policy: fast_policy(),
+        };
+        let err = format!("{:#}", p.get_token().unwrap_err());
+        assert!(err.contains("parse anonymous token response"), "{err}");
+    }
+
+    #[test]
+    fn none_provider_4xx_fast_fails_with_status_and_body() {
+        let (addr, calls) = spawn_oneshot_http_responder_with(|_| {
+            vec![http_response(
+                "401 Unauthorized",
+                r#"{"error":"no anonymous auth here"}"#,
+            )]
+        });
+        let p = NoneAuthProvider {
+            registry_url: format!("http://{addr}"),
+            token: String::new(),
+            policy: fast_policy(),
+        };
+        let err = format!("{:#}", p.get_token().unwrap_err());
+        assert!(err.contains("HTTP 401"), "{err}");
+        assert!(err.contains("no anonymous auth here"), "{err}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "4xx must not retry");
+    }
+
+    // -- GithubAtAuthProvider -----------------------------------------------
+
+    #[test]
+    fn github_at_exchanges_config_token() {
+        let (addr, calls) = spawn_oneshot_http_responder_with(|_| {
+            vec![http_response(
+                "200 OK",
+                r#"{"registry_token":"pat-reg-jwt"}"#,
+            )]
+        });
+        let p = provider_for_with_env(
+            McpAuthMethod::Github,
+            &format!("http://{addr}/"),
+            "ghp_config_token",
+            &fast_policy(),
+            empty_env(),
+        );
+        assert_eq!(p.get_token().unwrap(), "pat-reg-jwt");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn github_at_falls_back_to_env_token() {
+        let (addr, calls) = spawn_oneshot_http_responder_with(|_| {
+            vec![http_response(
+                "200 OK",
+                r#"{"registry_token":"env-reg-jwt"}"#,
+            )]
+        });
+        let env = Arc::new(MapEnvSource::new().with("MCP_GITHUB_TOKEN", "ghp_env_token"));
+        let p = provider_for_with_env(
+            McpAuthMethod::Github,
+            &format!("http://{addr}"),
+            "",
+            &fast_policy(),
+            env,
+        );
+        assert_eq!(p.get_token().unwrap(), "env-reg-jwt");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn github_at_errors_when_no_token_anywhere() {
+        let p = provider_for_with_env(
+            McpAuthMethod::Github,
+            "http://127.0.0.1:1",
+            "",
+            &fast_policy(),
+            empty_env(),
+        );
+        let err = p.get_token().unwrap_err().to_string();
+        assert!(err.contains("MCP_GITHUB_TOKEN"), "{err}");
+        assert!(err.contains("auth.token"), "{err}");
+    }
+
+    #[test]
+    fn github_at_missing_registry_token_errors() {
+        let (addr, _calls) =
+            spawn_oneshot_http_responder_with(|_| vec![http_response("200 OK", "{}")]);
+        let p = provider_for_with_env(
+            McpAuthMethod::Github,
+            &format!("http://{addr}"),
+            "ghp_x",
+            &fast_policy(),
+            empty_env(),
+        );
+        let err = p.get_token().unwrap_err().to_string();
+        assert!(
+            err.contains("github-at response missing registry_token"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn github_at_4xx_fast_fails_with_status() {
+        let (addr, calls) = spawn_oneshot_http_responder_with(|_| {
+            vec![http_response("403 Forbidden", r#"{"error":"bad PAT"}"#)]
+        });
+        let p = provider_for_with_env(
+            McpAuthMethod::Github,
+            &format!("http://{addr}"),
+            "ghp_bad",
+            &fast_policy(),
+            empty_env(),
+        );
+        let err = format!("{:#}", p.get_token().unwrap_err());
+        assert!(err.contains("HTTP 403"), "{err}");
+        assert!(err.contains("bad PAT"), "{err}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "4xx must not retry");
+    }
+
+    // -- GithubOidcAuthProvider ---------------------------------------------
+
+    #[test]
+    fn oidc_requires_request_url_env() {
+        let p = provider_for_with_env(
+            McpAuthMethod::GithubOidc,
+            "http://127.0.0.1:1",
+            "",
+            &fast_policy(),
+            empty_env(),
+        );
+        let err = p.get_token().unwrap_err().to_string();
+        assert!(err.contains("ACTIONS_ID_TOKEN_REQUEST_URL"), "{err}");
+    }
+
+    #[test]
+    fn oidc_requires_request_token_env() {
+        let env = Arc::new(
+            MapEnvSource::new().with("ACTIONS_ID_TOKEN_REQUEST_URL", "http://127.0.0.1:1/id"),
+        );
+        let p = provider_for_with_env(
+            McpAuthMethod::GithubOidc,
+            "http://127.0.0.1:1",
+            "",
+            &fast_policy(),
+            env,
+        );
+        let err = p.get_token().unwrap_err().to_string();
+        assert!(err.contains("ACTIONS_ID_TOKEN_REQUEST_TOKEN"), "{err}");
+    }
+
+    #[test]
+    fn oidc_rejects_empty_env_values() {
+        let env = Arc::new(
+            MapEnvSource::new()
+                .with("ACTIONS_ID_TOKEN_REQUEST_URL", "")
+                .with("ACTIONS_ID_TOKEN_REQUEST_TOKEN", ""),
+        );
+        let p = provider_for_with_env(
+            McpAuthMethod::GithubOidc,
+            "http://127.0.0.1:1",
+            "",
+            &fast_policy(),
+            env,
+        );
+        let err = p.get_token().unwrap_err().to_string();
+        assert!(err.contains("id-token: write permission missing"), "{err}");
+    }
+
+    #[test]
+    fn oidc_two_step_exchange_succeeds() {
+        // One responder serves both steps in order: the Actions id-token GET,
+        // then the registry POST /v0/auth/github-oidc.
+        let (addr, calls) = spawn_oneshot_http_responder_with(|_| {
+            vec![
+                http_response("200 OK", r#"{"value":"actions-oidc-jwt"}"#),
+                http_response("200 OK", r#"{"registry_token":"oidc-reg-jwt"}"#),
+            ]
+        });
+        let env = Arc::new(
+            MapEnvSource::new()
+                .with("ACTIONS_ID_TOKEN_REQUEST_URL", format!("http://{addr}/id"))
+                .with("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-bearer"),
+        );
+        let p = provider_for_with_env(
+            McpAuthMethod::GithubOidc,
+            &format!("http://{addr}"),
+            "ignored-static-token",
+            &fast_policy(),
+            env,
+        );
+        assert_eq!(p.get_token().unwrap(), "oidc-reg-jwt");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn oidc_appends_audience_with_ampersand_when_url_has_query() {
+        let (addr, calls) = spawn_oneshot_http_responder_with(|_| {
+            vec![
+                http_response("200 OK", r#"{"value":"actions-oidc-jwt"}"#),
+                http_response("200 OK", r#"{"registry_token":"oidc-reg-jwt"}"#),
+            ]
+        });
+        let env = Arc::new(
+            MapEnvSource::new()
+                .with(
+                    "ACTIONS_ID_TOKEN_REQUEST_URL",
+                    format!("http://{addr}/id?api-version=6"),
+                )
+                .with("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-bearer"),
+        );
+        let p = provider_for_with_env(
+            McpAuthMethod::GithubOidc,
+            &format!("http://{addr}"),
+            "",
+            &fast_policy(),
+            env,
+        );
+        assert_eq!(p.get_token().unwrap(), "oidc-reg-jwt");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn oidc_empty_id_token_value_errors() {
+        let (addr, _calls) =
+            spawn_oneshot_http_responder_with(|_| vec![http_response("200 OK", r#"{"value":""}"#)]);
+        let env = Arc::new(
+            MapEnvSource::new()
+                .with("ACTIONS_ID_TOKEN_REQUEST_URL", format!("http://{addr}/id"))
+                .with("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-bearer"),
+        );
+        let p = provider_for_with_env(
+            McpAuthMethod::GithubOidc,
+            &format!("http://{addr}"),
+            "",
+            &fast_policy(),
+            env,
+        );
+        let err = p.get_token().unwrap_err().to_string();
+        assert!(err.contains("OIDC token response missing value"), "{err}");
+    }
+
+    #[test]
+    fn oidc_exchange_missing_registry_token_errors() {
+        let (addr, _calls) = spawn_oneshot_http_responder_with(|_| {
+            vec![
+                http_response("200 OK", r#"{"value":"actions-oidc-jwt"}"#),
+                http_response("200 OK", "{}"),
+            ]
+        });
+        let env = Arc::new(
+            MapEnvSource::new()
+                .with("ACTIONS_ID_TOKEN_REQUEST_URL", format!("http://{addr}/id"))
+                .with("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-bearer"),
+        );
+        let p = provider_for_with_env(
+            McpAuthMethod::GithubOidc,
+            &format!("http://{addr}"),
+            "",
+            &fast_policy(),
+            env,
+        );
+        let err = p.get_token().unwrap_err().to_string();
+        assert!(
+            err.contains("github-oidc response missing registry_token"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn oidc_id_token_fetch_4xx_fast_fails() {
+        let (addr, calls) = spawn_oneshot_http_responder_with(|_| {
+            vec![http_response(
+                "401 Unauthorized",
+                r#"{"error":"bad runner token"}"#,
+            )]
+        });
+        let env = Arc::new(
+            MapEnvSource::new()
+                .with("ACTIONS_ID_TOKEN_REQUEST_URL", format!("http://{addr}/id"))
+                .with("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "runner-bearer"),
+        );
+        let p = provider_for_with_env(
+            McpAuthMethod::GithubOidc,
+            &format!("http://{addr}"),
+            "",
+            &fast_policy(),
+            env,
+        );
+        let err = format!("{:#}", p.get_token().unwrap_err());
+        assert!(err.contains("HTTP 401"), "{err}");
+        assert!(err.contains("bad runner token"), "{err}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "4xx must not retry");
+    }
 }

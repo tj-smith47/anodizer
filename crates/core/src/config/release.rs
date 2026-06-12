@@ -67,7 +67,11 @@ pub struct ReleaseConfig {
     pub skip: Option<StringOrBool>,
     /// Release mode: "keep-existing", "append", "prepend", or "replace".
     pub mode: Option<String>,
-    /// Artifact IDs filter for uploads.
+    /// Artifact IDs filter for uploads. Release-wide artifacts (checksums,
+    /// source archive, extra files, metadata) always upload regardless of
+    /// the filter, and derived artifacts (signatures, certificates, SBOMs)
+    /// inherit the verdict of the artifact they derive from — a signature
+    /// uploads iff the artifact it signs uploads.
     pub ids: Option<Vec<String>>,
     /// Target branch or SHA for the release tag.
     pub target_commitish: Option<String>,
@@ -120,6 +124,20 @@ pub struct ReleaseConfig {
     /// When `true`, a triggered rollback leaves this publisher's work in
     /// place rather than attempting to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
+    /// In-process failure policy: what `anodizer release` does after a
+    /// release-pipeline failure. `rollback` (default) deletes the run's
+    /// release tag(s) and reverts the version-bump commit so the same
+    /// version can be re-cut; `hold` leaves everything in place for
+    /// forensics and manual recovery (`release --rollback-only
+    /// --from-run=<id>`). `rollback` automatically degrades to `hold`
+    /// the moment any one-way-door (Submitter) publisher has landed:
+    /// the version is burned at a registry that never accepts it twice,
+    /// so destructive rollback is refused and fix-forward is the only
+    /// path. Root-level policy — in workspace configs (lockstep or
+    /// per-crate) the top-level `release.on_failure` governs the whole
+    /// run; setting it in a crate-level `release:` block is rejected at
+    /// config load (`validate_on_failure_root_only`).
+    pub on_failure: Option<OnFailureConfig>,
 }
 
 impl ReleaseConfig {
@@ -185,6 +203,36 @@ impl ReleaseConfig {
     /// create a fresh draft when one isn't found by default).
     pub fn resolved_use_existing_draft(&self) -> bool {
         self.use_existing_draft.unwrap_or(false)
+    }
+
+    /// Resolve `on_failure`, falling back to
+    /// [`OnFailureConfig::Rollback`].
+    pub fn resolved_on_failure(&self) -> OnFailureConfig {
+        self.on_failure.unwrap_or_default()
+    }
+}
+
+/// In-process failure policy for `anodizer release`. See
+/// [`ReleaseConfig::on_failure`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum OnFailureConfig {
+    /// Roll back reversible state (delete the run's release tags, revert
+    /// the version-bump commit) so the version can be re-cut. Degrades to
+    /// `Hold` when any one-way-door publisher already landed.
+    #[default]
+    Rollback,
+    /// Leave everything in place for forensics; exit nonzero with a
+    /// pointer at `release --rollback-only --from-run=<id>`.
+    Hold,
+}
+
+impl std::fmt::Display for OnFailureConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OnFailureConfig::Rollback => f.write_str("rollback"),
+            OnFailureConfig::Hold => f.write_str("hold"),
+        }
     }
 }
 

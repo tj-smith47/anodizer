@@ -51,7 +51,7 @@ pub(crate) fn list_staging_dir_recursive(
 /// addressable.
 pub(crate) fn format_v2_created_images_log(images: &[String], digest: &str) -> String {
     format!(
-        "created images: images={} digest={}",
+        "created images — images={} digest={}",
         images.join(","),
         digest
     )
@@ -133,7 +133,7 @@ pub(crate) fn execute_docker_build(
     job: &DockerBuildJob,
     log: &StageLogger,
 ) -> Result<DockerBuildResult> {
-    log.status(&format!("running: {}", job.cmd_args.join(" ")));
+    log.status(&format!("running {}", job.cmd_args.join(" ")));
 
     use anodizer_core::retry::{RetryPolicy, retry_sync};
     use std::ops::ControlFlow;
@@ -342,7 +342,7 @@ fn push_podman_tags(job: &DockerBuildJob, log: &StageLogger) -> Result<()> {
     };
 
     for push_args in &push_cmds {
-        log.status(&format!("running: {}", push_args.join(" ")));
+        log.status(&format!("running {}", push_args.join(" ")));
         retry_sync(&policy, |attempt| {
             if attempt > 1 {
                 log.warn(&format!(

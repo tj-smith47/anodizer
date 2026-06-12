@@ -262,9 +262,9 @@ fn test_is_disabled_template_evaluates_to_true() {
 
 #[test]
 fn test_is_disabled_template_evaluates_to_false() {
-    let ctx = make_ctx(); // IsSnapshot is "false"
+    let ctx = make_ctx(); // IsSnapshot is false
     let disable = Some(StringOrBool::String(
-        "{% if IsSnapshot == \"true\" %}true{% endif %}".to_string(),
+        "{% if IsSnapshot %}true{% endif %}".to_string(),
     ));
     assert!(!ctx.skip_with_log(&disable, &test_log(), "t").unwrap());
 }

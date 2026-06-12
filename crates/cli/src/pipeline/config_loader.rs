@@ -226,6 +226,8 @@ pub fn load_config(path: &Path) -> Result<Config> {
     anodizer_core::config::validate_format_overrides(&config).map_err(anyhow::Error::msg)?;
     // Validate release block does not configure multiple SCM backends.
     anodizer_core::config::validate_release_backends(&config).map_err(anyhow::Error::msg)?;
+    // Validate release.on_failure appears only in the root release block.
+    anodizer_core::config::validate_on_failure_root_only(&config).map_err(anyhow::Error::msg)?;
     // Validate nightly.publish_repo is "owner/repo" shaped (fail at config
     // time rather than as a confusing 404 when the release is created).
     anodizer_core::config::validate_nightly_publish_repo(&config).map_err(anyhow::Error::msg)?;

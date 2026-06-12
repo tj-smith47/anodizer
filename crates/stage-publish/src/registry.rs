@@ -361,6 +361,37 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     v
 }
 
+/// Every publisher anodizer knows, with no configuration gating.
+///
+/// Built for environment-preflight requirement collection: each
+/// [`Publisher::requirements`] self-gates on the resolved config (returning
+/// empty when unconfigured) and walks the FULL crate universe — including
+/// workspace crates that [`configured_publishers`]'s top-level-crate
+/// predicates cannot see before the per-crate overlay flattens them. Never
+/// use this list for dispatch; `run`/`rollback` on an unconfigured
+/// publisher is not a supported path.
+pub fn all_publishers() -> Vec<Box<dyn Publisher>> {
+    vec![
+        Box::new(crate::cargo::CargoPublisher::new()),
+        Box::new(crate::dockerhub::DockerhubPublisher::new()),
+        Box::new(crate::artifactory::ArtifactoryPublisher::new()),
+        Box::new(crate::cloudsmith::CloudsmithPublisher::new()),
+        Box::new(anodizer_stage_release::publisher::GithubReleasePublisher::new()),
+        Box::new(crate::homebrew::publisher::HomebrewPublisher::new()),
+        Box::new(crate::scoop::ScoopPublisher::new()),
+        Box::new(crate::nix::publisher::NixPublisher::new()),
+        Box::new(crate::mcp::publisher::McpPublisher::new()),
+        Box::new(crate::aur::AurOurPublisher::new()),
+        Box::new(crate::krew::KrewPublisher::new()),
+        Box::new(crate::schemastore::SchemastorePublisher::new()),
+        Box::new(crate::npm::NpmPublisher::new()),
+        Box::new(crate::gemfury::GemFuryPublisher::new()),
+        Box::new(crate::chocolatey::ChocolateyPublisher::new()),
+        Box::new(crate::winget::WingetPublisher::new()),
+        Box::new(crate::aur_source::AurSourcePublisher::new()),
+    ]
+}
+
 /// True when at least one crate has a `publish.chocolatey` block.
 fn is_chocolatey_configured(ctx: &Context) -> bool {
     ctx.config

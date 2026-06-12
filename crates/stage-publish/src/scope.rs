@@ -45,7 +45,7 @@
 /// credential.
 pub(crate) fn warn_scope_unavailable_msg(prefix: &str, publisher: &str, label: &str) -> String {
     format!(
-        "{prefix}: '{publisher}' skipped — env scope '{label}' unavailable \
+        "'{publisher}' skipped during {prefix} — env scope '{label}' unavailable \
          (set the env var to enable rollback)"
     )
 }
@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn warn_msg_includes_prefix_publisher_label_and_remedy() {
         let msg = warn_scope_unavailable_msg("rollback", "homebrew", "GITHUB_TOKEN contents:write");
-        assert!(msg.contains("rollback:"), "missing prefix: {msg}");
+        assert!(msg.contains("during rollback —"), "missing prefix: {msg}");
         assert!(msg.contains("'homebrew'"), "missing publisher: {msg}");
         assert!(
             msg.contains("'GITHUB_TOKEN contents:write'"),
@@ -175,8 +175,8 @@ mod tests {
         // helper must NOT lowercase / dash-normalize / otherwise
         // mangle it.
         let r = warn_scope_unavailable_msg("rollback-only", "p", "X");
-        assert!(r.starts_with("rollback-only:"), "got {r}");
+        assert!(r.contains("during rollback-only —"), "got {r}");
         let p = warn_scope_unavailable_msg("preflight", "p", "X");
-        assert!(p.starts_with("preflight:"), "got {p}");
+        assert!(p.contains("during preflight —"), "got {p}");
     }
 }

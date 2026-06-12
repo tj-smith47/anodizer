@@ -239,7 +239,9 @@ pub(crate) fn ensure_targets_installed(
             .output();
         match output {
             Ok(o) if o.status.success() => {
-                log.verbose(&format!("ensured target installed: {rustup_target}"));
+                log.verbose(&format!(
+                    "ensured rustup target {rustup_target} is installed"
+                ));
             }
             Ok(o) => {
                 // `rustup target add` failure is a hard
