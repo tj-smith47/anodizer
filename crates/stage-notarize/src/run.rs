@@ -155,8 +155,8 @@ pub(super) fn run_cross_platform(
         // Surface the filter contents so misconfigured `ids:` is visible
         // instead of producing a silent no-op.
         log.warn(&format!(
-            "macos[{idx}] ids={:?} matched no darwin binaries \
-             (check for typos or unbuilt darwin targets)",
+            "ids={:?} matched no darwin binaries — check for typos or \
+             unbuilt darwin targets (macos[{idx}])",
             ids
         ));
         ctx.strict_guard(
@@ -342,12 +342,13 @@ pub(super) fn run_native(
         }
     });
 
-    // Issue 9: Warn if options set with use: pkg (options only apply to DMGs)
+    // sign.options only applies to DMG mode; warn so a configured-but-ignored
+    // field is visible instead of silently dropped.
     if artifact_type == MacOSNativeArtifactKind::Pkg
         && sign.options.as_ref().is_some_and(|o| !o.is_empty())
     {
         log.warn(&format!(
-            "macos_native[{idx}] sign.options is set but only applies to DMG mode; ignored for pkg"
+            "sign.options is set but only applies to DMG mode; ignored for pkg (macos_native[{idx}])"
         ));
     }
 

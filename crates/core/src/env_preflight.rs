@@ -127,11 +127,11 @@ impl EnvPreflightReport {
 impl std::fmt::Display for EnvPreflightReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.failures.is_empty() {
-            return write!(f, "preflight: {} check(s) passed", self.checks);
+            return write!(f, "{} preflight check(s) passed", self.checks);
         }
         writeln!(
             f,
-            "preflight: {} of {} check(s) failed:",
+            "{} of {} preflight check(s) failed:",
             self.failures.len(),
             self.checks
         )?;

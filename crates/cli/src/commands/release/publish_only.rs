@@ -131,7 +131,7 @@ pub(super) fn crate_subdir_has_manifest(dist: &Path, crate_name: &str, log: &Sta
             // debugging an unexpected layout choice isn't left guessing
             // why a present subdir was skipped.
             log.verbose(&format!(
-                "publish-only --crate: scanning {} for context manifests failed: {e}; \
+                "failed to scan {} for context manifests: {e}; \
                  treating crate '{crate_name}' as having no per-crate subdir",
                 subdir.display()
             ));

@@ -291,7 +291,7 @@ pub fn run_publishers(
             if !errs.is_empty() {
                 // Return first error, log the rest
                 for e in errs.iter().skip(1) {
-                    log.status(&format!("[publisher] {} -- additional error: {}", label, e));
+                    log.status(&format!("additional error from publisher {}: {}", label, e));
                 }
                 return Err(errs.remove(0));
             }

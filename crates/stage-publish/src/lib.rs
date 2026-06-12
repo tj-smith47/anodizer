@@ -852,7 +852,7 @@ impl PublishStage {
         // dispatcher's interleaved log output.
         for r in &report.results {
             if let PublisherOutcome::Failed(msg) = &r.outcome {
-                log.warn(&format!("{}: {}", r.name, msg));
+                log.warn(&format!("publisher {} failed: {}", r.name, msg));
             } else if let PublisherOutcome::Skipped(SkipReason::SubmitterGated) = &r.outcome {
                 log.status(&format!("skipped {} via submitter-gate", r.name));
             }

@@ -241,8 +241,8 @@ fn check_target_triples(config: &Config, warnings: &mut Vec<String>) {
         let os_ok = known_os.iter().any(|os| triple.contains(os));
         if !arch_ok || !os_ok {
             warnings.push(format!(
-                "{}: unrecognized target triple '{}'",
-                context, triple
+                "unrecognized target triple '{}' in {}",
+                triple, context
             ));
         }
     };
@@ -282,7 +282,7 @@ fn check_changelog(config: &Config, warnings: &mut Vec<String>) {
             || cl.abbrev.is_some();
         if has_other {
             warnings.push(
-                "changelog: skip is true but other changelog fields are also set (they will be ignored)".to_string(),
+                "changelog.skip is true but other changelog fields are also set (they will be ignored)".to_string(),
             );
         }
     }
@@ -293,7 +293,7 @@ fn check_changelog(config: &Config, warnings: &mut Vec<String>) {
         && use_source != "github-native"
     {
         warnings.push(format!(
-            "changelog: unrecognized 'use' value '{}' (valid: git, github-native)",
+            "unrecognized changelog 'use' value '{}' (valid: git, github-native)",
             use_source
         ));
     }
@@ -312,7 +312,7 @@ fn check_checksum_skip_conflicts(config: &Config, warnings: &mut Vec<String>) {
             || cksum.ids.is_some();
         if has_other {
             warnings.push(
-                "defaults.checksum: skip is true but other checksum fields are also set (they will be ignored)".to_string(),
+                "defaults.checksum.skip is true but other checksum fields are also set (they will be ignored)".to_string(),
             );
         }
     }
@@ -327,7 +327,7 @@ fn check_checksum_skip_conflicts(config: &Config, warnings: &mut Vec<String>) {
                 || cksum.ids.is_some();
             if has_other {
                 warnings.push(format!(
-                    "crate '{}': checksum skip is true but other checksum fields are also set (they will be ignored)",
+                    "checksum skip is true for crate '{}' but other checksum fields are also set (they will be ignored)",
                     c.name,
                 ));
             }
@@ -360,7 +360,7 @@ fn check_sign_artifact_filters(config: &Config, warnings: &mut Vec<String>) {
             && !valid_artifact_filters.contains(&filter.as_str())
         {
             warnings.push(format!(
-                "signs: unrecognized artifacts filter '{}' (valid: {})",
+                "unrecognized signs artifacts filter '{}' (valid: {})",
                 filter,
                 valid_artifact_filters.join(", ")
             ));
@@ -380,7 +380,7 @@ fn check_checksum_algorithms(config: &Config, warnings: &mut Vec<String>) {
         && !valid_algorithms.contains(&algo.as_str())
     {
         warnings.push(format!(
-            "defaults.checksum: unrecognized algorithm '{}' (valid: {})",
+            "unrecognized defaults.checksum algorithm '{}' (valid: {})",
             algo,
             valid_algorithms.join(", ")
         ));
@@ -391,7 +391,7 @@ fn check_checksum_algorithms(config: &Config, warnings: &mut Vec<String>) {
             && !valid_algorithms.contains(&algo.as_str())
         {
             warnings.push(format!(
-                "crate '{}': unrecognized checksum algorithm '{}' (valid: {})",
+                "unrecognized checksum algorithm '{1}' for crate '{0}' (valid: {2})",
                 c.name,
                 algo,
                 valid_algorithms.join(", ")
