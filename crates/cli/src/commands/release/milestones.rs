@@ -34,7 +34,10 @@ fn resolve_milestone_for_close(
         .render_template(name_template)
         .context("milestone: render name_template")?;
     if milestone_name.is_empty() {
-        ctx.strict_guard(log, "skipping milestone — name_template rendered to empty")?;
+        ctx.strict_guard(
+            log,
+            "skipping milestone close — name_template rendered to empty",
+        )?;
         return Ok(None);
     }
     // Prefer `ctx.token_type` when choosing among mixed-provider configs so
