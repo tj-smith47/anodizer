@@ -262,15 +262,19 @@ anodizer release       Full release pipeline (--snapshot, --dry-run, --split/--m
 anodizer tag           Auto-tag from commit directives
 anodizer tag rollback  Delete anodize-managed tags at a SHA and revert the bump commit
 anodizer check         Validate configuration + run determinism harness
+anodizer preflight     Verify the environment can run the configured release (tools, secrets, key material)
 anodizer init          Generate starter .anodizer.yaml
 anodizer healthcheck   Probe external tools (nfpm, cosign, ...)
 ```
 
-`anodizer tag rollback "$GITHUB_SHA"` is the recommended `if: failure()` hook
-on every release workflow — it deletes any anodize-managed tag at the failed
-commit, reverts the bump, and pushes the revert so the next CI run isn't
-poisoned. See [Release resilience](https://tj-smith47.github.io/anodizer/docs/advanced/release-resilience/)
-for the flag matrix and integration recipe.
+Failure handling is in-process: a failed `anodizer release` executes the
+`release.on_failure` policy itself (`rollback` by default — delete the tag,
+revert the bump — auto-degrading to `hold` once a one-way-door publisher like
+crates.io has landed), so release workflows need no `if: failure()` recovery
+steps. `anodizer tag rollback "$GITHUB_SHA"` is the manual recovery command
+for killed or held runs. See
+[Release resilience](https://tj-smith47.github.io/anodizer/docs/advanced/release-resilience/)
+for the flag matrix and recovery flows.
 
 Full reference: `anodizer --help` or the [docs site](https://tj-smith47.github.io/anodizer/docs/reference/cli/).
 
