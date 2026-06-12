@@ -514,10 +514,7 @@ impl<'a> PerCrateOverlayGuard<'a> {
     /// foreign crate's release.
     fn reset_release_url(&mut self) {
         match &self.saved_release_url {
-            Some(v) => {
-                let v = v.clone();
-                self.ctx.template_vars_mut().set("ReleaseURL", &v);
-            }
+            Some(v) => self.ctx.template_vars_mut().set("ReleaseURL", v),
             None => {
                 self.ctx.template_vars_mut().unset("ReleaseURL");
             }
