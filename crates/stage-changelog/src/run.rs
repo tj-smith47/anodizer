@@ -701,10 +701,11 @@ fn resolve_scope(
 
 /// Build the GitHub login enricher for this run, or `None` when enrichment
 /// cannot apply: a non-GitHub changelog source (`gitlab`/`gitea` logins live
-/// in a different namespace), no explicit token (no ambient-auth lookups, by
-/// contract — unauthenticated runs keep name-based rendering), or no
-/// derivable GitHub target (`release.github` config, falling back to the
-/// `origin` remote).
+/// in a different namespace), no token through the standard chain
+/// (`--token` → `ANODIZER_GITHUB_TOKEN` → `GITHUB_TOKEN`; no ambient-auth
+/// lookups, by contract — unauthenticated runs keep name-based rendering),
+/// or no derivable GitHub target (`release.github` config, falling back to
+/// the `origin` remote).
 fn build_login_enricher(
     ctx: &Context,
     use_source: &str,
@@ -712,7 +713,10 @@ fn build_login_enricher(
     if !crate::enrich::use_source_supports_github_logins(use_source) {
         return None;
     }
-    let token = ctx.options.token.clone().filter(|t| !t.is_empty())?;
+    let token =
+        anodizer_core::git::resolve_github_token_with_env(ctx.options.token.as_deref(), &|key| {
+            ctx.env_var(key)
+        })?;
     let configured = ctx
         .config
         .crates
@@ -1112,7 +1116,21 @@ mod login_enricher_gating_tests {
         github: Option<(&str, &str)>,
         root: std::path::PathBuf,
     ) -> anodizer_core::context::Context {
-        TestContextBuilder::new()
+        ctx_with_env(token, github, root, &[])
+    }
+
+    /// Builds a context whose env source is map-backed (hermetic: the
+    /// developer's or CI's real `GITHUB_TOKEN` can never leak into these
+    /// gates). The empty-string defaults double as coverage that GHA's
+    /// missing-secret materialization (`""`) counts as absent; `env` pairs
+    /// override them.
+    fn ctx_with_env(
+        token: Option<&str>,
+        github: Option<(&str, &str)>,
+        root: std::path::PathBuf,
+        env: &[(&str, &str)],
+    ) -> anodizer_core::context::Context {
+        let mut builder = TestContextBuilder::new()
             .project_name("test")
             .token(token.map(str::to_string))
             .project_root(root)
@@ -1129,10 +1147,16 @@ mod login_enricher_gating_tests {
                 }),
                 ..Default::default()
             }])
-            .build()
+            .env("ANODIZER_GITHUB_TOKEN", "")
+            .env("GITHUB_TOKEN", "");
+        for (k, v) in env {
+            builder = builder.env(*k, *v);
+        }
+        builder.build()
     }
 
-    /// No explicit token → no enricher, regardless of a configured GitHub
+    /// No token anywhere in the chain (`--token` → `ANODIZER_GITHUB_TOKEN`
+    /// → `GITHUB_TOKEN`) → no enricher, regardless of a configured GitHub
     /// target: unauthenticated runs keep name-based rendering and never
     /// attempt ambient-auth lookups.
     #[test]
@@ -1144,6 +1168,34 @@ mod login_enricher_gating_tests {
         assert!(
             build_login_enricher(&ctx, "git").is_none(),
             "empty token counts as absent"
+        );
+    }
+
+    /// A run with only the `GITHUB_TOKEN` env var set (no `--token` flag —
+    /// the standard GitHub Actions shape) must get pipeline enrichment,
+    /// and `ANODIZER_GITHUB_TOKEN` must work the same way.
+    #[test]
+    fn env_token_alone_enables_enrichment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = ctx_with_env(
+            None,
+            Some(("octo", "repo")),
+            tmp.path().to_path_buf(),
+            &[("GITHUB_TOKEN", "gh-tok")],
+        );
+        assert!(
+            build_login_enricher(&ctx, "git").is_some(),
+            "GITHUB_TOKEN env alone must enable enrichment"
+        );
+        let ctx = ctx_with_env(
+            None,
+            Some(("octo", "repo")),
+            tmp.path().to_path_buf(),
+            &[("ANODIZER_GITHUB_TOKEN", "anod-tok")],
+        );
+        assert!(
+            build_login_enricher(&ctx, "git").is_some(),
+            "ANODIZER_GITHUB_TOKEN env alone must enable enrichment"
         );
     }
 

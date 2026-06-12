@@ -143,8 +143,12 @@ impl ChangelogConfig {
 
     /// Default `format` template for SCM-backed sources (github/gitlab/gitea).
     /// Renders SHA, message, and an `@login` mention falling back to
-    /// `AuthorName <AuthorEmail>` when the API returned no login.
-    pub const DEFAULT_FORMAT_SCM: &'static str = "{{ SHA }}: {{ Message }} ({% if Login %}@{{ Login }}{% else %}{{ AuthorName }} <{{ AuthorEmail }}>{% endif %})";
+    /// `AuthorName <AuthorEmail>` when the API returned no login. The mention
+    /// renders via `AuthorUsername` (not a literal `@` + raw `Login`) so the
+    /// renderer's mention styling applies — bare `@login` in release bodies,
+    /// `[@login](https://github.com/login)` in on-disk changelogs — while
+    /// `Login` stays the raw branch-condition datum.
+    pub const DEFAULT_FORMAT_SCM: &'static str = "{{ SHA }}: {{ Message }} ({% if Login %}{{ AuthorUsername }}{% else %}{{ AuthorName }} <{{ AuthorEmail }}>{% endif %})";
 
     /// Default `format` template for the `git` backend.
     pub const DEFAULT_FORMAT_GIT: &'static str = "{{ SHA }} {{ Message }}";

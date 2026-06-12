@@ -4089,9 +4089,9 @@ fn linked_style_unresolved_login_is_byte_identical_name_fallback() {
     assert_eq!(line, "* ef88059 close audit gaps (TJ Smith)");
 }
 
-/// The default SCM format (`@{{ Login }}` with the name/email fallback) gets
-/// the linked rendering for free in kac style — same render path, no
-/// format-template duplication.
+/// The default SCM format (the `AuthorUsername` mention with the name/email
+/// fallback) gets the linked rendering for free in kac style — same render
+/// path, no format-template duplication.
 #[test]
 fn default_scm_format_links_login_in_linked_style() {
     let mut commit = ci("feat: add X", "feat", "add X", "abc1234");
@@ -4127,6 +4127,80 @@ fn at_prefixed_author_username_does_not_double_at() {
         linked.contains("([@octocat](https://github.com/octocat))"),
         "collapsed mention must still link in kac style: {linked:?}"
     );
+}
+
+/// A commit subject that legitimately contains `@<login>` text — where the
+/// login happens to equal a resolved author's — stays plain in BOTH styles:
+/// styling targets only the renderer-substituted mention span, never
+/// coincidental free text.
+#[test]
+fn coincidental_login_text_in_message_stays_plain() {
+    let mut commit = ci(
+        "fix: remove @deprecated usage",
+        "fix",
+        "remove @deprecated usage",
+        "abc1234",
+    );
+    commit.full_hash = "abc1234567890abcdef1234567890abcdef12345".into();
+    commit.author_name = "Dep Recated".into();
+    commit.login = "deprecated".into();
+    let grouped = vec![GroupedCommits::new("", vec![commit])];
+    let fmt = "* {{ .SHA }} {{ .Message }} ({{ .AuthorUsername }})";
+    let linked = render_with_style(&grouped, fmt, "git", crate::render::LoginStyle::Linked);
+    let line = linked
+        .lines()
+        .find(|l| l.contains("remove"))
+        .expect("bullet line present");
+    assert_eq!(
+        line, "* abc1234 remove @deprecated usage ([@deprecated](https://github.com/deprecated))",
+        "message text must stay plain; only the author slot links"
+    );
+    let bare = render_with_style(&grouped, fmt, "git", crate::render::LoginStyle::Bare);
+    let line = bare
+        .lines()
+        .find(|l| l.contains("remove"))
+        .expect("bullet line present");
+    assert_eq!(line, "* abc1234 remove @deprecated usage (@deprecated)");
+}
+
+/// A crafted sentinel-framed "mention" inside a commit subject is neutralized
+/// by input sanitization: it neither triggers styling nor leaks the sentinel
+/// control character — on the resolved-login path AND the empty-login path.
+#[test]
+fn crafted_sentinel_in_message_never_styles_or_leaks() {
+    let evil_subject = "say \u{1}@evil\u{1} aloud";
+    let mut commit = ci("feat: x", "feat", evil_subject, "abc1234");
+    commit.author_name = "Ada L".into();
+    commit.login = "ada".into();
+    let grouped = vec![GroupedCommits::new("", vec![commit])];
+    let fmt = "* {{ .SHA }} {{ .Message }} ({{ .AuthorUsername }})";
+    for style in [
+        crate::render::LoginStyle::Bare,
+        crate::render::LoginStyle::Linked,
+    ] {
+        let md = render_with_style(&grouped, fmt, "git", style);
+        assert!(!md.contains('\u{1}'), "sentinel leaked: {md:?}");
+        assert!(
+            md.contains("say @evil aloud"),
+            "crafted span must degrade to plain text: {md:?}"
+        );
+        assert!(
+            !md.contains("github.com/evil"),
+            "crafted span must never be styled into a link: {md:?}"
+        );
+    }
+    // Empty-login path: no styling pass runs, the sentinel still never leaks.
+    let mut commit = ci("feat: x", "feat", evil_subject, "abc1234");
+    commit.author_name = "Ada L".into();
+    let grouped = vec![GroupedCommits::new("", vec![commit])];
+    for style in [
+        crate::render::LoginStyle::Bare,
+        crate::render::LoginStyle::Linked,
+    ] {
+        let md = render_with_style(&grouped, fmt, "git", style);
+        assert!(!md.contains('\u{1}'), "sentinel leaked: {md:?}");
+        assert!(md.contains("say @evil aloud"), "{md:?}");
+    }
 }
 
 /// The exact anodizer-dogfooding shape: leading `* ` + `(AuthorUsername)` with an

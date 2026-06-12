@@ -128,6 +128,34 @@ pub fn commit_author_login_with_binary(
     resolved
 }
 
+/// Resolve the GitHub token for API calls through the codebase-standard
+/// chain: explicit value (CLI flag / context option) → `ANODIZER_GITHUB_TOKEN`
+/// → `GITHUB_TOKEN`. Empty strings count as absent at every link — GitHub
+/// Actions materializes missing secrets as `""`, which must not
+/// short-circuit the fallback to the next link.
+///
+/// `env` is the injectable env source (pass `Context::env_var` or a
+/// map-backed closure in tests) so the chain is testable without mutating
+/// process env.
+pub fn resolve_github_token_with_env(
+    explicit: Option<&str>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> Option<String> {
+    let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
+    explicit
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .or_else(|| env("ANODIZER_GITHUB_TOKEN").and_then(non_empty))
+        .or_else(|| env("GITHUB_TOKEN").and_then(non_empty))
+}
+
+/// Process-env wrapper of [`resolve_github_token_with_env`] for call sites
+/// without a `Context` (e.g. the `bump`/`tag` changelog-sync write path,
+/// whose commands expose no `--token` flag).
+pub fn resolve_github_token(explicit: Option<&str>) -> Option<String> {
+    resolve_github_token_with_env(explicit, &|key| std::env::var(key).ok())
+}
+
 /// Redact secrets from `gh` CLI stderr before interpolating into a bail
 /// message. `token` is the `GITHUB_TOKEN` value passed to the
 /// subprocess; if the user-supplied token leaks (e.g. via a verbose `gh`
@@ -465,6 +493,58 @@ mod tests {
             commit_author_login_with_binary(gh, "o", "r", "e", "", None),
             None
         );
+    }
+
+    /// Chain order: explicit beats `ANODIZER_GITHUB_TOKEN` beats
+    /// `GITHUB_TOKEN`; empty strings are absent at every link. Uses a
+    /// map-backed env closure — no process-env mutation, no network.
+    #[test]
+    fn resolve_github_token_chain_order_and_empty_filtering() {
+        let env_with = |pairs: &[(&str, &str)]| {
+            let map: HashMap<String, String> = pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            move |key: &str| map.get(key).cloned()
+        };
+
+        let both = env_with(&[
+            ("ANODIZER_GITHUB_TOKEN", "anod-tok"),
+            ("GITHUB_TOKEN", "gh-tok"),
+        ]);
+        assert_eq!(
+            resolve_github_token_with_env(Some("explicit-tok"), &both),
+            Some("explicit-tok".to_string()),
+            "explicit token must win over both env vars"
+        );
+        assert_eq!(
+            resolve_github_token_with_env(None, &both),
+            Some("anod-tok".to_string()),
+            "ANODIZER_GITHUB_TOKEN must win over GITHUB_TOKEN"
+        );
+
+        let gh_only = env_with(&[("GITHUB_TOKEN", "gh-tok")]);
+        assert_eq!(
+            resolve_github_token_with_env(None, &gh_only),
+            Some("gh-tok".to_string()),
+            "GITHUB_TOKEN alone must resolve (the CI-gap pin)"
+        );
+        assert_eq!(
+            resolve_github_token_with_env(Some(""), &gh_only),
+            Some("gh-tok".to_string()),
+            "empty explicit token must fall through to env"
+        );
+
+        let empty_anod = env_with(&[("ANODIZER_GITHUB_TOKEN", ""), ("GITHUB_TOKEN", "gh-tok")]);
+        assert_eq!(
+            resolve_github_token_with_env(None, &empty_anod),
+            Some("gh-tok".to_string()),
+            "empty ANODIZER_GITHUB_TOKEN (GHA missing-secret materialization) must not short-circuit"
+        );
+
+        let none = env_with(&[]);
+        assert_eq!(resolve_github_token_with_env(None, &none), None);
+        assert_eq!(resolve_github_token_with_env(Some(""), &none), None);
     }
 
     /// `gh_api_get_with_binary` must surface a user-actionable spawn

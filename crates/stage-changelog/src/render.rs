@@ -350,35 +350,46 @@ fn render_commit_line(
             .map(|s| s.to_string())
             .unwrap_or_else(|| commit.full_hash.clone())
     };
+    // Every free-text input is stripped of the mention sentinel before it can
+    // reach the template, so the only sentinel spans in the rendered line are
+    // the ones this function substitutes — coincidental `@login` text in a
+    // commit subject can never be mistaken for an author mention, and a
+    // crafted sentinel in a commit message can never trigger styling.
+    let description = strip_mention_sentinels(&commit.description);
+    let author_name = strip_mention_sentinels(&commit.author_name);
+    let author_email = strip_mention_sentinels(&commit.author_email);
+    let login = strip_mention_sentinels(&commit.login);
     let mut vars = TemplateVars::new();
     // SHA respects the `abbrev` config.
     // `short_sha` is already computed with abbrev applied above; use it here
     // so templates referencing {{ .SHA }} honor the user's abbreviation.
     vars.set("SHA", &short_sha);
     vars.set("ShortSHA", &short_sha);
-    vars.set("Message", &commit.description);
-    vars.set("AuthorName", &commit.author_name);
-    vars.set("AuthorEmail", &commit.author_email);
-    // `Login` stays the raw backend datum (empty unless the github backend
-    // resolved a username): the default SCM format branches on it
-    // (`{% if Login %}@{{ Login }}{% else %}{{ AuthorName }} <{{ AuthorEmail }}>{% endif %}`),
-    // so an empty `Login` is the signal that drives the `Name <email>`
-    // fallback — overwriting it would suppress the email.
-    vars.set("Login", &commit.login);
+    vars.set("Message", &description);
+    vars.set("AuthorName", &author_name);
+    vars.set("AuthorEmail", &author_email);
+    // `Login` stays the raw backend datum (empty unless an SCM backend or
+    // login enrichment resolved a username): the default SCM format branches
+    // on it (`{% if Login %}{{ AuthorUsername }}{% else %}{{ AuthorName }}
+    // <{{ AuthorEmail }}>{% endif %}`), so an empty `Login` is the signal
+    // that drives the `Name <email>` fallback — overwriting it would
+    // suppress the email.
+    vars.set("Login", &login);
     // `AuthorUsername` is the DISPLAY alias: with a resolved login it carries
-    // the `@login` mention form (a GitHub release body autolinks it; the
-    // Linked style post-pass below turns it into an explicit Markdown link
-    // for on-disk changelogs); with no login it falls back to the author name
-    // so a `({{ .AuthorUsername }})` reference never renders a bare `()`.
-    // Unlike the raw `Login` (which the default SCM format branches on and
-    // prefixes with its own `@`), the mention form means templates ported
-    // from the `{{ with .AuthorUsername }}@{{ . }}{{ end }}` convention would
-    // double the `@` — `style_login_mentions` collapses that.
+    // the `@login` mention form, framed in sentinels so the post-render pass
+    // styles exactly this renderer-substituted span (a GitHub release body
+    // autolinks the bare mention; the Linked style turns it into an explicit
+    // Markdown link for on-disk changelogs). With no login it falls back to
+    // the author name so a `({{ .AuthorUsername }})` reference never renders
+    // a bare `()`. Unlike the raw `Login`, the mention form means templates
+    // ported from the `{{ with .AuthorUsername }}@{{ . }}{{ end }}`
+    // convention would double the `@` — `style_login_mentions` collapses the
+    // literal `@` directly before the span.
     let mention;
-    let author_username = if commit.login.is_empty() {
-        commit.author_name.as_str()
+    let author_username = if login.is_empty() {
+        author_name.as_ref()
     } else {
-        mention = format!("@{}", commit.login);
+        mention = format!("{MENTION_SENTINEL}@{login}{MENTION_SENTINEL}");
         mention.as_str()
     };
     vars.set("AuthorUsername", author_username);
@@ -397,19 +408,19 @@ fn render_commit_line(
     // Co-author trailers contribute Name only (email is in the raw trailer
     // string; Username is unknown without an extra SCM API hit — left empty).
     let mut authors_list: Vec<JsonValue> = Vec::new();
-    if !commit.author_name.is_empty() {
+    if !author_name.is_empty() {
         let mut obj = serde_json::Map::new();
-        obj.insert("Name".into(), JsonValue::String(commit.author_name.clone()));
-        obj.insert(
-            "Email".into(),
-            JsonValue::String(commit.author_email.clone()),
-        );
-        obj.insert("Username".into(), JsonValue::String(commit.login.clone()));
+        obj.insert("Name".into(), JsonValue::String(author_name.to_string()));
+        obj.insert("Email".into(), JsonValue::String(author_email.to_string()));
+        obj.insert("Username".into(), JsonValue::String(login.to_string()));
         authors_list.push(JsonValue::Object(obj));
     }
     for ca in &commit.co_authors {
         let mut obj = serde_json::Map::new();
-        obj.insert("Name".into(), JsonValue::String(ca.clone()));
+        obj.insert(
+            "Name".into(),
+            JsonValue::String(strip_mention_sentinels(ca).into_owned()),
+        );
         obj.insert("Email".into(), JsonValue::String(String::new()));
         obj.insert("Username".into(), JsonValue::String(String::new()));
         authors_list.push(JsonValue::Object(obj));
@@ -427,8 +438,8 @@ fn render_commit_line(
     // just the primary unless the trailer itself was a `<user@github>`
     // login form (left as future work).
     let mut commit_logins: Vec<String> = Vec::new();
-    if !commit.login.is_empty() {
-        commit_logins.push(commit.login.clone());
+    if !login.is_empty() {
+        commit_logins.push(login.to_string());
     }
     vars.set("Logins", &commit_logins.join(", "));
     // `Logins` as a structured list too — symmetric with `AuthorsList`
@@ -442,20 +453,25 @@ fn render_commit_line(
         .map(|s| JsonValue::String(s.clone()))
         .collect();
     vars.set_structured("LoginsList", JsonValue::Array(logins_list));
-    vars.set("AllLogins", logins);
-    vars.set("AllAuthors", all_authors);
+    vars.set("AllLogins", &strip_mention_sentinels(logins));
+    vars.set("AllAuthors", &strip_mention_sentinels(all_authors));
     let rendered = template::render(tmpl, &vars).with_context(|| {
         format!(
             "changelog: render commit format template '{tmpl}' for commit {}",
             commit.hash
         )
     })?;
-    let rendered = if commit.login.is_empty() {
-        // No login resolved: the line is byte-identical to the historical
-        // name-based rendering — no mention post-pass may touch it.
-        rendered
+    let rendered = if login.is_empty() {
+        // No login resolved: no sentinel span was substituted, so the line is
+        // byte-identical to the historical name-based rendering. The strip is
+        // a defensive no-op (inputs are sanitized above) that guarantees the
+        // sentinel can never leak on this path either.
+        match strip_mention_sentinels(&rendered) {
+            std::borrow::Cow::Borrowed(_) => rendered,
+            std::borrow::Cow::Owned(stripped) => stripped,
+        }
     } else {
-        style_login_mentions(&rendered, &commit.login, login_style)
+        style_login_mentions(&rendered, &login, login_style)
     };
     // De-dupe the leading bullet: when the user's `format:` already opens with
     // a Markdown list marker (`* ` / `- `, or the tab-separated form), emit it
@@ -476,41 +492,57 @@ fn render_commit_line(
     Ok(())
 }
 
+/// Frames the renderer-substituted author mention inside the rendered line so
+/// the post-render styling pass can target exactly that span. `U+0001` is a
+/// control character that cannot legitimately appear in commit metadata; every
+/// free-text input is stripped of it before templating
+/// ([`strip_mention_sentinels`]), so a span can only originate from the
+/// renderer's own `AuthorUsername` substitution — never from coincidental or
+/// crafted text.
+const MENTION_SENTINEL: char = '\u{1}';
+
+/// Remove [`MENTION_SENTINEL`] characters from a free-text input before it is
+/// handed to the template engine. Borrows when the input is already clean
+/// (the overwhelmingly common case), so the byte-identical fallback contract
+/// costs no allocation.
+fn strip_mention_sentinels(s: &str) -> std::borrow::Cow<'_, str> {
+    if s.contains(MENTION_SENTINEL) {
+        std::borrow::Cow::Owned(s.replace(MENTION_SENTINEL, ""))
+    } else {
+        std::borrow::Cow::Borrowed(s)
+    }
+}
+
 /// Post-render pass over one commit line for a RESOLVED `login`.
 ///
-/// 1. Collapses `@@login` to `@login`: `AuthorUsername` now carries the
-///    `@login` mention form, so a template that prefixes its own `@` (the
-///    `{{ with .AuthorUsername }}@{{ . }}{{ end }}` convention) would
-///    otherwise double it.
-/// 2. Under [`LoginStyle::Linked`], rewrites each standalone `@login` token
-///    to `[@login](https://github.com/login)` so on-disk Markdown is
-///    clickable. Token boundaries keep a longer handle (`@loginx`), an
-///    email-ish `x@login`, or an already-linked `[@login](…)` untouched.
+/// Styles exactly the sentinel-framed mention span the renderer substituted
+/// for `AuthorUsername` — free text mentioning `@login` is untouchable by
+/// construction (inputs are sentinel-stripped before templating):
+///
+/// 1. Consumes a literal `@` directly before the span: a template that
+///    prefixes its own `@` (the `{{ with .AuthorUsername }}@{{ . }}{{ end }}`
+///    convention) would otherwise double it.
+/// 2. Replaces the span with the styled mention — bare `@login` under
+///    [`LoginStyle::Bare`] (GitHub autolinks it in release bodies), or
+///    `[@login](https://github.com/login)` under [`LoginStyle::Linked`] for
+///    on-disk Markdown.
+/// 3. Strips any residual sentinel so it can never leak: a template filter
+///    (`upper` / `slice` / ...) applied to `AuthorUsername` can mangle a span
+///    past recognition, in which case the mention degrades to its unstyled
+///    text rather than emitting control characters.
 fn style_login_mentions(line: &str, login: &str, style: LoginStyle) -> String {
-    let needle = format!("@{login}");
-    let line = line.replace(&format!("@@{login}"), &needle);
-    if style == LoginStyle::Bare {
-        return line;
+    let span = format!("{MENTION_SENTINEL}@{login}{MENTION_SENTINEL}");
+    let styled = match style {
+        LoginStyle::Bare => format!("@{login}"),
+        LoginStyle::Linked => format!("[@{login}](https://github.com/{login})"),
+    };
+    let line = line.replace(&format!("@{span}"), &span);
+    let line = line.replace(&span, &styled);
+    if line.contains(MENTION_SENTINEL) {
+        line.replace(MENTION_SENTINEL, "")
+    } else {
+        line
     }
-    let is_handle_char = |c: char| c.is_ascii_alphanumeric() || c == '-';
-    let mut out = String::with_capacity(line.len() + 32);
-    let mut rest = line.as_str();
-    while let Some(idx) = rest.find(&needle) {
-        let before = &rest[..idx];
-        let after = &rest[idx + needle.len()..];
-        let prev = before.chars().next_back();
-        let standalone = !matches!(prev, Some(c) if c == '[' || c == '@' || is_handle_char(c))
-            && !matches!(after.chars().next(), Some(c) if is_handle_char(c));
-        out.push_str(before);
-        if standalone {
-            out.push_str(&format!("[{needle}](https://github.com/{login})"));
-        } else {
-            out.push_str(&needle);
-        }
-        rest = after;
-    }
-    out.push_str(rest);
-    out
 }
 // ---------------------------------------------------------------------------
 // Public render API — produces a single staged changelog edit that can be
@@ -814,14 +846,16 @@ fn group_section_commits(
     sort_commits(&mut infos, cfg.resolved_sort()?)?;
 
     // GitHub login enrichment for the on-disk changelog: resolve author
-    // emails to `@login` mentions when the release targets GitHub AND an
-    // explicit token is present (no token → name-based rendering, by
-    // contract). The per-call enricher is cheap — the email→login memo is
-    // process-wide in core, so a multi-crate `bump`/`tag` sync still costs
-    // one API call per unique author email. Failures keep name-based
-    // rendering.
+    // emails to `@login` mentions when the release targets GitHub AND a
+    // token resolves through the standard chain (`bump`/`tag`/`changelog`
+    // expose no `--token` flag, so explicit is `None` here and the env links
+    // `ANODIZER_GITHUB_TOKEN` → `GITHUB_TOKEN` carry the chain; no token →
+    // name-based rendering, by contract). The per-call enricher is cheap —
+    // the email→login memo is process-wide in core, so a multi-crate
+    // `bump`/`tag` sync still costs one API call per unique author email.
+    // Failures keep name-based rendering.
     if crate::enrich::use_source_supports_github_logins(cfg.resolved_use_source())
-        && let Some(token) = crate::enrich::token_from_env()
+        && let Some(token) = anodizer_core::git::resolve_github_token(None)
     {
         let configured = crate::enrich::configured_github_target(workspace_root);
         if let Some((owner, repo)) = crate::enrich::derive_github_target(
@@ -4184,52 +4218,70 @@ mod render_extra_tests {
 
     // ---- style_login_mentions ----
 
-    /// Linked style rewrites a standalone mention; token boundaries protect
-    /// longer handles, email-ish text, and already-linked mentions.
+    /// The sentinel-framed span the renderer substitutes for `AuthorUsername`.
+    fn span(login: &str) -> String {
+        format!("{MENTION_SENTINEL}@{login}{MENTION_SENTINEL}")
+    }
+
+    /// Only the sentinel-framed span is styled; identical-looking free text
+    /// (a coincidental `@login` in the commit subject) is untouched in BOTH
+    /// styles, because it carries no sentinel.
     #[test]
-    fn style_login_mentions_links_standalone_tokens_only() {
-        let linked = |s: &str| style_login_mentions(s, "ada", LoginStyle::Linked);
+    fn style_login_mentions_styles_only_the_sentinel_span() {
+        let line = format!("remove @ada usage ({})", span("ada"));
         assert_eq!(
-            linked("fix: x (@ada)"),
-            "fix: x ([@ada](https://github.com/ada))"
+            style_login_mentions(&line, "ada", LoginStyle::Linked),
+            "remove @ada usage ([@ada](https://github.com/ada))"
         );
-        // Longer handle: `@adamant` must not be split.
-        assert_eq!(linked("ping @adamant"), "ping @adamant");
-        // Email-ish: `x@ada` is not a mention.
-        assert_eq!(linked("mail x@ada now"), "mail x@ada now");
-        // Already linked: no double-wrapping.
         assert_eq!(
-            linked("[@ada](https://github.com/ada)"),
-            "[@ada](https://github.com/ada)"
-        );
-        // Multiple standalone mentions all link.
-        assert_eq!(
-            linked("@ada and @ada"),
-            "[@ada](https://github.com/ada) and [@ada](https://github.com/ada)"
+            style_login_mentions(&line, "ada", LoginStyle::Bare),
+            "remove @ada usage (@ada)"
         );
     }
 
-    /// Both styles collapse the `@@login` a user template produces by
-    /// prefixing its own `@` to the mention-form `AuthorUsername`.
+    /// A template-supplied literal `@` directly before the span is consumed
+    /// (the GR-ported `@{{ .AuthorUsername }}` shape), in both styles.
     #[test]
-    fn style_login_mentions_collapses_double_at() {
+    fn style_login_mentions_collapses_template_at_before_span() {
+        let line = format!("x (@{})", span("ada"));
         assert_eq!(
-            style_login_mentions("x (@@ada)", "ada", LoginStyle::Bare),
+            style_login_mentions(&line, "ada", LoginStyle::Bare),
             "x (@ada)"
         );
         assert_eq!(
-            style_login_mentions("x (@@ada)", "ada", LoginStyle::Linked),
+            style_login_mentions(&line, "ada", LoginStyle::Linked),
             "x ([@ada](https://github.com/ada))"
         );
     }
 
-    /// Bare style leaves a standalone mention untouched (GitHub autolinks it).
+    /// A mangled span (a template filter ate one sentinel) degrades to its
+    /// unstyled text — the sentinel itself must never reach the output.
     #[test]
-    fn style_login_mentions_bare_is_passthrough() {
-        assert_eq!(
-            style_login_mentions("fix: x (@ada)", "ada", LoginStyle::Bare),
-            "fix: x (@ada)"
-        );
+    fn style_login_mentions_never_leaks_sentinels() {
+        let half = format!("{MENTION_SENTINEL}@ADA");
+        let line = format!("x ({half})");
+        for style in [LoginStyle::Bare, LoginStyle::Linked] {
+            let out = style_login_mentions(&line, "ada", style);
+            assert!(
+                !out.contains(MENTION_SENTINEL),
+                "sentinel leaked ({style:?}): {out:?}"
+            );
+            assert_eq!(out, "x (@ADA)");
+        }
+    }
+
+    // ---- strip_mention_sentinels ----
+
+    /// Clean input borrows (no allocation, byte-identical); dirty input has
+    /// every sentinel removed.
+    #[test]
+    fn strip_mention_sentinels_borrows_clean_and_cleans_dirty() {
+        assert!(matches!(
+            strip_mention_sentinels("plain text"),
+            std::borrow::Cow::Borrowed("plain text")
+        ));
+        let dirty = format!("a{MENTION_SENTINEL}b{MENTION_SENTINEL}c");
+        assert_eq!(strip_mention_sentinels(&dirty), "abc");
     }
 
     // ---- collect_all_logins ----

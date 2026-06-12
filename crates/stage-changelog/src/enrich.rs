@@ -154,17 +154,6 @@ pub(crate) fn configured_github_target(workspace_root: &Path) -> Option<(String,
     None
 }
 
-/// The GitHub token for the write-path enricher: the same env precedence the
-/// CLI's `--token` fallback documents (`ANODIZER_GITHUB_TOKEN` over
-/// `GITHUB_TOKEN`). `None` disables enrichment — ambient `gh` auth is never
-/// used, so unauthenticated runs stay offline.
-pub(crate) fn token_from_env() -> Option<String> {
-    std::env::var("ANODIZER_GITHUB_TOKEN")
-        .ok()
-        .filter(|t| !t.is_empty())
-        .or_else(|| std::env::var("GITHUB_TOKEN").ok().filter(|t| !t.is_empty()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

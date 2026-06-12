@@ -156,8 +156,9 @@ pub(crate) fn resolve_token(ctx: &Context, env_var: Option<&str>) -> Option<Stri
         .clone()
         .and_then(non_empty)
         .or_else(|| env_var.and_then(|v| ctx.env_var(v)).and_then(non_empty))
-        .or_else(|| ctx.env_var("ANODIZER_GITHUB_TOKEN").and_then(non_empty))
-        .or_else(|| ctx.env_var("GITHUB_TOKEN").and_then(non_empty))
+        .or_else(|| {
+            anodizer_core::git::resolve_github_token_with_env(None, &|key| ctx.env_var(key))
+        })
 }
 
 // ---------------------------------------------------------------------------
