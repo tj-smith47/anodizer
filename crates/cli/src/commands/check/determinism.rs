@@ -20,7 +20,8 @@ use anodizer_core::{
 };
 use anyhow::{Context, Result};
 
-pub fn run(args: CheckDeterminismArgs) -> Result<()> {
+pub fn run(args: CheckDeterminismArgs, verbose: bool, debug: bool, quiet: bool) -> Result<()> {
+    let verbosity = Verbosity::from_flags(quiet, verbose, debug);
     let repo_root = std::env::current_dir().context("resolving repo root")?;
 
     // `--inject-drift` is a test-only flag gated by
@@ -80,7 +81,7 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
     // run-configuration summary as aligned `kv` rows, one level beneath it).
     // It is the single printer of these parameters — the child release
     // subprocess and any wrapping CI script must not repeat them.
-    let log = StageLogger::new("check", Verbosity::Normal);
+    let log = StageLogger::new("check", verbosity);
     let _section = log.group("check-determinism");
     emit_run_summary(
         &log,
@@ -189,6 +190,7 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
         child_snapshot,
         docker_backend_hint,
         crate_name: args.crate_name.clone(),
+        verbosity,
     };
 
     let report = harness.run()?;
@@ -201,13 +203,15 @@ pub fn run(args: CheckDeterminismArgs) -> Result<()> {
         serde_json::to_string_pretty(&report).context("serializing determinism report to JSON")?;
     std::fs::write(&report_path, json)
         .with_context(|| format!("writing report to {}", report_path.display()))?;
-    eprintln!(
-        "{}",
-        render_note(&format!(
-            "wrote determinism report to {}",
-            report_path.display()
-        ))
-    );
+    if verbosity > Verbosity::Quiet {
+        eprintln!(
+            "{}",
+            render_note(&format!(
+                "wrote determinism report to {}",
+                report_path.display()
+            ))
+        );
+    }
 
     if report.drift_count > 0 {
         eprintln!(

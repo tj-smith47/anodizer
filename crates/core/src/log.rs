@@ -364,12 +364,17 @@ pub struct SectionGuard {
 
 impl Drop for SectionGuard {
     fn drop(&mut self) {
+        // Take the PENDING lock BEFORE decrementing the depth: a
+        // flush_pending observer on another thread serializes on this
+        // lock, so it sees the depth decrement and the pop as one
+        // transition instead of a window where the depth is already
+        // lowered but the section's pending header is still queued.
+        let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
         SECTION_DEPTH.fetch_sub(1, Ordering::Relaxed);
         // Remove this section's pending entry (LIFO matches nesting). An
         // unflushed entry means the section emitted no body line — a no-op
         // stage — so dropping it without printing is exactly the desired
         // "no-op stages print nothing" behavior.
-        let mut pending = PENDING.lock().unwrap_or_else(|e| e.into_inner());
         pending.pop();
     }
 }
@@ -1138,17 +1143,20 @@ mod tests {
         // indentation (not a collapsible `::group::` block) conveys nesting.
         let _guard = SECTION_TEST_LOCK.lock().unwrap();
         let log = StageLogger::new("build", Verbosity::Normal);
-        assert_eq!(indent(), "");
+        // Relative to the inherited base so an exported ANODIZER_LOG_DEPTH
+        // in the test environment shifts every expectation uniformly.
+        let base = "  ".repeat(base_depth());
+        assert_eq!(indent(), base);
         {
             let _outer = log.group("build");
-            assert_eq!(indent(), "  ");
+            assert_eq!(indent(), format!("{base}  "));
             {
                 let _inner = log.group("sign");
-                assert_eq!(indent(), "    ");
+                assert_eq!(indent(), format!("{base}    "));
             }
-            assert_eq!(indent(), "  ");
+            assert_eq!(indent(), format!("{base}  "));
         }
-        assert_eq!(indent(), "");
+        assert_eq!(indent(), base);
     }
 
     #[test]
@@ -1552,17 +1560,21 @@ mod tests {
             }
             out
         };
+        // Relative to the live indent so an exported ANODIZER_LOG_DEPTH
+        // (or a section left open by a parallel test) cannot skew the
+        // absolute column.
+        let prefix = indent();
         assert_eq!(
             strip(StageLogger::render_body(MARKER_DETAIL, "x")),
-            "   • x"
+            format!("{prefix}   • x")
         );
         assert_eq!(
             strip(StageLogger::render_body(MARKER_SUCCESS, "ok")),
-            "   ✓ ok"
+            format!("{prefix}   ✓ ok")
         );
         assert_eq!(
             strip(StageLogger::render_body(MARKER_FAILURE, "bad")),
-            "   ✗ bad"
+            format!("{prefix}   ✗ bad")
         );
     }
 

@@ -1118,7 +1118,7 @@ fn apply_workspace_bump(
 
     if dry_run {
         log.status(&format!(
-            "(dry-run) workspace version-sync: would bump {} crate(s) → {}",
+            "(dry-run) would bump {} workspace crate(s) → {}",
             rows.iter().filter(|r| r.level != BumpLevel::Skip).count(),
             new_version
         ));
@@ -2367,7 +2367,7 @@ fn rewrite_and_stage_version_files(
     for (outcome, rel) in outcomes.iter().zip(files.iter()) {
         if outcome.replacements > 0 {
             log.status(&format!(
-                "{}version_files: rewrote {} occurrence(s) of {} → {} in {}",
+                "{}rewrote {} occurrence(s) of {} → {} in {}",
                 if dry_run { "(dry-run) " } else { "" },
                 outcome.replacements,
                 old,

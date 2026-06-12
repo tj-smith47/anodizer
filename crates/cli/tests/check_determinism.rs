@@ -386,9 +386,13 @@ fn harness_skips_env_preflight_and_prints_header_and_config_warnings_once() {
         !stderr.contains("no release tags at HEAD"),
         "children must select the fixture crate from the tag, not no-op: {stderr}"
     );
-    // (`running cargo` is the build stage's body line announcing the
-    // compile; one per child run.)
-    let builds = stderr.matches("running cargo").count();
+    // The build stage announces the compile as `running cargo zigbuild …`
+    // (zigbuild on PATH) or `running cargo build …` (fallback); one per
+    // child run. Anchoring on verb + subcommand keeps unrelated
+    // `running cargo <other>` body lines (e.g. a publish dry-run probe)
+    // out of the count.
+    let builds = stderr.matches("running cargo zigbuild").count()
+        + stderr.matches("running cargo build").count();
     assert_eq!(
         builds, 2,
         "expected one cargo build invocation per run (runs=2), got {builds}:\n{stderr}"
@@ -407,6 +411,71 @@ fn harness_skips_env_preflight_and_prints_header_and_config_warnings_once() {
             count, 1,
             "moderation-queue warning for {publisher} must print exactly once \
              per invocation, got {count}:\n{stderr}"
+        );
+    }
+}
+
+/// `-q` (the global quiet flag) must silence the harness's own output —
+/// the `Checking determinism` header, the kv summary rows, and the
+/// `run N of M` bullets — and propagate to the child release
+/// subprocesses so their section headers are silenced too. Errors stay
+/// audible (separate path: `log.error` / `render_error` are
+/// unconditional), so a green quiet run produces an (almost) empty
+/// stderr.
+#[test]
+fn quiet_flag_silences_harness_run_bullets_and_children() {
+    if !tool_on_path("cargo") || !tool_on_path("git") {
+        eprintln!(
+            "SKIP quiet_flag_silences_harness_run_bullets_and_children: \
+             cargo or git missing from PATH"
+        );
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path();
+    bootstrap_minimal_cargo_repo(repo, "anodize-quiet-fixture");
+
+    let report_path = repo.join("det.json");
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "-q",
+            "check",
+            "determinism",
+            "--runs",
+            "1",
+            "--stages",
+            "build",
+            "--report",
+        ])
+        .arg(&report_path)
+        .current_dir(repo)
+        // Plain output so absence assertions can't be confused by ANSI
+        // styling inserted under CI-forced color.
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("invoking anodize -q check determinism");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "quiet run must still succeed; stdout={} stderr={stderr}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    assert!(
+        report_path.exists(),
+        "quiet run must still write the report"
+    );
+    for needle in [
+        "Checking determinism",
+        "run 1 of 1",
+        "Building binaries",
+        "running cargo",
+        "wrote determinism report",
+    ] {
+        assert!(
+            !stderr.contains(needle),
+            "-q must silence `{needle}`; stderr:\n{stderr}"
         );
     }
 }

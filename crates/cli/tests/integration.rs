@@ -764,15 +764,15 @@ fn test_e2e_snapshot_release_produces_artifacts() {
 fn test_release_prepare_matches_explicit_skip() {
     let host = detect_host_target();
 
-    // We extract the set of stages the pipeline reported as skipped.
+    // Extracts the set of stages the pipeline reported as skipped.
     //
     // Pipeline-level skips are consolidated into kv rows: consecutive
     // skipped stages buffer up and flush as `   • skipped  a, b, c`
     // (operator/mode `--skip`) or `   • skipped  a, b, c (no binaries)`
     // (binary-dependent stages with no binaries) — both emitted by
-    // `Pipeline::run` via `kv`. The value is a comma-separated stage list;
-    // we split it so the assertions below can match `release` / `publish` /
-    // `announce` directly.
+    // `Pipeline::run` via `kv`. The value is a comma-separated stage
+    // list, split into names so the assertions below can match
+    // `release` / `publish` / `announce` directly.
     //
     // Per-crate / per-config body notes (e.g. `no gitlab config ...,
     // skipping`) are progress lines inside a running stage, not a stage
@@ -4831,7 +4831,7 @@ crates:
 
     // Seed dist/run-fixt/report.json with a Succeeded Manager entry
     // whose name does not match any publisher in this minimal config.
-    // We don't need real publisher dispatch — only that the replay
+    // Real publisher dispatch is not needed — only that the replay
     // path runs end-to-end and writes rollback.json.
     let run_dir = tmp.path().join("dist").join("run-fixt");
     fs::create_dir_all(&run_dir).unwrap();

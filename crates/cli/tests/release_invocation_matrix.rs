@@ -81,11 +81,11 @@ fn strip_ansi(s: &str) -> String {
 /// Both rows are emitted by `Pipeline::run` via `kv(...)` (see
 /// `crates/cli/src/pipeline/mod.rs`), so they are the authoritative
 /// "these stages did not run" signal; the value is a comma-separated
-/// stage list we split into individual names.
+/// stage list, split into individual names.
 ///
-/// We intentionally do NOT treat per-crate / per-config body notes such as
-/// `skipping build for crate 'X'` or `no gitlab config for crate 'y',
-/// skipping` as a stage skip: those are progress lines emitted inside a
+/// Per-crate / per-config body notes such as `skipping build for crate
+/// 'X'` or `no gitlab config for crate 'y', skipping` deliberately do
+/// NOT count as a stage skip: those are progress lines emitted inside a
 /// running stage, not the stage's own pipeline-level verdict. Anchoring on
 /// the kv key pad (`skipped` + at least two spaces) keeps the distinction
 /// precise — mid-stage notes like `skipped (snapshot mode)` have a single
@@ -702,7 +702,7 @@ fn host_targets_logs_skipped_apple_and_msvc_on_linux() {
     );
     let stderr = strip_ansi(&String::from_utf8_lossy(&out.stderr));
     assert!(
-        stderr.contains("host-targets: skipping 3 target(s)")
+        stderr.contains("skipping 3 target(s) not buildable")
             && stderr.contains("x86_64-apple-darwin")
             && stderr.contains("aarch64-apple-darwin")
             && stderr.contains("apple targets require a macOS host")
@@ -712,7 +712,7 @@ fn host_targets_logs_skipped_apple_and_msvc_on_linux() {
     );
     let skip_line = stderr
         .lines()
-        .find(|l| l.contains("host-targets: skipping"))
+        .find(|l| l.contains("not buildable on this"))
         .expect("a skip line is emitted");
     assert!(
         !skip_line.contains("x86_64-pc-windows-gnu"),

@@ -486,13 +486,16 @@ pub fn record_failure_policy(
 ///
 /// With zero publisher results a single placeholder row stands in for
 /// the per-publisher block, so the summary still states *why* it is
-/// empty instead of rendering a bare header:
+/// empty instead of rendering a bare header. `publish_ran` selects the
+/// cause: results are empty either because the publish stages never ran
+/// (skipped/gated) or because publish ran with zero publishers
+/// configured — the two read very differently to an operator:
 ///
 /// ```text
 /// • publishers   none ran (publish stages skipped)
 /// • run flags    submitter_gated=false announce_gated=false
 /// ```
-pub fn status_table_rows(summary: &RunSummary) -> Vec<(String, String)> {
+pub fn status_table_rows(summary: &RunSummary, publish_ran: bool) -> Vec<(String, String)> {
     // Cap the name column so a pathological publisher name (e.g. an
     // operator pastes a URL into `publishers.custom[].name`) cannot
     // blow out the terminal width in CI logs. 40 chars covers every
@@ -521,10 +524,12 @@ pub fn status_table_rows(summary: &RunSummary) -> Vec<(String, String)> {
 
     let mut rows: Vec<(String, String)> = Vec::new();
     if summary.results.is_empty() {
-        rows.push((
-            "publishers".to_string(),
-            "none ran (publish stages skipped)".to_string(),
-        ));
+        let why = if publish_ran {
+            "none ran (no publishers configured)"
+        } else {
+            "none ran (publish stages skipped)"
+        };
+        rows.push(("publishers".to_string(), why.to_string()));
     } else {
         let group_width = summary
             .results
@@ -1047,7 +1052,7 @@ mod tests {
     #[test]
     fn status_table_rows_render_per_publisher_and_run_flags() {
         let s = populated_summary();
-        let rows = status_table_rows(&s);
+        let rows = status_table_rows(&s, true);
         // One row per publisher result, plus the trailing run-flags row.
         assert_eq!(rows.len(), s.results.len() + 1, "rows: {rows:?}");
         assert!(
@@ -1094,7 +1099,7 @@ mod tests {
             results: vec![],
             determinism_allowlist: DeterminismAllowlist::default(),
         };
-        let rows = status_table_rows(&s);
+        let rows = status_table_rows(&s, false);
         assert_eq!(
             rows,
             vec![
@@ -1107,6 +1112,16 @@ mod tests {
                     "submitter_gated=false announce_gated=false".to_string()
                 ),
             ],
+        );
+        // Same empty results, but publish actually ran: the cause is a
+        // zero-publisher configuration, not a skipped stage.
+        let rows = status_table_rows(&s, true);
+        assert_eq!(
+            rows.first().expect("placeholder row"),
+            &(
+                "publishers".to_string(),
+                "none ran (no publishers configured)".to_string()
+            ),
         );
     }
 
@@ -1144,7 +1159,7 @@ mod tests {
             ],
             determinism_allowlist: DeterminismAllowlist::default(),
         };
-        let rows = status_table_rows(&s);
+        let rows = status_table_rows(&s, true);
         // The full long name is the row key, untruncated at this length.
         assert_eq!(
             rows[0].0, "custom-publisher-with-long-id",
@@ -1185,7 +1200,7 @@ mod tests {
             }],
             determinism_allowlist: DeterminismAllowlist::default(),
         };
-        let rows = status_table_rows(&s);
+        let rows = status_table_rows(&s, true);
         let key = &rows[0].0;
         assert!(
             !key.contains(&long_name),

@@ -125,7 +125,7 @@ impl Stage for VerifyReleaseStage {
         };
         if smoke_enabled && !docker_ok {
             log.status(
-                "verify-release: Docker unavailable — skipping install smoke-test \
+                "Docker unavailable — skipping install smoke-test \
                  (asset-existence and libc-ceiling still run)",
             );
         }

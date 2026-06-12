@@ -111,27 +111,11 @@ pub fn compute_skip_arg(extra: &[&str]) -> String {
 /// The child env is fully replaced (`env_clear` then re-populate) so
 /// host env vars cannot leak through and perturb the build. Caller
 /// (the harness) constructs the env map.
-pub fn run_build_pipeline_subprocess(
-    anodize_binary: &Path,
-    worktree_path: &Path,
-    env: &HashMap<String, String>,
-    targets: Option<&[String]>,
-    extra_skip: &[String],
-    snapshot: bool,
-    crate_name: Option<&str>,
-) -> Result<()> {
-    let mut cmd = build_subprocess_command(
-        anodize_binary,
-        worktree_path,
-        env,
-        targets,
-        extra_skip,
-        snapshot,
-        crate_name,
-    );
+pub fn run_build_pipeline_subprocess(spec: &ChildInvocation<'_>) -> Result<()> {
+    let mut cmd = build_subprocess_command(spec);
     tracing::debug!(
         args = ?cmd.get_args(),
-        worktree = %worktree_path.display(),
+        worktree = %spec.worktree_path.display(),
         "spawning anodize release child for determinism harness",
     );
     let status = cmd
@@ -140,30 +124,79 @@ pub fn run_build_pipeline_subprocess(
     anyhow::ensure!(
         status.success(),
         "harness build pipeline failed in worktree {} (exit {:?})",
-        worktree_path.display(),
+        spec.worktree_path.display(),
         status.code()
     );
     Ok(())
+}
+
+/// Invocation knobs for the child `anodize release` subprocess, grouped
+/// so the spawn surface takes one spec instead of a positional argument
+/// list that grows with every new knob.
+pub struct ChildInvocation<'a> {
+    /// Path to the running `anodize` binary (see
+    /// [`current_anodize_binary`]).
+    pub anodize_binary: &'a Path,
+    /// Hermetic worktree the child builds in (`current_dir`).
+    pub worktree_path: &'a Path,
+    /// Fully-replacing child env map (`env_clear` + re-populate);
+    /// constructed by the harness.
+    pub env: &'a HashMap<String, String>,
+    /// `--targets=<csv>` restriction; `None` validates every configured
+    /// target.
+    pub targets: Option<&'a [String]>,
+    /// The harness's complement skip set, merged with
+    /// [`SIDE_EFFECT_STAGES`] via [`compute_skip_arg`]. Pass `&[]` for
+    /// the legacy "side-effect stages only" behavior.
+    pub extra_skip: &'a [String],
+    /// Whether the child gets `--snapshot`. The release workflow passes
+    /// `false` on tag-push runs so artifacts carry the real version.
+    pub snapshot: bool,
+    /// `--crate=<name>` scoping for per-crate shards; `None` builds the
+    /// workspace default.
+    pub crate_name: Option<&'a str>,
+    /// Operator verbosity, forwarded as `--quiet` / `--verbose` /
+    /// `--debug` so the child's inherited stderr honors the same
+    /// contract as the harness's own logger.
+    pub verbosity: crate::log::Verbosity,
 }
 
 /// Build the [`Command`] the harness will spawn. Split out from
 /// [`run_build_pipeline_subprocess`] so unit tests can inspect the
 /// constructed argv (`cmd.get_args()`) without shelling out — the
 /// alternative is to ship a real `anodize` binary into the test harness.
-fn build_subprocess_command(
-    anodize_binary: &Path,
-    worktree_path: &Path,
-    env: &HashMap<String, String>,
-    targets: Option<&[String]>,
-    extra_skip: &[String],
-    snapshot: bool,
-    crate_name: Option<&str>,
-) -> Command {
+fn build_subprocess_command(spec: &ChildInvocation<'_>) -> Command {
+    let ChildInvocation {
+        anodize_binary,
+        worktree_path,
+        env,
+        targets,
+        extra_skip,
+        snapshot,
+        crate_name,
+        verbosity,
+    } = *spec;
     let mut cmd = Command::new(anodize_binary);
     let extra_refs: Vec<&str> = extra_skip.iter().map(String::as_str).collect();
     cmd.arg("release");
     if snapshot {
         cmd.arg("--snapshot");
+    }
+    // The child's stderr is inherited into the harness's own stream, so
+    // the operator's verbosity choice must extend to the child — a
+    // `check determinism -q` whose children still print every section
+    // would make the flag meaningless.
+    match verbosity {
+        crate::log::Verbosity::Quiet => {
+            cmd.arg("--quiet");
+        }
+        crate::log::Verbosity::Verbose => {
+            cmd.arg("--verbose");
+        }
+        crate::log::Verbosity::Debug => {
+            cmd.arg("--debug");
+        }
+        crate::log::Verbosity::Normal => {}
     }
     cmd.arg(compute_skip_arg(&extra_refs));
     // The replica pipeline runs in a deliberately credential-less hermetic
@@ -232,7 +265,16 @@ mod tests {
         let env = HashMap::new();
         let worktree = std::env::temp_dir();
         let bogus = PathBuf::from("/nonexistent/anodize-binary-for-tests");
-        let res = run_build_pipeline_subprocess(&bogus, &worktree, &env, None, &[], true, None);
+        let res = run_build_pipeline_subprocess(&ChildInvocation {
+            anodize_binary: &bogus,
+            worktree_path: &worktree,
+            env: &env,
+            targets: None,
+            extra_skip: &[],
+            snapshot: true,
+            crate_name: None,
+            verbosity: crate::log::Verbosity::Normal,
+        });
         assert!(
             res.is_err(),
             "missing binary should surface as an error, not a panic"
@@ -245,15 +287,16 @@ mod tests {
     #[test]
     fn subprocess_command_omits_targets_when_none() {
         let env = HashMap::new();
-        let cmd = build_subprocess_command(
-            &PathBuf::from("/usr/bin/anodize"),
-            &std::env::temp_dir(),
-            &env,
-            None,
-            &[],
-            true,
-            None,
-        );
+        let cmd = build_subprocess_command(&ChildInvocation {
+            anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+            worktree_path: &std::env::temp_dir(),
+            env: &env,
+            targets: None,
+            extra_skip: &[],
+            snapshot: true,
+            crate_name: None,
+            verbosity: crate::log::Verbosity::Normal,
+        });
         let args: Vec<&str> = cmd.get_args().map(|s| s.to_str().expect("ascii")).collect();
         assert!(
             args.iter().all(|a| !a.starts_with("--targets")),
@@ -281,15 +324,16 @@ mod tests {
             "x86_64-apple-darwin".to_string(),
             "aarch64-apple-darwin".to_string(),
         ];
-        let cmd = build_subprocess_command(
-            &PathBuf::from("/usr/bin/anodize"),
-            &std::env::temp_dir(),
-            &env,
-            Some(&triples),
-            &[],
-            true,
-            None,
-        );
+        let cmd = build_subprocess_command(&ChildInvocation {
+            anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+            worktree_path: &std::env::temp_dir(),
+            env: &env,
+            targets: Some(&triples),
+            extra_skip: &[],
+            snapshot: true,
+            crate_name: None,
+            verbosity: crate::log::Verbosity::Normal,
+        });
         let args: Vec<String> = cmd
             .get_args()
             .map(|s| s.to_str().expect("ascii").to_string())
@@ -310,15 +354,16 @@ mod tests {
     fn subprocess_command_drops_targets_when_list_is_empty() {
         let env = HashMap::new();
         let empty: Vec<String> = Vec::new();
-        let cmd = build_subprocess_command(
-            &PathBuf::from("/usr/bin/anodize"),
-            &std::env::temp_dir(),
-            &env,
-            Some(&empty),
-            &[],
-            true,
-            None,
-        );
+        let cmd = build_subprocess_command(&ChildInvocation {
+            anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+            worktree_path: &std::env::temp_dir(),
+            env: &env,
+            targets: Some(&empty),
+            extra_skip: &[],
+            snapshot: true,
+            crate_name: None,
+            verbosity: crate::log::Verbosity::Normal,
+        });
         let args: Vec<String> = cmd
             .get_args()
             .map(|s| s.to_str().expect("ascii").to_string())
@@ -340,15 +385,16 @@ mod tests {
     fn subprocess_command_always_disables_env_preflight() {
         let env = HashMap::new();
         for snapshot in [true, false] {
-            let cmd = build_subprocess_command(
-                &PathBuf::from("/usr/bin/anodize"),
-                &std::env::temp_dir(),
-                &env,
-                None,
-                &[],
+            let cmd = build_subprocess_command(&ChildInvocation {
+                anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+                worktree_path: &std::env::temp_dir(),
+                env: &env,
+                targets: None,
+                extra_skip: &[],
                 snapshot,
-                None,
-            );
+                crate_name: None,
+                verbosity: crate::log::Verbosity::Normal,
+            });
             let args: Vec<&str> = cmd.get_args().map(|s| s.to_str().expect("ascii")).collect();
             assert!(
                 args.contains(&"--no-preflight"),
@@ -369,15 +415,16 @@ mod tests {
         let mut env = HashMap::new();
         env.insert(crate::log::LOG_DEPTH_ENV.to_string(), "99".to_string());
         for snapshot in [true, false] {
-            let cmd = build_subprocess_command(
-                &PathBuf::from("/usr/bin/anodize"),
-                &std::env::temp_dir(),
-                &env,
-                None,
-                &[],
+            let cmd = build_subprocess_command(&ChildInvocation {
+                anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+                worktree_path: &std::env::temp_dir(),
+                env: &env,
+                targets: None,
+                extra_skip: &[],
                 snapshot,
-                None,
-            );
+                crate_name: None,
+                verbosity: crate::log::Verbosity::Normal,
+            });
             let depth = cmd
                 .get_envs()
                 .find(|(k, _)| *k == std::ffi::OsStr::new(crate::log::LOG_DEPTH_ENV))
@@ -412,15 +459,16 @@ mod tests {
     #[test]
     fn subprocess_command_drops_snapshot_when_disabled() {
         let env = HashMap::new();
-        let cmd = build_subprocess_command(
-            &PathBuf::from("/usr/bin/anodize"),
-            &std::env::temp_dir(),
-            &env,
-            None,
-            &[],
-            false,
-            None,
-        );
+        let cmd = build_subprocess_command(&ChildInvocation {
+            anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+            worktree_path: &std::env::temp_dir(),
+            env: &env,
+            targets: None,
+            extra_skip: &[],
+            snapshot: false,
+            crate_name: None,
+            verbosity: crate::log::Verbosity::Normal,
+        });
         let args: Vec<&str> = cmd.get_args().map(|s| s.to_str().expect("ascii")).collect();
         assert!(
             !args.contains(&"--snapshot"),
@@ -441,15 +489,16 @@ mod tests {
     #[test]
     fn subprocess_command_scopes_to_crate_when_named() {
         let env = HashMap::new();
-        let cmd = build_subprocess_command(
-            &PathBuf::from("/usr/bin/anodize"),
-            &std::env::temp_dir(),
-            &env,
-            None,
-            &[],
-            true,
-            Some("cfgd"),
-        );
+        let cmd = build_subprocess_command(&ChildInvocation {
+            anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+            worktree_path: &std::env::temp_dir(),
+            env: &env,
+            targets: None,
+            extra_skip: &[],
+            snapshot: true,
+            crate_name: Some("cfgd"),
+            verbosity: crate::log::Verbosity::Normal,
+        });
         let args: Vec<String> = cmd
             .get_args()
             .map(|s| s.to_str().expect("ascii").to_string())
@@ -465,15 +514,16 @@ mod tests {
     #[test]
     fn subprocess_command_omits_crate_when_none() {
         let env = HashMap::new();
-        let cmd = build_subprocess_command(
-            &PathBuf::from("/usr/bin/anodize"),
-            &std::env::temp_dir(),
-            &env,
-            None,
-            &[],
-            true,
-            None,
-        );
+        let cmd = build_subprocess_command(&ChildInvocation {
+            anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+            worktree_path: &std::env::temp_dir(),
+            env: &env,
+            targets: None,
+            extra_skip: &[],
+            snapshot: true,
+            crate_name: None,
+            verbosity: crate::log::Verbosity::Normal,
+        });
         let args: Vec<String> = cmd
             .get_args()
             .map(|s| s.to_str().expect("ascii").to_string())

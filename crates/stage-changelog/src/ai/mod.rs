@@ -260,7 +260,7 @@ pub(crate) fn enhance_with_ai(
     let provider = make_provider(provider_name, env)?;
 
     log.status(&format!(
-        "changelog.ai: enhancing release notes via {} (model: {})",
+        "enhancing release notes via {} (model: {})",
         provider_name,
         ai_cfg.model.as_deref().unwrap_or(provider.default_model())
     ));

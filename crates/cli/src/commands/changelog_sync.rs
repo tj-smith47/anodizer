@@ -202,7 +202,7 @@ fn persist_update(
         anodizer_stage_changelog::InsertionMode::Replace => {
             if dry_run {
                 log.status(&format!(
-                    "(dry-run) changelog: would write section for {} → {} in {}",
+                    "(dry-run) would write changelog section for {} → {} in {}",
                     t.crate_name,
                     t.to_version,
                     update.file_path.display()

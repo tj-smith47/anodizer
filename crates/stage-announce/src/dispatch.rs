@@ -9,10 +9,14 @@ pub(crate) fn dispatch(
     send: impl FnOnce() -> Result<()>,
 ) -> Result<()> {
     let log = ctx.logger("announce");
+    // kv register: the provider name is the key (several providers share
+    // one Announcing section, so the name is genuine information), the
+    // announcement line is the value.
+    let key_width = provider.chars().count();
     if ctx.is_dry_run() {
-        log.status(&format!("(dry-run) {provider}: {log_line}"));
+        log.kv(provider, &format!("(dry-run) {log_line}"), key_width);
     } else {
-        log.status(&format!("{provider}: {log_line}"));
+        log.kv(provider, log_line, key_width);
         send()?;
     }
     Ok(())

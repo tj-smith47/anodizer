@@ -273,7 +273,11 @@ pub fn emit_summary(ctx: &mut Context) {
     // `publisher-summary` (not `announce`) so the section header reads
     // `Summary` rather than the announce stage's phrase.
     let log = ctx.logger("publisher-summary");
-    let rows = anodizer_stage_publish::run_summary::status_table_rows(&summary);
+    // publish_report is installed only when the publish stage actually
+    // ran, so its presence distinguishes "stages skipped" from "ran with
+    // zero publishers configured" in the placeholder row.
+    let publish_ran = ctx.publish_report().is_some();
+    let rows = anodizer_stage_publish::run_summary::status_table_rows(&summary, publish_ran);
     let key_width = rows
         .iter()
         .map(|(k, _)| k.chars().count())

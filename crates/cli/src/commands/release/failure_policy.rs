@@ -163,7 +163,7 @@ pub(super) fn finish(
         FailureAction::Hold { degraded } => {
             if degraded {
                 log.warn(&format!(
-                    "on_failure=rollback DEGRADED to hold: one-way-door publisher(s) already \
+                    "on_failure=rollback DEGRADED to hold — one-way-door publisher(s) already \
                      accepted this version: {}. Those registries never accept the same version \
                      twice, so the version is burned and rolling back the tag would only orphan \
                      the live published state. Fix forward: keep the tag, revert reversible \
@@ -173,10 +173,10 @@ pub(super) fn finish(
                 ));
             } else {
                 log.status(
-                    "on_failure=hold: leaving tags, commits, and published state in place for \
-                     forensics. Recover with `anodizer release --rollback-only --from-run=<id>` \
-                     (reverts reversible publishers) and/or `anodizer tag rollback` once \
-                     investigated.",
+                    "holding tags, commits, and published state in place for forensics \
+                     (on_failure=hold). Recover with `anodizer release --rollback-only \
+                     --from-run=<id>` (reverts reversible publishers) and/or \
+                     `anodizer tag rollback` once investigated.",
                 );
             }
             FailurePolicyRecord {
@@ -205,8 +205,8 @@ fn execute_rollback(
     log: &StageLogger,
 ) -> FailurePolicyRecord {
     log.status(
-        "on_failure=rollback: no one-way-door publisher landed — rolling back this run's \
-         release tag(s) and version bump",
+        "rolling back this run's release tag(s) and version bump \
+         (on_failure=rollback) — no one-way-door publisher landed",
     );
     let rollback = crate::commands::tag::rollback::run(RollbackOpts {
         sha: None,

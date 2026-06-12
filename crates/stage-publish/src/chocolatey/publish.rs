@@ -967,7 +967,7 @@ mod tests {
         let msgs = cap.all_messages();
         assert!(
             msgs.iter()
-                .any(|(_, m)| m.contains("skipped") && m.contains("mytool")),
+                .any(|(_, m)| m.contains("skipping") && m.contains("mytool")),
             "expected skip status, got {msgs:?}"
         );
     }

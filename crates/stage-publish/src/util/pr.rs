@@ -51,7 +51,7 @@ fn sync_fork(
         &format!("{label}: git fetch upstream"),
     ) {
         log.warn(&format!(
-            "{label}: fork sync: fetch upstream failed, continuing without sync: {e}"
+            "failed to fetch upstream for {label} fork sync; continuing without sync: {e}"
         ));
         return;
     }
@@ -65,7 +65,7 @@ fn sync_fork(
         &format!("{label}: git rebase upstream"),
     ) {
         log.warn(&format!(
-            "{label}: fork sync: rebase failed, aborting rebase and continuing: {e}"
+            "failed to rebase {label} fork onto upstream; aborting rebase and continuing: {e}"
         ));
         // Abort the failed rebase so the repo is in a clean state.
         let _ = run_cmd_in(
@@ -101,7 +101,7 @@ fn gh_is_available() -> bool {
 /// the publish log and the actionable remediation pointer at the end.
 pub(crate) fn pr_exists_skip_warn_message(label: &str, head: &str) -> String {
     format!(
-        "{label}: PR for '{head}' already exists — skipping \
+        "{label} PR for '{head}' already exists — skipping \
          (set update_existing_pr: true to update the PR in place)"
     )
 }
@@ -110,7 +110,7 @@ pub(crate) fn pr_exists_skip_warn_message(label: &str, head: &str) -> String {
 /// exists, `update_existing_pr` is true, and the force-push to the
 /// existing branch succeeded.
 pub(crate) fn pr_exists_update_status_message(label: &str, head: &str) -> String {
-    format!("{label}: PR for '{head}' already exists — updated in place")
+    format!("{label} PR for '{head}' already exists — updated in place")
 }
 
 // ---------------------------------------------------------------------------
@@ -205,7 +205,7 @@ fn create_pr_via_gh_cli(
             .output();
         match pr_result {
             Ok(output) if output.status.success() => {
-                log.status(&format!("{label}: PR submitted via gh CLI"));
+                log.status(&format!("submitted {label} PR via gh CLI"));
                 return None;
             }
             Ok(output) => {
@@ -333,7 +333,7 @@ fn create_pr_via_api_with_env<E: EnvSource + ?Sized>(
         .send();
     match result {
         Ok(resp) if resp.status().is_success() => {
-            log.status(&format!("{label}: PR submitted via GitHub API"));
+            log.status(&format!("submitted {label} PR via GitHub API"));
             None
         }
         Ok(resp) => {

@@ -170,7 +170,7 @@ pub(super) fn run_split(
     let subdir = partial_target.dist_subdir();
 
     log.status(&format!(
-        "split mode: building for {} (dist/{})",
+        "building for {} in split mode (dist/{})",
         match &partial_target {
             anodizer_core::partial::PartialTarget::Exact(t) => t.clone(),
             anodizer_core::partial::PartialTarget::OsArch { os, arch } => {

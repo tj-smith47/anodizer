@@ -854,7 +854,7 @@ impl PublishStage {
             if let PublisherOutcome::Failed(msg) = &r.outcome {
                 log.warn(&format!("{}: {}", r.name, msg));
             } else if let PublisherOutcome::Skipped(SkipReason::SubmitterGated) = &r.outcome {
-                log.status(&format!("{}: skipped via submitter-gate", r.name));
+                log.status(&format!("skipped {} via submitter-gate", r.name));
             }
         }
 

@@ -50,7 +50,7 @@ pub(crate) fn validate_snapshot_emissions(ctx: &mut Context, log: &StageLogger) 
     // exercises emission-validate end-to-end.
     if ctx.options.partial_target.is_some() {
         log.status(
-            "emission-validate: skipped — build is target-restricted (--targets); \
+            "skipping emission validation — build is target-restricted (--targets); \
              cross-platform emission checks require the full artifact set",
         );
         return Ok(());

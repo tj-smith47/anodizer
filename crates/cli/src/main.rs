@@ -491,7 +491,9 @@ fn run() {
                 cli.debug,
                 cli.quiet,
             ),
-            CheckCmd::Determinism(args) => commands::check::determinism::run(args),
+            CheckCmd::Determinism(args) => {
+                commands::check::determinism::run(args, cli.verbose, cli.debug, cli.quiet)
+            }
             CheckCmd::VersionFiles => commands::check::version_files::run(
                 cli.config.as_deref(),
                 cli.verbose,

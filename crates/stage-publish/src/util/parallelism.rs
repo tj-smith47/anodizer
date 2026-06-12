@@ -49,7 +49,7 @@ pub(crate) fn join_or_warn<'scope, T>(
         } else {
             format!("{:?}", panic_payload)
         };
-        log.warn(&format!("{label}: worker thread panicked: {msg}"));
+        log.warn(&format!("{label} worker thread panicked: {msg}"));
     }
 }
 

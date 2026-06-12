@@ -685,7 +685,10 @@ impl Context {
     /// per-stage copy-paste.
     pub fn skip_in_snapshot(&self, log: &crate::log::StageLogger, stage: &str) -> bool {
         if self.is_snapshot() {
-            log.status(&format!("{}: skipped (snapshot mode)", stage));
+            // The stage name stays in the line: this guard fires on direct
+            // stage invocation, where no pipeline section header has named
+            // the stage yet.
+            log.status(&format!("skipping {stage} (snapshot mode)"));
             true
         } else {
             false

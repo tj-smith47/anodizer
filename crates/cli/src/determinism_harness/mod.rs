@@ -352,6 +352,12 @@ pub struct Harness {
     /// preserved by `--preserve-dist` are immediately shippable via
     /// `anodize release --publish-only`.
     pub child_snapshot: bool,
+    /// Operator-selected output verbosity (global `--quiet` /
+    /// `--verbose` / `--debug` flags). Drives the harness's own logger
+    /// (the `run N of M` bullets) and is forwarded to each child
+    /// `anodize release` subprocess so the whole interleaved stream
+    /// honors one verbosity contract.
+    pub verbosity: Verbosity,
     /// Backend hint forwarded from the CLI dispatcher's reading of the
     /// project's `dockers_v2[*].use` field. `Some("podman")` causes
     /// [`Harness::run_docker_stage`] to short-circuit with an explanatory
@@ -488,7 +494,7 @@ impl Harness {
         // `Checking determinism` section; the child subprocess's own
         // sections nest beneath each bullet via the inherited log depth
         // (see `determinism_runner::build_subprocess_command`).
-        let log = StageLogger::new("check-determinism", Verbosity::Normal);
+        let log = StageLogger::new("check-determinism", self.verbosity);
 
         for run_idx in 0..self.runs {
             log.detail(&format!("run {} of {}", run_idx + 1, self.runs));
@@ -704,13 +710,16 @@ impl Harness {
         let exe = anodizer_core::determinism_runner::current_anodize_binary()?;
         let extra_skip = compute_extra_skip(effective_stages);
         anodizer_core::determinism_runner::run_build_pipeline_subprocess(
-            &exe,
-            worktree_path,
-            env,
-            self.targets.as_deref(),
-            &extra_skip,
-            self.child_snapshot,
-            self.crate_name.as_deref(),
+            &anodizer_core::determinism_runner::ChildInvocation {
+                anodize_binary: &exe,
+                worktree_path,
+                env,
+                targets: self.targets.as_deref(),
+                extra_skip: &extra_skip,
+                snapshot: self.child_snapshot,
+                crate_name: self.crate_name.as_deref(),
+                verbosity: self.verbosity,
+            },
         )
     }
 
@@ -1019,6 +1028,7 @@ mod tests {
             child_snapshot: true,
             docker_backend_hint: None,
             crate_name: None,
+            verbosity: Verbosity::Normal,
         }
     }
 

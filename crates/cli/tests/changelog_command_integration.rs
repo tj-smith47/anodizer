@@ -1557,7 +1557,7 @@ crates:
 /// A single-crate repo configured `changelog.use: github-native` with a
 /// `release.github` repo. The standalone `changelog --format release-notes`
 /// must render LOCAL scm bullets (the pending window), emit the one-line
-/// "previewing from local git" note, require NO token, and be NON-empty.
+/// "previewing changelog from local git" note, require NO token, and be NON-empty.
 fn github_native_repo() -> TempDir {
     let tmp = TempDir::new().unwrap();
     let root = tmp.path();
@@ -1621,7 +1621,7 @@ fn github_native_release_notes_previews_from_local_git() {
         "github-native preview must NOT require a token: {stderr}"
     );
     assert!(
-        stderr.contains("previewing from local git"),
+        stderr.contains("previewing changelog from local git"),
         "github-native preview must emit the one-line fallback note: {stderr}"
     );
     assert!(
@@ -2119,7 +2119,7 @@ fn config_shape_matrix_renders_all_formats() {
         );
         if is_ghnative {
             assert!(
-                rn.stderr.contains("previewing from local git"),
+                rn.stderr.contains("previewing changelog from local git"),
                 "[{label}] github-native release-notes must emit the local-git note: {}",
                 rn.stderr
             );

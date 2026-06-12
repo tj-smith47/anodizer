@@ -532,4 +532,98 @@ mod tests {
             "PublishStage must NOT run after the guard fails"
         );
     }
+
+    /// No-op stage with a caller-chosen name, so a test can place an
+    /// operator-skipped stage at an exact pipeline position.
+    struct NoopNamedStage(&'static str);
+    impl Stage for NoopNamedStage {
+        fn name(&self) -> &str {
+            self.0
+        }
+        fn run(&self, _ctx: &mut Context) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A stage whose body logs one status line through the context's
+    /// logger, so capture order can pin where the consolidated skip row
+    /// lands relative to a running stage's output.
+    struct ChattyStage;
+    impl Stage for ChattyStage {
+        fn name(&self) -> &str {
+            "beta"
+        }
+        fn run(&self, ctx: &mut Context) -> Result<()> {
+            ctx.logger("beta").status("beta body line");
+            Ok(())
+        }
+    }
+
+    /// Ordering contract for the consolidated skip row: skips buffered
+    /// while consecutive stages are skipped flush BEFORE the next running
+    /// stage emits anything (the flush precedes the stage's section
+    /// opening) and are not lost when that stage fails — the row precedes
+    /// the failure line on the early error return.
+    #[test]
+    fn buffered_skips_flush_before_next_stage_and_survive_its_failure() {
+        use anodizer_core::log::LogCapture;
+
+        // Skip → running stage: the row precedes the stage's body line.
+        let mut p = Pipeline::new();
+        p.add(Box::new(NoopNamedStage("alpha")));
+        p.add(Box::new(ChattyStage));
+        let opts = ContextOptions {
+            skip_stages: vec!["alpha".to_string()],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(Config::default(), opts);
+        let capture = LogCapture::new();
+        ctx.with_log_capture(capture.clone());
+        let _dist_guard = isolate_dist(&mut ctx);
+        let log = ctx.logger("pipeline-test");
+        p.run(&mut ctx, &log).expect("chatty stage succeeds");
+        let msgs: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+        let skip_idx = msgs
+            .iter()
+            .position(|m| m == "skipped = alpha")
+            .unwrap_or_else(|| panic!("consolidated skip row missing: {msgs:?}"));
+        let body_idx = msgs
+            .iter()
+            .position(|m| m == "beta body line")
+            .unwrap_or_else(|| panic!("running stage body line missing: {msgs:?}"));
+        assert!(
+            skip_idx < body_idx,
+            "skip row must flush before the next stage's output: {msgs:?}"
+        );
+
+        // Skip → failing stage: the row still flushes before the failure
+        // line and is not swallowed by the early `?` return.
+        let mut p = Pipeline::new();
+        p.add(Box::new(NoopNamedStage("alpha")));
+        p.add(Box::new(FailingGuardStage));
+        let opts = ContextOptions {
+            skip_stages: vec!["alpha".to_string()],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(Config::default(), opts);
+        let capture = LogCapture::new();
+        ctx.with_log_capture(capture.clone());
+        let _dist_guard = isolate_dist(&mut ctx);
+        let log = ctx.logger("pipeline-test");
+        p.run(&mut ctx, &log)
+            .expect_err("failing stage must abort the pipeline");
+        let msgs: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+        let skip_idx = msgs
+            .iter()
+            .position(|m| m == "skipped = alpha")
+            .unwrap_or_else(|| panic!("consolidated skip row missing: {msgs:?}"));
+        let fail_idx = msgs
+            .iter()
+            .position(|m| m.starts_with("prepublish-guard failed:"))
+            .unwrap_or_else(|| panic!("failure line missing: {msgs:?}"));
+        assert!(
+            skip_idx < fail_idx,
+            "skip row must flush before the failing stage's error line: {msgs:?}"
+        );
+    }
 }
