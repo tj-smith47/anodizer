@@ -389,3 +389,110 @@ crates:
         serde_json::from_str(&fs::read_to_string(&planted).unwrap()).unwrap();
     assert_eq!(sibling["failure_policy"]["action"], "held");
 }
+
+/// The publish-only credential gate is a zero-mutation preflight: with a
+/// release token present but NO production signing key, `--publish-only`
+/// must abort with the fix-and-re-run message BEFORE the failure-policy
+/// boundary — no rollback, no revert commit, tag intact on both ends,
+/// and no `failure_policy` record written.
+#[test]
+fn publish_only_missing_sign_key_aborts_without_rollback() {
+    if !tool_on_path("git") {
+        eprintln!("SKIP publish_only_missing_sign_key: git missing");
+        return;
+    }
+    let (repo, origin) = setup_tagged_repo_with_origin(CARGO_PUBLISH_CONFIG);
+    let bump_sha = git_stdout(repo.path(), &["rev-parse", "HEAD"]);
+    // The preserved dist is laid down BEFORE the run here (unlike tests
+    // (a)/(b), where the run itself creates it after the dirty-repo
+    // check), so it must be ignored or setup aborts on a dirty tree.
+    // Self-ignoring keeps the untracked .gitignore out of the way too.
+    fs::write(repo.path().join(".gitignore"), "dist/\n.gitignore\n").unwrap();
+    bootstrap_preserved_dist(repo.path(), "test-project", "0.1.0", &bump_sha);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["release", "--publish-only", SKIP_ALL_BUT_PUBLISH])
+        .env("GITHUB_TOKEN", "dummy-token")
+        .env("CARGO_REGISTRY_TOKEN", "dummy-token")
+        .env_remove("COSIGN_KEY")
+        .env_remove("GPG_PRIVATE_KEY")
+        .current_dir(repo.path())
+        .output()
+        .expect("invoking anodizer release --publish-only");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "missing sign key must abort; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("missing production signing key"),
+        "the credential gate must name the gap; got: {stderr}"
+    );
+    assert!(
+        !stderr.contains("on_failure") && !stderr.contains("rolling back"),
+        "a zero-mutation credential miss must never reach the failure policy; got: {stderr}"
+    );
+
+    // Nothing was touched: tag intact on both ends, HEAD unchanged.
+    assert_eq!(git_stdout(repo.path(), &["tag", "-l", "v0.1.0"]), "v0.1.0");
+    assert_eq!(
+        git_stdout(origin.path(), &["tag", "-l", "v0.1.0"]),
+        "v0.1.0"
+    );
+    assert_eq!(
+        git_stdout(repo.path(), &["rev-parse", "HEAD"]),
+        bump_sha,
+        "no revert commit may be created; stderr: {stderr}"
+    );
+
+    // No run summary / failure_policy record — the run never reached
+    // the publish pipeline, let alone the policy.
+    assert!(
+        !repo
+            .path()
+            .join("dist")
+            .join("run-v0.1.0")
+            .join("summary.json")
+            .exists(),
+        "credential-gate abort must not write a failure-policy summary"
+    );
+}
+
+/// `release.on_failure` is root-level only: a crate-level setting is a
+/// config-load error (never silently ignored), surfaced by every
+/// config-loading command.
+#[test]
+fn crate_level_on_failure_is_rejected_at_config_load() {
+    if !tool_on_path("git") {
+        eprintln!("SKIP crate_level_on_failure_rejected: git missing");
+        return;
+    }
+    let config = r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      on_failure: hold
+    publish:
+      cargo: {}
+"#;
+    let (repo, _origin) = setup_tagged_repo_with_origin(config);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["check", "config"])
+        .current_dir(repo.path())
+        .output()
+        .expect("invoking anodizer check");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "crate-level on_failure must fail config load; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("root-level") && stderr.contains("test-project"),
+        "error must explain the rule and name the crate; got: {stderr}"
+    );
+}

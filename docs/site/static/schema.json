@@ -11815,7 +11815,7 @@
           ]
         },
         "on_failure": {
-          "description": "In-process failure policy: what `anodizer release` does after a release-pipeline failure. `rollback` (default) deletes the run's release tag(s) and reverts the version-bump commit so the same version can be re-cut; `hold` leaves everything in place for forensics and manual recovery (`release --rollback-only --from-run=<id>`). `rollback` automatically degrades to `hold` the moment any one-way-door (Submitter) publisher has landed: the version is burned at a registry that never accepts it twice, so destructive rollback is refused and fix-forward is the only path. Root-level policy — in workspace configs (lockstep or per-crate) the top-level `release.on_failure` governs the whole run.",
+          "description": "In-process failure policy: what `anodizer release` does after a release-pipeline failure. `rollback` (default) deletes the run's release tag(s) and reverts the version-bump commit so the same version can be re-cut; `hold` leaves everything in place for forensics and manual recovery (`release --rollback-only --from-run=<id>`). `rollback` automatically degrades to `hold` the moment any one-way-door (Submitter) publisher has landed: the version is burned at a registry that never accepts it twice, so destructive rollback is refused and fix-forward is the only path. Root-level policy — in workspace configs (lockstep or per-crate) the top-level `release.on_failure` governs the whole run; setting it in a crate-level `release:` block is rejected at config load (`validate_on_failure_root_only`).",
           "default": null,
           "anyOf": [
             {

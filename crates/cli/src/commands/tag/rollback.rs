@@ -610,9 +610,14 @@ fn probe_release_for_tag(
 /// Indeterminate probes (gh CLI missing, auth / network errors other
 /// than 404) FAIL CLOSED — refuse with the probe error and point at
 /// `--force`: with no summary and no probe answer there is zero
-/// evidence the version is safe to destroy. Only a non-GitHub origin
-/// warns and proceeds, because no GitHub release can exist there and
-/// the probe carries no signal either way.
+/// evidence the version is safe to destroy. An unresolvable `origin`
+/// remote (none configured, or git itself erroring) also fails closed
+/// for the same reason. The single fail-OPEN bound: a resolvable
+/// origin that is not `github.com`-shaped (GitLab / Gitea / file path /
+/// GitHub Enterprise host) warns and proceeds — the probe targets the
+/// github.com Releases API, which cannot host a release for such a
+/// remote, so it carries no signal either way; run-summary evidence
+/// (layer 1 of the guard) remains the only signal for those hosts.
 fn check_no_published_releases(
     cwd: &std::path::Path,
     gh_binary: &std::path::Path,
@@ -621,11 +626,25 @@ fn check_no_published_releases(
 ) -> Result<()> {
     let (owner, repo) = match git::detect_github_repo_in(cwd) {
         Ok(pair) => pair,
-        Err(e) => {
+        Err(e) if git::has_remote_in(cwd, "origin") => {
+            // `detect_github_repo_in` already redacts URL credentials in
+            // its parse-failure message, so `e` is safe to surface.
             log.warn(&format!(
-                "published-release guard skipped — could not resolve a GitHub origin: {e}"
+                "published-release guard: origin is not a github.com remote ({e}); no \
+                 github.com release can exist there — skipping the release probe \
+                 (run-summary evidence still applies)"
             ));
             return Ok(());
+        }
+        Err(e) => {
+            bail!(
+                "refusing to roll back: could not resolve the 'origin' remote to run the \
+                 published-release guard ({e}).\n\
+                 No run summary covers these tag(s) and without a remote there is no \
+                 evidence the version(s) are safe to destroy. Configure the 'origin' \
+                 remote and retry, or pass --force if you are certain nothing \
+                 irreversible shipped.",
+            );
         }
     };
     let mut published: Vec<&str> = Vec::new();
@@ -885,6 +904,18 @@ mod tests {
         bump_sha
     }
 
+    /// Give a fixture repo a resolvable non-github.com origin: the
+    /// published-state guard's probe is inapplicable there (warn +
+    /// proceed), letting tests exercise their actual subject without
+    /// tripping the unresolvable-origin fail-closed refusal. The URL is
+    /// never contacted — these tests run with `dry_run` / `no_push`.
+    fn add_non_github_origin(dir: &Path) {
+        run_git(
+            dir,
+            &["remote", "add", "origin", "https://gitlab.example/o/r.git"],
+        );
+    }
+
     fn opts_for(dir: &Path, sha: Option<String>) -> RollbackOpts {
         let _ = dir; // cwd is process-global; the with-guard helpers below set it
         RollbackOpts {
@@ -911,6 +942,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let bump_sha = init_bump_repo(dir, 2);
+        add_non_github_origin(dir);
 
         let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
 
@@ -930,6 +962,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let _bump_sha = init_bump_repo(dir, 0);
+        add_non_github_origin(dir);
 
         let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
 
@@ -961,6 +994,7 @@ mod tests {
         .unwrap()
         .trim()
         .to_string();
+        add_non_github_origin(dir);
 
         let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
 
@@ -992,7 +1026,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let bump_sha = init_bump_repo(dir, 0);
-        // No 'origin' configured — push_branch_in would error otherwise.
+        // Non-github origin only; `no_push` keeps push_branch_in from contacting it.
+        add_non_github_origin(dir);
 
         let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
 
@@ -1031,6 +1066,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let bump_sha = init_bump_repo(dir, 0);
+        add_non_github_origin(dir);
         // Add a non-anodize tag at the same SHA.
         run_git(dir, &["tag", "internal-release"]);
 
@@ -1342,6 +1378,40 @@ mod tests {
     }
 
     #[test]
+    fn guard_fails_closed_when_origin_unresolvable() {
+        // No 'origin' remote at all — zero evidence either way, so the
+        // guard must refuse, not warn-and-proceed.
+        let tmp = tempfile::tempdir().unwrap();
+        let _ = init_bump_repo(tmp.path(), 0);
+        let gh = tmp.path().join("gh-never-spawned");
+
+        let err =
+            check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log())
+                .expect_err("unresolvable origin must fail closed");
+        let msg = err.to_string();
+        assert!(msg.contains("refusing to roll back"), "got: {msg}");
+        assert!(msg.contains("'origin'"), "must name the remote: {msg}");
+        assert!(msg.contains("--force"), "must name the escape hatch: {msg}");
+    }
+
+    #[test]
+    fn guard_proceeds_for_resolvable_non_github_origin() {
+        // Origin resolves but is not github.com-shaped — the one
+        // genuinely-inapplicable case: no github.com release can exist,
+        // so the guard warns and proceeds without spawning the probe.
+        let tmp = tempfile::tempdir().unwrap();
+        let _ = init_bump_repo(tmp.path(), 0);
+        run_git(
+            tmp.path(),
+            &["remote", "add", "origin", "https://gitlab.com/o/r.git"],
+        );
+        let gh = tmp.path().join("gh-never-spawned");
+
+        check_no_published_releases(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log())
+            .expect("non-github.com origin carries no probe signal; rollback may proceed");
+    }
+
+    #[test]
     #[cfg(unix)]
     fn guard_fails_closed_on_gh_auth_error() {
         // gh present but erroring (auth/network) — same fail-closed
@@ -1360,21 +1430,6 @@ mod tests {
             err.to_string().contains("401"),
             "must carry the probe error"
         );
-    }
-
-    #[test]
-    fn guard_skips_when_origin_is_not_github() {
-        let tmp = tempfile::tempdir().unwrap();
-        let _ = init_bump_repo(tmp.path(), 0);
-        // No origin remote at all → detect_github_repo_in errors →
-        // guard warns and proceeds.
-        check_no_published_releases(
-            tmp.path(),
-            Path::new("gh"),
-            &["v1.0.0".to_string()],
-            &quiet_log(),
-        )
-        .expect("non-GitHub origin must not block rollback");
     }
 
     #[test]

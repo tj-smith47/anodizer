@@ -279,7 +279,8 @@ re-publish runs of an already-live release.
 
 The policy is a root-level `release:` setting: in workspace configs
 (lockstep or per-crate) the top-level `release.on_failure` governs the whole
-run. It does not fire for `--dry-run`, `--snapshot`, `--prepare`, `--split`,
+run, and setting it in a crate-level `release:` block is a config-load
+error. It does not fire for `--dry-run`, `--snapshot`, `--prepare`, `--split`,
 `--announce-only`, `--rollback-only`, or `--preflight` — none of those may
 destroy release state.
 
@@ -579,8 +580,12 @@ one-way-door publisher, by evidence strength:
    published (non-draft) release → refuse. An **unanswerable probe**
    (gh missing, auth/network error) also refuses — fail closed: with no
    summary and no probe answer there is zero evidence the version is safe
-   to destroy. Only a non-GitHub origin proceeds with a warning, since no
-   GitHub release can exist there.
+   to destroy. An **unresolvable `origin`** (none configured, or git
+   erroring) refuses for the same reason. The single fail-open bound: a
+   resolvable origin that is not `github.com`-shaped (GitLab, Gitea, a
+   file path, a GitHub Enterprise host) proceeds with a warning — the
+   probe targets the github.com Releases API, which cannot host a release
+   for such a remote, so run summaries are the only evidence layer there.
 
 `--force` overrides the whole guard for genuinely-offline recovery.
 

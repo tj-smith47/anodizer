@@ -85,6 +85,18 @@ fn git_init_no_identity(dir: &Path) {
     run_git(dir, &["config", "commit.gpgsign", "false"]);
 }
 
+/// Give the fixture a resolvable non-github.com origin: the
+/// published-state guard's release probe is inapplicable there (warn +
+/// proceed), so these offline `--no-push` / `--dry-run` tests exercise
+/// their actual subject instead of the unresolvable-origin fail-closed
+/// refusal. The URL is never contacted.
+fn add_non_github_origin(dir: &Path) {
+    run_git(
+        dir,
+        &["remote", "add", "origin", "https://gitlab.example/o/r.git"],
+    );
+}
+
 fn git_tag_exists(dir: &Path, tag: &str) -> bool {
     let mut cmd = Command::new("git");
     cmd.current_dir(dir).args(["tag", "-l", tag]);
@@ -129,6 +141,7 @@ fn tag_rollback_local_deletes_tag_and_creates_revert_commit() {
     run_git(dir, &["add", "-A"]);
     run_git(dir, &["commit", "-q", "-m", "chore(release): v1.0.0"]);
     run_git(dir, &["tag", "v1.0.0"]);
+    add_non_github_origin(dir);
 
     assert!(
         git_tag_exists(dir, "v1.0.0"),
@@ -183,6 +196,7 @@ fn tag_rollback_dry_run_makes_no_mutations() {
     run_git(dir, &["add", "-A"]);
     run_git(dir, &["commit", "-q", "-m", "chore(release): v1.0.0"]);
     run_git(dir, &["tag", "v1.0.0"]);
+    add_non_github_origin(dir);
     let head_before = git_head_sha(dir);
 
     let (mut cmd, _scratch) = anodizer();
@@ -225,6 +239,7 @@ fn tag_rollback_works_on_identity_less_host() {
     run_git(dir, &["add", "-A"]);
     run_git(dir, &["commit", "-q", "-m", "chore(release): v1.0.0"]);
     run_git(dir, &["tag", "v1.0.0"]);
+    add_non_github_origin(dir);
 
     // Spawn anodizer WITHOUT inheriting committer env. Manually
     // construct the command (the `anodizer()` helper would inherit

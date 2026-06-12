@@ -148,7 +148,9 @@ pub(super) fn finish(
     }
     let log = log.with_stage("failure-policy");
 
-    warn_crate_level_on_failure(ctx, &log);
+    // Crate-level `release.on_failure` was already rejected at config
+    // load (`validate_on_failure_root_only`), so the root block is the
+    // only possible source here.
     let configured = ctx
         .config
         .release
@@ -188,36 +190,6 @@ pub(super) fn finish(
     };
     record_outcome(ctx, &record, &log);
     Err(err)
-}
-
-/// Crate-level `release:` blocks share the `ReleaseConfig` struct, so
-/// `on_failure` parses there but the policy is root-level only (one
-/// process-wide decision per run, like `release.provider`). Warn when a
-/// crate sets it so the setting is never silently ignored.
-fn warn_crate_level_on_failure(ctx: &Context, log: &StageLogger) {
-    let mut offenders: Vec<&str> = ctx
-        .config
-        .crates
-        .iter()
-        .chain(
-            ctx.config
-                .workspaces
-                .iter()
-                .flatten()
-                .flat_map(|ws| ws.crates.iter()),
-        )
-        .filter(|c| c.release.as_ref().is_some_and(|r| r.on_failure.is_some()))
-        .map(|c| c.name.as_str())
-        .collect();
-    offenders.sort_unstable();
-    offenders.dedup();
-    if !offenders.is_empty() {
-        log.warn(&format!(
-            "release.on_failure is a root-level policy; the crate-level setting on {} is \
-             ignored — move it to the top-level `release:` block",
-            offenders.join(", ")
-        ));
-    }
 }
 
 /// Run the shared `tag rollback` path against HEAD (the tagged commit

@@ -4,11 +4,12 @@
 use serde::Deserialize;
 
 // Inline items from config/mod.rs
+use super::WorkspaceConfig;
 use super::{Config, ERR_DEFAULTS_AXIS_MISMATCH, IncludeFilePath, IncludeSpec, IncludeUrlConfig};
 use super::{
     validate_changelog_groups_depth, validate_changelog_paths, validate_defaults_axis,
-    validate_format_overrides, validate_homebrew_cask_url_template, validate_tag_sort,
-    validate_version,
+    validate_format_overrides, validate_homebrew_cask_url_template, validate_on_failure_root_only,
+    validate_tag_sort, validate_version,
 };
 
 // Items re-exported from config submodules (all reachable as super::ItemName
@@ -871,6 +872,74 @@ fn test_release_on_failure_rejects_unknown_value() {
         msg.contains("rollback") && msg.contains("hold"),
         "error must name the valid set, got: {msg}"
     );
+}
+
+#[test]
+fn test_validate_on_failure_root_only_accepts_root_setting() {
+    let config = Config {
+        project_name: "test".into(),
+        release: Some(ReleaseConfig {
+            on_failure: Some(OnFailureConfig::Hold),
+            ..Default::default()
+        }),
+        crates: vec![CrateConfig {
+            name: "app".into(),
+            path: ".".into(),
+            tag_template: "v{{ .Version }}".into(),
+            release: Some(ReleaseConfig::default()),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    validate_on_failure_root_only(&config).expect("root-level on_failure is the supported shape");
+}
+
+#[test]
+fn test_validate_on_failure_root_only_rejects_crate_level_setting() {
+    let config = Config {
+        project_name: "test".into(),
+        crates: vec![CrateConfig {
+            name: "app".into(),
+            path: ".".into(),
+            tag_template: "v{{ .Version }}".into(),
+            release: Some(ReleaseConfig {
+                on_failure: Some(OnFailureConfig::Hold),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let err = validate_on_failure_root_only(&config)
+        .expect_err("crate-level on_failure must be rejected");
+    assert!(err.contains("app"), "must name the offender: {err}");
+    assert!(err.contains("root-level"), "must explain the rule: {err}");
+    assert!(err.contains("top-level"), "must point at the fix: {err}");
+}
+
+#[test]
+fn test_validate_on_failure_root_only_rejects_workspace_crate_setting() {
+    let config = Config {
+        project_name: "test".into(),
+        workspaces: Some(vec![WorkspaceConfig {
+            name: "ws".into(),
+            crates: vec![CrateConfig {
+                name: "ws-member".into(),
+                path: "crates/member".into(),
+                tag_template: "member-v{{ .Version }}".into(),
+                release: Some(ReleaseConfig {
+                    on_failure: Some(OnFailureConfig::Rollback),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let err = validate_on_failure_root_only(&config)
+        .expect_err("workspace-crate on_failure must be rejected");
+    assert!(err.contains("ws-member"), "must name the offender: {err}");
 }
 
 // ---- ChangelogConfig resolved_*() accessors (lazy-defaults policy) ----

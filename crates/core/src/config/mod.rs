@@ -754,6 +754,39 @@ pub fn validate_release_backends(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate that `release.on_failure` is set only at the root.
+///
+/// The failure policy is one process-wide decision per run, resolved
+/// from the top-level `release:` block alone. Crate-level `release:`
+/// blocks share the `ReleaseConfig` struct, so the field parses there
+/// — but it would never be read; rejecting the misplacement at config
+/// load keeps a policy choice from being silently ignored.
+pub fn validate_on_failure_root_only(config: &Config) -> Result<(), String> {
+    let mut offenders: Vec<&str> = config
+        .crates
+        .iter()
+        .chain(
+            config
+                .workspaces
+                .iter()
+                .flatten()
+                .flat_map(|ws| ws.crates.iter()),
+        )
+        .filter(|c| c.release.as_ref().is_some_and(|r| r.on_failure.is_some()))
+        .map(|c| c.name.as_str())
+        .collect();
+    offenders.sort_unstable();
+    offenders.dedup();
+    if offenders.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "release.on_failure is a root-level policy and cannot be set per crate \
+         (set on: {}). Move it to the top-level `release:` block.",
+        offenders.join(", ")
+    ))
+}
+
 /// Marker prefix for the axis-mismatch validation error class. Existing
 /// validators in this module return `Result<(), String>` rather than a
 /// typed enum, so we expose this constant (instead of a `ConfigError`

@@ -157,12 +157,12 @@ pub struct ReleaseOpts {
 ///
 /// - `--no-preflight` always wins → false.
 /// - `--snapshot` / `--dry-run` / `--split` skip → no upstream side effects.
-/// - `--publish-only` skips → the publish-only branch does its own
-///   credential preflight at the top of `publish_only::run`; running
-///   the publisher-state preflight here first would make network
-///   calls (chocolatey/winget/cargo/aur state probes) before the
-///   credential gate, defeating the "fail before any mutation"
-///   property the spec requires.
+/// - `--publish-only` skips → that mode has its own credential gate
+///   (`publish_only::credential_preflight_gate`, run by the dispatcher
+///   right after this check); running the publisher-state preflight
+///   implicitly would make network calls (chocolatey/winget/cargo/aur
+///   state probes) before the credential gate, defeating the "fail
+///   before any mutation" property the spec requires.
 /// - `publish` in `skip` → caller opted out of one-way doors.
 /// - otherwise → true.
 ///
@@ -398,6 +398,14 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         return Ok(());
     }
 
+    // Third zero-mutation gate, publish-only specific: the release token
+    // + production signing key check. Hoisted here (out of the
+    // publish_only module) for the same reason as the two preflights
+    // above — a credential miss must never reach the failure policy.
+    if opts.publish_only {
+        publish_only::credential_preflight_gate(&ctx, opts.dry_run, opts.no_preflight, &log)?;
+    }
+
     // Every mode below routes its outcome through the in-process failure
     // policy (`release.on_failure`): on a pipeline failure the binary
     // itself decides rollback vs hold instead of leaving a summary for a
@@ -425,8 +433,6 @@ fn dispatch_release_modes(
         let dist = config.dist.clone();
         let run_opts = publish_only::RunOpts {
             dry_run: opts.dry_run,
-            no_preflight: opts.no_preflight,
-            silent_meta: false,
         };
         // When --crate is given, prefer the matching per-crate dist
         // subdir (`dist/<crate>/`) when one exists so the publish reads
@@ -2549,9 +2555,9 @@ mod tests {
     #[test]
     fn should_run_preflight_auto_publish_only_skips() {
         // `--publish-only` must skip the publisher-state preflight so
-        // the credential preflight (which lives inside
-        // `publish_only::run`) gets first crack at bailing before any
-        // network call.
+        // the credential gate (`publish_only::credential_preflight_gate`,
+        // run by the dispatcher right after this check) gets first crack
+        // at bailing before any network call.
         assert!(!should_run_preflight_auto(
             false, false, false, false, true, false
         ));

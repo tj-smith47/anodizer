@@ -146,22 +146,43 @@ pub(super) fn crate_subdir_has_manifest(dist: &Path, crate_name: &str, log: &Sta
 const SIGN_ENV_VARS: &[&str] = &["COSIGN_KEY", "GPG_PRIVATE_KEY"];
 const GITHUB_TOKEN_ENV_VARS: &[&str] = &["GITHUB_TOKEN", "ANODIZER_GITHUB_TOKEN"];
 
-/// Knobs the dispatcher hands to `publish_only::run`. Reduces the
-/// number of positional arguments and lets the dispatch site speak
-/// in terms of flag intent (`no_preflight`) rather than the threaded
-/// `--<flag>` boolean it came from.
+/// Knobs the dispatcher hands to `publish_only::run`. The credential
+/// preflight is NOT among them: [`credential_preflight_gate`] runs in
+/// the dispatcher (`commands/release/mod.rs`) before the failure-policy
+/// boundary, so nothing inside this module re-checks credentials.
 pub(super) struct RunOpts {
     pub dry_run: bool,
-    /// `--no-preflight`: skip the credential preflight as well as the
-    /// publisher-state preflight. Operator opt-out for the case
-    /// where they know what they're doing and want the mid-pipeline
-    /// failure to surface instead.
-    pub no_preflight: bool,
-    /// True when the dispatcher already handled the credential preflight
-    /// upstream, so per-iteration meta-logs should stay quiet. Set by
-    /// `run_per_crate` for each inner iteration; defaults to false for
-    /// direct callers (flat layout / single-crate publish-only).
-    pub silent_meta: bool,
+}
+
+/// Publish-only credential gate, invoked by the dispatcher in
+/// `commands/release/mod.rs` alongside the env and publisher-state
+/// preflights — i.e. BEFORE the `release.on_failure` policy boundary.
+/// A missing token or signing key aborts with zero mutations and must
+/// surface as fix-and-re-run; routing it through the policy would let
+/// a plain env mistake trigger a destructive rollback of a tag the
+/// run never touched.
+///
+/// `--dry-run` skips the check so operators can preview the pipeline
+/// without secrets; `--no-preflight` is the explicit opt-out for the
+/// rare case where the operator wants the mid-pipeline failure instead.
+pub(super) fn credential_preflight_gate(
+    ctx: &Context,
+    dry_run: bool,
+    no_preflight: bool,
+    log: &StageLogger,
+) -> Result<()> {
+    if dry_run {
+        log.verbose("(dry-run) skipping production-credential preflight");
+        return Ok(());
+    }
+    if no_preflight {
+        log.warn(
+            "credential preflight skipped via --no-preflight; \
+             missing credentials will fail mid-pipeline (no idempotent recovery)",
+        );
+        return Ok(());
+    }
+    preflight_credentials(|k| ctx.env_var(k))
 }
 
 /// `--publish-only` entry point. Wired from `commands/release/mod.rs::run`
@@ -180,9 +201,9 @@ pub(super) fn run(
 }
 
 /// Iterate per-crate subdirs in topo order, running the publish-only pipeline
-/// once per crate. Credential preflight fires once before the loop; the
-/// artifact registry is reset between crates so each pipeline sees only
-/// that crate's preserved artifacts.
+/// once per crate. The artifact registry is reset between crates so each
+/// pipeline sees only that crate's preserved artifacts. (Credentials were
+/// already gated upstream by [`credential_preflight_gate`].)
 ///
 /// `crate_order` is already topo-sorted by the caller (see `mod.rs`).
 pub(super) fn run_per_crate(
@@ -198,18 +219,6 @@ pub(super) fn run_per_crate(
         crate_order.len(),
         crate_order.join(", ")
     ));
-
-    // Credential preflight fires once before any state mutation.
-    if opts.dry_run {
-        log.verbose("(dry-run) skipping production-credential preflight");
-    } else if opts.no_preflight {
-        log.warn(
-            "credential preflight skipped via --no-preflight; \
-             missing credentials will fail mid-pipeline (no idempotent recovery)",
-        );
-    } else {
-        preflight_credentials(|k| ctx.env_var(k))?;
-    }
 
     // Build a name → WorkspaceConfig index up-front so each iteration
     // can apply the right overlay in O(1). Workspace-based configs leave
@@ -331,8 +340,6 @@ pub(super) fn run_per_crate(
         apply_per_crate_tag(ctx, config, crate_name, log);
         let per_crate_opts = RunOpts {
             dry_run: opts.dry_run,
-            no_preflight: true,
-            silent_meta: true,
         };
         run_one_crate_dist(ctx, config, log, &per_crate_opts, crate_dist)?;
     }
@@ -687,8 +694,6 @@ fn merge_workspace_skip(into: &mut Vec<String>, ws_skip: &[String]) {
 
 /// Inner body of the publish-only pipeline for a single dist root.
 /// Called by both `run()` (flat layout) and `run_per_crate()` (per-crate layout).
-/// `opts.no_preflight` is set by `run_per_crate` after it handles
-/// credential checking centrally; `run()` passes the caller's opts directly.
 fn run_one_crate_dist(
     ctx: &mut Context,
     config: &Config,
@@ -696,32 +701,6 @@ fn run_one_crate_dist(
     opts: &RunOpts,
     dist: PathBuf,
 ) -> Result<()> {
-    // ── Pre-flight credential check ────────────────────────────────────
-    // Bail BEFORE any state mutation: a credential miss this late
-    // (mid-pipeline) leaves a partially-uploaded release behind with no
-    // idempotent recovery. Dry-run skips so operators can preview the
-    // pipeline without secrets; `--no-preflight` is the explicit
-    // operator opt-out for the rare case where they want the
-    // mid-pipeline failure instead.
-    //
-    // `silent_meta` is set by `run_per_crate` after it ran preflight
-    // once before the loop — repeating the warn per crate iteration is
-    // noise.
-    if opts.dry_run {
-        if !opts.silent_meta {
-            log.verbose("(dry-run) skipping production-credential preflight");
-        }
-    } else if opts.no_preflight {
-        if !opts.silent_meta {
-            log.warn(
-                "credential preflight skipped via --no-preflight; \
-                 missing credentials will fail mid-pipeline (no idempotent recovery)",
-            );
-        }
-    } else {
-        preflight_credentials(|k| ctx.env_var(k))?;
-    }
-
     // ── Load preserved-dist context ────────────────────────────────────
     // Two manifest families live in `<dist>/`:
     //   - `artifacts.json` / `artifacts-<shard>.json`: the canonical
@@ -2437,11 +2416,7 @@ mod tests {
             "publish-only-restore-test",
             anodizer_core::log::Verbosity::Quiet,
         );
-        let opts = RunOpts {
-            dry_run: true,
-            no_preflight: true,
-            silent_meta: false,
-        };
+        let opts = RunOpts { dry_run: true };
         let result = run_per_crate(
             &mut ctx,
             &config,

@@ -135,7 +135,8 @@ pub struct ReleaseConfig {
     /// so destructive rollback is refused and fix-forward is the only
     /// path. Root-level policy — in workspace configs (lockstep or
     /// per-crate) the top-level `release.on_failure` governs the whole
-    /// run.
+    /// run; setting it in a crate-level `release:` block is rejected at
+    /// config load (`validate_on_failure_root_only`).
     pub on_failure: Option<OnFailureConfig>,
 }
 

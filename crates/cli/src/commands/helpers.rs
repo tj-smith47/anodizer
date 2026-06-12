@@ -782,13 +782,13 @@ pub fn setup_env(
     // Snapshot mode, dry-run, and release.skip can proceed without a token.
     //
     // `--publish-only` defers the token check to
-    // `publish_only::preflight_credentials`, which combines the token
-    // check with the production sign-key check (the spec wants both
-    // validated together at the top of the publish-only branch). If
+    // `publish_only::credential_preflight_gate`, which combines the
+    // token check with the production sign-key check (the spec wants
+    // both validated together before the publish-only branch runs). If
     // setup_env bailed here first, publish-only would never get a
     // chance to emit its combined preflight error or honor
-    // `--no-preflight`. The publish-only branch enforces the same
-    // gate downstream so dropping it here doesn't widen the hole.
+    // `--no-preflight`. The dispatcher enforces the same gate
+    // downstream so dropping it here doesn't widen the hole.
     if ctx.options.token.is_none()
         && !ctx.is_snapshot()
         && !ctx.is_dry_run()
