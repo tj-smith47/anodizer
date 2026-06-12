@@ -407,7 +407,13 @@ For workflows that add their own destructive recovery steps anyway, the
 anodizer-action exposes the flag as a step output to gate on:
 
 ```yaml
-# Advanced — custom workflow-level recovery (not needed by default):
+# Advanced — custom workflow-level recovery (not needed by default).
+# The id: on the release step is what makes steps.release.* resolvable.
+- uses: tj-smith47/anodizer-action@v1
+  id: release
+  with:
+    args: release
+
 - name: Custom recovery
   if: always() && (steps.release.outcome == 'failure' || steps.release.outcome == 'cancelled') && steps.release.outputs.irreversibly_published != 'true'
 ```
