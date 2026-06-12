@@ -1067,14 +1067,14 @@ fn run_cargo_publish_with_retry(
 
         if attempt >= PUBLISH_PROPAGATION_RETRIES {
             log.warn(&format!(
-                "{label}: propagation-style failure persists after {attempt} attempts; surfacing"
+                "propagation-style failure for {label} persists after {attempt} attempts; surfacing"
             ));
             last_output = Some(output);
             break;
         }
 
         log.status(&format!(
-            "{label}: sparse-index propagation lag detected (attempt {}/{}); retrying in {}s",
+            "sparse-index propagation lag detected for {label} (attempt {}/{}); retrying in {}s",
             attempt,
             PUBLISH_PROPAGATION_RETRIES,
             backoff.as_secs()

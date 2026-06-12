@@ -36,7 +36,7 @@ pub fn sync_version(
 
     if dry_run {
         log.status(&format!(
-            "(dry-run) version-sync: would update {} from {} to {}",
+            "(dry-run) would sync version in {} from {} to {}",
             cargo_toml_path.display(),
             current_version,
             version
@@ -240,7 +240,7 @@ pub fn sync_workspace_deps(
             let path_str = path.to_string_lossy().to_string();
             if dry_run {
                 log.status(&format!(
-                    "(dry-run) version-sync: would update {} dep in {}",
+                    "(dry-run) would sync {} dep version in {}",
                     crate_name,
                     path.display()
                 ));

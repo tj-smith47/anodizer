@@ -1020,7 +1020,7 @@ pub fn publish_to_krew(
         .with_context(|| format!("krew: write manifest {}", manifest_file.display()))?;
 
     log.status(&format!(
-        "wrote Krew plugin manifest: {}",
+        "wrote Krew plugin manifest {}",
         manifest_file.display()
     ));
 

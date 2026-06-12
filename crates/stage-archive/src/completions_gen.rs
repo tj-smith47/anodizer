@@ -296,7 +296,7 @@ fn run_generate(
         return Ok(out_path);
     }
 
-    log.status(&format!("generating {kind}: {cmd}"));
+    log.status(&format!("generating {kind} via `{cmd}`"));
     let output = Command::new("sh")
         .arg("-c")
         .arg(&cmd)
@@ -410,7 +410,7 @@ fn stage_files(
 ) -> Result<Vec<PathBuf>> {
     if matched.is_empty() {
         log.warn(&format!(
-            "{kind}: glob '{glob}' matched no files — no {kind} bundled"
+            "glob '{glob}' matched no files — no {kind} bundled"
         ));
         return Ok(Vec::new());
     }

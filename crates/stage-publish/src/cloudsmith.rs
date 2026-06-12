@@ -514,21 +514,24 @@ pub(crate) fn publish_to_cloudsmith(
                 "(dry-run) would upload packages to CloudSmith org '{}' repo '{}' at {}",
                 organization, repository, sample_url
             ));
-            log.status(&format!("(dry-run) formats filter: {:?}", formats));
+            log.status(&format!("(dry-run) would filter to formats {:?}", formats));
             if let Some(ref ids) = entry.ids {
-                log.status(&format!("(dry-run) build ID filter: {:?}", ids));
+                log.status(&format!("(dry-run) would filter to build IDs {:?}", ids));
             }
             if !distributions.is_empty() {
-                log.status(&format!("(dry-run) distributions: {:?}", distributions));
+                log.status(&format!(
+                    "(dry-run) would publish to distributions {:?}",
+                    distributions
+                ));
             }
             if let Some(ref comp) = component {
-                log.status(&format!("(dry-run) component: {}", comp));
+                log.status(&format!("(dry-run) would use component {}", comp));
             }
             if republish {
-                log.status("(dry-run) republish: true");
+                log.status("(dry-run) would republish existing versions");
             }
             log.status(&format!(
-                "(dry-run) credential env var: {}",
+                "(dry-run) would read credentials from {}",
                 secret_name_rendered
             ));
             log.status(&format!("(dry-run) {} artifacts matched", artifacts.len()));
@@ -1047,7 +1050,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
         let token = ctx.env_var("CLOUDSMITH_API_KEY");
         if token.is_none() {
             log.warn(
-                "cloudsmith: CLOUDSMITH_API_KEY not set; emitting manual-cleanup checklist instead of DELETE",
+                "CLOUDSMITH_API_KEY not set; emitting manual-cleanup checklist instead of DELETE",
             );
         }
 

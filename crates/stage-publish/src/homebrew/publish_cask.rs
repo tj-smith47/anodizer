@@ -159,7 +159,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
     let cask_path = casks_dir.join(format!("{}.rb", cask_result.cask_name));
     std::fs::write(&cask_path, &cask_result.content)
         .with_context(|| format!("homebrew cask: write cask file {}", cask_path.display()))?;
-    log.status(&format!("wrote Homebrew cask: {}", cask_path.display()));
+    log.status(&format!("wrote Homebrew cask {}", cask_path.display()));
 
     // `alternative_names:` versioned-file emission. Each entry that
     // renders to a token containing `@` (e.g. `myapp@1.2.3`) becomes its
@@ -175,7 +175,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
                 alt_path.display()
             )
         })?;
-        log.status(&format!("wrote Homebrew cask: {}", alt_path.display()));
+        log.status(&format!("wrote Homebrew cask {}", alt_path.display()));
         written_paths.push(alt_path);
     }
 
@@ -212,7 +212,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         }
         crate::util::CommitOutcome::NoChanges => {
             log.status(&format!(
-                "homebrew cask: nothing to push, cask '{}' already up to date",
+                "nothing to push for homebrew cask — '{}' already up to date",
                 cask_result.cask_name
             ));
         }

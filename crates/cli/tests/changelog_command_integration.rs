@@ -636,7 +636,7 @@ fn real_single_crate_tag_bump_subject_matches_exclude_prefix() {
 /// Bare `changelog --format release-notes` (no positional, no `--snapshot`) with
 /// the last tag BEHIND HEAD must render the pending last-tag..HEAD window — the
 /// same set kac/json show for the identical state — with NO release-time guards:
-/// no tag-at-HEAD error, no `changelog skipped` line.
+/// no tag-at-HEAD error, no `skipping changelog` line.
 #[test]
 fn bare_release_notes_renders_pending_window_no_guards() {
     let tmp = single_crate_repo();
@@ -655,7 +655,7 @@ fn bare_release_notes_renders_pending_window_no_guards() {
         r.stderr
     );
     assert!(
-        !r.stdout.contains("changelog skipped") && !r.stderr.contains("changelog skipped"),
+        !r.stdout.contains("skipping changelog") && !r.stderr.contains("skipping changelog"),
         "bare preview must NOT hit the snapshot-skip gate: {}\n{}",
         r.stdout,
         r.stderr
@@ -715,7 +715,7 @@ fn lockstep_release_notes_renders_pending_window_no_guards() {
         r.stderr
     );
     assert!(
-        !r.stdout.contains("changelog skipped") && !r.stderr.contains("changelog skipped"),
+        !r.stdout.contains("skipping changelog") && !r.stderr.contains("skipping changelog"),
         "lockstep preview must NOT hit the snapshot-skip gate: {}\n{}",
         r.stdout,
         r.stderr
@@ -742,7 +742,7 @@ fn snapshot_release_notes_renders_without_config_opt_in() {
         r.stdout, r.stderr
     );
     assert!(
-        !r.stdout.contains("changelog skipped") && !r.stderr.contains("changelog skipped"),
+        !r.stdout.contains("skipping changelog") && !r.stderr.contains("skipping changelog"),
         "the standalone command must bypass the `changelog.snapshot` gate: {}\n{}",
         r.stdout,
         r.stderr
@@ -2112,7 +2112,7 @@ fn config_shape_matrix_renders_all_formats() {
             );
         }
         assert!(
-            !rn.stdout.contains("changelog skipped") && !rn.stderr.contains("changelog skipped"),
+            !rn.stdout.contains("skipping changelog") && !rn.stderr.contains("skipping changelog"),
             "[{label}] release-notes must not hit the snapshot-skip gate: {}\n{}",
             rn.stdout,
             rn.stderr
@@ -2160,8 +2160,8 @@ fn config_shape_matrix_renders_all_formats() {
             snap.stdout, snap.stderr
         );
         assert!(
-            !snap.stdout.contains("changelog skipped")
-                && !snap.stderr.contains("changelog skipped"),
+            !snap.stdout.contains("skipping changelog")
+                && !snap.stderr.contains("skipping changelog"),
             "[{label}] snapshot release-notes must bypass the config gate: {}\n{}",
             snap.stdout,
             snap.stderr

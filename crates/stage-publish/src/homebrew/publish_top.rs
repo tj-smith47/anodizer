@@ -516,7 +516,7 @@ pub fn publish_top_level_homebrew_casks(
         let cask_path = cask_dir.join(format!("{}.rb", cask_name));
         std::fs::write(&cask_path, &content)
             .with_context(|| format!("homebrew_casks: write cask file {}", cask_path.display()))?;
-        log.status(&format!("wrote Homebrew cask: {}", cask_path.display()));
+        log.status(&format!("wrote Homebrew cask {}", cask_path.display()));
 
         // Emit one extra `.rb` per versioned alt-name (e.g. `myapp@1.2.3.rb`)
         // so users can `brew install myapp@1.2.3` to pin / downgrade.
@@ -529,7 +529,7 @@ pub fn publish_top_level_homebrew_casks(
                     alt_path.display()
                 )
             })?;
-            log.status(&format!("wrote Homebrew cask: {}", alt_path.display()));
+            log.status(&format!("wrote Homebrew cask {}", alt_path.display()));
             written_paths.push(alt_path);
         }
 

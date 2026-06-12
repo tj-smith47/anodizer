@@ -276,7 +276,7 @@ pub(crate) fn clone_repo(
         let tt_lower = tt.to_lowercase();
         if tt_lower != "github" && !tt_lower.is_empty() {
             log.warn(&format!(
-                    "{label}: repository.token_type={tt:?} is not yet supported; only \"github\" is currently implemented"
+                    "repository.token_type={tt:?} for {label} is not yet supported; only \"github\" is currently implemented"
                 ));
         }
     }

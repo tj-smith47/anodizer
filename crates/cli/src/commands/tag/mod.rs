@@ -867,7 +867,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
             match anodizer_core::cargo_lock::cargo_update_workspace(Some(workspace_root_path.as_path())) {
                 Ok(true) => {}
                 Ok(false) => log.warn(
-                    "version-sync: `cargo update --workspace` exited non-zero; Cargo.lock may be stale",
+                    "`cargo update --workspace` exited non-zero after version sync; Cargo.lock may be stale",
                 ),
                 Err(e) => log.warn(&format!(
                     "could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
@@ -1147,7 +1147,7 @@ fn apply_workspace_bump(
     match anodizer_core::cargo_lock::cargo_update_workspace(Some(workspace_root)) {
         Ok(true) => {}
         Ok(false) => log.warn(
-            "version-sync: `cargo update --workspace` exited non-zero; Cargo.lock may be stale",
+            "`cargo update --workspace` exited non-zero after version sync; Cargo.lock may be stale",
         ),
         Err(e) => log.warn(&format!(
             "could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
@@ -1230,7 +1230,11 @@ fn apply_workspace_bump(
         ),
     )?;
 
-    log.status(&format!("workspace version-sync: bumped → {}", new_version));
+    log.status(&format!(
+        "bumped {} workspace crate(s) → {}",
+        rows.iter().filter(|r| r.level != BumpLevel::Skip).count(),
+        new_version
+    ));
     Ok(true)
 }
 

@@ -223,7 +223,7 @@ fn create_pr_via_gh_cli(
                             &format!("{label}: git push --force-with-lease (update existing PR)"),
                         ) {
                             log.warn(&format!(
-                                "{label}: update_existing_pr=true but force-push failed: {e}"
+                                "failed to force-push {label} PR branch (update_existing_pr=true): {e}"
                             ));
                         } else {
                             log.status(&pr_exists_update_status_message(label, head));
@@ -242,7 +242,7 @@ fn create_pr_via_gh_cli(
                     break;
                 }
                 log.warn(&format!(
-                    "{label}: gh pr create attempt {attempt}/3 hit transient error; retrying..."
+                    "gh pr create for {label} hit transient error (attempt {attempt}/3); retrying..."
                 ));
                 std::thread::sleep(std::time::Duration::from_secs(5 * attempt));
             }
@@ -346,7 +346,7 @@ fn create_pr_via_api_with_env<E: EnvSource + ?Sized>(
             if status.as_u16() == 422 && body_text.contains("already exists") {
                 if update_existing_pr {
                     log.warn(&format!(
-                        "{label}: PR for '{head}' already exists and update_existing_pr=true \
+                        "{label} PR for '{head}' already exists and update_existing_pr=true \
                          was requested, but the API transport cannot force-push; \
                          install `gh` CLI to update the PR in place"
                     ));
@@ -514,7 +514,7 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
             &format!("{label}: git push (post-sync)"),
         ) {
             log.warn(&format!(
-                "{label}: fork sync: force-push after rebase failed, PR may have conflicts: {e}"
+                "failed to force-push {label} fork after rebase; PR may have conflicts: {e}"
             ));
         }
     }

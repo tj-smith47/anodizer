@@ -698,11 +698,11 @@ fn stage_package(
     })?;
 
     log.status(&format!(
-        "wrote Chocolatey nuspec: {}",
+        "wrote Chocolatey nuspec {}",
         nuspec_path.display()
     ));
     log.status(&format!(
-        "wrote Chocolatey install script: {}",
+        "wrote Chocolatey install script {}",
         install_path.display()
     ));
 
@@ -710,7 +710,7 @@ fn stage_package(
     // A nupkg is a ZIP containing the nuspec, tools/, and OPC metadata files.
     let nupkg_path = pkg_dir.join(format!("{}.{}.nupkg", pkg_name, version));
     create_nupkg(pkg_name, version, &nuspec_path, &tools_dir, &nupkg_path)?;
-    log.status(&format!("created nupkg: {}", nupkg_path.display()));
+    log.status(&format!("created nupkg {}", nupkg_path.display()));
 
     Ok(StagedPackage {
         _tmp_dir: tmp_dir,

@@ -365,7 +365,7 @@ fn execute_makeself_job(
         packaging_date.as_deref(),
     );
 
-    thread_log.status(&format!("creating makeself package: {}", job.filename));
+    thread_log.status(&format!("creating makeself package {}", job.filename));
 
     let output = Command::new("makeself")
         .args(&args)

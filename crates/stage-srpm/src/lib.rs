@@ -265,7 +265,7 @@ impl Stage for SrpmStage {
         fs::write(&spec_path, &spec_contents)
             .with_context(|| format!("srpm: write spec file {}", spec_path.display()))?;
 
-        log.status(&format!("creating source RPM: {}", package_filename));
+        log.status(&format!("creating source RPM {}", package_filename));
 
         // Build the SRPM using rpmbuild -bs
         let srpm_path = dist.join(&package_filename);

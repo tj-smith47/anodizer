@@ -105,10 +105,10 @@ fn warn_ids_eliminated_all(
 ) {
     if anodizer_core::artifact::ids_filter_eliminated_all(ids, pre_filter, post_filter) {
         log.warn(&format!(
-            "sbom[{}]: ids filter {:?} matched no artifacts — this config will \
+            "ids filter {:?} on sbom[{}] matched no artifacts — this config will \
              produce NO SBOMs",
-            id,
-            ids.unwrap_or(&[])
+            ids.unwrap_or(&[]),
+            id
         ));
     }
 }
@@ -452,7 +452,10 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
         && d.try_evaluates_to_true(|s| ctx.render_template(s))
             .with_context(|| format!("sbom[{}]: evaluate skip expression", id))?
     {
-        log.status(&format!("sbom[{}]: skipped", id));
+        log.status(&format!(
+            "skipping sbom[{}] — `skip` condition evaluated truthy",
+            id
+        ));
         return Ok(());
     }
 
@@ -565,16 +568,16 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
     if ctx.is_dry_run() {
         if artifacts_type == "any" {
             log.status(&format!(
-                "(dry-run) sbom[{}]: would run '{}' for all artifacts",
-                id, cmd
+                "(dry-run) would run '{}' for all artifacts (sbom[{}])",
+                cmd, id
             ));
         } else {
             for (path, _, _, _) in &matching_artifacts {
                 log.status(&format!(
-                    "(dry-run) sbom[{}]: would run '{}' on {}",
-                    id,
+                    "(dry-run) would run '{}' on {} (sbom[{}])",
                     cmd,
-                    path.display()
+                    path.display(),
+                    id
                 ));
             }
         }
@@ -655,10 +658,10 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
         }
 
         log.status(&format!(
-            "sbom[{}]: running {} {}",
-            id,
+            "running {} {} (sbom[{}])",
             cmd,
-            rendered_args.join(" ")
+            rendered_args.join(" "),
+            id
         ));
 
         let mut command = Command::new(cmd);
@@ -795,8 +798,8 @@ fn run_sbom_builtin(
 
     if ctx.is_dry_run() {
         log.status(&format!(
-            "(dry-run) sbom[{}]: would generate {} SBOM for {}",
-            id, format, project_name
+            "(dry-run) would generate {} SBOM for {} (sbom[{}])",
+            format, project_name, id
         ));
         return Ok(());
     }
@@ -813,9 +816,9 @@ fn run_sbom_builtin(
 
     let packages = parse_cargo_lock(&cargo_lock_content)?;
     log.status(&format!(
-        "sbom[{}]: parsed {} packages from Cargo.lock",
-        id,
-        packages.len()
+        "parsed {} packages from Cargo.lock (sbom[{}])",
+        packages.len(),
+        id
     ));
 
     // Deterministic inputs: the same release tag must produce byte-identical
@@ -838,9 +841,9 @@ fn run_sbom_builtin(
         chrono::DateTime::<chrono::Utc>::from_timestamp(state.sde, 0)
             .map(|dt| dt.to_rfc3339())
             .unwrap_or_else(|| {
-                log.status(&format!(
-                    "sbom[{}]: warn — SOURCE_DATE_EPOCH {} out of range; falling back to CommitDate",
-                    id, state.sde
+                log.warn(&format!(
+                    "SOURCE_DATE_EPOCH {} out of range for sbom[{}]; falling back to CommitDate",
+                    state.sde, id
                 ));
                 ctx.template_vars()
                     .get("CommitDate")
@@ -850,8 +853,8 @@ fn run_sbom_builtin(
     } else if let Some(cd) = ctx.template_vars().get("CommitDate").cloned() {
         cd
     } else {
-        log.status(&format!(
-            "sbom[{}]: warn — no SOURCE_DATE_EPOCH or CommitDate; SBOM timestamp will not be reproducible",
+        log.warn(&format!(
+            "no SOURCE_DATE_EPOCH or CommitDate for sbom[{}]; SBOM timestamp will not be reproducible",
             id
         ));
         anodizer_core::sde::resolve_now().to_rfc3339()
@@ -1002,7 +1005,7 @@ fn run_sbom_builtin(
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
-        log.status(&format!("sbom[{}]: wrote {} ({})", id, name, format));
+        log.status(&format!("wrote {} for sbom[{}] ({})", name, id, format));
 
         let mut metadata = HashMap::new();
         metadata.insert("format".to_string(), format.to_string());

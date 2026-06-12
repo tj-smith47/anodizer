@@ -113,7 +113,7 @@ fn render_aur_source_inner(
             .unwrap_or_default();
         if owner.is_empty() {
             log.warn(&format!(
-                "{}: could not extract owner from GitURL; set url_template explicitly",
+                "could not extract owner from GitURL for {}; set url_template explicitly",
                 label
             ));
         }
@@ -443,13 +443,13 @@ fn publish_aur_source_entry(
     match outcome {
         util::CommitOutcome::Pushed => {
             log.status(&format!(
-                "{}: package '{}' pushed to {}",
-                label, pkg_name, git_url
+                "pushed package '{}' for {} to {}",
+                pkg_name, label, git_url
             ));
         }
         util::CommitOutcome::NoChanges => {
             log.status(&format!(
-                "{}: nothing to push, package '{}' already up to date",
+                "nothing to push for {} — package '{}' already up to date",
                 label, pkg_name
             ));
         }

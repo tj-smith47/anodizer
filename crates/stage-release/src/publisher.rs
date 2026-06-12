@@ -406,7 +406,7 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
                     handles.push(s.spawn(move || {
                         let release_outcome = if let Some(id) = target.release_id {
                             log.status(&format!(
-                                "{}: delete release {} (id={}) from {}/{}",
+                                "deleting {} release {} (id={}) from {}/{}",
                                 GithubReleasePublisher::PUBLISHER_NAME,
                                 target.tag,
                                 id,
@@ -427,7 +427,7 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
                             // delete (it would 404 anyway). Treat as
                             // already-absent for the counter.
                             log.status(&format!(
-                                "{}: no captured release id for {} on {}/{}; \
+                                "no captured {} release id for {} on {}/{}; \
                                  skipping release delete (tag delete still attempted)",
                                 GithubReleasePublisher::PUBLISHER_NAME,
                                 target.tag,
@@ -442,7 +442,7 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
                         // so the tag is also reverted; 404 buckets as
                         // already-absent.
                         log.status(&format!(
-                            "{}: delete tag refs/tags/{} from {}/{}",
+                            "deleting {} tag refs/tags/{} from {}/{}",
                             GithubReleasePublisher::PUBLISHER_NAME,
                             target.tag,
                             target.owner,
@@ -520,7 +520,7 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
         }
 
         log.status(&format!(
-            "{}: deleted {} release(s), {} already-absent, {} failed; \
+            "{} rollback deleted {} release(s), {} already-absent, {} failed; \
              deleted {} tag(s), {} already-absent, {} failed",
             Self::PUBLISHER_NAME,
             release_deleted,

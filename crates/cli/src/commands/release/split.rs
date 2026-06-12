@@ -322,7 +322,7 @@ pub(super) fn run_split(
         std::fs::write(&matrix_path, &matrix_json)
             .with_context(|| format!("write matrix to {}", matrix_path.display()))?;
         log.status(&format!(
-            "wrote matrix to {} ({} entries, split by: {})",
+            "wrote matrix to {} ({} entries, split by {})",
             matrix_path.display(),
             matrix.include.len(),
             split_by

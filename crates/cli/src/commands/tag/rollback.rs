@@ -259,7 +259,7 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
     // deleting the tag + reverting the bump can never lead to a clean
     // same-version re-cut — only to an orphaned live release.
     if opts.force {
-        log.warn("--force: skipping the published-state guard");
+        log.warn("skipping the published-state guard (--force)");
     } else {
         check_not_irreversibly_published(&cwd, gh_binary, &deletable, &log)?;
     }
@@ -309,7 +309,7 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
         let parent = format!("{}~1", target_sha);
         if opts.dry_run {
             log.status(&format!(
-                "(dry-run) would: git reset --hard {} (parent of bump commit)",
+                "(dry-run) would run: git reset --hard {} (parent of bump commit)",
                 short(&target_sha)
             ));
         } else {
@@ -333,25 +333,25 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
     let message = build_revert_message(&target_sha, &deletable, opts.dry_run);
     if opts.dry_run {
         log.status(&format!(
-            "(dry-run) would: git revert --no-edit {} && git commit --amend -m {:?}",
+            "(dry-run) would run: git revert --no-edit {} && git commit --amend -m {:?}",
             short(&target_sha),
             message
         ));
     } else {
         let identity = git::resolve_rollback_identity(&cwd);
         git::revert_commit_in(&cwd, &target_sha, Some(&message), &identity)?;
-        log.status(&format!("created revert commit: {}", first_line(&message)));
+        log.status(&format!("created revert commit {}", first_line(&message)));
     }
 
     delete_tags(&cwd, &deletable, &opts, &log);
 
     if opts.no_push {
-        log.status("--no-push: skipping branch push");
+        log.status("skipping branch push (--no-push)");
         return Ok(());
     }
     let branch = resolve_push_branch(&cwd, &target_sha, opts.branch.as_deref())?;
     if opts.dry_run {
-        log.status(&format!("(dry-run) would: git push origin {branch}"));
+        log.status(&format!("(dry-run) would run: git push origin {branch}"));
     } else {
         git::push_branch_in(&cwd, &branch)?;
         log.status(&format!("pushed revert to origin/{branch}"));
@@ -371,21 +371,21 @@ fn delete_tags(
 ) {
     for tag in deletable {
         if opts.dry_run {
-            log.status(&format!("(dry-run) would delete tag: {tag} (remote+local)"));
+            log.status(&format!("(dry-run) would delete tag {tag} (remote+local)"));
             continue;
         }
         if !opts.no_push {
             match git::delete_remote_tag_in(cwd, tag) {
-                Ok(()) => log.status(&format!("deleted remote tag: {tag}")),
+                Ok(()) => log.status(&format!("deleted remote tag {tag}")),
                 Err(e) => log.warn(&format!(
                     "remote tag delete failed for {tag}: {e} (continuing)"
                 )),
             }
         } else {
-            log.status(&format!("--no-push: skipping remote delete for {tag}"));
+            log.status(&format!("skipping remote delete for {tag} (--no-push)"));
         }
         match git::delete_local_tag_in(cwd, tag) {
-            Ok(()) => log.status(&format!("deleted local tag: {tag}")),
+            Ok(()) => log.status(&format!("deleted local tag {tag}")),
             Err(e) => log.warn(&format!(
                 "local tag delete failed for {tag}: {e} (continuing)"
             )),

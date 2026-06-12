@@ -700,7 +700,7 @@ pub fn setup_env(
             for referenced in referenced_var_keys(value) {
                 if vars_map.contains_key(referenced) && !defined.contains(referenced) {
                     log.warn(&format!(
-                        "variables.{key}: references variable '{referenced}' that is \
+                        "variables.{key} references variable '{referenced}' that is \
                          defined later (variables resolve in alphabetical key order, so \
                          '{referenced}' is still unset here and renders empty). Rename so \
                          '{key}' sorts after '{referenced}'."

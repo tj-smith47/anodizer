@@ -64,7 +64,7 @@ impl Stage for super::ChangelogStage {
                 .unwrap_or(false);
             if !snapshot_opt_in {
                 log.status(
-                    "changelog skipped (snapshot mode; set `changelog.snapshot: true` to render)",
+                    "skipping changelog (snapshot mode; set `changelog.snapshot: true` to render)",
                 );
                 return Ok(());
             }
@@ -80,7 +80,7 @@ impl Stage for super::ChangelogStage {
                 .try_evaluates_to_true(|s| ctx.render_template(s))
                 .with_context(|| "changelog: render skip template")?;
             if off {
-                log.status("changelog skipped");
+                log.status("skipping changelog — `skip` condition evaluated truthy");
                 return Ok(());
             }
         }
@@ -889,7 +889,7 @@ fn render_crate_changelog(
     // unsupported above). Surface the limitation rather than silently widen.
     if scope.narrow.is_some() && (use_github || use_gitlab || use_gitea) {
         log.warn(
-            "changelog: `changelog.paths` narrows the per-crate scope, but the \
+            "`changelog.paths` narrows the per-crate scope, but the \
              SCM compare API cannot apply it precisely; the result may include \
              commits outside the configured paths. Use `use: git` for an exact \
              intersect.",

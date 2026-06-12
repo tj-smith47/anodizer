@@ -979,6 +979,10 @@ impl Stage for PublishStage {
         if ctx.skip_in_snapshot(&log, "publish") {
             return Ok(());
         }
+        // Mark before the guards below: an abort past this point must
+        // read "aborted before dispatch" (not "stages skipped") in the
+        // summary placeholder row.
+        ctx.set_publish_attempted();
 
         // Refuse to re-run publish when a prior `report.json` exists
         // for the current `run_id` unless the operator explicitly

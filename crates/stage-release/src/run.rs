@@ -84,7 +84,7 @@ fn validate_nightly_config(ctx: &Context, log: &anodizer_core::log::StageLogger)
     // promoted nightly: each run replaces the prior draft before it publishes.
     if nightly_cfg.draft == Some(true) && nightly_cfg.resolved_keep_last() == Some(1) {
         log.warn(
-            "release: nightly with both draft=true and a keep_last:1 retention \
+            "nightly with both draft=true and a keep_last:1 retention \
              (keep_single_release) — no published nightly release will exist \
              (each run replaces a prior draft)",
         );

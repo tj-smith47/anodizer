@@ -471,6 +471,24 @@ pub fn record_failure_policy(
     updated
 }
 
+/// How far the publish stage got this run, for the zero-results
+/// placeholder row in [`status_table_rows`].
+///
+/// Derived at summary time from the `(publish_attempted, publish_report)`
+/// context pair: report present means [`Ran`](Self::Ran); attempted with
+/// no report means a pre-dispatch guard aborted the stage; neither means
+/// the stage never started (snapshot / `--skip=publish`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PublishDisposition {
+    /// Publish stages never started (snapshot mode / `--skip=publish`).
+    Skipped,
+    /// The publish stage started but aborted before dispatching any
+    /// publisher (e.g. rerun refusal, runtime allowlist validation).
+    Aborted,
+    /// The publisher dispatcher ran to completion.
+    Ran,
+}
+
 /// Build the end-of-pipeline per-publisher status rows as `(key, value)`
 /// pairs in the log's kv register — the caller feeds each pair to
 /// `StageLogger::kv` with a shared key width so the value column aligns.
@@ -486,16 +504,18 @@ pub fn record_failure_policy(
 ///
 /// With zero publisher results a single placeholder row stands in for
 /// the per-publisher block, so the summary still states *why* it is
-/// empty instead of rendering a bare header. `publish_ran` selects the
-/// cause: results are empty either because the publish stages never ran
-/// (skipped/gated) or because publish ran with zero publishers
-/// configured — the two read very differently to an operator:
+/// empty instead of rendering a bare header. `disposition` selects the
+/// cause — skipped stage, pre-dispatch abort, and a zero-publisher
+/// configuration read very differently to an operator:
 ///
 /// ```text
 /// • publishers   none ran (publish stages skipped)
 /// • run flags    submitter_gated=false announce_gated=false
 /// ```
-pub fn status_table_rows(summary: &RunSummary, publish_ran: bool) -> Vec<(String, String)> {
+pub fn status_table_rows(
+    summary: &RunSummary,
+    disposition: PublishDisposition,
+) -> Vec<(String, String)> {
     // Cap the name column so a pathological publisher name (e.g. an
     // operator pastes a URL into `publishers.custom[].name`) cannot
     // blow out the terminal width in CI logs. 40 chars covers every
@@ -524,10 +544,10 @@ pub fn status_table_rows(summary: &RunSummary, publish_ran: bool) -> Vec<(String
 
     let mut rows: Vec<(String, String)> = Vec::new();
     if summary.results.is_empty() {
-        let why = if publish_ran {
-            "none ran (no publishers configured)"
-        } else {
-            "none ran (publish stages skipped)"
+        let why = match disposition {
+            PublishDisposition::Ran => "none ran (no publishers configured)",
+            PublishDisposition::Aborted => "none ran (publish stage aborted before dispatch)",
+            PublishDisposition::Skipped => "none ran (publish stages skipped)",
         };
         rows.push(("publishers".to_string(), why.to_string()));
     } else {
@@ -1052,7 +1072,7 @@ mod tests {
     #[test]
     fn status_table_rows_render_per_publisher_and_run_flags() {
         let s = populated_summary();
-        let rows = status_table_rows(&s, true);
+        let rows = status_table_rows(&s, PublishDisposition::Ran);
         // One row per publisher result, plus the trailing run-flags row.
         assert_eq!(rows.len(), s.results.len() + 1, "rows: {rows:?}");
         assert!(
@@ -1099,7 +1119,7 @@ mod tests {
             results: vec![],
             determinism_allowlist: DeterminismAllowlist::default(),
         };
-        let rows = status_table_rows(&s, false);
+        let rows = status_table_rows(&s, PublishDisposition::Skipped);
         assert_eq!(
             rows,
             vec![
@@ -1115,12 +1135,41 @@ mod tests {
         );
         // Same empty results, but publish actually ran: the cause is a
         // zero-publisher configuration, not a skipped stage.
-        let rows = status_table_rows(&s, true);
+        let rows = status_table_rows(&s, PublishDisposition::Ran);
         assert_eq!(
             rows.first().expect("placeholder row"),
             &(
                 "publishers".to_string(),
                 "none ran (no publishers configured)".to_string()
+            ),
+        );
+    }
+
+    #[test]
+    fn status_table_rows_empty_results_abort_state_why() {
+        // A pre-dispatch guard abort (rerun refusal, runtime allowlist)
+        // is neither "skipped" nor "zero publishers configured"; the
+        // placeholder row must name the abort so the failure-path
+        // summary doesn't mislabel the cause.
+        let s = RunSummary {
+            schema_version: RunSummary::CURRENT_SCHEMA_VERSION,
+            anodize_version: "0.0.0-test".to_string(),
+            tag: "v0.0.0".to_string(),
+            submitter_gated: false,
+            announce_gated: false,
+            publishers_succeeded: 0,
+            publishers_failed: 0,
+            irreversibly_published: false,
+            failure_policy: None,
+            results: vec![],
+            determinism_allowlist: DeterminismAllowlist::default(),
+        };
+        let rows = status_table_rows(&s, PublishDisposition::Aborted);
+        assert_eq!(
+            rows.first().expect("placeholder row"),
+            &(
+                "publishers".to_string(),
+                "none ran (publish stage aborted before dispatch)".to_string()
             ),
         );
     }
@@ -1159,7 +1208,7 @@ mod tests {
             ],
             determinism_allowlist: DeterminismAllowlist::default(),
         };
-        let rows = status_table_rows(&s, true);
+        let rows = status_table_rows(&s, PublishDisposition::Ran);
         // The full long name is the row key, untruncated at this length.
         assert_eq!(
             rows[0].0, "custom-publisher-with-long-id",
@@ -1200,7 +1249,7 @@ mod tests {
             }],
             determinism_allowlist: DeterminismAllowlist::default(),
         };
-        let rows = status_table_rows(&s, true);
+        let rows = status_table_rows(&s, PublishDisposition::Ran);
         let key = &rows[0].0;
         assert!(
             !key.contains(&long_name),

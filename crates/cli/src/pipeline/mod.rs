@@ -561,9 +561,10 @@ mod tests {
 
     /// Ordering contract for the consolidated skip row: skips buffered
     /// while consecutive stages are skipped flush BEFORE the next running
-    /// stage emits anything (the flush precedes the stage's section
-    /// opening) and are not lost when that stage fails — the row precedes
-    /// the failure line on the early error return.
+    /// stage's body output and are not lost when that stage fails — the
+    /// row precedes the failure line on the early error return. (Capture
+    /// records messages, not section headers, so the pinned bound is the
+    /// stage's first body line rather than its section opening.)
     #[test]
     fn buffered_skips_flush_before_next_stage_and_survive_its_failure() {
         use anodizer_core::log::LogCapture;

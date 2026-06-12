@@ -46,7 +46,7 @@ pub fn lock_recover<'a, T>(m: &'a Mutex<T>, log: &StageLogger, label: &str) -> M
         Ok(g) => g,
         Err(poisoned) => {
             log.warn(&format!(
-                "{label}: mutex poisoned by sibling thread panic; recovering state"
+                "{label} mutex poisoned by sibling thread panic; recovering state"
             ));
             poisoned.into_inner()
         }

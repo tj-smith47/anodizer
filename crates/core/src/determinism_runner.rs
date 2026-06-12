@@ -534,6 +534,55 @@ mod tests {
         );
     }
 
+    /// Operator verbosity must reach the child argv: each non-Normal
+    /// [`crate::log::Verbosity`] maps to exactly one flag, and Normal
+    /// maps to none (the child's own default). The child's stderr is
+    /// inherited into the parent stream, so a dropped flag would leave
+    /// `-q` runs loud and `--debug` runs mute inside the harness.
+    #[test]
+    fn subprocess_command_forwards_verbosity_flag() {
+        let env = HashMap::new();
+        let argv_for = |verbosity: crate::log::Verbosity| -> Vec<String> {
+            let cmd = build_subprocess_command(&ChildInvocation {
+                anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+                worktree_path: &std::env::temp_dir(),
+                env: &env,
+                targets: None,
+                extra_skip: &[],
+                snapshot: true,
+                crate_name: None,
+                verbosity,
+            });
+            cmd.get_args()
+                .map(|s| s.to_str().expect("ascii").to_string())
+                .collect()
+        };
+        let verbosity_flags = ["--quiet", "--verbose", "--debug"];
+        for (verbosity, expected) in [
+            (crate::log::Verbosity::Quiet, Some("--quiet")),
+            (crate::log::Verbosity::Verbose, Some("--verbose")),
+            (crate::log::Verbosity::Debug, Some("--debug")),
+            (crate::log::Verbosity::Normal, None),
+        ] {
+            let args = argv_for(verbosity);
+            let present: Vec<&String> = args
+                .iter()
+                .filter(|a| verbosity_flags.contains(&a.as_str()))
+                .collect();
+            match expected {
+                Some(flag) => assert_eq!(
+                    present,
+                    vec![flag],
+                    "{verbosity:?} must forward exactly {flag}; got {args:?}"
+                ),
+                None => assert!(
+                    present.is_empty(),
+                    "Normal must forward no verbosity flag; got {args:?}"
+                ),
+            }
+        }
+    }
+
     #[test]
     fn side_effect_stages_covers_every_known_publish_side_effect() {
         // Regression guard: if a future pipeline edit adds a side-effect

@@ -63,7 +63,7 @@ use crate::release_log;
 /// `format_retry_warn_shape_pins_shared_format` test below pins the exact
 /// format string both pathways emit.
 pub(crate) fn format_retry_warn(label: &str, attempt: u32, max: u32, status: u16) -> String {
-    format!("release: {label} failed (retriable, attempt {attempt}/{max}, status={status})")
+    format!("{label} failed (retriable, attempt {attempt}/{max}, status={status})")
 }
 
 /// Run an octocrab call through the shared retry policy.
@@ -300,7 +300,7 @@ mod tests {
         let s = format_retry_warn("delete release", 3, 10, 503);
         assert_eq!(
             s,
-            "release: delete release failed (retriable, attempt 3/10, status=503)"
+            "delete release failed (retriable, attempt 3/10, status=503)"
         );
     }
 

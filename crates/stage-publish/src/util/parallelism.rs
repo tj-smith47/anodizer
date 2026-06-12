@@ -93,8 +93,8 @@ pub(crate) fn run_revert_targets_parallel(
                 let counts = &counts;
                 handles.push(s.spawn(move || {
                     log.status(&format!(
-                        "{}: revert + push {} ({})",
-                        publisher, target.target, target.repo_url
+                        "reverting and pushing {} for {} ({})",
+                        target.target, publisher, target.repo_url
                     ));
                     match run_git_revert_and_push(target, &log) {
                         Ok(()) => {
@@ -127,7 +127,7 @@ pub(crate) fn run_revert_targets_parallel(
         Ok(c) => c,
         Err(poisoned) => {
             log.warn(&format!(
-                "{publisher}: mutex poisoned by worker panic; reporting counters as-of poison"
+                "{publisher} mutex poisoned by worker panic; reporting counters as-of poison"
             ));
             poisoned.into_inner()
         }

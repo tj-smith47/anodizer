@@ -363,6 +363,12 @@ pub struct Context {
     /// stages) consult this to apply the submitter-gate / announce-gate
     /// rules — see `PublishReport::any_failed`.
     pub publish_report: Option<PublishReport>,
+    /// Whether `PublishStage::run` entered its body this run. Set before
+    /// the pre-dispatch guards (rerun refusal, runtime allowlist), so a
+    /// guard abort leaves this `true` with `publish_report` still `None`
+    /// — the summary placeholder row uses the pair to distinguish
+    /// "publish skipped" from "publish aborted before dispatch".
+    pub publish_attempted: bool,
     /// SOURCE_DATE_EPOCH seed + non-determinism allow-list state for the
     /// run. `None` until a stage (typically `BuildStage`) seeds it from
     /// `resolve_reproducible_epoch(commit_timestamp)`; downstream stages
@@ -452,6 +458,7 @@ impl Context {
             token_type: ScmTokenType::GitHub,
             skip_memento: crate::pipe_skip::SkipMemento::new(),
             publish_report: None,
+            publish_attempted: false,
             determinism: None,
             pending_outcome: None,
             pending_evidence: None,
@@ -547,6 +554,19 @@ impl Context {
     /// or `None` if the publish stage hasn't run yet (or was skipped).
     pub fn publish_report(&self) -> Option<&PublishReport> {
         self.publish_report.as_ref()
+    }
+
+    /// Whether the publish stage entered its body this run (even if it
+    /// aborted before dispatching any publisher).
+    pub fn publish_attempted(&self) -> bool {
+        self.publish_attempted
+    }
+
+    /// Record that the publish stage entered its body. Called by
+    /// `PublishStage::run` ahead of its pre-dispatch guards so guard
+    /// aborts are distinguishable from a skipped stage.
+    pub fn set_publish_attempted(&mut self) {
+        self.publish_attempted = true;
     }
 
     /// Store the publisher dispatch report. Overwrites any prior value.
@@ -708,7 +728,7 @@ impl Context {
                 if self.options.strict {
                     anyhow::bail!("{}: failed to render template: {} (strict mode)", label, e);
                 }
-                log.warn(&format!("{}: failed to render template: {}", label, e));
+                log.warn(&format!("failed to render template for {}: {}", label, e));
                 Ok(template.to_string())
             }
         }

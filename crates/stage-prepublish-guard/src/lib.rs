@@ -58,11 +58,11 @@ fn run_guard(
     // runs in the snapshot/dry-run emission-validate pass. Guarding only the
     // real-publish path keeps this gate honest.
     if ctx.is_snapshot() {
-        log.status("skipped (snapshot mode)");
+        log.status("skipping prepublish guard (snapshot mode)");
         return Ok(());
     }
     if ctx.is_nightly() {
-        log.status("skipped (nightly run)");
+        log.status("skipping prepublish guard (nightly run)");
         return Ok(());
     }
 

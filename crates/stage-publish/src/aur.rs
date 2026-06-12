@@ -771,7 +771,7 @@ fn aur_write_package_files(
     let pkgbuild_path = output_dir.join("PKGBUILD");
     std::fs::write(&pkgbuild_path, pkgbuild)
         .with_context(|| format!("aur: write PKGBUILD {}", pkgbuild_path.display()))?;
-    log.status(&format!("wrote AUR PKGBUILD: {}", pkgbuild_path.display()));
+    log.status(&format!("wrote AUR PKGBUILD {}", pkgbuild_path.display()));
 
     if let Some(content) = install_content {
         let install_path = output_dir.join(install_filename);
@@ -779,7 +779,7 @@ fn aur_write_package_files(
             format!("aur: write {} {}", install_filename, install_path.display())
         })?;
         log.status(&format!(
-            "wrote AUR install file: {}",
+            "wrote AUR install file {}",
             install_path.display()
         ));
     }
@@ -787,7 +787,7 @@ fn aur_write_package_files(
     let srcinfo_path = output_dir.join(".SRCINFO");
     std::fs::write(&srcinfo_path, srcinfo)
         .with_context(|| format!("aur: write .SRCINFO {}", srcinfo_path.display()))?;
-    log.status(&format!("wrote AUR .SRCINFO: {}", srcinfo_path.display()));
+    log.status(&format!("wrote AUR .SRCINFO {}", srcinfo_path.display()));
 
     Ok(())
 }

@@ -1282,9 +1282,7 @@ fn parallel_delete(
     match counts.into_inner() {
         Ok(c) => c,
         Err(poisoned) => {
-            log.warn(
-                "artifactory: mutex poisoned by worker panic; reporting counters as-of poison",
-            );
+            log.warn("artifactory mutex poisoned by worker panic; reporting counters as-of poison");
             poisoned.into_inner()
         }
     }

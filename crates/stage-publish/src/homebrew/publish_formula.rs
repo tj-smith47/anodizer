@@ -420,7 +420,7 @@ fn clone_tap_and_write_formula(
         .with_context(|| format!("homebrew: write formula {}", formula_path.display()))?;
 
     log.status(&format!(
-        "wrote Homebrew formula: {}",
+        "wrote Homebrew formula {}",
         formula_path.display()
     ));
     Ok(formula_path)
@@ -506,7 +506,7 @@ fn maybe_write_cask_into_tap(
     let cask_path = casks_dir.join(format!("{}.rb", cask_result.cask_name));
     std::fs::write(&cask_path, &cask_result.content)
         .with_context(|| format!("homebrew cask: write cask file {}", cask_path.display()))?;
-    log.status(&format!("wrote Homebrew cask: {}", cask_path.display()));
+    log.status(&format!("wrote Homebrew cask {}", cask_path.display()));
 
     // Versioned alt-name files. Each emits a sibling `.rb` so users can
     // `brew install <pkg>@<version>` for a pinned/downgrade install path.
@@ -519,7 +519,7 @@ fn maybe_write_cask_into_tap(
                 alt_path.display()
             )
         })?;
-        log.status(&format!("wrote Homebrew cask: {}", alt_path.display()));
+        log.status(&format!("wrote Homebrew cask {}", alt_path.display()));
         versioned_paths.push(alt_path);
     }
 

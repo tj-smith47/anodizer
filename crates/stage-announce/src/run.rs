@@ -273,11 +273,18 @@ pub fn emit_summary(ctx: &mut Context) {
     // `publisher-summary` (not `announce`) so the section header reads
     // `Summary` rather than the announce stage's phrase.
     let log = ctx.logger("publisher-summary");
-    // publish_report is installed only when the publish stage actually
-    // ran, so its presence distinguishes "stages skipped" from "ran with
-    // zero publishers configured" in the placeholder row.
-    let publish_ran = ctx.publish_report().is_some();
-    let rows = anodizer_stage_publish::run_summary::status_table_rows(&summary, publish_ran);
+    // The report is installed only when the dispatcher finished;
+    // publish_attempted is set at stage entry. The pair separates the
+    // three placeholder causes: ran-with-zero-publishers, aborted by a
+    // pre-dispatch guard, and never started (snapshot / --skip).
+    let disposition = if ctx.publish_report().is_some() {
+        anodizer_stage_publish::run_summary::PublishDisposition::Ran
+    } else if ctx.publish_attempted() {
+        anodizer_stage_publish::run_summary::PublishDisposition::Aborted
+    } else {
+        anodizer_stage_publish::run_summary::PublishDisposition::Skipped
+    };
+    let rows = anodizer_stage_publish::run_summary::status_table_rows(&summary, disposition);
     let key_width = rows
         .iter()
         .map(|(k, _)| k.chars().count())

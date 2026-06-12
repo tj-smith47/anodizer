@@ -100,7 +100,7 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
 
     run_formatter(ctx, nix_cfg, &nix_file, log)?;
 
-    log.status(&format!("wrote Nix expression: {}", nix_file.display()));
+    log.status(&format!("wrote Nix expression {}", nix_file.display()));
 
     // (Re)generate the root `flake.nix`, merging this package into the
     // set recovered from any prior committed flake. Without a root flake
@@ -113,7 +113,7 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
     // (honoring `nix.path`).
     let flake_rel = super::flake::write_flake(repo_path, name, &nix_path)?;
     log.status(&format!(
-        "wrote root flake: {}",
+        "wrote root flake {}",
         repo_path.join(flake_rel).display()
     ));
 

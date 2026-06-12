@@ -126,6 +126,7 @@ trait Announcer: Sync {
         announce: &AnnounceConfig,
         retry: &RetryPolicy,
         log: &StageLogger,
+        key_width: usize,
     ) -> Result<()>;
 
     /// Render — but do not send — exactly the templates this announcer's
@@ -144,29 +145,39 @@ trait Announcer: Sync {
     }
 }
 
+/// Shared per-section dispatch state every announcer in one Announcing
+/// section writes into: the collected per-provider errors, the
+/// idempotency sent-marker (live path only), and the shared kv pad
+/// width computed over the providers that will fire.
+struct DispatchSink<'a> {
+    errors: &'a mut Vec<String>,
+    marker: Option<&'a mut crate::sent_marker::AnnounceSentMarker>,
+    key_width: usize,
+}
+
 /// Run a single announcer: skip when disabled, capture per-provider
-/// errors into the shared `errors` vec, propagate `enabled:` template
+/// errors into the sink's `errors` vec, propagate `enabled:` template
 /// errors (matching the historical `?`-in-let-chain behavior).
 ///
-/// When `marker` is `Some`, the announce is idempotent across re-runs: an
-/// announcer already recorded for this version is skipped, and a successful
-/// send records the announcer so a later re-run won't re-post. `marker` is
-/// `None` on dry-run paths (nothing is actually sent, so nothing is recorded).
+/// When the sink's `marker` is `Some`, the announce is idempotent across
+/// re-runs: an announcer already recorded for this version is skipped,
+/// and a successful send records the announcer so a later re-run won't
+/// re-post. `None` on dry-run paths (nothing is actually sent, so
+/// nothing is recorded).
 fn run_announcer(
     a: &dyn Announcer,
     ctx: &mut Context,
     announce: &AnnounceConfig,
     retry: &RetryPolicy,
     log: &StageLogger,
-    errors: &mut Vec<String>,
-    marker: Option<&mut crate::sent_marker::AnnounceSentMarker>,
+    sink: &mut DispatchSink<'_>,
 ) -> Result<()> {
     if !a.enabled(ctx, announce)? {
         return Ok(());
     }
     // Idempotency gate: a re-run at an already-announced version must not
     // re-post to a channel that already fired.
-    if let Some(ref m) = marker
+    if let Some(ref m) = sink.marker
         && m.already_sent(a.name())
     {
         log.status(&format!(
@@ -175,17 +186,17 @@ fn run_announcer(
         ));
         return Ok(());
     }
-    if let Err(e) = a.send(ctx, announce, retry, log) {
+    if let Err(e) = a.send(ctx, announce, retry, log, sink.key_width) {
         // `{e:#}` flattens the anyhow chain into "outer: middle: root"
         // so the announce-stage summary actually names the underlying
         // failure (e.g. a missing template variable or a wrapped tera
         // syntax error) instead of just the outermost wrapper.
-        errors.push(format!("{}: {e:#}", a.name()));
+        sink.errors.push(format!("{}: {e:#}", a.name()));
         return Ok(());
     }
     // Record the successful send so a re-run skips this channel. Flushed per
     // announcer so a mid-dispatch crash still records what already posted.
-    if let Some(m) = marker {
+    if let Some(m) = sink.marker.as_deref_mut() {
         m.mark_sent(a.name(), log);
     }
     Ok(())
@@ -201,21 +212,42 @@ pub(crate) fn dispatch_all_announcers(
     retry_policy: &RetryPolicy,
     log: &StageLogger,
     errors: &mut Vec<String>,
-    mut marker: Option<&mut crate::sent_marker::AnnounceSentMarker>,
+    marker: Option<&mut crate::sent_marker::AnnounceSentMarker>,
 ) -> Result<()> {
+    let key_width = enabled_key_width(ctx, announce, None)?;
+    let mut sink = DispatchSink {
+        errors,
+        marker,
+        key_width,
+    };
     for announcer in announcer_registry() {
-        run_announcer(
-            *announcer,
-            ctx,
-            announce,
-            retry_policy,
-            log,
-            errors,
-            marker.as_deref_mut(),
-        )?;
+        run_announcer(*announcer, ctx, announce, retry_policy, log, &mut sink)?;
     }
 
     Ok(())
+}
+
+/// Widest `name()` among the announcers that will actually fire (enabled
+/// and, when a filter applies, not filtered out), so every provider kv
+/// row in one Announcing section pads to the same column.
+fn enabled_key_width(
+    ctx: &mut Context,
+    announce: &AnnounceConfig,
+    filter: Option<&AnnounceFilter<'_>>,
+) -> Result<usize> {
+    let mut width = 0;
+    for announcer in announcer_registry() {
+        let name = announcer.name();
+        if let Some(f) = filter
+            && (f.include.is_some_and(|inc| !inc.contains(&name)) || f.skip.contains(&name))
+        {
+            continue;
+        }
+        if announcer.enabled(ctx, announce)? {
+            width = width.max(name.chars().count());
+        }
+    }
+    Ok(width)
 }
 
 /// Filter descriptor for [`dispatch_filtered_announcers`].
@@ -235,9 +267,15 @@ pub(crate) fn dispatch_filtered_announcers(
     retry_policy: &RetryPolicy,
     log: &StageLogger,
     errors: &mut Vec<String>,
-    mut marker: Option<&mut crate::sent_marker::AnnounceSentMarker>,
+    marker: Option<&mut crate::sent_marker::AnnounceSentMarker>,
     filter: AnnounceFilter<'_>,
 ) -> Result<()> {
+    let key_width = enabled_key_width(ctx, announce, Some(&filter))?;
+    let mut sink = DispatchSink {
+        errors,
+        marker,
+        key_width,
+    };
     for announcer in announcer_registry() {
         let name = announcer.name();
         if filter.include.is_some_and(|inc| !inc.contains(&name)) {
@@ -246,15 +284,7 @@ pub(crate) fn dispatch_filtered_announcers(
         if filter.skip.contains(&name) {
             continue;
         }
-        run_announcer(
-            *announcer,
-            ctx,
-            announce,
-            retry_policy,
-            log,
-            errors,
-            marker.as_deref_mut(),
-        )?;
+        run_announcer(*announcer, ctx, announce, retry_policy, log, &mut sink)?;
     }
     Ok(())
 }
@@ -328,6 +358,7 @@ impl Announcer for DiscordAnnouncer {
         announce: &AnnounceConfig,
         retry_policy: &RetryPolicy,
         log: &StageLogger,
+        key_width: usize,
     ) -> Result<()> {
         let cfg = announce
             .discord
@@ -392,7 +423,7 @@ impl Announcer for DiscordAnnouncer {
             color,
             icon_url: icon_url.as_deref(),
         };
-        dispatch(ctx, "discord", &message, || {
+        dispatch(ctx, "discord", &message, key_width, || {
             discord::send_discord(&url, &message, &opts, retry_policy)
         })
     }
@@ -431,6 +462,7 @@ impl Announcer for DiscourseAnnouncer {
         announce: &AnnounceConfig,
         retry_policy: &RetryPolicy,
         log: &StageLogger,
+        key_width: usize,
     ) -> Result<()> {
         let cfg = announce
             .discourse
@@ -470,7 +502,7 @@ impl Announcer for DiscourseAnnouncer {
         let message = render_message(ctx, cfg.message_template.as_deref())?;
         let api_key = require_env_with_env("discourse", "DISCOURSE_API_KEY", ctx.env_source())?;
 
-        dispatch(ctx, "discourse", &title, || {
+        dispatch(ctx, "discourse", &title, key_width, || {
             discourse::send_discourse(
                 &server,
                 &api_key,
@@ -516,6 +548,7 @@ impl Announcer for SlackAnnouncer {
         announce: &AnnounceConfig,
         retry_policy: &RetryPolicy,
         log: &StageLogger,
+        key_width: usize,
     ) -> Result<()> {
         let cfg = announce
             .slack
@@ -551,7 +584,7 @@ impl Announcer for SlackAnnouncer {
             Some(a) => render_json_template(ctx, Some(&serde_json::to_value(a)?))?,
             None => None,
         };
-        dispatch(ctx, "slack", &message, || {
+        dispatch(ctx, "slack", &message, key_width, || {
             let opts = slack::SlackOptions {
                 channel: channel.as_deref(),
                 username: username.as_deref(),
@@ -602,6 +635,7 @@ impl Announcer for WebhookAnnouncer {
         announce: &AnnounceConfig,
         retry_policy: &RetryPolicy,
         log: &StageLogger,
+        key_width: usize,
     ) -> Result<()> {
         let cfg = announce
             .webhook
@@ -669,7 +703,7 @@ impl Announcer for WebhookAnnouncer {
         } else {
             cfg.expected_status_codes.clone()
         };
-        dispatch(ctx, "webhook", &message, || {
+        dispatch(ctx, "webhook", &message, key_width, || {
             webhook::send_webhook(
                 &url,
                 &message,
@@ -718,6 +752,7 @@ impl Announcer for TelegramAnnouncer {
         announce: &AnnounceConfig,
         retry_policy: &RetryPolicy,
         log: &StageLogger,
+        key_width: usize,
     ) -> Result<()> {
         let cfg = announce
             .telegram
@@ -794,7 +829,7 @@ impl Announcer for TelegramAnnouncer {
             None => None,
         };
 
-        dispatch(ctx, "telegram", &message, || {
+        dispatch(ctx, "telegram", &message, key_width, || {
             telegram::send_telegram(
                 &bot_token,
                 &chat_id,
@@ -851,6 +886,7 @@ impl Announcer for TeamsAnnouncer {
         announce: &AnnounceConfig,
         retry_policy: &RetryPolicy,
         log: &StageLogger,
+        key_width: usize,
     ) -> Result<()> {
         let cfg = announce
             .teams
@@ -882,7 +918,7 @@ impl Announcer for TeamsAnnouncer {
             color: Some(color_val.as_str()),
             icon_url: icon_url.as_deref(),
         };
-        dispatch(ctx, "teams", &message, || {
+        dispatch(ctx, "teams", &message, key_width, || {
             teams::send_teams(&url, &message, &opts, retry_policy)
         })
     }
@@ -921,6 +957,7 @@ impl Announcer for MattermostAnnouncer {
         announce: &AnnounceConfig,
         retry_policy: &RetryPolicy,
         log: &StageLogger,
+        key_width: usize,
     ) -> Result<()> {
         let cfg = announce
             .mattermost
@@ -977,7 +1014,7 @@ impl Announcer for MattermostAnnouncer {
             color: Some(color_val.as_str()),
             title: title.as_deref(),
         };
-        dispatch(ctx, "mattermost", &message, || {
+        dispatch(ctx, "mattermost", &message, key_width, || {
             mattermost::send_mattermost(&url, &message, &opts, retry_policy)
         })
     }
@@ -1019,6 +1056,7 @@ impl Announcer for RedditAnnouncer {
         announce: &AnnounceConfig,
         retry_policy: &RetryPolicy,
         log: &StageLogger,
+        key_width: usize,
     ) -> Result<()> {
         let cfg = announce
             .reddit
@@ -1063,21 +1101,27 @@ impl Announcer for RedditAnnouncer {
         )?;
         let secret = &creds[0];
         let password = &creds[1];
-        dispatch(ctx, "reddit", &format!("r/{sub}: {title}"), || {
-            reddit::send_reddit(
-                &reddit::RedditPost {
-                    application_id: &app_id,
-                    secret,
-                    username: &username,
-                    password,
-                    subreddit: &sub,
-                    title: &title,
-                    url: &url,
-                },
-                log,
-                retry_policy,
-            )
-        })
+        dispatch(
+            ctx,
+            "reddit",
+            &format!("r/{sub}: {title}"),
+            key_width,
+            || {
+                reddit::send_reddit(
+                    &reddit::RedditPost {
+                        application_id: &app_id,
+                        secret,
+                        username: &username,
+                        password,
+                        subreddit: &sub,
+                        title: &title,
+                        url: &url,
+                    },
+                    log,
+                    retry_policy,
+                )
+            },
+        )
     }
     fn render_only(&self, ctx: &mut Context, announce: &AnnounceConfig) -> Result<()> {
         let Some(cfg) = announce.reddit.as_ref() else {
@@ -1119,6 +1163,7 @@ impl Announcer for TwitterAnnouncer {
         announce: &AnnounceConfig,
         retry_policy: &RetryPolicy,
         _log: &StageLogger,
+        key_width: usize,
     ) -> Result<()> {
         let cfg = announce
             .twitter
@@ -1140,7 +1185,7 @@ impl Announcer for TwitterAnnouncer {
         let access_token = &creds[2];
         let access_token_secret = &creds[3];
 
-        dispatch(ctx, "twitter", &message, || {
+        dispatch(ctx, "twitter", &message, key_width, || {
             twitter::send_twitter(
                 consumer_key,
                 consumer_secret,
@@ -1177,6 +1222,7 @@ impl Announcer for MastodonAnnouncer {
         announce: &AnnounceConfig,
         retry_policy: &RetryPolicy,
         log: &StageLogger,
+        key_width: usize,
     ) -> Result<()> {
         let cfg = announce
             .mastodon
@@ -1208,7 +1254,7 @@ impl Announcer for MastodonAnnouncer {
             require_non_empty_env_with_env("mastodon", "MASTODON_ACCESS_TOKEN", ctx.env_source())?;
         require_non_empty_env_with_env("mastodon", "MASTODON_CLIENT_ID", ctx.env_source())?;
         require_non_empty_env_with_env("mastodon", "MASTODON_CLIENT_SECRET", ctx.env_source())?;
-        dispatch(ctx, "mastodon", &message, || {
+        dispatch(ctx, "mastodon", &message, key_width, || {
             mastodon::send_mastodon(&server, &access_token, &message, retry_policy)
         })
     }
@@ -1241,6 +1287,7 @@ impl Announcer for BlueskyAnnouncer {
         announce: &AnnounceConfig,
         retry_policy: &RetryPolicy,
         log: &StageLogger,
+        key_width: usize,
     ) -> Result<()> {
         let cfg = announce
             .bluesky
@@ -1266,7 +1313,7 @@ impl Announcer for BlueskyAnnouncer {
             .map(|u| ctx.render_template(u))
             .transpose()?;
 
-        dispatch(ctx, "bluesky", &message, || {
+        dispatch(ctx, "bluesky", &message, key_width, || {
             bluesky::send_bluesky(
                 &username,
                 &app_password,
@@ -1309,6 +1356,7 @@ impl Announcer for LinkedInAnnouncer {
         announce: &AnnounceConfig,
         retry_policy: &RetryPolicy,
         log: &StageLogger,
+        key_width: usize,
     ) -> Result<()> {
         let cfg = announce
             .linkedin
@@ -1329,7 +1377,7 @@ impl Announcer for LinkedInAnnouncer {
             );
         }
         linkedin::validate_token_shape(&access_token)?;
-        dispatch(ctx, "linkedin", &message, || {
+        dispatch(ctx, "linkedin", &message, key_width, || {
             linkedin::send_linkedin(&access_token, &message, log, retry_policy)
         })
     }
@@ -1359,6 +1407,7 @@ impl Announcer for OpenCollectiveAnnouncer {
         announce: &AnnounceConfig,
         retry_policy: &RetryPolicy,
         log: &StageLogger,
+        key_width: usize,
     ) -> Result<()> {
         let cfg = announce
             .opencollective
@@ -1391,7 +1440,7 @@ impl Announcer for OpenCollectiveAnnouncer {
         let token =
             require_env_with_env("opencollective", "OPENCOLLECTIVE_TOKEN", ctx.env_source())?;
         opencollective::validate_token_shape(&token)?;
-        dispatch(ctx, "opencollective", &title, || {
+        dispatch(ctx, "opencollective", &title, key_width, || {
             opencollective::send_opencollective(&token, &slug, &title, &html, retry_policy)
         })
     }
@@ -1438,6 +1487,7 @@ impl Announcer for EmailAnnouncer {
         announce: &AnnounceConfig,
         retry_policy: &RetryPolicy,
         log: &StageLogger,
+        key_width: usize,
     ) -> Result<()> {
         let cfg = announce
             .email
@@ -1520,13 +1570,21 @@ impl Announcer for EmailAnnouncer {
                 insecure_skip_verify: insecure,
                 encryption,
             };
-            dispatch(ctx, "email (smtp)", &log_line, || {
-                email::send_smtp(&email_params, &smtp_params, retry_policy)
-            })?;
+            dispatch(
+                ctx,
+                "email",
+                &format!("via smtp {log_line}"),
+                key_width,
+                || email::send_smtp(&email_params, &smtp_params, retry_policy),
+            )?;
         } else {
-            dispatch(ctx, "email", &log_line, || {
-                email::send_sendmail(&email_params)
-            })?;
+            dispatch(
+                ctx,
+                "email",
+                &format!("via sendmail {log_line}"),
+                key_width,
+                || email::send_sendmail(&email_params),
+            )?;
         }
         Ok(())
     }
@@ -1802,8 +1860,11 @@ mod tests {
             &announce,
             &no_retry(),
             &log,
-            &mut errors,
-            None,
+            &mut DispatchSink {
+                errors: &mut errors,
+                marker: None,
+                key_width: 0,
+            },
         )
         .unwrap();
         assert!(errors.is_empty(), "{errors:?}");
@@ -1836,8 +1897,11 @@ mod tests {
             &announce,
             &no_retry(),
             &log,
-            &mut errors,
-            None,
+            &mut DispatchSink {
+                errors: &mut errors,
+                marker: None,
+                key_width: 0,
+            },
         )
         .unwrap();
         assert_eq!(errors.len(), 1, "{errors:?}");
@@ -1873,8 +1937,11 @@ mod tests {
                 &announce,
                 &no_retry(),
                 &log,
-                &mut errors,
-                Some(&mut marker),
+                &mut DispatchSink {
+                    errors: &mut errors,
+                    marker: Some(&mut marker),
+                    key_width: 0,
+                },
             )
             .unwrap();
         }
@@ -1892,8 +1959,11 @@ mod tests {
                 &announce,
                 &no_retry(),
                 &log,
-                &mut errors,
-                Some(&mut marker),
+                &mut DispatchSink {
+                    errors: &mut errors,
+                    marker: Some(&mut marker),
+                    key_width: 0,
+                },
             )
             .unwrap();
         }
@@ -1934,8 +2004,11 @@ mod tests {
             &announce,
             &no_retry(),
             &log,
-            &mut errors,
-            Some(&mut marker),
+            &mut DispatchSink {
+                errors: &mut errors,
+                marker: Some(&mut marker),
+                key_width: 0,
+            },
         )
         .unwrap();
         assert_eq!(errors.len(), 1, "send failed: {errors:?}");
@@ -1967,8 +2040,11 @@ mod tests {
                 &announce,
                 &no_retry(),
                 &log,
-                &mut errors,
-                None,
+                &mut DispatchSink {
+                    errors: &mut errors,
+                    marker: None,
+                    key_width: 0,
+                },
             )
             .is_err()
         );
@@ -2037,7 +2113,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         SlackAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap();
         let entries = log.lock().unwrap();
         assert_eq!(entries.len(), 1);
@@ -2064,7 +2140,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[("SLACK_WEBHOOK", &env_url)]);
         let logger = ctx.logger("announce");
         SlackAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap();
         assert_eq!(log.lock().unwrap()[0].path, "/env-hook");
     }
@@ -2086,7 +2162,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         DiscordAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap();
         let entries = log.lock().unwrap();
         let body: serde_json::Value = serde_json::from_str(&entries[0].body).unwrap();
@@ -2126,7 +2202,7 @@ mod tests {
         );
         let logger = ctx.logger("announce");
         DiscordAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap();
         assert_eq!(log.lock().unwrap()[0].path, "/webhooks/wid/wtok");
     }
@@ -2147,7 +2223,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         let err = DiscordAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap_err()
             .to_string();
         assert!(err.contains("out of range"), "{err}");
@@ -2170,7 +2246,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         TeamsAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap();
         let entries = log.lock().unwrap();
         assert_eq!(entries[0].path, "/teams");
@@ -2198,7 +2274,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         MattermostAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap();
         let body: serde_json::Value = serde_json::from_str(&log.lock().unwrap()[0].body).unwrap();
         assert_eq!(body["channel"], "rel-v1.0.0");
@@ -2228,7 +2304,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         WebhookAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap();
         let entries = log.lock().unwrap();
         assert_eq!(entries[0].path, "/wh");
@@ -2260,7 +2336,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         WebhookAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap();
     }
 
@@ -2283,7 +2359,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         let err = WebhookAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap_err()
             .to_string();
         assert!(err.contains("must use http or https"), "{err}");
@@ -2308,7 +2384,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[("DISCOURSE_API_KEY", "k")]);
         let logger = ctx.logger("announce");
         DiscourseAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap();
         let entries = log.lock().unwrap();
         assert_eq!(entries[0].path, "/posts.json");
@@ -2338,7 +2414,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[("DISCOURSE_API_KEY", "k")]);
         let logger = ctx.logger("announce");
         let err = DiscourseAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap_err()
             .to_string();
         assert!(err.contains("category_id must be non-zero"), "{err}");
@@ -2363,7 +2439,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         TelegramAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .expect("missing chat_id must skip cleanly in normal mode");
     }
 
@@ -2382,7 +2458,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[("MASTODON_ACCESS_TOKEN", "tok")]);
         let logger = ctx.logger("announce");
         let err = MastodonAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap_err()
             .to_string();
         assert!(err.contains("MASTODON_CLIENT_ID"), "{err}");
@@ -2405,7 +2481,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         let err = EmailAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap_err()
             .to_string();
         assert!(err.contains("SMTP username is required"), "{err}");
@@ -2427,7 +2503,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         let err = EmailAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap_err()
             .to_string();
         assert!(err.contains("missing @"), "{err}");
@@ -2538,7 +2614,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         DiscordAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .expect("missing webhook_url must skip cleanly in normal mode");
     }
 
@@ -2558,7 +2634,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[("DISCOURSE_API_KEY", "k")]);
         let logger = ctx.logger("announce");
         DiscourseAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .expect("empty server must skip cleanly in normal mode");
     }
 
@@ -2577,7 +2653,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[("DISCOURSE_API_KEY", "k")]);
         let logger = ctx.logger("announce");
         DiscourseAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .expect("missing category_id must skip cleanly in normal mode");
     }
 
@@ -2601,7 +2677,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[("DISCOURSE_API_KEY", "k")]);
         let logger = ctx.logger("announce");
         DiscourseAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap();
         let entries = log.lock().unwrap();
         assert!(
@@ -2625,7 +2701,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         WebhookAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .expect("missing endpoint_url must skip cleanly in normal mode");
     }
 
@@ -2648,7 +2724,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         WebhookAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap();
         let entries = log.lock().unwrap();
         let body: serde_json::Value = serde_json::from_str(&entries[0].body).unwrap_or_else(|e| {
@@ -2680,7 +2756,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[("TELEGRAM_TOKEN", "123:ABC")]);
         let logger = ctx.logger("announce");
         TelegramAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .expect("token from env, then skip on missing chat_id");
     }
 
@@ -2700,7 +2776,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         TelegramAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .expect("missing bot_token must skip cleanly in normal mode");
     }
 
@@ -2722,7 +2798,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[("TEAMS_WEBHOOK", &env_url)]);
         let logger = ctx.logger("announce");
         TeamsAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap();
         assert_eq!(log.lock().unwrap()[0].path, "/teams-env");
     }
@@ -2742,7 +2818,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         TeamsAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .expect("missing teams webhook must skip cleanly in normal mode");
     }
 
@@ -2761,7 +2837,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         MattermostAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .expect("missing mattermost webhook must skip cleanly in normal mode");
     }
 
@@ -2782,7 +2858,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         MattermostAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap();
         let body: serde_json::Value = serde_json::from_str(&log.lock().unwrap()[0].body).unwrap();
         assert_eq!(body["attachments"][0]["color"], "#2D313E");
@@ -2804,7 +2880,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         RedditAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .expect("missing application_id must skip cleanly in normal mode");
     }
 
@@ -2826,7 +2902,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         let err = RedditAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap_err()
             .to_string();
         assert!(err.contains("REDDIT_SECRET"), "{err}");
@@ -2846,7 +2922,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         let err = TwitterAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap_err()
             .to_string();
         assert!(err.contains("TWITTER_CONSUMER_KEY"), "{err}");
@@ -2867,7 +2943,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         MastodonAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .expect("empty mastodon server must skip cleanly in normal mode");
     }
 
@@ -2894,7 +2970,7 @@ mod tests {
         );
         let logger = ctx.logger("announce");
         MastodonAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap();
         let entries = log.lock().unwrap();
         assert_eq!(entries[0].path, "/api/v1/statuses");
@@ -2921,7 +2997,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[("BLUESKY_APP_PASSWORD", "pw")]);
         let logger = ctx.logger("announce");
         BlueskyAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .expect("missing bluesky username must skip cleanly in normal mode");
     }
 
@@ -2940,7 +3016,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         let err = BlueskyAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap_err()
             .to_string();
         assert!(err.contains("BLUESKY_APP_PASSWORD"), "{err}");
@@ -2977,7 +3053,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[("BLUESKY_APP_PASSWORD", "pw")]);
         let logger = ctx.logger("announce");
         BlueskyAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap();
         let entries = log.lock().unwrap();
         assert_eq!(entries.len(), 2, "{entries:?}");
@@ -3005,7 +3081,7 @@ mod tests {
         );
         let logger = ctx.logger("announce");
         let err = LinkedInAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap_err()
             .to_string();
         assert!(err.contains("whitespace or"), "{err}");
@@ -3025,7 +3101,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         let err = LinkedInAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap_err()
             .to_string();
         assert!(err.contains("LINKEDIN_ACCESS_TOKEN"), "{err}");
@@ -3045,7 +3121,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[("OPENCOLLECTIVE_TOKEN", "t")]);
         let logger = ctx.logger("announce");
         OpenCollectiveAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .expect("missing slug must skip cleanly in normal mode");
     }
 
@@ -3063,7 +3139,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[("OPENCOLLECTIVE_TOKEN", "t")]);
         let logger = ctx.logger("announce");
         OpenCollectiveAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .expect("empty slug must skip cleanly in normal mode");
     }
 
@@ -3082,7 +3158,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[("OPENCOLLECTIVE_TOKEN", "t")]);
         let logger = ctx.logger("announce");
         let err = OpenCollectiveAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap_err()
             .to_string();
         assert!(err.contains("slug"), "{err}");
@@ -3103,7 +3179,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         EmailAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .expect("missing from must skip cleanly in normal mode");
     }
 
@@ -3122,7 +3198,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         EmailAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .expect("empty recipient list must skip cleanly in normal mode");
     }
 
@@ -3147,7 +3223,7 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let logger = ctx.logger("announce");
         let err = EmailAnnouncer
-            .send(&mut ctx, &announce, &no_retry(), &logger)
+            .send(&mut ctx, &announce, &no_retry(), &logger, 0)
             .unwrap_err()
             .to_string();
         assert!(err.contains("SMTP_PASSWORD"), "{err}");
@@ -3180,7 +3256,7 @@ mod tests {
         let err = format!(
             "{:#}",
             EmailAnnouncer
-                .send(&mut ctx, &announce, &no_retry(), &logger)
+                .send(&mut ctx, &announce, &no_retry(), &logger, 0)
                 .unwrap_err()
         );
         assert!(err.contains("smtp: send exhausted retry attempts"), "{err}");

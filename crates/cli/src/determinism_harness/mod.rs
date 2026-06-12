@@ -159,9 +159,9 @@ pub enum StageId {
     /// Skipped (no drift, no artifact rows) when the worktree has no
     /// `Dockerfile` at its root — keeps the stage harmless for repos
     /// that wire docker via config but didn't bootstrap one. Skipped
-    /// (with a one-line eprintln) when `docker buildx` is not reachable
-    /// on the host so the harness stays usable on machines without
-    /// Docker installed.
+    /// (with a one-line warning through the harness logger) when
+    /// `docker buildx` is not reachable on the host so the harness
+    /// stays usable on machines without Docker installed.
     Docker,
     /// MSI installer reproducibility probe (Windows).
     ///
@@ -428,16 +428,16 @@ impl Harness {
         // their own gates downstream).
         let gate = installer_detect::filter_available_installer_stages(&effective_stages);
         let effective_stages = gate.available;
+        // Routed through the harness logger (not a bare eprintln) so
+        // `-q` silences these like every other harness line.
+        let warn_log = StageLogger::new("check-determinism", self.verbosity);
         for (stage, tool) in &gate.skipped {
-            eprintln!(
-                "{}",
-                anodizer_core::log::render_warning(&format!(
-                    "installer stage `{}` requested but `{}` is not on PATH; \
-                     skipping for this run (no artifacts emitted)",
-                    stage.as_str(),
-                    tool
-                ))
-            );
+            warn_log.warn(&format!(
+                "installer stage `{}` requested but `{}` is not on PATH; \
+                 skipping for this run (no artifacts emitted)",
+                stage.as_str(),
+                tool
+            ));
         }
 
         // Provision once: both runs must sign with identical key
@@ -550,17 +550,14 @@ impl Harness {
                                 )
                             })
                             .collect();
-                        eprintln!(
-                            "{}",
-                            anodizer_core::log::render_warning(&format!(
-                                "--inject-drift={} matched no artifact on run {}; \
-                                 discovered artifacts ({}):\n{}",
-                                stage,
-                                run_idx,
-                                artifacts.len(),
-                                summary.join("\n")
-                            ))
-                        );
+                        StageLogger::new("check-determinism", self.verbosity).warn(&format!(
+                            "--inject-drift={} matched no artifact on run {}; \
+                             discovered artifacts ({}):\n{}",
+                            stage,
+                            run_idx,
+                            artifacts.len(),
+                            summary.join("\n")
+                        ));
                     }
                 }
             }
@@ -797,8 +794,9 @@ impl Harness {
     /// points at a non-default path (and for the cargo-package /
     /// cargo-only test fixtures that share the same harness binary).
     ///
-    /// Skipped (with `eprintln!`) when `docker buildx` is not reachable
-    /// on the host. The harness is run on minimal images (e.g. the docs
+    /// Skipped (with a warning through the harness logger, so `-q`
+    /// silences it) when `docker buildx` is not reachable on the
+    /// host. The harness is run on minimal images (e.g. the docs
     /// build container) that legitimately do not have Docker installed;
     /// failing the whole harness there would block unrelated stages from
     /// completing.
@@ -815,27 +813,26 @@ impl Harness {
         // clear message, rather than spawn `docker buildx` and hand the
         // operator a misleading "this image is reproducible" signal that
         // covers a binary they will never actually publish.
+        // These warnings go through the harness logger so `-q` governs
+        // them like every other harness line; the docker-buildx child's
+        // own output below is inherited stderr and is NOT governed by
+        // the flag (BuildKit has no equivalent quiet passthrough here).
+        let log = StageLogger::new("check-determinism", self.verbosity);
         if self.docker_backend_hint.as_deref() == Some("podman") {
-            eprintln!(
-                "{}",
-                anodizer_core::log::render_warning(
-                    "docker stage requested but project config has `use: podman` \
-                     (Linux-only); the determinism harness only probes BuildKit-based \
-                     builds, so the docker stage is skipped for this run. Verify podman \
-                     image byte-stability outside the harness."
-                )
+            log.warn(
+                "docker stage requested but project config has `use: podman` \
+                 (Linux-only); the determinism harness only probes BuildKit-based \
+                 builds, so the docker stage is skipped for this run. Verify podman \
+                 image byte-stability outside the harness.",
             );
             return Ok(());
         }
         match anodizer_core::docker_detect::buildx_available() {
             Ok(true) => {}
             Ok(false) | Err(_) => {
-                eprintln!(
-                    "{}",
-                    anodizer_core::log::render_warning(
-                        "docker stage requested but `docker buildx` is not available on PATH; \
-                         skipping for this run (no artifacts emitted)"
-                    )
+                log.warn(
+                    "docker stage requested but `docker buildx` is not available on PATH; \
+                     skipping for this run (no artifacts emitted)",
                 );
                 return Ok(());
             }

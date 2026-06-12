@@ -539,7 +539,7 @@ fn execute_appimage_job(
         job.update_information.as_deref(),
     );
 
-    thread_log.status(&format!("creating AppImage: {}", job.filename));
+    thread_log.status(&format!("creating AppImage {}", job.filename));
 
     // Run with the AppDir's parent as cwd: linuxdeploy writes the output
     // `.AppImage` into the current dir, so a per-job dir keeps parallel jobs

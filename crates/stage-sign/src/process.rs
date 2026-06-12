@@ -123,8 +123,8 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
             drop(child_stdin); // Explicitly close stdin so child sees EOF
         } else {
             log.warn(&format!(
-                "{}: stdin data provided but child process stdin unavailable for {}",
-                job.label, job.artifact_display
+                "stdin data provided but child process stdin unavailable for {} ({})",
+                job.artifact_display, job.label
             ));
         }
     }
