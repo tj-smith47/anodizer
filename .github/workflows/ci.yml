@@ -4,6 +4,9 @@ on:
   push:
     branches: [master, 'session-*/**']
   pull_request:
+  # recovery trigger: lets CI run on a head whose push was suppressed
+  # (e.g. a skip marker inherited into a revert subject)
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
