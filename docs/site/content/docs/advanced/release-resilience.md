@@ -17,6 +17,7 @@ This guide walks through:
 - The three publisher groups (Assets / Manager / Submitter) and why dispatch order matters.
 - The Submitter gate that prevents irreversible publishers from firing after a required failure.
 - The `--rollback` flag and per-publisher rollback shapes.
+- `release.on_failure` — the in-process policy that rolls back (or holds) the tag and version bump when a run fails, with no workflow-side steps.
 - `--fail-fast` and how it differs from the default collect-then-decide behavior.
 - `--rollback-only --from-run=<id>` for replaying rollback against a prior run report.
 - `--summary-json=<path>` for capturing the audit trail.
@@ -246,7 +247,7 @@ release:
 | `hold` | Leaves tags, commits, and published state in place for forensics. Exit is still nonzero; recover with `release --rollback-only --from-run=<id>` and/or `tag rollback` once investigated. |
 
 This policy operates on the git-level state (`tag` + bump commit). It is
-independent of the per-publisher [`--rollback`](#the---rollback-flag)
+independent of the per-publisher [`--rollback`](#the-rollback-flag)
 machinery, which unwinds individual publishers' uploads inside the publish
 stage and runs first either way.
 
@@ -386,22 +387,29 @@ version slot. Reversible publishers (release assets, blobs, tap/bucket/index
 commits) never set it; their state is deletable and the same version can be
 re-cut, so rollback stays available after they succeed.
 
-Recovery tooling consumes the flag at two layers:
-
-```yaml
-# CI (the anodizer-action exposes it as a step output):
-- name: Rollback on release failure
-  if: always() && (steps.release.outcome == 'failure' || steps.release.outcome == 'cancelled') && steps.release.outputs.irreversibly_published != 'true'
-```
+Recovery tooling consumes the flag at two layers — both in-process by
+default:
 
 ```bash
-# In-binary: `tag rollback` reads dist/run-*/summary.json itself and
-# refuses when the version is burned (override with --force):
+# 1. The release run itself: the in-process `release.on_failure` policy
+#    degrades rollback to hold the moment the flag would flip (see above).
+
+# 2. Manual recovery: `tag rollback` reads dist/run-*/summary.json itself
+#    and refuses when the version is burned (override with --force):
 $ anodizer tag rollback
 Error: refusing to roll back — one-way-door publisher(s) already accepted these version(s):
   v0.8.0: version burned at cargo, chocolatey
 ...
 Fix forward instead: keep the tag, repair the failure, and cut the NEXT version
+```
+
+For workflows that add their own destructive recovery steps anyway, the
+anodizer-action exposes the flag as a step output to gate on:
+
+```yaml
+# Advanced — custom workflow-level recovery (not needed by default):
+- name: Custom recovery
+  if: always() && (steps.release.outcome == 'failure' || steps.release.outcome == 'cancelled') && steps.release.outputs.irreversibly_published != 'true'
 ```
 
 ## The outcome set
@@ -596,25 +604,17 @@ recognised so re-runs of the same rollback are idempotent.) Use
 `--mode=reset` to force history rewrite when you genuinely want the
 intervening commits gone too.
 
-**Workflow integration:** anodizer's own `release.yml` wires this as a
-failure/cancelled step on the release job, additionally gated on the
-action's `irreversibly_published` output so a post-publish failure never
-triggers automated destruction of a live release:
-
-```yaml
-- name: Rollback on release failure
-  if: always() && (steps.release.outcome == 'failure' || steps.release.outcome == 'cancelled') && steps.release.outputs.irreversibly_published != 'true'
-  env:
-    GH_TOKEN: ${{ secrets.GH_PAT }}
-    GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-  run: anodizer tag rollback "$GITHUB_SHA"
-```
-
-The `id: release` on the release step is what makes `steps.release.outcome`
-and `steps.release.outputs.irreversibly_published` resolvable; checking the
-outcome (rather than bare `failure()`) also keeps the rollback from running
-when the release step itself was skipped (e.g. `workflow_dispatch` with an
-`if:` that didn't match).
+**Workflow integration:** none needed. A failed `anodizer release` executes
+the same rollback path itself via the in-process
+[`release.on_failure` policy](#release-on-failure-the-in-process-failure-policy),
+already gated on the one-way-door evidence — a workflow-level rollback step
+would only race it. `tag rollback` is the **manual** recovery command: run it
+from an operator shell (or a one-off `workflow_dispatch` job) when a run was
+killed before it could execute its own policy, or when `on_failure: hold`
+deliberately left the tag in place for forensics. Workflows that still wire a
+custom destructive step must gate it on the action's `irreversibly_published`
+output (see above) so a post-publish failure never triggers automated
+destruction of a live release.
 
 `tag rollback` complements `release --rollback-only` rather than replacing
 it: use `--rollback-only` to unwind individual publisher state (reversible

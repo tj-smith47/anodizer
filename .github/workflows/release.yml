@@ -161,7 +161,6 @@ jobs:
           echo "All ${#expected[@]} shards uploaded preserved dist."
 
       - name: Run anodizer release --publish-only
-        id: release
         uses: tj-smith47/anodizer-action@v1
         with:
           from-artifact: ${{ needs.tag.outputs.publish_from_artifact }}

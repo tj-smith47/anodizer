@@ -62,7 +62,7 @@ If `github.owner` and `github.name` are omitted, anodizer auto-detects them from
 | `skip_upload` | bool | `false` | Create release without uploading assets |
 | `replace_existing_draft` | bool | `false` | Replace existing draft release. See [Recovery flags](../advanced/recovery-flags.md#release-replace-existing-draft). |
 | `replace_existing_artifacts` | bool | `false` | Overwrite existing assets. See [Recovery flags](../advanced/recovery-flags.md#release-replace-existing-artifacts). |
-| `on_failure` | string | `rollback` | In-process failure policy: `rollback` or `hold`. See [Release resilience](../advanced/release-resilience.md#releaseon_failure--the-in-process-failure-policy). |
+| `on_failure` | string | `rollback` | In-process failure policy: `rollback` or `hold`. See [Release resilience](../advanced/release-resilience.md#release-on-failure-the-in-process-failure-policy). |
 
 ## Full config reference
 
