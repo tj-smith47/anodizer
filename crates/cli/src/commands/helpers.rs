@@ -907,7 +907,8 @@ pub fn run_report_sizes(ctx: &mut Context, config: &Config, log: &StageLogger) {
 
 /// Write `dist/metadata.json` from the current context's resolved
 /// release variables (`tag`, `previous_tag`, `version`, `commit`,
-/// `date`, host `runtime`) and return the path it landed at.
+/// `date`, `release_url`, host `runtime`) and return the path it
+/// landed at.
 ///
 /// The output directory is taken from `ctx.config.dist`, NOT the
 /// `config` parameter. Per-crate publish-only re-anchors `ctx.config.dist`
@@ -947,6 +948,15 @@ pub fn write_metadata_json(
         .cloned()
         .unwrap_or_default();
     let date = ctx.template_vars().get("Date").cloned().unwrap_or_default();
+    // Same source as the `{{ ReleaseURL }}` template var the announce /
+    // webhook stages render: the release stage's authoritative `html_url`
+    // (or its derived default). Reading the var — instead of re-composing
+    // the URL here — keeps the two surfaces from ever drifting.
+    let release_url = ctx
+        .template_vars()
+        .get("ReleaseURL")
+        .cloned()
+        .unwrap_or_default();
 
     let project_metadata = serde_json::json!({
         "project_name": config.project_name,
@@ -955,6 +965,7 @@ pub fn write_metadata_json(
         "version": version,
         "commit": commit,
         "date": date,
+        "release_url": release_url,
         "runtime": {
             "goos": goos,
             "goarch": goarch,
@@ -2816,6 +2827,110 @@ list:
             vec![ArtifactKind::Metadata],
             "exactly one metadata.json artifact of kind Metadata must be registered"
         );
+    }
+
+    // ---- write_metadata_json — release_url emission --------------------
+
+    /// metadata.json must carry the `ReleaseURL` the release stage resolved
+    /// into the template var (authoritative `html_url` or its derived
+    /// default). The action-side `release-url` output reads `.release_url`
+    /// from this file; announce/webhook templates render the same var, so
+    /// the two surfaces must agree byte-for-byte. Single-crate shape: one
+    /// crate, root dist.
+    #[test]
+    fn write_metadata_json_emits_release_url_from_context() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = Config {
+            project_name: "demo".to_string(),
+            dist: tmp.path().to_path_buf(),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config.clone(), ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v1.2.3");
+        ctx.set_release_url("https://github.com/acme/demo/releases/tag/v1.2.3");
+
+        let path = write_metadata_json(&ctx, &config, &quiet_log()).expect("metadata write");
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            json["release_url"], "https://github.com/acme/demo/releases/tag/v1.2.3",
+            "release_url must mirror the ReleaseURL template var"
+        );
+        assert_eq!(json["tag"], "v1.2.3");
+    }
+
+    /// When no release URL is derivable (snapshot with the release stage
+    /// skipped, `--skip=release`, no SCM repo configured) `ReleaseURL`
+    /// stays unset and `release_url` must emit as an empty string — the
+    /// same absent-value shape as the sibling `tag` / `previous_tag` /
+    /// `commit` keys, and `jq '.release_url // empty'` on the consumer
+    /// side still yields empty output.
+    #[test]
+    fn write_metadata_json_release_url_empty_when_unset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = Config {
+            project_name: "demo".to_string(),
+            dist: tmp.path().to_path_buf(),
+            ..Default::default()
+        };
+        let ctx = Context::new(config.clone(), ContextOptions::default());
+        assert!(
+            ctx.template_vars().get("ReleaseURL").is_none(),
+            "precondition: ReleaseURL starts unset"
+        );
+
+        let path = write_metadata_json(&ctx, &config, &quiet_log()).expect("metadata write");
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            json["release_url"], "",
+            "unset ReleaseURL must emit an empty release_url, matching the \
+             empty-string style of the sibling keys"
+        );
+    }
+
+    /// Workspace-lockstep shape: multiple crates, one shared version/tag,
+    /// ONE metadata.json at the workspace-root dist. The root file must
+    /// carry the release URL the pipeline resolved for the shared tag.
+    #[test]
+    fn write_metadata_json_lockstep_root_carries_shared_release_url() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root_dist = tmp.path().join("dist");
+        let config = Config {
+            project_name: "cfgd".to_string(),
+            dist: root_dist.clone(),
+            crates: vec![
+                anodizer_core::config::CrateConfig {
+                    name: "cfgd".to_string(),
+                    tag_template: "v{{ Version }}".to_string(),
+                    ..Default::default()
+                },
+                anodizer_core::config::CrateConfig {
+                    name: "cfgd-core".to_string(),
+                    tag_template: "v{{ Version }}".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config.clone(), ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "0.4.0");
+        ctx.template_vars_mut().set("Tag", "v0.4.0");
+        ctx.set_release_url("https://github.com/acme/cfgd/releases/tag/v0.4.0");
+
+        let path = write_metadata_json(&ctx, &config, &quiet_log()).expect("metadata write");
+        assert_eq!(
+            path,
+            root_dist.join("metadata.json"),
+            "lockstep writes a single metadata.json at the workspace-root dist"
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(
+            json["release_url"], "https://github.com/acme/cfgd/releases/tag/v0.4.0",
+            "root metadata must carry the shared-tag release URL"
+        );
+        assert_eq!(json["tag"], "v0.4.0");
     }
 
     // ---- load_artifacts_from_manifest — targetless dedup skip ----------

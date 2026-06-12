@@ -750,6 +750,17 @@ fn test_e2e_snapshot_release_produces_artifacts() {
         "dist/ should contain metadata.json, found: {:?}",
         entries
     );
+
+    // Snapshot with `--skip=release` never derives a release URL; the key
+    // must still be present (action-side `jq '.release_url // empty'`
+    // contract) and empty, matching the sibling keys' absent-value shape.
+    let metadata: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(dist_dir.join("metadata.json")).unwrap()).unwrap();
+    assert_eq!(
+        metadata["release_url"], "",
+        "snapshot metadata.json must carry an empty release_url when no \
+         release was created"
+    );
 }
 
 /// E2E: `anodizer release --prepare` produces the same skip-stage behaviour

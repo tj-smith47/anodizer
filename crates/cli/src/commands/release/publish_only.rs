@@ -296,6 +296,9 @@ pub(super) fn run_per_crate(
         // prior crate's re-anchored version and render its tag / release
         // title / artifact names against the WRONG version.
         guard.reset_version_vars();
+        // Rewind `ReleaseURL` so a URL the prior crate's release stage set
+        // can't leak into a crate whose own release never derives one.
+        guard.reset_release_url();
         let ctx = guard.ctx_mut();
         // Reset the artifact registry before each crate so artifacts
         // from a prior crate's pipeline don't leak into the next one's
@@ -378,6 +381,7 @@ struct PerCrateOverlayGuard<'a> {
     saved_skip_stages: Vec<String>,
     saved_tag: Option<String>,
     saved_previous_tag: Option<String>,
+    saved_release_url: Option<String>,
     saved_version_vars: Vec<(&'static str, Option<String>)>,
     saved_overlay: OverlayFields,
 }
@@ -448,6 +452,7 @@ impl<'a> PerCrateOverlayGuard<'a> {
         let saved_skip_stages = ctx.options.skip_stages.clone();
         let saved_tag = ctx.template_vars().get("Tag").cloned();
         let saved_previous_tag = ctx.template_vars().get("PreviousTag").cloned();
+        let saved_release_url = ctx.template_vars().get("ReleaseURL").cloned();
         let saved_version_vars = VERSION_TEMPLATE_VARS
             .iter()
             .map(|&k| (k, ctx.template_vars().get(k).cloned()))
@@ -460,6 +465,7 @@ impl<'a> PerCrateOverlayGuard<'a> {
             saved_skip_stages,
             saved_tag,
             saved_previous_tag,
+            saved_release_url,
             saved_version_vars,
             saved_overlay,
         }
@@ -500,6 +506,24 @@ impl<'a> PerCrateOverlayGuard<'a> {
         }
     }
 
+    /// Rewind `ReleaseURL` to the captured baseline. Call at the start of
+    /// each iteration: the release stage sets the var per crate, but only
+    /// on paths that resolve a repo — a crate whose release is skipped or
+    /// has no resolvable repo would otherwise inherit the PRIOR crate's
+    /// URL, and its metadata.json / announce templates would point at a
+    /// foreign crate's release.
+    fn reset_release_url(&mut self) {
+        match &self.saved_release_url {
+            Some(v) => {
+                let v = v.clone();
+                self.ctx.template_vars_mut().set("ReleaseURL", &v);
+            }
+            None => {
+                self.ctx.template_vars_mut().unset("ReleaseURL");
+            }
+        }
+    }
+
     /// Reborrow the wrapped `&mut Context` for one loop iteration.
     /// Bypasses the borrow that would otherwise pin the original `ctx`
     /// alias for the entire lifetime of the guard.
@@ -535,6 +559,12 @@ impl Drop for PerCrateOverlayGuard<'_> {
             Some(prev) => self.ctx.template_vars_mut().set("PreviousTag", &prev),
             None => {
                 self.ctx.template_vars_mut().unset("PreviousTag");
+            }
+        }
+        match self.saved_release_url.take() {
+            Some(url) => self.ctx.template_vars_mut().set("ReleaseURL", &url),
+            None => {
+                self.ctx.template_vars_mut().unset("ReleaseURL");
             }
         }
         for (key, value) in std::mem::take(&mut self.saved_version_vars) {
@@ -2584,6 +2614,123 @@ mod tests {
         );
     }
 
+    /// Build a crate config with a GitHub release block so a per-crate
+    /// dry-run iteration drives the release stage's `ReleaseURL`
+    /// derivation end-to-end.
+    fn released_crate_cfg(name: &str, tag_template: &str) -> anodizer_core::config::CrateConfig {
+        anodizer_core::config::CrateConfig {
+            name: name.to_string(),
+            tag_template: tag_template.to_string(),
+            release: Some(anodizer_core::config::ReleaseConfig {
+                github: Some(anodizer_core::config::ScmRepoConfig {
+                    owner: "acme".to_string(),
+                    name: "widget".to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    /// Workspace per-crate mode, end-to-end through the real publish-only
+    /// pipeline in dry-run: each crate's `dist/<crate>/metadata.json` must
+    /// carry that crate's OWN release URL (derived from its own per-crate
+    /// tag), not the prior iteration's. This is the file the action-side
+    /// `release-url` output reads via `.release_url`.
+    #[test]
+    #[serial_test::serial]
+    fn run_per_crate_metadata_carries_per_crate_release_url() {
+        use anodizer_core::config::Config;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dist_base = tmp.path().join("dist");
+        seed_valid_preserved_dist(&dist_base, "a");
+        seed_valid_preserved_dist(&dist_base, "b");
+
+        let config = Config {
+            dist: dist_base.clone(),
+            crates: vec![
+                released_crate_cfg("a", "a-v{{ Version }}"),
+                released_crate_cfg("b", "b-v{{ Version }}"),
+            ],
+            ..Config::default()
+        };
+        let mut ctx = preserved_dist_ctx(&config);
+        // The changelog stage shells to git in the process cwd; skip it so
+        // the test stays hermetic — the surface under test is the release
+        // stage's URL derivation + the metadata write.
+        ctx.options.skip_stages = vec!["changelog".to_string()];
+
+        let log = anodizer_core::log::StageLogger::new(
+            "publish-only-release-url-test",
+            anodizer_core::log::Verbosity::Quiet,
+        );
+        let opts = RunOpts { dry_run: true };
+        run_per_crate(
+            &mut ctx,
+            &config,
+            &log,
+            opts,
+            dist_base.clone(),
+            vec!["a".to_string(), "b".to_string()],
+        )
+        .expect("both per-crate dry-run iterations must complete");
+
+        for name in ["a", "b"] {
+            let body = std::fs::read_to_string(dist_base.join(name).join("metadata.json")).unwrap();
+            let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let expected_tag = format!("{name}-v0.0.0");
+            assert_eq!(
+                json["tag"], expected_tag,
+                "crate '{name}' metadata must carry its own tag"
+            );
+            assert_eq!(
+                json["release_url"],
+                format!("https://github.com/acme/widget/releases/tag/{expected_tag}"),
+                "crate '{name}' metadata must carry its OWN release URL"
+            );
+        }
+        assert!(
+            ctx.template_vars().get("ReleaseURL").is_none(),
+            "guard Drop must restore the caller's pre-loop (unset) ReleaseURL"
+        );
+    }
+
+    /// `reset_release_url` must rewind `ReleaseURL` to the captured
+    /// baseline at every iteration top, and the guard's Drop must restore
+    /// it for the caller — otherwise a crate whose release stage never
+    /// derives a URL (skipped stage, no resolvable repo) inherits the
+    /// prior crate's URL into its metadata.json / announce templates.
+    #[test]
+    fn per_crate_overlay_guard_resets_release_url() {
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        assert!(ctx.template_vars().get("ReleaseURL").is_none());
+        {
+            let mut guard = PerCrateOverlayGuard::capture(&mut ctx);
+            // Simulate iteration 1's release stage setting the var.
+            guard
+                .ctx_mut()
+                .set_release_url("https://github.com/acme/widget/releases/tag/a-v0.0.0");
+            // Iteration 2's loop-top reset must rewind to the unset baseline.
+            guard.reset_release_url();
+            assert!(
+                guard.ctx_mut().template_vars().get("ReleaseURL").is_none(),
+                "loop-top reset must rewind ReleaseURL to the pre-loop baseline"
+            );
+            // Iteration 2 sets its own URL; Drop must still restore the baseline.
+            guard
+                .ctx_mut()
+                .set_release_url("https://github.com/acme/widget/releases/tag/b-v0.0.0");
+        }
+        assert!(
+            ctx.template_vars().get("ReleaseURL").is_none(),
+            "guard Drop must restore the caller's pre-loop (unset) ReleaseURL"
+        );
+    }
+
     /// `PerCrateOverlayGuard::Drop` must fire on unwind so a panic from
     /// inside the iteration body (e.g. an `unwrap` deep in stage code,
     /// a templating overflow, an `unreachable!()`) still rolls the
@@ -3218,6 +3365,7 @@ mod tests {
             ctx.template_vars_mut().set("Version", "0.4.0");
             ctx.template_vars_mut().set("Tag", "core-v0.4.0");
             ctx.template_vars_mut().set("FullCommit", "deadbeef");
+            ctx.set_release_url("https://github.com/acme/cfgd/releases/tag/core-v0.4.0");
 
             let path =
                 crate::commands::helpers::write_metadata_json(&ctx, &config, &quiet_log()).unwrap();
@@ -3244,6 +3392,11 @@ mod tests {
             );
             assert_eq!(json["version"], "0.4.0");
             assert_eq!(json["project_name"], "cfgd");
+            assert_eq!(
+                json["release_url"], "https://github.com/acme/cfgd/releases/tag/core-v0.4.0",
+                "per-crate metadata must carry this crate's own release URL \
+                 (the action-side `release-url` output reads `.release_url`)"
+            );
         }
     }
 
