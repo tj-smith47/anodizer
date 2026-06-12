@@ -18,6 +18,11 @@
 //!    ✗ aarch64-…   build failed    ← FAILURE line           (failure)
 //! ```
 //!
+//! Body lines belonging to a [`StageLogger::group`] section additionally
+//! carry the section's 2-space nesting indent, so a header's own detail
+//! rows sit one level beneath it (the indents in the sketch above are
+//! relative, not absolute columns).
+//!
 //! - **Section headers** ([`StageLogger::step`] / [`StageLogger::group`]) put a
 //!   bold-green present-participle verb (the leading word of the stage's
 //!   [`stage_header`] phrase) right-aligned in a fixed 12-column gutter, then
@@ -220,6 +225,7 @@ pub fn stage_header(stage: &str) -> &'static str {
         "announce" => "Announcing release",
         "verify-release" => "Verifying release",
         "publisher-summary" => "Summary",
+        "check-determinism" => "Checking determinism",
         "finalize" => "Finalizing",
         "prepare" => "Preparing",
         _ => "Running",

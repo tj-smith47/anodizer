@@ -92,6 +92,8 @@ pub fn compute_skip_arg(extra: &[&str]) -> String {
 ///   side-effect-producing stage AND every non-requested produce-stage
 ///   (the harness's complement set). Doubling N is safe in any env
 ///   because of this skip list.
+/// - `--no-preflight` — always. The replica runs in a deliberately
+///   credential-less env; see [`build_subprocess_command`].
 /// - `--targets=<csv>` (when `targets` is `Some`) — restricts the
 ///   rebuild to a subset of configured triples. The sharded
 ///   `release.yml` matrix passes this so each runner only validates
@@ -164,6 +166,15 @@ fn build_subprocess_command(
         cmd.arg("--snapshot");
     }
     cmd.arg(compute_skip_arg(&extra_refs));
+    // The replica pipeline runs in a deliberately credential-less hermetic
+    // env (env_clear + identity-only re-population): its run paths skip
+    // gracefully when keys/tools are absent, nothing publishes (see the
+    // skip list above), and signature outputs are excluded from
+    // byte-comparison. The config-derived env preflight would therefore
+    // reject exactly the environment the harness is designed to run in —
+    // disable it for the child by construction. Real release entrypoints
+    // are unaffected; preflight guards them as before.
+    cmd.arg("--no-preflight");
     if let Some(list) = targets
         && !list.is_empty()
     {
@@ -305,6 +316,34 @@ mod tests {
             args.iter().all(|a| !a.starts_with("--targets")),
             "empty target slice should omit --targets entirely; got {args:?}"
         );
+    }
+
+    /// The child release subprocess MUST carry `--no-preflight` in every
+    /// mode — snapshot children skip the env preflight via the snapshot
+    /// gate anyway, but non-snapshot children (tag-push determinism runs,
+    /// where the workflow passes `--no-snapshot` so artifacts carry the
+    /// real version) would otherwise run the config-derived env preflight
+    /// inside the credential-less worktree and abort the replica build on
+    /// missing secrets/tools the run paths handle gracefully.
+    #[test]
+    fn subprocess_command_always_disables_env_preflight() {
+        let env = HashMap::new();
+        for snapshot in [true, false] {
+            let cmd = build_subprocess_command(
+                &PathBuf::from("/usr/bin/anodize"),
+                &std::env::temp_dir(),
+                &env,
+                None,
+                &[],
+                snapshot,
+                None,
+            );
+            let args: Vec<&str> = cmd.get_args().map(|s| s.to_str().expect("ascii")).collect();
+            assert!(
+                args.contains(&"--no-preflight"),
+                "child argv (snapshot={snapshot}) must always carry --no-preflight; got {args:?}"
+            );
+        }
     }
 
     /// `snapshot=false` MUST drop `--snapshot` from the argv so the

@@ -174,8 +174,9 @@ pub(crate) struct BuildSubprocessEnv<'a> {
     /// keying env-var block (caller is opting out of sign-stage
     /// validation). When `Some`, the harness exports `COSIGN_KEY` /
     /// `COSIGN_PASSWORD` / `GNUPGHOME` / `GPG_FINGERPRINT` / `GPG_TTY` /
-    /// `GPG_KEY_PATH` / `ANODIZER_IN_DETERMINISM_HARNESS=1` into the
-    /// child env.
+    /// `GPG_KEY_PATH` into the child env.
+    /// (`ANODIZER_IN_DETERMINISM_HARNESS=1` is exported for every child,
+    /// keys or not.)
     pub signing_keys: Option<&'a EphemeralSigningKeys>,
 }
 
@@ -391,6 +392,27 @@ pub(crate) fn build_subprocess_env_with_env(
     // Always set CI=true so build scripts know they're in a sealed env.
     env.entry("CI".into()).or_insert_with(|| "true".into());
 
+    // Replica children replay the SAME static config the operator's outer
+    // invocation just loaded (which already emitted the config-derived
+    // warnings — legacy aliases, submitter `required: true`, etc.); letting
+    // every child re-emit them duplicates each warning runs× in one console.
+    // Those warnings travel via `tracing::warn!`, so cap the child's tracing
+    // filter at `error`. StageLogger output (stage progress, runtime
+    // warnings) is unaffected — it doesn't route through tracing.
+    // `.entry().or_insert()` keeps an operator-supplied RUST_LOG (Windows
+    // inherit-everything pass) authoritative for debugging.
+    env.entry("RUST_LOG".into())
+        .or_insert_with(|| "error".into());
+
+    // Marker for "this release run is a determinism-harness replica".
+    // Surfaced to user templates as `IsHarness` (see
+    // `Context::populate_runtime_vars`) so `if_condition:` blocks can opt
+    // stages in/out inside the harness. Set unconditionally — the property
+    // holds for every replica child, not only the signing-key runs that
+    // historically carried it. Identical across runs, so byte-comparison
+    // is unaffected.
+    env.insert("ANODIZER_IN_DETERMINISM_HARNESS".into(), "1".into());
+
     // Redirect LLVM coverage profile output OUTSIDE the worktree so an
     // instrumented anodize child (built via `cargo llvm-cov`) doesn't
     // drop `default_*.profraw` files into the source tree on process
@@ -422,7 +444,6 @@ pub(crate) fn build_subprocess_env_with_env(
     // host-leaked credential vars under either the allow-list or the
     // Windows inherit pass.
     if let Some(keys) = inputs.signing_keys {
-        env.insert("ANODIZER_IN_DETERMINISM_HARNESS".into(), "1".into());
         env.insert("COSIGN_KEY".into(), keys.cosign_key_contents.clone());
         env.insert("COSIGN_PASSWORD".into(), keys.cosign_password.clone());
         env.insert(
@@ -480,6 +501,36 @@ mod tests {
     fn allow_listed_path_reads_through_env_source() {
         let env = MapEnvSource::new().with("PATH", "/fixture/bin:/usr/bin");
         assert_eq!(allow_listed_path_with_env(&env), "/fixture/bin:/usr/bin");
+    }
+
+    /// Static-config warnings (legacy aliases, submitter `required: true`)
+    /// must print once per harness invocation — from the outer process —
+    /// not once per replica child. The children's tracing filter is capped
+    /// at `error` to enforce that.
+    #[test]
+    fn harness_env_caps_child_tracing_at_error() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = build_with(tmp.path(), &[]);
+        assert_eq!(
+            env.get("RUST_LOG").map(String::as_str),
+            Some("error"),
+            "child env must carry RUST_LOG=error so replica builds don't \
+             re-emit the outer process's static-config warnings"
+        );
+    }
+
+    /// `IsHarness` (template var) keys off this marker; it must be set for
+    /// EVERY replica child, not only signing-key runs.
+    #[test]
+    fn harness_env_always_marks_determinism_children() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = build_with(tmp.path(), &[]);
+        assert_eq!(
+            env.get("ANODIZER_IN_DETERMINISM_HARNESS")
+                .map(String::as_str),
+            Some("1"),
+            "harness marker must be present without signing keys"
+        );
     }
 
     #[test]

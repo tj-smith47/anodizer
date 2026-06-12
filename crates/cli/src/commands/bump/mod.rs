@@ -67,10 +67,15 @@ pub fn run(opts: BumpOpts) -> Result<()> {
         crate::commands::helpers::discover_workspace_root(opts.config_override.as_deref())
             .context("could not locate workspace root (no Cargo.toml found)")?;
 
+    // The command's ONLY config load — threaded into the coherence guard,
+    // the plan builder, and the pin enforcement below. Loading per consumer
+    // would re-emit the static-config warnings (legacy aliases, submitter
+    // `required: true`) once per load in a single invocation.
+    let bump_config = load_bump_config(&workspace_root, &opts)?;
+
     // Reject an incoherent flat-aggregate config (members sharing one tag prefix
     // but disagreeing on `[package].version`) before any work, identically to
     // `tag` and `changelog`.
-    let bump_config = load_changelog_config(&workspace_root, &opts);
     let bump_workspace = cargo_edit::load_workspace(&workspace_root).ok();
     crate::commands::tag::guard_flat_aggregate_coherence(
         bump_config.as_ref(),
@@ -78,7 +83,8 @@ pub fn run(opts: BumpOpts) -> Result<()> {
         &workspace_root,
     )?;
 
-    let rows = plan::build_plan(&workspace_root, &opts).context("failed to build bump plan")?;
+    let rows = plan::build_plan(&workspace_root, &opts, bump_config.as_ref())
+        .context("failed to build bump plan")?;
 
     if rows.is_empty() {
         log.status("nothing to bump");
@@ -88,7 +94,7 @@ pub fn run(opts: BumpOpts) -> Result<()> {
     // Enforce `.anodizer.yaml`'s `crates[*].version` pins. In strict mode this
     // is fatal; otherwise a warning. Runs BEFORE any output or prompt so the
     // user never confirms an invalid plan.
-    enforce_version_pins(&workspace_root, &rows, &opts, &log)?;
+    enforce_version_pins(bump_config.as_ref(), &rows, &opts, &log)?;
 
     if opts.output == "json" {
         let json =
@@ -306,51 +312,45 @@ fn default_commit_message(rows: &[PlanRow]) -> String {
     }
 }
 
-/// Best-effort load of `.anodizer.yaml` for the changelog gate.
+/// Load `.anodizer.yaml` once for the whole bump run (`--config` override,
+/// else `<workspace_root>/.anodizer.yaml`). The single result is shared by
+/// the coherence guard, the plan builder's `tag_template` lookup, the pin
+/// enforcement, and the changelog gate — each consumer loading separately
+/// would re-emit every static-config warning per load.
 ///
-/// Resolves the config path the same way [`enforce_version_pins`] does
-/// (`--config` override, else `<workspace_root>/.anodizer.yaml`). Returns `None`
-/// when no config file exists or it fails to parse — both cases leave the
-/// changelog refresh disabled, which is the correct default for a repo with no
-/// `changelog:` block.
-fn load_changelog_config(
+/// `Ok(None)` when no config file exists (every consumer degrades to its
+/// no-config behavior). A file that exists but fails to load is a hard
+/// error: pin enforcement is a correctness gate and must not be silently
+/// skipped on a malformed config.
+fn load_bump_config(
     workspace_root: &std::path::Path,
     opts: &BumpOpts,
-) -> Option<anodizer_core::config::Config> {
+) -> Result<Option<anodizer_core::config::Config>> {
     let cfg_path = match opts.config_override.as_deref() {
         Some(p) => p.to_path_buf(),
         None => workspace_root.join(".anodizer.yaml"),
     };
     if !cfg_path.is_file() {
-        return None;
+        return Ok(None);
     }
-    crate::pipeline::load_config(&cfg_path).ok()
+    crate::pipeline::load_config(&cfg_path)
+        .map(Some)
+        .with_context(|| format!("failed to load {}", cfg_path.display()))
 }
 
 /// Validate the plan against `crates[*].version` pins in `.anodizer.yaml`.
 /// In strict mode any pin mismatch is fatal; otherwise a warning is logged
-/// and the bump proceeds.
+/// and the bump proceeds. `config` is the run's single shared load
+/// ([`load_bump_config`]); `None` (no config file) means no pins to enforce.
 fn enforce_version_pins(
-    workspace_root: &std::path::Path,
+    config: Option<&anodizer_core::config::Config>,
     rows: &[PlanRow],
     opts: &BumpOpts,
     log: &StageLogger,
 ) -> Result<()> {
-    let cfg_path = match opts.config_override.as_deref() {
-        Some(p) => p.to_path_buf(),
-        None => {
-            let candidate = workspace_root.join(".anodizer.yaml");
-            if !candidate.is_file() {
-                return Ok(());
-            }
-            candidate
-        }
-    };
-    if !cfg_path.is_file() {
+    let Some(config) = config else {
         return Ok(());
-    }
-    let config = crate::pipeline::load_config(&cfg_path)
-        .with_context(|| format!("failed to load {}", cfg_path.display()))?;
+    };
     let mut violations: Vec<String> = Vec::new();
     for row in rows {
         if row.level == plan::BumpLevel::Skip {
