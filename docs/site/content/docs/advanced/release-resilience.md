@@ -229,6 +229,78 @@ ending up with a consistent set of Assets even if one Manager publisher
 hiccups. Use `--fail-fast` only when you want loud diagnostics and have a
 human ready to retry.
 
+## `release.on_failure` — the in-process failure policy
+
+When a `release` / `release --publish-only` / `release --merge` run fails,
+the binary itself decides what happens next — no summary-parsing `if:` chain
+is needed in workflow YAML:
+
+```yaml
+release:
+  on_failure: rollback   # rollback | hold; default rollback
+```
+
+| Value | Behavior on a pipeline failure |
+|---|---|
+| `rollback` | Deletes the run's release tag(s) and reverts the version-bump commit — the same execution path as `anodizer tag rollback` — so the same version can be re-cut after the fix lands. |
+| `hold` | Leaves tags, commits, and published state in place for forensics. Exit is still nonzero; recover with `release --rollback-only --from-run=<id>` and/or `tag rollback` once investigated. |
+
+This policy operates on the git-level state (`tag` + bump commit). It is
+independent of the per-publisher [`--rollback`](#the---rollback-flag)
+machinery, which unwinds individual publishers' uploads inside the publish
+stage and runs first either way.
+
+### Automatic degrade past one-way doors
+
+`rollback` degrades to `hold` the moment ANY one-way-door (Submitter-group)
+publisher has landed — regardless of config. crates.io, chocolatey, winget,
+snapcraft and friends never accept the same version twice: the version is
+burned, deleting the tag could only orphan the live published state, and
+fix-forward is the only path. The degrade message names the publishers that
+burned the version:
+
+```
+[failure-policy] ⚠ on_failure=rollback DEGRADED to hold: one-way-door
+publisher(s) already accepted this version: cargo, chocolatey. ...
+Fix forward: keep the tag, revert reversible publishers with
+`anodizer release --rollback-only --from-run=<id>` if needed, repair the
+failure, and cut the NEXT version.
+```
+
+The evidence comes from the run's own summaries — every
+`dist/run-*/summary.json` plus `dist/<crate>/run-*/summary.json`, so a crate
+that published irreversibly before a later crate failed (per-crate workspace
+mode) still degrades the whole run. The shared `tag rollback` path keeps its
+own published-state guard as a second layer: it additionally probes the
+GitHub Releases API for tags with no local summary, which is what protects
+re-publish runs of an already-live release.
+
+### Scope and recording
+
+The policy is a root-level `release:` setting: in workspace configs
+(lockstep or per-crate) the top-level `release.on_failure` governs the whole
+run. It does not fire for `--dry-run`, `--snapshot`, `--prepare`, `--split`,
+`--announce-only`, `--rollback-only`, or `--preflight` — none of those may
+destroy release state.
+
+Whichever path runs is recorded in the run summary so the audit artifact
+states how the failure was handled:
+
+```json
+"failure_policy": {
+  "configured": "rollback",
+  "action": "held",
+  "degraded": true,
+  "burned_publishers": ["cargo"]
+}
+```
+
+`action` is `rolled-back`, `held`, or `rollback-failed` (rollback was
+attempted but refused or errored — state is effectively held; the error text
+lands in `rollback_error`). A killed run (SIGKILL, runner eviction) cannot
+execute its own policy; the per-publisher summary snapshots persisted during
+dispatch are the forensics trail for manual recovery in that case.
+
 ## `--rollback-only --from-run=<id>`
 
 Anodizer writes a structured run report to `dist/run-<id>/report.json` after

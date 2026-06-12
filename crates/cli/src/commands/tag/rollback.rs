@@ -535,30 +535,8 @@ fn collect_run_summaries(
     dist: &std::path::Path,
     log: &StageLogger,
 ) -> Vec<anodizer_stage_publish::run_summary::RunSummary> {
-    fn run_dirs(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return Vec::new();
-        };
-        entries
-            .flatten()
-            .filter(|e| {
-                e.file_name().to_string_lossy().starts_with("run-")
-                    && e.path().join("summary.json").is_file()
-            })
-            .map(|e| e.path())
-            .collect()
-    }
-
-    let mut dirs = run_dirs(dist);
-    if let Ok(entries) = std::fs::read_dir(dist) {
-        for entry in entries.flatten().filter(|e| e.path().is_dir()) {
-            dirs.extend(run_dirs(&entry.path()));
-        }
-    }
-
     let mut out = Vec::new();
-    for dir in dirs {
-        let path = dir.join("summary.json");
+    for path in anodizer_stage_publish::run_summary::collect_run_summary_paths(dist) {
         match std::fs::read_to_string(&path)
             .map_err(anyhow::Error::from)
             .and_then(|text| Ok(serde_json::from_str(&text)?))
@@ -1482,6 +1460,7 @@ mod tests {
             publishers_succeeded: 0,
             publishers_failed: 0,
             irreversibly_published,
+            failure_policy: None,
             results,
             determinism_allowlist: DeterminismAllowlist::default(),
         };

@@ -1,4 +1,5 @@
 mod announce_only;
+mod failure_policy;
 mod milestones;
 mod publish_only;
 mod split;
@@ -369,6 +370,11 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     // surface mid-publish. `--announce-only` checks announce requirements
     // alone: announcers fire sequentially with real side effects, so a
     // missing token must abort before the first channel posts.
+    //
+    // Both preflights run BEFORE the failure-policy boundary below: they
+    // abort with zero mutations, so a missing secret must surface as
+    // "fix and re-run", never as a destructive rollback of a tag the
+    // run did not touch.
     if !opts.no_preflight && !opts.dry_run && !opts.snapshot && !opts.split {
         let scope = if opts.announce_only {
             crate::commands::preflight::PreflightScope::AnnounceOnly
@@ -392,6 +398,24 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         return Ok(());
     }
 
+    // Every mode below routes its outcome through the in-process failure
+    // policy (`release.on_failure`): on a pipeline failure the binary
+    // itself decides rollback vs hold instead of leaving a summary for a
+    // workflow-side `if:` chain to act on.
+    let result = dispatch_release_modes(&mut ctx, &config, &opts, &log);
+    failure_policy::finish(&ctx, &opts, &log, result)
+}
+
+/// Run the selected release mode (publish-only / announce-only / split /
+/// merge / full pipeline). Split out of [`run`] so the caller can route
+/// every mode's failure through [`failure_policy::finish`] uniformly,
+/// while the zero-mutation preflight gates stay outside that boundary.
+fn dispatch_release_modes(
+    ctx: &mut Context,
+    config: &Config,
+    opts: &ReleaseOpts,
+    log: &StageLogger,
+) -> Result<()> {
     if opts.publish_only {
         // --publish-only consumes the preserved dist tree (artifacts.json /
         // context.json) rather than git tags-at-HEAD. Crate selection comes
@@ -414,11 +438,11 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             let with_subdir: Vec<String> = opts
                 .crate_names
                 .iter()
-                .filter(|name| publish_only::crate_subdir_has_manifest(&dist, name, &log))
+                .filter(|name| publish_only::crate_subdir_has_manifest(&dist, name, log))
                 .cloned()
                 .collect();
             if with_subdir.is_empty() {
-                return publish_only::run(&mut ctx, &config, &log, run_opts);
+                return publish_only::run(ctx, config, log, run_opts);
             }
             // Fail closed on a partial match. When SOME requested crates
             // have a per-crate subdir and some don't, silently publishing
@@ -450,28 +474,28 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
                     with_subdir.join(", "),
                 );
             }
-            let all_known = flatten_known_crates(&config);
+            let all_known = flatten_known_crates(config);
             let sorted = topo_sort_selected(&all_known, &with_subdir);
             let order = if sorted.is_empty() {
                 with_subdir
             } else {
                 sorted
             };
-            return publish_only::run_per_crate(&mut ctx, &config, &log, run_opts, dist, order);
+            return publish_only::run_per_crate(ctx, config, log, run_opts, dist, order);
         }
         // Detect layout and dispatch.
-        match publish_only::detect_dist_layout(&dist, &log)? {
+        match publish_only::detect_dist_layout(&dist, log)? {
             publish_only::DistLayout::Flat => {
-                return publish_only::run(&mut ctx, &config, &log, run_opts);
+                return publish_only::run(ctx, config, log, run_opts);
             }
             publish_only::DistLayout::PerCrate(subdirs) => {
                 // Topo-sort discovered crate names so depends_on ordering
                 // is respected. Fall back to alphabetical when none of the
                 // discovered names match any configured crate.
-                let all_known = flatten_known_crates(&config);
+                let all_known = flatten_known_crates(config);
                 let sorted = topo_sort_selected(&all_known, &subdirs);
                 let order = if sorted.is_empty() { subdirs } else { sorted };
-                return publish_only::run_per_crate(&mut ctx, &config, &log, run_opts, dist, order);
+                return publish_only::run_per_crate(ctx, config, log, run_opts, dist, order);
             }
             publish_only::DistLayout::Ambiguous { crate_subdirs } => {
                 anyhow::bail!(
@@ -487,26 +511,26 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
     }
 
     if opts.announce_only {
-        return announce_only::run(&mut ctx, &config, &log, opts.dry_run);
+        return announce_only::run(ctx, config, log, opts.dry_run);
     }
 
     if opts.split {
-        return split::run_split(&mut ctx, &config, &log);
+        return split::run_split(ctx, config, log);
     }
 
     if opts.merge {
-        return split::run_merge(&mut ctx, &config, &log, opts.dry_run, None);
+        return split::run_merge(ctx, config, log, opts.dry_run, None);
     }
 
     let p = pipeline::build_release_pipeline();
-    let result = p.run(&mut ctx, &log);
+    let result = p.run(ctx, log);
 
     if result.is_ok() {
-        run_post_pipeline(&mut ctx, &config, opts.dry_run, &log)?;
+        run_post_pipeline(ctx, config, opts.dry_run, log)?;
     }
 
     if result.is_ok() {
-        gate_required_failures(&ctx)?;
+        gate_required_failures(ctx)?;
     }
 
     result

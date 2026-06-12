@@ -10882,6 +10882,25 @@
       },
       "additionalProperties": false
     },
+    "OnFailureConfig": {
+      "description": "In-process failure policy for `anodizer release`. See [`ReleaseConfig::on_failure`].",
+      "oneOf": [
+        {
+          "description": "Roll back reversible state (delete the run's release tags, revert the version-bump commit) so the version can be re-cut. Degrades to `Hold` when any one-way-door publisher already landed.",
+          "type": "string",
+          "enum": [
+            "rollback"
+          ]
+        },
+        {
+          "description": "Leave everything in place for forensics; exit nonzero with a pointer at `release --rollback-only --from-run=<id>`.",
+          "type": "string",
+          "enum": [
+            "hold"
+          ]
+        }
+      ]
+    },
     "OpenCollectiveAnnounce": {
       "type": "object",
       "properties": {
@@ -11793,6 +11812,18 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "on_failure": {
+          "description": "In-process failure policy: what `anodizer release` does after a release-pipeline failure. `rollback` (default) deletes the run's release tag(s) and reverts the version-bump commit so the same version can be re-cut; `hold` leaves everything in place for forensics and manual recovery (`release --rollback-only --from-run=<id>`). `rollback` automatically degrades to `hold` the moment any one-way-door (Submitter) publisher has landed: the version is burned at a registry that never accepts it twice, so destructive rollback is refused and fix-forward is the only path. Root-level policy — in workspace configs (lockstep or per-crate) the top-level `release.on_failure` governs the whole run.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/OnFailureConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "prerelease": {

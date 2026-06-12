@@ -1029,7 +1029,14 @@ pub fn resolve_rollback_identity(cwd: &Path) -> CommitterIdentity {
 /// Refuses against a dirty working tree (`git revert` would surface a
 /// less actionable "your local changes would be overwritten" message
 /// otherwise). Mirrors the dirty-tree guard used by
-/// `stage-publish/src/util/git_revert.rs`.
+/// `stage-publish/src/util/git_revert.rs`. The guard counts only
+/// TRACKED modifications (`--untracked-files=no`): a revert never
+/// touches untracked files, and a failure-recovery rollback runs right
+/// after a release wrote `dist/` — in repos that don't gitignore their
+/// dist, an untracked-counts-as-dirty guard would refuse every
+/// post-release rollback. The one genuine hazard (an untracked file
+/// where the revert must restore a tracked one) is refused by git
+/// itself with an explicit "would be overwritten" error.
 ///
 /// On revert failure (typically a merge conflict against later commits
 /// on top of the bump), runs `git revert --abort` to restore the
@@ -1048,7 +1055,7 @@ pub fn revert_commit_in(
     identity: &CommitterIdentity,
 ) -> Result<()> {
     let status = Command::new("git")
-        .args(["status", "--porcelain"])
+        .args(["status", "--porcelain", "--untracked-files=no"])
         .current_dir(cwd)
         .env("LC_ALL", "C")
         .env("GIT_TERMINAL_PROMPT", "0")

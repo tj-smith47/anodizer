@@ -24,7 +24,7 @@ use super::{
 };
 use super::{
     ForceTokenKind, GitHubUrlsConfig, GitLabUrlsConfig, GiteaUrlsConfig, MakeLatestConfig,
-    ReleaseConfig,
+    OnFailureConfig, ReleaseConfig,
 };
 use super::{HumanDuration, StringOrBool};
 use super::{
@@ -844,6 +844,33 @@ fn test_release_resolved_bool_user_values_win() {
     assert!(cfg.resolved_replace_existing_artifacts());
     assert!(cfg.resolved_include_meta());
     assert!(cfg.resolved_use_existing_draft());
+}
+
+#[test]
+fn test_release_resolved_on_failure_defaults_to_rollback() {
+    let cfg = ReleaseConfig::default();
+    assert_eq!(cfg.resolved_on_failure(), OnFailureConfig::Rollback);
+}
+
+#[test]
+fn test_release_on_failure_parses_both_values() {
+    for (yaml, expected) in [
+        ("on_failure: rollback", OnFailureConfig::Rollback),
+        ("on_failure: hold", OnFailureConfig::Hold),
+    ] {
+        let cfg: ReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert_eq!(cfg.resolved_on_failure(), expected, "yaml: {yaml}");
+    }
+}
+
+#[test]
+fn test_release_on_failure_rejects_unknown_value() {
+    let err = serde_yaml_ng::from_str::<ReleaseConfig>("on_failure: explode").unwrap_err();
+    let msg = err.to_string();
+    assert!(
+        msg.contains("rollback") && msg.contains("hold"),
+        "error must name the valid set, got: {msg}"
+    );
 }
 
 // ---- ChangelogConfig resolved_*() accessors (lazy-defaults policy) ----

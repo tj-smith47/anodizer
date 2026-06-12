@@ -56,8 +56,41 @@ pub struct RunSummary {
     /// versions parseable by newer readers.
     #[serde(default)]
     pub irreversibly_published: bool,
+    /// Outcome of the in-process failure policy (`release.on_failure`),
+    /// recorded after a release-pipeline failure so the summary states
+    /// which recovery path the run took. `None` on successful runs and
+    /// on summaries written before the policy executed.
+    ///
+    /// `#[serde(default)]` keeps summaries written by older anodize
+    /// versions parseable by newer readers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_policy: Option<FailurePolicyRecord>,
     pub results: Vec<RunSummaryResult>,
     pub determinism_allowlist: DeterminismAllowlist,
+}
+
+/// What the in-process failure policy decided and executed after a
+/// release-pipeline failure. See `release.on_failure`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FailurePolicyRecord {
+    /// Configured policy: `rollback` or `hold`.
+    pub configured: String,
+    /// Action actually taken: `rolled-back`, `held`, or
+    /// `rollback-failed` (rollback was attempted and refused/errored;
+    /// state is effectively held).
+    pub action: String,
+    /// True when a configured `rollback` degraded to hold because a
+    /// one-way-door publisher had already landed.
+    pub degraded: bool,
+    /// Submitter-group publishers whose publish landed and burned the
+    /// version (the degrade evidence). Empty unless `degraded`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub burned_publishers: Vec<String>,
+    /// Error from the rollback execution when `action` is
+    /// `rollback-failed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollback_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -183,6 +216,7 @@ impl RunSummary {
             publishers_succeeded,
             publishers_failed,
             irreversibly_published,
+            failure_policy: None,
             results,
             determinism_allowlist: DeterminismAllowlist {
                 compile_time,
@@ -374,6 +408,69 @@ pub fn persist_summary_snapshot(
     write_summary_json(&summary, &path).map(|_| ())
 }
 
+/// Every `summary.json` under `<dist>/run-*/` (single-crate / lockstep
+/// layout) and `<dist>/<crate>/run-*/` (per-crate workspace layout).
+/// The two layouts are the writer-side contract of [`summary_path`]:
+/// per-crate publish runs re-anchor `dist` onto `dist/<crate>/`, so a
+/// reader that wants the whole run's evidence must walk both levels.
+pub fn collect_run_summary_paths(dist: &Path) -> Vec<std::path::PathBuf> {
+    fn summaries_in(dir: &Path) -> Vec<std::path::PathBuf> {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        entries
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with("run-"))
+            .map(|e| e.path().join("summary.json"))
+            .filter(|p| p.is_file())
+            .collect()
+    }
+
+    let mut paths = summaries_in(dist);
+    if let Ok(entries) = fs::read_dir(dist) {
+        for entry in entries.flatten().filter(|e| e.path().is_dir()) {
+            paths.extend(summaries_in(&entry.path()));
+        }
+    }
+    paths
+}
+
+/// Stamp `record` onto every parseable run summary under `dist` (both
+/// layout levels — see [`collect_run_summary_paths`]) and rewrite them
+/// in place. Returns the number of summaries updated. Unreadable or
+/// unparseable files are skipped via `warn`: the record is a secondary
+/// observability channel and must never mask the release failure that
+/// triggered it.
+pub fn record_failure_policy(
+    dist: &Path,
+    record: &FailurePolicyRecord,
+    warn: &mut dyn FnMut(&str),
+) -> usize {
+    let mut updated = 0;
+    for path in collect_run_summary_paths(dist) {
+        let parsed: Result<RunSummary> = fs::read_to_string(&path)
+            .map_err(anyhow::Error::from)
+            .and_then(|text| Ok(serde_json::from_str(&text)?));
+        match parsed {
+            Ok(mut summary) => {
+                summary.failure_policy = Some(record.clone());
+                match write_summary_json(&summary, &path) {
+                    Ok(_) => updated += 1,
+                    Err(e) => warn(&format!(
+                        "failure-policy record write failed for {}: {e:#}",
+                        path.display()
+                    )),
+                }
+            }
+            Err(e) => warn(&format!(
+                "failure-policy record skipped unreadable summary {}: {e:#}",
+                path.display()
+            )),
+        }
+    }
+    updated
+}
+
 /// Pretty-print a per-publisher status table to the supplied writer
 /// (typically `stderr`).
 ///
@@ -483,6 +580,7 @@ mod tests {
             publishers_succeeded: 1,
             publishers_failed: 0,
             irreversibly_published: false,
+            failure_policy: None,
             results: vec![
                 RunSummaryResult {
                     name: "github-release".to_string(),
@@ -987,6 +1085,7 @@ mod tests {
             publishers_succeeded: 1,
             publishers_failed: 0,
             irreversibly_published: false,
+            failure_policy: None,
             results: vec![RunSummaryResult {
                 name: "custom-publisher-with-long-id".to_string(), // 29 chars
                 group: PublisherGroup::Manager,
@@ -1034,6 +1133,7 @@ mod tests {
             publishers_succeeded: 1,
             publishers_failed: 0,
             irreversibly_published: false,
+            failure_policy: None,
             results: vec![RunSummaryResult {
                 name: long_name.clone(),
                 group: PublisherGroup::Assets,
@@ -1077,5 +1177,111 @@ mod tests {
         let ctx = anodizer_core::context::Context::test_fixture();
         let s = RunSummary::from_context(&ctx);
         assert_eq!(s.anodize_version, env!("CARGO_PKG_VERSION"));
+    }
+
+    #[test]
+    fn missing_failure_policy_field_defaults_to_none() {
+        // Summaries written before the failure-policy field existed must
+        // stay parseable by newer readers.
+        let mut value = serde_json::to_value(populated_summary()).unwrap();
+        value.as_object_mut().unwrap().remove("failure_policy");
+        let parsed: RunSummary = serde_json::from_value(value).unwrap();
+        assert!(parsed.failure_policy.is_none());
+    }
+
+    #[test]
+    fn failure_policy_record_round_trips() {
+        let mut summary = populated_summary();
+        summary.failure_policy = Some(FailurePolicyRecord {
+            configured: "rollback".to_string(),
+            action: "held".to_string(),
+            degraded: true,
+            burned_publishers: vec!["cargo".to_string()],
+            rollback_error: None,
+        });
+        let text = serde_json::to_string(&summary).unwrap();
+        let parsed: RunSummary = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed, summary);
+        // Optional sub-fields stay off the wire when empty.
+        assert!(!text.contains("rollback_error"));
+    }
+
+    #[test]
+    fn collect_run_summary_paths_walks_both_layouts() {
+        let dist = tempfile::tempdir().unwrap();
+        let root_run = dist.path().join("run-v1.0.0");
+        let crate_run = dist.path().join("crate-a").join("run-crate-a-v1.0.0");
+        for dir in [&root_run, &crate_run] {
+            fs::create_dir_all(dir).unwrap();
+            fs::write(dir.join("summary.json"), "{}").unwrap();
+        }
+        // Distractors that must NOT be picked up: a non-run dir and a
+        // run dir without a summary.
+        fs::create_dir_all(dist.path().join("not-a-run")).unwrap();
+        fs::create_dir_all(dist.path().join("run-empty")).unwrap();
+
+        let mut paths = collect_run_summary_paths(dist.path());
+        paths.sort();
+        assert_eq!(
+            paths,
+            vec![
+                crate_run.join("summary.json"),
+                root_run.join("summary.json")
+            ]
+        );
+    }
+
+    #[test]
+    fn record_failure_policy_stamps_every_summary_in_both_layouts() {
+        let dist = tempfile::tempdir().unwrap();
+        let root_path = dist.path().join("run-v1.0.0").join("summary.json");
+        let crate_path = dist
+            .path()
+            .join("crate-a")
+            .join("run-crate-a-v1.0.0")
+            .join("summary.json");
+        write_summary_json(&populated_summary(), &root_path).unwrap();
+        write_summary_json(&populated_summary(), &crate_path).unwrap();
+
+        let record = FailurePolicyRecord {
+            configured: "rollback".to_string(),
+            action: "rolled-back".to_string(),
+            degraded: false,
+            burned_publishers: vec![],
+            rollback_error: None,
+        };
+        let mut warnings: Vec<String> = Vec::new();
+        let updated =
+            record_failure_policy(dist.path(), &record, &mut |m| warnings.push(m.to_string()));
+        assert_eq!(updated, 2, "warnings: {warnings:?}");
+        for path in [&root_path, &crate_path] {
+            let parsed: RunSummary =
+                serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
+            assert_eq!(parsed.failure_policy.as_ref(), Some(&record));
+            // Stamping must not disturb the publish results.
+            assert_eq!(parsed.results.len(), 2);
+        }
+    }
+
+    #[test]
+    fn record_failure_policy_skips_unparseable_summary_with_warning() {
+        let dist = tempfile::tempdir().unwrap();
+        let bad = dist.path().join("run-v1.0.0").join("summary.json");
+        fs::create_dir_all(bad.parent().unwrap()).unwrap();
+        fs::write(&bad, "not json").unwrap();
+
+        let record = FailurePolicyRecord {
+            configured: "hold".to_string(),
+            action: "held".to_string(),
+            degraded: false,
+            burned_publishers: vec![],
+            rollback_error: None,
+        };
+        let mut warnings: Vec<String> = Vec::new();
+        let updated =
+            record_failure_policy(dist.path(), &record, &mut |m| warnings.push(m.to_string()));
+        assert_eq!(updated, 0);
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("summary"), "got: {warnings:?}");
     }
 }
