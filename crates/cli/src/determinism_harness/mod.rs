@@ -571,15 +571,14 @@ impl Harness {
             // below so the artifact zip stays compact.
             if let Some(parent) = self.report_path.parent() {
                 let dump_root = parent.join("drift-bins").join(format!("run-{}", run_idx));
-                copy_artifacts_to_dump(worktree.path(), &artifacts, &dump_root).with_context(
-                    || {
+                copy_artifacts_to_dump(worktree.path(), &artifacts, &dump_root, &log)
+                    .with_context(|| {
                         format!(
                             "dumping artifacts to {} for determinism run {}",
                             dump_root.display(),
                             run_idx
                         )
-                    },
-                )?;
+                    })?;
             }
             // Preserve run-0's dist tree to the operator-supplied path
             // BEFORE the next iteration's `remove_dir_all` (or this
@@ -608,7 +607,7 @@ impl Harness {
                 // preserved tree (binaries live outside `dist/` in the
                 // worktree and are otherwise lost when the worktree is
                 // dropped).
-                preserve_raw_binaries(worktree.path(), dest).with_context(|| {
+                preserve_raw_binaries(worktree.path(), dest, &log).with_context(|| {
                     format!(
                         "preserving raw binaries from {} into {}",
                         worktree.path().display(),
@@ -640,7 +639,7 @@ impl Harness {
         // only path can rehydrate.
         if let Some(dest) = effective_preserve_dest.as_ref() {
             if report.drift_count > 0 {
-                remove_preserved_on_drift(dest);
+                remove_preserved_on_drift(dest, &log);
             } else {
                 write_preserved_dist_context(
                     dest,
@@ -649,6 +648,7 @@ impl Harness {
                         harness_targets: self.targets.as_deref(),
                         version_hint: &self.version_hint,
                     },
+                    &log,
                 )
                 .with_context(|| {
                     format!(

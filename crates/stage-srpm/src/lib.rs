@@ -77,7 +77,7 @@ impl Stage for SrpmStage {
 
         if source_archives.is_empty() {
             if ctx.options.snapshot || dry_run {
-                log.verbose("skipping SRPM: no source archives found (snapshot/dry-run mode)");
+                log.verbose("skipping SRPM — no source archives found (snapshot/dry-run mode)");
                 return Ok(());
             }
             anyhow::bail!("srpm: no source archives found. Enable the source stage first.");
@@ -252,7 +252,7 @@ impl Stage for SrpmStage {
 
         if dry_run {
             log.status(&format!(
-                "(dry-run) would create source RPM: {}",
+                "(dry-run) would create source RPM {}",
                 package_filename
             ));
             return Ok(());

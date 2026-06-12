@@ -695,44 +695,53 @@ pub fn publish_to_artifactory(
                     let rendered_v =
                         crate::util::render_or_warn(ctx, log, "artifactory.headers", v)?;
                     log.status(&format!(
-                        "(dry-run) custom header: {}={}",
+                        "(dry-run) would send custom header {}={}",
                         k,
                         log.redact(&rendered_v)
                     ));
                 }
             }
             if entry.client_x509_cert.is_some() {
-                log.status("(dry-run) using client cert: yes");
+                log.status("(dry-run) would present a client certificate");
             }
             if entry.client_x509_key.is_some() {
-                log.status("(dry-run) using client key: yes");
+                log.status("(dry-run) would present a client key");
             }
             if entry.trusted_certificates.is_some() {
-                log.status("(dry-run) using custom trusted certificates");
+                log.status("(dry-run) would trust custom certificates");
             }
-            log.status(&format!("(dry-run) checksum header: {}", checksum_header));
+            log.status(&format!(
+                "(dry-run) would send checksum header {}",
+                checksum_header
+            ));
             if let Some(ref ids) = entry.ids {
-                log.status(&format!("(dry-run) build ID filter: {:?}", ids));
+                log.status(&format!("(dry-run) would filter to build IDs {:?}", ids));
             }
             if let Some(ref exts) = entry.exts {
-                log.status(&format!("(dry-run) extension filter: {:?}", exts));
+                log.status(&format!("(dry-run) would filter to extensions {:?}", exts));
             }
             if include_checksum {
-                log.status("(dry-run) include checksums: true");
+                log.status("(dry-run) would include checksum files");
             }
             if include_signature {
-                log.status("(dry-run) include signatures: true");
+                log.status("(dry-run) would include signature files");
             }
             if include_meta {
-                log.status("(dry-run) include metadata: true");
+                log.status("(dry-run) would include metadata files");
             }
             if custom_artifact_name {
-                log.status("(dry-run) custom artifact naming: true");
+                log.status("(dry-run) would apply custom artifact naming");
             }
             if let Some(ref files) = entry.extra_files {
-                log.status(&format!("(dry-run) extra files: {} entries", files.len()));
+                log.status(&format!(
+                    "(dry-run) would upload {} extra file(s)",
+                    files.len()
+                ));
             }
-            log.status(&format!("(dry-run) credential env var: {}", named_env_var));
+            log.status(&format!(
+                "(dry-run) would read credentials from {}",
+                named_env_var
+            ));
 
             // Log matching artifacts in dry-run
             let artifacts = collect_upload_artifacts(

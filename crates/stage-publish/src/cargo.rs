@@ -929,10 +929,10 @@ pub(crate) fn check_publish_set_completeness(
                 // positively prove absence, so do not hard-fail — but surface
                 // it so a real gap isn't swallowed silently.
                 log.warn(&format!(
-                    "publish dep-guard: crate '{publishing}' depends on workspace crate \
-                     '{dep_name}'{alias_note} which is not in the cargo publish set, and no \
-                     required version could be resolved to verify it is on crates.io; verify \
-                     manually"
+                    "crate '{publishing}' depends on workspace crate \
+                     '{dep_name}'{alias_note} which is not in the cargo publish set, and the \
+                     publish dep-guard could not resolve a required version to verify it is \
+                     on crates.io; verify manually"
                 ));
                 continue;
             }
@@ -965,7 +965,7 @@ pub(crate) fn check_publish_set_completeness(
                 }
                 DepIndexState::Unknown => {
                     log.warn(&format!(
-                        "publish dep-guard: could not determine crates.io state for '{publishing}' \
+                        "publish dep-guard could not determine crates.io state for '{publishing}' \
                          dep '{dep_name}@{probe_version}'{alias_note} (transient index error); not \
                          failing the guard on an inconclusive probe — verify the dep is published \
                          if the real `cargo publish` fails"

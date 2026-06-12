@@ -210,7 +210,10 @@ pub fn run_publishers(
 
             if dry_run {
                 let full_cmd = format_command_line(&rendered_cmd, &rendered_args);
-                log.status(&format!("[dry-run] [publisher] {} -- {}", label, full_cmd));
+                log.status(&format!(
+                    "(dry-run) would run publisher {} -- {}",
+                    label, full_cmd
+                ));
             } else {
                 log.status(&format!(
                     "[publisher] {} -- running for {}",

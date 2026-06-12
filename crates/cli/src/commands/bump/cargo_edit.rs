@@ -304,11 +304,11 @@ fn rewrite_member_dependencies(
             for (dep_name, new_ver) in bumped {
                 if rewrite_dep_entry(tbl, dep_name, new_ver) {
                     log.verbose(&format!(
-                        "{}: {} {} = \"{}\"",
-                        manifest_path.display(),
+                        "rewrote {} {} = \"{}\" in {}",
                         section,
                         dep_name,
-                        new_ver
+                        new_ver,
+                        manifest_path.display()
                     ));
                     changed = true;
                 }
@@ -324,11 +324,11 @@ fn rewrite_member_dependencies(
                         for (dep_name, new_ver) in bumped {
                             if rewrite_dep_entry(tbl, dep_name, new_ver) {
                                 log.verbose(&format!(
-                                    "{}: target.{} {} = \"{}\"",
-                                    manifest_path.display(),
+                                    "rewrote target.{} {} = \"{}\" in {}",
                                     section,
                                     dep_name,
-                                    new_ver
+                                    new_ver,
+                                    manifest_path.display()
                                 ));
                                 changed = true;
                             }

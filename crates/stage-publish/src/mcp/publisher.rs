@@ -165,7 +165,7 @@ fn rollback_one_target(
                 ),
                 _ => return Err(err),
             };
-            log.warn(&format!("mcp rollback degraded to warn: {}", reason));
+            log.warn(&format!("mcp rollback degraded to warn — {}", reason));
             Ok(RollbackOutcome::DegradedToWarn)
         }
     }

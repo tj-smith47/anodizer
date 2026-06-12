@@ -470,7 +470,7 @@ fn should_skip_nfpm_config(
     let maintainer = nfpm_cfg.maintainer.as_deref().unwrap_or("");
     if maintainer.is_empty() {
         log.warn(&format!(
-            "nfpm config '{}': maintainer is empty (required for deb packages)",
+            "maintainer is empty for nfpm config '{}' (required for deb packages)",
             nfpm_id_for_log
         ));
     }
@@ -594,7 +594,7 @@ fn build_platform_groups(
     if filtered.is_empty() && !linux_binaries.is_empty() {
         let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
         log.warn(&format!(
-            "nfpm config '{}': ids filter matched no binaries, skipping",
+            "skipping nfpm config '{}' — ids filter matched no binaries",
             nfpm_id
         ));
         return None;
@@ -653,7 +653,7 @@ fn resolve_format_os_arch(
                 Some(("iphoneos-arm64".to_string(), base_arch.to_string()))
             } else {
                 log.status(&format!(
-                    "skipping ios for format '{}': only deb is supported",
+                    "skipping ios for format '{}' — only deb is supported",
                     format
                 ));
                 None
@@ -662,7 +662,7 @@ fn resolve_format_os_arch(
         "aix" => {
             if base_arch != "ppc64" {
                 log.status(&format!(
-                    "skipping aix/{}: only ppc64 is supported",
+                    "skipping aix/{} — only ppc64 is supported",
                     base_arch
                 ));
                 return None;
@@ -671,7 +671,7 @@ fn resolve_format_os_arch(
                 Some(("aix7.2".to_string(), "ppc".to_string()))
             } else {
                 log.status(&format!(
-                    "skipping aix for format '{}': only rpm is supported",
+                    "skipping aix for format '{}' — only rpm is supported",
                     format
                 ));
                 None

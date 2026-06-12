@@ -377,7 +377,7 @@ pub fn resolve_git_context(
     if let Some(crate_cfg) = first_crate {
         let tag = if let Some(ref override_tag) = tag_override {
             log.verbose(&format!(
-                "using ANODIZER_CURRENT_TAG override: {}",
+                "using ANODIZER_CURRENT_TAG override '{}'",
                 override_tag
             ));
             override_tag.clone()
@@ -469,7 +469,7 @@ pub fn resolve_git_context(
                     });
                 if let Some(prev_override) = prev_override {
                     log.verbose(&format!(
-                        "using ANODIZER_PREVIOUS_TAG override: {}",
+                        "using ANODIZER_PREVIOUS_TAG override '{}'",
                         prev_override
                     ));
                     git_info.previous_tag = Some(prev_override);

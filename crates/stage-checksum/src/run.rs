@@ -173,7 +173,7 @@ impl Stage for ChecksumStage {
                 new_artifacts.push(combined_artifact);
             } else {
                 log.status(&format!(
-                    "split mode: skipping combined checksums file for crate {crate_name}"
+                    "skipping combined checksums file for crate {crate_name} (split mode)"
                 ));
             }
 

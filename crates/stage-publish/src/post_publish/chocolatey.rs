@@ -112,7 +112,7 @@ pub fn poll(
     let mut ever_visible = false;
 
     log.verbose(&format!(
-        "polling chocolatey moderation: {} (interval={:?}, timeout={:?})",
+        "polling chocolatey moderation at {} (interval={:?}, timeout={:?})",
         url, interval, total_budget
     ));
 
@@ -122,7 +122,7 @@ pub fn poll(
         match verdict {
             PageVerdict::Approved(detail) => {
                 log.status(&format!(
-                    "chocolatey moderation: '{}-{}' approved ({})",
+                    "chocolatey moderation approved '{}-{}' ({})",
                     package, detail, version
                 ));
                 return PostPublishStatus::Approved { detail };
@@ -141,7 +141,7 @@ pub fn poll(
                 ever_visible = true;
                 last_pending_detail = Some(detail.clone());
                 log.verbose(&format!(
-                    "chocolatey moderation: '{}-{}' pending — {} (polled {:?})",
+                    "chocolatey moderation pending for '{}-{}' — {} (polled {:?})",
                     package, version, detail, elapsed
                 ));
             }
@@ -157,7 +157,7 @@ pub fn poll(
                          previously visible in this run — package may have been delisted",
                         url
                     );
-                    log.warn(&format!("chocolatey moderation: {}", reason));
+                    log.warn(&format!("chocolatey moderation halted — {}", reason));
                     return PostPublishStatus::Error { reason };
                 }
                 last_pending_detail = Some(if nf_elapsed >= NOT_FOUND_GRACE_WINDOW {
@@ -169,7 +169,7 @@ pub fn poll(
                     "page not yet indexed (HTTP 404)".to_string()
                 });
                 log.verbose(&format!(
-                    "chocolatey moderation: '{}-{}' not yet indexed (404 for {:?})",
+                    "chocolatey moderation has not indexed '{}-{}' yet (404 for {:?})",
                     package, version, nf_elapsed
                 ));
             }
@@ -182,7 +182,7 @@ pub fn poll(
                 not_found_since = None;
                 last_pending_detail = Some(format!("transient network error: {}", msg));
                 log.verbose(&format!(
-                    "chocolatey moderation: transient error scraping {}: {}",
+                    "chocolatey moderation transient error scraping {}: {}",
                     url, msg
                 ));
             }
@@ -200,7 +200,7 @@ pub fn poll(
             // surfaces to the release summary so an operator who DOES
             // want to follow up can see it.
             log.verbose(&format!(
-                "chocolatey moderation: '{}-{}' poll budget elapsed after {:?} (last state: {})",
+                "chocolatey moderation poll budget for '{}-{}' elapsed after {:?} (last state: {})",
                 package, version, total_budget, last_state
             ));
             return PostPublishStatus::timeout(last_state, started.elapsed());

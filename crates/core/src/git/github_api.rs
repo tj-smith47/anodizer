@@ -227,7 +227,7 @@ pub fn create_tag_via_github_api_in(
 ) -> Result<()> {
     if dry_run {
         log.status(&format!(
-            "(dry-run) would create tag via GitHub API: {} (\"{}\")",
+            "(dry-run) would create tag {} via GitHub API (\"{}\")",
             tag, message
         ));
         return Ok(());

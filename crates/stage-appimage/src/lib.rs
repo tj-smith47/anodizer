@@ -463,7 +463,7 @@ fn render_harvest_command(
 fn run_harvest(cmd: &str, harvest_dir: &Path, log: &anodizer_core::log::StageLogger) -> Result<()> {
     std::fs::create_dir_all(harvest_dir)
         .with_context(|| format!("appimage: create harvest dir {}", harvest_dir.display()))?;
-    log.status(&format!("harvesting AppImage runtime: {cmd}"));
+    log.status(&format!("harvesting AppImage runtime via `{cmd}`"));
     let output = Command::new("sh")
         .arg("-c")
         .arg(cmd)
@@ -860,7 +860,7 @@ fn collect_config_jobs(
             .unwrap_or_else(|| primary.name.clone());
 
         if dry_run {
-            log.status(&format!("(dry-run) would create AppImage: {filename}"));
+            log.status(&format!("(dry-run) would create AppImage {filename}"));
             continue;
         }
 

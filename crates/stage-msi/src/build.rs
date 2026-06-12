@@ -390,7 +390,7 @@ fn log_msi_dry_run(
     rendered_extensions: &[String],
 ) {
     log.status(&format!(
-        "(dry-run) would build MSI: {} (WiX {:?}) for crate {} target {:?}",
+        "(dry-run) would build MSI {} (WiX {:?}) for crate {} target {:?}",
         msi_filename, wix_version, crate_name, target
     ));
     if let Some(ts) = rendered_mod_timestamp {
@@ -404,7 +404,7 @@ fn log_msi_dry_run(
         }
     }
     for ext in rendered_extensions {
-        log.status(&format!("(dry-run) would add WiX extension: -ext {ext}"));
+        log.status(&format!("(dry-run) would add WiX extension -ext {ext}"));
     }
 }
 

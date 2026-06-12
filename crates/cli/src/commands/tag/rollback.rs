@@ -482,7 +482,7 @@ fn check_not_irreversibly_published(
             burned.push((tag.clone(), names));
         } else {
             log.status(&format!(
-                "run summary for {tag}: no one-way-door publisher landed — rollback permitted"
+                "no one-way-door publisher landed for {tag} (per run summary) — rollback permitted"
             ));
         }
     }
@@ -634,8 +634,8 @@ fn check_no_published_releases(
             // `detect_github_repo_in` already redacts URL credentials in
             // its parse-failure message, so `e` is safe to surface.
             log.warn(&format!(
-                "published-release guard: origin is not a github.com remote ({e}); no \
-                 github.com release can exist there — skipping the release probe \
+                "skipping the published-release probe — origin is not a github.com \
+                 remote ({e}); no github.com release can exist there \
                  (run-summary evidence still applies)"
             ));
             return Ok(());

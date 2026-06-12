@@ -294,7 +294,7 @@ fn commit_plan(
         .unwrap_or_else(|| default_commit_message(rows));
 
     anodizer_core::git::commit_in(workspace_root, &message, opts.sign)?;
-    log.verbose(&format!("created commit: {}", message));
+    log.verbose(&format!("created commit \"{}\"", message));
     Ok(())
 }
 
@@ -379,7 +379,7 @@ fn enforce_version_pins(
         );
     }
     for v in &violations {
-        log.warn(&format!("version pin: {}", v));
+        log.warn(&format!("version pin violation — {}", v));
     }
     Ok(())
 }

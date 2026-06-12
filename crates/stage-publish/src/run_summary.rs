@@ -480,7 +480,11 @@ pub fn record_failure_policy(
 /// the stage never started (snapshot / `--skip=publish`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PublishDisposition {
-    /// Publish stages never started (snapshot mode / `--skip=publish`).
+    /// Publish stages never started — operator skip (snapshot mode /
+    /// `--skip=publish`), a stage set that excludes publish, or an
+    /// earlier stage failing before publish was reached. The context
+    /// pair cannot distinguish these, so the row wording stays neutral:
+    /// "did not run".
     Skipped,
     /// The publish stage started but aborted before dispatching any
     /// publisher (e.g. rerun refusal, runtime allowlist validation).
@@ -509,7 +513,7 @@ pub enum PublishDisposition {
 /// configuration read very differently to an operator:
 ///
 /// ```text
-/// • publishers   none ran (publish stages skipped)
+/// • publishers   none ran (publish stages did not run)
 /// • run flags    submitter_gated=false announce_gated=false
 /// ```
 pub fn status_table_rows(
@@ -547,7 +551,7 @@ pub fn status_table_rows(
         let why = match disposition {
             PublishDisposition::Ran => "none ran (no publishers configured)",
             PublishDisposition::Aborted => "none ran (publish stage aborted before dispatch)",
-            PublishDisposition::Skipped => "none ran (publish stages skipped)",
+            PublishDisposition::Skipped => "none ran (publish stages did not run)",
         };
         rows.push(("publishers".to_string(), why.to_string()));
     } else {
@@ -1125,7 +1129,7 @@ mod tests {
             vec![
                 (
                     "publishers".to_string(),
-                    "none ran (publish stages skipped)".to_string()
+                    "none ran (publish stages did not run)".to_string()
                 ),
                 (
                     "run flags".to_string(),

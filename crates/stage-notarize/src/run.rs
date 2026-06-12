@@ -28,7 +28,9 @@ pub(super) fn run_cross_platform(
         .should_skip(|s| ctx.render_template(s))
         .with_context(|| format!("notarize: macos[{idx}] evaluate skip expression"))?
     {
-        log.status(&format!("skipped macos[{idx}] (skip: true)"));
+        log.status(&format!(
+            "skipping macos[{idx}] — `skip` condition evaluated truthy"
+        ));
         return Ok(());
     }
 
@@ -191,7 +193,7 @@ pub(super) fn run_cross_platform(
 
         if dry_run {
             log.status(&format!(
-                "  [dry-run] would run: {}",
+                "(dry-run) would run: {}",
                 redact_args(&sign_args, log).join(" ")
             ));
         } else {
@@ -238,7 +240,7 @@ pub(super) fn run_cross_platform(
 
             if dry_run {
                 log.status(&format!(
-                    "  [dry-run] would run: {}",
+                    "(dry-run) would run: {}",
                     redact_args(&notarize_args, log).join(" ")
                 ));
             } else {
@@ -286,7 +288,9 @@ pub(super) fn run_native(
         .should_skip(|s| ctx.render_template(s))
         .with_context(|| format!("notarize: macos_native[{idx}] evaluate skip expression"))?
     {
-        log.status(&format!("skipped macos_native[{idx}] (skip: true)"));
+        log.status(&format!(
+            "skipping macos_native[{idx}] — `skip` condition evaluated truthy"
+        ));
         return Ok(());
     }
 
@@ -426,10 +430,7 @@ fn run_native_dmg(
         ));
 
         if dry_run {
-            log.status(&format!(
-                "  [dry-run] would run: {}",
-                codesign_args.join(" ")
-            ));
+            log.status(&format!("(dry-run) would run: {}", codesign_args.join(" ")));
         } else {
             let status = Command::new(&codesign_args[0])
                 .args(&codesign_args[1..])
@@ -512,10 +513,7 @@ fn run_native_dmg(
         ));
 
         if dry_run {
-            log.status(&format!(
-                "  [dry-run] would run: {}",
-                notarize_args.join(" ")
-            ));
+            log.status(&format!("(dry-run) would run: {}", notarize_args.join(" ")));
         } else {
             // M6: wrap notarytool submit in a 3-attempt 30s exponential
             // retry; the call talks directly to Apple-hosted services and a
@@ -624,7 +622,7 @@ fn run_native_pkg(
         log.status(&format!("signing {} with productsign", pkg.name()));
 
         if dry_run {
-            log.status(&format!("  [dry-run] would run: {}", sign_args.join(" ")));
+            log.status(&format!("(dry-run) would run: {}", sign_args.join(" ")));
         } else {
             let status = Command::new(&sign_args[0])
                 .args(&sign_args[1..])
@@ -676,10 +674,7 @@ fn run_native_pkg(
         ));
 
         if dry_run {
-            log.status(&format!(
-                "  [dry-run] would run: {}",
-                notarize_args.join(" ")
-            ));
+            log.status(&format!("(dry-run) would run: {}", notarize_args.join(" ")));
         } else {
             // M6: 3-attempt 30s exponential retry around the Apple-hosted
             // notarytool submit call.

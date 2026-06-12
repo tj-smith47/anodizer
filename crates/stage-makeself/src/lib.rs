@@ -735,7 +735,7 @@ fn build_makeself_platform_job(
 
     if dry_run {
         log.status(&format!(
-            "(dry-run) would create makeself package: {}",
+            "(dry-run) would create makeself package {}",
             filename
         ));
         return Ok(());

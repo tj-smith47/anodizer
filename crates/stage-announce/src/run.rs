@@ -917,4 +917,52 @@ mod summary_tests {
             "summary must be written even when AnnounceStage::run was skipped",
         );
     }
+
+    /// End-to-end abort-state pin: a REAL `PublishStage::run` that the
+    /// rerun guard refuses (prior `report.json` on disk for the same
+    /// run_id) must surface as the `aborted before dispatch` placeholder
+    /// row. This pins two things at once: the disposition derivation in
+    /// `emit_summary` AND that `set_publish_attempted()` fires BEFORE
+    /// the pre-dispatch guards — moving it below
+    /// `refuse_rerun_if_report_exists` (or deleting it) regresses the
+    /// row to the mislabeled "publish stages did not run".
+    #[test]
+    fn emit_summary_reports_abort_when_rerun_guard_refuses() {
+        use anodizer_core::log::LogCapture;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).expect("mkdir dist");
+        let mut ctx = anodizer_core::test_helpers::TestContextBuilder::new()
+            .tag("v1.0.0")
+            .dist(dist.clone())
+            .build();
+        // Prior run's report.json for the same run_id (the tag).
+        let run_dir = dist.join("run-v1.0.0");
+        std::fs::create_dir_all(&run_dir).expect("mkdir run dir");
+        std::fs::write(run_dir.join("report.json"), "{}").expect("seed report.json");
+
+        let capture = LogCapture::new();
+        ctx.with_log_capture(capture.clone());
+
+        let err = anodizer_stage_publish::PublishStage
+            .run(&mut ctx)
+            .expect_err("rerun guard must refuse with a prior report.json");
+        assert!(
+            err.to_string().contains("publish refusing to run"),
+            "abort must come from the rerun guard, not some other failure: {err:#}"
+        );
+        assert!(
+            ctx.publish_report().is_none(),
+            "a guard abort must not install a publish report"
+        );
+
+        emit_summary(&mut ctx);
+        let msgs: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+        assert!(
+            msgs.iter()
+                .any(|m| m == "publishers = none ran (publish stage aborted before dispatch)"),
+            "failure-path summary must name the abort cause; got {msgs:?}"
+        );
+    }
 }

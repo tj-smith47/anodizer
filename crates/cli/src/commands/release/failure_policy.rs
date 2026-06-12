@@ -118,7 +118,7 @@ pub(super) fn gather_burn_evidence(ctx: &Context, log: &StageLogger) -> BurnEvid
         {
             Ok(summary) => names.extend(summary.burned_submitter_names()),
             Err(e) => log.warn(&format!(
-                "failure policy: ignoring unreadable run summary {}: {e:#}",
+                "ignoring unreadable run summary {} for failure-policy evaluation: {e:#}",
                 path.display()
             )),
         }
@@ -267,7 +267,7 @@ fn record_outcome(ctx: &Context, record: &FailurePolicyRecord, log: &StageLogger
     summary.failure_policy = Some(record.clone());
     if let Err(e) = write_summary_json(&summary, &path) {
         log.warn(&format!(
-            "failure policy: could not write summary at {}: {e:#}",
+            "could not write failure-policy summary at {}: {e:#}",
             path.display()
         ));
     }

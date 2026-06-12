@@ -679,7 +679,7 @@ fn load_legacy_artifacts(
     }
 
     log.status(&format!(
-        "merge (legacy): loaded {} artifact(s) from {} file(s)",
+        "loaded {} artifact(s) from {} file(s) (legacy merge mode)",
         total_loaded,
         artifact_files.len()
     ));

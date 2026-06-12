@@ -15,6 +15,7 @@
 //! the sibling [`super::preserve`] module.
 
 use anodizer_core::DeterminismReport;
+use anodizer_core::log::StageLogger;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -305,6 +306,7 @@ pub(super) fn copy_artifacts_to_dump(
     worktree_path: &Path,
     paths: &[PathBuf],
     dump_root: &Path,
+    log: &StageLogger,
 ) -> Result<()> {
     let target_root = worktree_path.join(".det-tmp").join("target");
     for p in paths {
@@ -321,15 +323,12 @@ pub(super) fn copy_artifacts_to_dump(
                 .with_context(|| format!("creating dump parent {}", parent.display()))?;
         }
         if let Err(e) = std::fs::copy(p, &dest) {
-            eprintln!(
-                "{}",
-                anodizer_core::log::render_warning(&format!(
-                    "drift-bin dump failed for {} -> {}: {}",
-                    p.display(),
-                    dest.display(),
-                    e
-                ))
-            );
+            log.warn(&format!(
+                "drift-bin dump failed for {} -> {}: {}",
+                p.display(),
+                dest.display(),
+                e
+            ));
         }
     }
     Ok(())

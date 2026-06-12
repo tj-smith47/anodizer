@@ -516,7 +516,7 @@ impl Verbosity {
 ///     .with_env(env_pairs);                       // attach env for redact
 /// log.status("compiling for x86_64-unknown-linux-gnu");
 /// log.verbose(&format!("RUSTFLAGS={}", flags));
-/// log.debug(&format!("full env: {:?}", env));
+/// log.debug(&format!("full env = {:?}", env));
 /// ```
 #[derive(Clone)]
 pub struct StageLogger {

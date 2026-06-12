@@ -452,7 +452,7 @@ fn run_uploads(
                             String::from_utf8_lossy(&upload_output.stderr),
                         ));
                         if REVIEW_PENDING_STRINGS.iter().any(|s| combined.contains(s)) {
-                            log.warn(&format!("snap upload pending review: {}", combined.trim()));
+                            log.warn(&format!("snap upload pending review — {}", combined.trim()));
                             return Ok(());
                         }
 

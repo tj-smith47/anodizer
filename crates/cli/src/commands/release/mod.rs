@@ -758,7 +758,7 @@ fn map_head_tags_to_crates(
         log.verbose("no tags at HEAD — release no-op");
         return Ok(Vec::new());
     }
-    log.verbose(&format!("tags at HEAD: {}", head_tags.join(", ")));
+    log.verbose(&format!("tags at HEAD = {}", head_tags.join(", ")));
     Ok(select_crates_for_tags(&head_tags, all_known_crates, log))
 }
 
@@ -1379,7 +1379,7 @@ fn run_publisher_preflight(
     // Preflight probes publisher state ahead of a publish; an already-published
     // release has no pending one-way-door transitions to guard against.
     if opts.announce_only {
-        log.status("preflight skipped: --announce-only does not publish");
+        log.status("skipping preflight (--announce-only does not publish)");
         return Ok(false);
     }
     let should_run_preflight = should_run_preflight_auto(

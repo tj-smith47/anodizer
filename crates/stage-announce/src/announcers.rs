@@ -155,9 +155,13 @@ struct DispatchSink<'a> {
     key_width: usize,
 }
 
-/// Run a single announcer: skip when disabled, capture per-provider
-/// errors into the sink's `errors` vec, propagate `enabled:` template
-/// errors (matching the historical `?`-in-let-chain behavior).
+/// Run a single announcer, capturing per-provider errors into the
+/// sink's `errors` vec.
+///
+/// The caller guarantees `a` is enabled — [`enabled_announcers`]
+/// evaluates every `enabled:` template exactly once (and fails fast
+/// before any send when one is broken), so this function must not
+/// re-evaluate it.
 ///
 /// When the sink's `marker` is `Some`, the announce is idempotent across
 /// re-runs: an announcer already recorded for this version is skipped,
@@ -172,9 +176,6 @@ fn run_announcer(
     log: &StageLogger,
     sink: &mut DispatchSink<'_>,
 ) -> Result<()> {
-    if !a.enabled(ctx, announce)? {
-        return Ok(());
-    }
     // Idempotency gate: a re-run at an already-announced version must not
     // re-post to a channel that already fired.
     if let Some(ref m) = sink.marker
@@ -214,28 +215,30 @@ pub(crate) fn dispatch_all_announcers(
     errors: &mut Vec<String>,
     marker: Option<&mut crate::sent_marker::AnnounceSentMarker>,
 ) -> Result<()> {
-    let key_width = enabled_key_width(ctx, announce, None)?;
+    let active = enabled_announcers(ctx, announce, None)?;
     let mut sink = DispatchSink {
         errors,
         marker,
-        key_width,
+        key_width: shared_key_width(&active),
     };
-    for announcer in announcer_registry() {
-        run_announcer(*announcer, ctx, announce, retry_policy, log, &mut sink)?;
+    for announcer in active {
+        run_announcer(announcer, ctx, announce, retry_policy, log, &mut sink)?;
     }
 
     Ok(())
 }
 
-/// Widest `name()` among the announcers that will actually fire (enabled
-/// and, when a filter applies, not filtered out), so every provider kv
-/// row in one Announcing section pads to the same column.
-fn enabled_key_width(
+/// Resolve the announcers that will actually fire: apply the name
+/// filter (when given), then evaluate each `enabled:` template exactly
+/// once. A broken `enabled:` template aborts HERE, before any announcer
+/// sends — a half-dispatched section (earlier channels posted, later
+/// ones dead) is worse than failing fast with nothing sent.
+fn enabled_announcers(
     ctx: &mut Context,
     announce: &AnnounceConfig,
     filter: Option<&AnnounceFilter<'_>>,
-) -> Result<usize> {
-    let mut width = 0;
+) -> Result<Vec<&'static dyn Announcer>> {
+    let mut active: Vec<&'static dyn Announcer> = Vec::new();
     for announcer in announcer_registry() {
         let name = announcer.name();
         if let Some(f) = filter
@@ -244,10 +247,20 @@ fn enabled_key_width(
             continue;
         }
         if announcer.enabled(ctx, announce)? {
-            width = width.max(name.chars().count());
+            active.push(*announcer);
         }
     }
-    Ok(width)
+    Ok(active)
+}
+
+/// Widest `name()` among the announcers that will fire, so every
+/// provider kv row in one Announcing section pads to the same column.
+fn shared_key_width(active: &[&'static dyn Announcer]) -> usize {
+    active
+        .iter()
+        .map(|a| a.name().chars().count())
+        .max()
+        .unwrap_or(0)
 }
 
 /// Filter descriptor for [`dispatch_filtered_announcers`].
@@ -270,21 +283,14 @@ pub(crate) fn dispatch_filtered_announcers(
     marker: Option<&mut crate::sent_marker::AnnounceSentMarker>,
     filter: AnnounceFilter<'_>,
 ) -> Result<()> {
-    let key_width = enabled_key_width(ctx, announce, Some(&filter))?;
+    let active = enabled_announcers(ctx, announce, Some(&filter))?;
     let mut sink = DispatchSink {
         errors,
         marker,
-        key_width,
+        key_width: shared_key_width(&active),
     };
-    for announcer in announcer_registry() {
-        let name = announcer.name();
-        if filter.include.is_some_and(|inc| !inc.contains(&name)) {
-            continue;
-        }
-        if filter.skip.contains(&name) {
-            continue;
-        }
-        run_announcer(*announcer, ctx, announce, retry_policy, log, &mut sink)?;
+    for announcer in active {
+        run_announcer(announcer, ctx, announce, retry_policy, log, &mut sink)?;
     }
     Ok(())
 }
@@ -1840,9 +1846,11 @@ mod tests {
     // ------------------------------------------------------------------
 
     #[test]
-    fn run_announcer_skips_when_disabled() {
+    fn dispatch_loop_never_sends_for_disabled_announcer() {
         // A disabled announcer with a bogus URL must never reach `send`
-        // (no panic from the `.invalid` host, no error collected).
+        // (no panic from the unroutable host, no error collected). The
+        // enabled gate lives in `enabled_announcers` (evaluated once per
+        // dispatch), so the pin drives the real dispatch loop.
         let announce = AnnounceConfig {
             slack: Some(SlackAnnounce {
                 enabled: Some(StringOrBool::Bool(false)),
@@ -1854,20 +1862,88 @@ mod tests {
         let mut ctx = live_ctx(announce.clone(), &[]);
         let log = ctx.logger("announce");
         let mut errors = vec![];
-        run_announcer(
-            &SlackAnnouncer,
+        dispatch_all_announcers(&mut ctx, &announce, &no_retry(), &log, &mut errors, None).unwrap();
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+
+    #[test]
+    fn enabled_announcers_respect_include_and_skip_filters() {
+        // Two enabled providers; the filter narrows which ones fire and
+        // therefore which names the shared kv pad width is computed from.
+        let announce = AnnounceConfig {
+            slack: Some(SlackAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                webhook_url: Some("http://127.0.0.1:1/never".to_string()),
+                ..Default::default()
+            }),
+            telegram: Some(TelegramAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+
+        let all = enabled_announcers(&mut ctx, &announce, None).unwrap();
+        let names: Vec<&str> = all.iter().map(|a| a.name()).collect();
+        assert_eq!(names, vec!["slack", "telegram"], "registry order");
+        assert_eq!(shared_key_width(&all), "telegram".len());
+
+        let only_slack = enabled_announcers(
             &mut ctx,
             &announce,
-            &no_retry(),
-            &log,
-            &mut DispatchSink {
-                errors: &mut errors,
-                marker: None,
-                key_width: 0,
-            },
+            Some(&AnnounceFilter {
+                include: Some(&["slack"]),
+                skip: &[],
+            }),
         )
         .unwrap();
-        assert!(errors.is_empty(), "{errors:?}");
+        assert_eq!(only_slack.len(), 1);
+        assert_eq!(only_slack[0].name(), "slack");
+        assert_eq!(shared_key_width(&only_slack), "slack".len());
+
+        let skip_slack = enabled_announcers(
+            &mut ctx,
+            &announce,
+            Some(&AnnounceFilter {
+                include: None,
+                skip: &["slack"],
+            }),
+        )
+        .unwrap();
+        assert_eq!(skip_slack.len(), 1);
+        assert_eq!(skip_slack[0].name(), "telegram");
+    }
+
+    #[test]
+    fn enabled_template_error_aborts_before_any_send() {
+        // Discord registers BEFORE slack in the dispatch order. With the
+        // single up-front `enabled:` evaluation, slack's broken template
+        // must abort the whole dispatch before discord attempts its send
+        // — a half-dispatched section would otherwise leave earlier
+        // channels posted and later ones dead. An attempted discord send
+        // would have pushed a per-provider entry into `errors`.
+        let announce = AnnounceConfig {
+            discord: Some(DiscordAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                ..Default::default()
+            }),
+            slack: Some(SlackAnnounce {
+                enabled: Some(StringOrBool::String("{{ NoSuchVar }}".to_string())),
+                webhook_url: Some("http://127.0.0.1:1/never".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = live_ctx(announce.clone(), &[]);
+        let log = ctx.logger("announce");
+        let mut errors = vec![];
+        dispatch_all_announcers(&mut ctx, &announce, &no_retry(), &log, &mut errors, None)
+            .expect_err("broken enabled: template must abort dispatch");
+        assert!(
+            errors.is_empty(),
+            "no announcer may have attempted a send before the abort: {errors:?}"
+        );
     }
 
     #[test]
@@ -2019,7 +2095,7 @@ mod tests {
     }
 
     #[test]
-    fn run_announcer_propagates_enabled_template_error() {
+    fn enabled_announcers_propagate_enabled_template_error() {
         let announce = AnnounceConfig {
             slack: Some(SlackAnnounce {
                 enabled: Some(StringOrBool::String("{{ NoSuchVar }}".to_string())),
@@ -2029,26 +2105,9 @@ mod tests {
             ..Default::default()
         };
         let mut ctx = live_ctx(announce.clone(), &[]);
-        let log = ctx.logger("announce");
-        let mut errors = vec![];
-        // enabled() errors must bubble up as the function's Err, not be
-        // collected into the per-provider errors vec.
-        assert!(
-            run_announcer(
-                &SlackAnnouncer,
-                &mut ctx,
-                &announce,
-                &no_retry(),
-                &log,
-                &mut DispatchSink {
-                    errors: &mut errors,
-                    marker: None,
-                    key_width: 0,
-                },
-            )
-            .is_err()
-        );
-        assert!(errors.is_empty(), "{errors:?}");
+        // enabled() errors must bubble up as the resolver's Err, not be
+        // swallowed into an empty active set.
+        assert!(enabled_announcers(&mut ctx, &announce, None).is_err());
     }
 
     #[test]

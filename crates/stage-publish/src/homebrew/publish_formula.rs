@@ -458,7 +458,7 @@ pub(crate) fn render_same_tap_cask_for_crate(
     };
     if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "homebrew cask: skipping upload for '{}' (skip_upload={})",
+            "skipping homebrew cask upload for '{}' (skip_upload={})",
             crate_name,
             cask_cfg
                 .skip_upload

@@ -314,8 +314,8 @@ fn handle_github_native_changelog(
         // would be noise that pushes them to add a `skip: [changelog]`
         // toggle just to silence it.
         log.verbose(
-            "changelog: use=github-native — no crate in scope has \
-             release.github; skipping (library workspace)",
+            "skipping changelog — use=github-native and no crate in scope has \
+             release.github (library workspace)",
         );
         return Ok(());
     }

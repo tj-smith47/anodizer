@@ -215,7 +215,7 @@ pub(super) fn run_per_crate(
     crate_order: Vec<String>,
 ) -> Result<()> {
     log.status(&format!(
-        "publish-only (per-crate): iterating {} crate(s): {}",
+        "iterating {} crate(s) in per-crate publish-only mode — {}",
         crate_order.len(),
         crate_order.join(", ")
     ));
@@ -301,6 +301,14 @@ pub(super) fn run_per_crate(
         // from a prior crate's pipeline don't leak into the next one's
         // sign/upload.
         ctx.artifacts = ArtifactRegistry::new();
+        // Reset the prior iteration's publish outcome: each crate's
+        // pipeline-end summary and required-failure gate must reflect
+        // THIS crate only. A leftover report would render crate A's
+        // publisher rows under crate B's Summary (and re-gate crate A's
+        // failures), and a leftover publish_attempted would mislabel a
+        // skipped publish as "aborted before dispatch".
+        ctx.publish_report = None;
+        ctx.publish_attempted = false;
         // Reset skip_stages to the original baseline before re-applying
         // the workspace overlay so a skip from a prior iteration's
         // workspace doesn't leak forward.
@@ -2433,6 +2441,51 @@ mod tests {
             ctx.config.dist, original_dist,
             "ctx.config.dist must be restored after the iteration (Ok or Err) \
              so the per-iteration override never leaks into the caller's context"
+        );
+    }
+
+    /// Each per-crate iteration owns its publish outcome: a leftover
+    /// `publish_report` / `publish_attempted` from a prior iteration (or
+    /// an outer run) would render the wrong publisher rows under the
+    /// next crate's Summary, re-gate the prior crate's failures, and
+    /// mislabel a skipped publish as "aborted before dispatch". The loop
+    /// must clear both at iteration top — pinned here by pre-seeding
+    /// stale values and observing them gone after the first iteration
+    /// (which fails fast on the absent dist, BEFORE any publish runs).
+    #[test]
+    fn run_per_crate_resets_publish_outcome_each_iteration() {
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::publish_report::PublishReport;
+
+        let config = Config::default();
+        let mut ctx = Context::new(config.clone(), ContextOptions::default());
+        ctx.set_publish_report(PublishReport::default());
+        ctx.set_publish_attempted();
+
+        let dist_base =
+            std::path::PathBuf::from("/tmp/anodize-publish-only-reset-test/nonexistent-dist-base");
+        let log = anodizer_core::log::StageLogger::new(
+            "publish-only-reset-test",
+            anodizer_core::log::Verbosity::Quiet,
+        );
+        let opts = RunOpts { dry_run: true };
+        let result = run_per_crate(
+            &mut ctx,
+            &config,
+            &log,
+            opts,
+            dist_base,
+            vec!["cfgd".to_string()],
+        );
+        assert!(result.is_err(), "absent dist_base must fail the iteration");
+        assert!(
+            ctx.publish_report().is_none(),
+            "stale publish_report must be cleared at iteration top"
+        );
+        assert!(
+            !ctx.publish_attempted(),
+            "stale publish_attempted must be cleared at iteration top"
         );
     }
 

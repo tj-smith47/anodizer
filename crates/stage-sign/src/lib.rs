@@ -157,7 +157,7 @@ impl Stage for DockerSignStage {
 
                 if docker_filter == "none" {
                     log.verbose(&format!(
-                        "skipping docker-sign config '{}': artifacts: none",
+                        "skipping docker-sign config '{}' — `artifacts: none`",
                         sign_id
                     ));
                     ctx.remember_skip("docker-sign", sign_id, "artifacts: none");
@@ -215,10 +215,10 @@ impl Stage for DockerSignStage {
                     image_paths.len(),
                 ) {
                     log.warn(&format!(
-                        "docker-sign config '{}': ids filter {:?} matched no docker \
+                        "ids filter {:?} on docker-sign config '{}' matched no docker \
                          artifacts — this config will sign NOTHING",
-                        sign_id,
-                        docker_sign_cfg.ids.as_deref().unwrap_or(&[])
+                        docker_sign_cfg.ids.as_deref().unwrap_or(&[]),
+                        sign_id
                     ));
                 }
 

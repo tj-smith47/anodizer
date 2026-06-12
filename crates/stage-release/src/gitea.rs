@@ -846,7 +846,7 @@ pub(crate) fn run_gitea_backend(
                 let file_name = result
                     .context("gitea: upload task panicked")?
                     .context("gitea: upload task failed")?;
-                log.verbose(&format!("uploaded artifact: {}", file_name));
+                log.verbose(&format!("uploaded artifact {}", file_name));
             }
         }
 

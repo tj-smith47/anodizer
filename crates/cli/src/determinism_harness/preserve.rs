@@ -22,6 +22,7 @@
 //! reason about as an integration boundary with the publish-only path.
 
 use anodizer_core::DeterminismReport;
+use anodizer_core::log::StageLogger;
 use anyhow::{Context, Result};
 use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
@@ -275,7 +276,11 @@ pub(crate) const PRESERVED_BIN_SUBDIR: &str = "_preserved-bin";
 /// rename with a sharing violation; in production the harness loop
 /// runs single-threaded against `dest` before the publish-only path
 /// touches it, so this is safe.
-pub(super) fn preserve_raw_binaries(worktree_path: &Path, dest: &Path) -> Result<()> {
+pub(super) fn preserve_raw_binaries(
+    worktree_path: &Path,
+    dest: &Path,
+    log: &StageLogger,
+) -> Result<()> {
     let manifest_path = dest.join("artifacts.json");
     let bytes = match std::fs::read(&manifest_path) {
         Ok(b) => b,
@@ -292,14 +297,11 @@ pub(super) fn preserve_raw_binaries(worktree_path: &Path, dest: &Path) -> Result
     let mut manifest: serde_json::Value = match serde_json::from_slice(&bytes) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!(
-                "{}",
-                anodizer_core::log::render_warning(&format!(
-                    "preserved-dist {} present but malformed ({}); skipping raw-binary preservation",
-                    manifest_path.display(),
-                    e
-                ))
-            );
+            log.warn(&format!(
+                "preserved-dist {} present but malformed ({}); skipping raw-binary preservation",
+                manifest_path.display(),
+                e
+            ));
             return Ok(());
         }
     };
@@ -481,14 +483,18 @@ pub(super) struct ContextInputs<'a> {
 /// Write is atomic via stage-to-`.tmp` + rename so a mid-write SIGKILL
 /// never leaves a truncated `context.json` for a downstream reader to
 /// silently mis-deserialize.
-pub(super) fn write_preserved_dist_context(dest: &Path, inputs: ContextInputs<'_>) -> Result<()> {
+pub(super) fn write_preserved_dist_context(
+    dest: &Path,
+    inputs: ContextInputs<'_>,
+    log: &StageLogger,
+) -> Result<()> {
     let report = inputs.report;
 
     // ── dist/artifacts.json: rich per-artifact metadata ──────────────
     // Optional + tolerant of corruption — fall back to defaults so a
     // malformed sibling JSON can't kill the manifest write.
     let artifacts_json: Option<serde_json::Value> =
-        read_optional_json(&dest.join("artifacts.json"));
+        read_optional_json(&dest.join("artifacts.json"), log);
     let mut targets: Vec<String> = artifacts_json
         .as_ref()
         .and_then(|v| v.as_array())
@@ -521,7 +527,7 @@ pub(super) fn write_preserved_dist_context(dest: &Path, inputs: ContextInputs<'_
     }
 
     // ── dist/metadata.json: { project_name, tag, version, commit } ───
-    let version: String = match read_optional_json(&dest.join("metadata.json")) {
+    let version: String = match read_optional_json(&dest.join("metadata.json"), log) {
         Some(v) => v
             .get("version")
             .and_then(|s| s.as_str())
@@ -585,34 +591,28 @@ pub(super) fn write_preserved_dist_context(dest: &Path, inputs: ContextInputs<'_
 /// Drops `Path::exists()` in favor of match-on-`NotFound` to avoid the
 /// TOCTOU race where another process deletes the file between the
 /// `exists()` check and the `read`.
-fn read_optional_json(path: &Path) -> Option<serde_json::Value> {
+fn read_optional_json(path: &Path, log: &StageLogger) -> Option<serde_json::Value> {
     match std::fs::read(path) {
         Ok(bytes) => match serde_json::from_slice::<serde_json::Value>(&bytes) {
             Ok(v) => Some(v),
             Err(e) => {
-                eprintln!(
-                    "{}",
-                    anodizer_core::log::render_warning(&format!(
-                        "preserved-dist {} present but malformed ({}); \
-                         proceeding with harness-supplied defaults",
-                        path.display(),
-                        e
-                    ))
-                );
+                log.warn(&format!(
+                    "preserved-dist {} present but malformed ({}); \
+                     proceeding with harness-supplied defaults",
+                    path.display(),
+                    e
+                ));
                 None
             }
         },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
-            eprintln!(
-                "{}",
-                anodizer_core::log::render_warning(&format!(
-                    "preserved-dist {} unreadable ({}); proceeding with \
-                     harness-supplied defaults",
-                    path.display(),
-                    e
-                ))
-            );
+            log.warn(&format!(
+                "preserved-dist {} unreadable ({}); proceeding with \
+                 harness-supplied defaults",
+                path.display(),
+                e
+            ));
             None
         }
     }
@@ -720,25 +720,26 @@ fn hash_file_streaming(path: &Path) -> Result<(String, u64)> {
 /// tree never blocks the determinism report from landing. The
 /// determinism check's exit code already encodes the drift; an
 /// operator who needs to investigate can `rm -rf` the path manually.
-pub(super) fn remove_preserved_on_drift(dest: &Path) {
+pub(super) fn remove_preserved_on_drift(dest: &Path, log: &StageLogger) {
     match std::fs::remove_dir_all(dest) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => {
-            eprintln!(
-                "{}",
-                anodizer_core::log::render_warning(&format!(
-                    "failed to remove preserved-dist `{}` after drift detection: {}",
-                    dest.display(),
-                    e
-                ))
-            );
+            log.warn(&format!(
+                "failed to remove preserved-dist `{}` after drift detection: {}",
+                dest.display(),
+                e
+            ));
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    fn test_log() -> StageLogger {
+        StageLogger::new("check-determinism", anodizer_core::log::Verbosity::Normal)
+    }
+
     use super::*;
     use anodizer_core::{ArtifactRow, DeterminismReport};
     use tempfile::TempDir;
@@ -803,6 +804,7 @@ mod tests {
                 harness_targets: None,
                 version_hint: "",
             },
+            &test_log(),
         )
         .expect("write_preserved_dist_context");
 
@@ -842,6 +844,7 @@ mod tests {
                 harness_targets: Some(&harness_targets),
                 version_hint: "0.0.0-fixture",
             },
+            &test_log(),
         )
         .unwrap();
         let ctx: PreservedDistContext =
@@ -880,6 +883,7 @@ mod tests {
                 harness_targets: Some(&harness_targets),
                 version_hint: "1.2.3-snapshot",
             },
+            &test_log(),
         )
         .expect("malformed sibling JSON must not abort the manifest write");
         let ctx: PreservedDistContext =
@@ -904,6 +908,7 @@ mod tests {
                 harness_targets: None,
                 version_hint: "",
             },
+            &test_log(),
         )
         .unwrap();
         assert!(dest.join("context.json").exists());
@@ -942,6 +947,7 @@ mod tests {
                 harness_targets: None,
                 version_hint: "0.0.0-fixture",
             },
+            &test_log(),
         )
         .unwrap();
         let ctx: PreservedDistContext =
@@ -993,7 +999,7 @@ mod tests {
         )
         .unwrap();
 
-        preserve_raw_binaries(worktree.path(), dest.path())
+        preserve_raw_binaries(worktree.path(), dest.path(), &test_log())
             .expect("preserve_raw_binaries must succeed");
 
         let copied = dest
@@ -1062,7 +1068,7 @@ mod tests {
         )
         .unwrap();
 
-        preserve_raw_binaries(worktree.path(), dest.path()).unwrap();
+        preserve_raw_binaries(worktree.path(), dest.path(), &test_log()).unwrap();
 
         let manifest: serde_json::Value =
             serde_json::from_slice(&std::fs::read(dest.path().join("artifacts.json")).unwrap())
@@ -1089,7 +1095,7 @@ mod tests {
     fn preserve_raw_binaries_no_op_when_manifest_absent() {
         let worktree = TempDir::new().unwrap();
         let dest = TempDir::new().unwrap();
-        preserve_raw_binaries(worktree.path(), dest.path())
+        preserve_raw_binaries(worktree.path(), dest.path(), &test_log())
             .expect("missing artifacts.json must not error");
     }
 
@@ -1137,7 +1143,7 @@ mod tests {
         )
         .unwrap();
 
-        let err = preserve_raw_binaries(worktree.path(), dest.path())
+        let err = preserve_raw_binaries(worktree.path(), dest.path(), &test_log())
             .expect_err("collision must bail")
             .to_string();
         assert!(
@@ -1187,7 +1193,7 @@ mod tests {
         )
         .unwrap();
 
-        preserve_raw_binaries(worktree.path(), dest.path())
+        preserve_raw_binaries(worktree.path(), dest.path(), &test_log())
             .expect("preserve must succeed even with only a UniversalBinary entry");
 
         let manifest: serde_json::Value =
@@ -1254,7 +1260,7 @@ mod tests {
         )
         .unwrap();
 
-        preserve_raw_binaries(worktree.path(), dest.path())
+        preserve_raw_binaries(worktree.path(), dest.path(), &test_log())
             .expect("preserve_raw_binaries must accept all extended kinds");
 
         let manifest: serde_json::Value =
@@ -1417,6 +1423,7 @@ mod tests {
                 harness_targets: None,
                 version_hint: "0.0.0-fixture",
             },
+            &test_log(),
         )
         .expect("write_preserved_dist_context");
 
@@ -1490,6 +1497,7 @@ mod tests {
                 harness_targets: None,
                 version_hint: "1.0.0",
             },
+            &test_log(),
         )
         .expect("write_preserved_dist_context into subdir");
 
@@ -1525,6 +1533,7 @@ mod tests {
                 harness_targets: None,
                 version_hint: "2.0.0",
             },
+            &test_log(),
         )
         .expect("write_preserved_dist_context at flat root");
 

@@ -635,10 +635,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
     std::fs::write(&manifest_path, &manifest)
         .with_context(|| format!("scoop: write manifest {}", manifest_path.display()))?;
 
-    log.status(&format!(
-        "wrote Scoop manifest: {}",
-        manifest_path.display()
-    ));
+    log.status(&format!("wrote Scoop manifest {}", manifest_path.display()));
 
     let scoop_default = "Scoop update for {{ ProjectName }} version {{ Tag }}";
     let commit_msg = crate::homebrew::render_commit_msg(

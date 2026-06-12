@@ -497,7 +497,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
         } else {
             format!("{}{}", cfg.tag_prefix, custom)
         };
-        log.verbose(&format!("using custom tag: {}", new_tag));
+        log.verbose(&format!("using custom tag {}", new_tag));
         let prev_for_custom = find_previous_tag(&cfg, git_config.as_ref()).ok().flatten();
         create_tag(
             &new_tag,
@@ -544,7 +544,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
     let prev_tag = find_previous_tag(&cfg, git_config.as_ref())?;
 
     log.verbose(&format!(
-        "previous tag: {}",
+        "previous tag = {}",
         prev_tag.as_deref().unwrap_or("(none)")
     ));
 
@@ -593,7 +593,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
 
     // Detect bump (with pre-major demotion applied to inferred bumps).
     let bump = detect_bump_demoted(&messages, &cfg, prev_tag.as_deref());
-    log.verbose(&format!("detected bump: {:?}", bump));
+    log.verbose(&format!("detected bump {:?}", bump));
 
     // The current manifest version for this tagging unit: the workspace
     // `[workspace.package].version` in lockstep mode, else the version-synced

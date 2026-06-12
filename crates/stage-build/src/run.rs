@@ -439,7 +439,7 @@ fn plan_build_jobs(
                             anodizer_core::partial::find_runtime_target(single, &original)
                     {
                         log.verbose(&format!(
-                            "--single-target: host '{}' matched configured target '{}' via alias table",
+                            "host '{}' matched configured target '{}' via alias table (--single-target)",
                             single, matched
                         ));
                         targets.push(matched);
@@ -915,7 +915,7 @@ fn plan_prebuilt_build(
             && let Some(matched) = anodizer_core::partial::find_runtime_target(single, &original)
         {
             log.verbose(&format!(
-                "--single-target: host '{}' matched configured prebuilt target '{}' via alias table",
+                "host '{}' matched configured prebuilt target '{}' via alias table (--single-target)",
                 single, matched
             ));
             targets.push(matched);

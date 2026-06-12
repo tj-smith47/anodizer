@@ -228,7 +228,7 @@ pub(crate) fn process_sign_configs(
 
         if config_filter == "none" {
             log.verbose(&format!(
-                "skipping {} config '{}': artifacts: none",
+                "skipping {} config '{}' — `artifacts: none`",
                 label, sub_label
             ));
             ctx.remember_skip(label, &sub_label, "artifacts: none");
@@ -294,11 +294,11 @@ pub(crate) fn process_sign_configs(
             artifact_paths.len(),
         ) {
             log.warn(&format!(
-                "{} config '{}': ids filter {:?} matched no artifacts — \
+                "ids filter {:?} on {} config '{}' matched no artifacts — \
                  this config will sign NOTHING",
+                sign_cfg.ids.as_deref().unwrap_or(&[]),
                 label,
-                sub_label,
-                sign_cfg.ids.as_deref().unwrap_or(&[])
+                sub_label
             ));
         }
 

@@ -407,7 +407,7 @@ fn verify_one_crate(
             match smoke::run_smoke(&job) {
                 Ok(SmokeOutcome::Passed) => {
                     log.verbose(&format!(
-                        "crate '{}' smoke OK: {name} on {image}",
+                        "crate '{}' smoke passed ({name} on {image})",
                         crate_cfg.name
                     ));
                 }

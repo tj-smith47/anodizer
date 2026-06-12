@@ -953,13 +953,13 @@ fn handle_dry_run(
         for (path, custom_name) in s.artifact_entries {
             if let Some(name) = custom_name {
                 log.status(&format!(
-                    "(dry-run)   would upload artifact: {} (as '{}')",
+                    "(dry-run)   would upload artifact {} (as '{}')",
                     path.display(),
                     name,
                 ));
             } else {
                 log.status(&format!(
-                    "(dry-run)   would upload artifact: {}",
+                    "(dry-run)   would upload artifact {}",
                     path.display()
                 ));
             }

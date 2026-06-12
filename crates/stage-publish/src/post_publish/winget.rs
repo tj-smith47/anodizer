@@ -108,14 +108,14 @@ pub fn poll(
         match verdict {
             PrVerdict::Approved(detail) => {
                 log.status(&format!(
-                    "winget PR: {} {} approved ({})",
+                    "winget PR for {} {} approved ({})",
                     package_identifier, version, detail
                 ));
                 return PostPublishStatus::Approved { detail };
             }
             PrVerdict::Rejected(detail) => {
                 log.status(&format!(
-                    "winget PR: {} {} rejected ({})",
+                    "winget PR for {} {} rejected ({})",
                     package_identifier, version, detail
                 ));
                 return PostPublishStatus::Rejected { detail };
@@ -133,7 +133,7 @@ pub fn poll(
                 ever_found = true;
                 last_pending_detail = Some(detail.clone());
                 log.verbose(&format!(
-                    "winget PR: {} {} pending — {}",
+                    "winget PR for {} {} pending — {}",
                     package_identifier, version, detail
                 ));
             }
@@ -148,18 +148,18 @@ pub fn poll(
                          from search — PR may have been closed or deleted",
                         package_identifier, version
                     );
-                    log.warn(&format!("winget PR: {}", reason));
+                    log.warn(&format!("winget {}", reason));
                     return PostPublishStatus::Error { reason };
                 }
                 last_pending_detail = Some("no matching PR found yet".to_string());
                 log.verbose(&format!(
-                    "winget PR: no PR matching '{} {}' visible yet",
+                    "no winget PR matching '{} {}' visible yet",
                     package_identifier, version
                 ));
             }
             PrVerdict::NetworkError(msg) => {
                 last_pending_detail = Some(format!("transient network error: {}", msg));
-                log.verbose(&format!("winget PR: transient error: {}", msg));
+                log.verbose(&format!("winget PR poll transient error: {}", msg));
                 // Force re-search on next iteration in case the PR URL went stale.
                 pr_url = None;
             }
@@ -177,7 +177,7 @@ pub fn poll(
             // budget. Log verbose only; the Timeout return variant
             // still surfaces to the release summary for follow-up.
             log.verbose(&format!(
-                "winget PR: {} {} poll budget elapsed after {:?} (last state: {})",
+                "winget PR poll budget for {} {} elapsed after {:?} (last state: {})",
                 package_identifier, version, total_budget, last_state
             ));
             return PostPublishStatus::timeout(last_state, started.elapsed());

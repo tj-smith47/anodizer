@@ -458,12 +458,12 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
     if skip_via_cli {
         if skipped.is_empty() {
             log.verbose(
-                "post-publish polling: skipped via --no-post-publish-poll (no eligible publishers)",
+                "skipping post-publish polling (--no-post-publish-poll; no eligible publishers)",
             );
             return;
         }
         log.verbose(&format!(
-            "post-publish polling: skipped via --no-post-publish-poll ({} publisher(s) recorded as NotPolled)",
+            "skipping post-publish polling (--no-post-publish-poll; {} publisher(s) recorded as NotPolled)",
             skipped.len()
         ));
         let not_polled: Vec<post_publish::PostPublishResult> = skipped
@@ -489,22 +489,22 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
     }
 
     if jobs.is_empty() {
-        log.verbose("post-publish polling: no eligible publishers");
+        log.verbose("no eligible publishers for post-publish polling");
         return;
     }
     log.status(&format!(
-        "post-publish polling: starting {} parallel poller(s)",
+        "starting {} parallel post-publish poller(s)",
         jobs.len()
     ));
     let results = post_publish::run_post_publish_polls(jobs, log);
     for r in &results {
         match &r.status {
             post_publish::PostPublishStatus::Approved { detail } => log.status(&format!(
-                "post-publish {} {} {} approved: {}",
+                "post-publish {} {} {} approved — {}",
                 r.publisher, r.package, r.version, detail
             )),
             post_publish::PostPublishStatus::Rejected { detail } => log.warn(&format!(
-                "post-publish {} {} {} rejected: {}",
+                "post-publish {} {} {} rejected — {}",
                 r.publisher, r.package, r.version, detail
             )),
             post_publish::PostPublishStatus::Timeout { last_state, .. } => log.warn(&format!(

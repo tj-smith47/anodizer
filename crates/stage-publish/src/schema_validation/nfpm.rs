@@ -229,7 +229,7 @@ fn validate_built_packages(
                     findings.extend(check_deb_control(path, &expected)?);
                 } else {
                     log.verbose(
-                        "nfpm: dpkg-deb not on PATH; relying on the nfpm config schema floor \
+                        "dpkg-deb not on PATH — relying on the nfpm config schema floor \
                          for .deb validation",
                     );
                 }
@@ -239,7 +239,7 @@ fn validate_built_packages(
                     findings.extend(check_rpm_control(path, &expected)?);
                 } else {
                     log.verbose(
-                        "nfpm: rpm not on PATH; relying on the nfpm config schema floor \
+                        "rpm not on PATH — relying on the nfpm config schema floor \
                          for .rpm validation",
                     );
                 }

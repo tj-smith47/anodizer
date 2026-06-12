@@ -365,7 +365,7 @@ pub(crate) fn run_github_backend(
             } else {
                 retouch_live = true;
                 log.status(&format!(
-                    "release already live: {} (id={}, mode={})",
+                    "release '{}' already live (id={}, mode={})",
                     release_name, existing.id, release_mode
                 ));
             }
@@ -560,7 +560,7 @@ pub(crate) fn run_github_backend(
             while let Some(result) = join_set.join_next().await {
                 match result {
                     Ok(Ok(file_name)) => {
-                        log.verbose(&format!("uploaded artifact: {}", file_name));
+                        log.verbose(&format!("uploaded artifact {}", file_name));
                     }
                     Ok(Err(e)) => return Err(e),
                     Err(join_err) => {
@@ -663,7 +663,7 @@ pub(crate) fn run_github_backend(
             let to_prune = nightly_releases_to_prune(&existing, keep_last, release_id_raw);
             for (rel_id, rel_tag) in to_prune {
                 log.status(&format!(
-                    "nightly retention (keep_last={keep_last}): deleting prior release '{release_name}' (id={rel_id}, tag='{rel_tag}')"
+                    "deleting prior release '{release_name}' (id={rel_id}, tag='{rel_tag}') for nightly retention (keep_last={keep_last})"
                 ));
                 let delete_result = retry_octocrab_call(&policy, "delete release (retention)", Some(&retry_after_capture), || {
                     let octo = octo.clone();
@@ -683,7 +683,7 @@ pub(crate) fn run_github_backend(
                         // A concurrent process already removed the release; the
                         // post-condition (release gone) is satisfied.
                         log.status(&format!(
-                            "nightly retention: release '{release_name}' (id={rel_id}) already deleted by concurrent process"
+                            "prior release '{release_name}' (id={rel_id}) already deleted by a concurrent process (nightly retention)"
                         ));
                     }
                     Err(err) => {
@@ -720,7 +720,7 @@ pub(crate) fn run_github_backend(
                             // user-visible artifact) is already gone. Warn and
                             // continue rather than abort the whole publish.
                             log.warn(&format!(
-                                "nightly retention: failed to delete stale tag '{rel_tag}' on {}/{}: {err}",
+                                "failed to delete stale tag '{rel_tag}' on {}/{} during nightly retention: {err}",
                                 github.owner, github.name
                             ));
                         }
@@ -1698,7 +1698,9 @@ mod orchestrator_tests {
 
         let messages: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
         assert!(
-            messages.iter().any(|m| m.contains("release already live")),
+            messages
+                .iter()
+                .any(|m| m == "release 'v1.2.3' already live (id=77, mode=keep-existing)"),
             "re-touch of a live release must log the concise already-live line; got: {messages:?}"
         );
         assert!(

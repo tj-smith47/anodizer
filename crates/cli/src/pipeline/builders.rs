@@ -887,7 +887,7 @@ mod tests {
         );
     }
 
-    /// Dry-run shape: the hook runner logs `[dry-run] before-publish hook: ...`
+    /// Dry-run shape: the hook runner logs `(dry-run) would run before-publish hook ...`
     /// instead of spawning the subprocess. Verified by asking the stage to
     /// run with a `exit 1` hook under dry-run; if the subprocess actually
     /// fired the pipeline would Err.
