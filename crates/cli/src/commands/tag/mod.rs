@@ -231,7 +231,9 @@ pub fn run(opts: TagOpts) -> Result<()> {
     let mut version_sync_enabled = false;
     let mut crate_version_files: Vec<String> = Vec::new();
     if let Some(ref crate_name) = opts.crate_name
-        && let Some(info) = load_crate_tag_info(&opts, &workspace_root_path, crate_name)
+        && let Some(info) = loaded_config
+            .as_ref()
+            .and_then(|c| load_crate_tag_info(c, crate_name))
     {
         cfg.tag_prefix = info.tag_prefix;
         crate_path = Some(info.path);
@@ -1962,9 +1964,15 @@ struct CrateTagInfo {
 /// When `--crate` is specified, look up the crate in top-level crates and
 /// workspace crates.  Returns the tag prefix (from `tag_template`) and the
 /// crate's `path` so change detection can be scoped to that directory.
-fn load_crate_tag_info(opts: &TagOpts, root: &Path, crate_name: &str) -> Option<CrateTagInfo> {
-    let config = load_config_at(opts, root)?;
-
+///
+/// Takes the command's single shared config load rather than re-loading:
+/// every `load_config_at` re-emits the static config-load warnings
+/// (moderation queue, legacy aliases), so a second load doubled them on
+/// the `--crate` path.
+fn load_crate_tag_info(
+    config: &anodizer_core::config::Config,
+    crate_name: &str,
+) -> Option<CrateTagInfo> {
     // Search top-level crates first, then workspace crates.
     let crate_cfg = config
         .crates
@@ -1986,7 +1994,7 @@ fn load_crate_tag_info(opts: &TagOpts, root: &Path, crate_name: &str) -> Option<
         .as_ref()
         .and_then(|vs| vs.enabled)
         .unwrap_or(false);
-    let version_files = resolve_version_files(Some(crate_cfg), Some(&config));
+    let version_files = resolve_version_files(Some(crate_cfg), Some(config));
     Some(CrateTagInfo {
         tag_prefix,
         path: crate_cfg.path.clone(),

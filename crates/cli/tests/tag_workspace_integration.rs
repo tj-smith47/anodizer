@@ -708,6 +708,43 @@ fn version_override_rejected_in_per_crate_mode() {
     assert!(!git_tag_exists(root, "cli-v5.0.0"));
 }
 
+/// Static config-load warnings (submitter moderation queue) must print
+/// exactly once per invocation on BOTH tag paths. The `--crate` path used
+/// to re-load the config inside the crate lookup, doubling every warning.
+#[test]
+fn tag_crate_path_emits_static_config_warnings_once() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    per_crate_workspace(root);
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: percrate\ncrates:\n  - name: core\n    path: crates/core\n    tag_template: \"core-v{{ .Version }}\"\n    version_sync:\n      enabled: true\n    publish:\n      chocolatey:\n        required: true\n  - name: cli\n    path: crates/cli\n    tag_template: \"cli-v{{ .Version }}\"\n    version_sync:\n      enabled: true\n",
+    )
+    .unwrap();
+    git_add_commit(root, "chore: require chocolatey on core");
+    fs::write(root.join("crates/core/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "feat: core change");
+
+    for args in [
+        vec!["tag", "--dry-run"],
+        vec!["tag", "--crate", "core", "--dry-run"],
+    ] {
+        let out = anodizer().current_dir(root).args(&args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?} failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            stderr.matches("publisher 'chocolatey'").count(),
+            1,
+            "moderation-queue warning must print exactly once for {args:?}: {stderr}"
+        );
+    }
+}
+
 /// `--version` WITH `--crate` in per-crate mode pins exactly that one crate's
 /// version, leaving its siblings untouched.
 #[test]
