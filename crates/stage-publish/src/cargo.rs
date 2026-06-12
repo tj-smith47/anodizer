@@ -1712,7 +1712,7 @@ pub(crate) fn run_start_message(selected_total: usize) -> String {
 /// Mirrors `run_per_crate_start_message` on every other per-crate
 /// publisher (homebrew, scoop, nix, aur, krew).
 pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
-    format!("starting per-crate cargo publish for \'{}\'", crate_name)
+    format!("starting per-crate cargo publish for '{}'", crate_name)
 }
 
 /// Operator-visible done line, emitted after `publish_to_cargo` returns
@@ -1730,8 +1730,8 @@ pub(crate) fn run_done_message(processed: usize) -> String {
 /// out by `--crate` / `--all` selection).
 pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     format!(
-        "cargo publisher registered but 0 of {} effective crate(s) had a publish.cargo \
-         block selected — nothing pushed. Check that --crate / --all selects a \
+        "cargo publisher registered but 0 of {} effective crate(s) had a cargo \
+         config block — nothing pushed. Check that --crate / --all selects a \
          crate whose publish.cargo block is set.",
         selected_total
     )

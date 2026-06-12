@@ -99,7 +99,7 @@ pub(crate) fn run_start_message(selected_total: usize) -> String {
 /// blank log.
 pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
     format!(
-        "skipping chocolatey for crate \'{}\' — no chocolatey config block",
+        "skipping chocolatey for crate '{}' — no chocolatey config block",
         crate_name
     )
 }
@@ -109,10 +109,7 @@ pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
 /// to a specific crate in the log so multi-crate workspaces are
 /// disambiguatable.
 pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
-    format!(
-        "starting per-crate chocolatey publish for \'{}\'",
-        crate_name
-    )
+    format!("starting per-crate chocolatey publish for '{}'", crate_name)
 }
 
 /// Final summary emitted at publisher exit. `processed` is the count of
@@ -481,7 +478,7 @@ mod publisher_tests {
     fn run_skip_unconfigured_message_names_crate() {
         let msg = run_skip_unconfigured_message("demo");
         assert!(
-            msg.starts_with("skipping chocolatey for crate \'demo\'"),
+            msg.starts_with("skipping chocolatey for crate 'demo'"),
             "{msg}"
         );
         assert!(msg.contains("no chocolatey config block"), "{msg}");

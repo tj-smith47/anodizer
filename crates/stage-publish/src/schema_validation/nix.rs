@@ -335,7 +335,7 @@ fn validate_nix_syntax(
             tool: "nix-instantiate",
             flags: &["--parse"],
             files: &[(file_name, nix_src)],
-            skip_message: "nix: nix-instantiate not on PATH; relying on the structural Nix floor \
+            skip_message: "nix-instantiate not on PATH — relying on the structural Nix floor \
                  for syntax validation",
             empty_fallback: "nix-instantiate --parse reported the generated Nix invalid but \
                  emitted no parseable diagnostic",

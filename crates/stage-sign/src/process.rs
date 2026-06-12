@@ -82,8 +82,8 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
     // summary (emitted once before this loop) is the status-level signal; the
     // per-artifact `sign X -> Y` line would flood the log on wide fan-outs.
     log.verbose(&format!(
-        "[{}] {} {} -> {}",
-        job.id_label, job.label, job.artifact_display, job.signature_display
+        "signing {} -> {} ({}[{}])",
+        job.artifact_display, job.signature_display, job.label, job.id_label
     ));
 
     let stdin_cfg = if job.stdin_data.is_some() {

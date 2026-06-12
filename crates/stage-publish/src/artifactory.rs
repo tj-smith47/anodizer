@@ -2948,7 +2948,10 @@ mod publisher_tests {
     fn artifactory_rollback_empty_warning_msg_shape() {
         let msg =
             crate::publisher_helpers::rollback_empty_warning_msg("artifactory", "upload URLs");
-        assert!(msg.starts_with("artifactory:"), "{msg}");
+        assert!(
+            msg.starts_with("no upload URLs recorded in artifactory evidence"),
+            "{msg}"
+        );
         assert!(msg.contains("upload URLs"), "{msg}");
         assert!(msg.contains("verify"), "{msg}");
         assert!(msg.contains("manually"), "{msg}");

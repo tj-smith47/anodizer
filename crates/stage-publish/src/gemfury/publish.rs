@@ -348,7 +348,7 @@ pub fn publish_to_gemfury(
                 .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                 .context("gemfury: render skip template")?;
             if off {
-                log.status("skipped gemfury entry — skip evaluates true");
+                log.status("skipping gemfury entry — skip evaluates true");
                 continue;
             }
         }

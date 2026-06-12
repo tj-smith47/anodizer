@@ -322,7 +322,7 @@ fn validate_pkgbuild_syntax(pkgbuild: &str, log: &StageLogger) -> Result<Vec<Sch
             tool: "bash",
             flags: &["-n"],
             files: &[("PKGBUILD", pkgbuild)],
-            skip_message: "aur: bash not on PATH; relying on the structural PKGBUILD floor for \
+            skip_message: "bash not on PATH — relying on the structural PKGBUILD floor for \
                  syntax validation",
             empty_fallback: "bash -n reported the generated PKGBUILD invalid but emitted no parseable diagnostic",
         },

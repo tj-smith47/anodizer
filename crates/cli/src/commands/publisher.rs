@@ -208,24 +208,16 @@ pub fn run_publishers(
             )
             .with_context(|| format!("failed to render publisher command for {}", label))?;
 
-            if dry_run {
-                let full_cmd = format_command_line(&rendered_cmd, &rendered_args);
-                log.status(&format!(
-                    "(dry-run) would run publisher {} for {} via `{}`",
-                    label,
-                    artifact.path.display(),
-                    full_cmd
-                ));
-            } else {
-                // parse command with shellwords
-                // and exec directly instead of wrapping with `sh -c`.
-                let full_cmd = format_command_line(&rendered_cmd, &rendered_args);
-                log.status(&format!(
-                    "running publisher {} for {} via `{}`",
-                    label,
-                    artifact.path.display(),
-                    full_cmd
-                ));
+            let full_cmd = format_command_line(&rendered_cmd, &rendered_args);
+            log.status(&run_line(
+                label,
+                &artifact.path.display().to_string(),
+                &full_cmd,
+                dry_run,
+            ));
+            if !dry_run {
+                // Parse with shellwords and exec directly instead of
+                // wrapping with `sh -c`.
                 let shell_args = split_shellwords(&full_cmd);
                 if shell_args.is_empty() {
                     anyhow::bail!("publisher: empty command after parsing: {}", full_cmd);
@@ -455,6 +447,18 @@ fn format_command_line(cmd: &str, args: &[String]) -> String {
     }
 }
 
+/// Render the per-artifact run line for both the live and dry-run paths.
+/// One helper keeps the two registers symmetric by construction — when
+/// they were two hand-maintained `format!` calls, only convention kept
+/// the label/path/command argument order identical between them.
+fn run_line(label: &str, artifact: &str, cmd: &str, dry_run: bool) -> String {
+    if dry_run {
+        format!("(dry-run) would run publisher {label} for {artifact} via `{cmd}`")
+    } else {
+        format!("running publisher {label} for {artifact} via `{cmd}`")
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -465,6 +469,33 @@ mod tests {
     use anodizer_core::config::StringOrBool;
     use std::collections::HashMap;
     use std::path::PathBuf;
+
+    /// Exact-equality pin on both run-line registers. The live and
+    /// dry-run lines must stay symmetric (same label/path/command order,
+    /// same `via` tail) — a swapped argument here renders garbage on
+    /// every publisher invocation, so the full strings are pinned, not
+    /// fragments.
+    #[test]
+    fn run_line_renders_symmetric_live_and_dry_run_lines() {
+        assert_eq!(
+            run_line(
+                "upload",
+                "dist/myapp.tar.gz",
+                "curl -T dist/myapp.tar.gz",
+                false
+            ),
+            "running publisher upload for dist/myapp.tar.gz via `curl -T dist/myapp.tar.gz`"
+        );
+        assert_eq!(
+            run_line(
+                "upload",
+                "dist/myapp.tar.gz",
+                "curl -T dist/myapp.tar.gz",
+                true
+            ),
+            "(dry-run) would run publisher upload for dist/myapp.tar.gz via `curl -T dist/myapp.tar.gz`"
+        );
+    }
 
     fn make_artifact(kind: ArtifactKind, path: &str, id: Option<&str>) -> Artifact {
         let mut metadata = HashMap::new();

@@ -137,7 +137,7 @@ impl Default for BlobPublisher {
 /// is absent or empty.
 pub(crate) fn blob_manual_cleanup_msg(target: &str) -> String {
     format!(
-        "blob: cannot auto-delete {} — legacy evidence without structured targets; delete manually via the cloud provider's console or `aws s3 rm` / `gsutil rm` / `az storage blob delete`",
+        "cannot auto-delete blob {} — legacy evidence without structured targets; delete manually via the cloud provider's console or `aws s3 rm` / `gsutil rm` / `az storage blob delete`",
         target
     )
 }

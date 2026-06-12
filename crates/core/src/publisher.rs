@@ -167,8 +167,8 @@ pub trait Publisher: Send + Sync {
 /// future stage crate that implements `Publisher`).
 pub fn rollback_empty_warning_msg(publisher: &str, target_label: &str) -> String {
     format!(
-        "{}: no {} recorded in evidence; verify {} state manually",
-        publisher, target_label, publisher
+        "no {} recorded in {} evidence — verify {} state manually",
+        target_label, publisher, publisher
     )
 }
 

@@ -96,7 +96,7 @@ pub(crate) fn run_start_message(selected_total: usize) -> String {
 /// why a per-crate publish was a no-op rather than guess from a blank log.
 pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
     format!(
-        "skipping nix for crate \'{}\' — no nix config block",
+        "skipping nix for crate '{}' — no nix config block",
         crate_name
     )
 }
@@ -106,7 +106,7 @@ pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
 /// specific crate in the log so multi-crate workspaces are
 /// disambiguatable.
 pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
-    format!("starting per-crate nix publish for \'{}\'", crate_name)
+    format!("starting per-crate nix publish for '{}'", crate_name)
 }
 
 /// Final summary emitted at publisher exit. `processed` is the count of
@@ -496,7 +496,7 @@ mod publisher_tests {
     #[test]
     fn run_skip_unconfigured_message_names_crate() {
         let msg = run_skip_unconfigured_message("demo");
-        assert!(msg.starts_with("skipping nix for crate \'demo\'"), "{msg}");
+        assert!(msg.starts_with("skipping nix for crate 'demo'"), "{msg}");
         assert!(msg.contains("no nix config block"), "{msg}");
     }
 

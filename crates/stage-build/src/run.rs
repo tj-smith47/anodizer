@@ -314,7 +314,7 @@ fn plan_build_jobs(
                     }]
                 } else {
                     log.status(&format!(
-                        "skipping crate '{}' — no builds configured and no binary target found",
+                        "skipping build for crate '{}' — no builds configured and no binary target found",
                         crate_cfg.name
                     ));
                     continue;

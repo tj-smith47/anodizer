@@ -51,7 +51,7 @@ pub(crate) fn list_staging_dir_recursive(
 /// addressable.
 pub(crate) fn format_v2_created_images_log(images: &[String], digest: &str) -> String {
     format!(
-        "created images: images={} digest={}",
+        "created images — images={} digest={}",
         images.join(","),
         digest
     )

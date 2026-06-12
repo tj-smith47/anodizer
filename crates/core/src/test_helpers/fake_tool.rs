@@ -364,6 +364,26 @@ mod tests {
     use super::*;
     use std::process::Command;
 
+    /// `Command::output` with a bounded retry on `ETXTBSY`. These tests
+    /// install a stub and exec it immediately from the same process; when
+    /// a sibling test thread forks inside the install's write window, its
+    /// pre-exec child briefly inherits the writable fd and the exec here
+    /// fails with "Text file busy". The fd is closed at the child's exec
+    /// (CLOEXEC), so a short retry is the standard remedy — production
+    /// code never writes-then-execs its own tools and cannot hit this.
+    #[cfg(unix)]
+    fn output_retrying_etxtbsy(cmd: &mut Command) -> std::process::Output {
+        for _ in 0..50 {
+            match cmd.output() {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                other => return other.expect("spawn fake tool"),
+            }
+        }
+        panic!("fake tool stayed ETXTBSY after 50 retries");
+    }
+
     #[cfg(unix)]
     #[test]
     fn records_argv_across_invocations() {
@@ -371,13 +391,10 @@ mod tests {
         tools.tool("widget").stdout("ok\n").install();
         let bin = tools.tool_path("widget");
 
-        let out = Command::new(&bin)
-            .args(["build", "--fast"])
-            .output()
-            .unwrap();
+        let out = output_retrying_etxtbsy(Command::new(&bin).args(["build", "--fast"]));
         assert!(out.status.success());
         assert_eq!(String::from_utf8_lossy(&out.stdout), "ok\n");
-        Command::new(&bin).arg("clean").output().unwrap();
+        output_retrying_etxtbsy(Command::new(&bin).arg("clean"));
 
         assert!(tools.was_called("widget"));
         assert_eq!(tools.call_count("widget"), 2);
@@ -391,7 +408,7 @@ mod tests {
     fn honors_exit_code_and_stderr() {
         let tools = FakeToolDir::new();
         tools.tool("boom").stderr("fatal\n").exit(7).install();
-        let out = Command::new(tools.tool_path("boom")).output().unwrap();
+        let out = output_retrying_etxtbsy(&mut Command::new(tools.tool_path("boom")));
         assert_eq!(out.status.code(), Some(7));
         assert_eq!(String::from_utf8_lossy(&out.stderr), "fatal\n");
     }
@@ -405,10 +422,8 @@ mod tests {
             .creates("out/doc.json", "{\"k\":1}")
             .install();
         let work = TempDir::new().unwrap();
-        let out = Command::new(tools.tool_path("gen"))
-            .current_dir(work.path())
-            .output()
-            .unwrap();
+        let out =
+            output_retrying_etxtbsy(Command::new(tools.tool_path("gen")).current_dir(work.path()));
         assert!(out.status.success());
         let body = std::fs::read_to_string(work.path().join("out/doc.json")).unwrap();
         assert_eq!(body, "{\"k\":1}");
@@ -424,11 +439,11 @@ mod tests {
             .script("for a in \"$@\"; do case \"$a\" in *=*) echo '{}' > \"${a#*=}\";; esac; done")
             .install();
         let work = TempDir::new().unwrap();
-        Command::new(tools.tool_path("syft"))
-            .current_dir(work.path())
-            .args(["scan", "-o", "spdx-json=bom.json"])
-            .output()
-            .unwrap();
+        output_retrying_etxtbsy(
+            Command::new(tools.tool_path("syft"))
+                .current_dir(work.path())
+                .args(["scan", "-o", "spdx-json=bom.json"]),
+        );
         assert_eq!(
             std::fs::read_to_string(work.path().join("bom.json")).unwrap(),
             "{}\n"

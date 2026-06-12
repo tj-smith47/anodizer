@@ -197,7 +197,7 @@ fn validate_nuspec_xmllint(xml: &str, log: &StageLogger) -> Result<Vec<SchemaFin
                 ("chocolatey.nuspec.xsd", NUSPEC_XSD),
                 ("package.nuspec", xml),
             ],
-            skip_message: "chocolatey: xmllint not on PATH; relying on the structural nuspec floor \
+            skip_message: "xmllint not on PATH — relying on the structural nuspec floor \
                  for schema validation",
             empty_fallback: "xmllint reported the nuspec schema-invalid but emitted no parseable validity line",
         },

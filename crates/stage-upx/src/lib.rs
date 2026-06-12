@@ -197,8 +197,8 @@ impl Stage for UpxStage {
                 let target_label = target.as_deref().unwrap_or("unknown");
 
                 thread_log.status(&format!(
-                    "[{}] compressing {} (target: {})",
-                    id_label, artifact_str, target_label,
+                    "compressing {} (target: {}) (upx[{}])",
+                    artifact_str, target_label, id_label,
                 ));
 
                 let size_before = match std::fs::metadata(artifact_path) {
@@ -254,10 +254,10 @@ impl Stage for UpxStage {
 
                     if KNOWN_EXCEPTIONS.iter().any(|ex| combined.contains(ex)) {
                         thread_log.warn(&format!(
-                            "[{}] skipping {} (target: {}): {}",
-                            id_label,
+                            "skipping {} (target: {}) (upx[{}]): {}",
                             artifact_str,
                             target_label,
+                            id_label,
                             combined.trim(),
                         ));
                     } else {

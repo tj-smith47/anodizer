@@ -320,7 +320,7 @@ fn validate_ruby_syntax(ruby: &str, log: &StageLogger) -> Result<Vec<SchemaFindi
             tool: "ruby",
             flags: &["-c"],
             files: &[(RUBY_TEMP_NAME, ruby)],
-            skip_message: "homebrew: ruby not on PATH; relying on the structural Ruby floor for \
+            skip_message: "ruby not on PATH — relying on the structural Ruby floor for \
                  syntax validation",
             empty_fallback: "ruby -c reported the generated Ruby invalid but emitted no parseable diagnostic",
         },

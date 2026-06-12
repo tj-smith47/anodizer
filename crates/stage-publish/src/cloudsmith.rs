@@ -798,7 +798,7 @@ pub(crate) fn publish_to_cloudsmith(
                         )? {
                             CloudsmithPackageState::SkipIdempotent => {
                                 let msg = format!(
-                                    "cloudsmith: '{}' already landed with matching md5 \
+                                    "'{}' already landed on cloudsmith with matching md5 \
                                      (concurrent uploader); treating as idempotent skip",
                                     art_name
                                 );
@@ -953,7 +953,7 @@ pub(crate) fn decode_cloudsmith_targets(
 /// this helper is reached only when `target.slug` is `None`.
 pub(crate) fn cloudsmith_manual_cleanup_msg(target: &CloudsmithTarget) -> String {
     format!(
-        "cloudsmith: manually withdraw '{}' from {}/{} (per-package slug not surfaced in evidence; delete via the Cloudsmith dashboard)",
+        "manually withdraw '{}' from Cloudsmith {}/{} (per-package slug not surfaced in evidence; delete via the Cloudsmith dashboard)",
         target.filename, target.org, target.repo
     )
 }

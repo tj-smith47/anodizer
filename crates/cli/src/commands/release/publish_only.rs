@@ -2459,27 +2459,27 @@ mod tests {
     /// state and leave iteration 1's outcome behind, failing the final
     /// asserts — this pins the per-iteration placement, not just
     /// outer-stale clearing.
-    #[test]
-    fn run_per_crate_resets_publish_outcome_each_iteration() {
-        use anodizer_core::config::Config;
-        use anodizer_core::context::{Context, ContextOptions};
-        use anodizer_core::publish_report::PublishReport;
-
-        let tmp = tempfile::tempdir().unwrap();
-        let dist_base = tmp.path().join("dist");
-        let a_dist = dist_base.join("a");
-        std::fs::create_dir_all(&a_dist).unwrap();
+    /// Seed `<dist_base>/<name>/` with a minimal but valid EMPTY
+    /// preserved dist (zero artifacts, commit `deadbeef`) so a
+    /// `run_per_crate` iteration over `name` runs the real publish-only
+    /// pipeline to completion in dry-run mode.
+    fn seed_valid_preserved_dist(dist_base: &std::path::Path, name: &str) {
+        let crate_dist = dist_base.join(name);
+        std::fs::create_dir_all(&crate_dist).unwrap();
         std::fs::write(
-            a_dist.join("context.json"),
+            crate_dist.join("context.json"),
             r#"{"artifacts":[],"targets":[],"version":"0.0.0","commit":"deadbeef"}"#,
         )
         .unwrap();
-        std::fs::write(a_dist.join("artifacts.json"), "[]").unwrap();
+        std::fs::write(crate_dist.join("artifacts.json"), "[]").unwrap();
+    }
 
-        let config = Config {
-            dist: dist_base.clone(),
-            ..Config::default()
-        };
+    /// Build the dry-run `Context` matching [`seed_valid_preserved_dist`]'s
+    /// commit/version so the preserved-context cross-checks pass.
+    fn preserved_dist_ctx(
+        config: &anodizer_core::config::Config,
+    ) -> anodizer_core::context::Context {
+        use anodizer_core::context::{Context, ContextOptions};
         let mut ctx = Context::new(
             config.clone(),
             ContextOptions {
@@ -2490,6 +2490,23 @@ mod tests {
         ctx.template_vars_mut().set("FullCommit", "deadbeef");
         ctx.template_vars_mut().set("Version", "0.0.0");
         ctx.template_vars_mut().set("Tag", "v0.0.0");
+        ctx
+    }
+
+    #[test]
+    fn run_per_crate_resets_publish_outcome_each_iteration() {
+        use anodizer_core::config::Config;
+        use anodizer_core::publish_report::PublishReport;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dist_base = tmp.path().join("dist");
+        seed_valid_preserved_dist(&dist_base, "a");
+
+        let config = Config {
+            dist: dist_base.clone(),
+            ..Config::default()
+        };
+        let mut ctx = preserved_dist_ctx(&config);
         // Pre-seed stale OUTER state as well: a loop-hoisted reset would
         // clear this much, so the distinguishing signal below stays
         // iteration 1's freshly-set outcome.
@@ -2523,6 +2540,47 @@ mod tests {
         assert!(
             !ctx.publish_attempted(),
             "iteration 1's publish_attempted must be cleared at iteration 2's top"
+        );
+    }
+
+    /// Vacuity guard for the reset test above: prove the fixture's
+    /// single successful iteration really exercises the
+    /// `set_publish_attempted` setter. If `PublishStage::run` ever stops
+    /// marking the attempt unconditionally (today it fires right after
+    /// the snapshot guard), the reset test would degrade into asserting
+    /// "still-cleared state stayed cleared" without noticing — this
+    /// assert catches that drift loudly.
+    #[test]
+    fn run_per_crate_pipeline_marks_publish_attempted() {
+        use anodizer_core::config::Config;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let dist_base = tmp.path().join("dist");
+        seed_valid_preserved_dist(&dist_base, "a");
+
+        let config = Config {
+            dist: dist_base.clone(),
+            ..Config::default()
+        };
+        let mut ctx = preserved_dist_ctx(&config);
+        let log = anodizer_core::log::StageLogger::new(
+            "publish-only-vacuity-test",
+            anodizer_core::log::Verbosity::Quiet,
+        );
+        let opts = RunOpts { dry_run: true };
+        run_per_crate(
+            &mut ctx,
+            &config,
+            &log,
+            opts,
+            dist_base,
+            vec!["a".to_string()],
+        )
+        .expect("single valid-crate iteration must run the pipeline to completion");
+        assert!(
+            ctx.publish_attempted(),
+            "the fixture's pipeline run must mark publish_attempted — \
+             otherwise the reset test's distinguishing signal is gone"
         );
     }
 
