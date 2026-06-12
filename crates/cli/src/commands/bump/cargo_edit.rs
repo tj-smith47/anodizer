@@ -370,7 +370,7 @@ fn rewrite_workspace_dependencies(
     for (dep_name, new_ver) in bumped {
         if rewrite_dep_entry(ws_deps, dep_name, new_ver) {
             log.verbose(&format!(
-                "root: [workspace.dependencies] {} = \"{}\"",
+                "updated root [workspace.dependencies] {} = \"{}\"",
                 dep_name, new_ver
             ));
             changed = true;

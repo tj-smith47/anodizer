@@ -411,7 +411,7 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         let (reverted, failed) =
             run_revert_targets_parallel(&prepared, "homebrew", Some(env_hint), &log);
         log.status(&format!(
-            "homebrew: reverted {} tap(s), {} failure(s)",
+            "homebrew rollback reverted {} tap(s), {} failure(s)",
             reverted, failed
         ));
         Ok(())

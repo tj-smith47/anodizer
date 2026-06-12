@@ -554,7 +554,7 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
 /// without reaching across the crate boundary.
 fn rollback_failure_msg(step: &str, tag: &str, owner: &str, repo: &str, err: &str) -> String {
     format!(
-        "github-release: {step} delete failed for {tag} on {owner}/{repo}: {err}; \
+        "github-release {step} delete failed for {tag} on {owner}/{repo}: {err}; \
          manual cleanup required at https://github.com/{owner}/{repo}/releases/tag/{tag}; \
          check $GITHUB_TOKEN is set in this shell or the configured \
          ANODIZER_GITHUB_TOKEN fallback"

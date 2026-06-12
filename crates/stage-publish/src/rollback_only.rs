@@ -169,14 +169,14 @@ pub(crate) fn run_with_publishers(
     let prior_state = rollback_path(ctx, run_id);
     let (path, source_label, is_rollback_state) = if prior_state.exists() {
         log.status(&format!(
-            "rollback-only: (replay) resuming from prior rollback state at {}",
+            "resuming (replay) from prior rollback state at {}",
             prior_state.display()
         ));
         (prior_state, "prior rollback state", true)
     } else {
         let report = report_path(ctx, run_id);
         log.status(&format!(
-            "rollback-only: (first run) loading prior report from {}",
+            "loading prior report (first run) from {}",
             report.display()
         ));
         (report, "prior report", false)
@@ -241,10 +241,10 @@ pub(crate) fn run_with_publishers(
         .collect();
 
     if target_indices.is_empty() {
-        log.warn("rollback-only: no rollback-eligible entries in prior report; nothing to do");
+        log.warn("no rollback-eligible entries in prior report; nothing to do");
     } else {
         log.status(&format!(
-            "rollback-only: dispatching {} target(s)",
+            "dispatching rollback for {} target(s)",
             target_indices.len()
         ));
     }
@@ -262,7 +262,7 @@ pub(crate) fn run_with_publishers(
 
         let Some(evidence) = evidence else {
             log.warn(&format!(
-                "rollback-only: '{}' has no evidence in prior report; skipping",
+                "'{}' has no evidence in prior report; skipping",
                 name,
             ));
             failed += 1;
@@ -273,7 +273,7 @@ pub(crate) fn run_with_publishers(
 
         let Some(publisher) = publishers.iter().find(|p| p.name() == name) else {
             log.warn(&format!(
-                "rollback-only: publisher '{}' not in current registry; skipping",
+                "publisher '{}' not in current registry; skipping",
                 name,
             ));
             not_found += 1;
@@ -312,7 +312,7 @@ pub(crate) fn run_with_publishers(
         // pull). See the matching logic in `rollback::run`.
         let was_failure = matches!(report.results[i].outcome, PublisherOutcome::Failed(_));
 
-        log.status(&format!("rollback-only: invoking '{}'", name));
+        log.status(&format!("invoking rollback for '{}'", name));
         match publisher.rollback(ctx, &evidence) {
             Ok(()) => {
                 rolled_back += 1;
@@ -324,13 +324,13 @@ pub(crate) fn run_with_publishers(
                 let msg = format!("{:#}", err);
                 failed += 1;
                 report.results[i].outcome = PublisherOutcome::RollbackFailed(msg.clone());
-                log.warn(&format!("rollback-only: '{}' failed: {}", name, msg));
+                log.warn(&format!("rollback for '{}' failed: {}", name, msg));
             }
         }
     }
 
     log.status(&format!(
-        "rollback-only: {} rolled back, {} failed, {} not found, {} skipped-no-scope",
+        "rollback complete — {} rolled back, {} failed, {} not found, {} skipped-no-scope",
         rolled_back, failed, not_found, skipped_no_scope,
     ));
 
@@ -346,7 +346,7 @@ pub(crate) fn run_with_publishers(
         serde_json::to_string_pretty(&report).context("failed to serialize rollback report")?;
     fs::write(&out_path, rollback_text)
         .with_context(|| format!("failed to write rollback state to {}", out_path.display()))?;
-    log.status(&format!("rollback-only: wrote {}", out_path.display()));
+    log.status(&format!("wrote {}", out_path.display()));
 
     Ok(report)
 }

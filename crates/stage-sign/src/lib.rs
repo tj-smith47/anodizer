@@ -325,7 +325,7 @@ impl Stage for DockerSignStage {
                             drop(child_stdin);
                         } else {
                             log.warn(&format!(
-                                "sign: stdin data provided but child process stdin unavailable for docker image {}",
+                                "stdin data provided but child process stdin unavailable for docker image {}",
                                 image_str
                             ));
                         }

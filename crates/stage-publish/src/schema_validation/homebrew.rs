@@ -86,7 +86,7 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
                 if let Some(hb_cfg) = hb_cfg.as_ref() {
                     if !crate_has_homebrew_archives(ctx, hb_cfg, crate_name) {
                         log.verbose(&format!(
-                            "homebrew: crate '{}' produced no archive artifact in this snapshot \
+                            "crate '{}' produced no archive artifact for homebrew in this snapshot \
                              shard; skipping formula schema validation",
                             crate_name
                         ));

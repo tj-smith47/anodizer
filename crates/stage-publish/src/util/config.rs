@@ -42,7 +42,7 @@ pub(crate) fn all_crates(ctx: &Context) -> Vec<CrateConfig> {
                 if let Some(existing) = acc.iter().find(|e| e.name == c.name) {
                     if existing.path != c.path {
                         log.warn(&format!(
-                            "all_crates: workspace '{}' crate '{}' path '{}' shadowed by \
+                            "workspace '{}' crate '{}' path '{}' shadowed by \
                              prior entry with path '{}'; workspace entry dropped (name \
                              collision with different paths — likely a config mistake)",
                             ws.name, c.name, c.path, existing.path

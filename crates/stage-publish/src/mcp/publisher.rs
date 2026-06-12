@@ -138,7 +138,7 @@ fn rollback_one_target(
     match result {
         Ok(_) => {
             log.status(&format!(
-                "mcp: marked '{}@{}' as deleted on {}",
+                "marked mcp '{}@{}' as deleted on {}",
                 target.server_name, target.version, target.registry_url,
             ));
             Ok(RollbackOutcome::Restored)
@@ -165,7 +165,7 @@ fn rollback_one_target(
                 ),
                 _ => return Err(err),
             };
-            log.warn(&format!("mcp: rollback degraded to warn: {}", reason));
+            log.warn(&format!("mcp rollback degraded to warn: {}", reason));
             Ok(RollbackOutcome::DegradedToWarn)
         }
     }
@@ -284,7 +284,7 @@ impl anodizer_core::Publisher for McpPublisher {
                 Err(e) => {
                     failed += 1;
                     log.warn(&format!(
-                        "mcp: failed to mark '{}@{}' as deleted on {}: {:#}; \
+                        "failed to mark mcp '{}@{}' as deleted on {}: {:#}; \
                          verify and restore manually via the registry admin UI",
                         t.server_name, t.version, t.registry_url, e
                     ));
@@ -292,7 +292,7 @@ impl anodizer_core::Publisher for McpPublisher {
             }
         }
         log.status(&format!(
-            "mcp: rollback marked {} version(s) as deleted, {} degraded-to-warn, {} failure(s)",
+            "mcp rollback marked {} version(s) as deleted, {} degraded-to-warn, {} failure(s)",
             deleted, degraded, failed
         ));
         Ok(())

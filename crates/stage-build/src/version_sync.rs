@@ -30,10 +30,7 @@ pub fn sync_version(
         .to_string();
 
     if current_version == version {
-        log.verbose(&format!(
-            "version-sync: {} already at version {}",
-            crate_path, version
-        ));
+        log.verbose(&format!("{} already at version {}", crate_path, version));
         return Ok(());
     }
 
@@ -54,7 +51,7 @@ pub fn sync_version(
         .with_context(|| format!("failed to write {}", cargo_toml_path.display()))?;
 
     log.status(&format!(
-        "version-sync: updated {} from {} to {}",
+        "updated {} from {} to {}",
         cargo_toml_path.display(),
         current_version,
         version
@@ -250,11 +247,7 @@ pub fn sync_workspace_deps(
             } else {
                 std::fs::write(path, doc.to_string())
                     .with_context(|| format!("failed to write {}", path.display()))?;
-                log.status(&format!(
-                    "version-sync: updated {} dep in {}",
-                    crate_name,
-                    path.display()
-                ));
+                log.status(&format!("updated {} dep in {}", crate_name, path.display()));
             }
             modified.push(path_str);
         }

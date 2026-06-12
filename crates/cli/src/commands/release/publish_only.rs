@@ -86,7 +86,7 @@ pub(super) fn detect_dist_layout(dist: &Path, log: &StageLogger) -> Result<DistL
                 // the reason so an operator debugging an unexpected Flat-vs-
                 // PerCrate choice isn't left guessing why an entry was skipped.
                 log.verbose(&format!(
-                    "publish-only: stat of dist entry {} failed: {e}; treating as non-directory",
+                    "stat of dist entry {} failed: {e}; treating as non-directory",
                     entry.path().display()
                 ));
                 false
@@ -278,7 +278,7 @@ pub(super) fn run_per_crate(
     for crate_name in &crate_order {
         let crate_dist = dist_base.join(crate_name);
         log.status(&format!(
-            "publish-only: publishing crate '{crate_name}' from {}",
+            "publishing crate '{crate_name}' from {}",
             crate_dist.display()
         ));
         // Rewind the config fields `apply_workspace_overlay` mutates
@@ -590,7 +590,7 @@ fn apply_per_crate_version(
         Ok(sv) => sv,
         Err(e) => {
             log.verbose(&format!(
-                "publish-only: preserved version '{version}' for crate '{crate_name}' \
+                "preserved version '{version}' for crate '{crate_name}' \
                  is not strict semver ({e}); leaving Version vars unchanged"
             ));
             return;
@@ -651,7 +651,7 @@ fn apply_per_crate_tag(ctx: &mut Context, config: &Config, crate_name: &str, log
         Ok(_) => return,
         Err(e) => {
             log.warn(&format!(
-                "publish-only: failed to render tag_template '{tag_template}' for crate '{crate_name}': {e}"
+                "failed to render tag_template '{tag_template}' for crate '{crate_name}': {e}"
             ));
             return;
         }
@@ -673,7 +673,7 @@ fn apply_per_crate_tag(ctx: &mut Context, config: &Config, crate_name: &str, log
             ctx.template_vars_mut().unset("PreviousTag");
         }
         Err(e) => log.verbose(&format!(
-            "publish-only: previous-tag lookup for crate '{crate_name}' failed: {e}"
+            "previous-tag lookup for crate '{crate_name}' failed: {e}"
         )),
     }
 }
@@ -730,7 +730,7 @@ fn run_one_crate_dist(
     let shard_count = preserved_contexts.len();
 
     log.status(&format!(
-        "publish-only: loaded {} context manifest(s) (version={}, commit={}, targets=[{}], {} artifact(s))",
+        "loaded {} context manifest(s) (version={}, commit={}, targets=[{}], {} artifact(s))",
         shard_count,
         preserved.version,
         short_commit_str(&preserved.commit),
@@ -801,7 +801,7 @@ fn run_one_crate_dist(
     ctx.artifacts.dedupe_targetless_duplicates();
 
     log.status(&format!(
-        "publish-only: rehydrated {} artifact(s) from {} artifacts manifest(s)",
+        "rehydrated {} artifact(s) from {} artifacts manifest(s)",
         ctx.artifacts.all().len(),
         artifact_manifests.len(),
     ));
@@ -1002,7 +1002,7 @@ fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
     }
     let count = stale_paths.len();
     log.status(&format!(
-        "publish-only: stripping {count} ephemeral signature/certificate artifact(s) before re-sign"
+        "stripping {count} ephemeral signature/certificate artifact(s) before re-sign"
     ));
     // Registry FIRST, then disk. If the process is signaled between
     // the two steps, a retry sees a consistent state: the registry
@@ -1022,7 +1022,7 @@ fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
             Ok(()) => disk_removed += 1,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => log.warn(&format!(
-                "publish-only: failed to delete stale signature {}: {} \
+                "failed to delete stale signature {}: {} \
                  (continuing; SignStage will overwrite or fail loudly)",
                 p.display(),
                 e
@@ -1037,7 +1037,7 @@ fn strip_ephemeral_signatures(ctx: &mut Context, log: &StageLogger) {
     // disk — registry entries can outlive their files when the
     // post-pipeline runs partial writes).
     log.status(&format!(
-        "publish-only: stripped {count} ephemeral signature artifact(s) from registry \
+        "stripped {count} ephemeral signature artifact(s) from registry \
          ({disk_removed} also deleted from disk)"
     ));
 }
@@ -1502,7 +1502,7 @@ fn cleanup_shard_manifests(dist: &Path, log: &StageLogger) {
         Ok(e) => e,
         Err(e) => {
             log.warn(&format!(
-                "publish-only: failed to read {} for shard-manifest cleanup: {} \
+                "failed to read {} for shard-manifest cleanup: {} \
                  (a retry may trip the unsuffixed-vs-suffixed collision check)",
                 dist.display(),
                 e,
@@ -1521,7 +1521,7 @@ fn cleanup_shard_manifests(dist: &Path, log: &StageLogger) {
             let path = entry.path();
             if let Err(e) = std::fs::remove_file(&path) {
                 log.warn(&format!(
-                    "publish-only: failed to remove shard manifest {}: {} \
+                    "failed to remove shard manifest {}: {} \
                      (a retry may trip the unsuffixed-vs-suffixed collision check)",
                     path.display(),
                     e

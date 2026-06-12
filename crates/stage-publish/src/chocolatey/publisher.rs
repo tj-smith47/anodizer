@@ -286,7 +286,7 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
         // of the pipeline.
         for t in &targets {
             log.warn(&format!(
-                "chocolatey: manual withdrawal required for '{}' version '{}'; \
+                "manual chocolatey withdrawal required for '{}' version '{}'; \
                  visit https://community.chocolatey.org/packages/{} and use the \
                  'Maintain' UI to withdraw the submission (only the package \
                  owner can drive this; the push API key does not authorize \
@@ -295,7 +295,7 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
             ));
         }
         log.status(&format!(
-            "chocolatey: {} package(s) require manual withdrawal",
+            "{} chocolatey package(s) require manual withdrawal",
             targets.len()
         ));
         Ok(())

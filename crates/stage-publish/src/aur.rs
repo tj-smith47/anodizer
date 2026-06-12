@@ -430,7 +430,7 @@ fn aur_check_skip_and_resolve_git_url(
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("aur: render skip template for '{}'", crate_name))?;
         if off {
-            log.status(&format!("aur: skipped for '{}'", crate_name));
+            log.status(&format!("skipped aur for '{}'", crate_name));
             return Ok(None);
         }
     }
@@ -442,7 +442,7 @@ fn aur_check_skip_and_resolve_git_url(
     )?;
     if !proceed {
         log.status(&format!(
-            "aur: skipping '{}' — `if` condition evaluated falsy",
+            "skipping aur for '{}' — `if` condition evaluated falsy",
             crate_name
         ));
         return Ok(None);
@@ -450,7 +450,7 @@ fn aur_check_skip_and_resolve_git_url(
 
     if crate::util::should_skip_upload(aur_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "aur: skipping upload for '{}' (skip_upload={})",
+            "skipping aur upload for '{}' (skip_upload={})",
             crate_name,
             aur_cfg
                 .skip_upload
@@ -835,7 +835,7 @@ fn aur_commit_and_push(
         }
         util::CommitOutcome::NoChanges => {
             log.status(&format!(
-                "aur: nothing to push, package '{}' already up to date",
+                "nothing to push, aur package '{}' already up to date",
                 package_name
             ));
             false
@@ -989,7 +989,7 @@ pub(crate) fn render_aur_pkgbuild_and_srcinfo_for_crate(
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("aur: render skip template for '{}'", crate_name))?;
         if off {
-            log.status(&format!("aur: skipped for '{}'", crate_name));
+            log.status(&format!("skipped aur for '{}'", crate_name));
             return Ok(None);
         }
     }
@@ -1001,7 +1001,7 @@ pub(crate) fn render_aur_pkgbuild_and_srcinfo_for_crate(
     )?;
     if !proceed {
         log.status(&format!(
-            "aur: skipping '{}' — `if` condition evaluated falsy",
+            "skipping aur for '{}' — `if` condition evaluated falsy",
             crate_name
         ));
         return Ok(None);
@@ -1009,7 +1009,7 @@ pub(crate) fn render_aur_pkgbuild_and_srcinfo_for_crate(
 
     if crate::util::should_skip_upload(aur_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "aur: skipping upload for '{}' (skip_upload)",
+            "skipping aur upload for '{}' (skip_upload)",
             crate_name
         ));
         return Ok(None);
@@ -1494,7 +1494,7 @@ impl anodizer_core::Publisher for AurOurPublisher {
             .collect::<anyhow::Result<Vec<_>>>()?;
         let (reverted, failed) = run_revert_targets_parallel(&prepared, "aur", None, &log);
         log.status(&format!(
-            "aur: reverted {} repo(s), {} failure(s)",
+            "aur rollback reverted {} repo(s), {} failure(s)",
             reverted, failed
         ));
         Ok(())

@@ -145,17 +145,17 @@ fn copy_extra_files(
                 if let Some(info) = info {
                     if info.mode.is_some() {
                         log.warn(&format!(
-                            "app_bundles: extra_files info.mode is not used for app bundles (ignored for src '{src}')"
+                            "extra_files info.mode is not used for app bundles (ignored for src '{src}')"
                         ));
                     }
                     if info.owner.is_some() {
                         log.warn(&format!(
-                            "app_bundles: extra_files info.owner is not used for app bundles (ignored for src '{src}')"
+                            "extra_files info.owner is not used for app bundles (ignored for src '{src}')"
                         ));
                     }
                     if info.group.is_some() {
                         log.warn(&format!(
-                            "app_bundles: extra_files info.group is not used for app bundles (ignored for src '{src}')"
+                            "extra_files info.group is not used for app bundles (ignored for src '{src}')"
                         ));
                     }
                 }

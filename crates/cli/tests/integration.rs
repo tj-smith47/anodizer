@@ -766,31 +766,35 @@ fn test_release_prepare_matches_explicit_skip() {
 
     // We extract the set of stages the pipeline reported as skipped.
     //
-    // The output refactor moved the stage name out of the message and into
-    // the per-line stage tag (now gone — format B). A pipeline-level skip
-    // now reads `   • <stage> skipped` (operator/mode `--skip`) or
-    // `   • <stage> skipped (no binaries)` (binary-dependent stage with no
-    // binaries) — both emitted by `Pipeline::run` via `status`. The stage
-    // name is the first whitespace-delimited token of the body; the rest is
-    // the verdict. We return the stage token so the assertions below can
-    // match `release` / `publish` / `announce` directly.
+    // Pipeline-level skips are consolidated into kv rows: consecutive
+    // skipped stages buffer up and flush as `   • skipped  a, b, c`
+    // (operator/mode `--skip`) or `   • skipped  a, b, c (no binaries)`
+    // (binary-dependent stages with no binaries) — both emitted by
+    // `Pipeline::run` via `kv`. The value is a comma-separated stage list;
+    // we split it so the assertions below can match `release` / `publish` /
+    // `announce` directly.
     //
     // Per-crate / per-config body notes (e.g. `no gitlab config ...,
     // skipping`) are progress lines inside a running stage, not a stage
-    // skip, so only the two exact verdict strings qualify.
+    // skip; anchoring on the kv key pad (`skipped` + at least two spaces)
+    // keeps them out — notes like `skipped (snapshot mode)` have a single
+    // space and don't match.
     fn extract_skipped_stages(stderr: &str) -> std::collections::BTreeSet<String> {
         stderr
             .lines()
             .filter_map(|line| {
                 let line = strip_ansi(line);
                 let body = line.trim_start().strip_prefix("• ")?;
-                let (stage, verdict) = body.split_once(' ')?;
-                if verdict == "skipped" || verdict == "skipped (no binaries)" {
-                    Some(stage.to_string())
-                } else {
-                    None
-                }
+                let names = body.strip_prefix("skipped  ")?.trim_start();
+                let names = names.strip_suffix(" (no binaries)").unwrap_or(names);
+                Some(
+                    names
+                        .split(", ")
+                        .map(|stage| stage.to_string())
+                        .collect::<Vec<_>>(),
+                )
             })
+            .flatten()
             .collect()
     }
 
@@ -4171,7 +4175,8 @@ crates:
 
     // milestone pre-flight emits the resolved target on stderr.
     assert!(
-        stderr.contains("milestone:") && stderr.contains("cross-axis-owner/cross-axis-repo"),
+        stderr.contains("will close milestone")
+            && stderr.contains("cross-axis-owner/cross-axis-repo"),
         "stderr should log the milestone pre-flight target, got:\n{}",
         stderr
     );

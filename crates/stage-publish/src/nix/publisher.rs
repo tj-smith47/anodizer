@@ -288,7 +288,7 @@ impl anodizer_core::Publisher for NixPublisher {
         let (reverted, failed) =
             run_revert_targets_parallel(&prepared, "nix", Some(env_hint), &log);
         log.status(&format!(
-            "nix: reverted {} overlay(s), {} failure(s)",
+            "nix rollback reverted {} overlay(s), {} failure(s)",
             reverted, failed
         ));
         Ok(())

@@ -28,7 +28,7 @@ pub(super) fn run_cross_platform(
         .should_skip(|s| ctx.render_template(s))
         .with_context(|| format!("notarize: macos[{idx}] evaluate skip expression"))?
     {
-        log.status(&format!("notarize: macos[{idx}] skipped (skip: true)"));
+        log.status(&format!("skipped macos[{idx}] (skip: true)"));
         return Ok(());
     }
 
@@ -153,7 +153,7 @@ pub(super) fn run_cross_platform(
         // Surface the filter contents so misconfigured `ids:` is visible
         // instead of producing a silent no-op.
         log.warn(&format!(
-            "notarize: macos[{idx}] ids={:?} matched no darwin binaries \
+            "macos[{idx}] ids={:?} matched no darwin binaries \
              (check for typos or unbuilt darwin targets)",
             ids
         ));
@@ -187,10 +187,7 @@ pub(super) fn run_cross_platform(
         }
         sign_args.push(binary_path.to_string());
 
-        log.status(&format!(
-            "notarize: signing {} with rcodesign",
-            artifact.name()
-        ));
+        log.status(&format!("signing {} with rcodesign", artifact.name()));
 
         if dry_run {
             log.status(&format!(
@@ -235,7 +232,7 @@ pub(super) fn run_cross_platform(
             notarize_args.push(binary_path.to_string());
 
             log.status(&format!(
-                "notarize: submitting {} for notarization via rcodesign",
+                "submitting {} for notarization via rcodesign",
                 artifact.name()
             ));
 
@@ -289,9 +286,7 @@ pub(super) fn run_native(
         .should_skip(|s| ctx.render_template(s))
         .with_context(|| format!("notarize: macos_native[{idx}] evaluate skip expression"))?
     {
-        log.status(&format!(
-            "notarize: macos_native[{idx}] skipped (skip: true)"
-        ));
+        log.status(&format!("skipped macos_native[{idx}] (skip: true)"));
         return Ok(());
     }
 
@@ -348,7 +343,7 @@ pub(super) fn run_native(
         && sign.options.as_ref().is_some_and(|o| !o.is_empty())
     {
         log.warn(&format!(
-            "notarize: macos_native[{idx}] sign.options is set but only applies to DMG mode; ignored for pkg"
+            "macos_native[{idx}] sign.options is set but only applies to DMG mode; ignored for pkg"
         ));
     }
 
@@ -426,7 +421,7 @@ fn run_native_dmg(
         codesign_args.push(bundle_path.to_string());
 
         log.status(&format!(
-            "notarize: signing app bundle {} with codesign",
+            "signing app bundle {} with codesign",
             bundle.name()
         ));
 
@@ -512,7 +507,7 @@ fn run_native_dmg(
         }
 
         log.status(&format!(
-            "notarize: submitting {} for notarization via xcrun notarytool",
+            "submitting {} for notarization via xcrun notarytool",
             dmg.name()
         ));
 
@@ -536,7 +531,7 @@ fn run_native_dmg(
             // skipped that step on purpose.
             if !params.wait {
                 log.status(&format!(
-                    "notarize: {} submitted (wait disabled; ticket will not be stapled — \
+                    "{} submitted (wait disabled; ticket will not be stapled — \
                      end-users will need an internet connection on first launch)",
                     dmg.name()
                 ));
@@ -545,7 +540,7 @@ fn run_native_dmg(
                 let dmg_path_str = dmg_path.to_string();
                 let staple_args = ["xcrun", "stapler", "staple", &dmg_path_str];
 
-                log.status(&format!("notarize: stapling {}", dmg.name()));
+                log.status(&format!("stapling {}", dmg.name()));
 
                 let status = Command::new(staple_args[0])
                     .args(&staple_args[1..])
@@ -626,10 +621,7 @@ fn run_native_pkg(
         sign_args.push(pkg_path.to_string());
         sign_args.push(signed_path.clone());
 
-        log.status(&format!(
-            "notarize: signing {} with productsign",
-            pkg.name()
-        ));
+        log.status(&format!("signing {} with productsign", pkg.name()));
 
         if dry_run {
             log.status(&format!("  [dry-run] would run: {}", sign_args.join(" ")));
@@ -679,7 +671,7 @@ fn run_native_pkg(
         }
 
         log.status(&format!(
-            "notarize: submitting {} for notarization via xcrun notarytool",
+            "submitting {} for notarization via xcrun notarytool",
             pkg.name()
         ));
 
@@ -702,7 +694,7 @@ fn run_native_pkg(
             // purpose.
             if !params.wait {
                 log.status(&format!(
-                    "notarize: {} submitted (wait disabled; ticket will not be stapled — \
+                    "{} submitted (wait disabled; ticket will not be stapled — \
                      end-users will need an internet connection on first launch)",
                     pkg.name()
                 ));
@@ -711,7 +703,7 @@ fn run_native_pkg(
                 let pkg_path_str = pkg_path.to_string();
                 let staple_args = ["xcrun", "stapler", "staple", &pkg_path_str];
 
-                log.status(&format!("notarize: stapling {}", pkg.name()));
+                log.status(&format!("stapling {}", pkg.name()));
 
                 let status = Command::new(staple_args[0])
                     .args(&staple_args[1..])

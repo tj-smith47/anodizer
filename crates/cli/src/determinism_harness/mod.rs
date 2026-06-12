@@ -58,6 +58,7 @@ pub use installer_detect::installer_stages;
 
 use anodizer_core::git::worktree::Worktree;
 use anodizer_core::harness_signing::EphemeralSigningKeys;
+use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::{AllowList, ArtifactRow, CURRENT_SCHEMA_VERSION, DeterminismReport, DriftRow};
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -483,7 +484,14 @@ impl Harness {
                 }
             });
 
+        // Emits the per-run delimiter bullets inside the dispatcher's
+        // `Checking determinism` section; the child subprocess's own
+        // sections nest beneath each bullet via the inherited log depth
+        // (see `determinism_runner::build_subprocess_command`).
+        let log = StageLogger::new("check-determinism", Verbosity::Normal);
+
         for run_idx in 0..self.runs {
+            log.detail(&format!("run {} of {}", run_idx + 1, self.runs));
             // Defensive: prior aborted runs may have left the dir behind;
             // `git worktree add` would reject a populated target.
             let _ = std::fs::remove_dir_all(&worktree_path);

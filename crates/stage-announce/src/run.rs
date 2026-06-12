@@ -192,7 +192,7 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
             return Ok(());
         }
         AnnounceDecision::SkipByIfCondition => {
-            log.status("announce: skipped — `if` condition evaluated falsy");
+            log.status("skipped — `if` condition evaluated falsy");
             return Ok(());
         }
         AnnounceDecision::GatedByReport { required_failures } => {
@@ -237,22 +237,14 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
     Ok(())
 }
 
-/// Write `--summary-json` (if configured) and pretty-print the
-/// per-publisher status table to stderr.
-///
-/// Called unconditionally at the end of `AnnounceStage::run` because
-/// the audit trail is most valuable when partial failures occur —
-/// dropping it on the early-return / gate-fire paths would defeat
-/// the point. Errors writing the file are warned, never fatal: a
-/// secondary observability channel must not be able to fail the
-/// release.
-/// End-of-pipeline run-summary emitter.
+/// End-of-pipeline run-summary emitter: write `summary.json` (and honor
+/// `--summary-json=<path>`), then print the per-publisher status rows
+/// to stderr.
 ///
 /// Always invoked by `Pipeline::run` at the very end (success or
-/// failure) so the per-publisher status table prints to stderr and
-/// `--summary-json=<path>` is honored regardless of whether the
-/// announce stage itself ran. Owned at the pipeline layer so
-/// `--skip=announce` does not silently drop the summary write.
+/// failure) — the audit trail is most valuable when partial failures
+/// occur, and owning it at the pipeline layer means `--skip=announce`
+/// does not silently drop the summary write.
 ///
 /// Best-effort: a `summary.json` write failure logs a warn but never
 /// escalates to a pipeline error — the release itself is unaffected
@@ -262,33 +254,34 @@ pub fn emit_summary(ctx: &mut Context) {
     let path = anodizer_stage_publish::run_summary::summary_path(ctx);
     if let Some(path) = path {
         let log = ctx.logger("announce");
+        // One level in: no section is open here (the last stage's guard
+        // dropped), so without the bump this line would sit two columns
+        // left of every section's body bullets.
+        let _indent = anodizer_core::log::indent_one_level();
         match anodizer_stage_publish::run_summary::write_summary_json(&summary, &path) {
-            Ok(true) => log.status(&format!("summary: wrote {}", path.display())),
+            Ok(true) => log.status(&format!("wrote {}", path.display())),
             Ok(false) => log.status(&format!(
-                "summary: preserved existing {} (this run carries no publisher results)",
+                "preserved existing {} (this run carries no publisher results)",
                 path.display()
             )),
-            Err(err) => log.warn(&format!(
-                "summary: failed to write {}: {err}",
-                path.display()
-            )),
+            Err(err) => log.warn(&format!("failed to write {}: {err}", path.display())),
         }
     }
-    // Always emit the per-publisher status table so non-CI runs see the
-    // outcome at a glance. Render into a buffer, then push each line
-    // through the StageLogger inside its own section so the table carries
-    // the unified `[stage]`/indent/theming and reads as one group in CI
-    // (`::group::publisher-summary`) rather than a raw flush-left block.
-    // Tagged `publisher-summary` (not `announce`) so the table body lines
-    // read `[publisher-summary]` under their own group rather than bleeding
-    // the pipeline-level `[announce]` tag inside `::group::publisher-summary`.
+    // Always emit the per-publisher status rows so non-CI runs see the
+    // outcome at a glance — kv rows under their own `Summary` section,
+    // keys padded to the widest so the value columns align. Tagged
+    // `publisher-summary` (not `announce`) so the section header reads
+    // `Summary` rather than the announce stage's phrase.
     let log = ctx.logger("publisher-summary");
-    let mut buf: Vec<u8> = Vec::new();
-    if anodizer_stage_publish::run_summary::print_status_table(&summary, &mut buf).is_ok() {
-        let _section = log.group("publisher-summary");
-        for line in String::from_utf8_lossy(&buf).lines() {
-            log.status(line);
-        }
+    let rows = anodizer_stage_publish::run_summary::status_table_rows(&summary);
+    let key_width = rows
+        .iter()
+        .map(|(k, _)| k.chars().count())
+        .max()
+        .unwrap_or(0);
+    let _section = log.group("publisher-summary");
+    for (key, value) in &rows {
+        log.kv(key, value, key_width);
     }
 }
 

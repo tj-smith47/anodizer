@@ -377,7 +377,7 @@ pub fn find_cargo_lock(start_dir: &Path) -> Result<PathBuf> {
 
 /// Get the repository root via `git rev-parse --show-toplevel`.
 fn get_repo_root(log: &anodizer_core::log::StageLogger) -> Result<PathBuf> {
-    log.debug("running: git rev-parse --show-toplevel");
+    log.debug("running git rev-parse --show-toplevel");
     let output = Command::new("git")
         .args(["rev-parse", "--show-toplevel"])
         .output()

@@ -1102,14 +1102,14 @@ impl anodizer_core::Publisher for AurSourcePublisher {
         }
         for t in &targets {
             log.warn(&format!(
-                "upstream-aur: force-push to '{}' at tag '{}' is irreversible \
+                "upstream-aur force-push to '{}' at tag '{}' is irreversible \
                  without AUR maintainer coordination; verify state at \
                  https://aur.archlinux.org/packages/{} (git URL: {})",
                 t.package, t.tag, t.package, t.git_url
             ));
         }
         log.status(&format!(
-            "upstream-aur: {} force-push(es) recorded; irreversible",
+            "upstream-aur recorded {} force-push(es); irreversible",
             targets.len()
         ));
         Ok(())

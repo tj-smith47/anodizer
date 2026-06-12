@@ -94,7 +94,7 @@ pub(crate) fn rollback_publish(
 
         let Some(token) = resolve_token(t) else {
             log.warn(&format!(
-                "schemastore: no token resolvable for {label} (env var ${env_hint} / \
+                "no schemastore token resolvable for {label} (env var ${env_hint} / \
                  ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN all unset); skipping rollback \
                  for head {}:{}",
                 t.fork_owner, t.branch
@@ -113,7 +113,7 @@ pub(crate) fn rollback_publish(
             Ok(v) => v,
             Err(e) => {
                 log.warn(&format!(
-                    "schemastore: failed to query upstream {label} for open PRs (head {}:{}): \
+                    "failed to query schemastore upstream {label} for open PRs (head {}:{}): \
                      {e}; manual cleanup required",
                     t.fork_owner, t.branch
                 ));
@@ -127,7 +127,7 @@ pub(crate) fn rollback_publish(
         // operator a manual revert PR is needed in the merged case.
         if pr_numbers.is_empty() {
             log.warn(&format!(
-                "schemastore: no open PR found for head {}:{} against {label}; if it was \
+                "no open schemastore PR found for head {}:{} against {label}; if it was \
                  merged, closing cannot undo it — open a manual revert PR; otherwise verify \
                  it was already closed",
                 t.fork_owner, t.branch
@@ -137,13 +137,13 @@ pub(crate) fn rollback_publish(
 
         for n in pr_numbers {
             let pr_url = format!("https://github.com/{label}/pull/{n}");
-            log.status(&format!("schemastore: closing PR {label} ({pr_url})"));
+            log.status(&format!("closing schemastore PR {label} ({pr_url})"));
             match crate::util::close_pr_via_api(&t.upstream_owner, &t.upstream_repo, n, &token) {
                 crate::util::CloseOutcome::Closed => closed += 1,
                 crate::util::CloseOutcome::AlreadyClosed => {
                     already_closed += 1;
                     log.status(&format!(
-                        "schemastore: PR {label} ({pr_url}) already closed/deleted upstream — \
+                        "schemastore PR {label} ({pr_url}) already closed/deleted upstream — \
                          rollback noticed the existing state"
                     ));
                 }
@@ -162,7 +162,7 @@ pub(crate) fn rollback_publish(
     }
 
     log.status(&format!(
-        "schemastore: closed {closed}, already-closed {already_closed}, failed {failed}"
+        "schemastore rollback closed {closed}, already-closed {already_closed}, failed {failed}"
     ));
     Ok(())
 }

@@ -51,7 +51,7 @@ fn clear_snapcraft_cache(xdg_cache_home: Option<&str>, home: Option<&str>, log: 
         return;
     }
     log.status(&format!(
-        "snapcraft: clearing stale download cache at {} (works around snapcraft ≤8.14.5 import-time os.makedirs crash)",
+        "clearing stale download cache at {} (works around snapcraft ≤8.14.5 import-time os.makedirs crash)",
         cache.display()
     ));
     let _ = std::fs::remove_dir_all(&cache);
@@ -462,7 +462,7 @@ fn process_snap_target(
         let snap_arch = triple_to_snap_arch(t);
         if !is_valid_snap_arch(snap_arch) {
             log.warn(&format!(
-                "snapcraft: skipping unsupported arch '{}' (target: {})",
+                "skipping unsupported arch '{}' (target: {})",
                 snap_arch, t
             ));
             return Ok(());
@@ -792,7 +792,7 @@ fn stage_prime_dir(
     if let Some(ref icon_src_str) = snap_cfg.icon {
         let icon_src = resolve_icon_path(icon_src_str, ctx.options.project_root.as_ref());
         let dest_rel = copy_snap_icon(&icon_src, &meta_dir, snap_name)?;
-        log.status(&format!("snapcraft: wrote snap icon to {}", dest_rel));
+        log.status(&format!("wrote snap icon to {}", dest_rel));
     }
 
     copy_binaries_into_prime(target_binaries, &prime_dir)?;
@@ -1001,7 +1001,7 @@ fn run_snap_jobs(
             .map_err(|_| anyhow::anyhow!("snapcraft cache lock poisoned"))?;
         clear_snapcraft_cache(xdg_cache_home, home_for_cache, &thread_log);
 
-        thread_log.status(&format!("running: {}", job.cmd_args.join(" ")));
+        thread_log.status(&format!("running {}", job.cmd_args.join(" ")));
 
         let output = Command::new(&job.cmd_args[0])
             .args(&job.cmd_args[1..])

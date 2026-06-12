@@ -870,7 +870,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
                     "version-sync: `cargo update --workspace` exited non-zero; Cargo.lock may be stale",
                 ),
                 Err(e) => log.warn(&format!(
-                    "version-sync: could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
+                    "could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
                 )),
             }
 
@@ -1150,7 +1150,7 @@ fn apply_workspace_bump(
             "version-sync: `cargo update --workspace` exited non-zero; Cargo.lock may be stale",
         ),
         Err(e) => log.warn(&format!(
-            "version-sync: could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
+            "could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
         )),
     }
 
@@ -1788,7 +1788,7 @@ fn run_per_crate_tag(
         match anodizer_core::cargo_lock::cargo_update_workspace(Some(workspace_root.as_path())) {
             Ok(_) => {}
             Err(e) => log.warn(&format!(
-                "version-sync: could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
+                "could not spawn `cargo update --workspace` ({e}); Cargo.lock may be stale"
             )),
         }
 
@@ -2379,7 +2379,7 @@ fn rewrite_and_stage_version_files(
             }
         } else {
             log.warn(&format!(
-                "version_files: enrolled file {} did not contain version {} (nothing rewritten)",
+                "enrolled version_files entry {} did not contain version {} (nothing rewritten)",
                 rel, old
             ));
         }

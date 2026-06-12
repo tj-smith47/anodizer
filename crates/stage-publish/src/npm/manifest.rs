@@ -135,7 +135,7 @@ pub(crate) fn warn_excluded_targets(log: &StageLogger, excluded: &[String]) {
         .collect::<Vec<_>>()
         .join(", ");
     log.warn(&format!(
-        "npm: {} target(s) have no npm os/cpu/libc mapping and were excluded from \
+        "{} target(s) have no npm os/cpu/libc mapping and were excluded from \
          npm packages: {}. Consumers on those platforms will not be able to \
          `npm install` this package (npm has no selector for them — e.g. macOS \
          universal binaries, or exotic arches).",

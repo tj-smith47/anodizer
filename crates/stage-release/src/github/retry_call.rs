@@ -130,7 +130,7 @@ where
                 if secondary_rl {
                     let delay = jitter_duration(secondary_rl_delay(retry_after));
                     release_log().warn(&format!(
-                        "release: {label} hit GitHub secondary rate limit; \
+                        "{label} hit GitHub secondary rate limit; \
                          sleeping {:.1}s before retry (attempt {attempt}/{max})",
                         delay.as_secs_f64(),
                     ));

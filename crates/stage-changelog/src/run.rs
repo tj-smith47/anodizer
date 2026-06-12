@@ -378,7 +378,7 @@ fn handle_github_native_changelog(
             String::new()
         } else {
             log.status(&format!(
-                "github-native: fetching release notes for {}/{} \
+                "fetching github-native release notes for {}/{} \
                  (tag_name={:?}, previous_tag_name={:?})",
                 repo.owner, repo.name, current_tag, prev_tag
             ));
@@ -424,7 +424,7 @@ fn handle_github_native_changelog(
     // missing config stays visible in CI output.
     if !missing_github.is_empty() {
         log.warn(&format!(
-            "changelog: use=github-native — skipping github-native notes for {} \
+            "use=github-native — skipping github-native notes for {} \
              crate(s) without release.github: {} (if any should have a release, \
              add release.github.owner and release.github.name)",
             missing_github.len(),
@@ -442,7 +442,7 @@ fn handle_github_native_changelog(
     // failure this surfaces.
     if !empty_github_body.is_empty() {
         log.warn(&format!(
-            "changelog: use=github-native produced an EMPTY release body for {} \
+            "use=github-native produced an EMPTY release body for {} \
              crate(s): {}. The GitHub release(s) will have NO release notes. \
              github-native notes are PR-based, so the likely cause is no merged \
              PRs between previous_tag_name and tag_name (e.g. a direct-push \
@@ -869,7 +869,7 @@ fn render_crate_changelog(
     // GitLab/Gitea compare APIs don't support path filtering at all.
     if use_github && paths.len() > 1 {
         log.warn(&format!(
-            "changelog: GitHub API only supports a single path filter; \
+            "GitHub API only supports a single path filter; \
              only the first of {} paths ('{}') will be used for API queries. \
              Use `use: git` for accurate multi-path filtering.",
             paths.len(),
@@ -878,7 +878,7 @@ fn render_crate_changelog(
     }
     if (use_gitlab || use_gitea) && !paths.is_empty() {
         log.warn(&format!(
-            "changelog: {} API does not support path filtering; \
+            "{} API does not support path filtering; \
              {} path(s) will be ignored. Use `use: git` for path-based filtering.",
             if use_gitlab { "GitLab" } else { "Gitea" },
             paths.len()
@@ -972,7 +972,7 @@ fn wrap_with_header_footer(
     if let Some(h) = header {
         let rendered = ctx.render_template_strict(h, "changelog header", log)?;
         if rendered.trim().is_empty() {
-            log.warn("changelog: header rendered to an empty string (will be omitted)");
+            log.warn("header rendered to an empty string (will be omitted)");
         } else {
             final_markdown.push_str(&rendered);
             final_markdown.push_str("\n\n");
@@ -984,7 +984,7 @@ fn wrap_with_header_footer(
     if let Some(f) = footer {
         let rendered = ctx.render_template_strict(f, "changelog footer", log)?;
         if rendered.trim().is_empty() {
-            log.warn("changelog: footer rendered to an empty string (will be omitted)");
+            log.warn("footer rendered to an empty string (will be omitted)");
         } else {
             final_markdown.push('\n');
             final_markdown.push_str(&rendered);

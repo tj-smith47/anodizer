@@ -68,7 +68,7 @@ pub(super) fn preflight_milestones(
     for milestone_cfg in milestones {
         if let Some(target) = resolve_milestone_for_close(milestone_cfg, ctx, log)? {
             log.status(&format!(
-                "milestone: will close '{}' on {}/{}",
+                "will close milestone '{}' on {}/{}",
                 target.name, target.owner, target.repo_name
             ));
         }
@@ -183,7 +183,7 @@ pub(super) fn close_milestones(
                     );
                 }
                 log.warn(&format!(
-                    "milestone: could not close '{}': {}",
+                    "could not close milestone '{}': {}",
                     milestone_name, e
                 ));
             }

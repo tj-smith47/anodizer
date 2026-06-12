@@ -502,7 +502,7 @@ fn stage_work_dir(
 fn run_flatpak_job(job: &FlatpakJob, verbosity: anodizer_core::log::Verbosity) -> Result<Artifact> {
     let thread_log = anodizer_core::log::StageLogger::new("flatpak", verbosity);
 
-    thread_log.status(&format!("running: {}", job.builder_args.join(" ")));
+    thread_log.status(&format!("running {}", job.builder_args.join(" ")));
     let output = Command::new(&job.builder_args[0])
         .args(&job.builder_args[1..])
         .current_dir(&job.work_dir)
@@ -515,7 +515,7 @@ fn run_flatpak_job(job: &FlatpakJob, verbosity: anodizer_core::log::Verbosity) -
         })?;
     thread_log.check_output(output, "flatpak-builder")?;
 
-    thread_log.status(&format!("running: {}", job.bundle_args.join(" ")));
+    thread_log.status(&format!("running {}", job.bundle_args.join(" ")));
     let output = Command::new(&job.bundle_args[0])
         .args(&job.bundle_args[1..])
         .current_dir(&job.work_dir)

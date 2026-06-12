@@ -268,7 +268,7 @@ fn validate_binstall(
         // to cross-check against. The binstall render itself is still
         // exercised below so a template error is caught.
         log.verbose(&format!(
-            "binstall: crate '{}' produced no archives in this snapshot shard; \
+            "crate '{}' produced no archives for binstall in this snapshot shard; \
              rendering pkg_url without an asset cross-check",
             crate_cfg.name
         ));
@@ -358,7 +358,7 @@ fn validate_binstall(
                     );
                 }
                 log.verbose(&format!(
-                    "binstall: crate '{}' override '{}' not built in this snapshot shard; \
+                    "crate '{}' binstall override '{}' not built in this snapshot shard; \
                      skipping its asset cross-check",
                     crate_cfg.name, triple
                 ));
@@ -585,7 +585,7 @@ fn validate_nix(ctx: &mut Context, crate_cfg: &CrateConfig, log: &StageLogger) -
     let produced = produced_archives(ctx, &crate_cfg.name);
     if produced.is_empty() {
         log.verbose(&format!(
-            "nix: crate '{}' produced no archives in this snapshot shard; \
+            "crate '{}' produced no archives for nix in this snapshot shard; \
              skipping nix emission validation (no assets to cross-check)",
             crate_cfg.name,
         ));
@@ -678,7 +678,7 @@ fn validate_nix(ctx: &mut Context, crate_cfg: &CrateConfig, log: &StageLogger) -
     }
 
     log.verbose(&format!(
-        "nix: crate '{}' snapshot emission validated ({} system(s) cross-checked)",
+        "crate '{}' nix snapshot emission validated ({} system(s) cross-checked)",
         crate_cfg.name,
         render.archives.len()
     ));

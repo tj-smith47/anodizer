@@ -194,6 +194,17 @@ fn build_subprocess_command(
     for (k, v) in env {
         cmd.env(k, v);
     }
+    // The child's stderr is inherited, so its lines interleave straight
+    // into the harness's stream. Export the parent's nesting depth (+2)
+    // so the child's section headers render beneath the harness's
+    // `• run N of M` bullet instead of flush-left: the bullet itself
+    // sits one section level plus a body indent under the harness
+    // header, and the child's sections belong one further level in.
+    // Set AFTER the hermetic env map so the map cannot clobber it.
+    cmd.env(
+        crate::log::LOG_DEPTH_ENV,
+        (crate::log::current_depth() + 2).to_string(),
+    );
     cmd
 }
 
@@ -342,6 +353,54 @@ mod tests {
             assert!(
                 args.contains(&"--no-preflight"),
                 "child argv (snapshot={snapshot}) must always carry --no-preflight; got {args:?}"
+            );
+        }
+    }
+
+    /// The child env must ALWAYS carry the log-depth var so the child's
+    /// interleaved stderr nests beneath the harness's `• run N of M`
+    /// bullet — and it must survive the hermetic `env_clear` +
+    /// re-population (it is set after the map is applied, so the map
+    /// cannot clobber it).
+    #[test]
+    fn subprocess_command_always_exports_log_depth() {
+        // A hermetic map that tries to clobber the var: the explicit
+        // post-map set must win.
+        let mut env = HashMap::new();
+        env.insert(crate::log::LOG_DEPTH_ENV.to_string(), "99".to_string());
+        for snapshot in [true, false] {
+            let cmd = build_subprocess_command(
+                &PathBuf::from("/usr/bin/anodize"),
+                &std::env::temp_dir(),
+                &env,
+                None,
+                &[],
+                snapshot,
+                None,
+            );
+            let depth = cmd
+                .get_envs()
+                .find(|(k, _)| *k == std::ffi::OsStr::new(crate::log::LOG_DEPTH_ENV))
+                .and_then(|(_, v)| v)
+                .and_then(|v| v.to_str())
+                .map(str::to_string);
+            // Pin presence + the `+2` floor rather than an exact value:
+            // SECTION_DEPTH is process-global and sibling tests open
+            // sections concurrently, so the exact depth at build time is
+            // not stable under a parallel test runner.
+            let parsed: usize = depth
+                .as_deref()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "child env (snapshot={snapshot}) must carry {}",
+                        crate::log::LOG_DEPTH_ENV
+                    )
+                })
+                .parse()
+                .expect("depth var must be numeric");
+            assert!(
+                parsed >= 2,
+                "depth must be parent depth + 2 (>= 2); got {parsed}"
             );
         }
     }

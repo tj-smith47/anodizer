@@ -471,24 +471,28 @@ pub fn record_failure_policy(
     updated
 }
 
-/// Pretty-print a per-publisher status table to the supplied writer
-/// (typically `stderr`).
+/// Build the end-of-pipeline per-publisher status rows as `(key, value)`
+/// pairs in the log's kv register — the caller feeds each pair to
+/// `StageLogger::kv` with a shared key width so the value column aligns.
 ///
-/// Output shape (operator-facing):
+/// Output shape once rendered (operator-facing):
 ///
 /// ```text
-/// Publisher status:
-///   name              group     required  status
-///   github-release    Assets    true      succeeded
-///   homebrew          Manager   false     failed
-///   cargo             Submitter true      skipped-submitter-gated
-///
-/// Run flags: submitter_gated=false announce_gated=true
+/// • github-release   Assets     required  succeeded
+/// • homebrew         Manager    optional  failed
+/// • cargo            Submitter  required  skipped-submitter-gated
+/// • run flags        submitter_gated=false announce_gated=true
 /// ```
-pub fn print_status_table(
-    summary: &RunSummary,
-    out: &mut dyn std::io::Write,
-) -> std::io::Result<()> {
+///
+/// With zero publisher results a single placeholder row stands in for
+/// the per-publisher block, so the summary still states *why* it is
+/// empty instead of rendering a bare header:
+///
+/// ```text
+/// • publishers   none ran (publish stages skipped)
+/// • run flags    submitter_gated=false announce_gated=false
+/// ```
+pub fn status_table_rows(summary: &RunSummary) -> Vec<(String, String)> {
     // Cap the name column so a pathological publisher name (e.g. an
     // operator pastes a URL into `publishers.custom[].name`) cannot
     // blow out the terminal width in CI logs. 40 chars covers every
@@ -515,53 +519,41 @@ pub fn print_status_table(
         }
     };
 
-    let name_width = summary
-        .results
-        .iter()
-        .map(|r| truncate_name(&r.name).chars().count())
-        .max()
-        .unwrap_or(0)
-        .max("name".len());
-    let group_width = summary
-        .results
-        .iter()
-        .map(|r| format!("{:?}", r.group).len())
-        .max()
-        .unwrap_or(0)
-        .max("group".len());
-    let required_width = "required".len();
-
-    writeln!(out, "Publisher status:")?;
-    writeln!(
-        out,
-        "  {:<nw$} {:<gw$} {:<rw$} status",
-        "name",
-        "group",
-        "required",
-        nw = name_width,
-        gw = group_width,
-        rw = required_width,
-    )?;
-    for r in &summary.results {
-        writeln!(
-            out,
-            "  {:<nw$} {:<gw$} {:<rw$} {}",
-            truncate_name(&r.name),
-            format!("{:?}", r.group),
-            r.required,
-            r.status,
-            nw = name_width,
-            gw = group_width,
-            rw = required_width,
-        )?;
+    let mut rows: Vec<(String, String)> = Vec::new();
+    if summary.results.is_empty() {
+        rows.push((
+            "publishers".to_string(),
+            "none ran (publish stages skipped)".to_string(),
+        ));
+    } else {
+        let group_width = summary
+            .results
+            .iter()
+            .map(|r| format!("{:?}", r.group).len())
+            .max()
+            .unwrap_or(0);
+        for r in &summary.results {
+            // "required" and "optional" are both 8 chars, so the status
+            // column aligns without padding the requirement cell.
+            let requirement = if r.required { "required" } else { "optional" };
+            rows.push((
+                truncate_name(&r.name),
+                format!(
+                    "{:<group_width$}  {requirement}  {}",
+                    format!("{:?}", r.group),
+                    r.status,
+                ),
+            ));
+        }
     }
-    writeln!(out)?;
-    writeln!(
-        out,
-        "Run flags: submitter_gated={} announce_gated={}",
-        summary.submitter_gated, summary.announce_gated,
-    )?;
-    Ok(())
+    rows.push((
+        "run flags".to_string(),
+        format!(
+            "submitter_gated={} announce_gated={}",
+            summary.submitter_gated, summary.announce_gated,
+        ),
+    ));
+    rows
 }
 
 #[cfg(test)]
@@ -1053,29 +1045,77 @@ mod tests {
     }
 
     #[test]
-    fn print_status_table_renders_human_readable() {
+    fn status_table_rows_render_per_publisher_and_run_flags() {
         let s = populated_summary();
-        let mut buf: Vec<u8> = Vec::new();
-        print_status_table(&s, &mut buf).expect("print");
-        let text = String::from_utf8(buf).expect("utf8");
-        assert!(text.contains("Publisher status:"), "header missing: {text}");
-        assert!(text.contains("succeeded"), "succeeded row missing: {text}");
+        let rows = status_table_rows(&s);
+        // One row per publisher result, plus the trailing run-flags row.
+        assert_eq!(rows.len(), s.results.len() + 1, "rows: {rows:?}");
         assert!(
-            text.contains("skipped-submitter-gated"),
-            "submitter-gated row missing: {text}"
+            rows.iter().any(|(_, v)| v.contains("succeeded")),
+            "succeeded row missing: {rows:?}"
         );
         assert!(
-            text.contains("Run flags: submitter_gated=true announce_gated=false"),
-            "run-flags line missing: {text}"
+            rows.iter()
+                .any(|(_, v)| v.contains("skipped-submitter-gated")),
+            "submitter-gated row missing: {rows:?}"
+        );
+        // The required bool renders as the words required/optional, not
+        // true/false.
+        assert!(
+            rows.iter()
+                .any(|(_, v)| v.contains("required") || v.contains("optional")),
+            "requirement cell missing: {rows:?}"
+        );
+        assert_eq!(
+            rows.last().expect("non-empty"),
+            &(
+                "run flags".to_string(),
+                "submitter_gated=true announce_gated=false".to_string()
+            ),
+            "run-flags row must close the table: {rows:?}"
         );
     }
 
     #[test]
-    fn print_status_table_widens_for_long_publisher_names() {
-        // 25-char publisher name (longer than the historical 20-char
-        // fixed width). The header and the row must agree on column
-        // boundaries: the `group` header should start at the same
-        // offset as the row's group column.
+    fn status_table_rows_empty_results_state_why() {
+        // Zero publisher results must yield an explicit placeholder row,
+        // not an empty table — the operator should read WHY nothing is
+        // listed.
+        let s = RunSummary {
+            schema_version: RunSummary::CURRENT_SCHEMA_VERSION,
+            anodize_version: "0.0.0-test".to_string(),
+            tag: "v0.0.0".to_string(),
+            submitter_gated: false,
+            announce_gated: false,
+            publishers_succeeded: 0,
+            publishers_failed: 0,
+            irreversibly_published: false,
+            failure_policy: None,
+            results: vec![],
+            determinism_allowlist: DeterminismAllowlist::default(),
+        };
+        let rows = status_table_rows(&s);
+        assert_eq!(
+            rows,
+            vec![
+                (
+                    "publishers".to_string(),
+                    "none ran (publish stages skipped)".to_string()
+                ),
+                (
+                    "run flags".to_string(),
+                    "submitter_gated=false announce_gated=false".to_string()
+                ),
+            ],
+        );
+    }
+
+    #[test]
+    fn status_table_rows_keep_long_names_untruncated_under_cap() {
+        // 29-char publisher name (longer than the historical 20-char
+        // fixed width but under the 40-char cap) must survive as the row
+        // key verbatim; the caller pads keys to the widest one so the
+        // value column aligns.
         let s = RunSummary {
             schema_version: RunSummary::CURRENT_SCHEMA_VERSION,
             anodize_version: "0.0.0-test".to_string(),
@@ -1086,43 +1126,45 @@ mod tests {
             publishers_failed: 0,
             irreversibly_published: false,
             failure_policy: None,
-            results: vec![RunSummaryResult {
-                name: "custom-publisher-with-long-id".to_string(), // 29 chars
-                group: PublisherGroup::Manager,
-                required: false,
-                status: "succeeded".to_string(),
-                evidence: None,
-            }],
+            results: vec![
+                RunSummaryResult {
+                    name: "custom-publisher-with-long-id".to_string(), // 29 chars
+                    group: PublisherGroup::Manager,
+                    required: false,
+                    status: "succeeded".to_string(),
+                    evidence: None,
+                },
+                RunSummaryResult {
+                    name: "gh".to_string(),
+                    group: PublisherGroup::Assets,
+                    required: true,
+                    status: "succeeded".to_string(),
+                    evidence: None,
+                },
+            ],
             determinism_allowlist: DeterminismAllowlist::default(),
         };
-        let mut buf: Vec<u8> = Vec::new();
-        print_status_table(&s, &mut buf).expect("print");
-        let text = String::from_utf8(buf).expect("utf8");
-        let lines: Vec<&str> = text.lines().collect();
-        // Lines: "Publisher status:", header, row.
-        let header = lines[1];
-        let row = lines[2];
-        // Find `group` in header and `Manager` in row; their starting
-        // byte offsets must match (column alignment).
-        let header_group_at = header.find("group").expect("group header present");
-        let row_group_at = row.find("Manager").expect("Manager cell present");
+        let rows = status_table_rows(&s);
+        // The full long name is the row key, untruncated at this length.
         assert_eq!(
-            header_group_at, row_group_at,
-            "header `group` column at {header_group_at} must align with row `Manager` cell at \
-             {row_group_at}\nheader: {header:?}\nrow:    {row:?}",
+            rows[0].0, "custom-publisher-with-long-id",
+            "long name must survive as the key untruncated: {rows:?}"
         );
-        // And the full long name must appear (no truncation at this length).
-        assert!(
-            row.contains("custom-publisher-with-long-id"),
-            "long name must render untruncated: {row:?}",
+        // Within the values, the group cell is padded to the widest group
+        // so the requirement/status columns align across rows.
+        let req_at = |v: &str| v.find("required").or_else(|| v.find("optional"));
+        assert_eq!(
+            req_at(&rows[0].1),
+            req_at(&rows[1].1),
+            "requirement column must align across rows: {rows:?}"
         );
     }
 
     #[test]
-    fn print_status_table_truncates_extremely_long_names() {
-        // 60-char publisher name exceeds the 40-char cap; the rendered
-        // row must replace the tail with an ellipsis so the remaining
-        // columns still line up in the CI log.
+    fn status_table_rows_truncate_extremely_long_names() {
+        // 60-char publisher name exceeds the 40-char cap; the row key
+        // must replace the tail with an ellipsis so the caller's key
+        // padding (and thus the value column) stays bounded in CI logs.
         let long_name = "x".repeat(60);
         let s = RunSummary {
             schema_version: RunSummary::CURRENT_SCHEMA_VERSION,
@@ -1143,32 +1185,22 @@ mod tests {
             }],
             determinism_allowlist: DeterminismAllowlist::default(),
         };
-        let mut buf: Vec<u8> = Vec::new();
-        print_status_table(&s, &mut buf).expect("print");
-        let text = String::from_utf8(buf).expect("utf8");
+        let rows = status_table_rows(&s);
+        let key = &rows[0].0;
         assert!(
-            !text.contains(&long_name),
-            "full 60-char name must NOT appear verbatim: {text}",
+            !key.contains(&long_name),
+            "full 60-char name must NOT appear verbatim: {key:?}",
         );
         assert!(
-            text.contains('…'),
-            "ellipsis must mark the truncation: {text}",
+            key.ends_with('…'),
+            "ellipsis must mark the truncation: {key:?}"
         );
-        // Header and row must still align — compare by visual (char)
-        // offset, not byte offset, since `…` is a 3-byte UTF-8 char.
-        let lines: Vec<&str> = text.lines().collect();
-        let header = lines[1];
-        let row = lines[2];
-        let char_offset = |line: &str, needle: &str| -> usize {
-            let byte_at = line.find(needle).expect("needle present");
-            line[..byte_at].chars().count()
-        };
-        let header_group_at = char_offset(header, "group");
-        let row_group_at = char_offset(row, "Assets");
+        // The cap is in chars (the `…` is one char), so the key stays at
+        // the 40-char visual width.
         assert_eq!(
-            header_group_at, row_group_at,
-            "truncated row must still align (char offsets): header {header_group_at} vs row \
-             {row_group_at}\nheader: {header:?}\nrow:    {row:?}",
+            key.chars().count(),
+            40,
+            "truncated key must sit at the 40-char cap: {key:?}"
         );
     }
 

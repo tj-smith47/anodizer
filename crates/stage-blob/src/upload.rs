@@ -329,7 +329,7 @@ pub(crate) fn upload_files_owned(
                         object_is_identical(&store, &object_path, &upload_data).await
                 {
                     task_log.status(&format!(
-                        "blobs: skipping {} — identical object already present",
+                        "skipping {} — identical object already present",
                         key_display
                     ));
                     anodizer_core::parallel::lock_recover(&skipped, &task_log, "blob upload")

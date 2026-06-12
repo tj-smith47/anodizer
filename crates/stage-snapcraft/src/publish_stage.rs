@@ -393,7 +393,7 @@ fn run_uploads(
                     let snap_name = resolve_snap_name(snap_cfg, &project_name, &krate.name);
                     if let Some(true) = snap_revision_already_published(&snap_name, &version, log) {
                         log.status(&format!(
-                            "snapcraft: skipping '{}' {} — revision already published in the Snap Store",
+                            "skipping snapcraft '{}' {} — revision already published in the Snap Store",
                             snap_name, version
                         ));
                         skipped_already_published += 1;
@@ -410,7 +410,7 @@ fn run_uploads(
                                 max_attempts,
                             ));
                         }
-                        log.status(&format!("running: {}", upload_args.join(" ")));
+                        log.status(&format!("running {}", upload_args.join(" ")));
                         let upload_output = match Command::new(&upload_args[0])
                             .args(&upload_args[1..])
                             .output()

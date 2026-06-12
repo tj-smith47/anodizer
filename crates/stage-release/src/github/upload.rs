@@ -282,7 +282,7 @@ pub(crate) async fn upload_release_asset(req: UploadAssetRequest<'_>) -> Result<
                 let err = result.expect_err("SecondaryRateLimited outcome guarantees Err variant");
                 let delay = jitter_duration(secondary_rl_delay(retry_after));
                 release_log().warn(&format!(
-                    "release: upload of '{file_name}' hit GitHub secondary \
+                    "upload of '{file_name}' hit GitHub secondary \
                      rate limit; sleeping {:.1}s before retry \
                      (attempt {attempt}/{})",
                     delay.as_secs_f64(),

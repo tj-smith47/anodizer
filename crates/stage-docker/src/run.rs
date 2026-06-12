@@ -1088,7 +1088,7 @@ pub(crate) fn process_docker_manifest(
     // errors.
     if v2_multiplatform_tags.contains(&manifest_name) {
         log.status(&format!(
-            "docker: skipping manifest '{}' — already pushed as multi-arch by dockers_v2",
+            "skipping manifest '{}' — already pushed as multi-arch by dockers_v2",
             manifest_name
         ));
         return Ok(());
@@ -1107,7 +1107,7 @@ pub(crate) fn process_docker_manifest(
         })?;
         if img.trim().is_empty() {
             log.warn(&format!(
-                "docker: manifest image_template '{}' rendered to empty string, skipping",
+                "manifest image_template '{}' rendered to empty string, skipping",
                 tmpl
             ));
             continue;
@@ -1268,7 +1268,7 @@ pub(crate) fn build_manifest_create_cmd(
     for img in rendered_images {
         if let Some(digest) = find_image_digest(new_artifacts, img) {
             let pinned = format!("{}@{}", img, digest);
-            log.verbose(&format!("manifest: pinning {} to digest {}", img, digest));
+            log.verbose(&format!("pinning manifest {} to digest {}", img, digest));
             create_cmd.push(pinned);
         } else {
             // "Did you mean?" — find closest matching image by edit distance.
@@ -1336,7 +1336,7 @@ fn run_manifest_create_with_retry(
                 max_attempts,
             ));
         }
-        log.status(&format!("running: {}", create_cmd.join(" ")));
+        log.status(&format!("running {}", create_cmd.join(" ")));
         let mut create_command = Command::new(&create_cmd[0]);
         create_command.args(&create_cmd[1..]);
         for (key, value) in manifest_env_vars {
@@ -1403,7 +1403,7 @@ fn run_manifest_push_with_retry(
                 max_attempts,
             ));
         }
-        log.status(&format!("running: {}", push_cmd.join(" ")));
+        log.status(&format!("running {}", push_cmd.join(" ")));
         let mut push_command = Command::new(&push_cmd[0]);
         push_command.args(&push_cmd[1..]);
         for (key, value) in manifest_env_vars {

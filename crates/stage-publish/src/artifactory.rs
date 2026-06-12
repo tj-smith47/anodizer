@@ -402,7 +402,7 @@ pub(crate) fn upload_single_artifact(
         match probe_artifact_presence(client, url, auth, &checksum) {
             ArtifactPresence::PresentMatching => {
                 log.status(&format!(
-                    "artifactory: skipping {} — already uploaded at {} (sha256 match)",
+                    "skipping {} — already uploaded at {} (sha256 match)",
                     artifact.name(),
                     url
                 ));
@@ -484,7 +484,7 @@ pub(crate) fn upload_single_artifact(
         |attempt| {
             if attempt > 1 {
                 log.verbose(&format!(
-                    "artifactory: retrying upload of {art_name} (attempt {attempt})"
+                    "retrying artifactory upload of {art_name} (attempt {attempt})"
                 ));
             }
             let mut req = match method_upper.as_str() {
@@ -791,14 +791,14 @@ pub fn publish_to_artifactory(
 
         if artifacts.is_empty() {
             log.status(&format!(
-                "artifactory: no matching artifacts for '{}' (mode={})",
+                "no matching artifactory artifacts for '{}' (mode={})",
                 name, mode
             ));
             continue;
         }
 
         log.status(&format!(
-            "artifactory: uploading {} artifacts to '{}' (mode={})",
+            "uploading {} artifacts to artifactory '{}' (mode={})",
             artifacts.len(),
             name,
             mode
@@ -832,7 +832,7 @@ pub fn publish_to_artifactory(
             }
         }
 
-        log.status(&format!("artifactory: upload complete for '{}'", name));
+        log.status(&format!("artifactory upload complete for '{}'", name));
     }
 
     Ok(summary)
@@ -1132,7 +1132,7 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
             Ok(c) => c,
             Err(e) => {
                 log.warn(&format!(
-                    "artifactory: failed to build HTTP client for rollback: {}; manual cleanup required",
+                    "artifactory rollback failed to build HTTP client: {}; manual cleanup required",
                     e
                 ));
                 return Ok(());
@@ -1170,7 +1170,7 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
 
         let (deleted, already_absent, failed) = parallel_delete(&client, &jobs, &log);
         log.status(&format!(
-            "artifactory: deleted {} artifact(s), {} already absent, {} failure(s)",
+            "artifactory rollback deleted {} artifact(s), {} already absent, {} failure(s)",
             deleted, already_absent, failed
         ));
         Ok(())
@@ -1227,7 +1227,7 @@ fn parallel_delete(
                 let log = log.clone();
                 let counts = &counts;
                 handles.push(s.spawn(move || {
-                    log.status(&format!("artifactory: DELETE {}", url));
+                    log.status(&format!("DELETE {}", url));
                     let mut req = client.delete(&url);
                     if let Some((ref u, ref p)) = basic_auth {
                         req = req.basic_auth(u, Some(p));
@@ -1246,7 +1246,7 @@ fn parallel_delete(
                                     let mut c = crate::util::lock_recover(counts, &log, "artifactory");
                                     c.1 += 1;
                                     log.status(&format!(
-                                        "artifactory: DELETE {} returned HTTP {} (already absent)",
+                                        "DELETE {} returned HTTP {} (already absent)",
                                         url, status
                                     ));
                                 }
@@ -1254,7 +1254,7 @@ fn parallel_delete(
                                     let mut c = crate::util::lock_recover(counts, &log, "artifactory");
                                     c.2 += 1;
                                     log.warn(&format!(
-                                        "artifactory: DELETE {} returned HTTP {} (manual cleanup may be required)",
+                                        "DELETE {} returned HTTP {} (manual cleanup may be required)",
                                         url, status
                                     ));
                                 }
@@ -1264,7 +1264,7 @@ fn parallel_delete(
                             let mut c = crate::util::lock_recover(counts, &log, "artifactory");
                             c.2 += 1;
                             log.warn(&format!(
-                                "artifactory: DELETE {} transport error: {} (manual cleanup may be required)",
+                                "DELETE {} transport error: {} (manual cleanup may be required)",
                                 url, e
                             ));
                         }

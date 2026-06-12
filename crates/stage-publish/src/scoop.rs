@@ -675,7 +675,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         }
         util::CommitOutcome::NoChanges => {
             log.status(&format!(
-                "scoop: nothing to push, manifest for '{}' already up to date",
+                "nothing to push, scoop manifest for '{}' already up to date",
                 manifest_name
             ));
         }
@@ -1012,7 +1012,7 @@ impl anodizer_core::Publisher for ScoopPublisher {
         let (reverted, failed) =
             run_revert_targets_parallel(&prepared, "scoop", Some(env_hint), &log);
         log.status(&format!(
-            "scoop: reverted {} bucket(s), {} failure(s)",
+            "scoop rollback reverted {} bucket(s), {} failure(s)",
             reverted, failed
         ));
         Ok(())

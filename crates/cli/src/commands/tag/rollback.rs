@@ -215,7 +215,11 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
 
     let raw_target = opts.sha.as_deref().unwrap_or("HEAD");
     let target_sha = git::rev_parse_in(&cwd, raw_target)?;
-    log.status(&format!("target: {} ({})", raw_target, short(&target_sha)));
+    log.kv(
+        "target",
+        &format!("{} ({})", raw_target, short(&target_sha)),
+        "target".len(),
+    );
 
     let all_tags_at_sha = git::get_tags_at_sha_in(&cwd, &target_sha)?;
     if all_tags_at_sha.is_empty() {
@@ -229,9 +233,9 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
     let mut deletable: Vec<String> = Vec::new();
     for tag in &all_tags_at_sha {
         match classify_tag(tag) {
-            None => log.status(&format!("skip (not anodize-shaped): {tag}")),
+            None => log.status(&format!("skipped {tag} (not anodize-shaped)")),
             Some(kind) if !scope_includes(opts.scope, kind) => log.status(&format!(
-                "skip (scope filter --scope={:?}): {tag}",
+                "skipped {tag} (scope filter --scope={:?})",
                 opts.scope
             )),
             Some(_) => deletable.push(tag.clone()),

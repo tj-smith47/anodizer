@@ -351,7 +351,7 @@ pub(crate) fn run_publish(ctx: &mut Context) -> anyhow::Result<PublishEvidence> 
 
     let effective = effective_schemas(ctx, &cfg)?;
     if effective.is_empty() {
-        log.status("schemastore: no schemas to register (all skipped or none configured)");
+        log.status("no schemas to register (all skipped or none configured)");
         return Ok(PublishEvidence::new("schemastore"));
     }
 
@@ -367,7 +367,7 @@ pub(crate) fn run_publish(ctx: &mut Context) -> anyhow::Result<PublishEvidence> 
     // `run_real`, which re-derives from the synced clone.
     if probe_remote_all_noop(ctx, &cfg, &effective, &log) {
         log.status(&format!(
-            "schemastore: all {} schema(s) already current upstream — nothing to publish (no clone)",
+            "all {} schemastore schema(s) already current upstream — nothing to publish (no clone)",
             effective.len()
         ));
         return Ok(PublishEvidence::new("schemastore"));
@@ -399,7 +399,7 @@ fn probe_remote_all_noop(
             // Never abort the release on a probe failure; fall through to the
             // clone, which is the source of truth.
             log.status(&format!(
-                "schemastore: pre-clone catalog probe skipped ({e}); proceeding to clone"
+                "schemastore pre-clone catalog probe skipped ({e}); proceeding to clone"
             ));
             false
         }
@@ -517,7 +517,7 @@ fn plan_dry_run(
         log.status(&plan.planned_line());
     }
     log.status(&format!(
-        "schemastore: (dry-run) planned {} schema registration(s); no PR opened",
+        "(dry-run) planned {} schemastore registration(s); no PR opened",
         effective.len()
     ));
     Ok(PublishEvidence::new("schemastore"))
@@ -655,7 +655,7 @@ fn run_real(
         };
         if !schema_change_needed(&plan, local_schema.as_deref(), &remote) {
             log.status(&format!(
-                "schemastore: `{}` already registered and current — no change",
+                "schemastore `{}` already registered and current — no change",
                 plan.name
             ));
             continue;
@@ -676,7 +676,7 @@ fn run_real(
     }
 
     if applied.is_empty() {
-        log.status("schemastore: every schema already registered and current — nothing to publish");
+        log.status("every schema already registered and current — nothing to publish");
         return Ok(PublishEvidence::new("schemastore"));
     }
 
@@ -698,7 +698,7 @@ fn run_real(
     ) {
         Ok(nums) if !nums.is_empty() => {
             log.status(&format!(
-                "schemastore: a PR for {fork_owner}:{branch} → {UPSTREAM_OWNER}/{UPSTREAM_REPO} \
+                "a schemastore PR for {fork_owner}:{branch} → {UPSTREAM_OWNER}/{UPSTREAM_REPO} \
                  is already open (#{}) — treating as in-flight, not re-pushing",
                 nums[0]
             ));
@@ -706,7 +706,7 @@ fn run_real(
         }
         Ok(_) => {}
         Err(e) => log.warn(&format!(
-            "schemastore: could not check for an existing open PR ({e}); proceeding to push"
+            "could not check for an existing open schemastore PR ({e}); proceeding to push"
         )),
     }
 
@@ -721,7 +721,7 @@ fn run_real(
         &commit_opts,
     )?;
     if !push.is_pushed() {
-        log.status("schemastore: fork branch already matches the staged tree — nothing pushed");
+        log.status("fork branch already matches the staged tree — nothing pushed");
         return Ok(PublishEvidence::new("schemastore"));
     }
 
@@ -777,7 +777,7 @@ fn sync_to_upstream(repo_path: &std::path::Path, log: &StageLogger) -> anyhow::R
         "schemastore: git reset --hard upstream",
     )?;
     log.status(&format!(
-        "schemastore: synced fork work tree to {UPSTREAM_OWNER}/{UPSTREAM_REPO}@{UPSTREAM_DEFAULT_BRANCH}"
+        "synced schemastore fork work tree to {UPSTREAM_OWNER}/{UPSTREAM_REPO}@{UPSTREAM_DEFAULT_BRANCH}"
     ));
     Ok(())
 }
@@ -847,7 +847,7 @@ fn write_vendor_schema(
     std::fs::write(&dest, formatted)
         .with_context(|| format!("schemastore: write {}", dest.display()))?;
     log.status(&format!(
-        "schemastore: vendored `{}` → {}",
+        "vendored schemastore `{}` → {}",
         plan.name,
         vendor_rel.display()
     ));
@@ -873,7 +873,7 @@ fn write_vendor_schema(
         std::fs::write(&allow_abs, &updated)
             .with_context(|| format!("schemastore: write {}", allow_abs.display()))?;
         log.status(&format!(
-            "schemastore: allowlisted high-dialect schema `{allow_name}` in {DIALECT_ALLOWLIST_PATH}"
+            "allowlisted high-dialect schema `{allow_name}` in {DIALECT_ALLOWLIST_PATH}"
         ));
     }
     Ok(())

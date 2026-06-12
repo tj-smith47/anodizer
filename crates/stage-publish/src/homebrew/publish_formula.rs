@@ -598,7 +598,7 @@ fn commit_files_to_tap(
         }
         crate::util::CommitOutcome::NoChanges => {
             log.status(&format!(
-                "homebrew: nothing to push, formula for '{}' already up to date",
+                "nothing to push, homebrew formula for '{}' already up to date",
                 ident.formula_name
             ));
         }
@@ -700,7 +700,7 @@ pub(crate) fn render_homebrew_formula_for_crate(
 
     if crate::util::should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "homebrew: skipping upload for '{}' (skip_upload={})",
+            "skipping homebrew upload for '{}' (skip_upload={})",
             crate_name,
             hb_cfg
                 .skip_upload
@@ -718,7 +718,7 @@ pub(crate) fn render_homebrew_formula_for_crate(
     )?;
     if !proceed {
         log.status(&format!(
-            "homebrew: skipping '{}' — `if` condition evaluated falsy",
+            "skipping homebrew for '{}' — `if` condition evaluated falsy",
             crate_name
         ));
         return Ok(None);
@@ -834,7 +834,7 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
 
     if crate::util::should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "homebrew: skipping upload for '{}' (skip_upload={})",
+            "skipping homebrew upload for '{}' (skip_upload={})",
             crate_name,
             hb_cfg
                 .skip_upload
@@ -852,7 +852,7 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
     )?;
     if !proceed {
         log.status(&format!(
-            "homebrew: skipping '{}' — `if` condition evaluated falsy",
+            "skipping homebrew for '{}' — `if` condition evaluated falsy",
             crate_name
         ));
         return Ok(false);

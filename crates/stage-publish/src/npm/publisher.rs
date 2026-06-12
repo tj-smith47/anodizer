@@ -104,11 +104,11 @@ impl anodizer_core::Publisher for NpmPublisher {
         let log = ctx.logger("publish");
         let entries = ctx.config.npms.clone().unwrap_or_default();
         if entries.is_empty() {
-            log.status("npm: no `npms:` entries configured");
+            log.status("no `npms:` entries configured");
             return Ok(anodizer_core::PublishEvidence::new("npm"));
         }
         log.status(&format!(
-            "npm: starting publish for {} entry(ies)",
+            "starting npm publish for {} entry(ies)",
             entries.len()
         ));
 
@@ -124,7 +124,7 @@ impl anodizer_core::Publisher for NpmPublisher {
         let mut publish_err: Option<anyhow::Error> = None;
         for (idx, cfg) in entries.iter().enumerate() {
             let label = cfg.id.clone().unwrap_or_else(|| format!("npms[{}]", idx));
-            log.status(&format!("npm: processing '{}'", label));
+            log.status(&format!("processing npm package '{}'", label));
             // Per-crate associations are out of scope for the top-level
             // `npms:` block — the first crate name (or the project name) is
             // the package-name fallback for an unnamed entry.
@@ -205,7 +205,7 @@ impl anodizer_core::Publisher for NpmPublisher {
             let token = env.var(&t.token_env_var).unwrap_or_default().to_string();
             if token.is_empty() {
                 log.warn(&format!(
-                    "npm: rollback of '{}@{}' skipped — env var ${} is unset; \
+                    "npm rollback of '{}@{}' skipped — env var ${} is unset; \
                      manually run `npm unpublish {}@{}` within 72h",
                     t.package, t.version, t.token_env_var, t.package, t.version
                 ));
@@ -216,7 +216,7 @@ impl anodizer_core::Publisher for NpmPublisher {
                 Ok(d) => d,
                 Err(e) => {
                     log.warn(&format!(
-                        "npm: rollback of '{}@{}' could not create .npmrc temp dir ({:#}); \
+                        "npm rollback of '{}@{}' could not create .npmrc temp dir ({:#}); \
                          manual cleanup required",
                         t.package, t.version, e
                     ));
@@ -226,7 +226,7 @@ impl anodizer_core::Publisher for NpmPublisher {
             };
             if let Err(e) = super::publish::write_npmrc(cfg_dir.path(), &t.registry, &token, None) {
                 log.warn(&format!(
-                    "npm: rollback of '{}@{}' could not write .npmrc ({:#}); \
+                    "npm rollback of '{}@{}' could not write .npmrc ({:#}); \
                      manual cleanup required",
                     t.package, t.version, e
                 ));
@@ -241,12 +241,12 @@ impl anodizer_core::Publisher for NpmPublisher {
                 &log,
             ) {
                 Ok(()) => {
-                    log.status(&format!("npm: unpublished '{}@{}'", t.package, t.version));
+                    log.status(&format!("unpublished '{}@{}'", t.package, t.version));
                     succeeded += 1;
                 }
                 Err(e) => {
                     log.warn(&format!(
-                        "npm: failed to unpublish '{}@{}' ({:#}); \
+                        "failed to unpublish '{}@{}' ({:#}); \
                          after 72h npm no longer permits unpublish — manual \
                          deprecation may be the only remediation",
                         t.package, t.version, e
@@ -256,7 +256,7 @@ impl anodizer_core::Publisher for NpmPublisher {
             }
         }
         log.status(&format!(
-            "npm: rollback complete — {} unpublished, {} failure(s)",
+            "npm rollback complete — {} unpublished, {} failure(s)",
             succeeded, failed
         ));
         Ok(())

@@ -151,7 +151,7 @@ pub fn generate_binstall_metadata(
         .with_context(|| format!("failed to write {}", cargo_toml_path.display()))?;
 
     log.status(&format!(
-        "binstall: updated [package.metadata.binstall] in {}",
+        "updated [package.metadata.binstall] in {}",
         cargo_toml_path.display()
     ));
 

@@ -519,7 +519,7 @@ fn wait_for_workspace_deps_to_appear(
         .context("publish: wait_for_workspace_deps build HTTP client")?;
 
     log.status(&format!(
-        "wait_for_workspace_deps: gating publish of '{}' on {} workspace dep(s)",
+        "gating publish of '{}' on {} workspace dep(s)",
         crate_name,
         deps.len()
     ));
@@ -531,26 +531,24 @@ fn wait_for_workspace_deps_to_appear(
     for (name, version) in deps {
         let url = sparse_index_url(name);
         log.status(&format!(
-            "wait_for_workspace_deps: waiting for {name}@{version} on crates.io (timeout {}s)",
+            "waiting for {name}@{version} on crates.io (timeout {}s)",
             max_wait.as_secs()
         ));
         loop {
             match probe_dep_on_index(&client, &url, version) {
                 Ok(true) => {
                     log.status(&format!(
-                        "wait_for_workspace_deps: {name}@{version} available — \
+                        "{name}@{version} available — \
                          continuing publish of '{crate_name}'"
                     ));
                     break;
                 }
                 Ok(false) => {
-                    log.verbose(&format!(
-                        "wait_for_workspace_deps: {name}@{version} not yet on index — retrying"
-                    ));
+                    log.verbose(&format!("{name}@{version} not yet on index — retrying"));
                 }
                 Err(e) => {
                     log.verbose(&format!(
-                        "wait_for_workspace_deps: probe error for {name}@{version}: {e:#} — retrying"
+                        "probe error for {name}@{version}: {e:#} — retrying"
                     ));
                 }
             }
@@ -1342,7 +1340,10 @@ pub(crate) fn cargo_publish_plan(
                     .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                     .with_context(|| format!("cargo: render skip template for '{}'", c.name))?;
                 if off {
-                    log.status(&format!("cargo: skipped for '{}' (skip=true)", c.name));
+                    log.status(&format!(
+                        "skipped cargo publish for '{}' (skip=true)",
+                        c.name
+                    ));
                     continue;
                 }
             }
@@ -1353,7 +1354,7 @@ pub(crate) fn cargo_publish_plan(
             )?;
             if !proceed {
                 log.status(&format!(
-                    "cargo: skipping '{}' — `if` condition evaluated falsy",
+                    "skipping cargo publish for '{}' — `if` condition evaluated falsy",
                     c.name
                 ));
                 continue;
@@ -1588,7 +1589,7 @@ fn publish_to_cargo_with(
                 workspace_deps_for_crate(&manifest_path, &workspace_names, &mut ws_root_cache);
             if deps.is_empty() {
                 log.verbose(&format!(
-                    "wait_for_workspace_deps: '{name}' has no workspace-internal deps with \
+                    "'{name}' has no workspace-internal deps with \
                      a literal version pin — gate is a no-op"
                 ));
             } else {
@@ -1598,7 +1599,7 @@ fn publish_to_cargo_with(
         }
 
         let cmd = publish_command(name, cargo_cfg);
-        log.status(&format!("running: {}", cmd.join(" ")));
+        log.status(&format!("running {}", cmd.join(" ")));
 
         // Defense in depth: even though poll_crates_io_index already waits
         // for the prior crate to land on the index edge anodizer queries,
@@ -1635,7 +1636,7 @@ fn publish_to_cargo_with(
         };
         if yank_version.is_empty() {
             log.warn(&format!(
-                "cargo: published '{name}' with no resolvable version; it CANNOT be \
+                "cargo published '{name}' with no resolvable version; it CANNOT be \
                  auto-yanked on rollback — verify and `cargo yank` it manually if a \
                  later crate fails this run"
             ));
@@ -1877,7 +1878,7 @@ impl anodizer_core::Publisher for CargoPublisher {
             // failure to recover. (Verbose, not a scary warn: an empty
             // record is the normal shape when the failing publisher never
             // reached its first successful `cargo publish`.)
-            log.verbose("cargo: no crates published this run; rollback is a no-op");
+            log.verbose("no crates published this run; cargo rollback is a no-op");
             return Ok(());
         }
         let mut yanked = 0usize;
@@ -1913,10 +1914,7 @@ impl anodizer_core::Publisher for CargoPublisher {
                 .as_deref()
                 .or(t.index.as_deref())
                 .unwrap_or("crates.io");
-            log.status(&format!(
-                "cargo: yank {} {} ({})",
-                t.name, t.version, target
-            ));
+            log.status(&format!("yanking {} {} ({})", t.name, t.version, target));
             let output = Command::new("cargo").args(&args).output()?;
             if output.status.success() {
                 yanked += 1;
@@ -1932,7 +1930,7 @@ impl anodizer_core::Publisher for CargoPublisher {
             }
         }
         log.status(&format!(
-            "cargo: yanked {} crate(s), {} failure(s)",
+            "cargo rollback yanked {} crate(s), {} failure(s)",
             yanked, failed
         ));
         Ok(())

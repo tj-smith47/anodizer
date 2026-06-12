@@ -80,7 +80,7 @@ impl PublisherSchemaValidator for AurSchemaValidator {
                     && !crate_has_aur_linux_archive(ctx, aur_cfg, crate_name)?
                 {
                     log.verbose(&format!(
-                        "aur: crate '{}' produced no linux archive in this snapshot shard; \
+                        "crate '{}' produced no linux archive for aur in this snapshot shard; \
                          skipping binary PKGBUILD schema validation",
                         crate_name
                     ));

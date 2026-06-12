@@ -118,7 +118,7 @@ impl Stage for ArchiveStage {
             && let Err(e) = fs::remove_dir_all(&staging_root)
         {
             log.verbose(&format!(
-                "archive: could not remove templated_files staging dir '{}': {e}",
+                "could not remove templated_files staging dir '{}': {e}",
                 staging_root.display()
             ));
         }

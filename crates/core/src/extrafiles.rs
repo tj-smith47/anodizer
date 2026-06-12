@@ -46,7 +46,7 @@ pub fn resolve(specs: &[ExtraFileSpec], log: &StageLogger) -> Result<Vec<Resolve
         let name_tmpl = spec.name_template().map(str::to_owned);
 
         if pattern.is_empty() {
-            log.warn("extra_files: ignoring empty glob");
+            log.warn("ignoring empty extra_files glob");
             continue;
         }
 
@@ -57,7 +57,7 @@ pub fn resolve(specs: &[ExtraFileSpec], log: &StageLogger) -> Result<Vec<Resolve
 
         if matches.is_empty() {
             log.warn(&format!(
-                "extra_files: glob '{pattern}' matched no files, skipping"
+                "extra_files glob '{pattern}' matched no files, skipping"
             ));
             continue;
         }

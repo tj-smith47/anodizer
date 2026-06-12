@@ -97,7 +97,7 @@ impl PublisherSchemaValidator for NixSchemaValidator {
                         && !crate_has_nix_archive(ctx, nix_cfg, crate_name)?
                     {
                         log.verbose(&format!(
-                            "nix: crate '{}' produced no Nix-mappable archive in this snapshot \
+                            "crate '{}' produced no Nix-mappable archive in this snapshot \
                              shard; skipping derivation schema validation",
                             crate_name
                         ));
@@ -110,7 +110,7 @@ impl PublisherSchemaValidator for NixSchemaValidator {
                     // failure.
                     let Some(render) = render_nix_for_validation(ctx, crate_name, &log)? else {
                         log.verbose(&format!(
-                            "nix: crate '{}' publisher would skip; nothing to validate",
+                            "crate '{}' nix publisher would skip; nothing to validate",
                             crate_name
                         ));
                         return Ok((out, None));

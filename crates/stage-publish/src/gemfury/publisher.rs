@@ -80,7 +80,7 @@ fn delete_recorded_targets(ctx: &mut Context, targets: &[GemFuryTarget]) {
         Ok(c) => c,
         Err(e) => {
             log.warn(&format!(
-                "gemfury: could not build HTTP client for rollback ({:#}); \
+                "gemfury rollback could not build HTTP client ({:#}); \
                  manual cleanup required via the GemFury dashboard",
                 e
             ));
@@ -115,7 +115,7 @@ fn delete_recorded_targets(ctx: &mut Context, targets: &[GemFuryTarget]) {
         let token = cfg_token.unwrap_or(env_token);
         if token.is_empty() {
             log.warn(&format!(
-                "gemfury: rollback of '{}/{}@{}' skipped — ${} not set and no \
+                "gemfury rollback of '{}/{}@{}' skipped — ${} not set and no \
                  `api_token` configured; manually delete via the GemFury dashboard",
                 t.account, t.package, t.version, t.api_token_env_var
             ));
@@ -127,14 +127,14 @@ fn delete_recorded_targets(ctx: &mut Context, targets: &[GemFuryTarget]) {
         ) {
             Ok(()) => {
                 log.status(&format!(
-                    "gemfury: deleted '{}/{}@{}'",
+                    "deleted gemfury package '{}/{}@{}'",
                     t.account, t.package, t.version
                 ));
                 deleted += 1;
             }
             Err(e) => {
                 log.warn(&format!(
-                    "gemfury: failed to delete '{}/{}@{}' ({:#}); manual cleanup required",
+                    "failed to delete gemfury package '{}/{}@{}' ({:#}); manual cleanup required",
                     t.account, t.package, t.version, e
                 ));
                 failed += 1;
@@ -142,7 +142,7 @@ fn delete_recorded_targets(ctx: &mut Context, targets: &[GemFuryTarget]) {
         }
     }
     log.status(&format!(
-        "gemfury: rollback complete — {} deleted, {} warn-only, {} failure(s)",
+        "gemfury rollback complete — {} deleted, {} warn-only, {} failure(s)",
         deleted, warn_only, failed
     ));
 }
@@ -204,7 +204,7 @@ impl anodizer_core::Publisher for GemFuryPublisher {
         if let Err(err) = publish_to_gemfury(ctx, &log, &mut pushed) {
             if !pushed.is_empty() {
                 log.warn(&format!(
-                    "gemfury: push failed after {} artifact(s) landed — rolling back \
+                    "gemfury push failed after {} artifact(s) landed — rolling back \
                      the partial push before failing the release",
                     pushed.len()
                 ));

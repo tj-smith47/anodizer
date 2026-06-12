@@ -222,7 +222,7 @@ impl anodizer_core::Publisher for BlobPublisher {
             log.warn(&blob_manual_cleanup_msg(&path.display().to_string()));
         }
         log.status(&format!(
-            "blob: rollback emitted manual-cleanup checklist for {} object(s) (legacy evidence)",
+            "blob rollback emitted manual-cleanup checklist for {} object(s) (legacy evidence)",
             evidence.artifact_paths.len()
         ));
         Ok(())
@@ -323,7 +323,7 @@ fn rollback_via_object_store(
             Ok(p) => p,
             Err(e) => {
                 log.warn(&format!(
-                    "blob: rollback skipped {}://{} — unknown provider in evidence: {}",
+                    "blob rollback skipped {}://{} — unknown provider in evidence: {}",
                     provider_str, bucket, e
                 ));
                 failed += group_targets.len();
@@ -335,7 +335,7 @@ fn rollback_via_object_store(
             Ok(s) => s,
             Err(e) => {
                 log.warn(&format!(
-                    "blob: rollback skipped {}://{} — build_store failed: {:#}",
+                    "blob rollback skipped {}://{} — build_store failed: {:#}",
                     provider_str, bucket, e
                 ));
                 failed += group_targets.len();
@@ -348,22 +348,19 @@ fn rollback_via_object_store(
             let url = blob_target_url(t);
             match rt.block_on(store.delete(&path)) {
                 Ok(()) => {
-                    log.status(&format!("blob: DELETE {}", url));
+                    log.status(&format!("DELETE {}", url));
                     deleted += 1;
                 }
                 Err(object_store::Error::NotFound { .. }) => {
                     // Object already gone — operator pre-deleted via the
                     // cloud console, or a prior partial rollback already
                     // ran. Idempotent: treat as success.
-                    log.status(&format!(
-                        "blob: {} already absent (treating as success)",
-                        url
-                    ));
+                    log.status(&format!("{} already absent (treating as success)", url));
                     already_absent += 1;
                 }
                 Err(e) => {
                     log.warn(&format!(
-                        "blob: DELETE {} failed: {} (manual cleanup may be required)",
+                        "DELETE {} failed: {} (manual cleanup may be required)",
                         url, e
                     ));
                     failed += 1;
@@ -373,7 +370,7 @@ fn rollback_via_object_store(
     }
 
     log.status(&format!(
-        "blob: rollback complete — {} deleted, {} already absent, {} failed",
+        "blob rollback complete — {} deleted, {} already absent, {} failed",
         deleted, already_absent, failed
     ));
     Ok(())

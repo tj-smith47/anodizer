@@ -105,7 +105,7 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
     cmd.arg(commit);
 
     log.debug(&format!(
-        "running: git archive --format {} {}--output {} {}",
+        "running git archive --format {} {}--output {} {}",
         initial_format,
         if prefix.is_empty() {
             String::new()
@@ -219,7 +219,7 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                         );
                     }
                     log.warn(&format!(
-                        "source: extra file '{}' not found, skipping",
+                        "extra file '{}' not found, skipping",
                         file_entry.src
                     ));
                     continue;
@@ -296,10 +296,7 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                     if strict {
                         bail!("source: extra file '{}' not found (strict mode)", entry.src);
                     }
-                    log.warn(&format!(
-                        "source: extra file '{}' not found, skipping",
-                        entry.src
-                    ));
+                    log.warn(&format!("extra file '{}' not found, skipping", entry.src));
                     continue;
                 }
 
@@ -465,7 +462,7 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
 /// Determine the repository root via `git rev-parse --show-toplevel`.
 pub(crate) fn get_repo_root(cwd: &Path, log: &anodizer_core::log::StageLogger) -> Result<PathBuf> {
     log.debug(&format!(
-        "running: git rev-parse --show-toplevel (cwd: {})",
+        "running git rev-parse --show-toplevel (cwd: {})",
         cwd.display()
     ));
     let output = Command::new("git")

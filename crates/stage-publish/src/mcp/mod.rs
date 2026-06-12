@@ -234,7 +234,7 @@ pub(crate) fn publish_with_registry(
     // `MCP_GITHUB_TOKEN`. Log the resolution path (NOT the token value) so a
     // user debugging an auth failure can see what anodizer tried.
     if mcp_rendered.auth.method == McpAuthMethod::Github && mcp_rendered.auth.token.is_empty() {
-        log.status("mcp: auth.token empty, falling back to MCP_GITHUB_TOKEN env var");
+        log.status("auth.token empty, falling back to MCP_GITHUB_TOKEN env var");
     }
 
     // ---- Build + authenticate ----
@@ -875,7 +875,7 @@ fn publish_payload(
                 && is_duplicate_version_rejection(*status, raw_body)
             {
                 log.status(&format!(
-                    "mcp: skipping '{}' on {} — version already published (registry \
+                    "skipping mcp '{}' on {} — version already published (registry \
                      rejected duplicate version)",
                     name, registry_url
                 ));
@@ -892,10 +892,10 @@ fn publish_payload(
         .and_then(|r| r.meta.official.map(|o| o.status))
         .unwrap_or_default();
     if status.is_empty() {
-        log.status(&format!("mcp: published '{}' to {}", name, registry_url));
+        log.status(&format!("published '{}' to {}", name, registry_url));
     } else {
         log.status(&format!(
-            "mcp: published '{}' to {} (status={})",
+            "published '{}' to {} (status={})",
             name, registry_url, status
         ));
     }

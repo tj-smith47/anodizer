@@ -454,7 +454,7 @@ pub(super) fn push_nupkg(
 
         if edge_transient {
             log.warn(&format!(
-                "chocolatey: edge returned HTTP {} with HTML body (attempt {}); \
+                "chocolatey edge returned HTTP {} with HTML body (attempt {}); \
                  retrying — likely a Cloudflare/IIS challenge, not a real rejection",
                 status, attempt
             ));

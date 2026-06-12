@@ -1130,7 +1130,7 @@ fn build_nfpm_job(
         match anodizer_core::util::parse_mod_timestamp(&rendered_mtime) {
             Ok(mt) => (Some(mt), Some(rendered_mtime)),
             Err(e) => {
-                log.warn(&format!("nfpm: invalid mtime '{rendered_mtime}': {e}"));
+                log.warn(&format!("invalid nfpm mtime '{rendered_mtime}': {e}"));
                 (None, None)
             }
         }
@@ -1179,7 +1179,7 @@ fn execute_nfpm_jobs(
     let run_job = |job: &NfpmJob| -> Result<Artifact> {
         let thread_log = anodizer_core::log::StageLogger::new("nfpm", verbosity);
 
-        thread_log.status(&format!("running: {}", job.cmd_args.join(" ")));
+        thread_log.status(&format!("running {}", job.cmd_args.join(" ")));
 
         let output = Command::new(&job.cmd_args[0])
             .args(&job.cmd_args[1..])
@@ -1195,13 +1195,13 @@ fn execute_nfpm_jobs(
         if let Some(mt) = job.mtime {
             if let Err(e) = anodizer_core::util::set_file_mtime(&job.pkg_path, mt) {
                 thread_log.warn(&format!(
-                    "nfpm: failed to apply mtime to {}: {}",
+                    "failed to apply mtime to {}: {}",
                     job.pkg_path.display(),
                     e
                 ));
             } else if let Some(ref repr) = job.mtime_repr {
                 thread_log.verbose(&format!(
-                    "nfpm: applied mtime={repr} to {}",
+                    "applied mtime={repr} to {}",
                     job.pkg_path.display()
                 ));
             }

@@ -170,7 +170,7 @@ fn run_announcer(
         && m.already_sent(a.name())
     {
         log.status(&format!(
-            "announce: skipping {} — already announced this version",
+            "skipping {} — already announced this version",
             a.name()
         ));
         return Ok(());
@@ -777,7 +777,7 @@ impl Announcer for TelegramAnnouncer {
             "MarkdownV2" | "HTML" => parse_mode_raw,
             other => {
                 log.warn(&format!(
-                    "telegram: unknown parse_mode {:?}, defaulting to \"MarkdownV2\"",
+                    "telegram parse_mode {:?} unknown, defaulting to \"MarkdownV2\"",
                     other
                 ));
                 "MarkdownV2"

@@ -607,7 +607,7 @@ impl Stage for DmgStage {
                             &dmg_path.to_string_lossy(),
                         );
 
-                        log.status(&format!("running: {}", cmd_args.join(" ")));
+                        log.status(&format!("running {}", cmd_args.join(" ")));
 
                         let output = Command::new(&cmd_args[0])
                             .args(&cmd_args[1..])

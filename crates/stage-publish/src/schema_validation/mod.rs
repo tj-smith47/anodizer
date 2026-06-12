@@ -316,7 +316,7 @@ pub fn validate_publisher_schemas(
             .validate(ctx, resolve_tag)
             .with_context(|| format!("schema-validate publisher '{publisher}' artifacts"))?;
         log.verbose(&format!(
-            "schema-validation: publisher '{}' produced {} finding(s)",
+            "publisher '{}' produced {} schema-validation finding(s)",
             publisher,
             result.len()
         ));

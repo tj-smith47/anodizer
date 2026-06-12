@@ -176,19 +176,20 @@ impl Pipeline {
             )?;
         }
 
+        // Consecutive skipped stages collapse into one `skipped  a, b, c`
+        // row (flushed when a stage actually runs, or at end of loop)
+        // instead of one line per stage — a heavily-skipped run (e.g. a
+        // determinism-harness child) would otherwise drown its real
+        // output in dozens of single-skip lines.
+        let mut pending_skips: Vec<(&str, bool)> = Vec::new();
+
         for stage in &self.stages {
             let name = stage.name();
-            // Operator-skipped stage: still open its section so the skip
-            // note sits inside the stage's own group (one section per
-            // stage in CI) rather than ungrouped after the last endgroup.
+            // Operator-skipped stage: no section is opened (the deferred
+            // header only prints on a real body line, which a skip is
+            // not); buffer the name for the consolidated row.
             if ctx.should_skip(name) {
-                // No section: a skipped stage has no header to announce (the
-                // header is deferred until a real body line, which a skip is
-                // not), so emit the one neutral skip line at the current
-                // (top) level — `• <name> skipped` reads flat, not nested
-                // under a non-existent verb header. The stage name is the
-                // line's subject (the per-line `[stage]` tag is gone).
-                log.status(&format!("{name} {}", "skipped".yellow()));
+                pending_skips.push((name, false));
                 continue;
             }
 
@@ -200,9 +201,11 @@ impl Pipeline {
             // individual stages (e.g., archive, upx) where it fires AFTER the stage
             // confirms it has work to do.
             if BINARY_DEPENDENT_STAGES.contains(&name) && !has_binaries {
-                log.status(&format!("{name} {}", "skipped (no binaries)".yellow()));
+                pending_skips.push((name, true));
                 continue;
             }
+
+            flush_skipped(log, &mut pending_skips);
 
             // Write metadata.json + artifacts.json before the release stage
             // so that include_meta can attach them to the GitHub release.
@@ -267,6 +270,8 @@ impl Pipeline {
             }
         }
 
+        flush_skipped(log, &mut pending_skips);
+
         // End-of-pipeline skip summary. Stages (sign, docker-sign, publisher)
         // record intentional per-sub-config skips via
         // `ctx.remember_skip(...)`; before this hook the skips were emitted
@@ -291,6 +296,39 @@ impl Pipeline {
         }
         Ok(())
     }
+}
+
+/// Flush the buffered consecutive stage skips as consolidated
+/// `skipped  a, b, c` kv rows — one row for operator skips (`--skip=`),
+/// a separate `... (no binaries)` row for library-only skips, so the two
+/// causes stay distinguishable. No-op when nothing is buffered.
+///
+/// Each `(name, no_binaries)` pair records one skipped stage in pipeline
+/// order; ordering within each row follows the pipeline.
+fn flush_skipped(log: &StageLogger, pending: &mut Vec<(&str, bool)>) {
+    if pending.is_empty() {
+        return;
+    }
+    let join = |no_binaries: bool| -> Option<String> {
+        let names: Vec<&str> = pending
+            .iter()
+            .filter(|(_, nb)| *nb == no_binaries)
+            .map(|(n, _)| *n)
+            .collect();
+        (!names.is_empty()).then(|| names.join(", "))
+    };
+    // One level in so the row sits at the same column as the surrounding
+    // sections' body bullets (no section is open between stages — the
+    // previous stage's guard already dropped).
+    let _indent = anodizer_core::log::indent_one_level();
+    let key_width = "skipped".len();
+    if let Some(names) = join(false) {
+        log.kv("skipped", &names, key_width);
+    }
+    if let Some(names) = join(true) {
+        log.kv("skipped", &format!("{names} (no binaries)"), key_width);
+    }
+    pending.clear();
 }
 
 /// Write preliminary metadata.json and artifacts.json before the release

@@ -175,7 +175,7 @@ pub fn run_post_publish_polls(jobs: Vec<PollJob>, log: &StageLogger) -> Vec<Post
                 },
             )) {
                 worker_log.warn(&format!(
-                    "post-publish: result channel closed for {} {} {}: {}",
+                    "post-publish result channel closed for {} {} {}: {}",
                     publisher, package, version, send_err
                 ));
             }

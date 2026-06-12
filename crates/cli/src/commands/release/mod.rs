@@ -1321,7 +1321,7 @@ fn apply_nightly_template_vars(
     ctx.template_vars_mut().set("ReleaseName", &release_name);
 
     log.verbose(&format!(
-        "nightly: version={}, tag={}, name={}",
+        "nightly version={}, tag={}, name={}",
         nightly_version, nightly_tag, release_name
     ));
     Ok(())
@@ -1355,7 +1355,7 @@ fn apply_snapshot_template_vars(
     ctx.template_vars_mut().set("Version", &rendered_name);
     ctx.template_vars_mut().set("ReleaseName", &rendered_name);
     log.verbose(&format!(
-        "snapshot: version={}, release_name={}",
+        "snapshot version={}, release_name={}",
         rendered_name, rendered_name
     ));
     Ok(())
@@ -1396,7 +1396,7 @@ fn run_publisher_preflight(
 
     let report = anodizer_stage_publish::preflight::run_preflight(ctx, log)?;
     if report.entries.is_empty() {
-        log.verbose("preflight: no one-way-door publishers configured; skipping check");
+        log.verbose("no one-way-door publishers configured; skipping one-way-door preflight");
     } else {
         // Route the report through the stage logger (same channel as every
         // other status string in this function) instead of a raw `print!` so
@@ -1437,7 +1437,7 @@ fn run_publisher_preflight(
         );
     }
     log.status(&format!(
-        "preflight: {} publisher(s) clean",
+        "preflight found {} publisher(s) clean",
         report.clean_count()
     ));
     // `--preflight` is a check-only mode: signal early-exit to the caller.

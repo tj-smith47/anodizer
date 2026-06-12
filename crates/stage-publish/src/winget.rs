@@ -533,7 +533,7 @@ fn resolve_winget_publisher_name<'a>(
                 );
             }
             log.warn(&format!(
-                "winget: publisher not explicitly set for '{}'; falling back to repo owner '{}'",
+                "winget publisher not explicitly set for '{}'; falling back to repo owner '{}'",
                 crate_name, repo_owner
             ));
             Ok(repo_owner)
@@ -1453,7 +1453,7 @@ fn submit_winget_manifests(
         }
         util::CommitOutcome::NoChanges => {
             log.status(&format!(
-                "winget: nothing to push, manifest for '{}' already up to date",
+                "nothing to push, winget manifest for '{}' already up to date",
                 package_id
             ));
         }
@@ -1798,7 +1798,7 @@ impl anodizer_core::Publisher for WingetPublisher {
         // and close the PR manually.
         for t in &targets {
             log.warn(&format!(
-                "winget: manual PR closure required for '{}' version '{}'; \
+                "manual winget PR closure required for '{}' version '{}'; \
                  visit https://github.com/{}/{}/pulls?q=is%3Apr+head%3A{}%3A{} \
                  and close the PR (winget validation cannot be reliably \
                  cancelled programmatically mid-flight)",
@@ -1806,7 +1806,7 @@ impl anodizer_core::Publisher for WingetPublisher {
             ));
         }
         log.status(&format!(
-            "winget: {} PR(s) require manual closure",
+            "{} winget PR(s) require manual closure",
             targets.len()
         ));
         Ok(())

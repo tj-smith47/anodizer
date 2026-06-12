@@ -301,7 +301,7 @@ pub(super) fn run_split(
     })?;
 
     log.status(&format!(
-        "split: wrote {} artifact(s) + context to {}",
+        "wrote {} artifact(s) + context to {}",
         split_ctx.artifacts.len(),
         ctx_path.display()
     ));
@@ -322,7 +322,7 @@ pub(super) fn run_split(
         std::fs::write(&matrix_path, &matrix_json)
             .with_context(|| format!("write matrix to {}", matrix_path.display()))?;
         log.status(&format!(
-            "split: wrote matrix to {} ({} entries, split by: {})",
+            "wrote matrix to {} ({} entries, split by: {})",
             matrix_path.display(),
             matrix.include.len(),
             split_by
@@ -387,7 +387,7 @@ fn check_split_worker_completeness(
     let matrix_path = dist.join("matrix.json");
     if !matrix_path.exists() {
         log.verbose(&format!(
-            "merge: no matrix.json at {} — skipping worker-completeness check",
+            "no matrix.json at {} — skipping worker-completeness check",
             matrix_path.display()
         ));
         return Ok(());
@@ -581,7 +581,7 @@ pub fn load_split_contexts_into(
                 Some(k) => k,
                 None => {
                     log.warn(&format!(
-                        "merge: unknown artifact kind '{}' in {}, skipping",
+                        "unknown artifact kind '{}' in {}, skipping",
                         sa.kind,
                         ctx_file.display()
                     ));
@@ -607,7 +607,7 @@ pub fn load_split_contexts_into(
     }
 
     log.status(&format!(
-        "merge: loaded {} artifact(s) from {} context(s)",
+        "loaded {} artifact(s) from {} context(s)",
         total_loaded,
         context_files.len()
     ));

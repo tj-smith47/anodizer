@@ -237,7 +237,7 @@ pub fn write_report_to_run_dir(ctx: &Context, log: &StageLogger) {
     // path — the operator loses replay; the release is unaffected.
     if let Err(e) = rollback_only::validate_run_id(&run_id) {
         log.warn(&format!(
-            "publish: skipped run-report write — derived run_id '{}' failed validation: {}",
+            "skipped run-report write — derived run_id '{}' failed validation: {}",
             run_id, e,
         ));
         return;
@@ -248,7 +248,7 @@ pub fn write_report_to_run_dir(ctx: &Context, log: &StageLogger) {
 
     if let Err(e) = std::fs::create_dir_all(&dir) {
         log.warn(&format!(
-            "publish: failed to create run-report dir {}: {}",
+            "failed to create run-report dir {}: {}",
             dir.display(),
             e,
         ));
@@ -262,7 +262,7 @@ pub fn write_report_to_run_dir(ctx: &Context, log: &StageLogger) {
         Ok(t) => t,
         Err(e) => {
             log.warn(&format!(
-                "publish: failed to serialize run-report for {}: {}",
+                "failed to serialize run-report for {}: {}",
                 path.display(),
                 e,
             ));
@@ -272,14 +272,14 @@ pub fn write_report_to_run_dir(ctx: &Context, log: &StageLogger) {
 
     if let Err(e) = anodizer_core::fs_atomic::atomic_write_str(&path, &text) {
         log.warn(&format!(
-            "publish: failed to write run-report to {}: {}",
+            "failed to write run-report to {}: {}",
             path.display(),
             e,
         ));
         return;
     }
 
-    log.status(&format!("publish: wrote run-report to {}", path.display()));
+    log.status(&format!("wrote run-report to {}", path.display()));
 }
 
 /// Collect crate names that match the selection filter and have a specific
@@ -500,19 +500,19 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
     for r in &results {
         match &r.status {
             post_publish::PostPublishStatus::Approved { detail } => log.status(&format!(
-                "post-publish: {} {} {} approved: {}",
+                "post-publish {} {} {} approved: {}",
                 r.publisher, r.package, r.version, detail
             )),
             post_publish::PostPublishStatus::Rejected { detail } => log.warn(&format!(
-                "post-publish: {} {} {} rejected: {}",
+                "post-publish {} {} {} rejected: {}",
                 r.publisher, r.package, r.version, detail
             )),
             post_publish::PostPublishStatus::Timeout { last_state, .. } => log.warn(&format!(
-                "post-publish: {} {} {} polling timed out (last state: {})",
+                "post-publish {} {} {} polling timed out (last state: {})",
                 r.publisher, r.package, r.version, last_state
             )),
             post_publish::PostPublishStatus::Error { reason } => log.warn(&format!(
-                "post-publish: {} {} {} polling error: {}",
+                "post-publish {} {} {} polling error: {}",
                 r.publisher, r.package, r.version, reason
             )),
             post_publish::PostPublishStatus::Pending { .. }
@@ -632,7 +632,7 @@ fn run_rollback_if_needed(ctx: &mut Context, publishers: &[Box<dyn Publisher>], 
         return;
     }
 
-    log.status("rollback: required failure(s) detected; invoking best-effort rollback");
+    log.status("required failure(s) detected; invoking best-effort rollback");
 
     // Take the report out so `rollback::run` can mutate it while
     // calling `publisher.rollback(ctx, ...)` (which itself needs
@@ -641,7 +641,7 @@ fn run_rollback_if_needed(ctx: &mut Context, publishers: &[Box<dyn Publisher>], 
         // Defensive: `needs_rollback` was true above, so the Option
         // must have been `Some`. If a future refactor changes that
         // invariant, log and bail rather than panic.
-        log.warn("rollback: publish_report missing; nothing to dispatch");
+        log.warn("rollback found no publish_report; nothing to dispatch");
         return;
     };
     rollback::run(publishers, &mut report, ctx, mode);
@@ -844,7 +844,7 @@ impl PublishStage {
             .filter(|r| matches!(r.outcome, PublisherOutcome::Skipped(_)))
             .count();
         log.status(&format!(
-            "publish: {} succeeded, {} failed, {} skipped, submitter_gated={}",
+            "publish complete — {} succeeded, {} failed, {} skipped, submitter_gated={}",
             succeeded, failed, skipped, report.submitter_gated,
         ));
         // Per-publisher failure detail — surface error strings so

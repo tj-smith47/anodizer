@@ -47,6 +47,12 @@ pub(super) const HARNESS_ENV_ALLOWLIST: &[&str] = &[
     "RUSTUP_HOME",
     // CI signal (overridden to "true" below if unset).
     "CI",
+    // Operator color preferences. The child's stderr is inherited into
+    // the harness's own stream, so the parent's color contract must
+    // extend to the child — without these the sealed CI=true would
+    // force color in the child even when the operator set NO_COLOR.
+    "NO_COLOR",
+    "ANODIZER_COLOR",
     // GitHub Actions identity vars — owner/repo, commit, refs, run #.
     "GITHUB_REPOSITORY",
     "GITHUB_SHA",

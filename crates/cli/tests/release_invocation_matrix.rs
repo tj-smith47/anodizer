@@ -8,7 +8,7 @@
 //! ever fires; the heavy compile / archive / sign stages are
 //! `--skip`ed where the table allows them to be, keeping each test
 //! cheap. The harness greps stderr for the canonical Pipeline-emitted
-//! stage-skip verdict (`[<stage>] skipped`, yellow, ANSI-stripped) — same
+//! consolidated skip row (`• skipped  a, b, c`, ANSI-stripped) — same
 //! shape the sibling
 //! `tests/integration.rs::test_release_prepare_matches_explicit_skip`
 //! relies on, so a logging-format change updates both at once.
@@ -74,46 +74,39 @@ fn strip_ansi(s: &str) -> String {
 
 /// Collect the stage names the Pipeline reported as skipped.
 ///
-/// A pipeline-level stage skip renders as a `• <stage> <verdict>` body line
-/// (format B — there is no per-line `[<stage>]` tag; the stage name leads the
-/// body):
-///   `• release skipped`              (operator/mode `--skip`)
-///   `• upx skipped (no binaries)`    (binary-dependent stage, no binaries)
-/// where the first body token IS the skipped stage and the rest is the
-/// reason. Both verdicts are emitted by `Pipeline::run` via `status(...)`
-/// (see `crates/cli/src/pipeline/mod.rs`), so they are the authoritative
-/// "this stage did not run" signal.
+/// Pipeline-level stage skips are consolidated into kv rows — consecutive
+/// skipped stages buffer up and flush as a single body line:
+///   `• skipped  build, changelog, archive`              (operator/mode `--skip`)
+///   `• skipped  upx, dmg, msi (no binaries)`            (binary-dependent stages, no binaries)
+/// Both rows are emitted by `Pipeline::run` via `kv(...)` (see
+/// `crates/cli/src/pipeline/mod.rs`), so they are the authoritative
+/// "these stages did not run" signal; the value is a comma-separated
+/// stage list we split into individual names.
 ///
 /// We intentionally do NOT treat per-crate / per-config body notes such as
 /// `skipping build for crate 'X'` or `no gitlab config for crate 'y',
 /// skipping` as a stage skip: those are progress lines emitted inside a
-/// running stage, not the stage's own pipeline-level verdict. Matching
-/// only the two exact strings below keeps the distinction precise.
+/// running stage, not the stage's own pipeline-level verdict. Anchoring on
+/// the kv key pad (`skipped` + at least two spaces) keeps the distinction
+/// precise — mid-stage notes like `skipped (snapshot mode)` have a single
+/// space and don't match.
 fn extract_skipped_stages(stderr: &str) -> std::collections::BTreeSet<String> {
     stderr
         .lines()
         .filter_map(|line| {
             let line = strip_ansi(line);
-            // A pipeline skip renders `   • <stage> <verdict>` (the per-line
-            // stage tag is gone — format B); the stage is the first body token.
             let body = line.trim_start().strip_prefix("• ")?;
-            let (stage, verdict) = body.split_once(' ')?;
-            if is_stage_skip_message(verdict) {
-                Some(stage.to_string())
-            } else {
-                None
-            }
+            let names = body.strip_prefix("skipped  ")?.trim_start();
+            let names = names.strip_suffix(" (no binaries)").unwrap_or(names);
+            Some(
+                names
+                    .split(", ")
+                    .map(|stage| stage.to_string())
+                    .collect::<Vec<_>>(),
+            )
         })
+        .flatten()
         .collect()
-}
-
-/// True when `verdict` (the body text after the `• <stage> ` prefix) is a
-/// stage's own pipeline-level skip verdict rather than a mid-stage progress
-/// note. Only the two exact verdicts `Pipeline::run` emits qualify; matching
-/// a looser `ends_with("skipping")` would wrongly capture per-crate body
-/// notes (e.g. `no gitlab config ..., skipping`) as a stage skip.
-fn is_stage_skip_message(verdict: &str) -> bool {
-    verdict == "skipped" || verdict == "skipped (no binaries)"
 }
 
 /// Bootstrap a fixture cargo+git repo with the minimal anodizer config.

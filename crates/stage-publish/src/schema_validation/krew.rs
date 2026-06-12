@@ -71,7 +71,7 @@ impl PublisherSchemaValidator for KrewSchemaValidator {
             };
             if !crate_has_krew_artifacts(ctx, crate_name, &krew_cfg)? {
                 log.verbose(&format!(
-                    "krew: crate '{}' produced no archive artifact in this \
+                    "crate '{}' produced no archive artifact for krew in this \
                      snapshot shard; skipping schema validation",
                     crate_name
                 ));

@@ -41,7 +41,7 @@ pub fn validate_announce_templates(ctx: &mut Context, log: &StageLogger) -> Resu
     ctx.refresh_artifacts_var();
 
     if !announce_should_run(ctx, &announce)? {
-        log.verbose("prepublish-guard: announce gated/skipped — no templates to dry-render");
+        log.verbose("announce gated/skipped — no templates to dry-render");
         return Ok(());
     }
 

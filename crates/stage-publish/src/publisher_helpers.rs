@@ -148,7 +148,7 @@ pub(crate) fn rollback_failure_warning_msg(
         ),
     };
     format!(
-        "{publisher}: revert+push failed for {target_name} ({target_url}): {err}; \
+        "{publisher} revert+push failed for {target_name} ({target_url}): {err}; \
          manual cleanup required at {target_url}{hint}"
     )
 }
@@ -432,7 +432,7 @@ mod tests {
             Some("HOMEBREW_TAP_TOKEN"),
         );
         assert!(
-            msg.starts_with("homebrew: revert+push failed for demo"),
+            msg.starts_with("homebrew revert+push failed for demo"),
             "{msg}"
         );
         assert!(
@@ -454,10 +454,7 @@ mod tests {
             &"clone failed",
             None,
         );
-        assert!(
-            msg.contains("aur: revert+push failed for demo-bin"),
-            "{msg}"
-        );
+        assert!(msg.contains("aur revert+push failed for demo-bin"), "{msg}");
         assert!(msg.contains("publish.aur.private_key"), "{msg}");
         assert!(msg.contains("GIT_SSH_COMMAND"), "{msg}");
         assert!(!msg.contains("ANODIZER_GITHUB_TOKEN"), "{msg}");

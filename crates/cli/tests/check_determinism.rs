@@ -360,6 +360,11 @@ fn harness_skips_env_preflight_and_prints_header_and_config_warnings_once() {
         // The unsatisfiable preflight requirement: the apk signature's
         // key env var is absent, as on a credential-less CI runner.
         .env_remove("APK_PRIVATE_KEY_PATH")
+        // Force plain output: under GITHUB_ACTIONS/CI the binary forces
+        // color, and the ANSI reset between the bold section verb and
+        // its message would break `matches("Checking determinism")`.
+        // NO_COLOR wins over every color override.
+        .env("NO_COLOR", "1")
         .output()
         .expect("invoking anodize check determinism");
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -381,10 +386,9 @@ fn harness_skips_env_preflight_and_prints_header_and_config_warnings_once() {
         !stderr.contains("no release tags at HEAD"),
         "children must select the fixture crate from the tag, not no-op: {stderr}"
     );
-    // (`running: cargo` rather than the `Building binaries` header — the
-    // header's verb carries ANSI color codes between verb and message, so
-    // the two words are not contiguous in raw stderr.)
-    let builds = stderr.matches("running: cargo").count();
+    // (`running cargo` is the build stage's body line announcing the
+    // compile; one per child run.)
+    let builds = stderr.matches("running cargo").count();
     assert_eq!(
         builds, 2,
         "expected one cargo build invocation per run (runs=2), got {builds}:\n{stderr}"

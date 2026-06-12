@@ -463,7 +463,7 @@ fn plan_build_jobs(
                 targets = partial.filter_targets(&targets);
                 if had_targets && targets.is_empty() {
                     log.verbose(&format!(
-                        "split: no targets match partial filter for {}/{}, skipping",
+                        "no targets match partial filter for {}/{}, skipping",
                         crate_cfg.name, binary_name_raw
                     ));
                     continue;
@@ -935,7 +935,7 @@ fn plan_prebuilt_build(
         targets = partial.filter_targets(&targets);
         if targets.is_empty() {
             log.verbose(&format!(
-                "split: no prebuilt targets match partial filter for {}/{}, skipping",
+                "no prebuilt targets match partial filter for {}/{}, skipping",
                 crate_cfg.name, binary_field
             ));
             return Ok(());

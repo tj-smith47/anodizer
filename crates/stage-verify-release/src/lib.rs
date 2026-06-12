@@ -86,7 +86,7 @@ impl Stage for VerifyReleaseStage {
         // runs never created one, so there is nothing to verify.
         if ctx.is_dry_run() || ctx.is_snapshot() {
             ctx.logger(STAGE_NAME)
-                .verbose("verify-release: dry-run/snapshot — no published release to verify");
+                .verbose("dry-run/snapshot — no published release to verify");
             return Ok(());
         }
 
@@ -106,7 +106,7 @@ impl Stage for VerifyReleaseStage {
             .collect();
 
         if crates.is_empty() {
-            log.verbose("verify-release: no crates with a release block; nothing to verify");
+            log.verbose("no crates with a release block; nothing to verify");
             return Ok(());
         }
 
@@ -148,12 +148,12 @@ impl Stage for VerifyReleaseStage {
         }
 
         if issues.is_empty() {
-            log.status("verify-release: all post-publish checks passed");
+            log.status("all post-publish checks passed");
             return Ok(());
         }
 
         for issue in &issues {
-            log.warn(&format!("verify-release: {issue}"));
+            log.warn(issue);
         }
         anyhow::bail!(
             "verify-release: post-publish verification found {} issue(s); {}:\n  - {}",
@@ -323,7 +323,7 @@ fn verify_one_crate(
                 }
                 if !diff.has_missing() {
                     log.verbose(&format!(
-                        "verify-release: crate '{}' all {} asset(s) present \
+                        "crate '{}' all {} asset(s) present \
                          ({} config-derived)",
                         crate_cfg.name,
                         all_expected.len(),
@@ -332,7 +332,7 @@ fn verify_one_crate(
                 }
                 if !diff.orphan.is_empty() {
                     log.verbose(&format!(
-                        "verify-release: crate '{}' {} orphan asset(s) on release (advisory): {}",
+                        "crate '{}' {} orphan asset(s) on release (advisory): {}",
                         crate_cfg.name,
                         diff.orphan.len(),
                         diff.orphan.join(", ")
@@ -341,7 +341,7 @@ fn verify_one_crate(
             }
             Ok(None) => {
                 log.verbose(&format!(
-                    "verify-release: crate '{}' no GitHub release configured — \
+                    "crate '{}' no GitHub release configured — \
                      skipping asset-existence",
                     crate_cfg.name
                 ));
@@ -399,7 +399,7 @@ fn verify_one_crate(
             };
             if !*smoke_strategy_logged {
                 log.verbose(&format!(
-                    "verify-release: install-smoke strategy: {}",
+                    "using install-smoke strategy {}",
                     smoke::strategy_label(&job.image)
                 ));
                 *smoke_strategy_logged = true;
@@ -407,7 +407,7 @@ fn verify_one_crate(
             match smoke::run_smoke(&job) {
                 Ok(SmokeOutcome::Passed) => {
                     log.verbose(&format!(
-                        "verify-release: crate '{}' smoke OK: {name} on {image}",
+                        "crate '{}' smoke OK: {name} on {image}",
                         crate_cfg.name
                     ));
                 }
@@ -442,7 +442,7 @@ fn check_one_deb_libc(
         Ok(Some(bytes)) => bytes,
         Ok(None) => {
             log.verbose(&format!(
-                "verify-release: crate '{crate_name}' {} has no inspectable ELF — \
+                "crate '{crate_name}' {} has no inspectable ELF — \
                  skipping libc check",
                 deb_path.display()
             ));
@@ -459,14 +459,14 @@ fn check_one_deb_libc(
     match libc_check::check_glibc_ceiling(&elf_bytes, ceiling) {
         Ok(LibcCheckOutcome::NoGlibcRequirement) => {
             log.verbose(&format!(
-                "verify-release: crate '{crate_name}' {} has no glibc requirement \
+                "crate '{crate_name}' {} has no glibc requirement \
                  (static/musl) — skipped",
                 deb_path.display()
             ));
         }
         Ok(LibcCheckOutcome::WithinCeiling { max }) => {
             log.verbose(&format!(
-                "verify-release: crate '{crate_name}' {} requires glibc {max} (<= {ceiling})",
+                "crate '{crate_name}' {} requires glibc {max} (<= {ceiling})",
                 deb_path.display()
             ));
         }

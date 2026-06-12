@@ -95,7 +95,7 @@ pub(crate) fn render_top_level_cask_entry(
 
     if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "homebrew_casks: skipping upload for '{}' (skip_upload)",
+            "skipping cask upload for '{}' (skip_upload)",
             cask_name
         ));
         return Ok(None);
@@ -108,7 +108,7 @@ pub(crate) fn render_top_level_cask_entry(
     )?;
     if !proceed {
         log.status(&format!(
-            "homebrew_casks: skipping '{}' — `if` condition evaluated falsy",
+            "skipping cask '{}' — `if` condition evaluated falsy",
             cask_name
         ));
         return Ok(None);
@@ -157,7 +157,7 @@ fn render_top_level_cask_inner(
             );
         }
         log.status(&format!(
-            "homebrew_casks: no macOS artifact in scope for cask '{}' — skipping (not applicable)",
+            "no macOS artifact in scope for cask '{}' — skipping (not applicable)",
             cask_name
         ));
         return Ok(None);
@@ -429,7 +429,7 @@ pub fn publish_top_level_homebrew_casks(
         // Check skip_upload.
         if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log)? {
             log.status(&format!(
-                "homebrew_casks: skipping upload for '{}' (skip_upload)",
+                "skipping cask upload for '{}' (skip_upload)",
                 cask_name
             ));
             continue;
@@ -443,7 +443,7 @@ pub fn publish_top_level_homebrew_casks(
         )?;
         if !proceed {
             log.status(&format!(
-                "homebrew_casks: skipping '{}' — `if` condition evaluated falsy",
+                "skipping cask '{}' — `if` condition evaluated falsy",
                 cask_name
             ));
             continue;
@@ -467,7 +467,7 @@ pub fn publish_top_level_homebrew_casks(
         let directory = super::resolve_cask_directory(cask_cfg.directory.as_deref(), ctx)?;
         if directory != "Casks" {
             log.warn(&format!(
-                "homebrew_casks: directory {:?} might not work properly for end users; \
+                "cask directory {:?} might not work properly for end users; \
                  the homebrew-cask convention is \"Casks\"",
                 directory
             ));
@@ -569,7 +569,7 @@ pub fn publish_top_level_homebrew_casks(
             }
             crate::util::CommitOutcome::NoChanges => {
                 log.status(&format!(
-                    "homebrew_casks: nothing to push, cask '{}' already up to date",
+                    "nothing to push, cask '{}' already up to date",
                     cask_name
                 ));
             }

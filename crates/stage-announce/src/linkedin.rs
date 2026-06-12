@@ -165,7 +165,7 @@ fn send_linkedin_to(
         .and_then(|a| a.as_str())
         .ok_or_else(|| anyhow::anyhow!("linkedin: could not find 'activity' in share response"))?;
     log.status(&format!(
-        "linkedin: post available at https://www.linkedin.com/feed/update/{activity}"
+        "linkedin post available at https://www.linkedin.com/feed/update/{activity}"
     ));
 
     Ok(())

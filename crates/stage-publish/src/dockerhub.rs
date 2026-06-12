@@ -197,7 +197,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
                 .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                 .with_context(|| "dockerhub: render skip template")?;
             if off {
-                log.status("dockerhub: entry skipped");
+                log.status("skipped dockerhub entry");
                 continue;
             }
         }
@@ -209,7 +209,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
             |t| ctx.render_template(t),
         )?;
         if !proceed {
-            log.status("dockerhub: entry skipped — `if` condition evaluated falsy");
+            log.status("skipped dockerhub entry — `if` condition evaluated falsy");
             continue;
         }
 
@@ -269,7 +269,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
         let short_desc_chars = short_desc.chars().count();
         if short_desc_chars > 100 {
             log.warn(&format!(
-                "dockerhub: short description is {} chars (max 100); Docker Hub will truncate it",
+                "dockerhub short description is {} chars (max 100); Docker Hub will truncate it",
                 short_desc_chars
             ));
         }
@@ -305,7 +305,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
         let secret_name = entry.secret_name.as_deref().unwrap_or("DOCKER_PASSWORD");
         if ctx.is_dry_run() && ctx.env_var(secret_name).is_none() {
             log.warn(&format!(
-                "dockerhub: secret env '{}' is not set; live mode will fail authentication",
+                "dockerhub secret env '{}' is not set; live mode will fail authentication",
                 secret_name
             ));
         }
@@ -456,7 +456,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
             };
             if short_unchanged && full_unchanged {
                 log.status(&format!(
-                    "dockerhub: no changes for '{}' (description / full_description match remote); skipping PATCH",
+                    "no dockerhub changes for '{}' (description / full_description match remote); skipping PATCH",
                     image
                 ));
                 continue;
@@ -499,7 +499,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
                 },
             )?;
 
-            log.status(&format!("dockerhub: synced description for '{}'", image));
+            log.status(&format!("synced dockerhub description for '{}'", image));
             targets.push(DockerhubTarget {
                 target: image.clone(),
                 repo_url,
@@ -736,13 +736,13 @@ impl anodizer_core::Publisher for DockerhubPublisher {
                 // bubbling Err and gating rollback of sibling
                 // publishers.
                 log.warn(&format!(
-                    "dockerhub: rollback could not build HTTP client ({e:#}); \
+                    "dockerhub rollback could not build HTTP client ({e:#}); \
                      manual review required for {} repo(s)",
                     targets.len()
                 ));
                 for t in &targets {
                     log.warn(&format!(
-                        "dockerhub: manual restore needed for {} ({})",
+                        "manual dockerhub restore needed for {} ({})",
                         t.target, t.repo_url
                     ));
                 }
@@ -759,14 +759,14 @@ impl anodizer_core::Publisher for DockerhubPublisher {
                 Ok(()) => {
                     restored += 1;
                     log.status(&format!(
-                        "dockerhub: restored description for '{}'",
+                        "restored dockerhub description for '{}'",
                         t.target
                     ));
                 }
                 Err(e) => {
                     failed += 1;
                     log.warn(&format!(
-                        "dockerhub: failed to restore '{}' ({}): {:#}; \
+                        "failed to restore dockerhub description for '{}' ({}): {:#}; \
                          check ${} is set or restore manually via the Docker Hub UI",
                         t.target, t.repo_url, e, t.secret_env_var
                     ));
@@ -774,7 +774,7 @@ impl anodizer_core::Publisher for DockerhubPublisher {
             }
         }
         log.status(&format!(
-            "dockerhub: rollback restored {} description(s), {} failure(s)",
+            "dockerhub rollback restored {} description(s), {} failure(s)",
             restored, failed
         ));
         Ok(())
