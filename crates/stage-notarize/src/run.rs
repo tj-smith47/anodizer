@@ -468,8 +468,8 @@ fn run_native_dmg(
         ctx.strict_guard(
             log,
             &format!(
-                "no matching app bundles or DMGs found (ids={:?}) \
-                 (macos_native[{idx}] dmg)",
+                "no matching app bundles or DMGs found (ids={:?}; \
+                 macos_native[{idx}] dmg)",
                 params.ids
             ),
         )?;
@@ -596,7 +596,7 @@ fn run_native_pkg(
         ctx.strict_guard(
             log,
             &format!(
-                "no matching PKG artifacts found (ids={:?}) (macos_native[{idx}] pkg)",
+                "no matching PKG artifacts found (ids={:?}; macos_native[{idx}] pkg)",
                 params.ids
             ),
         )?;

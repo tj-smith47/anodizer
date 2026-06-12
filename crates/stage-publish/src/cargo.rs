@@ -2763,8 +2763,8 @@ mod tests {
         // written executable that another test thread forks across in the
         // window before its write fd is closed trips ETXTBSY ("Text file
         // busy") on execve; `sh` is a long-lived binary and the stub is only
-        // read, so the race cannot occur. When the code under test must
-        // exec the stub itself, use
+        // read, so the race cannot occur. When the test itself execs the
+        // stub, use
         // `anodizer_core::test_helpers::fake_tool::output_retrying_etxtbsy`
         // instead of sh-routing.
         let cmd = vec![
