@@ -723,8 +723,6 @@ signs:
       - "{{ Signature }}"
       - "--detach-sig"
       - "{{ Artifact }}"
-    env:
-      - "GPG_TTY={{ Env.GPG_TTY }}"
     # IsSnapshot / IsHarness are real bools: sign in release mode, and inside
     # the determinism harness (which provisions its own ephemeral keys).
     if: "{{ not IsSnapshot or IsHarness }}"
