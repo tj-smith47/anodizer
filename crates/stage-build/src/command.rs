@@ -143,6 +143,51 @@ pub(crate) fn detect_cross_strategy_for_target_impl(
     detect_cross_strategy_impl(zigbuild_available, cross_available)
 }
 
+/// Resolve the effective strategy for `target`: `Auto` resolves via the
+/// host/target/tool-availability probes, anything else is taken verbatim.
+pub(crate) fn resolved_strategy_for_target(
+    strategy: &CrossStrategy,
+    target: &str,
+) -> CrossStrategy {
+    if *strategy == CrossStrategy::Auto {
+        detect_cross_strategy_for_target(target)
+    } else {
+        strategy.clone()
+    }
+}
+
+/// Warning for a cross-arch `*-linux-gnu` build about to run under plain
+/// `cargo build`. Without cargo-zigbuild or cross, cc-rs resolves the
+/// target C compiler from the system (e.g. `aarch64-linux-gnu-gcc`),
+/// which stock CI runners don't ship — the first native-code dependency
+/// (ring, libgit2, ...) then dies with an opaque `ToolNotFound` deep in a
+/// build script. Naming the routing decision up front turns that into an
+/// actionable message. Returns `None` when the resolved strategy is not
+/// plain cargo, the target is not glibc Linux, or the target is the host
+/// triple (native builds need no cross cc).
+pub(crate) fn cross_gnu_cargo_fallback_warning(
+    host: &str,
+    target: &str,
+    resolved: &CrossStrategy,
+) -> Option<String> {
+    if *resolved != CrossStrategy::Cargo || !is_linux_gnu(target) || host.is_empty() {
+        return None;
+    }
+    // Glibc-pinned spellings (`x86_64-unknown-linux-gnu.2.17`) of the host
+    // triple are still native builds.
+    let (bare_target, _) = crate::validation::strip_glibc_suffix(target);
+    if bare_target == host {
+        return None;
+    }
+    let arch = bare_target.split('-').next().unwrap_or(bare_target);
+    Some(format!(
+        "cross gnu target '{target}' resolved to plain cargo (cargo-zigbuild/cross not \
+         installed); native-code dependencies will need a system cross C toolchain \
+         (e.g. `{arch}-linux-gnu-gcc`) — install cargo-zigbuild + zig for a hermetic \
+         cross build"
+    ))
+}
+
 /// True for glibc-linked Linux triples: `*-linux-gnu`, ABI-suffixed forms
 /// like `*-linux-gnueabihf`, and glibc-pinned spellings like
 /// `x86_64-unknown-linux-gnu.2.17`. musl triples return false.
@@ -188,13 +233,10 @@ pub(crate) fn resolve_build_program(
     // cargo-zigbuild or cross are available (zig has known issues linking
     // for Apple hosts, cross can't cross to the same host), while
     // linux-gnu targets prefer zigbuild for a hermetic glibc floor.
-    let resolved = if *strategy == CrossStrategy::Auto {
-        match target {
-            Some(t) => detect_cross_strategy_for_target(t),
-            None => detect_cross_strategy(),
-        }
-    } else {
-        strategy.clone()
+    let resolved = match target {
+        Some(t) => resolved_strategy_for_target(strategy, t),
+        None if *strategy == CrossStrategy::Auto => detect_cross_strategy(),
+        None => strategy.clone(),
     };
 
     let (prog, default_subcmd) = match resolved {

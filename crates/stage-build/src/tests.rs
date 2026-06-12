@@ -1887,6 +1887,92 @@ fn test_detect_cross_strategy_host_linux_gnu_prefers_zigbuild() {
 }
 
 #[test]
+fn cross_gnu_cargo_fallback_warning_fires_for_cross_arch_plain_cargo() {
+    // The nightly-runner failure shape: aarch64 gnu on an x86_64 host with
+    // neither zigbuild nor cross installed resolves to plain cargo, which
+    // needs aarch64-linux-gnu-gcc the runner doesn't have. The warning must
+    // name the missing cross cc and the hermetic alternative.
+    let msg = crate::command::cross_gnu_cargo_fallback_warning(
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-gnu",
+        &CrossStrategy::Cargo,
+    )
+    .expect("cross-arch gnu target on plain cargo must warn");
+    assert!(msg.contains("aarch64-linux-gnu-gcc"), "msg: {msg}");
+    assert!(msg.contains("cargo-zigbuild"), "msg: {msg}");
+}
+
+#[test]
+fn cross_gnu_cargo_fallback_warning_silent_when_not_plain_cargo() {
+    for resolved in [CrossStrategy::Zigbuild, CrossStrategy::Cross] {
+        assert_eq!(
+            crate::command::cross_gnu_cargo_fallback_warning(
+                "x86_64-unknown-linux-gnu",
+                "aarch64-unknown-linux-gnu",
+                &resolved,
+            ),
+            None,
+        );
+    }
+}
+
+#[test]
+fn cross_gnu_cargo_fallback_warning_silent_for_native_and_non_gnu() {
+    // Host triple itself — native build, no cross cc needed.
+    assert_eq!(
+        crate::command::cross_gnu_cargo_fallback_warning(
+            "x86_64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu",
+            &CrossStrategy::Cargo,
+        ),
+        None,
+    );
+    // Glibc-pinned spelling of the host triple is still a native build.
+    assert_eq!(
+        crate::command::cross_gnu_cargo_fallback_warning(
+            "x86_64-unknown-linux-gnu",
+            "x86_64-unknown-linux-gnu.2.17",
+            &CrossStrategy::Cargo,
+        ),
+        None,
+    );
+    // musl links libc statically; the gnu cross-cc concern doesn't apply.
+    assert_eq!(
+        crate::command::cross_gnu_cargo_fallback_warning(
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-musl",
+            &CrossStrategy::Cargo,
+        ),
+        None,
+    );
+    // Unknown host (detection failed) — can't judge, stay quiet.
+    assert_eq!(
+        crate::command::cross_gnu_cargo_fallback_warning(
+            "",
+            "aarch64-unknown-linux-gnu",
+            &CrossStrategy::Cargo,
+        ),
+        None,
+    );
+}
+
+#[test]
+fn resolved_strategy_for_target_passes_explicit_strategy_through() {
+    // Only Auto consults the host/tool probes; explicit strategies are
+    // taken verbatim regardless of target.
+    for explicit in [
+        CrossStrategy::Cargo,
+        CrossStrategy::Cross,
+        CrossStrategy::Zigbuild,
+    ] {
+        assert_eq!(
+            crate::command::resolved_strategy_for_target(&explicit, "aarch64-unknown-linux-gnu"),
+            explicit,
+        );
+    }
+}
+
+#[test]
 fn test_detect_cross_strategy_host_linux_gnu_without_zigbuild_uses_cargo() {
     // Local-dev fallback: no cargo-zigbuild on PATH → native cargo for the
     // host triple, even when `cross` is installed (the host needs no
