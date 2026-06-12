@@ -535,6 +535,7 @@ dependencies = [
  "anyhow",
  "glob",
  "serde_yaml_ng",
+ "tempfile",
 ]
 
 [[package]]

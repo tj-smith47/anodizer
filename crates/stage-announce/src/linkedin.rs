@@ -91,8 +91,22 @@ pub fn send_linkedin(
     log: &StageLogger,
     policy: &RetryPolicy,
 ) -> Result<()> {
+    send_linkedin_to(API_BASE, access_token, message, log, policy)
+}
+
+/// Base-URL-injectable form of [`send_linkedin`]. Production passes
+/// [`API_BASE`]; unit tests point `api_base` at a local responder so the
+/// full share flow (URN resolution, 403 fallback, retry classification)
+/// runs without touching the real LinkedIn API.
+fn send_linkedin_to(
+    api_base: &str,
+    access_token: &str,
+    message: &str,
+    log: &StageLogger,
+    policy: &RetryPolicy,
+) -> Result<()> {
     let client = reqwest::blocking::Client::new();
-    let profile_urn = get_profile_urn(&client, access_token, policy)?;
+    let profile_urn = get_profile_urn(&client, api_base, access_token, policy)?;
 
     let share = json!({
         "owner": profile_urn,
@@ -102,7 +116,7 @@ pub fn send_linkedin(
 
     let resp_text = retry_sync(policy, |_attempt| {
         let send_result = client
-            .post(format!("{API_BASE}/v2/shares"))
+            .post(format!("{api_base}/v2/shares"))
             .bearer_auth(access_token)
             .header("Content-Type", "application/json")
             .header("X-Restli-Protocol-Version", "2.0.0")
@@ -163,12 +177,13 @@ pub fn send_linkedin(
 /// `/v2/me` (legacy, `id` field) only when the newer endpoint returns 403.
 fn get_profile_urn(
     client: &reqwest::blocking::Client,
+    api_base: &str,
     access_token: &str,
     policy: &RetryPolicy,
 ) -> Result<String> {
     let outcome = retry_sync(policy, |_attempt| {
         match client
-            .get(format!("{API_BASE}/v2/userinfo"))
+            .get(format!("{api_base}/v2/userinfo"))
             .bearer_auth(access_token)
             .send()
         {
@@ -215,7 +230,7 @@ fn get_profile_urn(
     let text = match outcome {
         Ok(text) => text,
         Err(e) if e.downcast_ref::<LinkedinFallback>().is_some() => {
-            return get_profile_urn_legacy(client, access_token, policy);
+            return get_profile_urn_legacy(client, api_base, access_token, policy);
         }
         Err(e) => return Err(e),
     };
@@ -230,12 +245,13 @@ fn get_profile_urn(
 /// Legacy fallback: resolve profile URN via `/v2/me`.
 fn get_profile_urn_legacy(
     client: &reqwest::blocking::Client,
+    api_base: &str,
     access_token: &str,
     policy: &RetryPolicy,
 ) -> Result<String> {
     let text = retry_sync(policy, |_attempt| {
         match client
-            .get(format!("{API_BASE}/v2/me"))
+            .get(format!("{api_base}/v2/me"))
             .bearer_auth(access_token)
             .send()
         {
@@ -405,6 +421,210 @@ mod tests {
             format_linkedin_http_error("share", reqwest::StatusCode::INTERNAL_SERVER_ERROR, "");
         assert!(msg.contains("share"), "{msg}");
         assert!(msg.contains("500"), "{msg}");
+    }
+
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::retry::RetryPolicy;
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder_with;
+
+    use super::send_linkedin_to;
+
+    const USERINFO_OK: &str = r#"{"sub":"abc123"}"#;
+    const ME_OK: &str = r#"{"id":"legacy456"}"#;
+    const SHARE_OK: &str = r#"{"activity":"urn:li:activity:6543"}"#;
+
+    fn http(status_line: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn fast_policy() -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: 2,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(5),
+        }
+    }
+
+    /// Drive the full share flow against a local responder serving the given
+    /// responses in connection order. Returns the outcome and the number of
+    /// canned responses actually consumed.
+    fn run_share(responses: Vec<String>) -> (Result<(), anyhow::Error>, u32) {
+        let (addr, calls) = spawn_oneshot_http_responder_with(|_| responses);
+        let log = StageLogger::new("announce", Verbosity::Quiet);
+        let result = send_linkedin_to(
+            &format!("http://{addr}"),
+            "opaque_token_value_123456",
+            "myapp v1.0 released",
+            &log,
+            &fast_policy(),
+        );
+        (result, calls.load(Ordering::SeqCst))
+    }
+
+    #[test]
+    fn share_happy_path_resolves_urn_then_posts() {
+        let (result, calls) =
+            run_share(vec![http("200 OK", USERINFO_OK), http("200 OK", SHARE_OK)]);
+        result.expect("share must succeed");
+        assert_eq!(calls, 2, "exactly userinfo + share");
+    }
+
+    #[test]
+    fn share_userinfo_403_falls_back_to_legacy_me() {
+        let (result, calls) = run_share(vec![
+            http("403 Forbidden", ""),
+            http("200 OK", ME_OK),
+            http("200 OK", SHARE_OK),
+        ]);
+        result.expect("403 on /v2/userinfo must fall back to /v2/me");
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn share_me_403_surfaces_permission_error() {
+        let (result, calls) = run_share(vec![http("403 Forbidden", ""), http("403 Forbidden", "")]);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("forbidden"), "{err}");
+        assert!(err.contains("permissions"), "{err}");
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn share_userinfo_4xx_fast_fails_with_body() {
+        let (result, calls) = run_share(vec![http(
+            "401 Unauthorized",
+            r#"{"message":"token expired","serviceErrorCode":65601}"#,
+        )]);
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(err.contains("GET /v2/userinfo"), "{err}");
+        assert!(err.contains("401"), "{err}");
+        assert!(err.contains("token expired"), "{err}");
+        assert_eq!(calls, 1, "4xx must not retry");
+    }
+
+    #[test]
+    fn share_userinfo_500_retries_then_succeeds() {
+        let (result, calls) = run_share(vec![
+            http("500 Internal Server Error", ""),
+            http("200 OK", USERINFO_OK),
+            http("200 OK", SHARE_OK),
+        ]);
+        result.expect("5xx on userinfo must retry");
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn share_post_4xx_fast_fails_with_body() {
+        let (result, calls) = run_share(vec![
+            http("200 OK", USERINFO_OK),
+            http(
+                "422 Unprocessable Entity",
+                r#"{"message":"duplicate share"}"#,
+            ),
+        ]);
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(err.contains("share"), "{err}");
+        assert!(err.contains("422"), "{err}");
+        assert!(err.contains("duplicate share"), "{err}");
+        assert_eq!(calls, 2);
+    }
+
+    #[test]
+    fn share_post_500_retries_then_succeeds() {
+        let (result, calls) = run_share(vec![
+            http("200 OK", USERINFO_OK),
+            http("500 Internal Server Error", ""),
+            http("200 OK", SHARE_OK),
+        ]);
+        result.expect("5xx on share must retry");
+        assert_eq!(calls, 3);
+    }
+
+    #[test]
+    fn share_response_missing_activity_errors() {
+        let (result, _) = run_share(vec![http("200 OK", USERINFO_OK), http("200 OK", "{}")]);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("could not find 'activity'"), "{err}");
+    }
+
+    #[test]
+    fn share_response_invalid_json_errors() {
+        let (result, _) = run_share(vec![
+            http("200 OK", USERINFO_OK),
+            http("200 OK", "<html>not json</html>"),
+        ]);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("failed to parse share response"), "{err}");
+    }
+
+    #[test]
+    fn share_userinfo_missing_sub_errors() {
+        let (result, _) = run_share(vec![http("200 OK", "{}")]);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("missing 'sub'"), "{err}");
+    }
+
+    #[test]
+    fn share_legacy_me_missing_id_errors() {
+        let (result, _) = run_share(vec![http("403 Forbidden", ""), http("200 OK", "{}")]);
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("missing 'id'"), "{err}");
+    }
+
+    #[test]
+    fn share_legacy_me_4xx_fast_fails_with_body() {
+        let (result, calls) = run_share(vec![
+            http("403 Forbidden", ""),
+            http("400 Bad Request", r#"{"message":"bad projection"}"#),
+        ]);
+        let err = format!("{:#}", result.unwrap_err());
+        assert!(err.contains("GET /v2/me"), "{err}");
+        assert!(err.contains("400"), "{err}");
+        assert!(err.contains("bad projection"), "{err}");
+        assert_eq!(calls, 2, "4xx on /v2/me must not retry");
+    }
+
+    #[test]
+    fn share_legacy_me_500_retries_then_succeeds() {
+        let (result, calls) = run_share(vec![
+            http("403 Forbidden", ""),
+            http("500 Internal Server Error", ""),
+            http("200 OK", ME_OK),
+            http("200 OK", SHARE_OK),
+        ]);
+        result.expect("5xx on /v2/me must retry");
+        assert_eq!(calls, 4);
+    }
+
+    #[test]
+    fn share_transport_error_is_classified_and_surfaced() {
+        // Bind a listener to reserve a port, then drop it: the connect gets
+        // ECONNREFUSED, which the userinfo arm classifies as a (retriable)
+        // transport error and surfaces after attempts are exhausted.
+        let addr = {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            l.local_addr().unwrap()
+        };
+        let log = StageLogger::new("announce", Verbosity::Quiet);
+        let err = send_linkedin_to(
+            &format!("http://{addr}"),
+            "opaque_token_value_123456",
+            "msg",
+            &log,
+            &fast_policy(),
+        )
+        .unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("GET /v2/userinfo transport error"),
+            "{chain}"
+        );
     }
 
     /// `distribution.linkedInDistributionTarget` (camelCase, empty
