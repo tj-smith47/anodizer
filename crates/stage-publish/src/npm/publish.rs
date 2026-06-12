@@ -554,7 +554,7 @@ pub fn publish_to_npm(
         |t| ctx.render_template(t),
     )?;
     if !proceed {
-        log.status("skipped npm — `if` condition evaluated falsy");
+        log.status("skipping npm — `if` condition evaluated falsy");
         return Ok(());
     }
 

@@ -743,7 +743,7 @@ fn fetch_crate_commits(
                 ctx.strict_guard(
                     log,
                     &format!(
-                        "changelog: GitHub API fetch failed, falling back to git: {}",
+                        "changelog GitHub API fetch failed, falling back to git: {}",
                         e
                     ),
                 )?;
@@ -761,7 +761,7 @@ fn fetch_crate_commits(
                 ctx.strict_guard(
                     log,
                     &format!(
-                        "changelog: GitLab API fetch failed, falling back to git: {}",
+                        "changelog GitLab API fetch failed, falling back to git: {}",
                         e
                     ),
                 )?;
@@ -779,7 +779,7 @@ fn fetch_crate_commits(
                 ctx.strict_guard(
                     log,
                     &format!(
-                        "changelog: Gitea API fetch failed, falling back to git: {}",
+                        "changelog Gitea API fetch failed, falling back to git: {}",
                         e
                     ),
                 )?;

@@ -197,7 +197,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
                 .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                 .with_context(|| "dockerhub: render skip template")?;
             if off {
-                log.status("skipped dockerhub entry");
+                log.status("skipping dockerhub entry — skip evaluates true");
                 continue;
             }
         }
@@ -209,7 +209,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
             |t| ctx.render_template(t),
         )?;
         if !proceed {
-            log.status("skipped dockerhub entry — `if` condition evaluated falsy");
+            log.status("skipping dockerhub entry — `if` condition evaluated falsy");
             continue;
         }
 
@@ -244,7 +244,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
         let images: &[String] = &rendered_images;
 
         if images.is_empty() {
-            ctx.strict_guard(log, "dockerhub: no images configured, skipping entry")?;
+            ctx.strict_guard(log, "skipping dockerhub entry — no images configured")?;
             continue;
         }
 
@@ -293,7 +293,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
             }
             if !image.contains('/') {
                 ctx.strict_guard(log, &format!(
-                    "dockerhub: image '{}' has no namespace; bare names map to 'library/' which requires Docker Inc permissions",
+                    "dockerhub image '{}' has no namespace; bare names map to 'library/' which requires Docker Inc permissions",
                     image
                 ))?;
             }
@@ -339,7 +339,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
         if short_desc.is_empty() && full_desc.is_none() {
             ctx.strict_guard(
                 log,
-                "dockerhub: both description and full_description are empty, skipping PATCH",
+                "skipping dockerhub description PATCH — both description and full_description are empty",
             )?;
             continue;
         }

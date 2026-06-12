@@ -269,7 +269,7 @@ fn stage_cloudsmith_file(
         "method": "post",
     });
 
-    log.verbose(&format!("[step 1/3] POST {}", files_create_url));
+    log.verbose(&format!("POST {} (step 1 of 3)", files_create_url));
     let (_create_status, create_body) =
         retry_request("files/create", art_name, policy, log, || {
             client
@@ -319,7 +319,7 @@ fn stage_cloudsmith_file(
     // added here. The fields returned in step 1 (policy, signature, key, ...)
     // MUST be included as multipart form text parts exactly as given, and the
     // actual file goes under the `file` key (not `package_file`).
-    log.verbose(&format!("[step 2/3] POST {} (presigned)", presigned_url));
+    log.verbose(&format!("POST {} (presigned, step 2 of 3)", presigned_url));
     // Multipart Form is move-only, so we rebuild it on every retry attempt.
     // Cloning `file_bytes` and `upload_fields` per-attempt is the price of
     // retriability; the bytes are already in memory.
@@ -394,7 +394,7 @@ pub(crate) fn publish_to_cloudsmith(
                 .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                 .with_context(|| "cloudsmith: render skip template")?;
             if off {
-                log.status("skipped cloudsmith entry");
+                log.status("skipping cloudsmith entry — skip evaluates true");
                 continue;
             }
         }
@@ -405,7 +405,7 @@ pub(crate) fn publish_to_cloudsmith(
             |t| ctx.render_template(t),
         )?;
         if !proceed {
-            log.status("skipped cloudsmith entry — `if` condition evaluated falsy");
+            log.status("skipping cloudsmith entry — `if` condition evaluated falsy");
             continue;
         }
 
@@ -746,7 +746,7 @@ pub(crate) fn publish_to_cloudsmith(
                 }
 
                 log.verbose(&format!(
-                    "[step 3/3] POST {} (identifier={}, distro={:?})",
+                    "POST {} (identifier={}, distro={:?}, step 3 of 3)",
                     package_upload_url, identifier, distro
                 ));
                 let label = format!("packages/upload/{}", fmt);
@@ -953,7 +953,7 @@ pub(crate) fn decode_cloudsmith_targets(
 /// this helper is reached only when `target.slug` is `None`.
 pub(crate) fn cloudsmith_manual_cleanup_msg(target: &CloudsmithTarget) -> String {
     format!(
-        "manually withdraw '{}' from Cloudsmith {}/{} (per-package slug not surfaced in evidence; delete via the Cloudsmith dashboard)",
+        "manually withdraw '{}' from cloudsmith {}/{} (per-package slug not surfaced in evidence; delete via the Cloudsmith dashboard)",
         target.filename, target.org, target.repo
     )
 }

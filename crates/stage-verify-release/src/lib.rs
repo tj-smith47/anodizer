@@ -275,8 +275,8 @@ fn verify_one_crate(
                     Ok(d) => d,
                     Err(e) => {
                         issues.push(format!(
-                            "crate '{}': could not derive expected signature/SBOM \
-                                 assets from config: {e:#}",
+                            "could not derive expected signature/SBOM assets \
+                                 from config for crate '{}': {e:#}",
                             crate_cfg.name
                         ));
                         Vec::new()
@@ -296,8 +296,8 @@ fn verify_one_crate(
                     .partition(|name| produced_set.contains(name.as_str()));
                 if !missing_produced.is_empty() {
                     issues.push(format!(
-                        "crate '{}': {} produced artifact(s) missing from the published \
-                         release: {}",
+                        "{1} produced artifact(s) missing from the published \
+                         release for crate '{0}': {2}",
                         crate_cfg.name,
                         missing_produced.len(),
                         missing_produced
@@ -309,9 +309,9 @@ fn verify_one_crate(
                 }
                 if !missing_derived.is_empty() {
                     issues.push(format!(
-                        "crate '{}': {} signature/SBOM asset(s) required by the resolved \
-                         signs/sboms config were never uploaded (the producing stage \
-                         registered no such artifact): {}",
+                        "{1} signature/SBOM asset(s) required by the resolved \
+                         signs/sboms config were never uploaded for crate '{0}' \
+                         (the producing stage registered no such artifact): {2}",
                         crate_cfg.name,
                         missing_derived.len(),
                         missing_derived
@@ -350,7 +350,7 @@ fn verify_one_crate(
                 // Failing to fetch the live release is itself a post-publish
                 // signal worth surfacing, not a silent skip.
                 issues.push(format!(
-                    "crate '{}': could not fetch published release assets: {e}",
+                    "could not fetch published release assets for crate '{}': {e}",
                     crate_cfg.name
                 ));
             }
@@ -413,13 +413,13 @@ fn verify_one_crate(
                 }
                 Ok(SmokeOutcome::Failed { detail }) => {
                     issues.push(format!(
-                        "crate '{}': install smoke-test failed for {name} on {image}: {detail}",
+                        "install smoke-test failed for crate '{}' ({name} on {image}): {detail}",
                         crate_cfg.name
                     ));
                 }
                 Err(e) => {
                     issues.push(format!(
-                        "crate '{}': install smoke-test could not run for {name}: {e}",
+                        "install smoke-test could not run for crate '{}' ({name}): {e}",
                         crate_cfg.name
                     ));
                 }
@@ -450,7 +450,7 @@ fn check_one_deb_libc(
         }
         Err(e) => {
             issues.push(format!(
-                "crate '{crate_name}': could not read {} for libc check: {e}",
+                "could not read {} of crate '{crate_name}' for the libc check: {e}",
                 deb_path.display()
             ));
             return;
@@ -472,14 +472,14 @@ fn check_one_deb_libc(
         }
         Ok(LibcCheckOutcome::ExceedsCeiling { max, ceiling }) => {
             issues.push(format!(
-                "crate '{crate_name}': {} requires glibc {max}, exceeding the configured \
-                 ceiling {ceiling}",
+                "{} of crate '{crate_name}' requires glibc {max}, exceeding the \
+                 configured ceiling {ceiling}",
                 deb_path.display()
             ));
         }
         Err(e) => {
             issues.push(format!(
-                "crate '{crate_name}': libc check failed for {}: {e}",
+                "libc check failed for {} of crate '{crate_name}': {e}",
                 deb_path.display()
             ));
         }

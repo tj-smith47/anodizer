@@ -229,7 +229,7 @@ fn process_nfpm_format(
         ctx.strict_guard(
             log,
             &format!(
-                "nfpm: skipping format '{}' for target '{}': architecture not supported",
+                "skipping nfpm format '{}' for target '{}' — architecture not supported",
                 format, triple
             ),
         )?;
@@ -460,7 +460,7 @@ fn should_skip_nfpm_config(
         ctx.strict_guard(
             log,
             &format!(
-                "nfpm config '{}': no output formats configured, skipping",
+                "skipping nfpm config '{}' — no output formats configured",
                 nfpm_id_for_log
             ),
         )?;

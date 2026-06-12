@@ -405,7 +405,7 @@ impl Announcer for DiscordAnnouncer {
                     // still run.
                     ctx.strict_guard(
                         log,
-                        "announce.discord: missing webhook_url \
+                        "missing webhook_url in announce.discord \
                              (set discord.webhook_url, or both \
                              DISCORD_WEBHOOK_ID and DISCORD_WEBHOOK_TOKEN env vars)",
                     )?;
@@ -481,18 +481,18 @@ impl Announcer for DiscourseAnnouncer {
         let server = match cfg.server.as_deref() {
             Some(raw) => ctx.render_template(raw)?,
             None => {
-                ctx.strict_guard(log, "announce.discourse: missing server")?;
+                ctx.strict_guard(log, "missing server in announce.discourse")?;
                 return Ok(());
             }
         };
         if server.is_empty() {
-            ctx.strict_guard(log, "announce.discourse: server must not be empty")?;
+            ctx.strict_guard(log, "server in announce.discourse must not be empty")?;
             return Ok(());
         }
         let category_id = match cfg.category_id {
             Some(id) => id,
             None => {
-                ctx.strict_guard(log, "announce.discourse: missing category_id")?;
+                ctx.strict_guard(log, "missing category_id in announce.discourse")?;
                 return Ok(());
             }
         };
@@ -570,7 +570,7 @@ impl Announcer for SlackAnnouncer {
                     // mode it warns and skips just this announcer.
                     ctx.strict_guard(
                         log,
-                        "announce.slack: missing webhook_url (set config or SLACK_WEBHOOK env var)",
+                        "missing webhook_url in announce.slack (set config or SLACK_WEBHOOK env var)",
                     )?;
                     return Ok(());
                 }
@@ -652,7 +652,7 @@ impl Announcer for WebhookAnnouncer {
         let url = match cfg.endpoint_url.as_deref() {
             Some(raw) => ctx.render_template(raw)?,
             None => {
-                ctx.strict_guard(log, "announce.webhook: missing endpoint_url")?;
+                ctx.strict_guard(log, "missing endpoint_url in announce.webhook")?;
                 return Ok(());
             }
         };
@@ -773,7 +773,7 @@ impl Announcer for TelegramAnnouncer {
                     // bail in strict mode.
                     ctx.strict_guard(
                         log,
-                        "announce.telegram: missing bot_token (set config or TELEGRAM_TOKEN env var)",
+                        "missing bot_token in announce.telegram (set config or TELEGRAM_TOKEN env var)",
                     )?;
                     return Ok(());
                 }
@@ -782,7 +782,7 @@ impl Announcer for TelegramAnnouncer {
         let chat_id = match cfg.chat_id.as_deref() {
             Some(raw) => ctx.render_template(raw)?,
             None => {
-                ctx.strict_guard(log, "announce.telegram: missing chat_id")?;
+                ctx.strict_guard(log, "missing chat_id in announce.telegram")?;
                 return Ok(());
             }
         };
@@ -905,7 +905,7 @@ impl Announcer for TeamsAnnouncer {
                 None => {
                     ctx.strict_guard(
                         log,
-                        "announce.teams: missing webhook_url (set config or TEAMS_WEBHOOK env var)",
+                        "missing webhook_url in announce.teams (set config or TEAMS_WEBHOOK env var)",
                     )?;
                     return Ok(());
                 }
@@ -976,7 +976,7 @@ impl Announcer for MattermostAnnouncer {
                 None => {
                     ctx.strict_guard(
                         log,
-                        "announce.mattermost: missing webhook_url (set config or MATTERMOST_WEBHOOK env var)",
+                        "missing webhook_url in announce.mattermost (set config or MATTERMOST_WEBHOOK env var)",
                     )?;
                     return Ok(());
                 }
@@ -1076,21 +1076,21 @@ impl Announcer for RedditAnnouncer {
         let app_id = match cfg.application_id.as_deref() {
             Some(raw) => ctx.render_template(raw)?,
             None => {
-                ctx.strict_guard(log, "announce.reddit: missing application_id")?;
+                ctx.strict_guard(log, "missing application_id in announce.reddit")?;
                 return Ok(());
             }
         };
         let username = match cfg.username.as_deref() {
             Some(raw) => ctx.render_template(raw)?,
             None => {
-                ctx.strict_guard(log, "announce.reddit: missing username")?;
+                ctx.strict_guard(log, "missing username in announce.reddit")?;
                 return Ok(());
             }
         };
         let sub = match cfg.sub.as_deref() {
             Some(raw) => ctx.render_template(raw)?,
             None => {
-                ctx.strict_guard(log, "announce.reddit: missing sub")?;
+                ctx.strict_guard(log, "missing sub in announce.reddit")?;
                 return Ok(());
             }
         };
@@ -1239,12 +1239,12 @@ impl Announcer for MastodonAnnouncer {
         let server = match cfg.server.as_deref() {
             Some(raw) => ctx.render_template(raw)?,
             None => {
-                ctx.strict_guard(log, "announce.mastodon: missing server")?;
+                ctx.strict_guard(log, "missing server in announce.mastodon")?;
                 return Ok(());
             }
         };
         if server.is_empty() {
-            ctx.strict_guard(log, "announce.mastodon: server must not be empty")?;
+            ctx.strict_guard(log, "server in announce.mastodon must not be empty")?;
             return Ok(());
         }
         let message = render_message(ctx, cfg.message_template.as_deref())?;
@@ -1305,7 +1305,7 @@ impl Announcer for BlueskyAnnouncer {
         let username = match cfg.username.as_deref() {
             Some(raw) => ctx.render_template(raw)?,
             None => {
-                ctx.strict_guard(log, "announce.bluesky: missing username")?;
+                ctx.strict_guard(log, "missing username in announce.bluesky")?;
                 return Ok(());
             }
         };
@@ -1424,12 +1424,12 @@ impl Announcer for OpenCollectiveAnnouncer {
         let slug = match cfg.slug.as_deref() {
             Some(raw) => ctx.render_template(raw)?,
             None => {
-                ctx.strict_guard(log, "announce.opencollective: missing slug")?;
+                ctx.strict_guard(log, "missing slug in announce.opencollective")?;
                 return Ok(());
             }
         };
         if slug.is_empty() {
-            ctx.strict_guard(log, "announce.opencollective: slug must not be empty")?;
+            ctx.strict_guard(log, "slug in announce.opencollective must not be empty")?;
             return Ok(());
         }
         opencollective::validate_slug(&slug)?;
@@ -1507,7 +1507,7 @@ impl Announcer for EmailAnnouncer {
         let from = match cfg.from.as_deref() {
             Some(raw) => ctx.render_template(raw)?,
             None => {
-                ctx.strict_guard(log, "announce.email: missing from")?;
+                ctx.strict_guard(log, "missing from in announce.email")?;
                 return Ok(());
             }
         };
@@ -1515,7 +1515,7 @@ impl Announcer for EmailAnnouncer {
         validate_email_from(&from)?;
 
         if cfg.to.is_empty() {
-            ctx.strict_guard(log, "announce.email: missing to (recipient list)")?;
+            ctx.strict_guard(log, "missing to (recipient list) in announce.email")?;
             return Ok(());
         }
 

@@ -358,7 +358,7 @@ pub fn publish_to_gemfury(
             |t| ctx.render_template(t),
         )?;
         if !proceed {
-            log.status("skipped gemfury entry — `if` condition evaluated falsy");
+            log.status("skipping gemfury entry — `if` condition evaluated falsy");
             continue;
         }
 

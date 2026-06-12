@@ -701,19 +701,22 @@ fn run_formatter(
                 .output()
             {
                 if !output.status.success() {
-                    ctx.strict_guard(log, &format!("nix: {} formatting failed", formatter))?;
+                    ctx.strict_guard(
+                        log,
+                        &format!("{} formatting failed for the nix expression", formatter),
+                    )?;
                 }
             } else {
                 ctx.strict_guard(
                     log,
-                    &format!("nix: {} not available, skipping format", formatter),
+                    &format!("skipping nix format — {} not available", formatter),
                 )?;
             }
         }
         _ => {
             ctx.strict_guard(
                 log,
-                &format!("nix: unknown formatter '{}', skipping", formatter),
+                &format!("skipping nix format — unknown formatter '{}'", formatter),
             )?;
         }
     }

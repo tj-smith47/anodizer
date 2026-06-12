@@ -2443,22 +2443,6 @@ mod tests {
         );
     }
 
-    /// Each per-crate iteration owns its publish outcome: a leftover
-    /// `publish_report` / `publish_attempted` from a prior iteration (or
-    /// an outer run) would render the wrong publisher rows under the
-    /// next crate's Summary, re-gate the prior crate's failures, and
-    /// mislabel a skipped publish as "aborted before dispatch". The loop
-    /// must clear both at EVERY iteration top, not once before the loop.
-    ///
-    /// Two-crate fixture: crate 'a' carries a minimal but valid empty
-    /// preserved dist, so iteration 1 runs the real publish-only
-    /// pipeline (`PublishStage::run` marks `publish_attempted` before
-    /// its guards). Crate 'b' has no subdir, so iteration 2 fails at
-    /// preserved-context discovery — AFTER its loop-top reset. A reset
-    /// hoisted above the loop would clear only the pre-seeded outer
-    /// state and leave iteration 1's outcome behind, failing the final
-    /// asserts — this pins the per-iteration placement, not just
-    /// outer-stale clearing.
     /// Seed `<dist_base>/<name>/` with a minimal but valid EMPTY
     /// preserved dist (zero artifacts, commit `deadbeef`) so a
     /// `run_per_crate` iteration over `name` runs the real publish-only
@@ -2493,6 +2477,22 @@ mod tests {
         ctx
     }
 
+    /// Each per-crate iteration owns its publish outcome: a leftover
+    /// `publish_report` / `publish_attempted` from a prior iteration (or
+    /// an outer run) would render the wrong publisher rows under the
+    /// next crate's Summary, re-gate the prior crate's failures, and
+    /// mislabel a skipped publish as "aborted before dispatch". The loop
+    /// must clear both at EVERY iteration top, not once before the loop.
+    ///
+    /// Two-crate fixture: crate 'a' carries a minimal but valid empty
+    /// preserved dist, so iteration 1 runs the real publish-only
+    /// pipeline (`PublishStage::run` marks `publish_attempted` before
+    /// its guards). Crate 'b' has no subdir, so iteration 2 fails at
+    /// preserved-context discovery — AFTER its loop-top reset. A reset
+    /// hoisted above the loop would clear only the pre-seeded outer
+    /// state and leave iteration 1's outcome behind, failing the final
+    /// asserts — this pins the per-iteration placement, not just
+    /// outer-stale clearing.
     #[test]
     fn run_per_crate_resets_publish_outcome_each_iteration() {
         use anodizer_core::config::Config;

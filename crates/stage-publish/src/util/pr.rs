@@ -248,7 +248,7 @@ fn create_pr_via_gh_cli(
             }
             Err(e) => {
                 let msg = format!(
-                    "{label}: could not run gh to create PR: {e} -- you may need to create the PR manually"
+                    "could not run gh to create the {label} PR: {e} -- you may need to create the PR manually"
                 );
                 log.warn(&msg);
                 // Silent-fail would let dispatch record Succeeded.
@@ -259,7 +259,7 @@ fn create_pr_via_gh_cli(
         }
     }
     let msg = format!(
-        "{label}: gh pr create exited with {} -- you may need to create the PR manually{}",
+        "gh pr create for {label} exited with {} -- you may need to create the PR manually{}",
         last_status
             .map(|s| s.to_string())
             .unwrap_or_else(|| "unknown status".to_string()),
@@ -319,7 +319,7 @@ fn create_pr_via_api_with_env<E: EnvSource + ?Sized>(
     let client = match anodizer_core::http::blocking_client(std::time::Duration::from_secs(30)) {
         Ok(c) => c,
         Err(e) => {
-            let msg = format!("{label}: build HTTP client: {e}");
+            let msg = format!("failed to build HTTP client for {label}: {e}");
             log.warn(&msg);
             // Silent-fail = dispatch records Succeeded; return Failed instead.
             return Some(PublisherOutcome::Failed(msg));
@@ -356,14 +356,14 @@ fn create_pr_via_api_with_env<E: EnvSource + ?Sized>(
                 return Some(PublisherOutcome::PendingValidation);
             }
             let msg = format!(
-                "{label}: GitHub API PR creation returned {status} -- you may need to create the PR manually\n{body_text}"
+                "GitHub API PR creation for {label} returned {status} -- you may need to create the PR manually\n{body_text}"
             );
             log.warn(&msg);
             Some(PublisherOutcome::Failed(msg))
         }
         Err(e) => {
             let msg = format!(
-                "{label}: GitHub API PR creation failed: {e} -- you may need to create the PR manually"
+                "GitHub API PR creation for {label} failed: {e} -- you may need to create the PR manually"
             );
             log.warn(&msg);
             Some(PublisherOutcome::Failed(msg))
@@ -543,7 +543,7 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
         }
         PrTransport::NoneAvailable => {
             let msg = format!(
-                "{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"
+                "cannot create the {label} PR automatically -- neither `gh` CLI nor a token is available"
             );
             log.warn(&msg);
             // Silent-fail (returning None here) would let dispatch
@@ -690,7 +690,7 @@ pub(crate) fn submit_pr_via_gh_with_opts_with_env<E: EnvSource + ?Sized>(
                 create_pr_via_api_with_env(&upstream, &spec, tok, label, log, env)
             } else {
                 let msg = format!(
-                    "{label}: cannot parse upstream repo slug '{upstream_repo}' for API fallback"
+                    "cannot parse upstream repo slug '{upstream_repo}' for the {label} API fallback"
                 );
                 log.warn(&msg);
                 Some(PublisherOutcome::Failed(msg))
@@ -698,7 +698,7 @@ pub(crate) fn submit_pr_via_gh_with_opts_with_env<E: EnvSource + ?Sized>(
         }
         PrTransport::NoneAvailable => {
             let msg = format!(
-                "{label}: neither `gh` CLI nor a token is available -- cannot create PR automatically"
+                "cannot create the {label} PR automatically -- neither `gh` CLI nor a token is available"
             );
             log.warn(&msg);
             // Silent-fail (returning None here) would let dispatch

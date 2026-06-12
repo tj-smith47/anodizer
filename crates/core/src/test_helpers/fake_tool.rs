@@ -359,30 +359,34 @@ fn sh_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
 }
 
+/// `Command::output` with a bounded retry on `ETXTBSY` ("Text file busy").
+///
+/// A test that installs a [`FakeToolDir`] stub and execs it immediately
+/// from the same process races every sibling test thread's `fork`: a child
+/// forked inside the install's write window briefly inherits the stub's
+/// writable fd, and the exec here fails with `ETXTBSY` until that child
+/// reaches its own `exec` (the fd is CLOEXEC). A short bounded retry is
+/// the standard remedy. Use this instead of routing the stub through
+/// `sh <stub>` — both close the race, but the retry keeps the real
+/// spawn-the-tool code path under test. Production code never
+/// writes-then-execs its own tools and cannot hit this.
+#[cfg(unix)]
+pub fn output_retrying_etxtbsy(cmd: &mut std::process::Command) -> std::process::Output {
+    for _ in 0..50 {
+        match cmd.output() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            other => return other.expect("spawn fake tool"),
+        }
+    }
+    panic!("fake tool stayed ETXTBSY after 50 retries");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::process::Command;
-
-    /// `Command::output` with a bounded retry on `ETXTBSY`. These tests
-    /// install a stub and exec it immediately from the same process; when
-    /// a sibling test thread forks inside the install's write window, its
-    /// pre-exec child briefly inherits the writable fd and the exec here
-    /// fails with "Text file busy". The fd is closed at the child's exec
-    /// (CLOEXEC), so a short retry is the standard remedy — production
-    /// code never writes-then-execs its own tools and cannot hit this.
-    #[cfg(unix)]
-    fn output_retrying_etxtbsy(cmd: &mut Command) -> std::process::Output {
-        for _ in 0..50 {
-            match cmd.output() {
-                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
-                }
-                other => return other.expect("spawn fake tool"),
-            }
-        }
-        panic!("fake tool stayed ETXTBSY after 50 retries");
-    }
 
     #[cfg(unix)]
     #[test]

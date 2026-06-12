@@ -554,8 +554,8 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                 ctx.strict_guard(
                     &log,
                     &format!(
-                        "sbom[{}]: no matching '{}' artifacts found, skipping",
-                        id, artifacts_type
+                        "skipping SBOM generation — no matching '{}' artifacts found (sbom[{}])",
+                        artifacts_type, id
                     ),
                 )?;
                 return Ok(());
@@ -934,8 +934,8 @@ fn run_sbom_builtin(
         ctx.strict_guard(
             &log,
             &format!(
-                "sbom[{}]: no matching '{}' artifacts found, skipping",
-                id, artifacts_type
+                "skipping SBOM generation — no matching '{}' artifacts found (sbom[{}])",
+                artifacts_type, id
             ),
         )?;
         return Ok(());

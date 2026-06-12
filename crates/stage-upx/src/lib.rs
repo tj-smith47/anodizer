@@ -115,7 +115,7 @@ impl Stage for UpxStage {
                 }
                 ctx.strict_guard(
                     &log,
-                    &format!("upx: binary '{}' not found, skipping compression", binary),
+                    &format!("skipping upx compression — binary '{}' not found", binary),
                 )?;
                 continue;
             }
@@ -149,7 +149,7 @@ impl Stage for UpxStage {
                 ctx.strict_guard(
                     &log,
                     &format!(
-                        "upx[{}]: no matching binary artifacts to compress",
+                        "no matching binary artifacts to compress (upx[{}])",
                         id_label
                     ),
                 )?;
