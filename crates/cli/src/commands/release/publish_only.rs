@@ -2408,8 +2408,9 @@ mod tests {
         use anodizer_core::config::Config;
         use anodizer_core::context::{Context, ContextOptions};
 
+        let tmp = tempfile::tempdir().unwrap();
         let mut config = Config::default();
-        let original_dist = std::path::PathBuf::from("/tmp/anodize-publish-only-restore-test/dist");
+        let original_dist = tmp.path().join("dist");
         config.dist = original_dist.clone();
         let mut ctx = Context::new(config.clone(), ContextOptions::default());
 
@@ -2417,9 +2418,7 @@ mod tests {
         // will iterate to the first crate, then `run_one_crate_dist`
         // will fail at `detect_dist_layout` / preserved-context discovery.
         // The dist-restore logic must still fire on the Err branch.
-        let dist_base = std::path::PathBuf::from(
-            "/tmp/anodize-publish-only-restore-test/nonexistent-dist-base",
-        );
+        let dist_base = tmp.path().join("missing");
         let log = anodizer_core::log::StageLogger::new(
             "publish-only-restore-test",
             anodizer_core::log::Verbosity::Quiet,
@@ -2449,43 +2448,81 @@ mod tests {
     /// an outer run) would render the wrong publisher rows under the
     /// next crate's Summary, re-gate the prior crate's failures, and
     /// mislabel a skipped publish as "aborted before dispatch". The loop
-    /// must clear both at iteration top — pinned here by pre-seeding
-    /// stale values and observing them gone after the first iteration
-    /// (which fails fast on the absent dist, BEFORE any publish runs).
+    /// must clear both at EVERY iteration top, not once before the loop.
+    ///
+    /// Two-crate fixture: crate 'a' carries a minimal but valid empty
+    /// preserved dist, so iteration 1 runs the real publish-only
+    /// pipeline (`PublishStage::run` marks `publish_attempted` before
+    /// its guards). Crate 'b' has no subdir, so iteration 2 fails at
+    /// preserved-context discovery — AFTER its loop-top reset. A reset
+    /// hoisted above the loop would clear only the pre-seeded outer
+    /// state and leave iteration 1's outcome behind, failing the final
+    /// asserts — this pins the per-iteration placement, not just
+    /// outer-stale clearing.
     #[test]
     fn run_per_crate_resets_publish_outcome_each_iteration() {
         use anodizer_core::config::Config;
         use anodizer_core::context::{Context, ContextOptions};
         use anodizer_core::publish_report::PublishReport;
 
-        let config = Config::default();
-        let mut ctx = Context::new(config.clone(), ContextOptions::default());
+        let tmp = tempfile::tempdir().unwrap();
+        let dist_base = tmp.path().join("dist");
+        let a_dist = dist_base.join("a");
+        std::fs::create_dir_all(&a_dist).unwrap();
+        std::fs::write(
+            a_dist.join("context.json"),
+            r#"{"artifacts":[],"targets":[],"version":"0.0.0","commit":"deadbeef"}"#,
+        )
+        .unwrap();
+        std::fs::write(a_dist.join("artifacts.json"), "[]").unwrap();
+
+        let config = Config {
+            dist: dist_base.clone(),
+            ..Config::default()
+        };
+        let mut ctx = Context::new(
+            config.clone(),
+            ContextOptions {
+                dry_run: true,
+                ..ContextOptions::default()
+            },
+        );
+        ctx.template_vars_mut().set("FullCommit", "deadbeef");
+        ctx.template_vars_mut().set("Version", "0.0.0");
+        ctx.template_vars_mut().set("Tag", "v0.0.0");
+        // Pre-seed stale OUTER state as well: a loop-hoisted reset would
+        // clear this much, so the distinguishing signal below stays
+        // iteration 1's freshly-set outcome.
         ctx.set_publish_report(PublishReport::default());
         ctx.set_publish_attempted();
 
-        let dist_base =
-            std::path::PathBuf::from("/tmp/anodize-publish-only-reset-test/nonexistent-dist-base");
         let log = anodizer_core::log::StageLogger::new(
             "publish-only-reset-test",
             anodizer_core::log::Verbosity::Quiet,
         );
         let opts = RunOpts { dry_run: true };
-        let result = run_per_crate(
+        let err = run_per_crate(
             &mut ctx,
             &config,
             &log,
             opts,
-            dist_base,
-            vec!["cfgd".to_string()],
+            dist_base.clone(),
+            vec!["a".to_string(), "b".to_string()],
+        )
+        .expect_err("iteration 2 must fail on the absent dist/b subdir");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains(&dist_base.join("b").display().to_string()),
+            "iteration 1 must succeed and iteration 2 must be the failing one \
+             (otherwise this test never observes the per-iteration reset); got: {chain}"
         );
-        assert!(result.is_err(), "absent dist_base must fail the iteration");
         assert!(
             ctx.publish_report().is_none(),
-            "stale publish_report must be cleared at iteration top"
+            "iteration 1's publish_report must be cleared at iteration 2's top"
         );
         assert!(
             !ctx.publish_attempted(),
-            "stale publish_attempted must be cleared at iteration top"
+            "iteration 1's publish_attempted must be cleared at iteration 2's top"
         );
     }
 

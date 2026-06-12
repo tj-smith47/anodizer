@@ -1612,7 +1612,7 @@ fn detect_changed_crates(
                 .is_some_and(|pfx| pfx.iter().any(|p| p.contains("{{")));
         if has_templates {
             log.debug(
-                "note: ignore_tags/ignore_tag_prefixes templates not rendered during \
+                "ignore_tags/ignore_tag_prefixes templates not rendered during \
                  change detection (template vars not yet available)",
             );
         }

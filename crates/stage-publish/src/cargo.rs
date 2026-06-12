@@ -940,8 +940,8 @@ pub(crate) fn check_publish_set_completeness(
             match index_probe(&dep_name, &probe_version) {
                 DepIndexState::Present => {
                     log.verbose(&format!(
-                        "publish dep-guard: '{publishing}' dep '{dep_name}@{probe_version}' is \
-                         not in the publish set but is already on crates.io — ok"
+                        "publish dep-guard confirmed '{publishing}' dep '{dep_name}@{probe_version}' is \
+                         not in the publish set but is already on crates.io"
                     ));
                 }
                 DepIndexState::Absent => {
@@ -1701,7 +1701,7 @@ simple_publisher!(
 /// dispatch table can't silently report success on a no-op run.
 pub(crate) fn run_start_message(selected_total: usize) -> String {
     format!(
-        "cargo: starting publish for {} selected crate(s)",
+        "starting cargo publish for {} selected crate(s)",
         selected_total
     )
 }
@@ -1712,7 +1712,7 @@ pub(crate) fn run_start_message(selected_total: usize) -> String {
 /// Mirrors `run_per_crate_start_message` on every other per-crate
 /// publisher (homebrew, scoop, nix, aur, krew).
 pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
-    format!("cargo: starting per-crate publish for '{}'", crate_name)
+    format!("starting per-crate cargo publish for \'{}\'", crate_name)
 }
 
 /// Operator-visible done line, emitted after `publish_to_cargo` returns
@@ -1721,7 +1721,7 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 /// dry-run paths all count as processed — they're successful runs of
 /// the correct code path).
 pub(crate) fn run_done_message(processed: usize) -> String {
-    format!("cargo: completed — {} crate(s) processed", processed)
+    format!("finished cargo publish — {} crate(s) processed", processed)
 }
 
 /// Warning emitted when the publisher was registered (at least one
@@ -1730,7 +1730,7 @@ pub(crate) fn run_done_message(processed: usize) -> String {
 /// out by `--crate` / `--all` selection).
 pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     format!(
-        "cargo: registered but 0 of {} effective crate(s) had a publish.cargo \
+        "cargo publisher registered but 0 of {} effective crate(s) had a publish.cargo \
          block selected — nothing pushed. Check that --crate / --all selects a \
          crate whose publish.cargo block is set.",
         selected_total
@@ -2039,32 +2039,28 @@ mod publisher_tests {
     #[test]
     fn run_start_message_names_selected_total() {
         let msg = run_start_message(3);
-        assert!(msg.starts_with("cargo:"), "{msg}");
-        assert!(msg.contains("starting publish"), "{msg}");
+        assert!(msg.starts_with("starting cargo publish for"), "{msg}");
         assert!(msg.contains("3 selected"), "{msg}");
     }
 
     #[test]
     fn run_per_crate_start_message_names_crate() {
         let msg = run_per_crate_start_message("demo");
-        assert!(msg.starts_with("cargo:"), "{msg}");
-        assert!(msg.contains("starting per-crate publish"), "{msg}");
+        assert!(msg.starts_with("starting per-crate cargo publish"), "{msg}");
         assert!(msg.contains("'demo'"), "{msg}");
     }
 
     #[test]
     fn run_done_message_reports_processed_count() {
         let msg = run_done_message(2);
-        assert!(msg.starts_with("cargo:"), "{msg}");
-        assert!(msg.contains("completed"), "{msg}");
+        assert!(msg.starts_with("finished cargo publish"), "{msg}");
         assert!(msg.contains("2 crate(s) processed"), "{msg}");
     }
 
     #[test]
     fn run_no_eligible_crates_warning_names_remediation() {
         let msg = run_no_eligible_crates_warning(5);
-        assert!(msg.starts_with("cargo:"), "{msg}");
-        assert!(msg.contains("registered"), "{msg}");
+        assert!(msg.starts_with("cargo publisher registered"), "{msg}");
         assert!(msg.contains("0 of 5 effective"), "{msg}");
         assert!(msg.contains("nothing pushed"), "{msg}");
         assert!(msg.contains("--crate"), "{msg}");
@@ -3548,22 +3544,22 @@ lib.workspace = true
     fn run_start_and_done_messages_carry_counts() {
         assert_eq!(
             run_start_message(3),
-            "cargo: starting publish for 3 selected crate(s)"
+            "starting cargo publish for 3 selected crate(s)"
         );
         assert_eq!(
             run_per_crate_start_message("cfgd-core"),
-            "cargo: starting per-crate publish for 'cfgd-core'"
+            "starting per-crate cargo publish for 'cfgd-core'"
         );
         assert_eq!(
             run_done_message(2),
-            "cargo: completed — 2 crate(s) processed"
+            "finished cargo publish — 2 crate(s) processed"
         );
     }
 
     #[test]
     fn run_no_eligible_crates_warning_names_the_total() {
         let w = run_no_eligible_crates_warning(5);
-        assert!(w.starts_with("cargo: registered but 0 of 5 effective crate(s)"));
+        assert!(w.starts_with("cargo publisher registered but 0 of 5 effective crate(s)"));
         assert!(w.contains("--crate / --all"));
     }
 
@@ -3773,7 +3769,7 @@ lib.workspace = true
             .into_iter()
             .filter(|(lvl, _)| *lvl == LogLevel::Status)
             .filter_map(|(_, m)| {
-                m.strip_prefix("cargo: starting per-crate publish for '")
+                m.strip_prefix("starting per-crate cargo publish for '")
                     .and_then(|rest| rest.strip_suffix('\''))
                     .map(str::to_string)
             })

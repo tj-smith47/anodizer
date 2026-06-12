@@ -736,13 +736,13 @@ pub(super) fn remove_preserved_on_drift(dest: &Path, log: &StageLogger) {
 
 #[cfg(test)]
 mod tests {
-    fn test_log() -> StageLogger {
-        StageLogger::new("check-determinism", anodizer_core::log::Verbosity::Normal)
-    }
-
     use super::*;
     use anodizer_core::{ArtifactRow, DeterminismReport};
     use tempfile::TempDir;
+
+    fn test_log() -> StageLogger {
+        StageLogger::new("check-determinism", anodizer_core::log::Verbosity::Normal)
+    }
 
     fn empty_report(commit: &str) -> DeterminismReport {
         DeterminismReport {

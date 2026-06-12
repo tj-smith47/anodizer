@@ -86,7 +86,7 @@ pub(crate) fn is_nix_per_crate_configured(ctx: &Context, crate_name: &str) -> bo
 /// substring an operator scans the log for.
 pub(crate) fn run_start_message(selected_total: usize) -> String {
     format!(
-        "nix: starting publish for {} selected crate(s)",
+        "starting nix publish for {} selected crate(s)",
         selected_total
     )
 }
@@ -95,7 +95,10 @@ pub(crate) fn run_start_message(selected_total: usize) -> String {
 /// Replaces what used to be a silent `continue` — operators need to see
 /// why a per-crate publish was a no-op rather than guess from a blank log.
 pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
-    format!("nix: skipping crate '{}' — no nix config block", crate_name)
+    format!(
+        "skipping nix for crate \'{}\' — no nix config block",
+        crate_name
+    )
 }
 
 /// Message emitted just before delegating to `publish_to_nix`. Anchors
@@ -103,7 +106,7 @@ pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
 /// specific crate in the log so multi-crate workspaces are
 /// disambiguatable.
 pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
-    format!("nix: starting per-crate publish for '{}'", crate_name)
+    format!("starting per-crate nix publish for \'{}\'", crate_name)
 }
 
 /// Final summary emitted at publisher exit. `processed` is the count of
@@ -112,7 +115,7 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 /// skip paths for skip_upload/dry-run/etc., each of which logs its own
 /// status line).
 pub(crate) fn run_done_message(processed: usize) -> String {
-    format!("nix: completed — {} crate(s) processed", processed)
+    format!("finished nix publish — {} crate(s) processed", processed)
 }
 
 /// Decision predicate for the no-eligible-crates warning. True when the
@@ -142,7 +145,7 @@ pub(crate) fn should_warn_no_eligible(processed: usize, selected_len: usize) -> 
 /// hides the fact that nothing was pushed.
 pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     format!(
-        "nix: registered but 0 of {} effective crate(s) had a nix \
+        "nix publisher registered but 0 of {} effective crate(s) had a nix \
          config block — nothing pushed. Check that --crate / --all selects a \
          crate whose publish.nix block is set.",
         selected_total
@@ -486,40 +489,35 @@ mod publisher_tests {
     #[test]
     fn run_start_message_names_selected_total() {
         let msg = run_start_message(3);
-        assert!(msg.starts_with("nix:"), "{msg}");
-        assert!(msg.contains("starting publish"), "{msg}");
+        assert!(msg.starts_with("starting nix publish for"), "{msg}");
         assert!(msg.contains("3 selected"), "{msg}");
     }
 
     #[test]
     fn run_skip_unconfigured_message_names_crate() {
         let msg = run_skip_unconfigured_message("demo");
-        assert!(msg.starts_with("nix:"), "{msg}");
-        assert!(msg.contains("skipping crate 'demo'"), "{msg}");
+        assert!(msg.starts_with("skipping nix for crate \'demo\'"), "{msg}");
         assert!(msg.contains("no nix config block"), "{msg}");
     }
 
     #[test]
     fn run_per_crate_start_message_names_crate() {
         let msg = run_per_crate_start_message("demo");
-        assert!(msg.starts_with("nix:"), "{msg}");
-        assert!(msg.contains("starting per-crate publish"), "{msg}");
+        assert!(msg.starts_with("starting per-crate nix publish"), "{msg}");
         assert!(msg.contains("'demo'"), "{msg}");
     }
 
     #[test]
     fn run_done_message_reports_processed_count() {
         let msg = run_done_message(2);
-        assert!(msg.starts_with("nix:"), "{msg}");
-        assert!(msg.contains("completed"), "{msg}");
+        assert!(msg.starts_with("finished nix publish"), "{msg}");
         assert!(msg.contains("2 crate(s) processed"), "{msg}");
     }
 
     #[test]
     fn run_no_eligible_crates_warning_names_remediation() {
         let msg = run_no_eligible_crates_warning(5);
-        assert!(msg.starts_with("nix:"), "{msg}");
-        assert!(msg.contains("registered"), "{msg}");
+        assert!(msg.starts_with("nix publisher registered"), "{msg}");
         assert!(msg.contains("0 of 5 effective"), "{msg}");
         assert!(msg.contains("nothing pushed"), "{msg}");
         assert!(msg.contains("--crate"), "{msg}");

@@ -84,11 +84,11 @@ fn collect_chocolatey_target(ctx: &Context, crate_name: &str) -> Option<Chocolat
 
 /// Message emitted at publisher entry. Names how many crates the publisher
 /// is iterating over. Factored into a helper so tests can pin the exact
-/// substring an operator scans the log for ("chocolatey: starting publish
+/// substring an operator scans the log for ("starting chocolatey publish
 /// for ...").
 pub(crate) fn run_start_message(selected_total: usize) -> String {
     format!(
-        "chocolatey: starting publish for {} selected crate(s)",
+        "starting chocolatey publish for {} selected crate(s)",
         selected_total
     )
 }
@@ -99,7 +99,7 @@ pub(crate) fn run_start_message(selected_total: usize) -> String {
 /// blank log.
 pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
     format!(
-        "chocolatey: skipping crate '{}' — no chocolatey config block",
+        "skipping chocolatey for crate \'{}\' — no chocolatey config block",
         crate_name
     )
 }
@@ -110,7 +110,7 @@ pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
 /// disambiguatable.
 pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
     format!(
-        "chocolatey: starting per-crate publish for '{}'",
+        "starting per-crate chocolatey publish for \'{}\'",
         crate_name
     )
 }
@@ -121,7 +121,10 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 /// skip paths for moderation/hash-match/dry-run/etc., each of which logs
 /// its own status line).
 pub(crate) fn run_done_message(processed: usize) -> String {
-    format!("chocolatey: completed — {} crate(s) processed", processed)
+    format!(
+        "finished chocolatey publish — {} crate(s) processed",
+        processed
+    )
 }
 
 /// Warning emitted when the publisher was registered (at least one
@@ -138,7 +141,7 @@ pub(crate) fn run_done_message(processed: usize) -> String {
 /// pushed.
 pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     format!(
-        "chocolatey: registered but 0 of {} effective crate(s) had a chocolatey \
+        "chocolatey publisher registered but 0 of {} effective crate(s) had a chocolatey \
          config block — nothing pushed. Check that --crate / --all selects a \
          crate whose publish.chocolatey block is set.",
         selected_total
@@ -470,40 +473,41 @@ mod publisher_tests {
     #[test]
     fn run_start_message_names_selected_total() {
         let msg = run_start_message(3);
-        assert!(msg.starts_with("chocolatey:"), "{msg}");
-        assert!(msg.contains("starting publish"), "{msg}");
+        assert!(msg.starts_with("starting chocolatey publish for"), "{msg}");
         assert!(msg.contains("3 selected"), "{msg}");
     }
 
     #[test]
     fn run_skip_unconfigured_message_names_crate() {
         let msg = run_skip_unconfigured_message("demo");
-        assert!(msg.starts_with("chocolatey:"), "{msg}");
-        assert!(msg.contains("skipping crate 'demo'"), "{msg}");
+        assert!(
+            msg.starts_with("skipping chocolatey for crate \'demo\'"),
+            "{msg}"
+        );
         assert!(msg.contains("no chocolatey config block"), "{msg}");
     }
 
     #[test]
     fn run_per_crate_start_message_names_crate() {
         let msg = run_per_crate_start_message("demo");
-        assert!(msg.starts_with("chocolatey:"), "{msg}");
-        assert!(msg.contains("starting per-crate publish"), "{msg}");
+        assert!(
+            msg.starts_with("starting per-crate chocolatey publish"),
+            "{msg}"
+        );
         assert!(msg.contains("'demo'"), "{msg}");
     }
 
     #[test]
     fn run_done_message_reports_processed_count() {
         let msg = run_done_message(2);
-        assert!(msg.starts_with("chocolatey:"), "{msg}");
-        assert!(msg.contains("completed"), "{msg}");
+        assert!(msg.starts_with("finished chocolatey publish"), "{msg}");
         assert!(msg.contains("2 crate(s) processed"), "{msg}");
     }
 
     #[test]
     fn run_no_eligible_crates_warning_names_remediation() {
         let msg = run_no_eligible_crates_warning(5);
-        assert!(msg.starts_with("chocolatey:"), "{msg}");
-        assert!(msg.contains("registered"), "{msg}");
+        assert!(msg.starts_with("chocolatey publisher registered"), "{msg}");
         assert!(msg.contains("0 of 5 effective"), "{msg}");
         assert!(msg.contains("nothing pushed"), "{msg}");
         // The warning must point the operator at the remediation surface
@@ -519,7 +523,7 @@ mod publisher_tests {
         // The warn helper must not panic or omit the remediation text in
         // this shape.
         let msg = run_no_eligible_crates_warning(0);
-        assert!(msg.starts_with("chocolatey:"), "{msg}");
+        assert!(msg.starts_with("chocolatey publisher registered"), "{msg}");
         assert!(msg.contains("0 of 0 effective"), "{msg}");
         assert!(msg.contains("nothing pushed"), "{msg}");
         assert!(msg.contains("--crate"), "{msg}");

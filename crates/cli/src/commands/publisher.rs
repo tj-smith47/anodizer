@@ -70,7 +70,7 @@ pub fn run_publishers(
                 .with_context(|| format!("[publisher] render skip template for {}", label))?;
             if off {
                 log.verbose(&format!(
-                    "[publisher] skipping {} -- skip=true (template)",
+                    "skipping publisher {} — skip=true (template)",
                     label
                 ));
                 if let Some(sm) = skip_memento {
@@ -88,7 +88,7 @@ pub fn run_publishers(
         )?;
         if !proceed {
             log.verbose(&format!(
-                "[publisher] skipping {} -- `if` condition evaluated falsy",
+                "skipping publisher {} — `if` condition evaluated falsy",
                 label
             ));
             if let Some(sm) = skip_memento {
@@ -98,7 +98,7 @@ pub fn run_publishers(
         }
 
         if publisher.cmd.is_empty() {
-            log.verbose(&format!("[publisher] skipping {} -- empty cmd", label));
+            log.verbose(&format!("skipping publisher {} — empty cmd", label));
             if let Some(sm) = skip_memento {
                 sm.remember("publisher", label, "empty cmd");
             }
@@ -191,7 +191,7 @@ pub fn run_publishers(
             .collect();
 
         if matching.is_empty() {
-            log.verbose(&format!("[publisher] {} -- no matching artifacts", label));
+            log.verbose(&format!("no matching artifacts for publisher {}", label));
             if let Some(sm) = skip_memento {
                 sm.remember("publisher", label, "no matching artifacts");
             }
@@ -211,18 +211,21 @@ pub fn run_publishers(
             if dry_run {
                 let full_cmd = format_command_line(&rendered_cmd, &rendered_args);
                 log.status(&format!(
-                    "(dry-run) would run publisher {} -- {}",
-                    label, full_cmd
+                    "(dry-run) would run publisher {} for {} via `{}`",
+                    label,
+                    artifact.path.display(),
+                    full_cmd
                 ));
             } else {
-                log.status(&format!(
-                    "[publisher] {} -- running for {}",
-                    label,
-                    artifact.path.display()
-                ));
                 // parse command with shellwords
                 // and exec directly instead of wrapping with `sh -c`.
                 let full_cmd = format_command_line(&rendered_cmd, &rendered_args);
+                log.status(&format!(
+                    "running publisher {} for {} via `{}`",
+                    label,
+                    artifact.path.display(),
+                    full_cmd
+                ));
                 let shell_args = split_shellwords(&full_cmd);
                 if shell_args.is_empty() {
                     anyhow::bail!("publisher: empty command after parsing: {}", full_cmd);

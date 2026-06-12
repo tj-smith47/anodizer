@@ -77,12 +77,25 @@ enum PageVerdict {
     NetworkError(String),
 }
 
+/// Render the operator-facing approval line. `'{package}-{version}'` is
+/// the package-version pair used throughout this module's messages; the
+/// parenthetical carries the scraped page detail. Factored out so a test
+/// can pin the argument order (a swapped detail/version renders garbage
+/// like `approved 'mytool-approved, ready for install' (1.2.3)`).
+fn approved_message(package: &str, version: &str, detail: &str) -> String {
+    format!(
+        "chocolatey moderation approved '{}-{}' ({})",
+        package, version, detail
+    )
+}
+
 /// Poll the Chocolatey community page until a terminal state is
 /// reached or the polling budget is exhausted.
 ///
 /// `page_base_url` is normally `https://community.chocolatey.org` —
 /// exposed as a parameter so tests can point at a local TCP listener.
-#[allow(unused_assignments)] // initial `None` is overwritten by every match arm before the
+#[allow(unused_assignments)]
+// initial `None` is overwritten by every match arm before the
 // timeout exit reads `last_pending_detail`; the compiler cannot prove the
 // loop body runs at least once, so the initial assignment triggers the lint.
 pub fn poll(
@@ -121,10 +134,7 @@ pub fn poll(
         let verdict = scrape_once(&url);
         match verdict {
             PageVerdict::Approved(detail) => {
-                log.status(&format!(
-                    "chocolatey moderation approved '{}-{}' ({})",
-                    package, detail, version
-                ));
+                log.status(&approved_message(package, version, &detail));
                 return PostPublishStatus::Approved { detail };
             }
             PageVerdict::Pending(detail) => {
@@ -288,6 +298,14 @@ fn classify_html(body: &str) -> PageVerdict {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approved_message_renders_package_version_pair_then_detail() {
+        assert_eq!(
+            approved_message("mytool", "1.2.3", "approved, ready for install"),
+            "chocolatey moderation approved 'mytool-1.2.3' (approved, ready for install)"
+        );
+    }
 
     #[test]
     fn classifies_approved_callout() {
