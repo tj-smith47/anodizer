@@ -1,8 +1,8 @@
 name: Nightly
 
+# No schedule: nightly is disabled pending a decision on its target-coverage
+# contract (full release matrix vs. linux-only from a single runner).
 on:
-  schedule:
-    - cron: '0 4 * * *'   # 04:00 UTC daily
   workflow_dispatch:
 
 permissions:
@@ -22,6 +22,10 @@ jobs:
       - uses: tj-smith47/anodizer-action@v1
         with:
           from-branch: master
+          # zig + cargo-zigbuild (plus the other configured-stage tools):
+          # cross-arch linux-gnu builds need zigbuild's bundled cc, same
+          # toolchain the determinism shards install.
+          auto-install: 'true'
           args: release --nightly --no-preflight
         env:
           COSIGN_KEY: ${{ secrets.COSIGN_KEY }}

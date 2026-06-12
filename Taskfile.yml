@@ -152,11 +152,29 @@ tasks:
       - 'echo "Coverage (line, cobertura): $(bash .claude/scripts/coverage-percent.sh cobertura.xml)"'
 
   coverage:publish:
-    desc: Run workspace test coverage and publish the badge update to origin/badges. Switches branches via the badge script; CI only.
+    desc: Run workspace test coverage, enforce the coverage floor, and publish the badge update to origin/badges. Switches branches via the badge script; CI only.
     cmds:
       - cargo llvm-cov nextest --cobertura --output-path cobertura.xml
       - bash .claude/scripts/coverage-percent.sh cobertura.xml
+      # Gate before publishing so CI fails loudly instead of quietly
+      # shipping a lower badge. Floor lives in coverage-gate.sh only.
+      - bash .claude/scripts/coverage-gate.sh cobertura.xml
       - bash .claude/scripts/publish-coverage.sh cobertura.xml
+
+  coverage:gate:
+    desc: "Coverage floor gate: run the instrumented suite quietly (full output in target/coverage-gate.log), then fail below the floor (default in coverage-gate.sh; override via COVERAGE_FLOOR)."
+    deps: [_check:tmp-headroom]
+    cmds:
+      # The instrumented run spews thousands of compile/test lines; keep the
+      # terminal to percent + verdict and park the rest in a logfile.
+      - mkdir -p target
+      - |
+        if ! cargo llvm-cov nextest --cobertura --output-path cobertura.xml > target/coverage-gate.log 2>&1; then
+          echo "instrumented test run failed — tail of target/coverage-gate.log:" >&2
+          tail -n 40 target/coverage-gate.log >&2
+          exit 1
+        fi
+      - bash .claude/scripts/coverage-gate.sh cobertura.xml
 
   tidy:
     desc: Format code and regenerate docs
@@ -198,6 +216,17 @@ tasks:
           STAGED_LIST: "{{.STAGED_PRE}}"
           MODIFIED_LIST: "{{.MODIFIED_PRE}}"
       - git commit {{.CLI_ARGS}}
+
+  push:
+    desc: "Coverage-gated push. Usage: task push [-- <git push args>] (defaults to origin master)."
+    preconditions:
+      # Uncommitted changes must not ride along on a push decision — gate the
+      # coverage run and the push on a clean tree.
+      - sh: git diff --quiet && git diff --cached --quiet
+        msg: "Working tree is dirty — commit or stash before task push."
+    cmds:
+      - task: coverage:gate
+      - git push {{.CLI_ARGS | default "origin master"}}
 
   _commit:restage:
     internal: true

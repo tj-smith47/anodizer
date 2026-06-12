@@ -236,10 +236,13 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
     out
 }
 
-/// Evaluate the collected requirements against the real environment: PATH
-/// probes via `core::tool_detect`, `docker info` for the daemon, a plain
-/// HTTP round-trip for endpoints (any response means reachable), and env
-/// lookups that merge `env_files` entries with the process environment.
+/// Evaluate the collected requirements against the real environment: a
+/// pure PATH lookup for tools (mirroring how stages spawn them — a tool
+/// requirement means "resolvable on PATH", not "answers `--version`",
+/// which arbitrary user-configured sign/publish commands may not),
+/// `docker info` for the daemon, a plain HTTP round-trip for endpoints
+/// (any response means reachable), and env lookups that merge
+/// `env_files` entries with the process environment.
 pub fn evaluate_against_environment(
     ctx: &Context,
     requirements: &[SourcedRequirement],
@@ -251,8 +254,7 @@ pub fn evaluate_against_environment(
             .cloned()
             .or_else(|| ctx.env_var(name))
     };
-    let tool =
-        |name: &str| -> bool { anodizer_core::tool_detect::tool_available(name).unwrap_or(false) };
+    let tool = |name: &str| -> bool { anodizer_core::util::find_binary(name) };
     let endpoint = |url: &str| -> std::result::Result<(), String> {
         let target = if url.contains("://") {
             url.to_string()

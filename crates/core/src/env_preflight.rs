@@ -152,8 +152,9 @@ impl std::fmt::Display for EnvPreflightReport {
 // ---------------------------------------------------------------------------
 
 /// Side-effecting probes injected into [`evaluate`]. Production callers wire
-/// these to [`crate::tool_detect`] and [`crate::http`]; tests inject
-/// closures.
+/// `tool` to [`crate::util::find_binary`] (a pure PATH lookup mirroring how
+/// stages spawn commands), `endpoint` to [`crate::http`], and `docker` to
+/// [`crate::tool_detect`]; tests inject closures.
 pub struct EnvProbes<'a> {
     /// `true` when the tool resolves on PATH.
     pub tool: &'a dyn Fn(&str) -> bool,
@@ -351,16 +352,11 @@ fn validate_ssh_private_key(content: &str) -> Result<(), String> {
     if !footer.contains("PRIVATE KEY-----") {
         return Err("footer is not a PRIVATE KEY PEM footer".to_string());
     }
-    // OpenSSH (libcrypto) rejects a key whose END line has no trailing
-    // newline — the canonical CI failure is a secret stored via a tool
-    // that strips it. Catch that here with a precise message.
-    if !content.ends_with('\n') {
-        return Err(
-            "missing trailing newline after the END marker (OpenSSH rejects such keys; \
-             re-store the secret with its final newline intact)"
-                .to_string(),
-        );
-    }
+    // A missing trailing newline after the END marker is NOT an error:
+    // the key writer normalizes the content to exactly one trailing
+    // newline before ssh ever reads it, so a secret stored via a tool
+    // that strips the final newline still works at run time. Failing
+    // here would reject input the pipeline provably tolerates.
     Ok(())
 }
 
@@ -837,11 +833,10 @@ mod tests {
     }
 
     #[test]
-    fn ssh_key_missing_trailing_newline_is_flagged() {
+    fn ssh_key_missing_trailing_newline_passes() {
         let key =
             "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaA==\n-----END OPENSSH PRIVATE KEY-----";
-        let err = validate_key_material(KeyKind::SshPrivate, key).unwrap_err();
-        assert!(err.contains("trailing newline"), "got: {err}");
+        assert!(validate_key_material(KeyKind::SshPrivate, key).is_ok());
     }
 
     #[test]

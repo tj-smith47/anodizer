@@ -791,6 +791,22 @@ fn plan_build_jobs(
                     target_env.insert("RUSTFLAGS".to_string(), new_rustflags);
                 }
 
+                // Surface a doomed routing decision before cargo spends
+                // minutes compiling: a cross-arch linux-gnu target on plain
+                // cargo fails at the first native-code dependency unless a
+                // system cross cc exists, and the resulting cc-rs error
+                // doesn't name the missing tooling layer. A `cross_tool`
+                // override bypasses strategy resolution entirely.
+                if cross_tool.is_none() {
+                    let resolved = crate::command::resolved_strategy_for_target(&strategy, target);
+                    let host = anodizer_core::partial::detect_host_target().unwrap_or_default();
+                    if let Some(msg) =
+                        crate::command::cross_gnu_cargo_fallback_warning(&host, target, &resolved)
+                    {
+                        log.warn(&msg);
+                    }
+                }
+
                 let build_ctx = crate::command::BuildContext {
                     crate_path: &crate_cfg.path,
                     target,

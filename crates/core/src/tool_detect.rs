@@ -15,10 +15,12 @@ use std::process::Command;
 
 /// The version flag `<name>` answers with a zero exit. `--version` for
 /// almost everything; OpenSSH's `ssh` rejects `--version` (exit 255,
-/// usage text) and only supports `-V`.
+/// usage text) and only supports `-V`; cosign rejects `--version`
+/// (exit 1, "unknown flag") and only supports the `version` subcommand.
 fn version_flag(name: &str) -> &'static str {
     match name {
         "ssh" => "-V",
+        "cosign" => "version",
         _ => "--version",
     }
 }
