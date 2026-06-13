@@ -589,6 +589,18 @@ pub fn create_config(dir: &Path, content: &str) {
 ///
 /// Shared by the checksum-stage, sign-stage, and verify-release regression
 /// suites, which assert that no produced/demanded asset name matches the chain.
+///
+/// # Classification basis
+///
+/// This reasons PURELY on filename suffixes (the trailing `.sha256` / `.sig`
+/// adjacency) and assumes a PRIMARY artifact's name never itself ends in a
+/// sidecar extension. A hypothetical primary literally named `foo.sig` would
+/// be misclassified: its legitimate checksum `foo.sig.sha256` parses as the
+/// forbidden `sig → sha256` adjacency even though no recursion occurred.
+/// anodize produces no such fixture, so there is no live bug — but a caller
+/// that needs kind-aware classification (distinguishing a primary that merely
+/// ends in `.sig` from a real signature sidecar) must pass the artifact KIND
+/// rather than rely on this name-only heuristic.
 pub fn has_recursive_sidecar_chain(name: &str) -> bool {
     // Peel trailing sidecar segments off the end; record them outermost-first.
     let mut rest = name;
