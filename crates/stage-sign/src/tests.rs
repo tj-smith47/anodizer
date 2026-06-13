@@ -128,6 +128,28 @@ fn pin_image_ref_to_digest_without_digest_returns_bare_ref() {
 }
 
 #[test]
+fn pin_image_ref_to_digest_handles_port_registry_and_no_tag() {
+    // A `host:port/repo:tag` reference: the PORT colon must not be mistaken
+    // for a tag/digest boundary — strip_digest_suffix splits on the last `@`
+    // (absent here), so the whole ref survives and the digest appends after.
+    assert_eq!(
+        pin_image_ref_to_digest("localhost:5000/org/app:0.9.0", "sha256:abc"),
+        "localhost:5000/org/app:0.9.0@sha256:abc"
+    );
+    // A digest-only reference (no tag) pins cleanly.
+    assert_eq!(
+        pin_image_ref_to_digest("ghcr.io/org/app", "sha256:abc"),
+        "ghcr.io/org/app@sha256:abc"
+    );
+    // Port registry that was already pinned re-pins without confusing the
+    // port colon for the digest delimiter.
+    assert_eq!(
+        pin_image_ref_to_digest("localhost:5000/org/app:0.9.0@sha256:old", "sha256:new"),
+        "localhost:5000/org/app:0.9.0@sha256:new"
+    );
+}
+
+#[test]
 fn collapse_doubled_digest_removes_one_pin() {
     // The historical default `{{ .Artifact }}@{{ .Digest }}` with a pinned
     // Artifact yields a doubled pin; collapse to a single valid reference.
@@ -2113,16 +2135,36 @@ fn test_docker_sign_signs_by_digest_not_tag() {
     }
 }
 
+/// Missing-digest path (safety-critical): when the build stage recorded NO
+/// digest, the publisher must NOT fabricate one — it signs the bare tag
+/// loudly (and warns elsewhere). This captures the rendered cosign reference
+/// and pins that exactly one image is signed by its bare tag, with ZERO
+/// `@sha256:` pins, so a future change cannot silently invent a digest.
+#[cfg(unix)]
 #[test]
-fn test_docker_sign_without_digest_metadata_still_works() {
+fn test_docker_sign_without_digest_signs_bare_tag_never_fabricates() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use anodizer_core::config::DockerSignConfig;
 
-    // Docker image without digest/id metadata — should still work
+    let tmp = tempfile::TempDir::new().unwrap();
+    let marker_path = tmp.path().join("ref.txt");
+    let marker_str = marker_path.to_string_lossy().to_string();
+
+    // Capture the standalone `{{ .Artifact }}` reference ($1) the sign command
+    // receives, exactly as `cosign sign <ref>` would shape it.
+    let (cmd, args) = (
+        "sh".to_string(),
+        vec![
+            "-c".to_string(),
+            format!("printf '%s' \"$1\" > {marker_str}"),
+            "sh".to_string(),
+            "{{ .Artifact }}".to_string(),
+        ],
+    );
     let docker_signs = vec![DockerSignConfig {
         id: Some("test-no-meta".to_string()),
-        cmd: Some("echo".to_string()),
-        args: Some(vec!["sign".to_string(), "{{ .Artifact }}".to_string()]),
+        cmd: Some(cmd),
+        args: Some(args),
         artifacts: Some("all".to_string()),
         ids: None,
         stdin: None,
@@ -2134,12 +2176,14 @@ fn test_docker_sign_without_digest_metadata_still_works() {
         certificate: None,
     }];
 
-    let mut ctx = TestContextBuilder::new().dry_run(true).build();
+    // Run for real (not dry-run) so the ref is actually rendered + captured.
+    let mut ctx = TestContextBuilder::new().dry_run(false).build();
     ctx.config.docker_signs = Some(docker_signs);
 
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::DockerImage,
         name: String::new(),
+        // No digest metadata — the safety-critical path.
         path: std::path::PathBuf::from("ghcr.io/myorg/app:latest"),
         target: None,
         crate_name: "test".to_string(),
@@ -2147,10 +2191,22 @@ fn test_docker_sign_without_digest_metadata_still_works() {
         size: None,
     });
 
-    let stage = SignStage;
+    let stage = DockerSignStage;
     assert!(
         stage.run(&mut ctx).is_ok(),
-        "docker sign without digest/id metadata should still work in dry-run"
+        "docker sign without digest metadata must still run"
+    );
+
+    let signed_ref = std::fs::read_to_string(&marker_path).unwrap();
+    let signed_ref = signed_ref.trim();
+    assert_eq!(
+        signed_ref, "ghcr.io/myorg/app:latest",
+        "missing digest must sign the bare tag, got: {signed_ref}"
+    );
+    assert_eq!(
+        signed_ref.matches("@sha256:").count(),
+        0,
+        "must NOT fabricate a digest when none was recorded: {signed_ref}"
     );
 }
 
