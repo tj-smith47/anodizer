@@ -798,16 +798,17 @@ attachments, Discord author, Reddit title / url:
 
 ```yaml
 announce:
-  webhook:
+  slack:
+    webhook_url: "https://hooks.slack.com/x"
     # warns — a secret-named env var templated into the body
     message_template: "deploy {{ Env.GITHUB_TOKEN }}"
 ```
 
 ```text
 $ anodizer check config
-WARN  announce.webhook.message_template references secret-named env var
-      GITHUB_TOKEN inside a template block — its value would be sent to the
-      channel. Redaction masks it on send, but remove it unless intended.
+   • validating configuration
+   Warning: announce.slack.message_template references secret-named var Env.GITHUB_TOKEN; its value is masked by outbound redaction (sent as "$GITHUB_TOKEN"), so embedding it here is almost certainly a mistake — remove the reference
+   • Config is valid.
 ```
 
 The lint is **warning-only** and surgical about what it flags. It does

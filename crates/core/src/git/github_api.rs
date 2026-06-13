@@ -164,14 +164,13 @@ pub fn resolve_github_token(explicit: Option<&str>) -> Option<String> {
 /// heuristics. Also strips inline URL credentials and any other secret
 /// env-var values reachable from the parent process env.
 fn redact_gh_stderr(stderr: &str, token: Option<&str>) -> String {
-    let stripped = crate::redact::redact_url_credentials(stderr);
     let mut env: Vec<(String, String)> = std::env::vars().collect();
     if let Some(tok) = token
         && !tok.is_empty()
     {
         env.push(("GITHUB_TOKEN".to_string(), tok.to_string()));
     }
-    crate::redact::string(&stripped, &env)
+    crate::redact::with_env(stderr, &env)
 }
 
 /// GET a GitHub API endpoint via the `gh` CLI, with pagination.
@@ -406,10 +405,9 @@ mod tests {
         let secret = "ghp_abcdefghijklmnopqrstuvwxyz0123456789";
         let stderr = format!("HTTP 401: token {secret} is invalid");
         let redacted = redact_gh_stderr(&stderr, Some(secret));
-        assert!(
-            !redacted.contains(secret),
-            "token leaked into redacted output: {redacted}"
-        );
+        // Exact-output, not absence-only: guards the env-value masking
+        // layer — the token is replaced by its `$NAME` placeholder.
+        assert_eq!(redacted, "HTTP 401: token $GITHUB_TOKEN is invalid");
     }
 
     #[test]
@@ -418,9 +416,11 @@ mod tests {
         // token argument.
         let stderr = "auth failed: https://user:secret-pw@github.com/o/r.git rejected";
         let redacted = redact_gh_stderr(stderr, None);
-        assert!(
-            !redacted.contains("secret-pw"),
-            "URL credential leaked: {redacted}"
+        // Exact-output, not absence-only: guards the inline URL-credential
+        // stripping layer — userinfo becomes `<redacted>`.
+        assert_eq!(
+            redacted,
+            "auth failed: https://<redacted>@github.com/o/r.git rejected"
         );
     }
 
