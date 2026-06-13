@@ -329,6 +329,7 @@ mod tests {
             rollback_only: false,
             from_run: None,
             allow_rerun: false,
+            show_skipped: false,
             allow_nondeterministic: vec![],
             summary_json: None,
             allow_ai_failure: false,

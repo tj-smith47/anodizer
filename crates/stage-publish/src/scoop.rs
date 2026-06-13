@@ -932,7 +932,10 @@ impl anodizer_core::Publisher for ScoopPublisher {
             // Defensive guard for explicit `--crate=X` selection when X has no
             // publisher block; implicit-all is already filtered by effective_publish_crates above.
             if !is_scoop_per_crate_configured(ctx, crate_name) {
-                log.status(&run_skip_unconfigured_message(crate_name));
+                log.skip_line(
+                    ctx.options.show_skipped,
+                    &run_skip_unconfigured_message(crate_name),
+                );
                 continue;
             }
             processed += 1;

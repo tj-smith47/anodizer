@@ -62,6 +62,7 @@ Run the full release pipeline
 | `--rollback-only` | — | — | Skip publish; re-attempt rollback from a prior run report. Requires --from-run=<id>. |
 | `--from-run` | — | — | Prior run id whose state to load when running --rollback-only. Loads <dist>/run-<id>/rollback.json if present (a prior replay's state), otherwise <dist>/run-<id>/report.json. Delete rollback.json to force a full re-roll. Must match the run_id format written by the release pipeline (alphanumeric, dot, dash, underscore; no path separators). |
 | `--allow-rerun` | — | — | DANGEROUS: force publish to proceed even when a prior dist/run-<id>/report.json exists for this tag. PR-based publishers (homebrew, scoop, nix, krew, MCP) will open DUPLICATE pull requests. Recover from partial failures with --rollback-only --from-run=<id> first. Cannot be combined with --rollback-only (which has its own idempotency). |
+| `--show-skipped` | — | — | Show per-crate 'no <publisher> config block' skip lines at default verbosity (normally only visible with --debug). Use to diagnose why a publisher didn't run for a given crate. |
 | `--allow-nondeterministic` | — | — | Runtime non-determinism opt-out for a specific artifact (repeatable). Mutually exclusive with --strict. |
 | `--summary-json` | — | — | Write the per-publisher run summary JSON to this path. Without it, real (non-snapshot, non-dry-run) releases write <dist>/run-<id>/summary.json — even when a stage fails — so recovery tooling always has machine-readable publish state. |
 | `--allow-ai-failure` | — | — | If `changelog.ai` is configured and the AI provider fails, log a warning and keep the pre-AI release notes instead of aborting the release. |
@@ -275,6 +276,7 @@ Run only the publish stages (release, publish, blob) from a completed dist/
 | `--dist` | — | — | Custom dist directory (overrides config) |
 | `--merge` | — | — | Merge artifacts from `release --split` workers (dist/<subdir>/context.json) before running the publish-only pipeline. Mirrors `goreleaser publish --merge`. |
 | `--allow-rerun` | — | — | Force re-publish even when a prior report.json exists. WARNING: PR-based publishers will open duplicate pull requests. |
+| `--show-skipped` | — | — | Show per-crate 'no <publisher> config block' skip lines at default verbosity (normally only visible with --debug). Use to diagnose why a publisher didn't run for a given crate. |
 
 
 ### `anodizer bump`

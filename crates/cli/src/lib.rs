@@ -197,6 +197,13 @@ pub enum Commands {
         )]
         allow_rerun: bool,
         #[arg(
+            long = "show-skipped",
+            help = "Show per-crate 'no <publisher> config block' skip lines at default verbosity \
+                    (normally only visible with --debug). Use to diagnose why a publisher didn't \
+                    run for a given crate."
+        )]
+        show_skipped: bool,
+        #[arg(
             long = "allow-nondeterministic",
             value_name = "name=reason",
             action = clap::ArgAction::Append,
@@ -539,6 +546,13 @@ pub enum Commands {
                     WARNING: PR-based publishers will open duplicate pull requests."
         )]
         allow_rerun: bool,
+        #[arg(
+            long = "show-skipped",
+            help = "Show per-crate 'no <publisher> config block' skip lines at default verbosity \
+                    (normally only visible with --debug). Use to diagnose why a publisher didn't \
+                    run for a given crate."
+        )]
+        show_skipped: bool,
     },
     /// Bump crate versions (Conventional Commits → semver level)
     ///

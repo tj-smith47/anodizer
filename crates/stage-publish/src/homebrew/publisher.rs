@@ -317,7 +317,10 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             // Defensive guard for explicit `--crate=X` selection when X has no
             // publisher block; implicit-all is already filtered by effective_publish_crates above.
             if !is_homebrew_per_crate_configured(ctx, crate_name) {
-                log.status(&run_skip_unconfigured_message(crate_name));
+                log.skip_line(
+                    ctx.options.show_skipped,
+                    &run_skip_unconfigured_message(crate_name),
+                );
                 continue;
             }
             processed += 1;
@@ -455,6 +458,7 @@ mod publisher_tests {
     use anodizer_core::config::{
         CrateConfig, HomebrewCaskConfig, HomebrewConfig, PublishConfig, RepositoryConfig,
     };
+    use anodizer_core::log::{LogCapture, LogLevel};
     use anodizer_core::test_helpers::TestContextBuilder;
     use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
 
@@ -723,6 +727,62 @@ mod publisher_tests {
             "{msg}"
         );
         assert!(msg.contains("'demo'"), "{msg}");
+    }
+
+    /// Build a two-crate workspace context where `unconfigured` carries no
+    /// `publish.homebrew` block, attach a [`LogCapture`], and exercise the
+    /// per-crate skip site's exact call shape
+    /// (`log.skip_line(ctx.options.show_skipped, …)`) for the unconfigured
+    /// crate. Returns the recorded `(level, message)` lines.
+    fn capture_homebrew_skip(show_skipped: bool, verbose: bool) -> Vec<(LogLevel, String)> {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![
+                homebrew_crate("configured"),
+                homebrew_crate("unconfigured"),
+            ])
+            .show_skipped(show_skipped)
+            .verbose(verbose)
+            .build();
+        // Strip the homebrew block from the second crate so the per-crate
+        // configured predicate fails for it — the exact no-op skip branch.
+        ctx.config.crates[1].publish = None;
+        let cap = LogCapture::new();
+        ctx.with_log_capture(cap.clone());
+        let log = ctx.logger("homebrew");
+        let crate_name = "unconfigured";
+        assert!(
+            !is_homebrew_per_crate_configured(&ctx, crate_name),
+            "fixture must leave the crate unconfigured so the skip branch fires"
+        );
+        log.skip_line(
+            ctx.options.show_skipped,
+            &run_skip_unconfigured_message(crate_name),
+        );
+        cap.all_messages()
+    }
+
+    #[test]
+    fn homebrew_no_config_skip_is_debug_level_by_default() {
+        // Default (show_skipped=false, Normal verbosity): the per-crate
+        // "no homebrew config block" line is recorded at Debug, NOT Status,
+        // so workspace mode does not emit one such line per non-applicable
+        // crate at default verbosity.
+        let lines = capture_homebrew_skip(false, false);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].0, LogLevel::Debug, "{lines:?}");
+        assert!(lines[0].1.contains("no homebrew config block"), "{lines:?}");
+        assert!(
+            lines.iter().all(|(l, _)| *l != LogLevel::Status),
+            "no-config skip must not record at Status by default: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn homebrew_no_config_skip_surfaces_with_show_skipped() {
+        // --show-skipped forces the line back to Status for diagnosis.
+        let lines = capture_homebrew_skip(true, false);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].0, LogLevel::Status, "{lines:?}");
     }
 
     #[test]

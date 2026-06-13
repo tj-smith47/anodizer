@@ -127,6 +127,7 @@ pub struct TestContextBuilder {
     dry_run: bool,
     verbose: bool,
     debug: bool,
+    show_skipped: bool,
     skip_stages: Vec<String>,
     selected_crates: Vec<String>,
     token: Option<String>,
@@ -173,6 +174,7 @@ impl Default for TestContextBuilder {
             dry_run: false,
             verbose: false,
             debug: false,
+            show_skipped: false,
             skip_stages: Vec::new(),
             selected_crates: Vec::new(),
             token: None,
@@ -272,6 +274,14 @@ impl TestContextBuilder {
     /// Enable or disable debug mode.
     pub fn debug(mut self, debug: bool) -> Self {
         self.debug = debug;
+        self
+    }
+
+    /// Force per-crate "no `<publisher>` config block" skip lines to surface
+    /// at default verbosity (`--show-skipped`). Sets
+    /// [`ContextOptions::show_skipped`].
+    pub fn show_skipped(mut self, show_skipped: bool) -> Self {
+        self.show_skipped = show_skipped;
         self
     }
 
@@ -457,6 +467,7 @@ impl TestContextBuilder {
             simulate_failure_publishers: Vec::new(),
             rollback_only: false,
             allow_rerun: false,
+            show_skipped: self.show_skipped,
             from_run: None,
             runtime_nondeterministic_allowlist: Vec::new(),
             summary_json_path: None,

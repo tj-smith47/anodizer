@@ -25,6 +25,9 @@ pub struct PublishOpts {
     pub merge: bool,
     /// Force re-publish even when a prior `dist/run-<id>/report.json` exists.
     pub allow_rerun: bool,
+    /// Surface per-crate "no `<publisher>` config block" skip lines at default
+    /// verbosity (`--show-skipped`); otherwise they route to debug.
+    pub show_skipped: bool,
 }
 
 pub fn run(opts: PublishOpts) -> Result<()> {
@@ -41,6 +44,7 @@ pub fn run(opts: PublishOpts) -> Result<()> {
         token: opts.token,
         merge: opts.merge,
         allow_rerun: opts.allow_rerun,
+        show_skipped: opts.show_skipped,
         ..Default::default()
     };
 
@@ -104,6 +108,7 @@ crates:
             quiet: true,
             merge: false,
             allow_rerun: false,
+            show_skipped: false,
         })
         .unwrap_err()
         .to_string();
@@ -135,6 +140,7 @@ crates:
             quiet: true,
             merge: false,
             allow_rerun: false,
+            show_skipped: false,
         });
         assert!(result.is_err(), "must fail with no manifest / no git");
     }
@@ -155,6 +161,7 @@ crates:
             quiet: true,
             merge: true,
             allow_rerun: false,
+            show_skipped: false,
         })
         .unwrap_err()
         .to_string();
@@ -175,6 +182,7 @@ crates:
             quiet: true,
             merge: false,
             allow_rerun: false,
+            show_skipped: false,
         };
         assert!(opts.dry_run);
         assert!(opts.quiet);
@@ -195,6 +203,7 @@ crates:
             quiet: true,
             merge: true,
             allow_rerun: false,
+            show_skipped: false,
         };
         assert!(opts.merge);
     }

@@ -429,6 +429,11 @@ impl LogCapture {
         self.count(LogLevel::Status)
     }
 
+    /// Number of [`LogLevel::Debug`] lines recorded.
+    pub fn debug_count(&self) -> usize {
+        self.count(LogLevel::Debug)
+    }
+
     /// Number of [`LogLevel::Warn`] lines recorded.
     pub fn warn_count(&self) -> usize {
         self.count(LogLevel::Warn)
@@ -897,6 +902,25 @@ impl StageLogger {
         #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
             cap.record(LogLevel::Debug, msg);
+        }
+    }
+
+    /// Emit a per-crate "no `<publisher>` config block" skip line at the
+    /// verbosity the operator asked for.
+    ///
+    /// These lines fire once per non-applicable crate in workspace mode (every
+    /// PR-based publisher visits every selected crate and skips the ones whose
+    /// config lacks its block), so at default verbosity they would bury the
+    /// real output under hundreds of lines of pure no-op noise. They are routed
+    /// to [`Self::debug`] (invisible at default and `--verbose`, visible at
+    /// `--debug`) unless `show` is set — `--show-skipped`, the diagnostic
+    /// escape hatch for "why didn't publisher X run for crate Y?" — in which
+    /// case they surface at [`Self::status`] like any other key action.
+    pub fn skip_line(&self, show: bool, msg: &str) {
+        if show {
+            self.status(msg);
+        } else {
+            self.debug(msg);
         }
     }
 
@@ -1724,5 +1748,39 @@ mod tests {
                 (LogLevel::Error, "own-error".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn skip_line_records_debug_when_not_shown() {
+        // The default (show=false) routes a per-crate "no config block" skip to
+        // debug() so it stays invisible at Normal/Verbose and only surfaces at
+        // --debug — the fix for the 300+-line workspace skip-noise problem.
+        let (log, cap) = StageLogger::with_capture("homebrew", Verbosity::Normal);
+        log.skip_line(
+            false,
+            "skipping homebrew for crate 'demo' — no homebrew config block",
+        );
+        assert_eq!(cap.debug_count(), 1);
+        assert_eq!(cap.status_count(), 0);
+        assert_eq!(
+            cap.all_messages(),
+            vec![(
+                LogLevel::Debug,
+                "skipping homebrew for crate 'demo' — no homebrew config block".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn skip_line_records_status_when_shown() {
+        // --show-skipped (show=true) forces the skip line back to status so the
+        // operator can diagnose why a publisher didn't run for a given crate.
+        let (log, cap) = StageLogger::with_capture("homebrew", Verbosity::Normal);
+        log.skip_line(
+            true,
+            "skipping homebrew for crate 'demo' — no homebrew config block",
+        );
+        assert_eq!(cap.status_count(), 1);
+        assert_eq!(cap.debug_count(), 0);
     }
 }

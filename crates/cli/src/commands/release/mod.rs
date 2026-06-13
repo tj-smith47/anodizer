@@ -135,6 +135,12 @@ pub struct ReleaseOpts {
     /// `crates/stage-publish/src/lib.rs::PublishStage::run` for the
     /// duplicate-publish-risk rationale.
     pub allow_rerun: bool,
+    /// `--show-skipped`: surface the per-crate "no `<publisher>` config
+    /// block" skip lines at default verbosity. Plumbed into
+    /// `ContextOptions::show_skipped`; defaults to false (those no-op skips
+    /// route to debug so workspace mode does not emit one line per
+    /// non-applicable crate per publisher).
+    pub show_skipped: bool,
     /// `--allow-nondeterministic <name>=<reason>` (repeatable):
     /// runtime non-determinism opt-outs. Parsed at the translation
     /// site into `(name, reason)` tuples; empty reasons are rejected
@@ -1123,6 +1129,7 @@ fn build_context_options(
         simulate_failure_publishers,
         rollback_only: opts.rollback_only,
         allow_rerun: opts.allow_rerun,
+        show_skipped: opts.show_skipped,
         from_run: opts.from_run.clone(),
         runtime_nondeterministic_allowlist,
         summary_json_path: opts.summary_json.clone(),
@@ -1851,6 +1858,7 @@ mod tests {
             rollback_only: false,
             from_run: None,
             allow_rerun: false,
+            show_skipped: false,
             allow_nondeterministic: vec![],
             summary_json: None,
             allow_ai_failure: false,

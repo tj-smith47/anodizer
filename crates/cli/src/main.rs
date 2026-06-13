@@ -337,6 +337,7 @@ fn run() {
             rollback_only,
             from_run,
             allow_rerun,
+            show_skipped,
             allow_nondeterministic,
             summary_json,
             allow_ai_failure,
@@ -440,6 +441,7 @@ fn run() {
                     rollback_only,
                     from_run,
                     allow_rerun,
+                    show_skipped,
                     allow_nondeterministic,
                     summary_json,
                     allow_ai_failure,
@@ -674,6 +676,7 @@ fn run() {
             dist,
             merge,
             allow_rerun,
+            show_skipped,
         } => commands::publish_cmd::run(commands::publish_cmd::PublishOpts {
             dry_run,
             token,
@@ -684,6 +687,7 @@ fn run() {
             quiet: cli.quiet,
             merge,
             allow_rerun,
+            show_skipped,
         }),
         Commands::Bump {
             level_or_version,

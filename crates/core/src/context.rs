@@ -206,6 +206,15 @@ pub struct ContextOptions {
     ///
     /// Audit ref: 2026-05-15 release-resilience-review finding I4.
     pub allow_rerun: bool,
+    /// `--show-skipped`: surface the per-crate "no `<publisher>` config
+    /// block" skip lines at default verbosity. In workspace mode every
+    /// PR-based publisher (homebrew / nix / scoop / aur / winget / krew /
+    /// chocolatey) visits every selected crate and skips the ones whose
+    /// config lacks its block; at default verbosity those no-op skips are
+    /// routed to debug (invisible unless `--debug`) so they do not bury the
+    /// real output. Setting this flag forces them back to status — the
+    /// diagnostic escape hatch for "why didn't publisher X run for crate Y?".
+    pub show_skipped: bool,
     /// `--from-run=<id>`: prior run id whose `report.json` to load
     /// when running in `--rollback-only` mode. clap enforces the
     /// `requires = "rollback_only"` relationship at parse time.
@@ -298,6 +307,7 @@ impl Default for ContextOptions {
             simulate_failure_publishers: Vec::new(),
             rollback_only: false,
             allow_rerun: false,
+            show_skipped: false,
             from_run: None,
             runtime_nondeterministic_allowlist: Vec::new(),
             summary_json_path: None,
