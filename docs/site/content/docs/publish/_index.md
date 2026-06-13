@@ -41,10 +41,11 @@ identically.
 Each per-publisher page lists its default in the Classification table and includes a
 `required:` snippet in the config reference.
 
-Other publishers — [Homebrew](./homebrew.md), [Scoop](./scoop.md), [Chocolatey](./chocolatey.md),
-[Winget](./winget.md), [AUR](./aur.md), [Krew](./krew.md), [MCP registry](./mcp-registry.md),
-[SchemaStore](./schemastore.md), [crates.io](./crates-io.md), [NPM](./npm.md),
-[Docker Hub](./dockerhub.md), and others — are documented in their own pages.
+Other publishers — [Homebrew Casks](./homebrew-casks.md) (the canonical Homebrew
+surface; [deprecated Formula](./homebrew.md) is documented separately), [Scoop](./scoop.md),
+[Chocolatey](./chocolatey.md), [Winget](./winget.md), [AUR](./aur.md), [Krew](./krew.md),
+[MCP registry](./mcp-registry.md), [SchemaStore](./schemastore.md), [crates.io](./crates-io.md),
+[NPM](./npm.md), [Docker Hub](./dockerhub.md), and others — are documented in their own pages.
 
 ### Submitter publishers
 

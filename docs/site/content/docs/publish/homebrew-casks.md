@@ -5,7 +5,7 @@ weight = 85
 template = "docs.html"
 +++
 
-Anodizer can generate Homebrew Cask `.rb` files for macOS applications and push them to your tap repository. This is separate from [Homebrew formulas](/docs/publish/homebrew/) which are for CLI tools.
+Anodizer generates Homebrew Cask `.rb` files for your macOS artifacts and pushes them to your tap repository. A cask is the canonical Homebrew channel for **pre-compiled binaries** — both GUI `.app` bundles (via the `app` stanza) and CLI tools (via a `binary` stanza that symlinks an executable onto the user's `PATH`). The [Homebrew Formula](/docs/publish/homebrew/) path — which compiles from source — is deprecated upstream for pre-built release binaries; use a cask. Set `binaries:` to ship a CLI; set `app:` to ship a GUI application; set both when a bundle also exposes a CLI.
 
 ## Classification
 

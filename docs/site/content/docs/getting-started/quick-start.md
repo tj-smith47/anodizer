@@ -52,7 +52,7 @@ This runs the full pipeline without any side effects — no GitHub release creat
 anodizer release --snapshot
 ```
 
-Unlike `--dry-run`, a snapshot performs the **real** build, archive, checksum, and signing stages — it just skips every stage that writes to a remote (GitHub release, crates.io, taps, registries, images). It also derives a snapshot version (the default appends `-SNAPSHOT`; the template can fold in the commit hash) instead of requiring a release tag, so you can snapshot an untagged working tree. Use it to test that your binaries compile for every target and that archive formats and checksums come out right. Snapshot additionally cross-checks each publisher's *would-be* emission (a binstall URL, a Nix asset map) against the assets the build actually produced, catching a class of "release succeeds but is silently wrong" bugs locally.
+Unlike `--dry-run`, a snapshot performs the **real** build, archive, checksum, and signing stages — it just skips every stage that writes to a remote (GitHub release, crates.io, taps, registries, images). It also derives a snapshot version (the default appends `-SNAPSHOT`; the template can fold in the commit hash) instead of requiring a release tag, so you can snapshot an untagged working tree. Use it to test that your binaries compile for every target and that archive formats and checksums come out right. Both `--dry-run` and `--snapshot` run the emission cross-check — each publisher's *would-be* output (a binstall download URL, a Nix asset map) is rendered in-memory and compared against the run's registered artifacts, catching a class of "release succeeds but is silently wrong" bugs locally. The check is only *meaningful* under `--snapshot`, where real built archives back the comparison; under `--dry-run` the artifacts are placeholder registrations, so it confirms the emission *renders* but not that it points at real bytes.
 
 ## 6. Release for real
 
@@ -63,7 +63,9 @@ anodizer release --crate myapp
 
 This runs the full pipeline: build, archive, checksum, changelog, GitHub release with asset uploads, and any configured publishers. Each publisher reads its own credential from the environment — `GITHUB_TOKEN` (needs `contents:write` for the release, plus `pull_request:write` if a Homebrew cask or other PR-based tap is configured), `CARGO_REGISTRY_TOKEN` for crates.io, and so on. A `homebrew_casks` entry opens (or updates) a pull request against its tap repo on every release rather than committing directly, so review and merge happen on your terms.
 
-> **Token scopes are checked in preflight.** anodizer surfaces a missing or under-scoped token *before* it starts publishing, so you find out at the top of the run, not halfway through. Run with `--strict` to turn those warnings into hard failures in CI.
+> **Tap repos must already exist.** If you configure `homebrew_casks` (or a Scoop bucket, AUR repo, etc.), create the target repo — e.g. an empty `<owner>/homebrew-tap` — *before* your first release; anodizer writes into it but never creates it. The release token needs `contents:write` for a direct push, or `pull_request:write` if the tap uses the PR workflow (casks open a PR per release).
+
+> **Preflight checks run before any publishing.** `--strict` promotes preflight warnings — an under-scoped token, or a feature you configured that would silently skip — into hard errors, so a misconfigured CI run fails at the top instead of half-publishing. `--strict-preflight` is the same as `--strict` and *additionally* treats a publisher whose remote state can't be determined (`Unknown`) as a blocker.
 
 ## What next?
 
