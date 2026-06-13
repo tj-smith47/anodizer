@@ -183,13 +183,26 @@ pub(crate) fn run_done_message(processed: usize) -> String {
 /// correct code path ran. Incrementing only on push-success would
 /// short-circuit this predicate to `true` in dry-run with a configured
 /// crate.
-pub(crate) fn should_warn_no_eligible(processed: usize, selected_len: usize) -> bool {
-    processed == 0 && selected_len > 0
+///
+/// `cask_total` is the number of top-level `homebrew_casks:` entries the
+/// run dispatched. The homebrew publisher has TWO sub-surfaces — the
+/// per-crate `publish.homebrew` FORMULA and the top-level
+/// `homebrew_casks:` CASK — and a cask-only project (the recommended path,
+/// zero formula blocks) publishes its cask correctly with `processed == 0`.
+/// The warning is a true "nothing pushed" signal only when NEITHER surface
+/// had anything to publish, so any configured cask suppresses it.
+pub(crate) fn should_warn_no_eligible(
+    processed: usize,
+    selected_len: usize,
+    cask_total: usize,
+) -> bool {
+    processed == 0 && selected_len > 0 && cask_total == 0
 }
 
 /// Warning emitted when the publisher was registered (at least one crate
-/// has a `publish.homebrew` block at the config level) but the run path
-/// processed zero crates.
+/// has a `publish.homebrew` block at the config level) but NEITHER
+/// homebrew sub-surface published anything: the run path processed zero
+/// formula crates AND no top-level `homebrew_casks:` entry was configured.
 ///
 /// With the implicit-all default in
 /// [`crate::publisher_helpers::effective_publish_crates`], an empty
@@ -198,12 +211,14 @@ pub(crate) fn should_warn_no_eligible(processed: usize, selected_len: usize) -> 
 /// `--crate`/`--all` matrix selection was non-empty AND filtered every
 /// homebrew-configured crate out. Operators must see this — otherwise
 /// the publisher's `succeeded` status hides the fact that nothing was
-/// pushed.
+/// pushed. Names both surfaces (`publish.homebrew` formula and
+/// `homebrew_casks:` cask) since either would satisfy the publisher.
 pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     format!(
         "homebrew publisher registered but 0 of {} effective crate(s) had a homebrew \
-         config block — nothing pushed. Check that --crate / --all selects a \
-         crate whose publish.homebrew block is set.",
+         config block and no top-level `homebrew_casks:` were configured — nothing \
+         pushed. Check that --crate / --all selects a crate whose `publish.homebrew` \
+         block is set, or configure a top-level `homebrew_casks:` entry.",
         selected_total
     )
 }
@@ -327,7 +342,7 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             any_pushed = true;
         }
 
-        if should_warn_no_eligible(processed, selected.len()) {
+        if should_warn_no_eligible(processed, selected.len(), cask_result.total) {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
         } else {
             log.status(&run_done_message(processed));
@@ -725,6 +740,10 @@ mod publisher_tests {
         assert!(msg.contains("nothing pushed"), "{msg}");
         assert!(msg.contains("--crate"), "{msg}");
         assert!(msg.contains("--all"), "{msg}");
+        // Both sub-surfaces must be named so an operator on the cask-only
+        // path knows that configuring a cask also satisfies the publisher.
+        assert!(msg.contains("publish.homebrew"), "{msg}");
+        assert!(msg.contains("homebrew_casks"), "{msg}");
     }
 
     /// The no-eligible-crates warning must fire only when the iteration
@@ -738,17 +757,32 @@ mod publisher_tests {
     fn should_warn_no_eligible_only_fires_when_predicate_filtered_everything() {
         // Dry-run with one configured crate: `processed` increments on
         // crate-entry (1), so the warning must not fire.
-        assert!(!should_warn_no_eligible(1, 1));
-        // True positive: 3 crates selected, none configured for homebrew.
-        // `processed` stays 0 → warning fires.
-        assert!(should_warn_no_eligible(0, 3));
+        assert!(!should_warn_no_eligible(1, 1, 0));
+        // True positive: 3 crates selected, none configured for homebrew,
+        // and no top-level casks → warning fires.
+        assert!(should_warn_no_eligible(0, 3, 0));
         // Boundary: empty selection (no crates configured at all) → no
         // warning. The warn would be noise when there's nothing the
         // operator could change about --crate/--all to fix it.
-        assert!(!should_warn_no_eligible(0, 0));
+        assert!(!should_warn_no_eligible(0, 0, 0));
         // Partial-skip: 2 of 3 selected crates were unconfigured, 1 ran
         // → no warning.
-        assert!(!should_warn_no_eligible(1, 3));
+        assert!(!should_warn_no_eligible(1, 3, 0));
+    }
+
+    /// Cask-only project (the recommended path): zero `publish.homebrew`
+    /// formula blocks but a top-level `homebrew_casks:` entry. The cask
+    /// publishes correctly with `processed == 0`, so the "nothing pushed"
+    /// warning must NOT fire — any configured cask suppresses it.
+    #[test]
+    fn should_warn_no_eligible_suppressed_when_casks_configured() {
+        // No formula crates processed, selection non-empty, but 1 cask
+        // configured → no warning (the cask is the publish surface).
+        assert!(!should_warn_no_eligible(0, 3, 1));
+        // Multiple casks, still no formula → still suppressed.
+        assert!(!should_warn_no_eligible(0, 1, 4));
+        // Both surfaces empty → the warning is a true signal, still fires.
+        assert!(should_warn_no_eligible(0, 2, 0));
     }
 
     /// Run the publisher end-to-end in dry-run mode against a context that
@@ -808,6 +842,83 @@ mod publisher_tests {
         assert!(
             targets.is_empty(),
             "no homebrew-eligible crate selected, targets must be empty"
+        );
+    }
+
+    /// Cask-only project end-to-end: a top-level `homebrew_casks:` entry and
+    /// ZERO `publish.homebrew` formula blocks. The cask path is the
+    /// publish surface (`processed == 0`), so the publisher must NOT emit the
+    /// false "registered but ... nothing pushed" warning. Regression for the
+    /// v0.9.0 log where the cask pushed successfully yet the warning fired.
+    #[test]
+    fn homebrew_publisher_cask_only_does_not_warn_nothing_pushed() {
+        let capture = anodizer_core::log::LogCapture::new();
+        let repo = crate::testing::hermetic_tagged_repo();
+        let mut ctx = TestContextBuilder::new()
+            // No `publish.homebrew` formula crate — a plain crate only.
+            .crates(vec![CrateConfig {
+                name: "demo".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig::default()),
+                ..Default::default()
+            }])
+            .selected_crates(vec!["demo".to_string()])
+            .dry_run(true)
+            .project_root(repo.path().to_path_buf())
+            .build();
+        // Cask-only configuration (the recommended path).
+        ctx.config.homebrew_casks = Some(vec![HomebrewCaskConfig {
+            name: Some("demo".into()),
+            repository: Some(RepositoryConfig {
+                owner: Some("acme".into()),
+                name: Some("homebrew-tap".into()),
+                branch: Some("main".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]);
+        ctx.with_log_capture(capture.clone());
+
+        let p = HomebrewPublisher::new();
+        p.run(&mut ctx).expect("cask-only publisher.run ok");
+
+        let warns = capture.warn_messages();
+        assert!(
+            !warns.iter().any(|m| m.contains("nothing pushed")),
+            "cask-only config must not emit the false nothing-pushed warning; got: {warns:?}"
+        );
+    }
+
+    /// The genuinely-empty case (neither formula nor cask configured) must
+    /// still emit the warning so a misconfigured publisher is not silent.
+    #[test]
+    fn homebrew_publisher_truly_empty_still_warns_nothing_pushed() {
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![
+                homebrew_crate("demo"),
+                CrateConfig {
+                    name: "other".to_string(),
+                    path: ".".to_string(),
+                    tag_template: "v{{ .Version }}".to_string(),
+                    publish: Some(PublishConfig::default()),
+                    ..Default::default()
+                },
+            ])
+            // Select only the non-homebrew crate, and configure no casks.
+            .selected_crates(vec!["other".to_string()])
+            .dry_run(true)
+            .build();
+        ctx.with_log_capture(capture.clone());
+
+        let p = HomebrewPublisher::new();
+        p.run(&mut ctx).expect("publisher.run ok");
+
+        let warns = capture.warn_messages();
+        assert!(
+            warns.iter().any(|m| m.contains("nothing pushed")),
+            "truly-empty homebrew config must warn; got: {warns:?}"
         );
     }
 
