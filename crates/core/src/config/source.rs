@@ -165,3 +165,201 @@ where
 
     deserializer.deserialize_any(SourceFilesVisitor)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse(yaml: &str) -> SourceConfig {
+        serde_yaml_ng::from_str(yaml).expect("valid SourceConfig YAML")
+    }
+
+    #[test]
+    fn is_enabled_defaults_false_when_unset() {
+        let cfg = SourceConfig::default();
+        assert!(!cfg.is_enabled());
+    }
+
+    #[test]
+    fn is_enabled_honors_explicit_values() {
+        assert!(parse("enabled: true").is_enabled());
+        assert!(!parse("enabled: false").is_enabled());
+    }
+
+    #[test]
+    fn archive_format_defaults_to_tar_gz() {
+        assert_eq!(SourceConfig::default().archive_format(), "tar.gz");
+    }
+
+    #[test]
+    fn archive_format_uses_explicit_format() {
+        assert_eq!(parse("format: zip").archive_format(), "zip");
+    }
+
+    #[test]
+    fn prefix_default_copies_name_template_when_prefix_unset() {
+        let mut cfg = parse("name_template: \"{{ .ProjectName }}-{{ .Version }}\"");
+        assert!(cfg.prefix_template.is_none());
+        cfg.apply_prefix_template_default();
+        assert_eq!(
+            cfg.prefix_template.as_deref(),
+            Some("{{ .ProjectName }}-{{ .Version }}")
+        );
+    }
+
+    #[test]
+    fn prefix_default_preserves_explicit_prefix() {
+        let mut cfg = parse("name_template: name-tpl\nprefix_template: prefix-tpl");
+        cfg.apply_prefix_template_default();
+        assert_eq!(cfg.prefix_template.as_deref(), Some("prefix-tpl"));
+    }
+
+    #[test]
+    fn prefix_default_noop_when_name_template_also_unset() {
+        let mut cfg = SourceConfig::default();
+        cfg.apply_prefix_template_default();
+        assert!(cfg.prefix_template.is_none());
+    }
+
+    #[test]
+    fn files_missing_is_empty_vec() {
+        assert!(parse("enabled: true").files.is_empty());
+    }
+
+    #[test]
+    fn files_single_string_becomes_one_entry() {
+        let cfg = parse("files: LICENSE");
+        assert_eq!(cfg.files.len(), 1);
+        assert_eq!(cfg.files[0].src, "LICENSE");
+        assert!(cfg.files[0].dst.is_none());
+    }
+
+    #[test]
+    fn files_single_object_becomes_one_entry() {
+        let cfg = parse("files:\n  src: README.md\n  dst: docs/README.md");
+        assert_eq!(cfg.files.len(), 1);
+        assert_eq!(cfg.files[0].src, "README.md");
+        assert_eq!(cfg.files[0].dst.as_deref(), Some("docs/README.md"));
+    }
+
+    #[test]
+    fn files_mixed_array_parses_strings_and_objects() {
+        let cfg = parse("files:\n  - LICENSE\n  - src: README.md\n    dst: docs/README.md\n");
+        assert_eq!(cfg.files.len(), 2);
+        assert_eq!(cfg.files[0].src, "LICENSE");
+        assert!(cfg.files[0].dst.is_none());
+        assert_eq!(cfg.files[1].src, "README.md");
+        assert_eq!(cfg.files[1].dst.as_deref(), Some("docs/README.md"));
+    }
+
+    #[test]
+    fn files_null_is_empty_vec() {
+        let cfg = parse("files: null");
+        assert!(cfg.files.is_empty());
+    }
+
+    #[test]
+    fn file_entry_info_mode_parses_octal_string() {
+        let cfg = parse(
+            "files:\n  - src: bin/app\n    info:\n      owner: root\n      mode: \"0o755\"\n",
+        );
+        let info = cfg.files[0].info.as_ref().expect("info present");
+        assert_eq!(info.owner.as_deref(), Some("root"));
+        assert_eq!(info.mode.map(|m| m.value()), Some(0o755));
+    }
+
+    #[test]
+    fn deny_unknown_fields_rejects_typos() {
+        let err = serde_yaml_ng::from_str::<SourceConfig>("enabledd: true");
+        assert!(err.is_err(), "unknown field must be rejected");
+    }
+
+    #[test]
+    fn archive_format_passes_through_tgz_tar_and_zip() {
+        // archive_format only overrides the default when format is Some; each
+        // explicit value must survive verbatim (no normalization).
+        assert_eq!(parse("format: tgz").archive_format(), "tgz");
+        assert_eq!(parse("format: tar").archive_format(), "tar");
+        assert_eq!(parse("format: zip").archive_format(), "zip");
+    }
+
+    #[test]
+    fn prefix_default_keeps_explicit_prefix_when_name_template_absent() {
+        // The unset-name guard must not clobber a prefix the user set alone.
+        let mut cfg = parse("prefix_template: only-prefix");
+        cfg.apply_prefix_template_default();
+        assert_eq!(cfg.prefix_template.as_deref(), Some("only-prefix"));
+    }
+
+    #[test]
+    fn file_entry_strip_parent_round_trips() {
+        let cfg = parse("files:\n  - src: a/b/c.txt\n    strip_parent: true\n");
+        assert_eq!(cfg.files[0].strip_parent, Some(true));
+        // unset on a plain string entry, not defaulted to a value
+        let bare = parse("files: a/b/c.txt");
+        assert_eq!(bare.files[0].strip_parent, None);
+    }
+
+    #[test]
+    fn file_info_mode_accepts_bare_decimal_int() {
+        // A bare YAML int is decimal: 493 == 0o755. Distinct path from the
+        // octal-prefixed-string case already covered above.
+        let cfg = parse("files:\n  - src: bin/app\n    info:\n      mode: 493\n");
+        let info = cfg.files[0].info.as_ref().expect("info present");
+        assert_eq!(info.mode.map(|m| m.value()), Some(0o755));
+    }
+
+    #[test]
+    fn file_info_captures_group_and_mtime() {
+        let cfg = parse(
+            "files:\n  - src: f\n    info:\n      group: staff\n      mtime: \"2024-01-01T00:00:00Z\"\n",
+        );
+        let info = cfg.files[0].info.as_ref().unwrap();
+        assert_eq!(info.group.as_deref(), Some("staff"));
+        assert_eq!(info.mtime.as_deref(), Some("2024-01-01T00:00:00Z"));
+        assert!(info.owner.is_none());
+    }
+
+    #[test]
+    fn nested_file_entry_rejects_unknown_field() {
+        let err = serde_yaml_ng::from_str::<SourceConfig>("files:\n  - src: f\n    bogus: 1\n");
+        assert!(err.is_err(), "SourceFileEntry must deny unknown fields");
+    }
+
+    #[test]
+    fn nested_file_info_rejects_unknown_field() {
+        let err = serde_yaml_ng::from_str::<SourceConfig>(
+            "files:\n  - src: f\n    info:\n      moed: 7\n",
+        );
+        assert!(err.is_err(), "SourceFileInfo must deny unknown fields");
+    }
+
+    #[test]
+    fn empty_array_files_is_empty_vec() {
+        // visit_seq with zero elements is a distinct branch from visit_none.
+        let cfg = parse("files: []");
+        assert!(cfg.files.is_empty());
+    }
+
+    #[test]
+    fn files_array_of_objects_only() {
+        let cfg = parse("files:\n  - src: a\n    dst: x/a\n  - src: b\n");
+        assert_eq!(cfg.files.len(), 2);
+        assert_eq!(cfg.files[0].dst.as_deref(), Some("x/a"));
+        assert_eq!(cfg.files[1].src, "b");
+        assert!(cfg.files[1].dst.is_none());
+    }
+
+    #[test]
+    fn config_round_trips_through_serde() {
+        let cfg = parse(
+            "enabled: true\nformat: zip\nname_template: src-{{ .Version }}\nfiles:\n  - LICENSE\n",
+        );
+        let yaml = serde_yaml_ng::to_string(&cfg).unwrap();
+        let back: SourceConfig = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert!(back.is_enabled());
+        assert_eq!(back.archive_format(), "zip");
+        assert_eq!(back.files.len(), 1);
+        assert_eq!(back.files[0].src, "LICENSE");
+    }
+}

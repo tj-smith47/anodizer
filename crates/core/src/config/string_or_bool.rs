@@ -440,3 +440,325 @@ where
 
     deserializer.deserialize_any(StringOrVecVisitor)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    // --- as_bool -----------------------------------------------------------
+
+    #[test]
+    fn as_bool_bool_arms_passthrough() {
+        assert!(StringOrBool::Bool(true).as_bool());
+        assert!(!StringOrBool::Bool(false).as_bool());
+    }
+
+    #[test]
+    fn as_bool_string_truthy_and_trimmed() {
+        assert!(StringOrBool::String("true".into()).as_bool());
+        assert!(StringOrBool::String("1".into()).as_bool());
+        // Leading/trailing whitespace is trimmed before the truthy check.
+        assert!(StringOrBool::String("  true  ".into()).as_bool());
+    }
+
+    #[test]
+    fn as_bool_string_falsy() {
+        assert!(!StringOrBool::String("no".into()).as_bool());
+        assert!(!StringOrBool::String(String::new()).as_bool());
+        assert!(!StringOrBool::String("false".into()).as_bool());
+    }
+
+    // --- as_str ------------------------------------------------------------
+
+    #[test]
+    fn as_str_bool_renders_word() {
+        assert_eq!(StringOrBool::Bool(true).as_str(), "true");
+        assert_eq!(StringOrBool::Bool(false).as_str(), "false");
+    }
+
+    #[test]
+    fn as_str_string_passthrough() {
+        assert_eq!(StringOrBool::String("{{ x }}".into()).as_str(), "{{ x }}");
+    }
+
+    // --- is_template -------------------------------------------------------
+
+    #[test]
+    fn is_template_detects_brace_only_in_string() {
+        assert!(StringOrBool::String("{{ .IsSnapshot }}".into()).is_template());
+        assert!(!StringOrBool::String("plain".into()).is_template());
+        // A Bool never carries a template, regardless of value.
+        assert!(!StringOrBool::Bool(true).is_template());
+    }
+
+    // --- try_evaluates_to_true --------------------------------------------
+
+    #[test]
+    fn try_evaluates_bool_short_circuits_without_rendering() {
+        let rendered = std::cell::Cell::new(false);
+        let res = StringOrBool::Bool(true).try_evaluates_to_true(|s| {
+            rendered.set(true);
+            Ok(s.to_string())
+        });
+        assert!(res.unwrap());
+        // Bool arm must NOT invoke the render closure.
+        assert!(!rendered.get());
+    }
+
+    #[test]
+    fn try_evaluates_string_renders_and_matches() {
+        let truthy = StringOrBool::String("1".into())
+            .try_evaluates_to_true(|s| Ok(s.to_string()))
+            .unwrap();
+        assert!(truthy);
+        let falsy = StringOrBool::String("nope".into())
+            .try_evaluates_to_true(|s| Ok(s.to_string()))
+            .unwrap();
+        assert!(!falsy);
+    }
+
+    #[test]
+    fn try_evaluates_propagates_render_error() {
+        let err =
+            StringOrBool::String("{{ x }}".into()).try_evaluates_to_true(|_| anyhow::bail!("boom"));
+        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("boom"));
+    }
+
+    #[test]
+    fn try_evaluates_rejects_stale_typed_compare() {
+        // Render closure should never be reached; the stale-compare guard
+        // fires first and returns Err.
+        let res = StringOrBool::String("{{ if IsSnapshot == \"false\" }}true{{ endif }}".into())
+            .try_evaluates_to_true(|_| panic!("render must not be called for stale compare"));
+        assert!(res.is_err());
+    }
+
+    // --- evaluate_if_condition --------------------------------------------
+
+    #[test]
+    fn if_condition_none_proceeds() {
+        let r = evaluate_if_condition(None, "lbl", |s| Ok(s.to_string())).unwrap();
+        assert!(r);
+    }
+
+    #[test]
+    fn if_condition_empty_literal_proceeds() {
+        let r = evaluate_if_condition(Some(""), "lbl", |s| Ok(s.to_string())).unwrap();
+        assert!(r);
+    }
+
+    #[test]
+    fn if_condition_falsy_values_skip() {
+        for v in ["false", "0", "no", ""] {
+            let r = evaluate_if_condition(Some("tmpl"), "lbl", |_| Ok(v.to_string())).unwrap();
+            assert!(!r, "rendered {v:?} should skip");
+        }
+    }
+
+    #[test]
+    fn if_condition_truthy_values_proceed() {
+        for v in ["yes", "1", "true", "anything"] {
+            let r = evaluate_if_condition(Some("tmpl"), "lbl", |_| Ok(v.to_string())).unwrap();
+            assert!(r, "rendered {v:?} should proceed");
+        }
+    }
+
+    #[test]
+    fn if_condition_render_error_carries_context() {
+        let err = evaluate_if_condition(Some("badtmpl"), "publisher 'x'", |_| {
+            anyhow::bail!("render failed")
+        });
+        let msg = format!("{:#}", err.unwrap_err());
+        assert!(msg.contains("publisher 'x'"));
+        assert!(msg.contains("badtmpl"));
+    }
+
+    #[test]
+    fn if_condition_stale_typed_compare_errors() {
+        let err = evaluate_if_condition(
+            Some("{{ if IsSnapshot == \"false\" }}go{{ endif }}"),
+            "blob 's3'",
+            |_| panic!("render must not run for stale compare"),
+        );
+        assert!(err.is_err());
+    }
+
+    // --- deserialize_string_or_bool_opt -----------------------------------
+
+    #[derive(Deserialize)]
+    struct BoolOptW {
+        #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+        v: Option<StringOrBool>,
+    }
+
+    #[test]
+    fn deserialize_bool_opt_bool_input() {
+        let w: BoolOptW = serde_yaml_ng::from_str("v: true").unwrap();
+        assert_eq!(w.v, Some(StringOrBool::Bool(true)));
+    }
+
+    #[test]
+    fn deserialize_bool_opt_string_input() {
+        let w: BoolOptW = serde_yaml_ng::from_str("v: \"{{ x }}\"").unwrap();
+        assert_eq!(w.v, Some(StringOrBool::String("{{ x }}".into())));
+    }
+
+    #[test]
+    fn deserialize_bool_opt_null_input() {
+        let w: BoolOptW = serde_yaml_ng::from_str("v: null").unwrap();
+        assert_eq!(w.v, None);
+    }
+
+    // --- HumanDuration::as_humantime_string -------------------------------
+
+    #[test]
+    fn human_duration_sub_second_falls_back_to_ms() {
+        assert_eq!(
+            HumanDuration(Duration::from_millis(250)).as_humantime_string(),
+            "250ms"
+        );
+    }
+
+    #[test]
+    fn human_duration_whole_seconds() {
+        assert_eq!(
+            HumanDuration(Duration::from_secs(45)).as_humantime_string(),
+            "45s"
+        );
+    }
+
+    #[test]
+    fn human_duration_minutes_and_seconds() {
+        assert_eq!(
+            HumanDuration(Duration::from_secs(90)).as_humantime_string(),
+            "1m30s"
+        );
+    }
+
+    #[test]
+    fn human_duration_hours_component() {
+        let s = HumanDuration(Duration::from_secs(3661)).as_humantime_string();
+        assert!(s.contains("1h"), "{s} should contain hours");
+        assert!(s.contains("1m"));
+        assert!(s.contains("1s"));
+    }
+
+    #[test]
+    fn human_duration_whole_minute_omits_seconds() {
+        // secs == 0 and out non-empty: the trailing `s` is suppressed.
+        assert_eq!(
+            HumanDuration(Duration::from_secs(120)).as_humantime_string(),
+            "2m"
+        );
+    }
+
+    // --- parse_humantime_duration -----------------------------------------
+
+    #[test]
+    fn parse_humantime_ok_values() {
+        assert_eq!(
+            parse_humantime_duration("10m").unwrap(),
+            Duration::from_secs(600)
+        );
+        assert_eq!(
+            parse_humantime_duration("15s").unwrap(),
+            Duration::from_secs(15)
+        );
+        assert_eq!(
+            parse_humantime_duration("1h30m").unwrap(),
+            Duration::from_secs(3600 + 1800)
+        );
+        assert_eq!(
+            parse_humantime_duration("500ms").unwrap(),
+            Duration::from_millis(500)
+        );
+        assert_eq!(
+            parse_humantime_duration("1d").unwrap(),
+            Duration::from_secs(86_400)
+        );
+    }
+
+    #[test]
+    fn parse_humantime_whitespace_tolerated() {
+        assert_eq!(
+            parse_humantime_duration("10 m").unwrap(),
+            Duration::from_secs(600)
+        );
+    }
+
+    #[test]
+    fn parse_humantime_errors() {
+        assert!(parse_humantime_duration("").is_err());
+        assert!(parse_humantime_duration("m").is_err());
+        assert!(parse_humantime_duration("10x").is_err());
+        // Trailing digits with no unit.
+        assert!(parse_humantime_duration("10").is_err());
+    }
+
+    // --- StringOrU32 / deserialize_u32_from_string_or_int -----------------
+
+    #[test]
+    fn u32_from_int_decimal() {
+        let v: StringOrU32 = serde_yaml_ng::from_str("18").unwrap();
+        assert_eq!(v.value(), 18);
+    }
+
+    #[test]
+    fn u32_from_prefixed_octal_string() {
+        let v: StringOrU32 = serde_yaml_ng::from_str("\"0o022\"").unwrap();
+        assert_eq!(v.value(), 18);
+    }
+
+    #[test]
+    fn u32_from_bare_leading_zero_is_octal() {
+        let v: StringOrU32 = serde_yaml_ng::from_str("\"022\"").unwrap();
+        assert_eq!(v.value(), 18);
+    }
+
+    #[test]
+    fn u32_from_plain_decimal_string() {
+        let v: StringOrU32 = serde_yaml_ng::from_str("\"18\"").unwrap();
+        assert_eq!(v.value(), 18);
+    }
+
+    #[test]
+    fn u32_invalid_octal_digit_errors() {
+        // 9 is not a valid octal digit.
+        let r = serde_yaml_ng::from_str::<StringOrU32>("\"0o999\"");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn u32_out_of_range_errors() {
+        let r = serde_yaml_ng::from_str::<StringOrU32>("5000000000");
+        assert!(r.is_err());
+    }
+
+    // --- deserialize_string_or_vec_opt ------------------------------------
+
+    #[derive(Deserialize)]
+    struct VecOptW {
+        #[serde(deserialize_with = "deserialize_string_or_vec_opt", default)]
+        v: Option<Vec<String>>,
+    }
+
+    #[test]
+    fn string_or_vec_single_string_wraps() {
+        let w: VecOptW = serde_yaml_ng::from_str("v: max-age=60").unwrap();
+        assert_eq!(w.v, Some(vec!["max-age=60".to_string()]));
+    }
+
+    #[test]
+    fn string_or_vec_list_passthrough() {
+        let w: VecOptW = serde_yaml_ng::from_str("v:\n  - a\n  - b").unwrap();
+        assert_eq!(w.v, Some(vec!["a".to_string(), "b".to_string()]));
+    }
+
+    #[test]
+    fn string_or_vec_null_is_none() {
+        let w: VecOptW = serde_yaml_ng::from_str("v: null").unwrap();
+        assert_eq!(w.v, None);
+    }
+}

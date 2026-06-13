@@ -243,4 +243,71 @@ mod tests {
     fn no_dollar_signs() {
         assert_eq!(expand_with("plain text", |_| None), "plain text");
     }
+
+    // --- expand_with_preserve ---------------------------------------------
+
+    #[test]
+    fn preserve_known_var_expands() {
+        let vars = [("HOME", "/home/tj")];
+        assert_eq!(
+            expand_with_preserve("${HOME}/file", lookup_map(&vars)),
+            "/home/tj/file"
+        );
+        assert_eq!(expand_with_preserve("$HOME", lookup_map(&vars)), "/home/tj");
+    }
+
+    #[test]
+    fn preserve_unknown_braced_kept_literal() {
+        // Unlike expand_with (empty), expand_with_preserve keeps `${name}`.
+        assert_eq!(expand_with_preserve("a${UNSET}b", |_| None), "a${UNSET}b");
+    }
+
+    #[test]
+    fn preserve_unknown_bare_kept_literal() {
+        // The canonical case: an unmatched `$HOME` inside a path survives.
+        assert_eq!(
+            expand_with_preserve("/tmp/$HOME/file", |_| None),
+            "/tmp/$HOME/file"
+        );
+    }
+
+    #[test]
+    fn preserve_mixed_known_and_unknown() {
+        let vars = [("KNOWN", "K")];
+        assert_eq!(
+            expand_with_preserve("$KNOWN-$MISSING", lookup_map(&vars)),
+            "K-$MISSING"
+        );
+    }
+
+    #[test]
+    fn preserve_unclosed_brace_kept_literal() {
+        assert_eq!(expand_with_preserve("${FOO", |_| None), "${FOO");
+    }
+
+    #[test]
+    fn preserve_dollar_at_end_kept_literal() {
+        assert_eq!(expand_with_preserve("end$", |_| None), "end$");
+    }
+
+    #[test]
+    fn preserve_digit_sequence_not_expanded() {
+        // `$5` is a positional ref, not a var; the non-valid-start branch
+        // keeps the bare `$` and continues.
+        assert_eq!(
+            expand_with_preserve("Bearer $5XYZ", |_| None),
+            "Bearer $5XYZ"
+        );
+    }
+
+    #[test]
+    fn preserve_dollar_before_non_var_kept_literal() {
+        assert_eq!(expand_with_preserve("$.field", |_| None), "$.field");
+    }
+
+    #[test]
+    fn preserve_single_pass_no_recursion() {
+        let vars = [("A", "$B"), ("B", "expanded")];
+        assert_eq!(expand_with_preserve("$A", lookup_map(&vars)), "$B");
+    }
 }

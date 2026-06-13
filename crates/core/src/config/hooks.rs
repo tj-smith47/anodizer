@@ -408,4 +408,270 @@ mod tests {
             "canonical hooks-only must not warn: {captured}"
         );
     }
+
+    #[test]
+    fn filter_all_matches_every_kind() {
+        let f = BeforePublishArtifactFilter::All;
+        assert!(f.matches(ArtifactKind::Checksum));
+        assert!(f.matches(ArtifactKind::Binary));
+        assert!(f.matches(ArtifactKind::DockerManifest));
+        assert!(f.matches(ArtifactKind::Sbom));
+    }
+
+    #[test]
+    fn filter_default_is_all() {
+        assert_eq!(
+            BeforePublishArtifactFilter::default(),
+            BeforePublishArtifactFilter::All
+        );
+    }
+
+    #[test]
+    fn filter_source_buckets_all_source_kinds() {
+        let f = BeforePublishArtifactFilter::Source;
+        assert!(f.matches(ArtifactKind::SourceArchive));
+        assert!(f.matches(ArtifactKind::SourcePkgBuild));
+        assert!(f.matches(ArtifactKind::SourceSrcInfo));
+        assert!(f.matches(ArtifactKind::SourceRpm));
+        assert!(!f.matches(ArtifactKind::Archive));
+        assert!(!f.matches(ArtifactKind::Binary));
+    }
+
+    #[test]
+    fn filter_package_excludes_archives_and_binaries() {
+        let f = BeforePublishArtifactFilter::Package;
+        assert!(f.matches(ArtifactKind::LinuxPackage));
+        assert!(f.matches(ArtifactKind::Snap));
+        assert!(f.matches(ArtifactKind::PublishableSnapcraft));
+        assert!(f.matches(ArtifactKind::Flatpak));
+        assert!(!f.matches(ArtifactKind::Archive));
+        assert!(!f.matches(ArtifactKind::SourceRpm));
+    }
+
+    #[test]
+    fn filter_installer_covers_msi_and_macos_pkg() {
+        let f = BeforePublishArtifactFilter::Installer;
+        assert!(f.matches(ArtifactKind::Installer));
+        assert!(f.matches(ArtifactKind::MacOsPackage));
+        assert!(!f.matches(ArtifactKind::DiskImage));
+    }
+
+    #[test]
+    fn filter_archive_includes_makeself_but_not_source_archive() {
+        let f = BeforePublishArtifactFilter::Archive;
+        assert!(f.matches(ArtifactKind::Archive));
+        assert!(f.matches(ArtifactKind::Makeself));
+        assert!(!f.matches(ArtifactKind::SourceArchive));
+    }
+
+    #[test]
+    fn filter_binary_covers_three_binary_kinds() {
+        let f = BeforePublishArtifactFilter::Binary;
+        assert!(f.matches(ArtifactKind::Binary));
+        assert!(f.matches(ArtifactKind::UploadableBinary));
+        assert!(f.matches(ArtifactKind::UniversalBinary));
+        assert!(!f.matches(ArtifactKind::Library));
+    }
+
+    #[test]
+    fn filter_image_excludes_multiarch_manifest() {
+        let f = BeforePublishArtifactFilter::Image;
+        assert!(f.matches(ArtifactKind::DockerImage));
+        assert!(f.matches(ArtifactKind::DockerImageV2));
+        assert!(f.matches(ArtifactKind::PublishableDockerImage));
+        // multi-arch index entries are not scannable image blobs
+        assert!(!f.matches(ArtifactKind::DockerManifest));
+        assert!(!f.matches(ArtifactKind::DockerDigest));
+    }
+
+    #[test]
+    fn filter_narrow_variants_match_only_themselves() {
+        assert!(BeforePublishArtifactFilter::Checksum.matches(ArtifactKind::Checksum));
+        assert!(!BeforePublishArtifactFilter::Checksum.matches(ArtifactKind::Sbom));
+        assert!(BeforePublishArtifactFilter::DiskImage.matches(ArtifactKind::DiskImage));
+        assert!(!BeforePublishArtifactFilter::DiskImage.matches(ArtifactKind::Installer));
+        assert!(BeforePublishArtifactFilter::Sbom.matches(ArtifactKind::Sbom));
+        assert!(!BeforePublishArtifactFilter::Sbom.matches(ArtifactKind::Checksum));
+    }
+
+    #[test]
+    fn filter_deserializes_snake_case_and_diskimage_alias() {
+        let f: BeforePublishArtifactFilter = serde_yaml_ng::from_str("disk_image").unwrap();
+        assert_eq!(f, BeforePublishArtifactFilter::DiskImage);
+        // legacy single-word `diskimage` alias parses to the same variant
+        let aliased: BeforePublishArtifactFilter = serde_yaml_ng::from_str("diskimage").unwrap();
+        assert_eq!(aliased, BeforePublishArtifactFilter::DiskImage);
+    }
+
+    #[test]
+    fn hook_entry_string_deserializes_as_simple() {
+        let h: HookEntry = serde_yaml_ng::from_str("\"echo hi\"").unwrap();
+        assert!(matches!(h, HookEntry::Simple(ref s) if s == "echo hi"));
+    }
+
+    #[test]
+    fn hook_entry_object_deserializes_as_structured() {
+        let h: HookEntry = serde_yaml_ng::from_str("cmd: build.sh\ndir: subdir").unwrap();
+        match h {
+            HookEntry::Structured(s) => {
+                assert_eq!(s.cmd, "build.sh");
+                assert_eq!(s.dir.as_deref(), Some("subdir"));
+            }
+            HookEntry::Simple(_) => panic!("expected structured hook"),
+        }
+    }
+
+    #[test]
+    fn hook_entry_rejects_non_string_non_object() {
+        // a bare list is neither a command string nor a structured hook
+        let err = serde_yaml_ng::from_str::<HookEntry>("- a\n- b");
+        assert!(err.is_err());
+    }
+
+    #[test]
+    fn hook_entry_if_alias_maps_to_if_condition() {
+        let h: HookEntry = serde_yaml_ng::from_str("cmd: x\nif: \"{{ .IsSnapshot }}\"").unwrap();
+        match h {
+            HookEntry::Structured(s) => {
+                assert_eq!(s.if_condition.as_deref(), Some("{{ .IsSnapshot }}"));
+            }
+            HookEntry::Simple(_) => panic!("expected structured hook"),
+        }
+    }
+
+    #[test]
+    fn hook_entry_partial_eq_str_matches_both_variants() {
+        assert!(HookEntry::Simple("go test".to_string()) == "go test");
+        assert!(HookEntry::Simple("go test".to_string()) != "go vet");
+        let structured = HookEntry::Structured(StructuredHook {
+            cmd: "make lint".to_string(),
+            ..Default::default()
+        });
+        assert!(structured == "make lint");
+        assert!(structured != "make build");
+    }
+
+    #[test]
+    fn deserialize_then_serialize_drops_post_field() {
+        // post-only input folds into hooks: and serialization shows no post:
+        let cfg: HooksConfig = serde_yaml_ng::from_str("post:\n  - legacy.sh").unwrap();
+        assert!(cfg.post.is_none());
+        let out = serde_yaml_ng::to_string(&cfg).unwrap();
+        assert!(out.contains("hooks"), "serialized: {out}");
+        assert!(
+            !out.contains("post"),
+            "serialized must not carry post: {out}"
+        );
+    }
+
+    #[test]
+    fn empty_block_neither_spelling_stays_empty_and_silent() {
+        // (false, false) arm: empty block, nothing folds and nothing warns.
+        let captured = capture_warnings(|| {
+            let mut cfg = HooksConfig {
+                hooks: None,
+                post: None,
+            };
+            cfg.merge_hook_aliases();
+            assert!(cfg.hooks.is_none());
+            assert!(cfg.post.is_none());
+        });
+        assert!(
+            !captured.contains("DEPRECATION"),
+            "empty block must not warn: {captured}"
+        );
+    }
+
+    #[test]
+    fn empty_post_vec_does_not_trigger_fold_or_warn() {
+        // is_some_and(|v| !v.is_empty()) means an empty post vec is treated as
+        // absent — it must not fold into hooks nor warn.
+        let captured = capture_warnings(|| {
+            let mut cfg = HooksConfig {
+                hooks: None,
+                post: Some(vec![]),
+            };
+            cfg.merge_hook_aliases();
+            // empty post was NOT folded; it stays as the (now still-empty) post
+            assert!(cfg.hooks.is_none(), "empty post must not become hooks");
+        });
+        assert!(
+            !captured.contains("DEPRECATION"),
+            "empty post must not warn: {captured}"
+        );
+    }
+
+    #[test]
+    fn default_hooks_config_is_all_none() {
+        let cfg = HooksConfig::default();
+        assert!(cfg.hooks.is_none());
+        assert!(cfg.post.is_none());
+    }
+
+    #[test]
+    fn raw_deserialize_rejects_unknown_key() {
+        let err = serde_yaml_ng::from_str::<HooksConfig>("befor:\n  - x");
+        assert!(err.is_err(), "deny_unknown_fields on Raw must reject typos");
+    }
+
+    #[test]
+    fn structured_hook_full_fields_parse() {
+        let h: HookEntry = serde_yaml_ng::from_str(
+            "cmd: build.sh\nenv: [FOO=1, BAR=2]\noutput: true\nids: [linux-bin]\nartifacts: binary\n",
+        )
+        .unwrap();
+        match h {
+            HookEntry::Structured(s) => {
+                assert_eq!(s.cmd, "build.sh");
+                assert_eq!(
+                    s.env.as_deref(),
+                    Some(&["FOO=1".to_string(), "BAR=2".to_string()][..])
+                );
+                assert_eq!(s.output, Some(true));
+                assert_eq!(s.ids.as_deref(), Some(&["linux-bin".to_string()][..]));
+                assert_eq!(s.artifacts, Some(BeforePublishArtifactFilter::Binary));
+            }
+            HookEntry::Simple(_) => panic!("expected structured hook"),
+        }
+    }
+
+    #[test]
+    fn structured_hook_rejects_unknown_field() {
+        // StructuredHook is deny_unknown_fields; deserialize routes objects here.
+        let err = serde_yaml_ng::from_str::<HookEntry>("cmd: x\nbogus: 1");
+        assert!(
+            err.is_err(),
+            "unknown structured-hook field must be rejected"
+        );
+    }
+
+    #[test]
+    fn hook_entry_simple_serializes_untagged_as_bare_string() {
+        let h = HookEntry::Simple("echo hi".to_string());
+        let out = serde_yaml_ng::to_string(&h).unwrap();
+        // untagged: a Simple serializes to a bare scalar, not a tagged map
+        assert_eq!(out.trim(), "echo hi");
+    }
+
+    #[test]
+    fn hook_entry_structured_serializes_to_mapping() {
+        let h = HookEntry::Structured(StructuredHook {
+            cmd: "make".to_string(),
+            output: Some(true),
+            ..Default::default()
+        });
+        let out = serde_yaml_ng::to_string(&h).unwrap();
+        assert!(out.contains("cmd: make"), "serialized: {out}");
+        assert!(out.contains("output: true"), "serialized: {out}");
+    }
+
+    #[test]
+    fn filter_installer_distinct_from_package_and_diskimage() {
+        // Installer must NOT swallow package/diskimage kinds — guards the
+        // most error-prone overlap in the matches() table.
+        let f = BeforePublishArtifactFilter::Installer;
+        assert!(!f.matches(ArtifactKind::LinuxPackage));
+        assert!(!f.matches(ArtifactKind::DiskImage));
+        assert!(!f.matches(ArtifactKind::Archive));
+    }
 }

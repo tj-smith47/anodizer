@@ -242,4 +242,136 @@ mod tests {
             Some(crate::PublisherOutcome::PendingValidation)
         ));
     }
+
+    #[test]
+    fn rollback_empty_warning_msg_interpolates_all_three_slots() {
+        let msg = rollback_empty_warning_msg("homebrew", "tap commit");
+        assert_eq!(
+            msg,
+            "no tap commit recorded in homebrew evidence — verify homebrew state manually"
+        );
+    }
+
+    #[test]
+    fn rollback_empty_warning_msg_distinct_per_publisher() {
+        let a = rollback_empty_warning_msg("cargo", "crate");
+        let b = rollback_empty_warning_msg("aur", "commit");
+        assert_ne!(a, b);
+        assert!(a.contains("cargo") && a.contains("crate"));
+        assert!(b.contains("aur") && b.contains("commit"));
+    }
+
+    #[test]
+    fn programmatic_rollback_on_failure_defaults_false() {
+        let p = MinimalPublisher;
+        let evidence = PublishEvidence::new("minimal");
+        assert!(!p.programmatic_rollback_on_failure(&evidence));
+    }
+
+    #[test]
+    fn retain_on_rollback_defaults_false() {
+        assert!(!MinimalPublisher.retain_on_rollback());
+    }
+
+    #[test]
+    fn requirements_default_is_empty() {
+        let p = MinimalPublisher;
+        let ctx = Context::test_fixture();
+        assert!(p.requirements(&ctx).is_empty());
+    }
+
+    #[test]
+    fn preflight_check_variants_compare_by_value() {
+        assert_eq!(PreflightCheck::Pass, PreflightCheck::Pass);
+        assert_eq!(
+            PreflightCheck::Warning("dup".into()),
+            PreflightCheck::Warning("dup".into())
+        );
+        // same variant, different payload, must not be equal
+        assert_ne!(
+            PreflightCheck::Blocker("a".into()),
+            PreflightCheck::Blocker("b".into())
+        );
+        // different variants with same string must not be equal
+        assert_ne!(
+            PreflightCheck::Warning("x".into()),
+            PreflightCheck::Blocker("x".into())
+        );
+    }
+
+    #[test]
+    fn minimal_publisher_carries_its_declared_identity() {
+        let p = MinimalPublisher;
+        assert_eq!(p.name(), "minimal");
+        assert_eq!(p.group(), PublisherGroup::Manager);
+        assert!(!p.required());
+        assert!(!p.skips_on_nightly());
+    }
+
+    /// A publisher that overrides every default-implemented hook, so the
+    /// trait dispatch is proven to reach the override (not silently shadowed
+    /// by the default body).
+    struct OverridingPublisher;
+    impl Publisher for OverridingPublisher {
+        fn name(&self) -> &str {
+            "overriding"
+        }
+        fn run(&self, _ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
+            Ok(PublishEvidence::new("overriding"))
+        }
+        fn group(&self) -> PublisherGroup {
+            PublisherGroup::Assets
+        }
+        fn required(&self) -> bool {
+            true
+        }
+        fn skips_on_nightly(&self) -> bool {
+            true
+        }
+        fn preflight(&self, _ctx: &Context) -> anyhow::Result<PreflightCheck> {
+            Ok(PreflightCheck::Blocker("fork missing".into()))
+        }
+        fn rollback_scope_needed(&self) -> Option<&'static str> {
+            Some("delete_repo")
+        }
+        fn programmatic_rollback_on_failure(&self, _evidence: &PublishEvidence) -> bool {
+            true
+        }
+        fn retain_on_rollback(&self) -> bool {
+            true
+        }
+    }
+
+    #[test]
+    fn override_publisher_preflight_returns_blocker() {
+        let p = OverridingPublisher;
+        let ctx = Context::test_fixture();
+        assert_eq!(
+            p.preflight(&ctx).unwrap(),
+            PreflightCheck::Blocker("fork missing".into())
+        );
+    }
+
+    #[test]
+    fn override_publisher_exposes_rollback_scope_and_flags() {
+        let p = OverridingPublisher;
+        let evidence = PublishEvidence::new("overriding");
+        assert_eq!(p.rollback_scope_needed(), Some("delete_repo"));
+        assert!(p.programmatic_rollback_on_failure(&evidence));
+        assert!(p.retain_on_rollback());
+        assert!(p.required());
+        assert!(p.skips_on_nightly());
+        assert_eq!(p.group(), PublisherGroup::Assets);
+    }
+
+    #[test]
+    fn preflight_check_clone_preserves_payload() {
+        let warn = PreflightCheck::Warning("dup upload".into());
+        assert_eq!(warn.clone(), warn);
+        let blocker = PreflightCheck::Blocker("no tap".into());
+        let cloned = blocker.clone();
+        assert_eq!(cloned, PreflightCheck::Blocker("no tap".into()));
+        // Clone must not collapse a Warning into the same value as a Blocker.
+        assert_ne!(warn, blocker);
+    }
 }

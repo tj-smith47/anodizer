@@ -392,3 +392,283 @@ pub struct SrpmConfig {
 //
 // SRPM contents share [`NfpmContent`]; both the canonical `src` / `dst`
 // keys and the SRPM-style `source` / `destination` aliases parse.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Wrapper exercising the `deserialize_makeselfs` custom visitor through
+    /// the same `deserialize_with` attribute the real config uses.
+    #[derive(Deserialize)]
+    struct MakeselfWrap {
+        #[serde(deserialize_with = "deserialize_makeselfs", default)]
+        makeselfs: Vec<MakeselfConfig>,
+    }
+
+    #[derive(Deserialize)]
+    struct AppImageWrap {
+        #[serde(deserialize_with = "deserialize_appimages", default)]
+        appimages: Vec<AppImageConfig>,
+    }
+
+    fn makeselfs(yaml: &str) -> Vec<MakeselfConfig> {
+        serde_yaml_ng::from_str::<MakeselfWrap>(yaml)
+            .expect("valid makeselfs YAML")
+            .makeselfs
+    }
+
+    fn appimages(yaml: &str) -> Vec<AppImageConfig> {
+        serde_yaml_ng::from_str::<AppImageWrap>(yaml)
+            .expect("valid appimages YAML")
+            .appimages
+    }
+
+    #[test]
+    fn makeself_single_object_becomes_one_element_vec() {
+        let v = makeselfs("makeselfs:\n  id: solo\n  script: run.sh\n");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].id.as_deref(), Some("solo"));
+        assert_eq!(v[0].script.as_deref(), Some("run.sh"));
+    }
+
+    #[test]
+    fn makeself_array_preserves_order() {
+        let v = makeselfs("makeselfs:\n  - id: a\n  - id: b\n");
+        assert_eq!(v.len(), 2);
+        assert_eq!(v[0].id.as_deref(), Some("a"));
+        assert_eq!(v[1].id.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn makeself_null_is_empty_vec() {
+        assert!(makeselfs("makeselfs: null").is_empty());
+    }
+
+    #[test]
+    fn makeself_missing_is_empty_vec() {
+        assert!(makeselfs("other: 1").is_empty());
+    }
+
+    #[test]
+    fn makeself_skip_accepts_bool_and_template_via_string_or_bool() {
+        let v = makeselfs("makeselfs:\n  id: x\n  skip: true\n");
+        assert!(v[0].skip.as_ref().unwrap().as_bool());
+
+        let t = makeselfs("makeselfs:\n  id: x\n  skip: \"{{ .IsSnapshot }}\"\n");
+        assert!(t[0].skip.as_ref().unwrap().is_template());
+    }
+
+    #[test]
+    fn makeself_disable_alias_folds_into_skip() {
+        let v = makeselfs("makeselfs:\n  id: x\n  disable: true\n");
+        assert!(v[0].skip.as_ref().unwrap().as_bool());
+    }
+
+    #[test]
+    fn makeself_file_src_dst_aliases_map_to_source_destination() {
+        let v = makeselfs("makeselfs:\n  id: x\n  files:\n    - src: in.txt\n      dst: out.txt\n");
+        let f = &v[0].files.as_ref().unwrap()[0];
+        assert_eq!(f.source, "in.txt");
+        assert_eq!(f.destination.as_deref(), Some("out.txt"));
+    }
+
+    #[test]
+    fn makeself_file_canonical_source_destination_keys_also_parse() {
+        let v = makeselfs("makeselfs:\n  id: x\n  files:\n    - source: a\n      destination: b\n");
+        let f = &v[0].files.as_ref().unwrap()[0];
+        assert_eq!(f.source, "a");
+        assert_eq!(f.destination.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn makeself_rejects_unknown_field() {
+        let err = serde_yaml_ng::from_str::<MakeselfWrap>("makeselfs:\n  id: x\n  bogus: 1\n");
+        assert!(err.is_err(), "deny_unknown_fields must reject typos");
+    }
+
+    #[test]
+    fn appimage_single_object_becomes_one_element_vec() {
+        let v = appimages("appimages:\n  id: hx\n  desktop: a.desktop\n  icon: a.png\n");
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].id.as_deref(), Some("hx"));
+        assert_eq!(v[0].desktop.as_deref(), Some("a.desktop"));
+    }
+
+    #[test]
+    fn appimage_array_and_null_paths() {
+        assert_eq!(appimages("appimages:\n  - id: a\n  - id: b").len(), 2);
+        assert!(appimages("appimages: null").is_empty());
+    }
+
+    #[test]
+    fn appimage_extra_source_destination_aliases_map_to_src_dst() {
+        let v = appimages(
+            "appimages:\n  id: x\n  appdir_extra:\n    - source: runtime/\n      destination: usr/lib/runtime\n",
+        );
+        let extra = &v[0].appdir_extra.as_ref().unwrap()[0];
+        assert_eq!(extra.src, "runtime/");
+        assert_eq!(extra.dst, "usr/lib/runtime");
+    }
+
+    #[test]
+    fn appimage_runtime_harvest_parses_command_and_dir() {
+        let v = appimages(
+            "appimages:\n  id: x\n  runtime_harvest:\n    command: \"{{ .ArtifactPath }} --populate {{ .HarvestDir }}\"\n    dir: runtime/\n",
+        );
+        let rh = v[0].runtime_harvest.as_ref().unwrap();
+        assert!(rh.command.contains("--populate"));
+        assert_eq!(rh.dir, "runtime/");
+    }
+
+    #[test]
+    fn appimage_disable_alias_folds_into_skip() {
+        let v = appimages("appimages:\n  id: x\n  disable: true\n");
+        assert!(v[0].skip.as_ref().unwrap().as_bool());
+    }
+
+    #[test]
+    fn srpm_enabled_defaults_to_none_and_parses_when_set() {
+        let off: SrpmConfig = serde_yaml_ng::from_str("package_name: foo").unwrap();
+        assert!(off.enabled.is_none());
+        let on: SrpmConfig = serde_yaml_ng::from_str("enabled: true").unwrap();
+        assert_eq!(on.enabled, Some(true));
+    }
+
+    #[test]
+    fn srpm_bins_stored_in_deterministic_btreemap_order() {
+        let cfg: SrpmConfig =
+            serde_yaml_ng::from_str("bins:\n  zeta: /usr/bin/zeta\n  alpha: /usr/bin/alpha\n")
+                .unwrap();
+        let keys: Vec<&String> = cfg.bins.as_ref().unwrap().keys().collect();
+        assert_eq!(keys, vec!["alpha", "zeta"], "BTreeMap iterates sorted");
+    }
+
+    #[test]
+    fn srpm_skip_template_string_parses() {
+        let cfg: SrpmConfig = serde_yaml_ng::from_str("skip: \"{{ .Env.SKIP }}\"").unwrap();
+        assert!(cfg.skip.as_ref().unwrap().is_template());
+    }
+
+    #[test]
+    fn srpm_rejects_unknown_field() {
+        assert!(serde_yaml_ng::from_str::<SrpmConfig>("nope: 1").is_err());
+    }
+
+    #[test]
+    fn makeself_empty_array_is_empty_vec() {
+        // visit_seq with zero elements is a distinct branch from visit_unit.
+        assert!(makeselfs("makeselfs: []").is_empty());
+    }
+
+    #[test]
+    fn makeself_full_metadata_block_parses() {
+        let v = makeselfs(
+            "makeselfs:\n  id: x\n  script: run.sh\n  compression: xz\n  os: [linux, darwin]\n  arch: [amd64]\n  extra_args: [--nox11]\n  keywords: [cli, tool]\n",
+        );
+        let m = &v[0];
+        assert_eq!(m.compression.as_deref(), Some("xz"));
+        assert_eq!(
+            m.os.as_deref(),
+            Some(&["linux".to_string(), "darwin".to_string()][..])
+        );
+        assert_eq!(m.arch.as_deref(), Some(&["amd64".to_string()][..]));
+        assert_eq!(m.extra_args.as_deref(), Some(&["--nox11".to_string()][..]));
+        assert_eq!(
+            m.keywords.as_deref(),
+            Some(&["cli".to_string(), "tool".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn makeself_file_strip_parent_round_trips() {
+        let v = makeselfs(
+            "makeselfs:\n  id: x\n  files:\n    - source: a/b\n      strip_parent: true\n",
+        );
+        assert_eq!(v[0].files.as_ref().unwrap()[0].strip_parent, Some(true));
+    }
+
+    #[test]
+    fn makeself_file_rejects_unknown_field() {
+        let err = serde_yaml_ng::from_str::<MakeselfWrap>(
+            "makeselfs:\n  id: x\n  files:\n    - source: a\n      bogus: 1\n",
+        );
+        assert!(err.is_err(), "MakeselfFile must deny unknown fields");
+    }
+
+    #[test]
+    fn appimage_empty_array_is_empty_vec() {
+        assert!(appimages("appimages: []").is_empty());
+    }
+
+    #[test]
+    fn appimage_update_information_and_os_arch_filters_parse() {
+        let v = appimages(
+            "appimages:\n  id: x\n  update_information: \"gh-releases-zsync|me|app|latest|app-*.AppImage.zsync\"\n  os: [linux]\n  arch: [amd64, arm64]\n",
+        );
+        let a = &v[0];
+        assert!(
+            a.update_information
+                .as_deref()
+                .unwrap()
+                .starts_with("gh-releases-zsync")
+        );
+        assert_eq!(a.os.as_deref(), Some(&["linux".to_string()][..]));
+        assert_eq!(
+            a.arch.as_deref(),
+            Some(&["amd64".to_string(), "arm64".to_string()][..])
+        );
+    }
+
+    #[test]
+    fn appimage_extra_rejects_unknown_field() {
+        let err = serde_yaml_ng::from_str::<AppImageWrap>(
+            "appimages:\n  id: x\n  appdir_extra:\n    - src: a\n      dst: b\n      bogus: 1\n",
+        );
+        assert!(err.is_err(), "AppImageExtra must deny unknown fields");
+    }
+
+    #[test]
+    fn appimage_runtime_harvest_rejects_unknown_field() {
+        let err = serde_yaml_ng::from_str::<AppImageWrap>(
+            "appimages:\n  id: x\n  runtime_harvest:\n    command: c\n    dir: d\n    bogus: 1\n",
+        );
+        assert!(err.is_err(), "RuntimeHarvest must deny unknown fields");
+    }
+
+    #[test]
+    fn appimage_skip_template_marks_template_not_bool() {
+        let v = appimages("appimages:\n  id: x\n  skip: \"{{ .IsSnapshot }}\"\n");
+        let skip = v[0].skip.as_ref().unwrap();
+        assert!(skip.is_template());
+        assert!(
+            !skip.as_bool(),
+            "an unrendered template is not a literal true"
+        );
+    }
+
+    #[test]
+    fn srpm_contents_and_prefixes_and_scriptlets_parse() {
+        let cfg: SrpmConfig = serde_yaml_ng::from_str(
+            "enabled: true\nprefixes: [/usr, /etc]\npretrans: scripts/pre.sh\nposttrans: scripts/post.sh\ncontents:\n  - src: a.conf\n    dst: /etc/a.conf\n    type: config\n",
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.prefixes.as_deref(),
+            Some(&["/usr".to_string(), "/etc".to_string()][..])
+        );
+        assert_eq!(cfg.pretrans.as_deref(), Some("scripts/pre.sh"));
+        assert_eq!(cfg.posttrans.as_deref(), Some("scripts/post.sh"));
+        let contents = cfg.contents.as_ref().unwrap();
+        assert_eq!(contents[0].src, "a.conf");
+        assert_eq!(contents[0].dst, "/etc/a.conf");
+        assert_eq!(contents[0].content_type.as_deref(), Some("config"));
+    }
+
+    #[test]
+    fn srpm_version_components_parse() {
+        let cfg: SrpmConfig =
+            serde_yaml_ng::from_str("prerelease: rc1\nversion_metadata: gitabc123\n").unwrap();
+        assert_eq!(cfg.prerelease.as_deref(), Some("rc1"));
+        assert_eq!(cfg.version_metadata.as_deref(), Some("gitabc123"));
+    }
+}

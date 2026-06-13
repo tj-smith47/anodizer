@@ -130,3 +130,38 @@ impl Amd64Variant {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn amd64_variant_as_str_covers_every_arm() {
+        assert_eq!(Amd64Variant::V1.as_str(), "v1");
+        assert_eq!(Amd64Variant::V2.as_str(), "v2");
+        assert_eq!(Amd64Variant::V3.as_str(), "v3");
+        assert_eq!(Amd64Variant::V4.as_str(), "v4");
+    }
+
+    #[test]
+    fn amd64_variant_deserializes_snake_case() {
+        // The `snake_case` serde rename is the load-bearing contract: a
+        // `v3` in YAML must parse to the typed variant so a typo fails at
+        // parse time instead of rendering an invalid PKGBUILD.
+        let v: Amd64Variant = serde_json::from_str("\"v3\"").expect("v3 parses");
+        assert_eq!(v, Amd64Variant::V3);
+        assert!(
+            serde_json::from_str::<Amd64Variant>("\"avx2\"").is_err(),
+            "an unknown variant must be rejected at parse time"
+        );
+    }
+
+    #[test]
+    fn skip_alias_disable_round_trips() {
+        // `disable:` is the legacy spelling; serde alias must map it onto
+        // `skip` so old configs keep working.
+        let cfg: AurSourceConfig =
+            serde_yaml_ng::from_str("disable: true").expect("legacy disable: parses");
+        assert!(matches!(cfg.skip, Some(StringOrBool::Bool(true))));
+    }
+}
