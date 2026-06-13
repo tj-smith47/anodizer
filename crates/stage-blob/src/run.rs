@@ -306,11 +306,15 @@ pub(crate) fn derive_blob_required(ctx: &Context) -> bool {
 /// snapshot version was about to reach. Best-effort orientation only — the raw
 /// configured `provider`/`bucket` strings (templates unrendered) are enough to
 /// identify the destination without building object stores.
+///
+/// Walks the same `crate_universe` (top-level `crates` + every
+/// `workspaces[].crates`) the guard predicate uses, so a pure-workspace config
+/// whose `blobs:` lives only under a workspace crate still names its bucket
+/// rather than reporting `(none configured)`.
 fn blob_destinations(ctx: &Context) -> Vec<String> {
     let selected = &ctx.options.selected_crates;
-    ctx.config
-        .crates
-        .iter()
+    anodizer_core::env_preflight::crate_universe(&ctx.config)
+        .into_iter()
         .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .filter_map(|c| c.blobs.as_ref())
         .flat_map(|configs| configs.iter())
@@ -1003,6 +1007,54 @@ mod run_tests {
         assert!(
             ctx.publish_report.is_none(),
             "guard must abort BEFORE any upload or report entry",
+        );
+    }
+
+    /// A pure-workspace config (crates live ONLY under `workspaces[].crates`,
+    /// not top-level `crates`) must still name the workspace crate's bucket in
+    /// the guard error — `blob_destinations` walks the same `crate_universe` the
+    /// predicate does, so the operator is never left with `(none configured)`
+    /// exactly when a workspace-only blob was about to be hit.
+    #[test]
+    fn blob_stage_run_names_workspace_bucket_on_non_release_version() {
+        let cfg = BlobConfig {
+            provider: "s3".to_string(),
+            bucket: "ws-releases".to_string(),
+            ..Default::default()
+        };
+        let config = Config {
+            project_name: "demo".to_string(),
+            workspaces: Some(vec![anodizer_core::config::WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![CrateConfig {
+                    name: "wscrate".to_string(),
+                    path: ".".to_string(),
+                    blobs: Some(vec![cfg]),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        // Real release: NOT snapshot, NOT dry-run, so the guard is live.
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "demo");
+        ctx.template_vars_mut().set("IsSnapshot", "false");
+        ctx.template_vars_mut()
+            .set("Version", "0.0.0~SNAPSHOT-d7813f0");
+
+        let err = BlobStage
+            .run(&mut ctx)
+            .expect_err("a non-release version must bail at BlobStage::run");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("s3://ws-releases"),
+            "error must name the WORKSPACE crate's bucket, not '(none configured)': {msg}",
+        );
+        assert!(
+            !msg.contains("(none configured)"),
+            "a configured workspace blob must never report '(none configured)': {msg}",
         );
     }
 

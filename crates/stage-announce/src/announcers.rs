@@ -304,6 +304,25 @@ pub(crate) fn dispatch_filtered_announcers(
 /// both [`dispatch_all_announcers`] (which sends) and [`render_all_announcers`]
 /// (which only renders), so the pre-publish guard exercises exactly the set the
 /// real announce path would.
+fn announcer_registry() -> &'static [&'static dyn Announcer] {
+    &[
+        &DiscordAnnouncer,
+        &DiscourseAnnouncer,
+        &SlackAnnouncer,
+        &WebhookAnnouncer,
+        &TelegramAnnouncer,
+        &TeamsAnnouncer,
+        &MattermostAnnouncer,
+        &RedditAnnouncer,
+        &TwitterAnnouncer,
+        &MastodonAnnouncer,
+        &BlueskyAnnouncer,
+        &LinkedInAnnouncer,
+        &OpenCollectiveAnnouncer,
+        &EmailAnnouncer,
+    ]
+}
+
 /// The names of every announcer whose config block is present, for the
 /// non-release version guard's error message. Presence-based (not `enabled:`
 /// template evaluation) so it is side-effect-free and can run BEFORE any
@@ -331,25 +350,6 @@ pub(crate) fn configured_announcer_names(announce: &AnnounceConfig) -> Vec<Strin
     push(announce.opencollective.is_some(), "opencollective");
     push(announce.email.is_some(), "email");
     names
-}
-
-fn announcer_registry() -> &'static [&'static dyn Announcer] {
-    &[
-        &DiscordAnnouncer,
-        &DiscourseAnnouncer,
-        &SlackAnnouncer,
-        &WebhookAnnouncer,
-        &TelegramAnnouncer,
-        &TeamsAnnouncer,
-        &MattermostAnnouncer,
-        &RedditAnnouncer,
-        &TwitterAnnouncer,
-        &MastodonAnnouncer,
-        &BlueskyAnnouncer,
-        &LinkedInAnnouncer,
-        &OpenCollectiveAnnouncer,
-        &EmailAnnouncer,
-    ]
 }
 
 /// Dry-render every ENABLED announcer's templates, collecting a per-provider

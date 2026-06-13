@@ -82,6 +82,11 @@ fn is_zero_sentinel(v: &str) -> bool {
 /// version are evaluated, so the guard is correct in all config modes —
 /// single-crate, workspace-lockstep, and per-crate.
 ///
+/// `targets` is best-effort orientation for the error message only — the bail
+/// decision is driven solely by the version predicate, so an empty `targets`
+/// still bails (a destination-naming gap must never silently let a non-release
+/// version through).
+///
 /// No-op in dry-run and snapshot: neither produces an external effect (dry-run
 /// stages no-op their side effects; snapshot already short-circuits every one
 /// of these stages via `skip_in_snapshot`), so a non-release version there is a
@@ -266,6 +271,18 @@ mod tests {
         let log = ctx.logger("publish-test");
         guard_release_version(&ctx, &log, "publish", &["cargo".to_string()])
             .expect("a real semver version must not trip the guard");
+    }
+
+    #[test]
+    fn guard_bails_on_real_base_with_snapshot_suffix() {
+        // A real semver base carrying a snapshot suffix (NOT the 0.0.0 sentinel)
+        // must still bail on the snapshot-marker reason — proves the guard does
+        // not rely on the 0.0.0 sentinel to catch a snapshot version.
+        let ctx = ctx_with_version("1.4.2-SNAPSHOT-abc1234");
+        let log = ctx.logger("publish-test");
+        let err = guard_release_version(&ctx, &log, "publish", &["cargo".to_string()])
+            .expect_err("a snapshot-suffixed real base version must still bail");
+        assert!(err.to_string().contains("snapshot marker"), "{err}");
     }
 
     #[test]
