@@ -11,16 +11,15 @@
 
 /// The verify-release stage's verdict for one pipeline run.
 ///
-/// `ran` is `true` whenever the gate executed its checks (it is left unset —
-/// the [`Context`](crate::context::Context) slot stays `None` — on the
-/// disabled / skipped / dry-run / snapshot early-returns, where no published
-/// release exists to verify). `issues` is empty on a clean pass and carries one
+/// "Did the gate run" is encoded by `Some(..)` vs `None` on the
+/// [`Context`](crate::context::Context) slot: the stage stamps `Some` whenever
+/// it executed its checks, and leaves the slot `None` on the disabled /
+/// skipped / dry-run / snapshot early-returns, where no published release
+/// exists to verify. `issues` is empty on a clean pass and carries one
 /// human-readable string per defect otherwise; each string already names the
 /// offending `crate '<name>'` so attribution survives the workspace fan-out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifyReleaseSummary {
-    /// Whether the gate executed its checks this run.
-    pub ran: bool,
     /// One message per detected defect; empty on a clean pass.
     pub issues: Vec<String>,
 }

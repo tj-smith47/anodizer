@@ -769,7 +769,6 @@ mod summary_tests {
             Some(report),
         );
         ctx.verify_release = Some(anodizer_core::VerifyReleaseSummary {
-            ran: true,
             issues: vec!["install smoke-test failed for crate 'app' (app.deb)".to_string()],
         });
         emit_summary(&mut ctx);

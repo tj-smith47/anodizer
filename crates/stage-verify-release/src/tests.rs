@@ -515,8 +515,8 @@ fn asset_existence_bails_when_a_produced_asset_is_missing() {
 
 #[test]
 fn verify_release_records_summary_slot_on_pass() {
-    // Clean pass: the gate sets ctx.verify_release = Some(ran:true, issues:[])
-    // so the run-summary can render a passing verify-release row.
+    // Clean pass: the gate stamps Some(issues:[]) — the Some encodes "the gate
+    // ran" so the run-summary can render a passing verify-release row.
     let (addr, _log) = spawn_release_route(&["app.tar.gz", "checksums.txt"]);
 
     let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
@@ -524,11 +524,11 @@ fn verify_release_records_summary_slot_on_pass() {
     add_artifact(&mut ctx, ArtifactKind::Checksum, "checksums.txt", "app");
 
     assert!(VerifyReleaseStage.run(&mut ctx).is_ok());
-    let summary = ctx
-        .verify_release
-        .as_ref()
-        .expect("clean pass must still stamp the verify-release slot");
-    assert!(summary.ran, "ran must be true on the success path");
+    assert!(
+        ctx.verify_release.is_some(),
+        "a clean pass must still stamp the verify-release slot (Some encodes 'ran')"
+    );
+    let summary = ctx.verify_release.as_ref().unwrap();
     assert!(
         summary.issues.is_empty(),
         "a clean pass carries no issues: {:?}",
@@ -550,11 +550,11 @@ fn verify_release_records_summary_slot_before_bail() {
     VerifyReleaseStage
         .run(&mut ctx)
         .expect_err("a missing produced asset must fail the gate");
-    let summary = ctx
-        .verify_release
-        .as_ref()
-        .expect("the failure path must stamp the verify-release slot before bailing");
-    assert!(summary.ran, "ran must be true on the failure path");
+    assert!(
+        ctx.verify_release.is_some(),
+        "the failure path must stamp the verify-release slot (Some) before bailing"
+    );
+    let summary = ctx.verify_release.as_ref().unwrap();
     assert_eq!(
         summary.issues.len(),
         1,

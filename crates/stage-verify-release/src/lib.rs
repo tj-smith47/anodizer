@@ -151,10 +151,7 @@ impl Stage for VerifyReleaseStage {
             // Record the clean verdict on the context so the end-of-pipeline
             // summary renders a passing verify-release row (a separate axis
             // from the publisher rows).
-            ctx.verify_release = Some(anodizer_core::VerifyReleaseSummary {
-                ran: true,
-                issues: Vec::new(),
-            });
+            ctx.verify_release = Some(anodizer_core::VerifyReleaseSummary { issues: Vec::new() });
             log.status("all post-publish checks passed");
             return Ok(());
         }
@@ -167,7 +164,6 @@ impl Stage for VerifyReleaseStage {
         // uniform false all-`succeeded` green. The publishes genuinely landed;
         // this records the SEPARATE post-publish verification failure.
         ctx.verify_release = Some(anodizer_core::VerifyReleaseSummary {
-            ran: true,
             issues: issues.clone(),
         });
         anyhow::bail!(

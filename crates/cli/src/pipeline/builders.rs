@@ -1554,7 +1554,6 @@ before_publish:
                 // Mirror the real stage: stamp the verdict BEFORE bailing so
                 // the pipeline-end summary records it.
                 ctx.verify_release = Some(anodizer_core::VerifyReleaseSummary {
-                    ran: true,
                     issues: vec!["install smoke-test failed for crate 'myapp'".to_string()],
                 });
                 anyhow::bail!("post-publish verification found issues")
