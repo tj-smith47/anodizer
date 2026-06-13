@@ -61,11 +61,34 @@ impl PackageType {
 /// Sentinel printed to stdout AFTER a successful install and BEFORE the
 /// version-check runs. Its presence in the captured stdout tells the failure
 /// classifier which step failed: absent ⇒ install failed; present ⇒ install
-/// succeeded and the version-check is the failing step. The token is fixed
-/// and contains no shell metacharacters, so it needs no quoting and cannot be
-/// forged by package output (it is emitted by our own `printf`, not the
-/// package).
+/// succeeded and the version-check is the failing step.
+///
+/// The classifier matches the marker only when it occupies its own line (the
+/// position our `printf '%s\n'` writes it), so a package that happened to echo
+/// the token mid-line during a failing install cannot forge an install-success
+/// signal. The token is also unique and emitted by anodize, not by any known
+/// package manager — but the own-line anchor is the actual guarantee.
 const SMOKE_STEP_MARKER: &str = "__ANODIZER_SMOKE_INSTALLED__";
+
+/// `true` when `stdout` contains [`SMOKE_STEP_MARKER`] on its own line — the
+/// exact shape `printf '%s\n' <marker>` produces. Matching a whole line (rather
+/// than a bare substring) means stray package output that merely embeds the
+/// token cannot be mistaken for the install-success signal.
+fn marker_present(stdout: &str) -> bool {
+    stdout.lines().any(|line| line == SMOKE_STEP_MARKER)
+}
+
+/// `true` when `stderr` looks like a Docker-daemon / runtime failure to START
+/// the container (image pull error, exec error, OCI runtime error) rather than
+/// a failure of the install or version-check command running INSIDE it. The
+/// container never reaches the install step in this case, so attributing the
+/// failure to "install" would mislead. Detected by the `docker:`-prefixed
+/// runtime error line and the daemon's canonical error envelope.
+fn is_container_start_failure(stderr: &str) -> bool {
+    stderr
+        .lines()
+        .any(|line| line.starts_with("docker:") || line.contains("Error response from daemon"))
+}
 
 /// The `sh -c` body run inside the smoke container: install the package found at
 /// `container_pkg_path`, then version-check the installed binary. Identical
@@ -154,29 +177,42 @@ fn tail(s: &str) -> String {
 }
 
 /// Build the failure detail for the install+version container exec, attributing
-/// the failure to the install or the version-check step via [`SMOKE_STEP_MARKER`].
+/// the failure to the right step:
 ///
-/// When the marker is absent from stdout the install step failed; its output
-/// (everything captured) is reported. When the marker is present the install
-/// succeeded and the version-check is the failing step; only the post-marker
-/// stdout is reported so the install's success banner does not mask the real
-/// error (the v0.9.0 apk case: install printed "OK: … 17 packages", then
-/// `--version` exited 127 — the classifier now attributes `exit 127` to the
-/// version-check and drops the install banner from the stdout tail).
+/// 1. A Docker-daemon/runtime failure to START the container (image pull, exec,
+///    OCI runtime error) is labeled "container failed to start" — the container
+///    never ran the install, so blaming install would mislead.
+/// 2. Marker present ([`SMOKE_STEP_MARKER`] on its own line) ⇒ install
+///    succeeded and the version-check is the failing step; only the post-marker
+///    stdout is reported so the install's success banner does not mask the real
+///    error (the v0.9.0 apk case: install printed "OK: … 17 packages", then
+///    `--version` exited 127 — attributed to the version-check, banner dropped).
+/// 3. Marker absent ⇒ the install step itself failed; its output is reported.
 fn smoke_failure_detail(binary: &str, out: &std::process::Output) -> String {
     let stderr = String::from_utf8_lossy(&out.stderr);
     let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr_trim = stderr.trim();
+
+    if is_container_start_failure(stderr_trim) {
+        return format!(
+            "container failed to start: {}",
+            compose_detail(&out.status, stderr_trim, stdout.trim())
+        );
+    }
+
     match stdout.split_once(SMOKE_STEP_MARKER) {
-        // Marker present ⇒ install succeeded; version-check failed. Report only
-        // what the version-check produced on stdout (after the marker).
-        Some((_install_out, version_out)) => format!(
+        // Marker present (own-line) ⇒ install succeeded; version-check failed.
+        // Report only what the version-check produced on stdout (after the
+        // marker line).
+        Some((_install_out, version_out)) if marker_present(&stdout) => format!(
             "version-check (`{binary} --version`) failed: {}",
-            compose_detail(&out.status, stderr.trim(), version_out.trim())
+            compose_detail(&out.status, stderr_trim, version_out.trim())
         ),
-        // Marker absent ⇒ install never completed; report the install output.
-        None => format!(
+        // Marker absent (or only mid-line, hence forged) ⇒ install never
+        // completed; report the install output.
+        _ => format!(
             "install step failed: {}",
-            compose_detail(&out.status, stderr.trim(), stdout.trim())
+            compose_detail(&out.status, stderr_trim, stdout.trim())
         ),
     }
 }
@@ -1123,6 +1159,65 @@ mod tests {
             !detail.starts_with("install step failed"),
             "must not blame the install step: {detail}"
         );
+    }
+
+    /// A Docker-daemon failure to start the container (image pull / exec /
+    /// OCI runtime error) must be labeled "container failed to start", NOT
+    /// "install step failed" — the container never reached the install step.
+    /// The real docker stderr must still surface.
+    #[cfg(unix)]
+    #[test]
+    fn smoke_failure_detail_labels_container_start_failure() {
+        let stderr = "docker: Error response from daemon: manifest for alpine:latest not found: manifest unknown.";
+        let out = fake_output(125, "", stderr);
+        let detail = smoke_failure_detail("anodizer", &out);
+        assert!(
+            detail.starts_with("container failed to start"),
+            "daemon error must be labeled container-start, not install: {detail}"
+        );
+        assert!(
+            !detail.contains("install step failed"),
+            "must not blame the install step: {detail}"
+        );
+        assert!(
+            detail.contains("exit 125"),
+            "must include the exit code: {detail}"
+        );
+        assert!(
+            detail.contains("manifest unknown"),
+            "must surface the real docker error: {detail}"
+        );
+    }
+
+    /// A package that echoes the marker token MID-LINE during a failing install
+    /// must NOT be mistaken for the install-success signal: only an own-line
+    /// marker (the position our `printf` writes it) counts. The failure must
+    /// still be attributed to the install step.
+    #[cfg(unix)]
+    #[test]
+    fn smoke_failure_detail_ignores_mid_line_marker_forge() {
+        let stdout = format!("noise before {SMOKE_STEP_MARKER} noise after\ninstall failed here\n");
+        let out = fake_output(1, &stdout, "apk: broken package");
+        let detail = smoke_failure_detail("anodizer", &out);
+        assert!(
+            detail.starts_with("install step failed"),
+            "a mid-line marker must not forge install-success: {detail}"
+        );
+        assert!(
+            !detail.contains("version-check"),
+            "must not be attributed to the version-check: {detail}"
+        );
+    }
+
+    #[test]
+    fn marker_present_requires_own_line() {
+        assert!(marker_present(&format!("a\n{SMOKE_STEP_MARKER}\nb")));
+        assert!(marker_present(SMOKE_STEP_MARKER));
+        // Embedded mid-line ⇒ not a valid marker.
+        assert!(!marker_present(&format!(
+            "prefix {SMOKE_STEP_MARKER} suffix"
+        )));
+        assert!(!marker_present("no marker at all"));
     }
 
     /// When install itself fails the marker is absent; the detail must blame
