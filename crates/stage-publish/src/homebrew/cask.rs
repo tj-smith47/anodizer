@@ -652,56 +652,14 @@ pub(super) fn generate_cask_from_context(
         .as_deref()
         .or(hb_cfg.url_template.as_deref());
 
-    let mut platform_artifacts: Vec<(&anodizer_core::artifact::Artifact, String, String)> =
-        Vec::new();
     let kinds = [
         anodizer_core::artifact::ArtifactKind::DiskImage,
         anodizer_core::artifact::ArtifactKind::Archive,
         anodizer_core::artifact::ArtifactKind::UploadableBinary,
     ];
-    for kind in &kinds {
-        for art in ctx.artifacts.by_kind_and_crate(*kind, crate_name) {
-            if !art.only_replacing_unibins() {
-                continue;
-            }
-            let target = art.target.as_deref().unwrap_or("");
-            let is_macos =
-                target.contains("darwin") || target.contains("macos") || target.contains("apple");
-            let is_linux = target.contains("linux");
-            if !is_macos && !is_linux && !target.is_empty() {
-                continue; // Skip Windows and other platforms for casks
-            }
-            // Skip if this OS+arch combo is already covered by a higher-priority kind
-            let (os, arch) = anodizer_core::target::map_target(target);
-            let key = format!("{}_{}", os, arch);
-            if platform_artifacts.iter().any(|(_, k, _)| *k == key) {
-                continue;
-            }
-            let url = if let Some(tmpl) = url_template {
-                crate::util::render_url_template_with_ctx(
-                    ctx,
-                    tmpl,
-                    art.name(),
-                    &version,
-                    &arch,
-                    &os,
-                )
-            } else if let Some(u) = art.metadata.get("url") {
-                u.clone()
-            } else {
-                continue;
-            };
-            let url = url.replace(&version, "#{version}");
-            // sha256 is fetched again in the second collection pass below
-            // (the one that actually populates CaskArchEntry); both lookups
-            // are bail-on-missing there, so any artifact reaching this loop
-            // is already known to carry sha256 metadata. Discard locally.
-            platform_artifacts.push((art, key, format!("{}|{}|{}", os, arch, url)));
-        }
-    }
 
-    // Build platform blocks for multi-platform cask support.
-    // Re-collect with proper url/sha256 pairs.
+    // Build per-platform `on_macos` / `on_linux` blocks, each carrying one
+    // `on_arm` / `on_intel` entry per architecture present in the release.
     let mut platform_blocks: Vec<CaskPlatformBlock> = Vec::new();
     {
         use std::collections::BTreeMap;
@@ -727,11 +685,13 @@ pub(super) fn generate_cask_from_context(
                 } else {
                     continue;
                 };
-                let key = format!("{}_{}", os_block, arch_block);
+                // Dedup is per-OS: a darwin `intel` entry must not suppress a
+                // linux `intel` entry. Only skip when THIS os_block already
+                // holds an entry for THIS arch_block (the first-kind-wins
+                // precedence: DiskImage > Archive > UploadableBinary).
                 if os_map
-                    .values()
-                    .flatten()
-                    .any(|e: &CaskArchEntry| format!("{}_{}", os_block, e.arch_block) == key)
+                    .get(os_block)
+                    .is_some_and(|arches| arches.iter().any(|e| e.arch_block == arch_block))
                 {
                     continue;
                 }

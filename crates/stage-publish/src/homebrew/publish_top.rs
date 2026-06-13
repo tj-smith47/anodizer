@@ -47,6 +47,45 @@ fn resolve_top_cask_description<'a>(
         .as_deref()
         .or_else(|| ctx.config.meta_description_project())
 }
+
+/// Remove a stale `Formula/<name>.rb` from a cloned tap working tree so the
+/// freshly-written `Casks/<name>.rb` is authoritative for `brew install
+/// <name>`.
+///
+/// In a Homebrew tap a same-named **Formula shadows a Cask**: with both
+/// `Formula/anodizer.rb` and `Casks/anodizer.rb` present, `brew install
+/// anodizer` resolves the formula, pinning users to whatever (possibly
+/// stale) version that formula declares. A project that has migrated to a
+/// cask-only config therefore must also retire the old formula, or every
+/// install silently serves the old binary.
+///
+/// Returns the removed path (so the caller can stage the deletion via
+/// `git add`) or `None` when no stale formula exists. Only the bare
+/// `Formula/<name>.rb` is touched — projects that legitimately publish
+/// per-crate formulae are unaffected because their formula path is driven
+/// by the formula publisher, not this cask flow.
+fn stage_stale_formula_removal(
+    repo_path: &std::path::Path,
+    cask_name: &str,
+    log: &StageLogger,
+) -> Result<Option<std::path::PathBuf>> {
+    let stale_formula = repo_path.join("Formula").join(format!("{}.rb", cask_name));
+    if !stale_formula.is_file() {
+        return Ok(None);
+    }
+    std::fs::remove_file(&stale_formula).with_context(|| {
+        format!(
+            "homebrew_casks: remove stale formula {}",
+            stale_formula.display()
+        )
+    })?;
+    log.status(&format!(
+        "removed stale Homebrew formula {} shadowing the cask",
+        stale_formula.display()
+    ));
+    Ok(Some(stale_formula))
+}
+
 /// Outcome shape returned by [`publish_top_level_homebrew_casks`].
 ///
 /// `pushed_any` mirrors the prior `bool` return — it gates whether the
@@ -533,6 +572,13 @@ pub fn publish_top_level_homebrew_casks(
             written_paths.push(alt_path);
         }
 
+        // Remove any stale `Formula/<name>.rb` shadowing this cask, staging
+        // the deletion alongside the cask write so the cask is authoritative
+        // in the same commit.
+        if let Some(removed) = stage_stale_formula_removal(repo_path, cask_name, log)? {
+            written_paths.push(removed);
+        }
+
         // Render commit message.
         let commit_msg = render_commit_msg(
             cask_cfg.commit_msg_template.as_deref(),
@@ -628,10 +674,70 @@ pub fn publish_top_level_homebrew_casks(
 #[cfg(test)]
 #[allow(clippy::field_reassign_with_default)]
 mod tests {
-    use super::{resolve_top_cask_description, resolve_top_cask_homepage};
+    use super::{
+        resolve_top_cask_description, resolve_top_cask_homepage, stage_stale_formula_removal,
+    };
     use anodizer_core::PublisherOutcome;
     use anodizer_core::config::{Config, HomebrewCaskConfig, MetadataConfig};
     use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::{StageLogger, Verbosity};
+
+    /// A cask publish into a tap that still carries `Formula/<name>.rb` must
+    /// retire that stale formula (so the cask is authoritative for `brew
+    /// install <name>`), returning the removed path for staging. The cask
+    /// file itself is unaffected — only the shadowing formula is removed.
+    #[test]
+    fn stale_formula_is_removed_on_cask_publish() {
+        let log = StageLogger::new("publish", Verbosity::Quiet);
+        let tap = tempfile::tempdir().expect("temp tap");
+        let repo = tap.path();
+
+        // Simulate a tap working tree mid-migration: an old formula AND a
+        // freshly-written cask for the same token.
+        std::fs::create_dir_all(repo.join("Formula")).unwrap();
+        std::fs::create_dir_all(repo.join("Casks")).unwrap();
+        let formula = repo.join("Formula").join("anodizer.rb");
+        let cask = repo.join("Casks").join("anodizer.rb");
+        std::fs::write(
+            &formula,
+            "class Anodizer < Formula\n  version \"0.5.0\"\nend\n",
+        )
+        .unwrap();
+        std::fs::write(&cask, "cask \"anodizer\" do\n  version \"0.9.1\"\nend\n").unwrap();
+
+        let removed = stage_stale_formula_removal(repo, "anodizer", &log)
+            .expect("removal must not error")
+            .expect("a stale formula was present, so its path must be returned");
+
+        assert_eq!(removed, formula, "returned path must be the stale formula");
+        assert!(
+            !formula.exists(),
+            "stale Formula/anodizer.rb must be removed so the cask wins"
+        );
+        assert!(
+            cask.exists(),
+            "the cask file must remain present after formula cleanup"
+        );
+    }
+
+    /// When no stale formula exists, the cleanup is a no-op: returns `None`
+    /// and touches nothing. Guards against spuriously staging a phantom
+    /// deletion in the common cask-from-scratch case.
+    #[test]
+    fn no_stale_formula_is_a_noop() {
+        let log = StageLogger::new("publish", Verbosity::Quiet);
+        let tap = tempfile::tempdir().expect("temp tap");
+        let repo = tap.path();
+        std::fs::create_dir_all(repo.join("Casks")).unwrap();
+        std::fs::write(repo.join("Casks").join("anodizer.rb"), "cask\n").unwrap();
+
+        let removed =
+            stage_stale_formula_removal(repo, "anodizer", &log).expect("noop must not error");
+        assert!(
+            removed.is_none(),
+            "no formula present => nothing removed, nothing staged"
+        );
+    }
 
     /// When per-cask `homepage` is unset, the resolver returns the
     /// project-level `metadata.homepage`. Same fallback shape used by

@@ -157,15 +157,25 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
     format!("starting per-crate homebrew publish for '{}'", crate_name)
 }
 
-/// Final summary emitted at publisher exit. `processed` is the count of
-/// crates the publisher actually invoked `publish_to_homebrew` on (not
-/// the count of successful tap pushes — `publish_to_homebrew` has its own
-/// skip paths for skip_upload/dry-run/etc., each of which logs its own
-/// status line).
-pub(crate) fn run_done_message(processed: usize) -> String {
+/// Final summary emitted at publisher exit.
+///
+/// `processed` is the count of crates the publisher invoked
+/// `publish_to_homebrew` on for the per-crate FORMULA surface (not the
+/// count of successful tap pushes — `publish_to_homebrew` has its own skip
+/// paths for skip_upload/dry-run/etc., each of which logs its own status
+/// line). `casks` is the number of in-scope top-level `homebrew_casks:`
+/// entries the run rendered.
+///
+/// Both surfaces count toward the unit total: a cask-only project (the
+/// recommended path, zero formula blocks) would otherwise report
+/// `0 unit(s) processed` even after pushing its cask, which reads as a
+/// no-op to operators scanning the log.
+pub(crate) fn run_done_message(processed: usize, casks: usize) -> String {
     format!(
-        "finished homebrew publish — {} crate(s) processed",
-        processed
+        "finished homebrew publish — {} unit(s) processed ({} formula crate(s), {} cask(s))",
+        processed + casks,
+        processed,
+        casks,
     )
 }
 
@@ -348,7 +358,7 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         if should_warn_no_eligible(processed, selected.len(), cask_result.total) {
             log.warn(&run_no_eligible_crates_warning(selected.len()));
         } else {
-            log.status(&run_done_message(processed));
+            log.status(&run_done_message(processed, cask_result.applicable));
         }
 
         // Aggregate applicability: when the current crate scope had no
@@ -828,9 +838,28 @@ mod publisher_tests {
 
     #[test]
     fn run_done_message_reports_processed_count() {
-        let msg = run_done_message(2);
+        let msg = run_done_message(2, 0);
         assert!(msg.starts_with("finished homebrew publish"), "{msg}");
-        assert!(msg.contains("2 crate(s) processed"), "{msg}");
+        // Two formula crates, no casks → total unit count is 2.
+        assert!(msg.contains("2 unit(s) processed"), "{msg}");
+        assert!(msg.contains("2 formula crate(s)"), "{msg}");
+        assert!(msg.contains("0 cask(s)"), "{msg}");
+    }
+
+    /// A cask-only run (zero formula crates, one published cask) must report
+    /// a NON-zero processed count — the v0.9.1 log read "0 crate(s)
+    /// processed" even though the cask published, which looked like a no-op.
+    #[test]
+    fn run_done_message_counts_published_casks() {
+        let msg = run_done_message(0, 1);
+        assert!(
+            msg.contains("1 unit(s) processed"),
+            "cask-only run must report 1 unit, not 0; got: {msg}"
+        );
+        assert!(msg.contains("1 cask(s)"), "{msg}");
+        // Mixed: 1 formula + 2 casks → 3 units total.
+        let mixed = run_done_message(1, 2);
+        assert!(mixed.contains("3 unit(s) processed"), "{mixed}");
     }
 
     #[test]

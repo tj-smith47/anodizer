@@ -2415,6 +2415,127 @@ fn generate_cask_multi_platform_emits_per_arch_blocks_without_top_level_url() {
     assert!(!cask.contains("https://ignored.example/x.tar.gz"));
 }
 
+/// Multi-arch regression: a release carrying darwin-arm64 + darwin-amd64
+/// AND linux-amd64 + linux-arm64 archives must emit EVERY (os, arch) pair
+/// in the cask — both `on_arm`/`on_intel` under `on_macos`, and a matching
+/// `on_linux` block. The v0.9.1 cask shipped arm64-only because the
+/// per-arch dedup filter compared the *current* artifact's OS against each
+/// existing entry, so a macOS entry whose arch matched a later Linux
+/// artifact wrongly suppressed the Linux entry (and vice-versa).
+#[test]
+fn generate_cask_from_context_emits_every_os_arch_pair() {
+    use anodizer_core::config::{HomebrewCaskConfig, HomebrewConfig};
+    let config = Config {
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    // All four archives a typical macOS+Linux release produces. Distinct
+    // sha256s so a dropped arch is detectable by a missing digest.
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-darwin-arm64.tar.gz",
+        "aarch64-apple-darwin",
+        "https://e.com/mytool-1.0.0-darwin-arm64.tar.gz",
+        "sha_darwin_arm64",
+    ));
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-darwin-amd64.tar.gz",
+        "x86_64-apple-darwin",
+        "https://e.com/mytool-1.0.0-darwin-amd64.tar.gz",
+        "sha_darwin_amd64",
+    ));
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-linux-amd64.tar.gz",
+        "x86_64-unknown-linux-gnu",
+        "https://e.com/mytool-1.0.0-linux-amd64.tar.gz",
+        "sha_linux_amd64",
+    ));
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-linux-arm64.tar.gz",
+        "aarch64-unknown-linux-gnu",
+        "https://e.com/mytool-1.0.0-linux-arm64.tar.gz",
+        "sha_linux_arm64",
+    ));
+
+    let hb_cfg = HomebrewConfig::default();
+    let cask_cfg = HomebrewCaskConfig::default();
+    let result = super::cask::generate_cask_from_context(&ctx, "mytool", &hb_cfg, &cask_cfg)
+        .expect("multi-arch cask generation");
+    let cask = result.content;
+
+    assert!(cask.contains("on_macos do"), "missing on_macos\n{cask}");
+    assert!(cask.contains("on_linux do"), "missing on_linux\n{cask}");
+    // Every one of the four digests must survive into the rendered cask.
+    for sha in [
+        "sha_darwin_arm64",
+        "sha_darwin_amd64",
+        "sha_linux_amd64",
+        "sha_linux_arm64",
+    ] {
+        assert!(
+            cask.contains(sha),
+            "cask dropped the {sha} arch entry — multi-arch dedup bug\n{cask}"
+        );
+    }
+    // Both macOS arch stanzas present; Linux block carries both arches too.
+    assert_eq!(
+        cask.matches("on_arm do").count(),
+        2,
+        "expected on_arm under both on_macos and on_linux\n{cask}"
+    );
+    assert_eq!(
+        cask.matches("on_intel do").count(),
+        2,
+        "expected on_intel under both on_macos and on_linux\n{cask}"
+    );
+}
+
+/// Single-arch regression guard: a darwin-arm64-only release must still
+/// produce a valid cask with exactly that one arch entry (no spurious
+/// extra stanzas, no failure).
+#[test]
+fn generate_cask_from_context_single_arch_still_valid() {
+    use anodizer_core::config::{HomebrewCaskConfig, HomebrewConfig};
+    let config = Config {
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-darwin-arm64.tar.gz",
+        "aarch64-apple-darwin",
+        "https://e.com/mytool-1.0.0-darwin-arm64.tar.gz",
+        "sha_darwin_arm64",
+    ));
+    let hb_cfg = HomebrewConfig::default();
+    let cask_cfg = HomebrewCaskConfig::default();
+    let result = super::cask::generate_cask_from_context(&ctx, "mytool", &hb_cfg, &cask_cfg)
+        .expect("single-arch cask generation");
+    let cask = result.content;
+    assert!(cask.contains("sha_darwin_arm64"), "{cask}");
+    assert!(
+        !cask.contains("on_intel do"),
+        "single arm64 release must not emit a spurious on_intel stanza\n{cask}"
+    );
+}
+
 /// `generate_cask` with alternative_names emits multiple `name` lines.
 #[test]
 fn generate_cask_emits_alternative_names() {
