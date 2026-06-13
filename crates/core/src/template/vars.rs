@@ -273,8 +273,16 @@ pub fn find_stale_typed_compare(template: &str) -> Option<&str> {
         .map(|m| m.as_str())
 }
 
+/// Pattern matching an `Env.VARNAME` reference, capturing the variable name
+/// in group 1. The leading `.` of the Go-style `.Env.X` form sits outside the
+/// capture, so both Tera (`Env.X`) and Go-style (`.Env.X`) refs match.
+/// Exported so consumers that need the same env-ref grammar (e.g. the
+/// `check config` secret-exposure lint) build their regex from this single
+/// literal rather than re-typing it.
+pub const ENV_REF_PATTERN: &str = r"Env\.([A-Za-z_][A-Za-z0-9_]*)";
+
 /// Regex matching `Env.VARNAME` references in a preprocessed template.
 /// Used to discover env var keys referenced by the template so they can be
 /// pre-populated with empty strings (missing env vars resolve to "").
 pub(super) static ENV_REF_RE: LazyLock<Regex> =
-    LazyLock::new(|| crate::util::static_regex(r"Env\.([A-Za-z_][A-Za-z0-9_]*)"));
+    LazyLock::new(|| crate::util::static_regex(ENV_REF_PATTERN));

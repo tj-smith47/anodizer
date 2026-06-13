@@ -58,6 +58,7 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
     check_copy_from(config, &mut errors);
     check_target_triples(config, &mut warnings);
     check_changelog(config, &mut warnings);
+    check_announce_secret_exposure(config, &mut warnings);
     check_checksum_skip_conflicts(config, &mut warnings);
     check_crate_paths(config, &mut errors);
     check_sign_artifact_filters(config, &mut warnings);
@@ -296,6 +297,211 @@ fn check_changelog(config: &Config, warnings: &mut Vec<String>) {
             "unrecognized changelog 'use' value '{}' (valid: git, github-native)",
             use_source
         ));
+    }
+}
+
+/// Warn when a recipient-visible announce template references a secret-named
+/// `Env` variable (e.g. `{{ Env.GITHUB_TOKEN }}`).
+///
+/// Outbound redaction masks any secret-named env value before it reaches a
+/// recipient (sent as the literal `$NAME`), so embedding such a reference in
+/// the message/title/body a reader will see is almost always an authoring
+/// mistake. Only content fields are scanned — routing fields (webhook URLs,
+/// bot tokens, channel IDs, SMTP credentials) legitimately carry secrets and
+/// are skipped to avoid noise. `reddit.url_template` is treated as content
+/// because a token-named reference in a public link is a leak.
+fn check_announce_secret_exposure(config: &Config, warnings: &mut Vec<String>) {
+    let Some(announce) = &config.announce else {
+        return;
+    };
+
+    let scan = |field: &str, value: &Option<String>, warnings: &mut Vec<String>| {
+        if let Some(text) = value {
+            warn_secret_env_refs(field, text, warnings);
+        }
+    };
+
+    if let Some(b) = &announce.bluesky {
+        scan(
+            "announce.bluesky.message_template",
+            &b.message_template,
+            warnings,
+        );
+    }
+    if let Some(d) = &announce.discourse {
+        scan(
+            "announce.discourse.title_template",
+            &d.title_template,
+            warnings,
+        );
+        scan(
+            "announce.discourse.message_template",
+            &d.message_template,
+            warnings,
+        );
+    }
+    if let Some(l) = &announce.linkedin {
+        scan(
+            "announce.linkedin.message_template",
+            &l.message_template,
+            warnings,
+        );
+    }
+    if let Some(o) = &announce.opencollective {
+        scan(
+            "announce.opencollective.title_template",
+            &o.title_template,
+            warnings,
+        );
+        scan(
+            "announce.opencollective.message_template",
+            &o.message_template,
+            warnings,
+        );
+    }
+    if let Some(t) = &announce.twitter {
+        scan(
+            "announce.twitter.message_template",
+            &t.message_template,
+            warnings,
+        );
+    }
+    if let Some(m) = &announce.mastodon {
+        scan(
+            "announce.mastodon.message_template",
+            &m.message_template,
+            warnings,
+        );
+    }
+    if let Some(d) = &announce.discord {
+        scan(
+            "announce.discord.message_template",
+            &d.message_template,
+            warnings,
+        );
+        scan("announce.discord.author", &d.author, warnings);
+    }
+    if let Some(w) = &announce.webhook {
+        scan(
+            "announce.webhook.message_template",
+            &w.message_template,
+            warnings,
+        );
+    }
+    if let Some(t) = &announce.telegram {
+        scan(
+            "announce.telegram.message_template",
+            &t.message_template,
+            warnings,
+        );
+    }
+    if let Some(t) = &announce.teams {
+        scan(
+            "announce.teams.message_template",
+            &t.message_template,
+            warnings,
+        );
+        scan("announce.teams.title_template", &t.title_template, warnings);
+    }
+    if let Some(m) = &announce.mattermost {
+        scan(
+            "announce.mattermost.message_template",
+            &m.message_template,
+            warnings,
+        );
+        scan(
+            "announce.mattermost.title_template",
+            &m.title_template,
+            warnings,
+        );
+    }
+    if let Some(e) = &announce.email {
+        scan(
+            "announce.email.subject_template",
+            &e.subject_template,
+            warnings,
+        );
+        scan(
+            "announce.email.message_template",
+            &e.message_template,
+            warnings,
+        );
+    }
+    if let Some(r) = &announce.reddit {
+        scan(
+            "announce.reddit.title_template",
+            &r.title_template,
+            warnings,
+        );
+        scan("announce.reddit.url_template", &r.url_template, warnings);
+    }
+    if let Some(s) = &announce.slack {
+        scan(
+            "announce.slack.message_template",
+            &s.message_template,
+            warnings,
+        );
+        if let Some(blocks) = &s.blocks {
+            for (i, block) in blocks.iter().enumerate() {
+                if let Some(text) = &block.text {
+                    warn_secret_env_refs(
+                        &format!("announce.slack.blocks[{}].text", i),
+                        &text.text,
+                        warnings,
+                    );
+                }
+            }
+        }
+        if let Some(attachments) = &s.attachments {
+            for (i, att) in attachments.iter().enumerate() {
+                let prefix = format!("announce.slack.attachments[{}]", i);
+                scan(&format!("{}.text", prefix), &att.text, warnings);
+                scan(&format!("{}.title", prefix), &att.title, warnings);
+                scan(&format!("{}.fallback", prefix), &att.fallback, warnings);
+                scan(&format!("{}.pretext", prefix), &att.pretext, warnings);
+                scan(&format!("{}.footer", prefix), &att.footer, warnings);
+            }
+        }
+    }
+}
+
+/// Push a warning for every `Env.<NAME>` reference inside a render block of
+/// `text` whose `NAME` looks like a secret.
+///
+/// Only refs inside a `{{ ... }}` expression or a `{% ... %}` statement are
+/// considered — bare prose like `set Env.GITHUB_TOKEN first` never renders
+/// under Tera, so it cannot leak and must not warn. Each block span is
+/// scanned independently with [`anodizer_core::template::ENV_REF_PATTERN`], so
+/// multiple refs in one block (e.g. `{{ Env.A | default(Env.B_TOKEN) }}`) are
+/// all caught. Both Tera (`Env.X`) and Go-style (`.Env.X`) forms match — the
+/// capture starts after the dot, so a leading `.` is irrelevant.
+fn warn_secret_env_refs(field: &str, text: &str, warnings: &mut Vec<String>) {
+    static BLOCK_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        // Non-greedy inner captures so adjacent blocks stay separate spans.
+        anodizer_core::util::static_regex(r"(?s)\{\{(.*?)\}\}|\{%(.*?)%\}")
+    });
+    static ENV_REF: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+        anodizer_core::util::static_regex(anodizer_core::template::ENV_REF_PATTERN)
+    });
+    for block in BLOCK_RE.captures_iter(text) {
+        // Exactly one alternation arm matches per block; take whichever did.
+        let inner = block
+            .get(1)
+            .or_else(|| block.get(2))
+            .map(|m| m.as_str())
+            .unwrap_or("");
+        for cap in ENV_REF.captures_iter(inner) {
+            let name = &cap[1];
+            let upper = name.to_uppercase();
+            if anodizer_core::redact::SECRET_KEY_SUFFIXES
+                .iter()
+                .any(|suffix| upper.ends_with(suffix))
+            {
+                warnings.push(format!(
+                    "{field} references secret-named var Env.{name}; its value is masked by outbound redaction (sent as \"${name}\"), so embedding it here is almost certainly a mistake — remove the reference"
+                ));
+            }
+        }
     }
 }
 
@@ -1338,5 +1544,205 @@ mod tests {
         assert!(result.is_err(), "invalid provider with id should fail");
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("validation failed"), "got: {}", msg);
+    }
+
+    // -----------------------------------------------------------------------
+    // Announce secret-exposure lint tests
+    // -----------------------------------------------------------------------
+
+    use anodizer_core::config::{
+        AnnounceConfig, BlueskyAnnounce, DiscourseAnnounce, EmailAnnounce, SlackAnnounce,
+        SlackAttachment, SlackBlock, SlackTextObject, TwitterAnnounce,
+    };
+
+    fn collect_announce_warnings(announce: AnnounceConfig) -> Vec<String> {
+        let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+        config.announce = Some(announce);
+        let mut warnings = Vec::new();
+        check_announce_secret_exposure(&config, &mut warnings);
+        warnings
+    }
+
+    #[test]
+    fn test_announce_secret_warns_on_token_in_message() {
+        let warnings = collect_announce_warnings(AnnounceConfig {
+            twitter: Some(TwitterAnnounce {
+                message_template: Some("deploy {{ Env.GITHUB_TOKEN }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert_eq!(
+            warnings.len(),
+            1,
+            "expected one warning, got: {:?}",
+            warnings
+        );
+        assert!(warnings[0].contains("announce.twitter.message_template"));
+        assert!(warnings[0].contains("Env.GITHUB_TOKEN"));
+        assert!(
+            warnings[0].contains("$GITHUB_TOKEN"),
+            "warning should state the masked form: {}",
+            warnings[0]
+        );
+    }
+
+    #[test]
+    fn test_announce_secret_warns_on_title_and_email_subject() {
+        let title_warnings = collect_announce_warnings(AnnounceConfig {
+            discourse: Some(DiscourseAnnounce {
+                title_template: Some("release {{ Env.SIGNING_KEY }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert_eq!(title_warnings.len(), 1, "got: {:?}", title_warnings);
+        assert!(title_warnings[0].contains("announce.discourse.title_template"));
+        assert!(title_warnings[0].contains("Env.SIGNING_KEY"));
+
+        let email_warnings = collect_announce_warnings(AnnounceConfig {
+            email: Some(EmailAnnounce {
+                subject_template: Some("v{{ Env.NPM_PASSWORD }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert_eq!(email_warnings.len(), 1, "got: {:?}", email_warnings);
+        assert!(email_warnings[0].contains("announce.email.subject_template"));
+        assert!(email_warnings[0].contains("Env.NPM_PASSWORD"));
+    }
+
+    #[test]
+    fn test_announce_secret_warns_on_go_style_dotted_env() {
+        let warnings = collect_announce_warnings(AnnounceConfig {
+            twitter: Some(TwitterAnnounce {
+                message_template: Some("{{ .Env.CARGO_REGISTRY_TOKEN }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert_eq!(warnings.len(), 1, "got: {:?}", warnings);
+        assert!(warnings[0].contains("Env.CARGO_REGISTRY_TOKEN"));
+    }
+
+    #[test]
+    fn test_announce_secret_warns_in_slack_blocks_and_attachments() {
+        let warnings = collect_announce_warnings(AnnounceConfig {
+            slack: Some(SlackAnnounce {
+                blocks: Some(vec![SlackBlock {
+                    block_type: "section".to_string(),
+                    text: Some(SlackTextObject {
+                        text_type: "mrkdwn".to_string(),
+                        text: "see {{ Env.SLACK_API_TOKEN }}".to_string(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }]),
+                attachments: Some(vec![SlackAttachment {
+                    footer: Some("built by {{ Env.BUILDER_SECRET }}".to_string()),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert_eq!(warnings.len(), 2, "got: {:?}", warnings);
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("announce.slack.blocks[0].text")
+                    && w.contains("Env.SLACK_API_TOKEN")),
+            "block-nested secret not warned: {:?}",
+            warnings
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("announce.slack.attachments[0].footer")
+                    && w.contains("Env.BUILDER_SECRET")),
+            "attachment-nested secret not warned: {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn test_announce_secret_silent_on_non_secret_refs() {
+        // Non-secret placeholders, a non-secret env var, a provider with no
+        // template, and an absent announce block all stay silent.
+        let warnings = collect_announce_warnings(AnnounceConfig {
+            bluesky: Some(BlueskyAnnounce {
+                message_template: Some(
+                    "{{ ProjectName }} {{ Tag }} home={{ Env.HOME }}".to_string(),
+                ),
+                ..Default::default()
+            }),
+            twitter: Some(TwitterAnnounce {
+                message_template: None,
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert!(
+            warnings.is_empty(),
+            "non-secret refs should not warn: {:?}",
+            warnings
+        );
+
+        let mut config = make_config(vec![make_crate("a", "a-v{{ .Version }}", None)]);
+        config.announce = None;
+        let mut no_announce = Vec::new();
+        check_announce_secret_exposure(&config, &mut no_announce);
+        assert!(
+            no_announce.is_empty(),
+            "absent announce block should not warn: {:?}",
+            no_announce
+        );
+    }
+
+    #[test]
+    fn test_announce_secret_silent_on_bare_prose_no_braces() {
+        // A secret-named ref in plain prose (outside any {{ }} / {% %} block)
+        // never renders under Tera, so it cannot leak and must stay silent.
+        let warnings = collect_announce_warnings(AnnounceConfig {
+            twitter: Some(TwitterAnnounce {
+                message_template: Some("contact Env.GITHUB_TOKEN admin".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert!(
+            warnings.is_empty(),
+            "bare-prose Env ref outside a render block should not warn: {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn test_announce_secret_warns_on_both_refs_in_one_block() {
+        // Two Env refs inside ONE render block must both be flagged; only the
+        // secret-named one(s) warn (PROJECT is not secret, B_TOKEN is).
+        let warnings = collect_announce_warnings(AnnounceConfig {
+            twitter: Some(TwitterAnnounce {
+                message_template: Some("{{ Env.A_TOKEN | default(Env.B_TOKEN) }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        assert_eq!(
+            warnings.len(),
+            2,
+            "both secret refs should warn: {:?}",
+            warnings
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("Env.A_TOKEN")),
+            "first ref missed: {:?}",
+            warnings
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("Env.B_TOKEN")),
+            "second ref in same block missed: {:?}",
+            warnings
+        );
     }
 }

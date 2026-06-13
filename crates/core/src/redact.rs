@@ -9,7 +9,7 @@
 /// `_KEY` covers AI provider API keys (`ANTHROPIC_API_KEY`,
 /// `OPENAI_API_KEY`) alongside signing-key and other historical
 /// secret-bearing variable names.
-const SECRET_KEY_SUFFIXES: &[&str] = &["_KEY", "_SECRET", "_PASSWORD", "_TOKEN"];
+pub const SECRET_KEY_SUFFIXES: &[&str] = &["_KEY", "_SECRET", "_PASSWORD", "_TOKEN"];
 
 /// Value prefixes that indicate a secret regardless of key name.
 ///

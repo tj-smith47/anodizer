@@ -100,31 +100,38 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn whitelisted_env_is_inherited_non_whitelisted_is_dropped() {
-        // SAFETY: single-threaded test mutating process env; no other
-        // thread reads these keys concurrently within this test binary.
+        // Forward the real parent PATH verbatim rather than clobbering the
+        // process PATH to a sentinel: a global `set_var("PATH", …)` leaks into
+        // every concurrently-running test (Rust runs the binary's tests on
+        // parallel threads), breaking PATH-dependent probes like
+        // `util::find_binary`. Reading the real value proves the same
+        // forwarding contract without mutating shared state.
+        let real_path = std::env::var_os("PATH");
+
+        // SAFETY: `#[serial]` excludes other env-mutating tests; the
+        // credential key is namespaced and removed below before the guard ends.
         unsafe {
-            std::env::set_var("PATH", "/sentinel/bin");
             std::env::set_var("ANODIZER_SECRET_TOKEN", "leak-me");
         }
         let cmd = whitelisted(&["true"]).expect("valid argv");
         let envs = env_map(&cmd);
+        unsafe {
+            std::env::remove_var("ANODIZER_SECRET_TOKEN");
+        }
 
         // A whitelisted key present in the parent env is forwarded verbatim.
         assert_eq!(
             envs.get(OsStr::new("PATH")),
-            Some(&Some(OsString::from("/sentinel/bin"))),
-            "PATH should be inherited from the whitelist"
+            Some(&real_path),
+            "PATH should be inherited from the whitelist verbatim"
         );
         // A non-whitelisted key (credential-shaped) must not leak through.
         assert!(
             !envs.contains_key(OsStr::new("ANODIZER_SECRET_TOKEN")),
             "non-whitelisted env must be dropped, got: {envs:?}"
         );
-
-        unsafe {
-            std::env::remove_var("ANODIZER_SECRET_TOKEN");
-        }
     }
 
     #[test]
