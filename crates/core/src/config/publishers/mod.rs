@@ -196,9 +196,13 @@ pub struct PublishConfig {
     /// `{{ .Error }}` carries untrusted remote text (HTTP error bodies, git
     /// stderr) — interpolating it into `cmd` lets crafted error content
     /// break quoting and execute. Read untrusted values from the env vars
-    /// instead, and pass `anodizer notify --raw` so the untrusted text is not
-    /// Tera-rendered (without `--raw`, a `{{ Env.SECRET }}` reference smuggled
-    /// into the error body would expand a secret into the outbound message):
+    /// instead (`$ANODIZER_ERROR`), and pass `anodizer notify --raw` so the
+    /// text is sent literally rather than Tera-rendered. The outbound
+    /// notification body is secret-redacted by default, so a secret reference
+    /// smuggled into the error body is masked (sent as `$NAME`) even without
+    /// `--raw`; `--raw` stays recommended because it avoids re-rendering
+    /// already-final text and keeps untrusted content out of the shell-parsed
+    /// `cmd` string:
     ///
     /// ```yaml
     /// publish:

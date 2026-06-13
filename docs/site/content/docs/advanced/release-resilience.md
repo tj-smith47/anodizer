@@ -170,8 +170,8 @@ publish:
     - cmd: 'anodizer notify --raw "anodizer: $ANODIZER_PUBLISHER failed @ $ANODIZER_VERSION: $ANODIZER_ERROR"'
 ```
 
-`--raw` sends the message literally, skipping Tera rendering — required here
-because `$ANODIZER_ERROR` is untrusted (see the security note below).
+`--raw` sends the message literally, skipping Tera rendering — recommended
+here because `$ANODIZER_ERROR` is untrusted (see the security note below).
 
 The failure context is available on two channels — environment variables on
 the hook process, and template variables rendered into `cmd`:
@@ -196,24 +196,35 @@ into `cmd` lets crafted error content break your quoting and execute as
 shell code:
 
 ```yaml
-# UNSAFE: a single quote in the error body breaks out of the quoting
+# UNSAFE: a single quote in the error body breaks out of the quoting,
+# and the `{{ .Error }}` template form splices the untrusted text into
+# the `sh -c` cmd string — a shell-injection surface.
 - cmd: "anodizer notify 'failed: {{ .Error }}'"
 
 # SAFE: the shell expands $ANODIZER_ERROR at run time; the value is
-# never parsed as shell code, and --raw stops Tera from expanding a
-# `{{ Env.SECRET }}` smuggled into the error text into the message
+# never parsed as shell code, and --raw avoids re-rendering text that
+# is already final.
 - cmd: 'anodizer notify --raw "failed: $ANODIZER_ERROR"'
 ```
 
 Template interpolation remains fine for values anodizer controls
 (`{{ .Publisher }}`, `{{ .Version }}`, `{{ .Tag }}`, ...).
 
-When the message body carries untrusted text (any `$ANODIZER_ERROR` or
-`{{ .Error }}` value), pass `--raw` to `anodizer notify` so the message is
-sent literally. Without `--raw`, `anodizer notify` renders the message
-through Tera, and a crafted error body containing `{{ Env.CARGO_REGISTRY_TOKEN }}`
-(or any other secret reference) would expand the secret into the outbound
-notification.
+Two reasons to keep using the env form (`$ANODIZER_ERROR`) plus `--raw`
+for untrusted text — neither is covered by outbound redaction:
+
+1. **Shell-injection.** The `{{ .Error }}` template form is spliced into
+   the `sh -c` cmd string before the shell parses it, so a crafted error
+   body can break your quoting and execute. The `$ANODIZER_ERROR` env form
+   is expanded by the shell at run time and is never parsed as code.
+2. **Double-rendering.** `--raw` skips Tera, so already-final error text
+   is not re-rendered.
+
+Secret *values* in the body are a separate concern, and anodizer already
+handles them: the outbound notification body is redacted by default
+(see [Notification secret redaction](#notification-secret-redaction)), so a
+secret can no longer leak into the message even without `--raw`. Prefer the
+env form plus `--raw` anyway, for the two reasons above.
 
 Hook failures are logged as warnings and never change the release outcome.
 For ad-hoc notifications (outside a release), use `anodizer notify`.
@@ -711,6 +722,9 @@ anodizer notify "v0.8.1 is live" --skip=webhook
 
 # Send untrusted text literally (no Tera rendering) — e.g. from an on_error hook:
 anodizer notify --raw "publish failed: $ANODIZER_ERROR"
+
+# Opt out of outbound-body redaction for a trusted private channel:
+anodizer notify --allow-secrets "deploy key rotated: $NEW_KEY"
 ```
 
 | Flag | Semantics |
@@ -718,11 +732,88 @@ anodizer notify --raw "publish failed: $ANODIZER_ERROR"
 | `<message>` (positional) | Message body. Supports Tera templates — `{{ .Version }}`, `{{ .ProjectName }}`, etc. |
 | `--publishers=<list>` | Comma-separated integration names to fire. Default: all configured. |
 | `--skip=<list>` | Comma-separated integration names to omit. |
-| `--raw` | Send the message literally, without Tera rendering. Use when the message contains untrusted text (e.g. error output in an `on_error` hook) so a `{{ Env.SECRET }}` reference smuggled into that text cannot expand a secret into the outbound notification. |
+| `--raw` | Send the message literally, without Tera rendering. Controls **rendering only** — use it when the message contains untrusted text (e.g. error output in an `on_error` hook) so the body is not re-rendered. It does **not** control redaction. |
+| `--allow-secrets` | Disable redaction of the **outbound body**, sending known secret values in plaintext. For a deliberately trusted private channel only. anodizer's own log/stderr output stays redacted regardless. See [Notification secret redaction](#notification-secret-redaction). |
 | `--dry-run` | Print what would be sent; do not call external APIs. |
 
 `anodizer notify` reads the same `announce:` config block as `anodizer release`.
 No idempotency sent-marker is written — repeated `notify` calls fire every time.
+
+## Notification secret redaction
+
+Every outbound announce notification body — from both `anodizer notify` and
+the release pipeline's `announce` stage — has known secret env values masked
+before it is sent. This is the same redaction anodizer applies to its own
+logs: a secret env value is replaced with `$VAR_NAME` (a real `ghp_…` token
+becomes `$GITHUB_TOKEN`). Redaction is on by default; no secret value can
+leak into a notification unless you explicitly opt out.
+
+### Two redaction surfaces
+
+- **Outbound body** (what the channel receives): redacted by default;
+  `--allow-secrets` opts out.
+- **anodizer's own logs / stderr** (what lands in GitHub Actions logs):
+  redacted **always**, with no opt-out — even under `--allow-secrets`.
+
+### Control matrix
+
+`--raw` (rendering) and `--allow-secrets` (redaction) are **independent
+axes** — neither flag affects the other:
+
+| flags | Tera on body | outbound body | GitHub Actions log |
+|---|---|---|---|
+| (none) | rendered | redacted | redacted |
+| `--raw` | verbatim | redacted | redacted |
+| `--allow-secrets` | rendered | plaintext | redacted |
+| `--raw --allow-secrets` | verbatim | plaintext | redacted |
+
+### Worked example
+
+The same message, default vs. `--allow-secrets` — note that the GitHub
+Actions log is redacted in both cases:
+
+```text
+$ anodizer notify "auth failed with ghp_REALSECRET"
+  → webhook receives:  auth failed with $GITHUB_TOKEN    (redacted, default)
+  → GitHub Actions log: auth failed with $GITHUB_TOKEN   (redacted)
+
+$ anodizer notify --allow-secrets "auth failed with ghp_REALSECRET"
+  → webhook receives:  auth failed with ghp_REALSECRET   (plaintext, intended)
+  → GitHub Actions log: auth failed with $GITHUB_TOKEN   (still redacted)
+```
+
+Redaction is **surgical**: in a large error block, only the known secret
+substring becomes `$NAME`; every other character prints verbatim. A
+multi-line stack trace carrying one token has just that token masked, with
+the rest of the trace intact.
+
+### Static lint — `anodizer check config`
+
+`anodizer check config` also statically warns when an announce **content**
+template literally references a secret-named env var inside a `{{ }}` or
+`{% %}` block. Secret-named means the var ends in `_KEY`, `_SECRET`,
+`_PASSWORD`, or `_TOKEN`. The lint covers the content surfaces a reader
+would template — message / title / subject / body, Slack blocks &
+attachments, Discord author, Reddit title / url:
+
+```yaml
+announce:
+  webhook:
+    # warns — a secret-named env var templated into the body
+    message_template: "deploy {{ Env.GITHUB_TOKEN }}"
+```
+
+```text
+$ anodizer check config
+WARN  announce.webhook.message_template references secret-named env var
+      GITHUB_TOKEN inside a template block — its value would be sent to the
+      channel. Redaction masks it on send, but remove it unless intended.
+```
+
+The lint is **warning-only** and surgical about what it flags. It does
+**not** fire on `{{ Tag }}`, on a normal env var such as `{{ Env.HOME }}`,
+on a missing `--raw`, or on bare prose without `{{ }}` braces — only on a
+secret-named env var inside a template block in an announce content field.
 
 See also:
 

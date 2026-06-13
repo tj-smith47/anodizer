@@ -89,6 +89,9 @@ The canonical key is `hooks:` for both `before:` and `after:` to the conventiona
 | `post` | list of HookEntry | — | Legacy alias for `hooks:` (anodizer pre-v0.4). Always `None` after parsing — `merge_hook_aliases` collapses it into `hooks`. Present on the struct only because `Deserialize` writes through it before the fold step. |
 
 ## `announce`
+Announce-stage integrations.
+
+Message bodies are secret-redacted before send: known secret env values are masked (a real token becomes `$NAME`). Redaction is on by default; `anodizer notify --allow-secrets` opts a single send out for a trusted private channel, while anodizer's own log output stays redacted regardless.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `bluesky` | BlueskyAnnounce | — | Bluesky announcement configuration. |
@@ -990,7 +993,7 @@ Uses the unified `HomebrewCaskConfig` which carries all fields from both the per
 | `nix` | NixConfig | — | Nix derivation publishing configuration. |
 | `on_error` | list of HookEntry | — | Hooks that fire once per FAILED publisher, after rollback has been attempted. Each entry is a standard hook (`cmd` / `dir` / `env` / `output`); the template surface adds `{{ .Publisher }}`, `{{ .Error }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}` (Assets/Manager/Submitter), `{{ .Required }}`, and `{{ .RolledBack }}` — true if any publisher was rolled back (or rollback was attempted and failed) during this run. The same values are also exported to the hook process as environment variables: `ANODIZER_PUBLISHER`, `ANODIZER_ERROR`, `ANODIZER_VERSION`, `ANODIZER_TAG`, `ANODIZER_GROUP`, `ANODIZER_REQUIRED`, `ANODIZER_ROLLED_BACK`. A hook's own failure is logged as a warning and never changes the release outcome.
 
-Security: the rendered `cmd` string is parsed by `sh -c`, and `{{ .Error }}` carries untrusted remote text (HTTP error bodies, git stderr) — interpolating it into `cmd` lets crafted error content break quoting and execute. Read untrusted values from the env vars instead, and pass `anodizer notify --raw` so the untrusted text is not Tera-rendered (without `--raw`, a `{{ Env.SECRET }}` reference smuggled into the error body would expand a secret into the outbound message):
+Security: the rendered `cmd` string is parsed by `sh -c`, and `{{ .Error }}` carries untrusted remote text (HTTP error bodies, git stderr) — interpolating it into `cmd` lets crafted error content break quoting and execute. Read untrusted values from the env vars instead (`$ANODIZER_ERROR`), and pass `anodizer notify --raw` so the text is sent literally rather than Tera-rendered. The outbound notification body is secret-redacted by default, so a secret reference smuggled into the error body is masked (sent as `$NAME`) even without `--raw`; `--raw` stays recommended because it avoids re-rendering already-final text and keeps untrusted content out of the shell-parsed `cmd` string:
 
 ```yaml publish: on_error: - cmd: 'anodizer notify --raw "anodizer: $ANODIZER_PUBLISHER failed @ $ANODIZER_VERSION: $ANODIZER_ERROR"' ``` |
 | `scoop` | ScoopConfig | — | Scoop manifest publishing configuration. |

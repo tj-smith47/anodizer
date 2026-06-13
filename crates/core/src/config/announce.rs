@@ -30,6 +30,12 @@ pub enum AnnounceGate {
     None,
 }
 
+/// Announce-stage integrations.
+///
+/// Message bodies are secret-redacted before send: known secret env values
+/// are masked (a real token becomes `$NAME`). Redaction is on by default;
+/// `anodizer notify --allow-secrets` opts a single send out for a trusted
+/// private channel, while anodizer's own log output stays redacted regardless.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct AnnounceConfig {
