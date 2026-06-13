@@ -11944,6 +11944,18 @@
           "format": "uint32",
           "minimum": 0.0
         },
+        "upload_pace": {
+          "description": "Minimum interval between successive asset-upload *starts* (a humantime string, e.g. `\"200ms\"`, `\"1s\"`, `\"0s\"`).\n\nThis is a *proactive* pace that smooths the initial burst of upload requests, layered on top of [`Self::upload_concurrency`] (the concurrency cap) and the reactive secondary-rate-limit backoff. With the concurrency cap alone, the first N uploads fire in the same instant — exactly the burst pattern that trips GitHub's secondary rate limit. Spacing each upload's *start* by this interval (with ±20% jitter so concurrent releases don't synchronise) makes the burst far less likely to trip the limit in the first place.\n\nDefault: `\"200ms\"` — at the default concurrency of 4 this caps the initial start rate at ~5/s, which is below the burst threshold yet adds negligible wall-clock to a normal release (upload time is dominated by transfer, not start-spacing). Set to `\"0s\"` to disable pacing entirely (rely on the concurrency cap + reactive backoff). Override at runtime with `ANODIZER_GITHUB_UPLOAD_PACE_MS` (integer milliseconds; `0` disables).",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HumanDuration"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "use_existing_draft": {
           "description": "Reuse an existing draft release instead of creating a new one.",
           "default": null,

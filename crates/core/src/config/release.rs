@@ -2,7 +2,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    ContentSource, ExtraFileSpec, StringOrBool, TemplatedExtraFile, deserialize_string_or_bool_opt,
+    ContentSource, ExtraFileSpec, HumanDuration, StringOrBool, TemplatedExtraFile,
+    deserialize_string_or_bool_opt,
 };
 
 // ---------------------------------------------------------------------------
@@ -94,6 +95,26 @@ pub struct ReleaseConfig {
     /// artifacts. Default: 4. Override at runtime with
     /// `ANODIZER_GITHUB_UPLOAD_CONCURRENCY`.
     pub upload_concurrency: Option<u32>,
+    /// Minimum interval between successive asset-upload *starts* (a humantime
+    /// string, e.g. `"200ms"`, `"1s"`, `"0s"`).
+    ///
+    /// This is a *proactive* pace that smooths the initial burst of upload
+    /// requests, layered on top of [`Self::upload_concurrency`] (the
+    /// concurrency cap) and the reactive secondary-rate-limit backoff. With
+    /// the concurrency cap alone, the first N uploads fire in the same instant
+    /// — exactly the burst pattern that trips GitHub's secondary rate limit.
+    /// Spacing each upload's *start* by this interval (with ±20% jitter so
+    /// concurrent releases don't synchronise) makes the burst far less likely
+    /// to trip the limit in the first place.
+    ///
+    /// Default: `"200ms"` — at the default concurrency of 4 this caps the
+    /// initial start rate at ~5/s, which is below the burst threshold yet adds
+    /// negligible wall-clock to a normal release (upload time is dominated by
+    /// transfer, not start-spacing). Set to `"0s"` to disable pacing entirely
+    /// (rely on the concurrency cap + reactive backoff). Override at runtime
+    /// with `ANODIZER_GITHUB_UPLOAD_PACE_MS` (integer milliseconds; `0`
+    /// disables).
+    pub upload_pace: Option<HumanDuration>,
     /// Override whether this publisher failing should fail the overall release.
     ///
     /// Default: `true` — a failure here aborts the release.
@@ -149,6 +170,11 @@ impl ReleaseConfig {
     /// Default release `mode` (empty string is treated as
     /// "keep-existing" — keep current release notes, don't overwrite).
     pub const DEFAULT_MODE: &'static str = "keep-existing";
+
+    /// Default minimum interval between successive asset-upload starts
+    /// (see [`Self::upload_pace`]). 200 ms smooths the initial burst at the
+    /// default concurrency of 4 without meaningfully slowing a release.
+    pub const DEFAULT_UPLOAD_PACE: std::time::Duration = std::time::Duration::from_millis(200);
 
     /// Valid `mode:` values. Anything else is a config error.
     pub const VALID_MODES: &[&'static str] = &["keep-existing", "append", "prepend", "replace"];
@@ -209,6 +235,21 @@ impl ReleaseConfig {
     /// [`OnFailureConfig::Rollback`].
     pub fn resolved_on_failure(&self) -> OnFailureConfig {
         self.on_failure.unwrap_or_default()
+    }
+
+    /// Resolve the upload pace (minimum inter-upload-start interval) from the
+    /// config, applying [`Self::DEFAULT_UPLOAD_PACE`] when unset. A configured
+    /// `"0s"` resolves to `Duration::ZERO`, which the upload loop treats as
+    /// "pacing disabled".
+    ///
+    /// Note: the runtime env override `ANODIZER_GITHUB_UPLOAD_PACE_MS` takes
+    /// precedence and is applied at the call site (it needs the request-scoped
+    /// [`crate::Context`]), mirroring how `ANODIZER_GITHUB_UPLOAD_CONCURRENCY`
+    /// overrides [`Self::upload_concurrency`].
+    pub fn resolved_upload_pace(&self) -> std::time::Duration {
+        self.upload_pace
+            .map(|d| d.duration())
+            .unwrap_or(Self::DEFAULT_UPLOAD_PACE)
     }
 }
 

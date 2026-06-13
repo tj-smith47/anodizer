@@ -19,7 +19,7 @@ use super::lookup::{
 };
 use super::spec::{
     BackendEnv, GithubReleaseSpec, UploadOpts, check_existing_assets_block_upload,
-    nightly_releases_to_prune,
+    nightly_releases_to_prune, resolve_upload_pace,
 };
 use super::upload::{UploadAssetRequest, upload_release_asset};
 use super::{
@@ -465,6 +465,16 @@ pub(crate) fn run_github_backend(
                 })
                 .unwrap_or(4) as usize;
             let semaphore = Arc::new(tokio::sync::Semaphore::new(upload_concurrency));
+            // Proactive upload pace: the minimum interval between successive
+            // upload STARTS, layered on top of the concurrency cap and the
+            // reactive secondary-rate-limit backoff. The concurrency cap alone
+            // lets the first `upload_concurrency` POSTs fire in the same
+            // instant — the exact burst that trips GitHub's secondary rate
+            // limit; spacing each task's spawn by this interval smooths that
+            // burst. `Duration::ZERO` means pacing is disabled (rely on the
+            // cap + backoff). env `ANODIZER_GITHUB_UPLOAD_PACE_MS` >
+            // `release.upload_pace` > 200 ms default.
+            let upload_pace = resolve_upload_pace(release_cfg, env_source);
             let gh_owner = github.owner.clone();
             let gh_name = github.name.clone();
             let tag_for_upload = tag.to_string();
@@ -515,7 +525,16 @@ pub(crate) fn run_github_backend(
 
             let mut join_set = tokio::task::JoinSet::new();
 
-            for (path, file_name) in prepared_entries {
+            for (idx, (path, file_name)) in prepared_entries.into_iter().enumerate() {
+                // Proactive pace: space each upload START by at least
+                // `upload_pace`, jittered ±20% so concurrent releases don't
+                // synchronise their bursts. Skipped for the first task (no
+                // prior start to space from) and when pacing is disabled
+                // (`Duration::ZERO`). The semaphore still bounds how many run
+                // at once; this only governs how fast new starts are admitted.
+                if idx > 0 && !upload_pace.is_zero() {
+                    tokio::time::sleep(anodizer_core::retry::jitter_duration(upload_pace)).await;
+                }
                 let sem = semaphore.clone();
                 let octo = octo.clone();
                 let gh_owner = gh_owner.clone();
@@ -2332,6 +2351,177 @@ mod orchestrator_tests {
                 .iter()
                 .any(|e| e.method == "POST" && e.path == "/upload/42?name=demo.tar.gz"),
             "the asset upload must reach the POST after the per-upload 404 retry; calls: {entries:?}",
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // Proactive upload pace — the minimum interval between upload STARTS.
+    // ---------------------------------------------------------------------
+
+    /// Build a [`Context`] like [`build_ctx`] but also seed the
+    /// `ANODIZER_GITHUB_UPLOAD_PACE_MS` override so the pace timing tests can
+    /// drive the inter-upload-start interval without touching config.
+    fn build_ctx_with_pace_ms(addr: SocketAddr, pace_ms: &str) -> Context {
+        let base = format!("http://{addr}");
+        let mut ctx = TestContextBuilder::new()
+            .project_name("demo")
+            .tag("v1.2.3")
+            .token(Some("test-token".to_string()))
+            .env("ANODIZER_GITHUB_API_BASE", &base)
+            .env("ANODIZER_GITHUB_UPLOAD_PACE_MS", pace_ms)
+            .build();
+        ctx.config.github_urls = Some(GitHubUrlsConfig {
+            api: Some(base.clone()),
+            upload: Some(base.clone()),
+            download: Some(base),
+            skip_tls_verify: None,
+        });
+        ctx.config.retry = Some(anodizer_core::config::RetryConfig {
+            attempts: 5,
+            delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(1)),
+            max_delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(2)),
+        });
+        ctx
+    }
+
+    /// Route set for an N-asset happy-path upload against release id 42:
+    /// create POST, a reusable GET on the release (readiness + per-upload
+    /// `upload_url` read), and one upload POST per asset name.
+    fn multi_asset_routes(release: String, names: &[(&'static str, u64)]) -> Vec<ScriptedRoute> {
+        let mut routes = vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/o/r/releases",
+                response: http_201(release.clone()),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/42",
+                response: http_ok(release),
+                times: None,
+            },
+        ];
+        for (name, id) in names {
+            routes.push(ScriptedRoute {
+                method: "POST",
+                path_pattern: Box::leak(format!("/upload/42?name={name}").into_boxed_str()),
+                response: http_201(asset_json(*id, name, 5)),
+                times: Some(1),
+            });
+        }
+        routes
+    }
+
+    /// With a non-zero pace, successive upload STARTS are spaced by at least
+    /// the (jittered) pace interval. Three assets => two inter-start gaps, so
+    /// total wall-clock must be at least `2 * pace * 0.8` (the jitter floor).
+    /// A 120 ms pace yields a >= ~192 ms floor — comfortably above scheduler
+    /// noise yet fast enough to keep the test cheap.
+    #[test]
+    fn upload_pace_spaces_successive_upload_starts() {
+        use std::time::Instant;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let a = write_artifact(tmp.path(), "a.tar.gz", b"aaaaa");
+        let b = write_artifact(tmp.path(), "b.tar.gz", b"bbbbb");
+        let c = write_artifact(tmp.path(), "c.tar.gz", b"ccccc");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let release = release_json(addr, 42, true, "v1.2.3");
+        let routes = multi_asset_routes(
+            release,
+            &[("a.tar.gz", 1), ("b.tar.gz", 2), ("c.tar.gz", 3)],
+        );
+        let (_addr2, _log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let ctx = build_ctx_with_pace_ms(addr, "120");
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        let artifacts = vec![
+            (a, Some("a.tar.gz".to_string())),
+            (b, Some("b.tar.gz".to_string())),
+            (c, Some("c.tar.gz".to_string())),
+        ];
+        let anc = spec_ancillary_default();
+
+        let t0 = Instant::now();
+        run_backend(
+            &rt,
+            &ctx,
+            &token,
+            &crate_cfg,
+            &make_spec(&anc),
+            &base_opts(),
+            &artifacts,
+        )
+        .expect("paced upload succeeds")
+        .expect("returns Some");
+        let elapsed = t0.elapsed();
+
+        // 2 gaps * 120 ms * 0.8 jitter floor = 192 ms.
+        assert!(
+            elapsed >= std::time::Duration::from_millis(192),
+            "upload pace must space the 3 starts by >= 2 * 120ms * 0.8; elapsed: {elapsed:?}"
+        );
+    }
+
+    /// With pace disabled (`ANODIZER_GITHUB_UPLOAD_PACE_MS=0`) the upload loop
+    /// must NOT insert any inter-start delay. The same three-asset upload that
+    /// the paced test spaces to >= 192 ms here completes well under the pace
+    /// floor — proving `0` is a true no-op (the concurrency cap + reactive
+    /// backoff remain the only governors).
+    #[test]
+    fn upload_pace_zero_is_a_no_op() {
+        use std::time::Instant;
+
+        let tmp = TempDir::new().expect("tempdir");
+        let a = write_artifact(tmp.path(), "a.tar.gz", b"aaaaa");
+        let b = write_artifact(tmp.path(), "b.tar.gz", b"bbbbb");
+        let c = write_artifact(tmp.path(), "c.tar.gz", b"ccccc");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        let release = release_json(addr, 42, true, "v1.2.3");
+        let routes = multi_asset_routes(
+            release,
+            &[("a.tar.gz", 1), ("b.tar.gz", 2), ("c.tar.gz", 3)],
+        );
+        let (_addr2, _log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let ctx = build_ctx_with_pace_ms(addr, "0");
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        let artifacts = vec![
+            (a, Some("a.tar.gz".to_string())),
+            (b, Some("b.tar.gz".to_string())),
+            (c, Some("c.tar.gz".to_string())),
+        ];
+        let anc = spec_ancillary_default();
+
+        let t0 = Instant::now();
+        run_backend(
+            &rt,
+            &ctx,
+            &token,
+            &crate_cfg,
+            &make_spec(&anc),
+            &base_opts(),
+            &artifacts,
+        )
+        .expect("unpaced upload succeeds")
+        .expect("returns Some");
+        let elapsed = t0.elapsed();
+
+        // No pacing: the only delays are loopback round-trips. Bound well
+        // below the 192 ms paced floor so a regression that always paces
+        // (ignoring the 0 sentinel) trips this assertion.
+        assert!(
+            elapsed < std::time::Duration::from_millis(150),
+            "pace=0 must add no inter-start delay; elapsed: {elapsed:?}"
         );
     }
 }

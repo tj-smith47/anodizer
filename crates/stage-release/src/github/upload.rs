@@ -28,7 +28,7 @@ use std::sync::Arc;
 use anodizer_core::retry::{RetryPolicy, jitter_duration};
 use anyhow::{Context as _, Result};
 
-use super::secondary_rate_limit::{RetryAfterCapture, secondary_rl_delay};
+use super::secondary_rate_limit::{RetryAfterCapture, secondary_rl_delay_with_env};
 use super::spec::{AlreadyExistsAction, classify_already_exists, upload_retry_locals};
 use super::upload_outcome::{UploadAttemptOutcome, classify_upload_attempt};
 use super::{
@@ -280,7 +280,11 @@ pub(crate) async fn upload_release_asset(req: UploadAssetRequest<'_>) -> Result<
                 // limits are transient burst guards, not quota
                 // exhaustion.
                 let err = result.expect_err("SecondaryRateLimited outcome guarantees Err variant");
-                let delay = jitter_duration(secondary_rl_delay(retry_after));
+                // Read the secondary-RL delay through the request-scoped
+                // `env_source` (not the global process env) so the
+                // `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS` override is honored
+                // without a global-env race between parallel callers/tests.
+                let delay = jitter_duration(secondary_rl_delay_with_env(retry_after, env_source));
                 release_log().warn(&format!(
                     "upload of '{file_name}' hit GitHub secondary \
                      rate limit; sleeping {:.1}s before retry \
@@ -491,6 +495,19 @@ mod tests {
         path: &std::path::Path,
         replace_existing_artifacts: bool,
     ) -> Result<()> {
+        run_upload_with_env(addr, path, replace_existing_artifacts, &EmptyEnv).await
+    }
+
+    /// Like [`run_upload`] but with a caller-supplied [`EnvSource`], so a test
+    /// can drive `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS` through an injected
+    /// [`MapEnvSource`](anodizer_core::MapEnvSource) instead of mutating the
+    /// global process env (which races parallel tests).
+    async fn run_upload_with_env(
+        addr: SocketAddr,
+        path: &std::path::Path,
+        replace_existing_artifacts: bool,
+        env_source: &dyn anodizer_core::EnvSource,
+    ) -> Result<()> {
         let octo = build_test_octocrab(addr);
         let policy = test_retry_policy();
         upload_release_asset(UploadAssetRequest {
@@ -505,7 +522,7 @@ mod tests {
             policy: &policy,
             retry_after: None,
             token: "test-token",
-            env_source: &EmptyEnv,
+            env_source,
         })
         .await
     }
@@ -619,6 +636,59 @@ mod tests {
             calls.load(Ordering::SeqCst),
             3,
             "bail must not delete or re-upload (1 GET + 1 POST + 1 probe list)"
+        );
+    }
+
+    /// Secondary-rate-limit EXHAUSTION: every upload attempt's POST returns a
+    /// 403 secondary-rate-limit response. The loop must back off between
+    /// attempts (honoring the env-tuned delay), exhaust the bounded budget,
+    /// and surface an actionable error that BOTH reports the attempt budget
+    /// AND names the secondary rate limit (so an operator knows the cause is a
+    /// burst guard, not a bare 403 auth failure or a transient 5xx).
+    ///
+    /// `test_retry_policy` resolves max_attempts=5 (> the MIN floor of 3), so
+    /// 5 attempts x (GET release + POST 403) = 10 scripted responses are
+    /// consumed before the loop gives up. `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS=1`
+    /// caps each inter-attempt sleep at ~1 s (×0.8–1.2 jitter) so the test
+    /// proves the backoff fires without paying the real 60 s floor.
+    #[tokio::test]
+    async fn secondary_rate_limit_exhaustion_surfaces_actionable_error() {
+        let body_403 = r#"{"message":"You have exceeded a secondary rate limit and have been temporarily blocked from content creation. Please retry your request again later.","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#secondary-rate-limits"}"#;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_artifact(tmp.path(), "app.tar.gz", b"bytes");
+        let (addr, calls) = spawn_oneshot_http_responder_with(|addr| {
+            // 5 attempts: each is a GET release (200) then a POST upload (403
+            // secondary-RL).
+            let mut v = Vec::new();
+            for _ in 0..5 {
+                v.push(release_json(addr));
+                v.push(http("403 Forbidden", body_403));
+            }
+            v
+        });
+
+        // Keep the per-attempt secondary-RL backoff at ~1 s instead of the
+        // real 60 s floor so the test stays fast. Injected through a
+        // `MapEnvSource` rather than the global process env so parallel tests
+        // never race the override window.
+        let env =
+            anodizer_core::MapEnvSource::new().with("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS", "1");
+        let result = run_upload_with_env(addr, &path, false, &env).await;
+
+        let err = result.expect_err("persistent secondary-RL 403 must fail after bounded attempts");
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("failed after 5 attempts"),
+            "error must report the exhausted attempt budget: {rendered}"
+        );
+        assert!(
+            rendered.to_lowercase().contains("secondary rate limit"),
+            "error must name the secondary rate limit (actionable, not a bare 403): {rendered}"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            10,
+            "expected 5 attempts x (GET release + POST 403)"
         );
     }
 

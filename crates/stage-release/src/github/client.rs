@@ -201,3 +201,69 @@ impl rustls::client::danger::ServerCertVerifier for DangerousNoCertVerifier {
         self.schemes.clone()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! End-to-end proof that the `RetryAfterLayer` actually captures the
+    //! server's `Retry-After` header through the FULL production middleware
+    //! stack built by [`build_octocrab_client`] — not just by writing the
+    //! capture directly (which the `secondary_rate_limit.rs` unit tests do).
+    //!
+    //! This is the test the layer-order comment in `build_octocrab_client`
+    //! depends on: any reordering that moved `RetryAfterLayer` outside
+    //! octocrab's error-mapping (which strips response headers) would make
+    //! the capture silently read 0, and this test would catch it.
+    use super::*;
+    use anodizer_core::config::GitHubUrlsConfig;
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn retry_after_header_is_captured_through_the_layer_stack() {
+        // A 403 secondary-RL response carrying `Retry-After: 90`. octocrab's
+        // error mapping discards the header when it builds the typed error, so
+        // the only way `capture` ends up non-zero is the `RetryAfterLayer`
+        // reading it off the raw response first.
+        let body = r#"{"message":"You have exceeded a secondary rate limit","documentation_url":"https://docs.github.com/rest/overview/resources-in-the-rest-api#secondary-rate-limits"}"#;
+        let resp = Box::leak(
+            format!(
+                "HTTP/1.1 403 Forbidden\r\n\
+                 Content-Type: application/json\r\n\
+                 Retry-After: 90\r\n\
+                 Content-Length: {}\r\n\
+                 \r\n\
+                 {body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        );
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![resp]);
+
+        let github_urls = Some(GitHubUrlsConfig {
+            api: Some(format!("http://{addr}/")),
+            upload: Some(format!("http://{addr}/")),
+            download: Some(format!("http://{addr}/")),
+            skip_tls_verify: None,
+        });
+        let (octo, capture) =
+            build_octocrab_client("test-token", &github_urls).expect("build client");
+
+        assert!(
+            capture.get().is_none(),
+            "capture must start empty (no response seen yet)"
+        );
+
+        // The request errors (403), but the layer must have captured the
+        // header before octocrab stripped it.
+        let _ = octo
+            .get::<serde_json::Value, _, _>("/test", None::<&()>)
+            .await
+            .expect_err("403 must surface as an error");
+
+        assert_eq!(
+            capture.get(),
+            Some(Duration::from_secs(90)),
+            "RetryAfterLayer must capture `Retry-After: 90` through the full stack"
+        );
+    }
+}
