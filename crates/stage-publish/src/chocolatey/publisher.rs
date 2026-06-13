@@ -88,7 +88,7 @@ fn collect_chocolatey_target(ctx: &Context, crate_name: &str) -> Option<Chocolat
 /// for ...").
 pub(crate) fn run_start_message(selected_total: usize) -> String {
     format!(
-        "starting chocolatey publish for {} selected crate(s)",
+        "starting chocolatey publish — scanning {} selected crate(s) for a chocolatey config block",
         selected_total
     )
 }
@@ -99,7 +99,7 @@ pub(crate) fn run_start_message(selected_total: usize) -> String {
 /// blank log.
 pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
     format!(
-        "skipping chocolatey for crate '{}' — no chocolatey config block",
+        "skipped chocolatey for crate '{}' — no chocolatey config block",
         crate_name
     )
 }
@@ -119,7 +119,7 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 /// its own status line).
 pub(crate) fn run_done_message(processed: usize) -> String {
     format!(
-        "finished chocolatey publish — {} crate(s) processed",
+        "finished chocolatey publish — {} configured crate(s) processed",
         processed
     )
 }
@@ -473,7 +473,7 @@ mod publisher_tests {
     #[test]
     fn run_start_message_names_selected_total() {
         let msg = run_start_message(3);
-        assert!(msg.starts_with("starting chocolatey publish for"), "{msg}");
+        assert!(msg.starts_with("starting chocolatey publish"), "{msg}");
         assert!(msg.contains("3 selected"), "{msg}");
     }
 
@@ -481,7 +481,7 @@ mod publisher_tests {
     fn run_skip_unconfigured_message_names_crate() {
         let msg = run_skip_unconfigured_message("demo");
         assert!(
-            msg.starts_with("skipping chocolatey for crate 'demo'"),
+            msg.starts_with("skipped chocolatey for crate 'demo'"),
             "{msg}"
         );
         assert!(msg.contains("no chocolatey config block"), "{msg}");
@@ -501,7 +501,7 @@ mod publisher_tests {
     fn run_done_message_reports_processed_count() {
         let msg = run_done_message(2);
         assert!(msg.starts_with("finished chocolatey publish"), "{msg}");
-        assert!(msg.contains("2 crate(s) processed"), "{msg}");
+        assert!(msg.contains("2 configured crate(s) processed"), "{msg}");
     }
 
     #[test]

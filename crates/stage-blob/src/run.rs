@@ -581,7 +581,7 @@ impl BlobStage {
                             remote_key,
                         );
                         log.status(&format!(
-                            "(dry-run) would upload {} -> {}",
+                            "(dry-run) would upload {} → {}",
                             local_path.display(),
                             remote,
                         ));
@@ -602,7 +602,7 @@ impl BlobStage {
                         &rendered_directory,
                         remote_key,
                     );
-                    log.verbose(&format!("uploading {} -> {}", local_path.display(), remote));
+                    log.verbose(&format!("uploading {} → {}", local_path.display(), remote));
                 }
 
                 let store: Arc<dyn ObjectStore> =

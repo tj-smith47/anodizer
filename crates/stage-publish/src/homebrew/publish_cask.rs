@@ -25,7 +25,7 @@ fn cask_skip_gates_trip(
         .or(hb_cfg.skip_upload.as_ref());
     if crate::util::should_skip_upload(effective_skip, ctx, log)? {
         log.status(&format!(
-            "skipping homebrew cask upload for '{}' (skip_upload={})",
+            "skipped homebrew cask upload for '{}' — skip_upload={}",
             crate_name,
             effective_skip.map(|v| v.as_str()).unwrap_or("")
         ));
@@ -45,7 +45,7 @@ fn cask_skip_gates_trip(
     )?;
     if !proceed {
         log.status(&format!(
-            "skipping homebrew cask for '{}' — `if` condition evaluated falsy",
+            "skipped homebrew cask for '{}' — `if` condition evaluated falsy",
             crate_name
         ));
         return Ok(true);

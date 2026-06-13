@@ -863,7 +863,7 @@ pub fn publish_to_krew(
             .with_context(|| format!("krew: render skip template for '{}'", crate_name))?;
         if off {
             log.status(&format!(
-                "skipping krew config for '{}' (skip=true)",
+                "skipped krew config for '{}' — skip=true",
                 crate_name
             ));
             return Ok(KrewPublishOutcome::skipped());
@@ -876,14 +876,14 @@ pub fn publish_to_krew(
     )?;
     if !proceed {
         log.status(&format!(
-            "skipping krew for '{}' — `if` condition evaluated falsy",
+            "skipped krew for '{}' — `if` condition evaluated falsy",
             crate_name
         ));
         return Ok(KrewPublishOutcome::skipped());
     }
     if util::should_skip_upload(krew_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "skipping krew upload for '{}' (skip_upload={})",
+            "skipped krew upload for '{}' — skip_upload={}",
             crate_name,
             krew_cfg
                 .skip_upload
@@ -3116,7 +3116,7 @@ pub(crate) fn is_krew_per_crate_configured(ctx: &Context, crate_name: &str) -> b
 /// substring an operator scans the log for.
 pub(crate) fn run_start_message(selected_total: usize) -> String {
     format!(
-        "starting krew publish for {} selected crate(s)",
+        "starting krew publish — scanning {} selected crate(s) for a krew config block",
         selected_total
     )
 }
@@ -3126,7 +3126,7 @@ pub(crate) fn run_start_message(selected_total: usize) -> String {
 /// why a per-crate publish was a no-op rather than guess from a blank log.
 pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
     format!(
-        "skipping krew for crate '{}' — no krew config block",
+        "skipped krew for crate '{}' — no krew config block",
         crate_name
     )
 }
@@ -3144,7 +3144,10 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 /// count of successful PRs — `publish_to_krew` has its own skip paths for
 /// skip_upload/dry-run/etc., each of which logs its own status line).
 pub(crate) fn run_done_message(processed: usize) -> String {
-    format!("finished krew publish — {} crate(s) processed", processed)
+    format!(
+        "finished krew publish — {} configured crate(s) processed",
+        processed
+    )
 }
 
 /// Decision predicate for the no-eligible-crates warning. True when the
@@ -3736,14 +3739,14 @@ mod publisher_tests {
     #[test]
     fn run_start_message_names_selected_total() {
         let msg = run_start_message(3);
-        assert!(msg.starts_with("starting krew publish for"), "{msg}");
+        assert!(msg.starts_with("starting krew publish"), "{msg}");
         assert!(msg.contains("3 selected"), "{msg}");
     }
 
     #[test]
     fn run_skip_unconfigured_message_names_crate() {
         let msg = run_skip_unconfigured_message("demo");
-        assert!(msg.starts_with("skipping krew for crate 'demo'"), "{msg}");
+        assert!(msg.starts_with("skipped krew for crate 'demo'"), "{msg}");
         assert!(msg.contains("no krew config block"), "{msg}");
     }
 
@@ -3758,7 +3761,7 @@ mod publisher_tests {
     fn run_done_message_reports_processed_count() {
         let msg = run_done_message(2);
         assert!(msg.starts_with("finished krew publish"), "{msg}");
-        assert!(msg.contains("2 crate(s) processed"), "{msg}");
+        assert!(msg.contains("2 configured crate(s) processed"), "{msg}");
     }
 
     #[test]

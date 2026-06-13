@@ -761,7 +761,7 @@ pub fn publish_to_artifactory(
             // so dry-run reflects template behaviour exactly.
             for a in &artifacts {
                 let url = render_artifact_url(ctx, target_template, a, custom_artifact_name)?;
-                log.status(&format!("(dry-run)   {} ({}) -> {}", a.name(), a.kind, url));
+                log.status(&format!("(dry-run)   {} ({}) → {}", a.name(), a.kind, url));
             }
             continue;
         }

@@ -1701,7 +1701,7 @@ simple_publisher!(
 /// dispatch table can't silently report success on a no-op run.
 pub(crate) fn run_start_message(selected_total: usize) -> String {
     format!(
-        "starting cargo publish for {} selected crate(s)",
+        "starting cargo publish — processing {} selected crate(s)",
         selected_total
     )
 }
@@ -1721,7 +1721,10 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 /// dry-run paths all count as processed — they're successful runs of
 /// the correct code path).
 pub(crate) fn run_done_message(processed: usize) -> String {
-    format!("finished cargo publish — {} crate(s) processed", processed)
+    format!(
+        "finished cargo publish — {} selected crate(s) processed",
+        processed
+    )
 }
 
 /// Warning emitted when the publisher was registered (at least one
@@ -2039,7 +2042,7 @@ mod publisher_tests {
     #[test]
     fn run_start_message_names_selected_total() {
         let msg = run_start_message(3);
-        assert!(msg.starts_with("starting cargo publish for"), "{msg}");
+        assert!(msg.starts_with("starting cargo publish"), "{msg}");
         assert!(msg.contains("3 selected"), "{msg}");
     }
 
@@ -2054,7 +2057,7 @@ mod publisher_tests {
     fn run_done_message_reports_processed_count() {
         let msg = run_done_message(2);
         assert!(msg.starts_with("finished cargo publish"), "{msg}");
-        assert!(msg.contains("2 crate(s) processed"), "{msg}");
+        assert!(msg.contains("2 selected crate(s) processed"), "{msg}");
     }
 
     #[test]
@@ -3547,7 +3550,7 @@ lib.workspace = true
     fn run_start_and_done_messages_carry_counts() {
         assert_eq!(
             run_start_message(3),
-            "starting cargo publish for 3 selected crate(s)"
+            "starting cargo publish — processing 3 selected crate(s)"
         );
         assert_eq!(
             run_per_crate_start_message("cfgd-core"),
@@ -3555,7 +3558,7 @@ lib.workspace = true
         );
         assert_eq!(
             run_done_message(2),
-            "finished cargo publish — 2 crate(s) processed"
+            "finished cargo publish — 2 selected crate(s) processed"
         );
     }
 

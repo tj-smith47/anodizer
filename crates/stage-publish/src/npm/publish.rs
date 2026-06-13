@@ -544,7 +544,7 @@ pub fn publish_to_npm(
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .context("npm: render skip template")?;
         if off {
-            log.status("skipping npm — skip evaluates true");
+            log.status("skipped npm — skip evaluates true");
             return Ok(());
         }
     }
@@ -554,7 +554,7 @@ pub fn publish_to_npm(
         |t| ctx.render_template(t),
     )?;
     if !proceed {
-        log.status("skipping npm — `if` condition evaluated falsy");
+        log.status("skipped npm — `if` condition evaluated falsy");
         return Ok(());
     }
 

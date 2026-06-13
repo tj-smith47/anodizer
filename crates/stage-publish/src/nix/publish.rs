@@ -304,7 +304,10 @@ fn check_skip_guards(
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("nix: render skip template for '{}'", crate_name))?;
         if off {
-            log.status(&format!("skipped nix config for '{}'", crate_name));
+            log.status(&format!(
+                "skipped nix config for '{}' — skip evaluates true",
+                crate_name
+            ));
             return Ok(true);
         }
     }
@@ -315,14 +318,14 @@ fn check_skip_guards(
     )?;
     if !proceed {
         log.status(&format!(
-            "skipping nix for '{}' — `if` condition evaluated falsy",
+            "skipped nix for '{}' — `if` condition evaluated falsy",
             crate_name
         ));
         return Ok(true);
     }
     if util::should_skip_upload(nix_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "skipping nix upload for '{}' (skip_upload={})",
+            "skipped nix upload for '{}' — skip_upload={}",
             crate_name,
             nix_cfg
                 .skip_upload

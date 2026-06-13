@@ -246,7 +246,7 @@ pub(crate) fn should_skip_publisher_with_if(
             .with_context(|| format!("{label}: render skip template"))?;
         if off {
             log.status(&format!(
-                "skipping {label} — `skip` condition evaluated truthy"
+                "skipped {label} — `skip` condition evaluated truthy"
             ));
             return Ok(true);
         }
@@ -257,16 +257,14 @@ pub(crate) fn should_skip_publisher_with_if(
     // never skip a prerelease, regressing the documented `skip_upload: auto`
     // semantics.
     if skip_upload.is_some() && should_skip_upload(skip_upload, ctx, log)? {
-        log.status(&format!("skipping {label} upload (skip_upload)"));
+        log.status(&format!("skipped {label} upload — skip_upload is set"));
         return Ok(true);
     }
     let proceed = anodizer_core::config::evaluate_if_condition(if_condition, label, |t| {
         ctx.render_template(t)
     })?;
     if !proceed {
-        log.status(&format!(
-            "skipping {label} — `if` condition evaluated falsy"
-        ));
+        log.status(&format!("skipped {label} — `if` condition evaluated falsy"));
         return Ok(true);
     }
     Ok(false)

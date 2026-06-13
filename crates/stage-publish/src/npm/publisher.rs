@@ -122,9 +122,7 @@ impl anodizer_core::Publisher for NpmPublisher {
         // packages from rollback.
         let mut pushed: Vec<super::publish::NpmTarget> = Vec::new();
         let mut publish_err: Option<anyhow::Error> = None;
-        for (idx, cfg) in entries.iter().enumerate() {
-            let label = cfg.id.clone().unwrap_or_else(|| format!("npms[{}]", idx));
-            log.status(&format!("processing npm package '{}'", label));
+        for cfg in entries.iter() {
             // Per-crate associations are out of scope for the top-level
             // `npms:` block — the first crate name (or the project name) is
             // the package-name fallback for an unnamed entry.
@@ -134,6 +132,16 @@ impl anodizer_core::Publisher for NpmPublisher {
                 .first()
                 .map(|c| c.name.clone())
                 .unwrap_or_else(|| ctx.config.project_name.clone());
+            // Name the entry by what the operator recognises — the npm
+            // package name, its `id`, or the resolved crate name — never the
+            // raw config index, which is meaningless outside the YAML file.
+            let label = cfg
+                .name
+                .clone()
+                .filter(|n| !n.is_empty())
+                .or_else(|| cfg.id.clone().filter(|i| !i.is_empty()))
+                .unwrap_or_else(|| crate_name.clone());
+            log.status(&format!("processing npm package '{}'", label));
             if let Err(e) = publish_to_npm(ctx, cfg, &crate_name, &log, &mut pushed) {
                 publish_err = Some(e);
                 break;

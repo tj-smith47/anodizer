@@ -438,7 +438,7 @@ pub(crate) fn handle_upload_error(
     match &err {
         object_store::Error::NotFound { path, .. } => {
             anyhow::anyhow!(
-                "blobs: bucket or object not found ({}): uploading {} -> {}",
+                "blobs: bucket or object not found ({}): uploading {} → {}",
                 path,
                 local_path,
                 remote_key
@@ -446,7 +446,7 @@ pub(crate) fn handle_upload_error(
         }
         object_store::Error::Unauthenticated { path, .. } => {
             anyhow::anyhow!(
-                "blobs: authentication failed — check credentials. Uploading {} -> {} ({})",
+                "blobs: authentication failed — check credentials. Uploading {} → {} ({})",
                 local_path,
                 remote_key,
                 path
@@ -454,7 +454,7 @@ pub(crate) fn handle_upload_error(
         }
         object_store::Error::PermissionDenied { path, .. } => {
             anyhow::anyhow!(
-                "blobs: access denied — check permissions. Uploading {} -> {} ({})",
+                "blobs: access denied — check permissions. Uploading {} → {} ({})",
                 local_path,
                 remote_key,
                 path
@@ -462,7 +462,7 @@ pub(crate) fn handle_upload_error(
         }
         _ => {
             anyhow::anyhow!(
-                "blobs: upload failed for {} -> {}: {}",
+                "blobs: upload failed for {} → {}: {}",
                 local_path,
                 remote_key,
                 err

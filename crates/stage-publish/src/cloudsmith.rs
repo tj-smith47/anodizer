@@ -562,7 +562,7 @@ pub(crate) fn publish_to_cloudsmith(
                 .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                 .with_context(|| "cloudsmith: render skip template")?;
             if off {
-                log.status("skipping cloudsmith entry — skip evaluates true");
+                log.status("skipped cloudsmith entry — skip evaluates true");
                 continue;
             }
         }
@@ -573,7 +573,7 @@ pub(crate) fn publish_to_cloudsmith(
             |t| ctx.render_template(t),
         )?;
         if !proceed {
-            log.status("skipping cloudsmith entry — `if` condition evaluated falsy");
+            log.status("skipped cloudsmith entry — `if` condition evaluated falsy");
             continue;
         }
 
@@ -859,7 +859,7 @@ pub(crate) fn publish_to_cloudsmith(
             // Per-file upload detail is verbose-only; the entry summary
             // reports the aggregate upload count at default verbosity.
             log.verbose(&format!(
-                "uploading {} ({}, {} bytes, md5={}) -> org '{}' repo '{}'{}",
+                "uploading {} ({}, {} bytes, md5={}) → org '{}' repo '{}'{}",
                 art_name,
                 fmt,
                 size_bytes,

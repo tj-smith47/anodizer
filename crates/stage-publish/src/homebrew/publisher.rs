@@ -134,7 +134,7 @@ fn collect_run_targets(ctx: &Context) -> Vec<HomebrewTarget> {
 /// substring an operator scans the log for.
 pub(crate) fn run_start_message(selected_total: usize) -> String {
     format!(
-        "starting homebrew publish for {} selected crate(s)",
+        "starting homebrew publish — scanning {} selected crate(s) for a homebrew config block",
         selected_total
     )
 }
@@ -144,7 +144,7 @@ pub(crate) fn run_start_message(selected_total: usize) -> String {
 /// why a per-crate publish was a no-op rather than guess from a blank log.
 pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
     format!(
-        "skipping homebrew for crate '{}' — no homebrew config block",
+        "skipped homebrew for crate '{}' — no homebrew config block",
         crate_name
     )
 }
@@ -172,7 +172,7 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 /// no-op to operators scanning the log.
 pub(crate) fn run_done_message(processed: usize, casks: usize) -> String {
     format!(
-        "finished homebrew publish — {} unit(s) processed ({} formula crate(s), {} cask(s))",
+        "finished homebrew publish — {} configured unit(s) processed ({} formula crate(s), {} cask(s))",
         processed + casks,
         processed,
         casks,
@@ -715,7 +715,7 @@ mod publisher_tests {
     #[test]
     fn run_start_message_names_selected_total() {
         let msg = run_start_message(3);
-        assert!(msg.starts_with("starting homebrew publish for"), "{msg}");
+        assert!(msg.starts_with("starting homebrew publish"), "{msg}");
         assert!(msg.contains("3 selected"), "{msg}");
     }
 
@@ -723,7 +723,7 @@ mod publisher_tests {
     fn run_skip_unconfigured_message_names_crate() {
         let msg = run_skip_unconfigured_message("demo");
         assert!(
-            msg.starts_with("skipping homebrew for crate 'demo'"),
+            msg.starts_with("skipped homebrew for crate 'demo'"),
             "{msg}"
         );
         assert!(msg.contains("no homebrew config block"), "{msg}");
@@ -841,7 +841,7 @@ mod publisher_tests {
         let msg = run_done_message(2, 0);
         assert!(msg.starts_with("finished homebrew publish"), "{msg}");
         // Two formula crates, no casks → total unit count is 2.
-        assert!(msg.contains("2 unit(s) processed"), "{msg}");
+        assert!(msg.contains("2 configured unit(s) processed"), "{msg}");
         assert!(msg.contains("2 formula crate(s)"), "{msg}");
         assert!(msg.contains("0 cask(s)"), "{msg}");
     }
@@ -853,13 +853,13 @@ mod publisher_tests {
     fn run_done_message_counts_published_casks() {
         let msg = run_done_message(0, 1);
         assert!(
-            msg.contains("1 unit(s) processed"),
+            msg.contains("1 configured unit(s) processed"),
             "cask-only run must report 1 unit, not 0; got: {msg}"
         );
         assert!(msg.contains("1 cask(s)"), "{msg}");
         // Mixed: 1 formula + 2 casks → 3 units total.
         let mixed = run_done_message(1, 2);
-        assert!(mixed.contains("3 unit(s) processed"), "{mixed}");
+        assert!(mixed.contains("3 configured unit(s) processed"), "{mixed}");
     }
 
     #[test]

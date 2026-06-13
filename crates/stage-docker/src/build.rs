@@ -187,12 +187,20 @@ pub(crate) fn execute_docker_build(
             output.stderr = redacted.into_bytes();
         }
 
-        {
+        // The captured per-layer buildx progress (≈hundreds of lines, plus
+        // the ephemeral `/tmp/.tmpXXXX` staging-context path) is a firehose
+        // that drowns the default register; the concise "created images"
+        // summary below is the default-verbosity signal. Tee the raw stream
+        // only under `-v`, and to STDERR — stdout is anodizer's
+        // machine-readable channel. On the failure path `check_output`
+        // re-emits the redacted output regardless of verbosity, so a build
+        // error still surfaces its context.
+        if log.is_verbose() {
             use std::io::Write;
             // Best-effort tee: an EPIPE from a parent pipe close must
             // not abort the build worker. `.ok()` is more intent-clear
             // than `let _ =`.
-            std::io::stdout().write_all(&output.stdout).ok();
+            std::io::stderr().write_all(&output.stdout).ok();
             std::io::stderr().write_all(&output.stderr).ok();
         }
 

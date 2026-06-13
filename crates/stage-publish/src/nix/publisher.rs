@@ -86,7 +86,7 @@ pub(crate) fn is_nix_per_crate_configured(ctx: &Context, crate_name: &str) -> bo
 /// substring an operator scans the log for.
 pub(crate) fn run_start_message(selected_total: usize) -> String {
     format!(
-        "starting nix publish for {} selected crate(s)",
+        "starting nix publish — scanning {} selected crate(s) for a nix config block",
         selected_total
     )
 }
@@ -96,7 +96,7 @@ pub(crate) fn run_start_message(selected_total: usize) -> String {
 /// why a per-crate publish was a no-op rather than guess from a blank log.
 pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
     format!(
-        "skipping nix for crate '{}' — no nix config block",
+        "skipped nix for crate '{}' — no nix config block",
         crate_name
     )
 }
@@ -115,7 +115,10 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 /// skip paths for skip_upload/dry-run/etc., each of which logs its own
 /// status line).
 pub(crate) fn run_done_message(processed: usize) -> String {
-    format!("finished nix publish — {} crate(s) processed", processed)
+    format!(
+        "finished nix publish — {} configured crate(s) processed",
+        processed
+    )
 }
 
 /// Decision predicate for the no-eligible-crates warning. True when the
@@ -492,14 +495,14 @@ mod publisher_tests {
     #[test]
     fn run_start_message_names_selected_total() {
         let msg = run_start_message(3);
-        assert!(msg.starts_with("starting nix publish for"), "{msg}");
+        assert!(msg.starts_with("starting nix publish"), "{msg}");
         assert!(msg.contains("3 selected"), "{msg}");
     }
 
     #[test]
     fn run_skip_unconfigured_message_names_crate() {
         let msg = run_skip_unconfigured_message("demo");
-        assert!(msg.starts_with("skipping nix for crate 'demo'"), "{msg}");
+        assert!(msg.starts_with("skipped nix for crate 'demo'"), "{msg}");
         assert!(msg.contains("no nix config block"), "{msg}");
     }
 
@@ -514,7 +517,7 @@ mod publisher_tests {
     fn run_done_message_reports_processed_count() {
         let msg = run_done_message(2);
         assert!(msg.starts_with("finished nix publish"), "{msg}");
-        assert!(msg.contains("2 crate(s) processed"), "{msg}");
+        assert!(msg.contains("2 configured crate(s) processed"), "{msg}");
     }
 
     #[test]

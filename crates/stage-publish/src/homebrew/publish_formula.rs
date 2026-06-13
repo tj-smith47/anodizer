@@ -458,7 +458,7 @@ pub(crate) fn render_same_tap_cask_for_crate(
     };
     if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "skipping homebrew cask upload for '{}' (skip_upload={})",
+            "skipped homebrew cask upload for '{}' — skip_upload={}",
             crate_name,
             cask_cfg
                 .skip_upload
@@ -700,7 +700,7 @@ pub(crate) fn render_homebrew_formula_for_crate(
 
     if crate::util::should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "skipping homebrew upload for '{}' (skip_upload={})",
+            "skipped homebrew upload for '{}' — skip_upload={}",
             crate_name,
             hb_cfg
                 .skip_upload
@@ -718,7 +718,7 @@ pub(crate) fn render_homebrew_formula_for_crate(
     )?;
     if !proceed {
         log.status(&format!(
-            "skipping homebrew for '{}' — `if` condition evaluated falsy",
+            "skipped homebrew for '{}' — `if` condition evaluated falsy",
             crate_name
         ));
         return Ok(None);
@@ -834,7 +834,7 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
 
     if crate::util::should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "skipping homebrew upload for '{}' (skip_upload={})",
+            "skipped homebrew upload for '{}' — skip_upload={}",
             crate_name,
             hb_cfg
                 .skip_upload
@@ -852,7 +852,7 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
     )?;
     if !proceed {
         log.status(&format!(
-            "skipping homebrew for '{}' — `if` condition evaluated falsy",
+            "skipped homebrew for '{}' — `if` condition evaluated falsy",
             crate_name
         ));
         return Ok(false);

@@ -430,7 +430,10 @@ fn aur_check_skip_and_resolve_git_url(
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("aur: render skip template for '{}'", crate_name))?;
         if off {
-            log.status(&format!("skipped aur for '{}'", crate_name));
+            log.status(&format!(
+                "skipped aur for '{}' — skip evaluates true",
+                crate_name
+            ));
             return Ok(None);
         }
     }
@@ -442,7 +445,7 @@ fn aur_check_skip_and_resolve_git_url(
     )?;
     if !proceed {
         log.status(&format!(
-            "skipping aur for '{}' — `if` condition evaluated falsy",
+            "skipped aur for '{}' — `if` condition evaluated falsy",
             crate_name
         ));
         return Ok(None);
@@ -450,7 +453,7 @@ fn aur_check_skip_and_resolve_git_url(
 
     if crate::util::should_skip_upload(aur_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "skipping aur upload for '{}' (skip_upload={})",
+            "skipped aur upload for '{}' — skip_upload={}",
             crate_name,
             aur_cfg
                 .skip_upload
@@ -989,7 +992,10 @@ pub(crate) fn render_aur_pkgbuild_and_srcinfo_for_crate(
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
             .with_context(|| format!("aur: render skip template for '{}'", crate_name))?;
         if off {
-            log.status(&format!("skipped aur for '{}'", crate_name));
+            log.status(&format!(
+                "skipped aur for '{}' — skip evaluates true",
+                crate_name
+            ));
             return Ok(None);
         }
     }
@@ -1001,7 +1007,7 @@ pub(crate) fn render_aur_pkgbuild_and_srcinfo_for_crate(
     )?;
     if !proceed {
         log.status(&format!(
-            "skipping aur for '{}' — `if` condition evaluated falsy",
+            "skipped aur for '{}' — `if` condition evaluated falsy",
             crate_name
         ));
         return Ok(None);
@@ -1009,7 +1015,7 @@ pub(crate) fn render_aur_pkgbuild_and_srcinfo_for_crate(
 
     if crate::util::should_skip_upload(aur_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "skipping aur upload for '{}' (skip_upload)",
+            "skipped aur upload for '{}' — skip_upload is set",
             crate_name
         ));
         return Ok(None);
@@ -1302,7 +1308,7 @@ pub(crate) fn is_aur_per_crate_configured(ctx: &Context, crate_name: &str) -> bo
 /// substring an operator scans the log for.
 pub(crate) fn run_start_message(selected_total: usize) -> String {
     format!(
-        "starting aur publish for {} selected crate(s)",
+        "starting aur publish — scanning {} selected crate(s) for an aur config block",
         selected_total
     )
 }
@@ -1312,7 +1318,7 @@ pub(crate) fn run_start_message(selected_total: usize) -> String {
 /// why a per-crate publish was a no-op rather than guess from a blank log.
 pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
     format!(
-        "skipping aur for crate '{}' — no aur config block",
+        "skipped aur for crate '{}' — no aur config block",
         crate_name
     )
 }
@@ -1330,7 +1336,10 @@ pub(crate) fn run_per_crate_start_message(crate_name: &str) -> String {
 /// paths for skip_upload/dry-run/etc., each of which logs its own status
 /// line).
 pub(crate) fn run_done_message(processed: usize) -> String {
-    format!("finished aur publish — {} crate(s) processed", processed)
+    format!(
+        "finished aur publish — {} configured crate(s) processed",
+        processed
+    )
 }
 
 /// Decision predicate for the no-eligible-crates warning. True when the
@@ -1769,14 +1778,14 @@ mod publisher_tests {
     #[test]
     fn run_start_message_names_selected_total() {
         let msg = run_start_message(3);
-        assert!(msg.starts_with("starting aur publish for"), "{msg}");
+        assert!(msg.starts_with("starting aur publish"), "{msg}");
         assert!(msg.contains("3 selected"), "{msg}");
     }
 
     #[test]
     fn run_skip_unconfigured_message_names_crate() {
         let msg = run_skip_unconfigured_message("demo");
-        assert!(msg.starts_with("skipping aur for crate 'demo'"), "{msg}");
+        assert!(msg.starts_with("skipped aur for crate 'demo'"), "{msg}");
         assert!(msg.contains("no aur config block"), "{msg}");
     }
 
@@ -1791,7 +1800,7 @@ mod publisher_tests {
     fn run_done_message_reports_processed_count() {
         let msg = run_done_message(2);
         assert!(msg.starts_with("finished aur publish"), "{msg}");
-        assert!(msg.contains("2 crate(s) processed"), "{msg}");
+        assert!(msg.contains("2 configured crate(s) processed"), "{msg}");
     }
 
     #[test]

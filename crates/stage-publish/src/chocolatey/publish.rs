@@ -427,7 +427,7 @@ fn select_windows_artifacts<'a>(
                 // the operator sees why their arm64 build wasn't packaged
                 // (rather than silently failing on the consumer's machine).
                 log.status(&format!(
-                    "skipping chocolatey artifact '{}' for '{}' — arch '{}' is not \
+                    "skipped chocolatey artifact '{}' for '{}' — arch '{}' is not \
                      supported by chocolatey (only amd64/386)",
                     a.name(),
                     crate_name,
@@ -837,7 +837,7 @@ fn handle_feed_state(
             let local = compute_nupkg_hash(nupkg_path, &algorithm)?;
             if local == hash {
                 log.status(&format!(
-                    "skipping chocolatey '{}-{}' — already published (hash match)",
+                    "skipped chocolatey '{}-{}' — already published (hash match)",
                     pkg_name, version
                 ));
                 return Ok(Some(false));
@@ -967,7 +967,7 @@ mod tests {
         let msgs = cap.all_messages();
         assert!(
             msgs.iter()
-                .any(|(_, m)| m.contains("skipping") && m.contains("mytool")),
+                .any(|(_, m)| m.contains("skipped") && m.contains("mytool")),
             "expected skip status, got {msgs:?}"
         );
     }
