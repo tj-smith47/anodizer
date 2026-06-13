@@ -2390,26 +2390,7 @@ fn test_checksum_source_list_is_primary_subject_kinds() {
     }
 }
 
-/// `true` when `name` ends in two or more consecutive `.sha256` / `.sig`
-/// segments — the recursive sidecar pattern `(\.sha256|\.sig){2,}` such as
-/// `X.sha256.sig` or `X.sha256.sig.sha256`. A single trailing `.sha256` or
-/// `.sig` is legitimate and returns `false`.
-fn has_recursive_sidecar_chain(name: &str) -> bool {
-    let mut rest = name;
-    let mut run = 0usize;
-    loop {
-        if let Some(stripped) = rest.strip_suffix(".sha256") {
-            rest = stripped;
-            run += 1;
-        } else if let Some(stripped) = rest.strip_suffix(".sig") {
-            rest = stripped;
-            run += 1;
-        } else {
-            break;
-        }
-    }
-    run >= 2
-}
+use anodizer_core::test_helpers::has_recursive_sidecar_chain;
 
 #[test]
 fn checksum_stage_never_produces_recursive_sidecar_chains() {
@@ -2489,19 +2470,6 @@ fn checksum_stage_never_produces_recursive_sidecar_chains() {
             );
         }
     }
-}
-
-#[test]
-fn recursive_sidecar_chain_detector_classification() {
-    assert!(has_recursive_sidecar_chain("x.sha256.sig"));
-    assert!(has_recursive_sidecar_chain("x.sha256.sig.sha256"));
-    assert!(has_recursive_sidecar_chain("x.tar.gz.sig.sig"));
-    assert!(has_recursive_sidecar_chain("x.cdx.json.sha256.sig.sha256"));
-    // Single legitimate sidecars are fine.
-    assert!(!has_recursive_sidecar_chain("x.tar.gz.sha256"));
-    assert!(!has_recursive_sidecar_chain("x.tar.gz.sig"));
-    assert!(!has_recursive_sidecar_chain("x.cdx.json.sha256"));
-    assert!(!has_recursive_sidecar_chain("x.tar.gz"));
 }
 
 // ---------------------------------------------------------------------------

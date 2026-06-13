@@ -676,7 +676,10 @@ fn write_combined_file(
         crate_name: crate_name.to_string(),
         metadata: HashMap::from([
             ("algorithm".to_string(), resolved.algorithm.clone()),
-            ("combined".to_string(), "true".to_string()),
+            (
+                anodizer_core::artifact::COMBINED_CHECKSUM_META.to_string(),
+                anodizer_core::artifact::COMBINED_CHECKSUM_VALUE.to_string(),
+            ),
         ]),
         size: None,
     })
@@ -730,7 +733,12 @@ pub fn refresh_combined_checksums(ctx: &mut Context, dry_run: bool) -> Result<()
         .artifacts
         .by_kind(ArtifactKind::Checksum)
         .into_iter()
-        .filter(|a| a.metadata.get("combined").map(|s| s.as_str()) == Some("true"))
+        .filter(|a| {
+            a.metadata
+                .get(anodizer_core::artifact::COMBINED_CHECKSUM_META)
+                .map(|s| s.as_str())
+                == Some(anodizer_core::artifact::COMBINED_CHECKSUM_VALUE)
+        })
         .filter_map(|a| {
             let algo = a.metadata.get("algorithm")?.clone();
             Some((a.path.clone(), algo, a.crate_name.clone()))

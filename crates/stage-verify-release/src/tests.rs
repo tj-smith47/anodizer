@@ -54,29 +54,15 @@ fn add_combined_checksum(ctx: &mut Context, name: &str, crate_name: &str) {
         path: std::path::PathBuf::from(name),
         target: None,
         crate_name: crate_name.to_string(),
-        metadata: HashMap::from([("combined".to_string(), "true".to_string())]),
+        metadata: HashMap::from([(
+            anodizer_core::artifact::COMBINED_CHECKSUM_META.to_string(),
+            anodizer_core::artifact::COMBINED_CHECKSUM_VALUE.to_string(),
+        )]),
         size: None,
     });
 }
 
-/// `true` when `name` ends in two or more consecutive `.sha256` / `.sig`
-/// segments (the recursive sidecar pattern such as `X.sha256.sig`).
-fn has_recursive_sidecar_chain(name: &str) -> bool {
-    let mut rest = name;
-    let mut run = 0usize;
-    loop {
-        if let Some(s) = rest.strip_suffix(".sha256") {
-            rest = s;
-            run += 1;
-        } else if let Some(s) = rest.strip_suffix(".sig") {
-            rest = s;
-            run += 1;
-        } else {
-            break;
-        }
-    }
-    run >= 2
-}
+use anodizer_core::test_helpers::has_recursive_sidecar_chain;
 
 #[test]
 fn verify_release_never_demands_signature_of_a_checksum_or_signature() {
@@ -103,15 +89,7 @@ fn verify_release_never_demands_signature_of_a_checksum_or_signature() {
 
     add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
     // Combined checksums file (the only legitimate sign subject under `checksum`).
-    ctx.artifacts.add(Artifact {
-        kind: ArtifactKind::Checksum,
-        name: "app_checksums.txt".to_string(),
-        path: std::path::PathBuf::from("app_checksums.txt"),
-        target: None,
-        crate_name: "app".to_string(),
-        metadata: HashMap::from([("combined".to_string(), "true".to_string())]),
-        size: None,
-    });
+    add_combined_checksum(&mut ctx, "app_checksums.txt", "app");
     // Split sidecar plus a signature/certificate that must NOT be re-signed by
     // the derivation.
     add_artifact(&mut ctx, ArtifactKind::Checksum, "app.tar.gz.sha256", "app");
@@ -1162,8 +1140,8 @@ fn derived_expectations_empty_when_run_recorded_intentional_skip() {
 fn derived_expectations_follow_subject_verdict_under_release_ids() {
     // A signature inherits its SUBJECT's release.ids verdict: a sig of an
     // ids-excluded archive is not expected, a sig of an ids-included archive is.
-    // Under `artifacts: all` the combined checksum is a derived sidecar (NOT a
-    // primary subject), so it is never signed and contributes no expectation.
+    // Under `artifacts: all` the COMBINED checksum IS signed (GoReleaser parity)
+    // and, being an always-pass subject, is expected regardless of ids.
     let mut ctx = TestContextBuilder::new()
         .tag("v1.0.0")
         .crates(vec![published_crate("app", None)])
@@ -1200,9 +1178,12 @@ fn derived_expectations_follow_subject_verdict_under_release_ids() {
     let derived = config_expected_asset_names(&ctx, "app", Some(&ids)).expect("derivation");
     assert_eq!(
         derived,
-        vec!["keep.tar.gz.sig".to_string()],
-        "only the ids-included primary subject is signed under `all`; the \
-         ids-excluded archive and the derived checksum sidecar contribute none"
+        vec![
+            "app_checksums.txt.sig".to_string(),
+            "keep.tar.gz.sig".to_string()
+        ],
+        "the combined checksum (always-pass) and the ids-included archive are \
+         signed under `all`; the ids-excluded archive contributes none"
     );
 }
 

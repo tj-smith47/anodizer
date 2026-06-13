@@ -239,8 +239,10 @@ mod tests {
     /// `artifacts: checksum` signs (split sidecars are never signed).
     fn combined_checksum(name: &str, crate_name: &str) -> Artifact {
         let mut a = artifact(ArtifactKind::Checksum, name, crate_name, None);
-        a.metadata
-            .insert("combined".to_string(), "true".to_string());
+        a.metadata.insert(
+            anodizer_core::artifact::COMBINED_CHECKSUM_META.to_string(),
+            anodizer_core::artifact::COMBINED_CHECKSUM_VALUE.to_string(),
+        );
         a
     }
 

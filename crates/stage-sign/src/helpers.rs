@@ -18,13 +18,16 @@ use anodizer_core::env_expand::expand_with_preserve;
 ///
 /// Filter values:
 /// - `"none"`          → nothing is signed
-/// - `"all"` / `"any"` → the PRIMARY subject kinds only
+/// - `"all"` / `"any"` → the PRIMARY subject kinds
 ///   (`signable_subject_kinds()`: Archive, UploadableBinary, SourceArchive,
 ///   UploadableFile, Makeself, AppImage, LinuxPackage, Flatpak, SourceRpm,
-///   Installer, DiskImage, MacOsPackage, Sbom). Every DERIVED sidecar
-///   (Checksum/Signature/Certificate/Metadata) is excluded by construction, so
-///   re-running the sign stage on a partially-built dist can never produce
-///   `*.sig.sig` / `*.sha256.sig` chains.
+///   Installer, DiskImage, MacOsPackage, Sbom), PLUS the COMBINED
+///   `checksums.txt` (a `Checksum` with `combined = "true"`) — GoReleaser's
+///   `sign.artifacts: all` signs the combined checksums file too, so combined-
+///   mode consumers get `checksums.txt.sig`. Every other DERIVED sidecar
+///   (a split per-artifact `.sha256`, Signature, Certificate, Metadata) is
+///   excluded by construction, so re-running the sign stage on a partially-
+///   built dist can never produce `*.sig.sig` / `*.sha256.sig` chains.
 /// - `"source"`        → only `ArtifactKind::SourceArchive`
 /// - `"archive"`       → only `ArtifactKind::Archive`
 /// - `"binary"`        → only `ArtifactKind::Binary`
@@ -51,7 +54,10 @@ pub(crate) fn should_sign_artifact(
 ) -> Result<bool> {
     match filter {
         "none" => Ok(false),
-        "all" | "any" => Ok(anodizer_core::artifact::signable_subject_kinds().contains(&kind)),
+        "all" | "any" => Ok(
+            anodizer_core::artifact::signable_subject_kinds().contains(&kind)
+                || is_combined_checksum(kind, metadata),
+        ),
         "source" => Ok(kind == ArtifactKind::SourceArchive),
         "archive" => Ok(kind == ArtifactKind::Archive),
         "binary" => Ok(kind == ArtifactKind::Binary),
@@ -61,10 +67,22 @@ pub(crate) fn should_sign_artifact(
         "sbom" => Ok(kind == ArtifactKind::Sbom),
         "snap" => Ok(kind == ArtifactKind::Snap),
         "macos_package" => Ok(kind == ArtifactKind::MacOsPackage),
-        "checksum" => Ok(kind == ArtifactKind::Checksum
-            && metadata.get("combined").map(|s| s.as_str()) == Some("true")),
+        "checksum" => Ok(is_combined_checksum(kind, metadata)),
         other => anyhow::bail!("invalid sign artifacts filter: {other}"),
     }
+}
+
+/// `true` when the artifact is the COMBINED `checksums.txt` (a `Checksum`
+/// carrying the `combined = "true"` marker), as opposed to a per-artifact split
+/// `.sha256` sidecar. Signing the combined file is safe (it is signed once and
+/// never re-checksummed); signing a split sidecar is what produced the
+/// recursive `.sha256.sig` chains, so split sidecars are never matched.
+fn is_combined_checksum(kind: ArtifactKind, metadata: &HashMap<String, String>) -> bool {
+    kind == ArtifactKind::Checksum
+        && metadata
+            .get(anodizer_core::artifact::COMBINED_CHECKSUM_META)
+            .map(|s| s.as_str())
+            == Some(anodizer_core::artifact::COMBINED_CHECKSUM_VALUE)
 }
 
 /// Validate a sign-config list's ids: unique, and never colliding with the

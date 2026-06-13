@@ -12,13 +12,16 @@ use super::{DockerSignStage, SignStage};
 /// Test shim: call `should_sign_artifact` with empty metadata (the common
 /// case). Tests that need the combined-checksum distinction call the real
 /// 3-arg `should_sign_artifact` with a populated metadata map directly.
-fn ssa(kind: ArtifactKind, filter: &str) -> anyhow::Result<bool> {
+fn should_sign(kind: ArtifactKind, filter: &str) -> anyhow::Result<bool> {
     should_sign_artifact(kind, &std::collections::HashMap::new(), filter)
 }
 
 /// Metadata marking a Checksum artifact as the combined `checksums.txt`.
 fn combined_meta() -> std::collections::HashMap<String, String> {
-    std::collections::HashMap::from([("combined".to_string(), "true".to_string())])
+    std::collections::HashMap::from([(
+        anodizer_core::artifact::COMBINED_CHECKSUM_META.to_string(),
+        anodizer_core::artifact::COMBINED_CHECKSUM_VALUE.to_string(),
+    )])
 }
 
 /// Return a shell command + args that writes `content_expr` to `dest_file`.
@@ -100,71 +103,185 @@ fn test_filter_artifacts_checksum() {
         "combined checksums.txt is signed by artifacts: checksum"
     );
     assert!(
-        !ssa(ArtifactKind::Checksum, "checksum").unwrap(),
+        !should_sign(ArtifactKind::Checksum, "checksum").unwrap(),
         "a split sidecar (no combined=true) is NEVER signed"
     );
-    assert!(!ssa(ArtifactKind::Archive, "checksum").unwrap());
-    assert!(!ssa(ArtifactKind::Binary, "checksum").unwrap());
+    assert!(!should_sign(ArtifactKind::Archive, "checksum").unwrap());
+    assert!(!should_sign(ArtifactKind::Binary, "checksum").unwrap());
 }
 
 #[test]
 fn test_filter_artifacts_all() {
-    // "all" matches anodizer_core::artifact::signable_subject_kinds() — the
-    // PRIMARY subjects only. Installer-family kinds (MSI/NSIS as Installer, DMG
-    // as DiskImage, PKG as MacOsPackage) are primary so they are signed
-    // alongside archives. Dedicated filters (`installer`, `diskimage`,
-    // `macos_package`) remain available for finer-grain selection. A Checksum
-    // (derived sidecar) is NOT a primary subject and is never signed by `all`.
-    assert!(!ssa(ArtifactKind::Checksum, "all").unwrap());
-    assert!(ssa(ArtifactKind::Archive, "all").unwrap());
-    assert!(ssa(ArtifactKind::UploadableBinary, "all").unwrap());
-    assert!(ssa(ArtifactKind::LinuxPackage, "all").unwrap());
-    assert!(ssa(ArtifactKind::SourceArchive, "all").unwrap());
-    assert!(ssa(ArtifactKind::Makeself, "all").unwrap());
-    assert!(ssa(ArtifactKind::Flatpak, "all").unwrap());
-    assert!(ssa(ArtifactKind::Sbom, "all").unwrap());
-    assert!(ssa(ArtifactKind::SourceRpm, "all").unwrap());
-    assert!(ssa(ArtifactKind::UploadableFile, "all").unwrap());
-    assert!(ssa(ArtifactKind::Installer, "all").unwrap());
-    assert!(ssa(ArtifactKind::DiskImage, "all").unwrap());
-    assert!(ssa(ArtifactKind::MacOsPackage, "all").unwrap());
+    // "all" matches anodizer_core::artifact::signable_subject_kinds() (the
+    // PRIMARY subjects) PLUS the combined checksums file (GoReleaser parity).
+    // Installer-family kinds (MSI/NSIS as Installer, DMG as DiskImage, PKG as
+    // MacOsPackage) are primary so they are signed alongside archives. Dedicated
+    // filters (`installer`, `diskimage`, `macos_package`) remain available for
+    // finer-grain selection.
+    //
+    // The COMBINED checksums file IS signed by `all` (→ checksums.txt.sig); a
+    // split per-artifact `.sha256` sidecar (no combined=true) is NOT — signing
+    // each sidecar is what produced the recursive sha256.sig chains.
+    assert!(
+        should_sign_artifact(ArtifactKind::Checksum, &combined_meta(), "all").unwrap(),
+        "combined checksums.txt is signed by artifacts: all (GoReleaser parity)"
+    );
+    assert!(
+        !should_sign(ArtifactKind::Checksum, "all").unwrap(),
+        "a split checksum sidecar (no combined=true) is NEVER signed by all"
+    );
+    assert!(should_sign(ArtifactKind::Archive, "all").unwrap());
+    assert!(should_sign(ArtifactKind::UploadableBinary, "all").unwrap());
+    assert!(should_sign(ArtifactKind::LinuxPackage, "all").unwrap());
+    assert!(should_sign(ArtifactKind::SourceArchive, "all").unwrap());
+    assert!(should_sign(ArtifactKind::Makeself, "all").unwrap());
+    assert!(should_sign(ArtifactKind::Flatpak, "all").unwrap());
+    assert!(should_sign(ArtifactKind::Sbom, "all").unwrap());
+    assert!(should_sign(ArtifactKind::SourceRpm, "all").unwrap());
+    assert!(should_sign(ArtifactKind::UploadableFile, "all").unwrap());
+    assert!(should_sign(ArtifactKind::Installer, "all").unwrap());
+    assert!(should_sign(ArtifactKind::DiskImage, "all").unwrap());
+    assert!(should_sign(ArtifactKind::MacOsPackage, "all").unwrap());
 
     // Signature + Certificate are excluded from the `all` filter (the
     // 87a55ea / #6509). Although both kinds are otherwise release-uploadable,
     // signing them on a re-run of the stage would produce `.sig.sig` /
     // `.pem.sig` chains and corrupt checksums. See
     // `re_sign_idempotency_does_not_chain_signatures` below.
-    assert!(!ssa(ArtifactKind::Signature, "all").unwrap());
-    assert!(!ssa(ArtifactKind::Certificate, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::Signature, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::Certificate, "all").unwrap());
 
-    // Kinds not in release_uploadable_kinds — users must opt in via the
+    // Kinds that are not primary subjects — users must opt in via the
     // dedicated `binary` / `snap` filters.
-    assert!(!ssa(ArtifactKind::Binary, "all").unwrap());
-    assert!(!ssa(ArtifactKind::Snap, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::Binary, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::Snap, "all").unwrap());
 
     // Internal / metadata types — never signed.
-    assert!(!ssa(ArtifactKind::DockerImage, "all").unwrap());
-    assert!(!ssa(ArtifactKind::DockerManifest, "all").unwrap());
-    assert!(!ssa(ArtifactKind::BrewFormula, "all").unwrap());
-    assert!(!ssa(ArtifactKind::Metadata, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::DockerImage, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::DockerManifest, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::BrewFormula, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::Metadata, "all").unwrap());
 }
 
 #[test]
 fn test_filter_artifacts_any_alias() {
     // "any" is an alias for "all"
-    assert!(ssa(ArtifactKind::Archive, "any").unwrap());
-    assert!(ssa(ArtifactKind::UploadableBinary, "any").unwrap());
+    assert!(should_sign(ArtifactKind::Archive, "any").unwrap());
+    assert!(should_sign(ArtifactKind::UploadableBinary, "any").unwrap());
     // Signature + Certificate excluded from `any` (alias of `all`) — see
     // `re_sign_idempotency_does_not_chain_signatures`.
-    assert!(!ssa(ArtifactKind::Signature, "any").unwrap());
-    assert!(!ssa(ArtifactKind::Certificate, "any").unwrap());
-    assert!(!ssa(ArtifactKind::Binary, "any").unwrap());
-    assert!(!ssa(ArtifactKind::DockerImage, "any").unwrap());
+    assert!(!should_sign(ArtifactKind::Signature, "any").unwrap());
+    assert!(!should_sign(ArtifactKind::Certificate, "any").unwrap());
+    assert!(!should_sign(ArtifactKind::Binary, "any").unwrap());
+    assert!(!should_sign(ArtifactKind::DockerImage, "any").unwrap());
 }
 
 #[test]
 fn test_filter_artifacts_none() {
-    assert!(!ssa(ArtifactKind::Checksum, "none").unwrap());
+    assert!(!should_sign(ArtifactKind::Checksum, "none").unwrap());
+}
+
+#[test]
+fn all_filter_signs_combined_checksum_not_split_sidecars_no_chain() {
+    // P1 / GoReleaser parity: `sign.artifacts: all` signs the COMBINED
+    // checksums file (→ checksums.txt.sig) so combined-mode consumers get a
+    // signature of their checksum manifest. It must NOT sign a per-artifact
+    // split `.sha256` sidecar (that is what produced the recursive
+    // `.sha256.sig` chains), and the resulting asset set must contain no
+    // `(.sha256|.sig){2,}` chain.
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::test_helpers::has_recursive_sidecar_chain;
+
+    let signs = vec![SignConfig {
+        id: Some("gpg".to_string()),
+        cmd: Some("gpg".to_string()),
+        args: Some(vec![
+            "--output".to_string(),
+            "{{ .Signature }}".to_string(),
+            "--detach-sign".to_string(),
+            "{{ .Artifact }}".to_string(),
+        ]),
+        artifacts: Some("all".to_string()),
+        ids: None,
+        signature: None,
+        stdin: None,
+        stdin_file: None,
+        env: None,
+        certificate: None,
+        output: None,
+        if_condition: None,
+    }];
+
+    let mut ctx = TestContextBuilder::new().dry_run(true).signs(signs).build();
+
+    let add = |ctx: &mut anodizer_core::context::Context,
+               kind: ArtifactKind,
+               name: &str,
+               meta: std::collections::HashMap<String, String>| {
+        ctx.artifacts.add(Artifact {
+            kind,
+            name: name.to_string(),
+            path: std::path::PathBuf::from(format!("/tmp/{name}")),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: meta,
+            size: None,
+        });
+    };
+
+    add(
+        &mut ctx,
+        ArtifactKind::Archive,
+        "myapp.tar.gz",
+        Default::default(),
+    );
+    // Combined checksums file — SHOULD be signed under `all`.
+    add(
+        &mut ctx,
+        ArtifactKind::Checksum,
+        "myapp_checksums.txt",
+        combined_meta(),
+    );
+    // Split per-artifact sidecar — must NOT be signed.
+    add(
+        &mut ctx,
+        ArtifactKind::Checksum,
+        "myapp.tar.gz.sha256",
+        Default::default(),
+    );
+
+    SignStage.run(&mut ctx).unwrap();
+
+    let sig_names: Vec<String> = ctx
+        .artifacts
+        .by_kind(ArtifactKind::Signature)
+        .into_iter()
+        .map(|a| a.name.clone())
+        .collect();
+
+    assert!(
+        sig_names.iter().any(|n| n == "myapp_checksums.txt.sig"),
+        "combined checksums file must be signed under `all`; got {sig_names:?}"
+    );
+    assert!(
+        sig_names.iter().any(|n| n == "myapp.tar.gz.sig"),
+        "primary archive must be signed under `all`; got {sig_names:?}"
+    );
+    assert!(
+        !sig_names.iter().any(|n| n == "myapp.tar.gz.sha256.sig"),
+        "split checksum sidecar must NOT be signed; got {sig_names:?}"
+    );
+
+    // No registered artifact (subjects or freshly-produced signatures) may
+    // carry a recursive sidecar chain.
+    for a in ctx.artifacts.all() {
+        assert!(
+            !has_recursive_sidecar_chain(&a.name),
+            "recursive sidecar chain registered: {} (kind={:?})",
+            a.name,
+            a.kind
+        );
+    }
 }
 
 /// Regression:
@@ -182,96 +299,96 @@ fn re_sign_idempotency_does_not_chain_signatures() {
     // would itself be signed).
     for filter in ["all", "any"] {
         assert!(
-            !ssa(ArtifactKind::Signature, filter).unwrap(),
+            !should_sign(ArtifactKind::Signature, filter).unwrap(),
             "Signature must be excluded from `{filter}` filter (#6509)"
         );
         assert!(
-            !ssa(ArtifactKind::Certificate, filter).unwrap(),
+            !should_sign(ArtifactKind::Certificate, filter).unwrap(),
             "Certificate must be excluded from `{filter}` filter (#6509)"
         );
     }
 
     // Sanity: a normal release-uploadable kind (Archive) is still signed.
-    assert!(ssa(ArtifactKind::Archive, "all").unwrap());
-    assert!(ssa(ArtifactKind::Archive, "any").unwrap());
+    assert!(should_sign(ArtifactKind::Archive, "all").unwrap());
+    assert!(should_sign(ArtifactKind::Archive, "any").unwrap());
 }
 
 #[test]
 fn test_filter_artifacts_archive() {
-    assert!(ssa(ArtifactKind::Archive, "archive").unwrap());
-    assert!(!ssa(ArtifactKind::Binary, "archive").unwrap());
-    assert!(!ssa(ArtifactKind::Checksum, "archive").unwrap());
-    assert!(!ssa(ArtifactKind::LinuxPackage, "archive").unwrap());
+    assert!(should_sign(ArtifactKind::Archive, "archive").unwrap());
+    assert!(!should_sign(ArtifactKind::Binary, "archive").unwrap());
+    assert!(!should_sign(ArtifactKind::Checksum, "archive").unwrap());
+    assert!(!should_sign(ArtifactKind::LinuxPackage, "archive").unwrap());
 }
 
 #[test]
 fn test_filter_artifacts_source() {
     // "source" matches SourceArchive (not Archive)
-    assert!(ssa(ArtifactKind::SourceArchive, "source").unwrap());
-    assert!(!ssa(ArtifactKind::Archive, "source").unwrap());
-    assert!(!ssa(ArtifactKind::Binary, "source").unwrap());
-    assert!(!ssa(ArtifactKind::Checksum, "source").unwrap());
+    assert!(should_sign(ArtifactKind::SourceArchive, "source").unwrap());
+    assert!(!should_sign(ArtifactKind::Archive, "source").unwrap());
+    assert!(!should_sign(ArtifactKind::Binary, "source").unwrap());
+    assert!(!should_sign(ArtifactKind::Checksum, "source").unwrap());
 }
 
 #[test]
 fn test_filter_artifacts_binary() {
-    assert!(ssa(ArtifactKind::Binary, "binary").unwrap());
-    assert!(!ssa(ArtifactKind::Archive, "binary").unwrap());
-    assert!(!ssa(ArtifactKind::Checksum, "binary").unwrap());
-    assert!(!ssa(ArtifactKind::LinuxPackage, "binary").unwrap());
+    assert!(should_sign(ArtifactKind::Binary, "binary").unwrap());
+    assert!(!should_sign(ArtifactKind::Archive, "binary").unwrap());
+    assert!(!should_sign(ArtifactKind::Checksum, "binary").unwrap());
+    assert!(!should_sign(ArtifactKind::LinuxPackage, "binary").unwrap());
 }
 
 #[test]
 fn test_filter_artifacts_package() {
-    assert!(ssa(ArtifactKind::LinuxPackage, "package").unwrap());
-    assert!(!ssa(ArtifactKind::Binary, "package").unwrap());
-    assert!(!ssa(ArtifactKind::Archive, "package").unwrap());
-    assert!(!ssa(ArtifactKind::Checksum, "package").unwrap());
+    assert!(should_sign(ArtifactKind::LinuxPackage, "package").unwrap());
+    assert!(!should_sign(ArtifactKind::Binary, "package").unwrap());
+    assert!(!should_sign(ArtifactKind::Archive, "package").unwrap());
+    assert!(!should_sign(ArtifactKind::Checksum, "package").unwrap());
 }
 
 #[test]
 fn test_filter_artifacts_installer() {
-    assert!(ssa(ArtifactKind::Installer, "installer").unwrap());
-    assert!(!ssa(ArtifactKind::Binary, "installer").unwrap());
-    assert!(!ssa(ArtifactKind::Archive, "installer").unwrap());
-    assert!(!ssa(ArtifactKind::Checksum, "installer").unwrap());
-    assert!(!ssa(ArtifactKind::LinuxPackage, "installer").unwrap());
+    assert!(should_sign(ArtifactKind::Installer, "installer").unwrap());
+    assert!(!should_sign(ArtifactKind::Binary, "installer").unwrap());
+    assert!(!should_sign(ArtifactKind::Archive, "installer").unwrap());
+    assert!(!should_sign(ArtifactKind::Checksum, "installer").unwrap());
+    assert!(!should_sign(ArtifactKind::LinuxPackage, "installer").unwrap());
 }
 
 #[test]
 fn test_filter_artifacts_diskimage() {
-    assert!(ssa(ArtifactKind::DiskImage, "diskimage").unwrap());
-    assert!(!ssa(ArtifactKind::Binary, "diskimage").unwrap());
-    assert!(!ssa(ArtifactKind::Archive, "diskimage").unwrap());
-    assert!(!ssa(ArtifactKind::Checksum, "diskimage").unwrap());
-    assert!(!ssa(ArtifactKind::Installer, "diskimage").unwrap());
+    assert!(should_sign(ArtifactKind::DiskImage, "diskimage").unwrap());
+    assert!(!should_sign(ArtifactKind::Binary, "diskimage").unwrap());
+    assert!(!should_sign(ArtifactKind::Archive, "diskimage").unwrap());
+    assert!(!should_sign(ArtifactKind::Checksum, "diskimage").unwrap());
+    assert!(!should_sign(ArtifactKind::Installer, "diskimage").unwrap());
 }
 
 #[test]
 fn test_filter_artifacts_sbom() {
-    assert!(ssa(ArtifactKind::Sbom, "sbom").unwrap());
-    assert!(!ssa(ArtifactKind::Binary, "sbom").unwrap());
-    assert!(!ssa(ArtifactKind::Archive, "sbom").unwrap());
-    assert!(!ssa(ArtifactKind::Checksum, "sbom").unwrap());
-    assert!(!ssa(ArtifactKind::LinuxPackage, "sbom").unwrap());
+    assert!(should_sign(ArtifactKind::Sbom, "sbom").unwrap());
+    assert!(!should_sign(ArtifactKind::Binary, "sbom").unwrap());
+    assert!(!should_sign(ArtifactKind::Archive, "sbom").unwrap());
+    assert!(!should_sign(ArtifactKind::Checksum, "sbom").unwrap());
+    assert!(!should_sign(ArtifactKind::LinuxPackage, "sbom").unwrap());
 }
 
 #[test]
 fn test_filter_artifacts_snap() {
-    assert!(ssa(ArtifactKind::Snap, "snap").unwrap());
-    assert!(!ssa(ArtifactKind::Binary, "snap").unwrap());
-    assert!(!ssa(ArtifactKind::Archive, "snap").unwrap());
-    assert!(!ssa(ArtifactKind::Checksum, "snap").unwrap());
-    assert!(!ssa(ArtifactKind::LinuxPackage, "snap").unwrap());
+    assert!(should_sign(ArtifactKind::Snap, "snap").unwrap());
+    assert!(!should_sign(ArtifactKind::Binary, "snap").unwrap());
+    assert!(!should_sign(ArtifactKind::Archive, "snap").unwrap());
+    assert!(!should_sign(ArtifactKind::Checksum, "snap").unwrap());
+    assert!(!should_sign(ArtifactKind::LinuxPackage, "snap").unwrap());
 }
 
 #[test]
 fn test_filter_artifacts_macos_package() {
-    assert!(ssa(ArtifactKind::MacOsPackage, "macos_package").unwrap());
-    assert!(!ssa(ArtifactKind::Binary, "macos_package").unwrap());
-    assert!(!ssa(ArtifactKind::Archive, "macos_package").unwrap());
-    assert!(!ssa(ArtifactKind::Checksum, "macos_package").unwrap());
-    assert!(!ssa(ArtifactKind::Installer, "macos_package").unwrap());
+    assert!(should_sign(ArtifactKind::MacOsPackage, "macos_package").unwrap());
+    assert!(!should_sign(ArtifactKind::Binary, "macos_package").unwrap());
+    assert!(!should_sign(ArtifactKind::Archive, "macos_package").unwrap());
+    assert!(!should_sign(ArtifactKind::Checksum, "macos_package").unwrap());
+    assert!(!should_sign(ArtifactKind::Installer, "macos_package").unwrap());
 }
 
 #[test]
@@ -360,79 +477,79 @@ fn test_artifacts_filter_selects_correct_kinds() {
     // "all" = signable_subject_kinds() (primary subjects). Installer-family
     // kinds (MSI/NSIS as Installer, DMG as DiskImage, PKG as MacOsPackage) are
     // all primary, so all three are signed under "all".
-    assert!(ssa(ArtifactKind::Archive, "all").unwrap());
-    assert!(ssa(ArtifactKind::UploadableBinary, "all").unwrap());
+    assert!(should_sign(ArtifactKind::Archive, "all").unwrap());
+    assert!(should_sign(ArtifactKind::UploadableBinary, "all").unwrap());
     // Checksum is a derived sidecar, NOT a primary subject: never signed.
-    assert!(!ssa(ArtifactKind::Checksum, "all").unwrap());
-    assert!(ssa(ArtifactKind::LinuxPackage, "all").unwrap());
-    assert!(ssa(ArtifactKind::Sbom, "all").unwrap());
-    assert!(ssa(ArtifactKind::Installer, "all").unwrap());
-    assert!(ssa(ArtifactKind::DiskImage, "all").unwrap());
-    assert!(ssa(ArtifactKind::MacOsPackage, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::Checksum, "all").unwrap());
+    assert!(should_sign(ArtifactKind::LinuxPackage, "all").unwrap());
+    assert!(should_sign(ArtifactKind::Sbom, "all").unwrap());
+    assert!(should_sign(ArtifactKind::Installer, "all").unwrap());
+    assert!(should_sign(ArtifactKind::DiskImage, "all").unwrap());
+    assert!(should_sign(ArtifactKind::MacOsPackage, "all").unwrap());
     // Signature + Certificate + Checksum + Metadata are excluded from `all` to
     // prevent recursive signing.
-    assert!(!ssa(ArtifactKind::Signature, "all").unwrap());
-    assert!(!ssa(ArtifactKind::Certificate, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::Signature, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::Certificate, "all").unwrap());
 
-    // Kinds outside release_uploadable_kinds — use dedicated `binary` /
+    // Kinds outside the primary subjects — use dedicated `binary` /
     // `snap` filters to opt in.
-    assert!(!ssa(ArtifactKind::Binary, "all").unwrap());
-    assert!(!ssa(ArtifactKind::Snap, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::Binary, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::Snap, "all").unwrap());
 
     // "all" does NOT match internal/non-uploadable types
-    assert!(!ssa(ArtifactKind::DockerImage, "all").unwrap());
-    assert!(!ssa(ArtifactKind::DockerManifest, "all").unwrap());
-    assert!(!ssa(ArtifactKind::BrewFormula, "all").unwrap());
-    assert!(!ssa(ArtifactKind::Metadata, "all").unwrap());
-    assert!(!ssa(ArtifactKind::ScoopManifest, "all").unwrap());
-    assert!(!ssa(ArtifactKind::KrewPluginManifest, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::DockerImage, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::DockerManifest, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::BrewFormula, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::Metadata, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::ScoopManifest, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::KrewPluginManifest, "all").unwrap());
 
     // "none" matches nothing
-    assert!(!ssa(ArtifactKind::Archive, "none").unwrap());
-    assert!(!ssa(ArtifactKind::Binary, "none").unwrap());
-    assert!(!ssa(ArtifactKind::Checksum, "none").unwrap());
-    assert!(!ssa(ArtifactKind::LinuxPackage, "none").unwrap());
-    assert!(!ssa(ArtifactKind::Installer, "none").unwrap());
-    assert!(!ssa(ArtifactKind::DiskImage, "none").unwrap());
-    assert!(!ssa(ArtifactKind::Sbom, "none").unwrap());
-    assert!(!ssa(ArtifactKind::Snap, "none").unwrap());
-    assert!(!ssa(ArtifactKind::MacOsPackage, "none").unwrap());
+    assert!(!should_sign(ArtifactKind::Archive, "none").unwrap());
+    assert!(!should_sign(ArtifactKind::Binary, "none").unwrap());
+    assert!(!should_sign(ArtifactKind::Checksum, "none").unwrap());
+    assert!(!should_sign(ArtifactKind::LinuxPackage, "none").unwrap());
+    assert!(!should_sign(ArtifactKind::Installer, "none").unwrap());
+    assert!(!should_sign(ArtifactKind::DiskImage, "none").unwrap());
+    assert!(!should_sign(ArtifactKind::Sbom, "none").unwrap());
+    assert!(!should_sign(ArtifactKind::Snap, "none").unwrap());
+    assert!(!should_sign(ArtifactKind::MacOsPackage, "none").unwrap());
 
     // "archive" only matches Archive
-    assert!(ssa(ArtifactKind::Archive, "archive").unwrap());
-    assert!(!ssa(ArtifactKind::Binary, "archive").unwrap());
-    assert!(!ssa(ArtifactKind::Checksum, "archive").unwrap());
+    assert!(should_sign(ArtifactKind::Archive, "archive").unwrap());
+    assert!(!should_sign(ArtifactKind::Binary, "archive").unwrap());
+    assert!(!should_sign(ArtifactKind::Checksum, "archive").unwrap());
 
     // "binary" only matches Binary
-    assert!(ssa(ArtifactKind::Binary, "binary").unwrap());
-    assert!(!ssa(ArtifactKind::Archive, "binary").unwrap());
+    assert!(should_sign(ArtifactKind::Binary, "binary").unwrap());
+    assert!(!should_sign(ArtifactKind::Archive, "binary").unwrap());
 
     // "package" only matches LinuxPackage
-    assert!(ssa(ArtifactKind::LinuxPackage, "package").unwrap());
-    assert!(!ssa(ArtifactKind::Archive, "package").unwrap());
+    assert!(should_sign(ArtifactKind::LinuxPackage, "package").unwrap());
+    assert!(!should_sign(ArtifactKind::Archive, "package").unwrap());
 
     // "installer" only matches Installer
-    assert!(ssa(ArtifactKind::Installer, "installer").unwrap());
-    assert!(!ssa(ArtifactKind::Archive, "installer").unwrap());
+    assert!(should_sign(ArtifactKind::Installer, "installer").unwrap());
+    assert!(!should_sign(ArtifactKind::Archive, "installer").unwrap());
 
     // "diskimage" only matches DiskImage
-    assert!(ssa(ArtifactKind::DiskImage, "diskimage").unwrap());
-    assert!(!ssa(ArtifactKind::Archive, "diskimage").unwrap());
+    assert!(should_sign(ArtifactKind::DiskImage, "diskimage").unwrap());
+    assert!(!should_sign(ArtifactKind::Archive, "diskimage").unwrap());
 
     // "sbom" only matches Sbom
-    assert!(ssa(ArtifactKind::Sbom, "sbom").unwrap());
-    assert!(!ssa(ArtifactKind::Archive, "sbom").unwrap());
+    assert!(should_sign(ArtifactKind::Sbom, "sbom").unwrap());
+    assert!(!should_sign(ArtifactKind::Archive, "sbom").unwrap());
 
     // "snap" only matches Snap
-    assert!(ssa(ArtifactKind::Snap, "snap").unwrap());
-    assert!(!ssa(ArtifactKind::Archive, "snap").unwrap());
+    assert!(should_sign(ArtifactKind::Snap, "snap").unwrap());
+    assert!(!should_sign(ArtifactKind::Archive, "snap").unwrap());
 
     // "macos_package" only matches MacOsPackage
-    assert!(ssa(ArtifactKind::MacOsPackage, "macos_package").unwrap());
-    assert!(!ssa(ArtifactKind::Archive, "macos_package").unwrap());
+    assert!(should_sign(ArtifactKind::MacOsPackage, "macos_package").unwrap());
+    assert!(!should_sign(ArtifactKind::Archive, "macos_package").unwrap());
 
     // Unknown filter returns an error
-    assert!(ssa(ArtifactKind::Checksum, "unknown-value").is_err());
+    assert!(should_sign(ArtifactKind::Checksum, "unknown-value").is_err());
 }
 
 #[test]
@@ -631,7 +748,7 @@ fn test_dry_run_logs_without_executing() {
         path: std::path::PathBuf::from("/tmp/checksums.sha256"),
         target: None,
         crate_name: "test".to_string(),
-        metadata: std::collections::HashMap::from([("combined".to_string(), "true".to_string())]),
+        metadata: combined_meta(),
         size: None,
     });
 
@@ -805,7 +922,7 @@ fn test_missing_signing_binary_errors_with_command_name() {
         path: std::path::PathBuf::from("/tmp/checksums.sha256"),
         target: None,
         crate_name: "test".to_string(),
-        metadata: std::collections::HashMap::from([("combined".to_string(), "true".to_string())]),
+        metadata: combined_meta(),
         size: None,
     });
 
@@ -849,7 +966,7 @@ fn test_signing_command_nonzero_exit_errors_with_details() {
         path: std::path::PathBuf::from("/tmp/test.sha256"),
         target: None,
         crate_name: "test".to_string(),
-        metadata: std::collections::HashMap::from([("combined".to_string(), "true".to_string())]),
+        metadata: combined_meta(),
         size: None,
     });
 
@@ -1018,7 +1135,7 @@ fn test_sign_env_vars_passed_to_command() {
         path: artifact_path,
         target: None,
         crate_name: "test".to_string(),
-        metadata: std::collections::HashMap::from([("combined".to_string(), "true".to_string())]),
+        metadata: combined_meta(),
         size: None,
     });
 
@@ -1224,7 +1341,7 @@ fn test_sign_stage_registers_signature_artifacts_dry_run() {
         path: std::path::PathBuf::from("/tmp/checksums.sha256"),
         target: None,
         crate_name: "myapp".to_string(),
-        metadata: std::collections::HashMap::from([("combined".to_string(), "true".to_string())]),
+        metadata: combined_meta(),
         size: None,
     });
 
@@ -1270,7 +1387,7 @@ fn test_sign_stage_registers_certificate_artifacts_dry_run() {
         path: std::path::PathBuf::from("/tmp/checksums.sha256"),
         target: None,
         crate_name: "myapp".to_string(),
-        metadata: std::collections::HashMap::from([("combined".to_string(), "true".to_string())]),
+        metadata: combined_meta(),
         size: None,
     });
 
@@ -1523,7 +1640,7 @@ fn test_if_condition_true_proceeds() {
         path: std::path::PathBuf::from("/tmp/checksums.sha256"),
         target: None,
         crate_name: "test".to_string(),
-        metadata: std::collections::HashMap::from([("combined".to_string(), "true".to_string())]),
+        metadata: combined_meta(),
         size: None,
     });
 
@@ -1658,7 +1775,7 @@ fn test_if_condition_snapshot_template() {
         path: std::path::PathBuf::from("/tmp/checksums.sha256"),
         target: None,
         crate_name: "test".to_string(),
-        metadata: std::collections::HashMap::from([("combined".to_string(), "true".to_string())]),
+        metadata: combined_meta(),
         size: None,
     });
 
@@ -2500,51 +2617,51 @@ fn test_docker_sign_none_id_defaults() {
 #[test]
 fn test_all_filter_excludes_internal_types() {
     // Internal types that should NOT be signed by the "all" filter
-    assert!(!ssa(ArtifactKind::DockerImage, "all").unwrap());
-    assert!(!ssa(ArtifactKind::DockerImageV2, "all").unwrap());
-    assert!(!ssa(ArtifactKind::DockerManifest, "all").unwrap());
-    assert!(!ssa(ArtifactKind::BrewFormula, "all").unwrap());
-    assert!(!ssa(ArtifactKind::ScoopManifest, "all").unwrap());
-    assert!(!ssa(ArtifactKind::Metadata, "all").unwrap());
-    assert!(!ssa(ArtifactKind::Nixpkg, "all").unwrap());
-    assert!(!ssa(ArtifactKind::KrewPluginManifest, "all").unwrap());
-    assert!(!ssa(ArtifactKind::WingetInstaller, "all").unwrap());
-    assert!(!ssa(ArtifactKind::PkgBuild, "all").unwrap());
-    assert!(!ssa(ArtifactKind::PublishableSnapcraft, "all").unwrap());
-    assert!(!ssa(ArtifactKind::PublishableDockerImage, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::DockerImage, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::DockerImageV2, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::DockerManifest, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::BrewFormula, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::ScoopManifest, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::Metadata, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::Nixpkg, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::KrewPluginManifest, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::WingetInstaller, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::PkgBuild, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::PublishableSnapcraft, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::PublishableDockerImage, "all").unwrap());
 }
 
 #[test]
-fn test_all_filter_includes_release_uploadable_types() {
+fn test_all_filter_includes_primary_subject_types() {
     // "all" = anodizer_core::artifact::signable_subject_kinds() (primary
     // subjects). Mapping: MSI/NSIS (Installer), DMG (DiskImage), and
     // PKG (MacOsPackage) are all primary subjects so they get signed and
     // uploaded alongside archives; anodizer treats them as first-class.
-    assert!(ssa(ArtifactKind::Archive, "all").unwrap());
-    assert!(ssa(ArtifactKind::UploadableBinary, "all").unwrap());
-    assert!(ssa(ArtifactKind::LinuxPackage, "all").unwrap());
-    assert!(ssa(ArtifactKind::SourceArchive, "all").unwrap());
-    assert!(ssa(ArtifactKind::Makeself, "all").unwrap());
-    assert!(ssa(ArtifactKind::Flatpak, "all").unwrap());
-    assert!(ssa(ArtifactKind::SourceRpm, "all").unwrap());
-    assert!(ssa(ArtifactKind::Installer, "all").unwrap());
-    assert!(ssa(ArtifactKind::DiskImage, "all").unwrap());
-    assert!(ssa(ArtifactKind::MacOsPackage, "all").unwrap());
-    assert!(ssa(ArtifactKind::Sbom, "all").unwrap());
+    assert!(should_sign(ArtifactKind::Archive, "all").unwrap());
+    assert!(should_sign(ArtifactKind::UploadableBinary, "all").unwrap());
+    assert!(should_sign(ArtifactKind::LinuxPackage, "all").unwrap());
+    assert!(should_sign(ArtifactKind::SourceArchive, "all").unwrap());
+    assert!(should_sign(ArtifactKind::Makeself, "all").unwrap());
+    assert!(should_sign(ArtifactKind::Flatpak, "all").unwrap());
+    assert!(should_sign(ArtifactKind::SourceRpm, "all").unwrap());
+    assert!(should_sign(ArtifactKind::Installer, "all").unwrap());
+    assert!(should_sign(ArtifactKind::DiskImage, "all").unwrap());
+    assert!(should_sign(ArtifactKind::MacOsPackage, "all").unwrap());
+    assert!(should_sign(ArtifactKind::Sbom, "all").unwrap());
     // Checksum is a derived sidecar, NOT a primary subject: excluded from `all`.
-    assert!(!ssa(ArtifactKind::Checksum, "all").unwrap());
-    assert!(ssa(ArtifactKind::UploadableFile, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::Checksum, "all").unwrap());
+    assert!(should_sign(ArtifactKind::UploadableFile, "all").unwrap());
     // Signature + Certificate + Metadata are derived sidecars, excluded from
     // `all` so re-running sign on a partially-built dist does not produce
     // sig.sig chains.
-    assert!(!ssa(ArtifactKind::Signature, "all").unwrap());
-    assert!(!ssa(ArtifactKind::Certificate, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::Signature, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::Certificate, "all").unwrap());
 
     // These are NOT primary subjects — use the dedicated
     // `binary` / `snap` filters to opt in.
-    assert!(!ssa(ArtifactKind::Binary, "all").unwrap());
-    assert!(!ssa(ArtifactKind::UniversalBinary, "all").unwrap());
-    assert!(!ssa(ArtifactKind::Snap, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::Binary, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::UniversalBinary, "all").unwrap());
+    assert!(!should_sign(ArtifactKind::Snap, "all").unwrap());
 }
 
 // -----------------------------------------------------------------------

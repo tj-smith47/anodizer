@@ -567,6 +567,30 @@ pub fn create_config(dir: &Path, content: &str) {
         .unwrap_or_else(|e| panic!("failed to write .anodizer.yaml: {e}"));
 }
 
+/// `true` when `name` ends in two or more consecutive `.sha256` / `.sig`
+/// segments — the recursive sidecar pattern `(\.sha256|\.sig){2,}` such as
+/// `X.sha256.sig` or `X.sha256.sig.sha256`. A single trailing `.sha256` or
+/// `.sig` is a legitimate sidecar and returns `false`.
+///
+/// Shared by the checksum-stage and verify-release regression suites, which
+/// both assert that no produced/demanded asset name matches the chain.
+pub fn has_recursive_sidecar_chain(name: &str) -> bool {
+    let mut rest = name;
+    let mut run = 0usize;
+    loop {
+        if let Some(stripped) = rest.strip_suffix(".sha256") {
+            rest = stripped;
+            run += 1;
+        } else if let Some(stripped) = rest.strip_suffix(".sig") {
+            rest = stripped;
+            run += 1;
+        } else {
+            break;
+        }
+    }
+    run >= 2
+}
+
 /// Create a fake binary file at `dir/<name>` for testing archive/checksum stages.
 ///
 /// The file contains a small amount of recognizable data so tests can
@@ -684,6 +708,19 @@ pub fn make_git_info(dirty: bool, prerelease: Option<&str>) -> GitInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recursive_sidecar_chain_detector_classification() {
+        assert!(has_recursive_sidecar_chain("x.sha256.sig"));
+        assert!(has_recursive_sidecar_chain("x.sha256.sig.sha256"));
+        assert!(has_recursive_sidecar_chain("x.tar.gz.sig.sig"));
+        assert!(has_recursive_sidecar_chain("x.cdx.json.sha256.sig.sha256"));
+        // Single legitimate sidecars are fine.
+        assert!(!has_recursive_sidecar_chain("x.tar.gz.sha256"));
+        assert!(!has_recursive_sidecar_chain("x.tar.gz.sig"));
+        assert!(!has_recursive_sidecar_chain("x.cdx.json.sha256"));
+        assert!(!has_recursive_sidecar_chain("x.tar.gz"));
+    }
 
     #[test]
     fn test_builder_default_produces_valid_context() {

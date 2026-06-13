@@ -657,9 +657,16 @@ pub fn signable_subject_kinds() -> &'static [ArtifactKind] {
 
 /// `true` when `kind` is a DERIVED sidecar — the OUTPUT of checksumming,
 /// signing, or run metadata, and therefore something that must NEVER be an
-/// input (subject) to the checksum or sign stages. The single guard that makes
-/// the recursive `(.sha256|.sig)`-chain bug unrepresentable: any code building a
-/// subject set asserts `!is_derived_sidecar_kind(kind)`.
+/// input (subject) to the checksum or sign stages.
+///
+/// What makes the recursive `(.sha256|.sig)`-chain bug unrepresentable is the
+/// ALLOW-LIST taxonomy — [`checksummable_subject_kinds`] /
+/// [`signable_subject_kinds`] enumerate only primary kinds, so a derived
+/// sidecar can never be selected as a subject in the first place. This
+/// predicate is the COMPLEMENTARY deny-side filter: it is used where a stage
+/// iterates the whole registry rather than an allow-listed kind set —
+/// `refresh_combined_checksums` skips every artifact for which this returns
+/// `true` so a freshly-produced `.sig` is not re-hashed into the combined file.
 pub fn is_derived_sidecar_kind(kind: ArtifactKind) -> bool {
     matches!(
         kind,
@@ -708,6 +715,17 @@ pub fn is_binary_sign_output(artifact: &Artifact) -> bool {
 /// sign / SBOM stages; read by [`matches_id_filter`] so a derived artifact
 /// inherits its subject's id-filter verdict.
 pub const SUBJECT_KIND_META: &str = "subject_kind";
+
+/// Metadata key marking a [`ArtifactKind::Checksum`] artifact as the COMBINED
+/// `checksums.txt` (value [`COMBINED_CHECKSUM_VALUE`], i.e. `"true"`), as
+/// opposed to a per-artifact split sidecar. Written by the checksum stage when
+/// it emits the combined file; read by the sign stage's `checksum` / `all`
+/// filters, which sign the combined file but never a split sidecar (signing a
+/// split `.sha256` is what produced the recursive `.sha256.sig` chains).
+pub const COMBINED_CHECKSUM_META: &str = "combined";
+
+/// Sentinel value stored under [`COMBINED_CHECKSUM_META`].
+pub const COMBINED_CHECKSUM_VALUE: &str = "true";
 
 /// Artifact kinds the `ids:` filter always keeps — these are emitted for
 /// every release, not per-build, so a build-id filter has nothing to say
