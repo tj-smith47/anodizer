@@ -17,6 +17,11 @@ use crate::group::CommitInfo;
 /// into [`LoginEnricher`] (boxed so tests can supply counting closures).
 type LoginResolveFn<'a> = Box<dyn FnMut(&str, &str) -> Option<String> + 'a>;
 
+/// `(author_name, author_email) -> canonical_email` mailmap canonicalizer
+/// injected into [`LoginEnricher`] (boxed so tests stay offline). `None`
+/// means "no canonical mapping" — the back-fill then leaves the commit alone.
+type CanonicalizeFn<'a> = Box<dyn FnMut(&str, &str) -> Option<String> + 'a>;
+
 /// Memoizing email→GitHub-login enricher for [`CommitInfo`] lists.
 ///
 /// The lookup function is injected so tests never touch the network; the
@@ -28,17 +33,37 @@ type LoginResolveFn<'a> = Box<dyn FnMut(&str, &str) -> Option<String> + 'a>;
 pub(crate) struct LoginEnricher<'a> {
     /// `(author_email, representative_sha) -> login` lookup.
     resolve: LoginResolveFn<'a>,
+    /// `(author_name, author_email) -> canonical_email` mailmap mapping used
+    /// by the back-fill pass to lend a resolved login between aliased emails.
+    canonicalize: CanonicalizeFn<'a>,
     /// Run-local memo: one `resolve` call per unique email, failures included.
     cache: HashMap<String, Option<String>>,
+    /// Run-local memo for `canonicalize`, keyed by `author_email`. One
+    /// `git check-mailmap` spawn per unique email regardless of how many
+    /// commits (the back-fill seeds and fills in two passes) share it.
+    canonical_cache: HashMap<String, Option<String>>,
 }
 
 impl<'a> LoginEnricher<'a> {
-    /// Build an enricher around an injected lookup function.
+    /// Build an enricher around an injected lookup function. The mailmap
+    /// canonicalizer defaults to a no-op (every identity maps to itself), so
+    /// the back-fill pass only fires when a canonicalizer is supplied via
+    /// [`LoginEnricher::with_canonicalizer`].
     pub(crate) fn new(resolve: LoginResolveFn<'a>) -> Self {
         Self {
             resolve,
+            canonicalize: Box::new(|_, email| Some(email.to_string())),
             cache: HashMap::new(),
+            canonical_cache: HashMap::new(),
         }
+    }
+
+    /// Attach the mailmap canonicalizer that drives the login back-fill pass:
+    /// after primary resolution, login-less commits whose canonical email
+    /// matches a resolved sibling's canonical email inherit that login.
+    pub(crate) fn with_canonicalizer(mut self, canonicalize: CanonicalizeFn<'a>) -> Self {
+        self.canonicalize = canonicalize;
+        self
     }
 
     /// Production enricher resolving via the GitHub commits API for
@@ -50,9 +75,14 @@ impl<'a> LoginEnricher<'a> {
         owner: String,
         repo: String,
         token: String,
+        workspace_root: &Path,
     ) -> LoginEnricher<'static> {
+        let root = workspace_root.to_path_buf();
         LoginEnricher::new(Box::new(move |email, sha| {
             anodizer_core::git::commit_author_login(&owner, &repo, email, sha, Some(&token))
+        }))
+        .with_canonicalizer(Box::new(move |name, email| {
+            anodizer_core::git::canonical_author_email_in(&root, name, email)
         }))
     }
 
@@ -79,6 +109,60 @@ impl<'a> LoginEnricher<'a> {
             };
             if let Some(login) = resolved {
                 commit.login = login;
+            }
+        }
+
+        self.backfill_aliased_logins(commits);
+    }
+
+    /// Memoized `canonicalize` lookup keyed by `author_email`. `check-mailmap`
+    /// maps purely on email (one email → one canonical), so caching by email
+    /// alone is correct and collapses the back-fill's two passes to one spawn
+    /// per unique email. Misses (including `None`) are cached so an unmapped
+    /// email is never re-spawned.
+    fn canonical_for(&mut self, name: &str, email: &str) -> Option<String> {
+        if let Some(hit) = self.canonical_cache.get(email) {
+            return hit.clone();
+        }
+        let canonical = (self.canonicalize)(name, email);
+        self.canonical_cache
+            .insert(email.to_string(), canonical.clone());
+        canonical
+    }
+
+    /// Back-fill pass: lend a resolved login between author identities the
+    /// repo's `.mailmap` declares to be the same person. Commits authored with
+    /// an unlinked email (whose GitHub `.author.login` is null) inherit the
+    /// login resolved for a linked sibling email that canonicalizes to the same
+    /// `.mailmap` identity. Strictly best-effort — a commit with no canonical
+    /// match keeps its empty login and the renderer's name-based fallback.
+    fn backfill_aliased_logins(&mut self, commits: &mut [CommitInfo]) {
+        // Seed `canonical_email -> login` from commits that already resolved,
+        // iterating the slice in order so the first non-empty login wins
+        // deterministically (independent of HashMap iteration order).
+        let mut canonical_login: HashMap<String, String> = HashMap::new();
+        for commit in commits.iter() {
+            if commit.login.is_empty() || commit.author_email.is_empty() {
+                continue;
+            }
+            if let Some(canonical) = self.canonical_for(&commit.author_name, &commit.author_email) {
+                canonical_login
+                    .entry(canonical)
+                    .or_insert_with(|| commit.login.clone());
+            }
+        }
+        if canonical_login.is_empty() {
+            return;
+        }
+
+        for commit in commits.iter_mut() {
+            if !commit.login.is_empty() || commit.author_email.is_empty() {
+                continue;
+            }
+            if let Some(canonical) = self.canonical_for(&commit.author_name, &commit.author_email)
+                && let Some(login) = canonical_login.get(&canonical)
+            {
+                commit.login = login.clone();
             }
         }
     }
@@ -165,6 +249,16 @@ mod tests {
             login: login.to_string(),
             ..Default::default()
         }
+    }
+
+    /// A login resolver where `tj@jarvispro.io` is account-linked (returns a
+    /// login) and `jane@work.com` is not (returns `None`, mirroring a GitHub
+    /// `.author.login` null for an unlinked commit email).
+    fn linked_only_resolver() -> LoginResolveFn<'static> {
+        Box::new(|email, _sha| match email {
+            "tj@jarvispro.io" => Some("tj-smith47".to_string()),
+            _ => None,
+        })
     }
 
     /// One lookup per unique email: three commits across two emails cost
@@ -325,5 +419,108 @@ mod tests {
 
         std::fs::write(tmp.path().join(".anodizer.yaml"), "crates: []\n").unwrap();
         assert_eq!(configured_github_target(tmp.path()), None);
+    }
+
+    /// Mailmap back-fill: an unlinked email (`jane@work.com`, resolves to
+    /// null) inherits the login of a linked sibling (`tj@jarvispro.io`) when
+    /// the canonicalizer maps BOTH to the same canonical identity.
+    #[test]
+    fn backfill_lends_login_across_canonical_aliases() {
+        let mut commits = vec![
+            CommitInfo {
+                author_name: "TJ Smith".into(),
+                author_email: "tj@jarvispro.io".into(),
+                full_hash: "a1a1".into(),
+                ..Default::default()
+            },
+            CommitInfo {
+                author_name: "TJ Smith".into(),
+                author_email: "jane@work.com".into(),
+                full_hash: "b2b2".into(),
+                ..Default::default()
+            },
+        ];
+        {
+            let mut enricher = LoginEnricher::new(linked_only_resolver())
+                // Both aliases canonicalize to the primary identity's email.
+                .with_canonicalizer(Box::new(|_name, _email| {
+                    Some("tj@jarvispro.io".to_string())
+                }));
+            enricher.enrich(&mut commits);
+        }
+        assert_eq!(
+            commits[0].login, "tj-smith47",
+            "the linked email resolves directly"
+        );
+        assert_eq!(
+            commits[1].login, "tj-smith47",
+            "the unlinked sibling inherits the login via the mailmap canonical match"
+        );
+    }
+
+    /// Negative: when the canonicalizer maps the two emails to DIFFERENT
+    /// canonical identities, the unlinked commit stays login-less — no
+    /// cross-contamination between unrelated authors.
+    #[test]
+    fn backfill_does_not_cross_unrelated_authors() {
+        let mut commits = vec![
+            CommitInfo {
+                author_name: "TJ Smith".into(),
+                author_email: "tj@jarvispro.io".into(),
+                full_hash: "a1a1".into(),
+                ..Default::default()
+            },
+            CommitInfo {
+                author_name: "Someone Else".into(),
+                author_email: "jane@work.com".into(),
+                full_hash: "b2b2".into(),
+                ..Default::default()
+            },
+        ];
+        {
+            let mut enricher = LoginEnricher::new(linked_only_resolver())
+                // Each email is its own canonical identity (distinct people).
+                .with_canonicalizer(Box::new(|_name, email| Some(email.to_string())));
+            enricher.enrich(&mut commits);
+        }
+        assert_eq!(commits[0].login, "tj-smith47");
+        assert!(
+            commits[1].login.is_empty(),
+            "an unrelated author must not inherit another's login"
+        );
+    }
+
+    /// The canonicalizer (a `git check-mailmap` spawn in production) runs at
+    /// most once per unique author email across BOTH back-fill passes — four
+    /// commits over two emails cost exactly two canonicalize calls, not eight.
+    #[test]
+    fn backfill_memoizes_one_canonicalize_per_unique_email() {
+        let mut calls: Vec<String> = Vec::new();
+        let mut commits = vec![
+            commit("tj@jarvispro.io", "a1a1", ""),
+            commit("jane@work.com", "b2b2", ""),
+            commit("tj@jarvispro.io", "c3c3", ""),
+            commit("jane@work.com", "d4d4", ""),
+        ];
+        for c in &mut commits {
+            c.author_name = "TJ Smith".into();
+        }
+        {
+            let mut enricher = LoginEnricher::new(linked_only_resolver()).with_canonicalizer(
+                Box::new(|_name, email| {
+                    calls.push(email.to_string());
+                    Some("tj@jarvispro.io".to_string())
+                }),
+            );
+            enricher.enrich(&mut commits);
+        }
+        calls.sort();
+        assert_eq!(
+            calls,
+            vec!["jane@work.com".to_string(), "tj@jarvispro.io".to_string()],
+            "exactly one canonicalize call per unique email across both passes"
+        );
+        // Back-fill still works: both jane commits inherit the login.
+        assert!(commits.iter().all(|c| c.login == "tj-smith47"));
     }
 }

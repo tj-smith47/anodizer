@@ -862,7 +862,8 @@ fn group_section_commits(
             configured.as_ref().map(|(o, n)| (o.as_str(), n.as_str())),
             workspace_root,
         ) {
-            crate::enrich::LoginEnricher::for_github_repo(owner, repo, token).enrich(&mut infos);
+            crate::enrich::LoginEnricher::for_github_repo(owner, repo, token, workspace_root)
+                .enrich(&mut infos);
         }
     }
 

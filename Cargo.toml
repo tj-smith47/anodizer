@@ -82,7 +82,7 @@ version = "0.9.1"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/tj-smith47/anodizer"
-authors = ["TJ Smith"]
+authors = ["TJ Smith <tj@jarvispro.io>"]
 keywords = ["release", "automation", "cargo", "ci-cd", "packaging"]
 categories = ["command-line-utilities", "development-tools"]
 

@@ -735,7 +735,7 @@ fn build_login_enricher(
         &root,
     )?;
     Some(crate::enrich::LoginEnricher::for_github_repo(
-        owner, repo, token,
+        owner, repo, token, &root,
     ))
 }
 

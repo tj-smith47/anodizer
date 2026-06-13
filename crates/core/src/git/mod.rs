@@ -5,6 +5,7 @@ use std::process::Command;
 mod commits;
 mod detect;
 mod github_api;
+mod mailmap;
 mod remote;
 mod semver;
 mod snapshot_sde;
@@ -41,6 +42,7 @@ pub use github_api::{
     gh_api_get_paginated_with_binary, gh_api_get_with_binary, resolve_github_token,
     resolve_github_token_with_env,
 };
+pub use mailmap::canonical_author_email_in;
 pub use remote::{
     detect_github_repo, detect_github_repo_in, detect_owner_repo, detect_owner_repo_in,
     detect_remote_web_base_in, has_remote_in, parse_github_remote, parse_remote_owner_repo,
