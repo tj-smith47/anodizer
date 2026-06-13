@@ -4,7 +4,8 @@ use anodizer_core::stage::Stage;
 use anodizer_core::test_helpers::TestContextBuilder;
 
 use super::helpers::{
-    prepare_stdin_from, resolve_sign_args, resolve_signature_path, should_sign_artifact,
+    collapse_doubled_digest, pin_image_ref_to_digest, prepare_stdin_from, resolve_sign_args,
+    resolve_signature_path, should_sign_artifact,
 };
 use super::process::{ArtifactFilter, process_sign_configs};
 use super::{DockerSignStage, SignStage};
@@ -90,6 +91,60 @@ fn test_resolve_sign_args() {
     let resolved = resolve_sign_args(&args, "/tmp/file.tar.gz", "/tmp/file.tar.gz.sig", None);
     assert_eq!(resolved[1], "/tmp/file.tar.gz.sig");
     assert_eq!(resolved[3], "/tmp/file.tar.gz");
+}
+
+#[test]
+fn pin_image_ref_to_digest_appends_digest() {
+    // A bare tag becomes a digest-pinned reference cosign can sign safely.
+    assert_eq!(
+        pin_image_ref_to_digest("ghcr.io/org/app:0.9.0", "sha256:abc123"),
+        "ghcr.io/org/app:0.9.0@sha256:abc123"
+    );
+}
+
+#[test]
+fn pin_image_ref_to_digest_is_idempotent() {
+    // Feeding an already-pinned ref must not double the digest.
+    assert_eq!(
+        pin_image_ref_to_digest("ghcr.io/org/app:0.9.0@sha256:abc123", "sha256:abc123"),
+        "ghcr.io/org/app:0.9.0@sha256:abc123"
+    );
+    // Re-pinning swaps to the freshly-resolved digest (the build stage's
+    // value is authoritative).
+    assert_eq!(
+        pin_image_ref_to_digest("ghcr.io/org/app:0.9.0@sha256:stale", "sha256:fresh"),
+        "ghcr.io/org/app:0.9.0@sha256:fresh"
+    );
+}
+
+#[test]
+fn pin_image_ref_to_digest_without_digest_returns_bare_ref() {
+    // No digest captured → leave the ref unpinned (caller warns); never
+    // fabricate a digest.
+    assert_eq!(
+        pin_image_ref_to_digest("ghcr.io/org/app:latest", ""),
+        "ghcr.io/org/app:latest"
+    );
+}
+
+#[test]
+fn collapse_doubled_digest_removes_one_pin() {
+    // The historical default `{{ .Artifact }}@{{ .Digest }}` with a pinned
+    // Artifact yields a doubled pin; collapse to a single valid reference.
+    assert_eq!(
+        collapse_doubled_digest("ghcr.io/org/app:0.9.0@sha256:abc@sha256:abc"),
+        "ghcr.io/org/app:0.9.0@sha256:abc"
+    );
+    // A single pin is untouched.
+    assert_eq!(
+        collapse_doubled_digest("ghcr.io/org/app:0.9.0@sha256:abc"),
+        "ghcr.io/org/app:0.9.0@sha256:abc"
+    );
+    // Two DIFFERENT trailing tokens are left alone (not a self-doubling).
+    assert_eq!(
+        collapse_doubled_digest("ghcr.io/org/app:0.9.0@sha256:abc@sha256:def"),
+        "ghcr.io/org/app:0.9.0@sha256:abc@sha256:def"
+    );
 }
 
 #[test]
@@ -1964,6 +2019,98 @@ fn test_docker_sign_digest_and_artifact_id_template_vars() {
         "artifactID template var should resolve from metadata, got: {}",
         output.trim()
     );
+}
+
+/// The reference handed to cosign must be the digest-pinned
+/// `<repo>:<tag>@sha256:<digest>`, never a bare tag — signing a tag is a
+/// TOCTOU hole (the tag can move between build and sign). Regression for the
+/// v0.9.0 log where cosign warned it was handed `ghcr.io/...:0.9.0` (a tag).
+/// Exercises BOTH a bare `{{ .Artifact }}` args template and the historical
+/// `{{ .Artifact }}@{{ .Digest }}` default; each must yield exactly one pin.
+#[test]
+fn test_docker_sign_signs_by_digest_not_tag() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::DockerSignConfig;
+
+    for (label, args_template) in [
+        ("bare-artifact", "{{ .Artifact }}"),
+        ("artifact-at-digest", "{{ .Artifact }}@{{ .Digest }}"),
+    ] {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let marker_path = tmp.path().join("ref.txt");
+        let marker_str = marker_path.to_string_lossy().to_string();
+
+        // Capture the reference cosign receives. The ref template is a
+        // STANDALONE arg (`$1`) — exactly how a real `cosign sign <ref>`
+        // call shapes it — so the per-arg digest-collapse applies. A shell
+        // captures `$1` to the marker file.
+        let (cmd, args) = if cfg!(windows) {
+            (
+                "cmd.exe".to_string(),
+                vec![
+                    "/C".to_string(),
+                    format!("echo %1> {}", marker_str),
+                    args_template.to_string(),
+                ],
+            )
+        } else {
+            (
+                "sh".to_string(),
+                vec![
+                    "-c".to_string(),
+                    format!("printf '%s' \"$1\" > {}", marker_str),
+                    "sh".to_string(),
+                    args_template.to_string(),
+                ],
+            )
+        };
+        let docker_signs = vec![DockerSignConfig {
+            id: Some("digest-ref".to_string()),
+            cmd: Some(cmd),
+            args: Some(args),
+            artifacts: Some("all".to_string()),
+            ids: None,
+            stdin: None,
+            stdin_file: None,
+            env: None,
+            output: None,
+            if_condition: None,
+            signature: None,
+            certificate: None,
+        }];
+
+        let mut ctx = TestContextBuilder::new().dry_run(false).build();
+        ctx.config.docker_signs = Some(docker_signs);
+
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("tag".to_string(), "ghcr.io/myorg/app:0.9.0".to_string());
+        metadata.insert("digest".to_string(), "sha256:282ea8edeadbeef".to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::DockerImageV2,
+            name: "ghcr.io/myorg/app:0.9.0".to_string(),
+            path: std::path::PathBuf::from("ghcr.io/myorg/app:0.9.0"),
+            target: None,
+            crate_name: "test".to_string(),
+            metadata,
+            size: None,
+        });
+
+        let stage = DockerSignStage;
+        stage.run(&mut ctx).unwrap();
+
+        let signed_ref = std::fs::read_to_string(&marker_path).unwrap();
+        let signed_ref = signed_ref.trim();
+        assert_eq!(
+            signed_ref, "ghcr.io/myorg/app:0.9.0@sha256:282ea8edeadbeef",
+            "[{label}] cosign must receive the digest-pinned ref, got: {signed_ref}"
+        );
+        // Exactly one digest pin — no doubling, no bare tag.
+        assert_eq!(
+            signed_ref.matches("@sha256:").count(),
+            1,
+            "[{label}] exactly one digest pin expected: {signed_ref}"
+        );
+    }
 }
 
 #[test]

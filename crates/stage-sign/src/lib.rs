@@ -245,13 +245,31 @@ impl Stage for DockerSignStage {
                     // Also set camelCase for direct Tera usage ({{ artifactID }}).
                     ctx.template_vars_mut().set("artifactID", artifact_id_val);
 
+                    // Sign the digest-pinned reference (`<repo>:<tag>@<digest>`),
+                    // never the bare tag: a tag can move between build and sign,
+                    // so a tag-signature may certify a different image than the
+                    // one anodize built (cosign warns and is removing tag
+                    // signing). The build stage recorded this image's digest in
+                    // metadata; pinning to it certifies exactly that image. When
+                    // no digest was captured the reference stays unpinned and we
+                    // warn rather than silently sign by tag.
+                    if digest_val.is_empty() {
+                        log.warn(&format!(
+                            "docker-sign [{}]: no digest recorded for image '{}' — \
+                             signing by tag, which can certify a moved image. Ensure \
+                             the docker build stage captured the image digest.",
+                            sign_id, image_str
+                        ));
+                    }
+                    let signed_ref =
+                        crate::helpers::pin_image_ref_to_digest(image_str.as_ref(), digest_val);
+
                     // For Docker images the "signature" concept is embedded;
                     // use a placeholder `.sig` path to satisfy the template
                     // if the user has {{ .Signature }} in their args.
-                    let signature_str = format!("{}.sig", image_str);
+                    let signature_str = format!("{}.sig", signed_ref);
 
-                    let resolved =
-                        resolve_sign_args(&args, image_str.as_ref(), &signature_str, None);
+                    let resolved = resolve_sign_args(&args, &signed_ref, &signature_str, None);
 
                     // Propagate template render errors instead of silently
                     // falling back to the unrendered template string —
@@ -266,6 +284,12 @@ impl Stage for DockerSignStage {
                                 format!("docker-sign [{}]: render arg '{}'", sign_id, arg)
                             })
                         })
+                        // `{{ .Artifact }}` already resolves to the pinned ref;
+                        // an args template that ALSO appends `@{{ .Digest }}`
+                        // (e.g. the historical default) would otherwise yield a
+                        // doubled `@sha256:..@sha256:..`. Collapse it so exactly
+                        // one digest pin survives regardless of args shape.
+                        .map(|arg| arg.map(|a| crate::helpers::collapse_doubled_digest(&a)))
                         .collect::<Result<Vec<_>>>()?;
 
                     if ctx.is_dry_run() {
@@ -277,7 +301,7 @@ impl Stage for DockerSignStage {
                         continue;
                     }
 
-                    log.status(&format!("docker-sign [{}] {}", sign_id, image_str));
+                    log.status(&format!("docker-sign [{}] {}", sign_id, signed_ref));
 
                     // Prepare stdin piping for docker signs.
                     let (stdin_cfg, stdin_data) = prepare_stdin_from(

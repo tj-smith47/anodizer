@@ -228,6 +228,65 @@ pub(crate) fn expand_shell_vars(s: &str, vars: &HashMap<&str, &str>) -> String {
     expand_with_preserve(s, |name| vars.get(name).map(|v| (*v).to_string()))
 }
 
+/// Pin a Docker image reference to its content digest, producing the
+/// `<repo>:<tag>@sha256:<digest>` form cosign must sign.
+///
+/// Signing a bare `<repo>:<tag>` is a TOCTOU integrity hole: the tag can
+/// move between build and sign, so a tag-signature may certify a different
+/// image than the one anodize built (cosign warns and is removing tag
+/// signing). The build stage records the digest it produced; signing the
+/// digest-pinned reference certifies exactly that image.
+///
+/// Idempotent: any existing `@sha256:...` suffix on `image_ref` is stripped
+/// before re-pinning, so feeding an already-pinned reference (or a user
+/// `args` template that also appends `@{{ .Digest }}`) cannot produce a
+/// doubled `@sha256:...@sha256:...` token. When `digest` is empty (no
+/// digest was captured) the reference is returned unpinned — the caller
+/// warns rather than silently dropping the signature.
+pub(crate) fn pin_image_ref_to_digest(image_ref: &str, digest: &str) -> String {
+    let base = strip_digest_suffix(image_ref);
+    if digest.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}@{digest}")
+    }
+}
+
+/// Strip a trailing `@sha256:<hex>` (or any `@<alg>:<value>`) digest suffix
+/// from an image reference, returning the bare `<repo>:<tag>` (or `<repo>`)
+/// part. A reference with no digest suffix is returned unchanged.
+fn strip_digest_suffix(image_ref: &str) -> &str {
+    // A digest suffix is the final `@`-delimited segment containing a `:`
+    // (the `<algorithm>:<hex>` shape). Splitting on the LAST `@` is safe
+    // because a registry/repo/tag cannot contain `@` — only the digest
+    // delimiter does.
+    match image_ref.rsplit_once('@') {
+        Some((base, suffix)) if suffix.contains(':') => base,
+        _ => image_ref,
+    }
+}
+
+/// Collapse a doubled trailing image digest (`@<alg>:<v>@<alg>:<v>`, the two
+/// halves identical) down to a single pin.
+///
+/// `{{ .Artifact }}` now resolves to the already-digest-pinned reference, so
+/// an `args` template that ALSO appends `@{{ .Digest }}` (the historical
+/// default, and a natural hand-written value) would otherwise produce
+/// `<repo>:<tag>@sha256:X@sha256:X`. This keeps exactly one pin so the
+/// resulting cosign reference is valid for both args shapes. Only collapses
+/// when the two digest segments are byte-identical — a genuinely different
+/// trailing token is left untouched.
+pub(crate) fn collapse_doubled_digest(arg: &str) -> String {
+    if let Some((head, last)) = arg.rsplit_once('@')
+        && last.contains(':')
+        && let Some((base, prev)) = head.rsplit_once('@')
+        && prev == last
+    {
+        return format!("{base}@{last}");
+    }
+    arg.to_string()
+}
+
 /// Replace `{{ .Artifact }}`, `{{ .Signature }}`, and `{{ .Certificate }}`
 /// placeholders in each arg.
 pub(crate) fn resolve_sign_args(
