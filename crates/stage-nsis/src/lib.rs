@@ -205,7 +205,7 @@ impl Stage for NsisStage {
                     )?;
                     if !proceed {
                         log.status(&format!(
-                        "skipping nsis config '{}' for crate {}: `if` condition evaluated falsy",
+                        "skipped nsis config '{}' for crate {} — `if` condition evaluated falsy",
                         nsis_id_for_log, krate.name
                     ));
                         continue;
@@ -263,16 +263,16 @@ impl Stage for NsisStage {
                     // Warn and skip if no Windows binaries found
                     if filtered.is_empty() && windows_binaries.is_empty() {
                         log.warn(&format!(
-                            "no Windows binary artifacts found for crate '{}'; \
-                         skipping NSIS generation (expected binaries targeting windows)",
+                            "skipped NSIS generation for crate '{}' — no Windows binary \
+                         artifacts found (expected binaries targeting windows)",
                             krate.name
                         ));
                         continue;
                     }
                     if filtered.is_empty() {
                         log.warn(&format!(
-                            "ids filter {:?} matched no binaries for crate '{}'; skipping",
-                            nsis_cfg.ids, krate.name
+                            "skipped nsis for crate '{}' — ids filter {:?} matched no binaries",
+                            krate.name, nsis_cfg.ids
                         ));
                         continue;
                     }

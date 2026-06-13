@@ -865,7 +865,7 @@ fn test_changelog_github_native_aggregates_missing_release_github_warnings() {
     let warns = capture.warn_messages();
     let skip_warns: Vec<&String> = warns
         .iter()
-        .filter(|m| m.contains("skipping github-native notes"))
+        .filter(|m| m.contains("skipped github-native notes"))
         .collect();
     assert_eq!(
         skip_warns.len(),

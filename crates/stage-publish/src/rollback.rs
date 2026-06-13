@@ -112,7 +112,7 @@ pub fn run(
         // Find the publisher by name.
         let Some(publisher) = publishers.iter().find(|p| p.name() == name_owned) else {
             log.warn(&format!(
-                "publisher '{}' not in current registry; skipping rollback",
+                "skipped rollback for '{}' — publisher not in current registry",
                 name_owned,
             ));
             failed += 1;
@@ -124,7 +124,7 @@ pub fn run(
         // Publisher opted out of rollback — leave its work in place.
         if publisher.retain_on_rollback() {
             log.status(&format!(
-                "skipping rollback for '{}' — retain_on_rollback is set",
+                "skipped rollback for '{}' — retain_on_rollback is set",
                 name_owned
             ));
             continue;

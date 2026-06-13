@@ -471,14 +471,14 @@ pub fn publish_to_gemfury(
                 log,
             )? {
                 log.status(&format!(
-                    "'{}@{}' already on gemfury account '{}' — skipping (idempotent)",
+                    "skipped '{}@{}' — already on gemfury account '{}' (idempotent)",
                     fury_pkg, version, account
                 ));
                 continue;
             }
 
             log.status(&format!(
-                "pushing {} ({}) -> {} (gemfury account '{}')",
+                "pushing {} ({}) → {} (gemfury account '{}')",
                 art_name, format, push_url, account
             ));
 

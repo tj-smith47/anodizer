@@ -94,9 +94,9 @@ pub(crate) fn rollback_publish(
 
         let Some(token) = resolve_token(t) else {
             log.warn(&format!(
-                "no schemastore token resolvable for {label} (env var ${env_hint} / \
-                 ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN all unset); skipping rollback \
-                 for head {}:{}",
+                "skipped rollback for head {}:{} — no schemastore token resolvable for \
+                 {label} (env var ${env_hint} / ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN \
+                 all unset)",
                 t.fork_owner, t.branch
             ));
             continue;

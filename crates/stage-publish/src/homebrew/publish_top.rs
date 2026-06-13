@@ -134,7 +134,7 @@ pub(crate) fn render_top_level_cask_entry(
 
     if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log)? {
         log.status(&format!(
-            "skipping cask upload for '{}' (skip_upload)",
+            "skipped cask upload for '{}' — skip_upload is set",
             cask_name
         ));
         return Ok(None);
@@ -147,7 +147,7 @@ pub(crate) fn render_top_level_cask_entry(
     )?;
     if !proceed {
         log.status(&format!(
-            "skipping cask '{}' — `if` condition evaluated falsy",
+            "skipped cask '{}' — `if` condition evaluated falsy",
             cask_name
         ));
         return Ok(None);
@@ -196,7 +196,7 @@ fn render_top_level_cask_inner(
             );
         }
         log.status(&format!(
-            "no macOS artifact in scope for cask '{}' — skipping (not applicable)",
+            "skipped cask '{}' — no macOS artifact in scope (not applicable)",
             cask_name
         ));
         return Ok(None);
@@ -468,7 +468,7 @@ pub fn publish_top_level_homebrew_casks(
         // Check skip_upload.
         if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log)? {
             log.status(&format!(
-                "skipping cask upload for '{}' (skip_upload)",
+                "skipped cask upload for '{}' — skip_upload is set",
                 cask_name
             ));
             continue;
@@ -482,7 +482,7 @@ pub fn publish_top_level_homebrew_casks(
         )?;
         if !proceed {
             log.status(&format!(
-                "skipping cask '{}' — `if` condition evaluated falsy",
+                "skipped cask '{}' — `if` condition evaluated falsy",
                 cask_name
             ));
             continue;

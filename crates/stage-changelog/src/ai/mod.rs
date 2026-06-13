@@ -245,7 +245,7 @@ pub(crate) fn enhance_with_ai(
 
     // Skip AI enhancement in snapshot mode — cost containment.
     if ctx.is_snapshot() {
-        log.status("skipping changelog.ai enhancement (snapshot mode)");
+        log.status("skipped changelog.ai enhancement — snapshot mode");
         return Ok(body.to_owned());
     }
 

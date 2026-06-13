@@ -57,7 +57,7 @@ pub fn resolve(specs: &[ExtraFileSpec], log: &StageLogger) -> Result<Vec<Resolve
 
         if matches.is_empty() {
             log.warn(&format!(
-                "extra_files glob '{pattern}' matched no files, skipping"
+                "skipped extra_files glob '{pattern}' — matched no files"
             ));
             continue;
         }

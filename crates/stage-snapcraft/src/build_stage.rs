@@ -195,15 +195,15 @@ impl Stage for SnapcraftStage {
                 // Warn and skip if no linux binaries found
                 if filtered_binaries.is_empty() && linux_binaries.is_empty() {
                     log.warn(&format!(
-                        "no Linux binaries found for crate '{}'; skipping snapcraft",
+                        "skipped snapcraft for crate '{}' — no Linux binaries found",
                         krate.name
                     ));
                     continue;
                 }
                 if filtered_binaries.is_empty() {
                     log.warn(&format!(
-                        "ids filter {:?} matched no binaries for crate '{}'; skipping",
-                        snap_cfg.ids, krate.name
+                        "skipped snapcraft for crate '{}' — ids filter {:?} matched no binaries",
+                        krate.name, snap_cfg.ids
                     ));
                     continue;
                 }
@@ -462,7 +462,7 @@ fn process_snap_target(
         let snap_arch = triple_to_snap_arch(t);
         if !is_valid_snap_arch(snap_arch) {
             log.warn(&format!(
-                "skipping unsupported arch '{}' (target: {})",
+                "skipped arch '{}' — unsupported (target: {})",
                 snap_arch, t
             ));
             return Ok(());
@@ -580,7 +580,7 @@ fn snap_cfg_skipped(
             .with_context(|| format!("snapcraft: render skip template for crate {}", krate_name))?;
         if off {
             log.status(&format!(
-                "skipping snapcraft config for crate {} (skip=true)",
+                "skipped snapcraft config for crate {} — skip=true",
                 krate_name
             ));
             return Ok(true);
@@ -593,7 +593,7 @@ fn snap_cfg_skipped(
     )?;
     if !proceed {
         log.status(&format!(
-            "skipping snapcraft config for crate {krate_name} — `if` condition evaluated falsy"
+            "skipped snapcraft config for crate {krate_name} — `if` condition evaluated falsy"
         ));
         return Ok(true);
     }

@@ -314,7 +314,7 @@ fn plan_build_jobs(
                     }]
                 } else {
                     log.status(&format!(
-                        "skipping build for crate '{}' — no builds configured and no binary target found",
+                        "skipped build for crate '{}' — no builds configured and no binary target found",
                         crate_cfg.name
                     ));
                     continue;
@@ -367,7 +367,7 @@ fn plan_build_jobs(
             // name and `cargo build --bin <library-name>` would fail.
             if build.binary.is_none() && !crate_has_binary_target(&crate_cfg.path) {
                 log.status(&format!(
-                    "skipping build for crate '{}' — no explicit binary, no binary target found",
+                    "skipped build for crate '{}' — no explicit binary, no binary target found",
                     crate_cfg.name
                 ));
                 continue;
@@ -394,7 +394,7 @@ fn plan_build_jobs(
             };
             if should_skip {
                 log.status(&format!(
-                    "skipping build '{}' (skip: true)",
+                    "skipped build '{}' — skip: true",
                     build.id.as_deref().unwrap_or(&binary_field)
                 ));
                 continue;
@@ -463,7 +463,7 @@ fn plan_build_jobs(
                 targets = partial.filter_targets(&targets);
                 if had_targets && targets.is_empty() {
                     log.verbose(&format!(
-                        "no targets match partial filter for {}/{}, skipping",
+                        "skipped {}/{} — no targets match partial filter",
                         crate_cfg.name, binary_name_raw
                     ));
                     continue;
@@ -473,7 +473,7 @@ fn plan_build_jobs(
             // If no targets configured, skip (caller should ensure defaults)
             if targets.is_empty() {
                 log.warn(&format!(
-                    "no targets configured for {}/{}, skipping",
+                    "skipped {}/{} — no targets configured",
                     crate_cfg.name, binary_name_raw
                 ));
                 continue;
@@ -905,7 +905,7 @@ fn plan_prebuilt_build(
     };
     if should_skip {
         log.status(&format!(
-            "skipping prebuilt build '{}' (skip: true)",
+            "skipped prebuilt build '{}' — skip: true",
             build.id.as_deref().unwrap_or(&binary_field)
         ));
         return Ok(());
@@ -951,7 +951,7 @@ fn plan_prebuilt_build(
         targets = partial.filter_targets(&targets);
         if targets.is_empty() {
             log.verbose(&format!(
-                "no prebuilt targets match partial filter for {}/{}, skipping",
+                "skipped {}/{} — no prebuilt targets match partial filter",
                 crate_cfg.name, binary_field
             ));
             return Ok(());

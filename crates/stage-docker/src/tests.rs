@@ -1886,7 +1886,7 @@ fn v2_digest_log_split_emits_images_and_digest_as_separate_fields() {
 ///
 /// Equivalent of `dockerfile: "{{ if .IsSnapshot }}Dockerfile{{ end }}"`
 /// during a release (IsSnapshot=false) — the rendered string is empty, so
-/// the pipe should bail with "skipping … rendered empty" and produce no
+/// the pipe should bail with "skipped … rendered empty" and produce no
 /// artifacts.
 #[test]
 fn dockerfile_template_renders_to_empty_skips_pipe() {

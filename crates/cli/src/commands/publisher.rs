@@ -70,7 +70,7 @@ pub fn run_publishers(
                 .with_context(|| format!("[publisher] render skip template for {}", label))?;
             if off {
                 log.verbose(&format!(
-                    "skipping publisher {} — skip=true (template)",
+                    "skipped publisher {} — skip=true (template)",
                     label
                 ));
                 if let Some(sm) = skip_memento {
@@ -88,7 +88,7 @@ pub fn run_publishers(
         )?;
         if !proceed {
             log.verbose(&format!(
-                "skipping publisher {} — `if` condition evaluated falsy",
+                "skipped publisher {} — `if` condition evaluated falsy",
                 label
             ));
             if let Some(sm) = skip_memento {
@@ -98,7 +98,7 @@ pub fn run_publishers(
         }
 
         if publisher.cmd.is_empty() {
-            log.verbose(&format!("skipping publisher {} — empty cmd", label));
+            log.verbose(&format!("skipped publisher {} — empty cmd", label));
             if let Some(sm) = skip_memento {
                 sm.remember("publisher", label, "empty cmd");
             }

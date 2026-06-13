@@ -279,7 +279,7 @@ fn should_skip_msi_config(
     )?;
     if !proceed {
         log.status(&format!(
-            "skipping msi config '{msi_id_for_log}' for crate {crate_name}: `if` condition evaluated falsy"
+            "skipped msi config '{msi_id_for_log}' for crate {crate_name} — `if` condition evaluated falsy"
         ));
         return Ok(true);
     }
@@ -350,16 +350,16 @@ fn filter_msi_binaries(
 
     if filtered.is_empty() && windows_binaries.is_empty() {
         log.warn(&format!(
-            "no Windows binary artifacts found for crate '{}'; \
-             skipping MSI generation (expected binaries targeting windows/msvc)",
+            "skipped MSI generation for crate '{}' — no Windows binary \
+             artifacts found (expected binaries targeting windows/msvc)",
             crate_name
         ));
         return None;
     }
     if filtered.is_empty() {
         log.warn(&format!(
-            "ids filter {:?} matched no binaries for crate '{}'; skipping",
-            msi_cfg.ids, crate_name
+            "skipped msi for crate '{}' — ids filter {:?} matched no binaries",
+            crate_name, msi_cfg.ids
         ));
         return None;
     }

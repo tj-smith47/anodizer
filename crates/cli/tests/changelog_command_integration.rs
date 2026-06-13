@@ -17,13 +17,13 @@ use std::path::Path;
 use std::process::Command;
 use tempfile::TempDir;
 
-/// Whether output contains a changelog-STAGE skip line ("skipping
-/// changelog (snapshot mode...)" / "skipping changelog — `skip` ...").
-/// Deliberately tighter than `contains("skipping changelog")` so the
-/// changelog.ai line ("skipping changelog.ai enhancement ...") from an
+/// Whether output contains a changelog-STAGE skip line ("skipped
+/// changelog — snapshot mode ..." / "skipped changelog — `skip` ...").
+/// Deliberately tighter than `contains("skipped changelog")` so the
+/// changelog.ai line ("skipped changelog.ai enhancement ...") from an
 /// AI-configured fixture can never false-match.
 fn mentions_changelog_stage_skip(s: &str) -> bool {
-    s.contains("skipping changelog (") || s.contains("skipping changelog —")
+    s.contains("skipped changelog — ")
 }
 
 fn anodizer() -> Command {

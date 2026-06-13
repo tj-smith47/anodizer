@@ -90,7 +90,7 @@ impl Stage for TemplateFilesStage {
             }
 
             log.status(&format!(
-                "rendered '{}' -> '{}'",
+                "rendered '{}' → '{}'",
                 entry.src,
                 output_path.display()
             ));

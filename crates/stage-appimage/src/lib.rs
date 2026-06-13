@@ -319,7 +319,7 @@ fn assemble_appdir(appdir: &Path, job: &AppImageJob) -> Result<(PathBuf, PathBuf
     }
     std::fs::copy(&job.binary_src, &bin_dst).with_context(|| {
         format!(
-            "appimage: copy binary {} -> {}",
+            "appimage: copy binary {} → {}",
             job.binary_src.display(),
             bin_dst.display()
         )
@@ -330,7 +330,7 @@ fn assemble_appdir(appdir: &Path, job: &AppImageJob) -> Result<(PathBuf, PathBuf
     let desktop_dst = appdir.join(file_basename(&job.desktop_src, "app.desktop"));
     std::fs::copy(&job.desktop_src, &desktop_dst).with_context(|| {
         format!(
-            "appimage: copy desktop file {} -> {}",
+            "appimage: copy desktop file {} → {}",
             job.desktop_src.display(),
             desktop_dst.display()
         )
@@ -339,7 +339,7 @@ fn assemble_appdir(appdir: &Path, job: &AppImageJob) -> Result<(PathBuf, PathBuf
     let icon_dst = appdir.join(file_basename(&job.icon_src, "app.png"));
     std::fs::copy(&job.icon_src, &icon_dst).with_context(|| {
         format!(
-            "appimage: copy icon {} -> {}",
+            "appimage: copy icon {} → {}",
             job.icon_src.display(),
             icon_dst.display()
         )
@@ -358,7 +358,7 @@ fn copy_entry_into_appdir(appdir: &Path, entry: &AppDirEntry) -> Result<()> {
     if entry.src.is_dir() {
         copy_dir_recursive(&entry.src, &dst).with_context(|| {
             format!(
-                "appimage: copy dir {} -> {}",
+                "appimage: copy dir {} → {}",
                 entry.src.display(),
                 dst.display()
             )
@@ -369,7 +369,7 @@ fn copy_entry_into_appdir(appdir: &Path, entry: &AppDirEntry) -> Result<()> {
         }
         std::fs::copy(&entry.src, &dst).with_context(|| {
             format!(
-                "appimage: copy file {} -> {}",
+                "appimage: copy file {} → {}",
                 entry.src.display(),
                 dst.display()
             )
@@ -586,7 +586,7 @@ fn execute_appimage_job(
             })
             .with_context(|| {
                 format!(
-                    "appimage: move {} -> {}",
+                    "appimage: move {} → {}",
                     built.display(),
                     job.output_path.display()
                 )
@@ -769,7 +769,7 @@ fn collect_config_jobs(
         let cmd = render_harvest_command(ctx, &harvest.command, &host, &harvest_dir)?;
         if dry_run {
             log.status(&format!(
-                "(dry-run) would harvest AppImage runtime via `{cmd}` -> {}",
+                "(dry-run) would harvest AppImage runtime via `{cmd}` → {}",
                 harvest_dir.display()
             ));
         } else {

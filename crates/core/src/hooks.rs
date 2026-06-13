@@ -121,7 +121,7 @@ pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> R
                 tracing::debug!(
                     label = label,
                     cmd = raw_cmd,
-                    "skipping hook: `if` condition evaluated falsy"
+                    "skipped hook — `if` condition evaluated falsy"
                 );
                 continue;
             }
@@ -137,7 +137,7 @@ pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> R
                 tracing::debug!(
                     label = label,
                     cmd = raw_cmd,
-                    "skipping hook: literal `if` condition is falsy"
+                    "skipped hook — literal `if` condition is falsy"
                 );
                 continue;
             }

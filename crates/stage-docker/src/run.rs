@@ -454,7 +454,7 @@ fn prepare_v2_config(
     // Check disable — skip when template evaluates to true.
     if is_docker_v2_skipped(&v2_cfg.skip, ctx)? {
         log.status(&format!(
-            "skipping dockers_v2[{}] for crate {} (skip=true)",
+            "skipped dockers_v2[{}] for crate {} — skip=true",
             idx, krate.name
         ));
         return Ok(());
@@ -486,7 +486,7 @@ fn prepare_v2_config(
     })?;
     if rendered_dockerfile.trim().is_empty() {
         log.status(&format!(
-            "skipping dockers_v2[{}] for crate {} — dockerfile template rendered empty",
+            "skipped dockers_v2[{}] for crate {} — dockerfile template rendered empty",
             idx, krate.name
         ));
         return Ok(());
@@ -632,7 +632,7 @@ fn prepare_v2_config(
             HookRunContext::new(dry_run, log, Some(&hook_vars)),
         ) {
             log.warn(&format!(
-                "pre-hook {} failed; skipping this config's build (other configs continue): {:#}",
+                "skipped this config's build — pre-hook {} failed (other configs continue): {:#}",
                 pre_label, e
             ));
             pre_hook_errors.push(e);
@@ -740,7 +740,7 @@ fn queue_v2_build_for_platforms(
 
     if image_tags.is_empty() {
         log.warn(&format!(
-            "skipping dockers_v2[{}] for crate {} — no image tags produced (images or tags resolved to empty)",
+            "skipped dockers_v2[{}] for crate {} — no image tags produced (images or tags resolved to empty)",
             idx, krate.name
         ));
         return Ok(());
@@ -1088,7 +1088,7 @@ pub(crate) fn process_docker_manifest(
     // errors.
     if v2_multiplatform_tags.contains(&manifest_name) {
         log.status(&format!(
-            "skipping manifest '{}' — already pushed as multi-arch by dockers_v2",
+            "skipped manifest '{}' — already pushed as multi-arch by dockers_v2",
             manifest_name
         ));
         return Ok(());
@@ -1107,7 +1107,7 @@ pub(crate) fn process_docker_manifest(
         })?;
         if img.trim().is_empty() {
             log.warn(&format!(
-                "manifest image_template '{}' rendered to empty string, skipping",
+                "skipped manifest — image_template '{}' rendered to empty string",
                 tmpl
             ));
             continue;

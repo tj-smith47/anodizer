@@ -64,7 +64,7 @@ impl Stage for super::ChangelogStage {
                 .unwrap_or(false);
             if !snapshot_opt_in {
                 log.status(
-                    "skipping changelog (snapshot mode; set `changelog.snapshot: true` to render)",
+                    "skipped changelog — snapshot mode (set `changelog.snapshot: true` to render)",
                 );
                 return Ok(());
             }
@@ -80,7 +80,7 @@ impl Stage for super::ChangelogStage {
                 .try_evaluates_to_true(|s| ctx.render_template(s))
                 .with_context(|| "changelog: render skip template")?;
             if off {
-                log.status("skipping changelog — `skip` condition evaluated truthy");
+                log.status("skipped changelog — `skip` condition evaluated truthy");
                 return Ok(());
             }
         }
@@ -320,7 +320,7 @@ fn handle_github_native_changelog(
         // would be noise that pushes them to add a `skip: [changelog]`
         // toggle just to silence it.
         log.verbose(
-            "skipping changelog — use=github-native and no crate in scope has \
+            "skipped changelog — use=github-native and no crate in scope has \
              release.github (library workspace)",
         );
         return Ok(());
@@ -431,7 +431,7 @@ fn handle_github_native_changelog(
     // missing config stays visible in CI output.
     if !missing_github.is_empty() {
         log.warn(&format!(
-            "use=github-native — skipping github-native notes for {} \
+            "skipped github-native notes (use=github-native) for {} \
              crate(s) without release.github: {} (if any should have a release, \
              add release.github.owner and release.github.name)",
             missing_github.len(),

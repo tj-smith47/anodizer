@@ -457,7 +457,7 @@ pub fn create_and_push_tag_in(
     } else if strict {
         anyhow::bail!("no 'origin' remote found, cannot push tag (strict mode)");
     } else {
-        log.warn("no 'origin' remote found, skipping push");
+        log.warn("skipped push — no 'origin' remote found");
     }
     Ok(())
 }
@@ -950,7 +950,7 @@ pub fn push_branch_and_tags_atomic_in(
         if strict {
             anyhow::bail!("no '{remote}' remote found, cannot push (strict mode)");
         }
-        log.warn(&format!("no '{remote}' remote found, skipping push"));
+        log.warn(&format!("skipped push — no '{remote}' remote found"));
         return Ok(());
     }
 

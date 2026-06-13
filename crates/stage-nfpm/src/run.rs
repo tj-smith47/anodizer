@@ -229,7 +229,7 @@ fn process_nfpm_format(
         ctx.strict_guard(
             log,
             &format!(
-                "skipping nfpm format '{}' for target '{}' — architecture not supported",
+                "skipped nfpm format '{}' for target '{}' — architecture not supported",
                 format, triple
             ),
         )?;
@@ -449,7 +449,7 @@ fn should_skip_nfpm_config(
     if !nfpm_config_if_proceeds(ctx, nfpm_cfg, nfpm_id_for_log)? {
         let reason = "`if` condition evaluated falsy".to_string();
         log.verbose(&format!(
-            "skipping nfpm config '{}': {}",
+            "skipped nfpm config '{}' — {}",
             nfpm_id_for_log, reason
         ));
         ctx.remember_skip("nfpm", nfpm_id_for_log, &reason);
@@ -460,7 +460,7 @@ fn should_skip_nfpm_config(
         ctx.strict_guard(
             log,
             &format!(
-                "skipping nfpm config '{}' — no output formats configured",
+                "skipped nfpm config '{}' — no output formats configured",
                 nfpm_id_for_log
             ),
         )?;
@@ -594,7 +594,7 @@ fn build_platform_groups(
     if filtered.is_empty() && !linux_binaries.is_empty() {
         let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
         log.warn(&format!(
-            "skipping nfpm config '{}' — ids filter matched no binaries",
+            "skipped nfpm config '{}' — ids filter matched no binaries",
             nfpm_id
         ));
         return None;
@@ -653,7 +653,7 @@ fn resolve_format_os_arch(
                 Some(("iphoneos-arm64".to_string(), base_arch.to_string()))
             } else {
                 log.status(&format!(
-                    "skipping ios for format '{}' — only deb is supported",
+                    "skipped ios for format '{}' — only deb is supported",
                     format
                 ));
                 None
@@ -662,7 +662,7 @@ fn resolve_format_os_arch(
         "aix" => {
             if base_arch != "ppc64" {
                 log.status(&format!(
-                    "skipping aix/{} — only ppc64 is supported",
+                    "skipped aix/{} — only ppc64 is supported",
                     base_arch
                 ));
                 return None;
@@ -671,7 +671,7 @@ fn resolve_format_os_arch(
                 Some(("aix7.2".to_string(), "ppc".to_string()))
             } else {
                 log.status(&format!(
-                    "skipping aix for format '{}' — only rpm is supported",
+                    "skipped aix for format '{}' — only rpm is supported",
                     format
                 ));
                 None

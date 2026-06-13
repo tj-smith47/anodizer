@@ -382,7 +382,7 @@ impl Stage for AttestStage {
             return Ok(());
         };
         if !cfg.enabled {
-            log.verbose("attestations disabled; skipping");
+            log.verbose("skipped attestations — disabled");
             return Ok(());
         }
 

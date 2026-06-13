@@ -29,7 +29,7 @@ impl Stage for SourceStage {
             .unwrap_or(false);
 
         if !source_enabled {
-            log.status("source archive not enabled, skipping");
+            log.status("skipped source archive — not enabled");
             return Ok(());
         }
 

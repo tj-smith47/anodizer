@@ -172,7 +172,7 @@ pub(super) fn credential_preflight_gate(
     log: &StageLogger,
 ) -> Result<()> {
     if dry_run {
-        log.verbose("(dry-run) skipping production-credential preflight");
+        log.verbose("(dry-run) skipped production-credential preflight");
         return Ok(());
     }
     if no_preflight {

@@ -166,7 +166,7 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
     // should hear about"). Stage-level skip — bypasses the per-provider
     // dispatch entirely so a misconfigured webhook can't bypass the gate.
     if ctx.is_nightly() {
-        log.status("announce skipped — nightly run (GoReleaser parity)");
+        log.status("skipped announce — nightly run (GoReleaser parity)");
         return Ok(());
     }
 
@@ -176,7 +176,7 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
     let announce = match ctx.config.announce.clone() {
         Some(a) => a,
         None => {
-            log.status("no announce config — skipping");
+            log.status("skipped announce — no announce config");
             return Ok(());
         }
     };
@@ -196,11 +196,11 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
     match announce_decision(ctx, &announce)? {
         AnnounceDecision::Proceed => {}
         AnnounceDecision::SkipBySkipTemplate => {
-            log.status("announce.skip evaluated to true — skipping");
+            log.status("skipped announce — `skip` condition evaluated truthy");
             return Ok(());
         }
         AnnounceDecision::SkipByIfCondition => {
-            log.status("skipped — `if` condition evaluated falsy");
+            log.status("skipped announce — `if` condition evaluated falsy");
             return Ok(());
         }
         AnnounceDecision::GatedByReport { required_failures } => {

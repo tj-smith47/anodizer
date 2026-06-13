@@ -74,13 +74,13 @@ pub(crate) fn stage_artifacts_v2(
 
                 if dry_run {
                     log.status(&format!(
-                        "(dry-run) would copy {} -> {}",
+                        "(dry-run) would copy {} → {}",
                         artifact.path.display(),
                         dest.display()
                     ));
                 } else {
                     log.status(&format!(
-                        "staging {} -> {}",
+                        "staging {} → {}",
                         artifact.path.display(),
                         dest.display()
                     ));
@@ -118,13 +118,13 @@ pub(crate) fn copy_dockerfile(
 
     if dry_run {
         log.status(&format!(
-            "(dry-run) would copy Dockerfile {} -> {}",
+            "(dry-run) would copy Dockerfile {} → {}",
             dockerfile_src.display(),
             dockerfile_dest.display()
         ));
     } else {
         log.status(&format!(
-            "copying Dockerfile {} -> {}",
+            "copying Dockerfile {} → {}",
             dockerfile_src.display(),
             dockerfile_dest.display()
         ));
@@ -216,7 +216,7 @@ pub(crate) fn stage_extra_files(
 
         if dry_run {
             log.status(&format!(
-                "(dry-run) would copy extra file {} -> {}",
+                "(dry-run) would copy extra file {} → {}",
                 src.display(),
                 dest.display()
             ));
@@ -231,7 +231,7 @@ pub(crate) fn stage_extra_files(
                 })?;
             }
             log.status(&format!(
-                "copying extra file {} -> {}",
+                "copying extra file {} → {}",
                 src.display(),
                 dest.display()
             ));

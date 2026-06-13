@@ -754,7 +754,7 @@ fn publish_one_tarball(
 ) -> Result<Option<NpmTarget>> {
     if version_already_published(&staged.package, version, cfg_dir, registry, log)? {
         log.status(&format!(
-            "'{}@{}' already published to {} — skipping (idempotent re-run)",
+            "skipped '{}@{}' — already published to {} (idempotent re-run)",
             staged.package, version, registry
         ));
         return Ok(Some(NpmTarget {

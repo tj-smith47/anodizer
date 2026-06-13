@@ -115,7 +115,7 @@ impl Stage for UpxStage {
                 }
                 ctx.strict_guard(
                     &log,
-                    &format!("skipping upx compression — binary '{}' not found", binary),
+                    &format!("skipped upx compression — binary '{}' not found", binary),
                 )?;
                 continue;
             }
@@ -254,7 +254,7 @@ impl Stage for UpxStage {
 
                     if KNOWN_EXCEPTIONS.iter().any(|ex| combined.contains(ex)) {
                         thread_log.warn(&format!(
-                            "skipping {} (target: {}) (upx[{}]): {}",
+                            "skipped {} (target: {}) (upx[{}]) — {}",
                             artifact_str,
                             target_label,
                             id_label,
@@ -275,7 +275,7 @@ impl Stage for UpxStage {
                     };
                     let ratio = (size_after * 100) / size_before;
                     thread_log.status(&format!(
-                        "compressed {} ({} -> {}, {}%)",
+                        "compressed {} ({} → {}, {}%)",
                         artifact_path.display(),
                         format_size(size_before),
                         format_size(size_after),

@@ -262,7 +262,7 @@ pub(crate) fn run_with_publishers(
 
         let Some(evidence) = evidence else {
             log.warn(&format!(
-                "'{}' has no evidence in prior report; skipping",
+                "skipped rollback for '{}' — no evidence in prior report",
                 name,
             ));
             failed += 1;
@@ -273,7 +273,7 @@ pub(crate) fn run_with_publishers(
 
         let Some(publisher) = publishers.iter().find(|p| p.name() == name) else {
             log.warn(&format!(
-                "publisher '{}' not in current registry; skipping",
+                "skipped rollback for '{}' — publisher not in current registry",
                 name,
             ));
             not_found += 1;

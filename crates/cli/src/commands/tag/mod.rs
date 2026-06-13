@@ -568,7 +568,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
                     cfg.force_without_changes
                 };
             if !force {
-                log.verbose(&format!("no changes since {} -- skipping", tag));
+                log.verbose(&format!("skipped tag — no changes since {}", tag));
                 println!("new_tag={}", tag);
                 println!("old_tag={}", tag);
                 println!("part=none");
@@ -632,7 +632,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // An explicit `--version` is itself the release signal, so it tags
     // regardless of any per-commit bump directive.
     if bump == BumpKind::None && !cargo_ahead && version_override.is_none() {
-        log.verbose("no bump signal and Cargo.toml not ahead -- skipping tag");
+        log.verbose("skipped tag — no bump signal and Cargo.toml not ahead");
         println!("new_tag={}", prev_tag.as_deref().unwrap_or(""));
         println!("old_tag={}", prev_tag.as_deref().unwrap_or(""));
         println!("part=none");
@@ -704,7 +704,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
 
     let new_tag = format!("{}{}", cfg.tag_prefix, new_version);
 
-    log.verbose(&format!("{} -> {}", old_tag_str, new_tag));
+    log.verbose(&format!("{} → {}", old_tag_str, new_tag));
 
     // When version_sync is enabled for this crate, update the Cargo.toml
     // version and commit before tagging so the tagged commit has the correct
@@ -1532,7 +1532,7 @@ fn compute_per_crate_tags(
 
         if bump == BumpKind::None {
             log.verbose(&format!(
-                "group {:?}: no bump signal — skipping",
+                "skipped group {:?} — no bump signal",
                 group.iter().map(|c| c.name.as_str()).collect::<Vec<_>>()
             ));
             continue;
@@ -1560,7 +1560,7 @@ fn compute_per_crate_tags(
         }
 
         log.verbose(&format!(
-            "group {:?}: {} -> {}{}",
+            "group {:?}: {} → {}{}",
             group.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
             old_tag_str,
             tag_prefix,

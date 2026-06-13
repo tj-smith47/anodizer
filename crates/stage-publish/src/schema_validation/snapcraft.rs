@@ -90,8 +90,8 @@ impl PublisherSchemaValidator for SnapcraftSchemaValidator {
                     anodizer_stage_snapcraft::snapcraft_snap_yamls_for_crate(ctx, crate_name)?;
                 if yamls.is_empty() {
                     log.verbose(&format!(
-                        "crate '{}' produced no snap.yaml in this snapshot \
-                         shard (skipped or no Linux binary); skipping schema validation",
+                        "skipped snapcraft schema validation for crate '{}' — produced no snap.yaml \
+                         in this snapshot shard (skipped or no Linux binary)",
                         crate_name
                     ));
                     return Ok(out);

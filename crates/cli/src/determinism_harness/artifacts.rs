@@ -324,7 +324,7 @@ pub(super) fn copy_artifacts_to_dump(
         }
         if let Err(e) = std::fs::copy(p, &dest) {
             log.warn(&format!(
-                "drift-bin dump failed for {} -> {}: {}",
+                "drift-bin dump failed for {} → {}: {}",
                 p.display(),
                 dest.display(),
                 e

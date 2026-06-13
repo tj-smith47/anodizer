@@ -193,7 +193,7 @@ pub(crate) fn resolve_copy_from(
 
     std::fs::copy(&resolved_src, dst).with_context(|| {
         format!(
-            "copy_from: failed to copy {} -> {}",
+            "copy_from: failed to copy {} → {}",
             resolved_src.display(),
             dst.display()
         )
@@ -256,7 +256,7 @@ pub(crate) fn ensure_targets_installed(
                 );
             }
             Err(_) => {
-                ctx.strict_guard(log, "rustup not found, skipping target installation")?;
+                ctx.strict_guard(log, "skipped target installation — rustup not found")?;
                 return Ok(()); // If rustup isn't available, skip all
             }
         }

@@ -125,7 +125,7 @@ impl Stage for VerifyReleaseStage {
         };
         if smoke_enabled && !docker_ok {
             log.status(
-                "Docker unavailable — skipping install smoke-test \
+                "skipped install smoke-test — Docker unavailable \
                  (asset-existence and libc-ceiling still run)",
             );
         }
@@ -352,8 +352,8 @@ fn verify_one_crate(
             }
             Ok(None) => {
                 log.verbose(&format!(
-                    "crate '{}' no GitHub release configured — \
-                     skipping asset-existence",
+                    "skipped asset-existence for crate '{}' — \
+                     no GitHub release configured",
                     crate_cfg.name
                 ));
             }
@@ -453,8 +453,8 @@ fn check_one_deb_libc(
         Ok(Some(bytes)) => bytes,
         Ok(None) => {
             log.verbose(&format!(
-                "crate '{crate_name}' {} has no inspectable ELF — \
-                 skipping libc check",
+                "skipped libc check for crate '{crate_name}' {} — \
+                 has no inspectable ELF",
                 deb_path.display()
             ));
             return;

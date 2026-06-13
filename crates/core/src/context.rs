@@ -780,7 +780,7 @@ impl Context {
             // The stage name stays in the line: this guard fires on direct
             // stage invocation, where no pipeline section header has named
             // the stage yet.
-            log.status(&format!("skipping {stage} (snapshot mode)"));
+            log.status(&format!("skipped {stage} — snapshot mode"));
             true
         } else {
             false

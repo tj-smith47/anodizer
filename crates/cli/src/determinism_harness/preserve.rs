@@ -201,11 +201,11 @@ pub(super) fn preserve_dist_tree(worktree_path: &Path, dest: &Path) -> Result<()
                     .with_context(|| format!("stat {}", src_path.display()))?;
                 if ft.is_dir() {
                     copy_dir_recursive(&src_path, &dst_path).with_context(|| {
-                        format!("copying {} -> {}", src_path.display(), dst_path.display())
+                        format!("copying {} → {}", src_path.display(), dst_path.display())
                     })?;
                 } else {
                     std::fs::copy(&src_path, &dst_path).with_context(|| {
-                        format!("copying {} -> {}", src_path.display(), dst_path.display())
+                        format!("copying {} → {}", src_path.display(), dst_path.display())
                     })?;
                 }
             }
@@ -298,7 +298,7 @@ pub(super) fn preserve_raw_binaries(
         Ok(v) => v,
         Err(e) => {
             log.warn(&format!(
-                "preserved-dist {} present but malformed ({}); skipping raw-binary preservation",
+                "skipped raw-binary preservation — preserved-dist {} present but malformed ({})",
                 manifest_path.display(),
                 e
             ));
@@ -360,7 +360,7 @@ pub(super) fn preserve_raw_binaries(
         }
         std::fs::copy(&src, &dst_abs).with_context(|| {
             format!(
-                "copying raw binary {} -> {}",
+                "copying raw binary {} → {}",
                 src.display(),
                 dst_abs.display()
             )
@@ -387,7 +387,7 @@ pub(super) fn preserve_raw_binaries(
         .with_context(|| format!("writing rewritten manifest tmp to {}", tmp_path.display()))?;
     std::fs::rename(&tmp_path, &manifest_path).with_context(|| {
         format!(
-            "atomically renaming {} -> {}",
+            "atomically renaming {} → {}",
             tmp_path.display(),
             manifest_path.display()
         )
@@ -440,7 +440,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
             // follows symlinks and copies content, which is what we want
             // for a hermetic preserved artifact set.
             std::fs::copy(&src_path, &dst_path).with_context(|| {
-                format!("copying {} -> {}", src_path.display(), dst_path.display())
+                format!("copying {} → {}", src_path.display(), dst_path.display())
             })?;
         }
     }
@@ -574,7 +574,7 @@ pub(super) fn write_preserved_dist_context(
         .with_context(|| format!("writing context.json tmp to {}", tmp_path.display()))?;
     std::fs::rename(&tmp_path, &ctx_path).with_context(|| {
         format!(
-            "atomically renaming {} -> {}",
+            "atomically renaming {} → {}",
             tmp_path.display(),
             ctx_path.display()
         )

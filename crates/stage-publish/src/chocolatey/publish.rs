@@ -142,7 +142,7 @@ pub fn publish_to_chocolatey(
     let api_key = resolve_api_key(ctx, choco_cfg, log)?;
     if api_key.is_empty() {
         log.warn(&format!(
-            "no chocolatey API key for '{}', skipping push",
+            "skipped push for '{}' — no chocolatey API key",
             crate_name
         ));
         return Ok(false);

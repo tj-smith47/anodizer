@@ -402,7 +402,7 @@ pub(crate) fn upload_single_artifact(
         match probe_artifact_presence(client, url, auth, &checksum) {
             ArtifactPresence::PresentMatching => {
                 log.status(&format!(
-                    "skipping {} — already uploaded at {} (sha256 match)",
+                    "skipped {} — already uploaded at {} (sha256 match)",
                     artifact.name(),
                     url
                 ));

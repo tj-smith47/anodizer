@@ -149,7 +149,7 @@ impl Stage for ChecksumStage {
 
             if source_artifacts.is_empty() {
                 log.verbose(&format!(
-                    "no checksummable artifacts for crate {crate_name}, skipping"
+                    "skipped checksums for crate {crate_name} — no checksummable artifacts"
                 ));
                 continue;
             }
@@ -173,7 +173,7 @@ impl Stage for ChecksumStage {
                 new_artifacts.push(combined_artifact);
             } else {
                 log.status(&format!(
-                    "skipping combined checksums file for crate {crate_name} (split mode)"
+                    "skipped combined checksums file for crate {crate_name} — split mode"
                 ));
             }
 
@@ -407,7 +407,7 @@ fn compute_artifact_hash(
 ) -> Result<String> {
     if dry_run && !artifact.path.exists() {
         log.verbose(&format!(
-            "(dry-run) skipping hash for non-existent {}",
+            "(dry-run) skipped hash — non-existent {}",
             artifact.path.display()
         ));
         let hash_len = hash_hex_len(algorithm);
@@ -561,7 +561,7 @@ fn hash_and_emit_sidecars(
             }
 
             log.verbose(&format!(
-                "{}{} -> {} ({})",
+                "{}{} → {} ({})",
                 if dry_run { "(dry-run) " } else { "" },
                 artifact.path.display(),
                 sidecar_path.display(),
@@ -659,7 +659,7 @@ fn write_combined_file(
     }
 
     log.status(&format!(
-        "{}combined checksums -> {}",
+        "{}combined checksums → {}",
         if dry_run { "(dry-run) " } else { "" },
         combined_path.display()
     ));

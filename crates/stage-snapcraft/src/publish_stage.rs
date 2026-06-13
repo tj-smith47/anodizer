@@ -393,7 +393,7 @@ fn run_uploads(
                     let snap_name = resolve_snap_name(snap_cfg, &project_name, &krate.name);
                     if let Some(true) = snap_revision_already_published(&snap_name, &version, log) {
                         log.status(&format!(
-                            "skipping snapcraft '{}' {} — revision already published in the Snap Store",
+                            "skipped snapcraft '{}' {} — revision already published in the Snap Store",
                             snap_name, version
                         ));
                         skipped_already_published += 1;

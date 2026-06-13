@@ -456,7 +456,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
             };
             if short_unchanged && full_unchanged {
                 log.status(&format!(
-                    "no dockerhub changes for '{}' (description / full_description match remote); skipping PATCH",
+                    "skipped dockerhub PATCH for '{}' — description / full_description match remote",
                     image
                 ));
                 continue;

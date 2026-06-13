@@ -187,7 +187,7 @@ fn run_announcer(
         && m.already_sent(a.name())
     {
         log.status(&format!(
-            "skipping {} — already announced this version",
+            "skipped {} — already announced this version",
             a.name()
         ));
         return Ok(());

@@ -315,7 +315,7 @@ pub fn copy_binary(files: &[&Path], output: &Path) -> Result<()> {
             anyhow::bail!("binary: source does not exist: {}", src.display());
         }
         fs::copy(src, output)
-            .with_context(|| format!("binary: copy {} -> {}", src.display(), output.display()))?;
+            .with_context(|| format!("binary: copy {} → {}", src.display(), output.display()))?;
     } else {
         let out_dir = output.parent().unwrap_or(Path::new("."));
         for &src in files {
@@ -325,7 +325,7 @@ pub fn copy_binary(files: &[&Path], output: &Path) -> Result<()> {
             let file_name = src.file_name().unwrap_or(src.as_os_str());
             let dest = out_dir.join(file_name);
             fs::copy(src, &dest)
-                .with_context(|| format!("binary: copy {} -> {}", src.display(), dest.display()))?;
+                .with_context(|| format!("binary: copy {} → {}", src.display(), dest.display()))?;
         }
     }
     Ok(())

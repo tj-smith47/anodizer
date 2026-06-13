@@ -286,7 +286,7 @@ fn run_generate(
 
     if dry_run {
         log.status(&format!(
-            "(dry-run) would generate {kind} via `{cmd}` -> {}",
+            "(dry-run) would generate {kind} via `{cmd}` → {}",
             out_path.display()
         ));
         // Write a placeholder so downstream bundling has a real file in
@@ -424,7 +424,7 @@ fn stage_files(
             .unwrap_or_else(|| "unknown".to_string());
         let dest = staging.join(&file_name);
         std::fs::copy(src, &dest)
-            .with_context(|| format!("{kind}: copy {} -> {}", src.display(), dest.display()))?;
+            .with_context(|| format!("{kind}: copy {} → {}", src.display(), dest.display()))?;
         staged.push(dest);
     }
     Ok(staged)

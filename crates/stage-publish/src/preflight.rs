@@ -990,8 +990,8 @@ fn simulate_dry_run_publishes(
             }
             DryRunOutcome::Unavailable(detail) => {
                 log.warn(&format!(
-                    "skipping `cargo publish --dry-run -p {name}` ({detail}); \
-                     relying on the partial-publish index check alone"
+                    "skipped `cargo publish --dry-run -p {name}` — {detail} \
+                     (relying on the partial-publish index check alone)"
                 ));
             }
         }

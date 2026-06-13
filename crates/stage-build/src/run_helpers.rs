@@ -107,7 +107,7 @@ pub(crate) fn add_artifact(
             if job_bin_path.exists() {
                 std::fs::copy(job_bin_path, &flat_path).with_context(|| {
                     format!(
-                        "no_unique_dist_dir: failed to copy {} -> {}",
+                        "no_unique_dist_dir: failed to copy {} → {}",
                         job_bin_path.display(),
                         flat_path.display()
                     )
@@ -209,7 +209,7 @@ fn apply_source_mutations_with_resolver(
             {
                 if is_snapshot {
                     log.verbose(&format!(
-                        "skipping version sync for {} (snapshot mode does not mutate source files)",
+                        "skipped version sync for {} — snapshot mode does not mutate source files",
                         crate_cfg.path
                     ));
                 } else {
@@ -229,7 +229,7 @@ fn apply_source_mutations_with_resolver(
             {
                 if is_snapshot {
                     log.verbose(&format!(
-                        "skipping binstall metadata for {} (snapshot mode does not mutate source files)",
+                        "skipped binstall metadata for {} — snapshot mode does not mutate source files",
                         crate_cfg.path
                     ));
                 } else {
@@ -336,7 +336,7 @@ pub(crate) fn run_dry_run(
                 .status(&format!("(dry-run) {} {}", cmd.program, cmd.args.join(" ")));
         } else if let Some((ref src, ref dst)) = job.copy_from {
             exec.log.status(&format!(
-                "(dry-run) copy {} -> {}",
+                "(dry-run) copy {} → {}",
                 src.display(),
                 dst.display()
             ));

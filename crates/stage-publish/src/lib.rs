@@ -458,12 +458,12 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
     if skip_via_cli {
         if skipped.is_empty() {
             log.verbose(
-                "skipping post-publish polling (--no-post-publish-poll; no eligible publishers)",
+                "skipped post-publish polling — --no-post-publish-poll (no eligible publishers)",
             );
             return;
         }
         log.verbose(&format!(
-            "skipping post-publish polling (--no-post-publish-poll; {} publisher(s) recorded as NotPolled)",
+            "skipped post-publish polling — --no-post-publish-poll ({} publisher(s) recorded as NotPolled)",
             skipped.len()
         ));
         let not_polled: Vec<post_publish::PostPublishResult> = skipped

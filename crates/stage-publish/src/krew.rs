@@ -3344,9 +3344,8 @@ impl anodizer_core::Publisher for KrewPublisher {
         for t in &targets {
             let Some(token) = resolve_token(t) else {
                 log.warn(&format!(
-                    "no krew token resolvable for {} (env var ${} / \
-                     ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN all unset); \
-                     skipping rollback for this target",
+                    "skipped rollback for {} — no krew token resolvable (env var ${} / \
+                     ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN all unset)",
                     t.target,
                     t.token_env_var.as_deref().unwrap_or("KREW_INDEX_TOKEN"),
                 ));

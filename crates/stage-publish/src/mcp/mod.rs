@@ -89,7 +89,7 @@ pub(crate) fn publish_to_mcp(ctx: &mut Context, log: &StageLogger) -> Result<Opt
         // verbose (not status): this fires on N-1 of N crate passes in a
         // workspace, so promoting it to status would flood normal output.
         log.verbose(
-            "skipping mcp — none of the selected crates own the OCI image \
+            "skipped mcp — none of the selected crates own the OCI image \
              referenced by the mcp manifest (runs on the owning crate's pass)",
         );
         ctx.record_publisher_outcome(anodizer_core::PublisherOutcome::Skipped(
@@ -332,7 +332,7 @@ fn render_mcp_config(ctx: &Context) -> Result<McpRenderOutcome> {
     if ctx.config.mcp.name.as_deref().unwrap_or("").is_empty() {
         return Ok(McpRenderOutcome::Skipped(McpSkip {
             reason: anodizer_core::SkipReason::NotConfigured,
-            message: "skipping mcp — no mcp.name configured",
+            message: "skipped mcp — no mcp.name configured",
         }));
     }
     let mut mcp_rendered: McpConfig = ctx.config.mcp.clone();
@@ -343,7 +343,7 @@ fn render_mcp_config(ctx: &Context) -> Result<McpRenderOutcome> {
         if off {
             return Ok(McpRenderOutcome::Skipped(McpSkip {
                 reason: anodizer_core::SkipReason::NotApplicable,
-                message: "skipping mcp — skip evaluates true",
+                message: "skipped mcp — skip evaluates true",
             }));
         }
     }
@@ -355,7 +355,7 @@ fn render_mcp_config(ctx: &Context) -> Result<McpRenderOutcome> {
     if !proceed {
         return Ok(McpRenderOutcome::Skipped(McpSkip {
             reason: anodizer_core::SkipReason::NotApplicable,
-            message: "skipping mcp — `if` condition evaluated falsy",
+            message: "skipped mcp — `if` condition evaluated falsy",
         }));
     }
 
@@ -875,7 +875,7 @@ fn publish_payload(
                 && is_duplicate_version_rejection(*status, raw_body)
             {
                 log.status(&format!(
-                    "skipping mcp '{}' on {} — version already published (registry \
+                    "skipped mcp '{}' on {} — version already published (registry \
                      rejected duplicate version)",
                     name, registry_url
                 ));

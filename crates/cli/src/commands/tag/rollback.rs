@@ -259,7 +259,7 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
     // deleting the tag + reverting the bump can never lead to a clean
     // same-version re-cut — only to an orphaned live release.
     if opts.force {
-        log.warn("skipping the published-state guard (--force)");
+        log.warn("skipped the published-state guard — --force");
     } else {
         check_not_irreversibly_published(&cwd, gh_binary, &deletable, &log)?;
     }
@@ -346,7 +346,7 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
     delete_tags(&cwd, &deletable, &opts, &log);
 
     if opts.no_push {
-        log.status("skipping branch push (--no-push)");
+        log.status("skipped branch push — --no-push");
         return Ok(());
     }
     let branch = resolve_push_branch(&cwd, &target_sha, opts.branch.as_deref())?;
@@ -382,7 +382,7 @@ fn delete_tags(
                 )),
             }
         } else {
-            log.status(&format!("skipping remote delete for {tag} (--no-push)"));
+            log.status(&format!("skipped remote delete for {tag} — --no-push"));
         }
         match git::delete_local_tag_in(cwd, tag) {
             Ok(()) => log.status(&format!("deleted local tag {tag}")),
@@ -634,7 +634,7 @@ fn check_no_published_releases(
             // `detect_github_repo_in` already redacts URL credentials in
             // its parse-failure message, so `e` is safe to surface.
             log.warn(&format!(
-                "skipping the published-release probe — origin is not a github.com \
+                "skipped the published-release probe — origin is not a github.com \
                  remote ({e}); no github.com release can exist there \
                  (run-summary evidence still applies)"
             ));

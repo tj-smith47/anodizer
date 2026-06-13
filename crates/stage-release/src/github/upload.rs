@@ -178,9 +178,8 @@ pub(crate) async fn upload_release_asset(req: UploadAssetRequest<'_>) -> Result<
                 // leave a corrupt asset behind.
                 if overwrite_attempted && !partial {
                     release_log().warn(&format!(
-                        "existing asset '{file_name}' on release '{tag}' \
-                         reappeared after delete+retry; \
-                         skipping, stale asset kept"
+                        "skipped re-upload — existing asset '{file_name}' on release '{tag}' \
+                         reappeared after delete+retry; stale asset kept"
                     ));
                     last_err = None;
                     break;
@@ -263,8 +262,8 @@ pub(crate) async fn upload_release_asset(req: UploadAssetRequest<'_>) -> Result<
                     }
                     Err(del_err) => {
                         release_log().warn(&format!(
-                            "could not overwrite existing asset '{file_name}' on release '{tag}' \
-                             (size mismatch and delete failed: {del_err}); skipping, stale asset kept"
+                            "skipped overwrite of existing asset '{file_name}' on release '{tag}' \
+                             — size mismatch and delete failed: {del_err}; stale asset kept"
                         ));
                         last_err = None;
                         break;

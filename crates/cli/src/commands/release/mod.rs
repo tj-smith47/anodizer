@@ -792,7 +792,7 @@ fn select_crates_for_tags(
         let matches = resolve_tag_to_crates(tag, all_known_crates);
         if matches.is_empty() {
             log.verbose(&format!(
-                "tag '{}' does not match any configured crate — skipping",
+                "skipped tag '{}' — matches no configured crate",
                 tag
             ));
             continue;
@@ -1393,7 +1393,7 @@ fn run_publisher_preflight(
     // Preflight probes publisher state ahead of a publish; an already-published
     // release has no pending one-way-door transitions to guard against.
     if opts.announce_only {
-        log.status("skipping preflight (--announce-only does not publish)");
+        log.status("skipped preflight — --announce-only does not publish");
         return Ok(false);
     }
     let should_run_preflight = should_run_preflight_auto(
@@ -1410,7 +1410,7 @@ fn run_publisher_preflight(
 
     let report = anodizer_stage_publish::preflight::run_preflight(ctx, log)?;
     if report.entries.is_empty() {
-        log.verbose("no one-way-door publishers configured; skipping one-way-door preflight");
+        log.verbose("skipped one-way-door preflight — no one-way-door publishers configured");
     } else {
         // Route the report through the stage logger (same channel as every
         // other status string in this function) instead of a raw `print!` so

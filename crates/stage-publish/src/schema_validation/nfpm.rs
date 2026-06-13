@@ -105,8 +105,8 @@ impl PublisherSchemaValidator for NfpmSchemaValidator {
                     render_build_matched_nfpm_configs(ctx, crate_name, &artifact_version)?;
                 if configs.is_empty() {
                     log.verbose(&format!(
-                        "crate '{}' produced no nfpm config in this snapshot \
-                         shard (skipped or no eligible artifact); skipping schema validation",
+                        "skipped nfpm schema validation for crate '{}' — produced no nfpm config \
+                         in this snapshot shard (skipped or no eligible artifact)",
                         crate_name
                     ));
                     return Ok(out);

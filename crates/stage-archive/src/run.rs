@@ -80,7 +80,7 @@ impl Stage for ArchiveStage {
                 if all_binaries.is_empty() && !has_any_meta {
                     ctx.strict_guard(
                         &log,
-                        &format!("no binaries for crate {crate_name}, skipping"),
+                        &format!("skipped archive for crate {crate_name} — no binaries"),
                     )?;
                     continue;
                 }
@@ -325,7 +325,7 @@ fn archive_one_config(
         )?;
         if !proceed {
             log.status(&format!(
-                "skipping archives[{archive_id}] — `if` condition evaluated falsy"
+                "skipped archives[{archive_id}] — `if` condition evaluated falsy"
             ));
             continue;
         }
@@ -354,7 +354,7 @@ fn archive_one_config(
                 .map(|ids| format!(" matching ids {ids:?}"))
                 .unwrap_or_default();
             log.warn(&format!(
-                "skipping archives[{archive_id}] — crate {crate_name} has no \
+                "skipped archives[{archive_id}] — crate {crate_name} has no \
              binaries{id_filter_desc} (set `meta: true` if this is intentional)"
             ));
             continue;
@@ -776,7 +776,7 @@ fn archive_one_config(
                 // "none" format: skip archive creation entirely for this target
                 if format == "none" {
                     log.status(&format!(
-                        "skipping archive for {crate_name}/{target} (format: none)"
+                        "skipped archive for {crate_name}/{target} — format: none"
                     ));
                     continue;
                 }

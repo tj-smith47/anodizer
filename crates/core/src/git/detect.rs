@@ -172,7 +172,7 @@ pub fn detect_git_info_in(cwd: &Path, tag: &str, skip_validate: bool) -> Result<
         Ok(sv) => sv,
         Err(e) => {
             if skip_validate {
-                tracing::warn!("current tag is not semver, skipping validation");
+                tracing::warn!("skipped validation — current tag is not semver");
                 SemVer {
                     major: 0,
                     minor: 0,

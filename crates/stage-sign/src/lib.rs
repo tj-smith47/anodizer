@@ -142,7 +142,7 @@ impl Stage for DockerSignStage {
                 if !proceed {
                     let reason = "`if` condition evaluated falsy".to_string();
                     log.verbose(&format!(
-                        "skipping docker-sign config '{}': {}",
+                        "skipped docker-sign config '{}' — {}",
                         sign_id, reason
                     ));
                     ctx.remember_skip("docker-sign", sign_id, &reason);
@@ -157,7 +157,7 @@ impl Stage for DockerSignStage {
 
                 if docker_filter == "none" {
                     log.verbose(&format!(
-                        "skipping docker-sign config '{}' — `artifacts: none`",
+                        "skipped docker-sign config '{}' — `artifacts: none`",
                         sign_id
                     ));
                     ctx.remember_skip("docker-sign", sign_id, "artifacts: none");

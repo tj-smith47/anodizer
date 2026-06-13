@@ -50,7 +50,7 @@ pub(crate) fn validate_snapshot_emissions(ctx: &mut Context, log: &StageLogger) 
     // exercises emission-validate end-to-end.
     if ctx.options.partial_target.is_some() {
         log.status(
-            "skipping emission validation — build is target-restricted (--targets); \
+            "skipped emission validation — build is target-restricted (--targets); \
              cross-platform emission checks require the full artifact set",
         );
         return Ok(());
@@ -358,8 +358,8 @@ fn validate_binstall(
                     );
                 }
                 log.verbose(&format!(
-                    "crate '{}' binstall override '{}' not built in this snapshot shard; \
-                     skipping its asset cross-check",
+                    "skipped asset cross-check for crate '{}' — binstall override '{}' \
+                     not built in this snapshot shard",
                     crate_cfg.name, triple
                 ));
                 continue;
@@ -585,8 +585,8 @@ fn validate_nix(ctx: &mut Context, crate_cfg: &CrateConfig, log: &StageLogger) -
     let produced = produced_archives(ctx, &crate_cfg.name);
     if produced.is_empty() {
         log.verbose(&format!(
-            "crate '{}' produced no archives for nix in this snapshot shard; \
-             skipping nix emission validation (no assets to cross-check)",
+            "skipped nix emission validation for crate '{}' — produced no archives for nix \
+             in this snapshot shard (no assets to cross-check)",
             crate_cfg.name,
         ));
         return Ok(());

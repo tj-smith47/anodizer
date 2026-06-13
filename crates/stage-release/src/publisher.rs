@@ -427,8 +427,8 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
                             // delete (it would 404 anyway). Treat as
                             // already-absent for the counter.
                             log.status(&format!(
-                                "no captured {} release id for {} on {}/{}; \
-                                 skipping release delete (tag delete still attempted)",
+                                "skipped release delete — no captured {} release id for {} \
+                                 on {}/{} (tag delete still attempted)",
                                 GithubReleasePublisher::PUBLISHER_NAME,
                                 target.tag,
                                 target.owner,

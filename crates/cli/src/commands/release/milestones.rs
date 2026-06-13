@@ -36,7 +36,7 @@ fn resolve_milestone_for_close(
     if milestone_name.is_empty() {
         ctx.strict_guard(
             log,
-            "skipping milestone close — name_template rendered to empty",
+            "skipped milestone close — name_template rendered to empty",
         )?;
         return Ok(None);
     }
@@ -46,7 +46,7 @@ fn resolve_milestone_for_close(
     if owner.is_empty() || repo_name.is_empty() {
         ctx.strict_guard(
             log,
-            "skipping milestone close — repo owner/name not resolvable",
+            "skipped milestone close — repo owner/name not resolvable",
         )?;
         return Ok(None);
     }

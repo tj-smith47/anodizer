@@ -29,7 +29,7 @@ pub(super) fn run_cross_platform(
         .with_context(|| format!("notarize: macos[{idx}] evaluate skip expression"))?
     {
         log.status(&format!(
-            "skipping macos[{idx}] — `skip` condition evaluated truthy"
+            "skipped macos[{idx}] — `skip` condition evaluated truthy"
         ));
         return Ok(());
     }
@@ -289,7 +289,7 @@ pub(super) fn run_native(
         .with_context(|| format!("notarize: macos_native[{idx}] evaluate skip expression"))?
     {
         log.status(&format!(
-            "skipping macos_native[{idx}] — `skip` condition evaluated truthy"
+            "skipped macos_native[{idx}] — `skip` condition evaluated truthy"
         ));
         return Ok(());
     }

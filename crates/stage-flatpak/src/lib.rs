@@ -737,16 +737,16 @@ fn process_flatpak_cfg(
 
     if filtered.is_empty() && linux_binaries.is_empty() {
         log.warn(&format!(
-            "no Linux binary artifacts found for crate '{}'; \
-             skipping Flatpak generation (expected binaries targeting linux)",
+            "skipped Flatpak generation for crate '{}' — no Linux binary \
+             artifacts found (expected binaries targeting linux)",
             krate.name
         ));
         return Ok(());
     }
     if filtered.is_empty() {
         log.warn(&format!(
-            "ids filter {:?} matched no binaries for crate '{}'; skipping",
-            flatpak_cfg.ids, krate.name
+            "skipped flatpak for crate '{}' — ids filter {:?} matched no binaries",
+            krate.name, flatpak_cfg.ids
         ));
         return Ok(());
     }
@@ -754,7 +754,7 @@ fn process_flatpak_cfg(
     let effective_binaries = map_to_supported_arches(&filtered);
     if effective_binaries.is_empty() {
         log.warn(&format!(
-            "no supported architectures (amd64/arm64) found for crate '{}'; skipping Flatpak",
+            "skipped flatpak for crate '{}' — no supported architectures (amd64/arm64) found",
             krate.name
         ));
         return Ok(());

@@ -385,7 +385,7 @@ impl Stage for AppBundleStage {
                     )?;
                     if !proceed {
                         log.status(&format!(
-                        "skipping appbundle config '{}' for crate {}: `if` condition evaluated falsy",
+                        "skipped appbundle config '{}' for crate {} — `if` condition evaluated falsy",
                         bundle_id_for_log, krate.name
                     ));
                         continue;
@@ -427,16 +427,16 @@ impl Stage for AppBundleStage {
                     // Warn and skip if no darwin binaries found
                     if filtered.is_empty() && darwin_binaries.is_empty() {
                         log.warn(&format!(
-                            "no macOS binary artifacts found for crate '{}'; \
-                         skipping app bundle generation (expected binaries targeting darwin/apple)",
+                            "skipped app bundle generation for crate '{}' — no macOS binary \
+                         artifacts found (expected binaries targeting darwin/apple)",
                             krate.name
                         ));
                         continue;
                     }
                     if filtered.is_empty() {
                         log.warn(&format!(
-                            "ids filter {:?} matched no binaries for crate '{}'; skipping",
-                            bundle_cfg.ids, krate.name
+                            "skipped appbundle for crate '{}' — ids filter {:?} matched no binaries",
+                            krate.name, bundle_cfg.ids
                         ));
                         continue;
                     }

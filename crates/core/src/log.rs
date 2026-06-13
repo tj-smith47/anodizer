@@ -2030,7 +2030,7 @@ mod tests {
         let (log, cap) = StageLogger::with_capture("homebrew", Verbosity::Normal);
         log.skip_line(
             false,
-            "skipping homebrew for crate 'demo' — no homebrew config block",
+            "skipped homebrew for crate 'demo' — no homebrew config block",
         );
         assert_eq!(cap.debug_count(), 1);
         assert_eq!(cap.status_count(), 0);
@@ -2038,7 +2038,7 @@ mod tests {
             cap.all_messages(),
             vec![(
                 LogLevel::Debug,
-                "skipping homebrew for crate 'demo' — no homebrew config block".to_string()
+                "skipped homebrew for crate 'demo' — no homebrew config block".to_string()
             )]
         );
     }
@@ -2053,7 +2053,7 @@ mod tests {
         let (log, cap) = StageLogger::with_capture("homebrew", Verbosity::Normal);
         log.skip_line(
             true,
-            "skipping homebrew for crate 'demo' — no homebrew config block",
+            "skipped homebrew for crate 'demo' — no homebrew config block",
         );
         assert_eq!(cap.status_count(), 1);
         assert_eq!(cap.debug_count(), 0);

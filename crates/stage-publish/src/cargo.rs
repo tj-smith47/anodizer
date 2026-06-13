@@ -1341,7 +1341,7 @@ pub(crate) fn cargo_publish_plan(
                     .with_context(|| format!("cargo: render skip template for '{}'", c.name))?;
                 if off {
                     log.status(&format!(
-                        "skipped cargo publish for '{}' (skip=true)",
+                        "skipped cargo publish for '{}' — skip=true",
                         c.name
                     ));
                     continue;
@@ -1354,7 +1354,7 @@ pub(crate) fn cargo_publish_plan(
             )?;
             if !proceed {
                 log.status(&format!(
-                    "skipping cargo publish for '{}' — `if` condition evaluated falsy",
+                    "skipped cargo publish for '{}' — `if` condition evaluated falsy",
                     c.name
                 ));
                 continue;
@@ -1553,7 +1553,7 @@ fn publish_to_cargo_with(
         };
         if already_published {
             log.status(&format!(
-                "skipping '{}-{}' — already published on crates.io",
+                "skipped '{}-{}' — already published on crates.io",
                 name, crate_version
             ));
             continue;
@@ -1663,7 +1663,7 @@ fn publish_to_cargo_with(
                 .unwrap_or(DEFAULT_INDEX_TIMEOUT_SECS);
             if timeout == 0 {
                 log.warn(&format!(
-                    "index_timeout is 0 for '{}'; skipping index poll (dependents may fail)",
+                    "skipped index poll for '{}' — index_timeout is 0 (dependents may fail)",
                     name
                 ));
             } else {
@@ -1816,7 +1816,7 @@ impl anodizer_core::Publisher for CargoPublisher {
         // emits these so a no-op dispatch can't masquerade as success.
         // `publish_to_cargo` emits per-crate progress
         // (`(dry-run) would run: ...` / `running: cargo publish -p ...` /
-        // `skipping ... already published`) plus the per-crate-start line
+        // `skipped ... already published`) plus the per-crate-start line
         // from `run_per_crate_start_message` which forms the loop-body
         // signal that satisfies the visible-work contract.
         let eligible = count_cargo_configured_crates(ctx);
@@ -2604,7 +2604,7 @@ mod tests {
 
     /// Version-exists on crates.io must skip without comparing bytes.
     /// Pre-seed a sparse-index response that returns a valid version entry;
-    /// the publisher loop must emit "skipping" and NOT attempt to POST.
+    /// the publisher loop must emit "skipped" and NOT attempt to POST.
     #[test]
     fn skip_on_version_exists_no_cksum_comparison() {
         use std::sync::atomic::Ordering;

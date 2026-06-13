@@ -80,9 +80,9 @@ struct SignJob {
 fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
     // Per-artifact detail — at default verbosity the `signing N artifacts`
     // summary (emitted once before this loop) is the status-level signal; the
-    // per-artifact `sign X -> Y` line would flood the log on wide fan-outs.
+    // per-artifact `sign X → Y` line would flood the log on wide fan-outs.
     log.verbose(&format!(
-        "signing {} -> {} ({}[{}])",
+        "signing {} → {} ({}[{}])",
         job.artifact_display, job.signature_display, job.label, job.id_label
     ));
 
@@ -206,7 +206,7 @@ pub(crate) fn process_sign_configs(
         if !proceed {
             let reason = "`if` condition evaluated falsy".to_string();
             log.verbose(&format!(
-                "skipping {} config '{}': {}",
+                "skipped {} config '{}' — {}",
                 label, sub_label, reason
             ));
             ctx.remember_skip(label, &sub_label, &reason);
@@ -228,7 +228,7 @@ pub(crate) fn process_sign_configs(
 
         if config_filter == "none" {
             log.verbose(&format!(
-                "skipping {} config '{}' — `artifacts: none`",
+                "skipped {} config '{}' — `artifacts: none`",
                 label, sub_label
             ));
             ctx.remember_skip(label, &sub_label, "artifacts: none");

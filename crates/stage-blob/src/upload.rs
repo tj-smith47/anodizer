@@ -336,7 +336,7 @@ pub(crate) fn upload_files_owned(
                     // Per-file skip detail is verbose-only; the job summary
                     // (default verbosity) reports the aggregate skip count.
                     task_log.verbose(&format!(
-                        "skipping {} — identical object already present",
+                        "skipped {} — identical object already present",
                         key_display
                     ));
                     anodizer_core::parallel::lock_recover(&skipped, &task_log, "blob upload")

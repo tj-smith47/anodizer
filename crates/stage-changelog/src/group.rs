@@ -207,7 +207,7 @@ fn compile_filter_patterns(
         match Regex::new(p) {
             Ok(re) => patterns.push(re),
             Err(e) => log.warn(&format!(
-                "invalid {} regex {:?}: {} (skipping pattern)",
+                "skipped {} pattern {:?} — invalid regex: {}",
                 kind, p, e
             )),
         }

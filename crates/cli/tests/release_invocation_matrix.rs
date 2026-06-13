@@ -702,7 +702,7 @@ fn host_targets_logs_skipped_apple_and_msvc_on_linux() {
     );
     let stderr = strip_ansi(&String::from_utf8_lossy(&out.stderr));
     assert!(
-        stderr.contains("skipping 3 target(s) not buildable")
+        stderr.contains("skipped 3 target(s) — not buildable")
             && stderr.contains("x86_64-apple-darwin")
             && stderr.contains("aarch64-apple-darwin")
             && stderr.contains("apple targets require a macOS host")

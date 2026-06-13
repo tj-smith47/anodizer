@@ -73,8 +73,8 @@ impl PublisherSchemaValidator for WingetSchemaValidator {
             };
             if !crate_has_winget_installer_artifacts(ctx, crate_name, &winget_cfg) {
                 log.verbose(&format!(
-                    "crate '{}' produced no Windows installer artifact for winget in this \
-                     snapshot shard; skipping schema validation",
+                    "skipped winget schema validation for crate '{}' — produced no Windows \
+                     installer artifact in this snapshot shard",
                     crate_name
                 ));
                 continue;

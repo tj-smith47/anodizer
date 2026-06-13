@@ -270,7 +270,7 @@ impl Stage for DmgStage {
                     )?;
                     if !proceed {
                         log.status(&format!(
-                            "skipping dmg config '{}' for crate {}: `if` condition evaluated falsy",
+                            "skipped dmg config '{}' for crate {} — `if` condition evaluated falsy",
                             dmg_id_for_log, krate.name
                         ));
                         continue;
@@ -379,14 +379,14 @@ impl Stage for DmgStage {
                     if filtered.is_empty() && source_artifacts.is_empty() {
                         if use_mode == "appbundle" {
                             log.warn(&format!(
-                            "no appbundle artifacts found for crate '{}'; \
-                             skipping DMG generation (expected Installer artifacts with format=appbundle)",
-                            krate.name
-                        ));
+                                "skipped DMG generation for crate '{}' — no appbundle artifacts \
+                             found (expected Installer artifacts with format=appbundle)",
+                                krate.name
+                            ));
                         } else {
                             log.warn(&format!(
-                                "no macOS binary artifacts found for crate '{}'; \
-                             skipping DMG generation (expected binaries targeting darwin/apple)",
+                                "skipped DMG generation for crate '{}' — no macOS binary \
+                             artifacts found (expected binaries targeting darwin/apple)",
                                 krate.name
                             ));
                         }
@@ -394,8 +394,8 @@ impl Stage for DmgStage {
                     }
                     if filtered.is_empty() {
                         log.warn(&format!(
-                            "ids filter {:?} matched no artifacts for crate '{}'; skipping",
-                            dmg_cfg.ids, krate.name
+                            "skipped dmg for crate '{}' — ids filter {:?} matched no artifacts",
+                            krate.name, dmg_cfg.ids
                         ));
                         continue;
                     }

@@ -81,7 +81,7 @@ pub(crate) fn run_github_backend(
         Some(r) => r,
         None => {
             log.warn(&format!(
-                "no github config for crate '{}', skipping",
+                "skipped release for crate '{}' — no github config",
                 crate_cfg.name
             ));
             return Ok(None);
@@ -448,7 +448,7 @@ pub(crate) fn run_github_backend(
         // parallelism using a semaphore (context's parallelism setting,
         // minimum 1).
         if skip_upload {
-            log.status("skip_upload is set, skipping artifact uploads");
+            log.status("skipped artifact uploads — skip_upload is set");
         } else {
             // Upload concurrency cap: env > config > default (4).
             // Separate from ctx.options.parallelism (which governs build
@@ -644,7 +644,7 @@ pub(crate) fn run_github_backend(
                 })?;
             if !retouch_live {
                 log.status(&format!(
-                    "published release '{}' (draft -> live)",
+                    "published release '{}' (draft → live)",
                     release_name
                 ));
             }

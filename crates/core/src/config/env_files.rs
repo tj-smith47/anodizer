@@ -201,7 +201,7 @@ pub fn load_env_files(
                 if strict {
                     return Err(format!("env file '{}' not found (strict mode)", file_path));
                 }
-                log.warn(&format!("env file '{}' not found, skipping", file_path));
+                log.warn(&format!("skipped env file '{}' — not found", file_path));
                 continue;
             }
             Err(e) => {
@@ -219,7 +219,7 @@ pub fn load_env_files(
                 let key = key.trim();
                 if key.is_empty() {
                     log.warn(&format!(
-                        "skipping line with empty key in '{}': {}",
+                        "skipped line — empty key in '{}': {}",
                         file_path,
                         line.trim()
                     ));
@@ -238,7 +238,7 @@ pub fn load_env_files(
                 vars.insert(key.to_string(), value.to_string());
             } else {
                 log.warn(&format!(
-                    "skipping line without '=' in '{}': {}",
+                    "skipped line — no '=' in '{}': {}",
                     file_path, trimmed
                 ));
             }

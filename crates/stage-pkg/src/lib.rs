@@ -230,7 +230,7 @@ impl Stage for PkgStage {
                     )?;
                     if !proceed {
                         log.status(&format!(
-                            "skipping pkg config '{}' for crate {}: `if` condition evaluated falsy",
+                            "skipped pkg config '{}' for crate {} — `if` condition evaluated falsy",
                             pkg_id_for_log, krate.name
                         ));
                         continue;
@@ -298,14 +298,14 @@ impl Stage for PkgStage {
                     if filtered.is_empty() && source_artifacts.is_empty() {
                         if use_mode == "appbundle" {
                             log.warn(&format!(
-                            "no appbundle artifacts found for crate '{}'; \
-                             skipping PKG generation (expected Installer artifacts with format=appbundle)",
-                            krate.name
-                        ));
+                                "skipped PKG generation for crate '{}' — no appbundle artifacts \
+                             found (expected Installer artifacts with format=appbundle)",
+                                krate.name
+                            ));
                         } else {
                             log.warn(&format!(
-                                "no macOS binary artifacts found for crate '{}'; \
-                             skipping PKG generation (expected binaries targeting darwin/apple)",
+                                "skipped PKG generation for crate '{}' — no macOS binary \
+                             artifacts found (expected binaries targeting darwin/apple)",
                                 krate.name
                             ));
                         }
@@ -313,8 +313,8 @@ impl Stage for PkgStage {
                     }
                     if filtered.is_empty() {
                         log.warn(&format!(
-                            "ids filter {:?} matched no artifacts for crate '{}'; skipping",
-                            pkg_cfg.ids, krate.name
+                            "skipped pkg for crate '{}' — ids filter {:?} matched no artifacts",
+                            krate.name, pkg_cfg.ids
                         ));
                         continue;
                     }

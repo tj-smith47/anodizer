@@ -324,7 +324,7 @@ fn execute_makeself_job(
         }
         fs::copy(src, &dst).with_context(|| {
             format!(
-                "makeself: copy binary {} -> {}",
+                "makeself: copy binary {} → {}",
                 src.display(),
                 dst.display()
             )
@@ -337,7 +337,7 @@ fn execute_makeself_job(
             fs::create_dir_all(parent)?;
         }
         fs::copy(src, &dst).with_context(|| {
-            format!("makeself: copy file {} -> {}", src.display(), dst.display())
+            format!("makeself: copy file {} → {}", src.display(), dst.display())
         })?;
     }
 
@@ -383,7 +383,7 @@ fn execute_makeself_job(
         })
         .with_context(|| {
             format!(
-                "makeself: move {} -> {}",
+                "makeself: move {} → {}",
                 built_path.display(),
                 job.output_path.display()
             )

@@ -245,7 +245,7 @@ pub(super) fn run_split(
             if artifact.path != dest {
                 std::fs::copy(&artifact.path, &dest).with_context(|| {
                     format!(
-                        "split: copy {} -> {}",
+                        "split: copy {} → {}",
                         artifact.path.display(),
                         dest.display()
                     )
@@ -294,7 +294,7 @@ pub(super) fn run_split(
         .with_context(|| format!("write split context tmp to {}", tmp_path.display()))?;
     std::fs::rename(&tmp_path, &ctx_path).with_context(|| {
         format!(
-            "rename split context {} -> {}",
+            "rename split context {} → {}",
             tmp_path.display(),
             ctx_path.display()
         )
@@ -387,7 +387,7 @@ fn check_split_worker_completeness(
     let matrix_path = dist.join("matrix.json");
     if !matrix_path.exists() {
         log.verbose(&format!(
-            "no matrix.json at {} — skipping worker-completeness check",
+            "skipped worker-completeness check — no matrix.json at {}",
             matrix_path.display()
         ));
         return Ok(());
@@ -581,7 +581,7 @@ pub fn load_split_contexts_into(
                 Some(k) => k,
                 None => {
                     log.warn(&format!(
-                        "unknown artifact kind '{}' in {}, skipping",
+                        "skipped artifact — unknown kind '{}' in {}",
                         sa.kind,
                         ctx_file.display()
                     ));

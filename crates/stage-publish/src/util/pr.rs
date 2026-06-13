@@ -101,7 +101,7 @@ fn gh_is_available() -> bool {
 /// the publish log and the actionable remediation pointer at the end.
 pub(crate) fn pr_exists_skip_warn_message(label: &str, head: &str) -> String {
     format!(
-        "{label} PR for '{head}' already exists — skipping \
+        "skipped {label} PR for '{head}' — already exists \
          (set update_existing_pr: true to update the PR in place)"
     )
 }

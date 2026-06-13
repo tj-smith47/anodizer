@@ -402,7 +402,7 @@ impl Stage for SbomStage {
         let log = ctx.logger("sbom");
 
         if ctx.config.sboms.is_empty() {
-            log.status("no SBOMs configured, skipping");
+            log.status("skipped SBOM — none configured");
             return Ok(());
         }
 
@@ -453,7 +453,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
             .with_context(|| format!("sbom[{}]: evaluate skip expression", id))?
     {
         log.status(&format!(
-            "skipping sbom[{}] — `skip` condition evaluated truthy",
+            "skipped sbom[{}] — `skip` condition evaluated truthy",
             id
         ));
         return Ok(());
@@ -554,7 +554,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
                 ctx.strict_guard(
                     &log,
                     &format!(
-                        "skipping SBOM generation — no matching '{}' artifacts found (sbom[{}])",
+                        "skipped SBOM generation — no matching '{}' artifacts found (sbom[{}])",
                         artifacts_type, id
                     ),
                 )?;
@@ -934,7 +934,7 @@ fn run_sbom_builtin(
         ctx.strict_guard(
             &log,
             &format!(
-                "skipping SBOM generation — no matching '{}' artifacts found (sbom[{}])",
+                "skipped SBOM generation — no matching '{}' artifacts found (sbom[{}])",
                 artifacts_type, id
             ),
         )?;

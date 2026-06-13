@@ -77,7 +77,7 @@ impl Stage for SrpmStage {
 
         if source_archives.is_empty() {
             if ctx.options.snapshot || dry_run {
-                log.verbose("skipping SRPM — no source archives found (snapshot/dry-run mode)");
+                log.verbose("skipped SRPM — no source archives found (snapshot/dry-run mode)");
                 return Ok(());
             }
             anyhow::bail!("srpm: no source archives found. Enable the source stage first.");
@@ -346,7 +346,7 @@ impl Stage for SrpmStage {
         // Move to dist with the desired filename
         fs::copy(generated_path, &srpm_path).with_context(|| {
             format!(
-                "srpm: copy {} -> {}",
+                "srpm: copy {} → {}",
                 generated_path.display(),
                 srpm_path.display()
             )

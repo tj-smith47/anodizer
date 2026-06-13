@@ -433,8 +433,8 @@ impl Harness {
         let warn_log = StageLogger::new("check-determinism", self.verbosity);
         for (stage, tool) in &gate.skipped {
             warn_log.warn(&format!(
-                "installer stage `{}` requested but `{}` is not on PATH; \
-                 skipping for this run (no artifacts emitted)",
+                "skipped installer stage `{}` for this run — `{}` is not on PATH \
+                 (no artifacts emitted)",
                 stage.as_str(),
                 tool
             ));
@@ -544,7 +544,7 @@ impl Harness {
                             .map(|p| {
                                 let s = p.to_string_lossy();
                                 format!(
-                                    "  {} -> {}",
+                                    "  {} → {}",
                                     p.display(),
                                     artifacts::infer_stage_from_path(&s)
                                 )
@@ -771,7 +771,7 @@ impl Harness {
                     .with_context(|| format!("crate path lacks filename: {}", path.display()))?;
                 let target = dest.join(name);
                 std::fs::copy(&path, &target).with_context(|| {
-                    format!("copying {} -> {}", path.display(), target.display())
+                    format!("copying {} → {}", path.display(), target.display())
                 })?;
             }
         }
@@ -831,8 +831,8 @@ impl Harness {
             Ok(true) => {}
             Ok(false) | Err(_) => {
                 log.warn(
-                    "docker stage requested but `docker buildx` is not available on PATH; \
-                     skipping for this run (no artifacts emitted)",
+                    "skipped docker stage for this run — `docker buildx` is not available on PATH \
+                     (no artifacts emitted)",
                 );
                 return Ok(());
             }
@@ -854,7 +854,7 @@ impl Harness {
         let target = dest_dir.join("image.oci.tar");
         std::fs::copy(&output.oci_tar_path, &target).with_context(|| {
             format!(
-                "copying {} -> {}",
+                "copying {} → {}",
                 output.oci_tar_path.display(),
                 target.display()
             )

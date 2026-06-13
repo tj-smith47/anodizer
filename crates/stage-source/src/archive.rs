@@ -219,7 +219,7 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                         );
                     }
                     log.warn(&format!(
-                        "extra file '{}' not found, skipping",
+                        "skipped extra file '{}' — not found",
                         file_entry.src
                     ));
                     continue;
@@ -296,7 +296,7 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                     if strict {
                         bail!("source: extra file '{}' not found (strict mode)", entry.src);
                     }
-                    log.warn(&format!("extra file '{}' not found, skipping", entry.src));
+                    log.warn(&format!("skipped extra file '{}' — not found", entry.src));
                     continue;
                 }
 

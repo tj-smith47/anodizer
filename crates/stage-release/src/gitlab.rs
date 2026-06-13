@@ -803,7 +803,7 @@ pub(crate) fn run_gitlab_backend(
         Some(r) => r,
         None => {
             log.warn(&format!(
-                "no gitlab config for crate '{}', skipping",
+                "skipped release for crate '{}' — no gitlab config",
                 crate_cfg.name
             ));
             return Ok(None);
@@ -904,7 +904,7 @@ pub(crate) fn run_gitlab_backend(
 
         // Upload artifacts with bounded parallelism (matching GitHub path).
         if skip_upload {
-            log.status("skip_upload is set, skipping artifact uploads");
+            log.status("skipped artifact uploads — skip_upload is set");
         } else {
             let upload_parallelism = std::cmp::max(ctx.options.parallelism, 1);
             let semaphore = Arc::new(tokio::sync::Semaphore::new(upload_parallelism));

@@ -824,7 +824,7 @@ pub(crate) fn publish_to_cloudsmith(
                         // Per-file skip detail is verbose-only; the entry
                         // summary reports the aggregate skip count.
                         log.verbose(&format!(
-                            "skipping '{}' — already uploaded with matching md5",
+                            "skipped '{}' — already uploaded with matching md5",
                             art_name
                         ));
                         skipped_count += 1;
@@ -1083,10 +1083,10 @@ pub(crate) fn publish_to_cloudsmith(
                 // Snapshot publishes are blocked by the shared non-release
                 // version guard, but guard the destructive prune independently
                 // so it can never delete real releases on behalf of a snapshot run.
-                log.verbose("cloudsmith keep_versions: skipping prune in snapshot mode");
+                log.verbose("skipped cloudsmith keep_versions prune — snapshot mode");
             } else if keep == 0 {
                 log.warn(
-                    "cloudsmith keep_versions: 0 is invalid (would prune every version); skipping prune",
+                    "skipped cloudsmith keep_versions prune — 0 is invalid (would prune every version)",
                 );
             } else if ctx.version().is_empty() {
                 // Without a known current version, the pure selector loses its
@@ -1095,7 +1095,7 @@ pub(crate) fn publish_to_cloudsmith(
                 // quirk could delete what this run just uploaded. Refuse rather
                 // than prune blind.
                 log.warn(
-                    "cloudsmith keep_versions: current version is unknown; skipping prune to avoid deleting the just-uploaded release",
+                    "skipped cloudsmith keep_versions prune — current version is unknown (avoids deleting the just-uploaded release)",
                 );
             } else {
                 let current_version = ctx.version();
