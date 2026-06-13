@@ -288,6 +288,17 @@ CloudSmith publisher configuration. Pushes packages to CloudSmith repositories.
 | `formats` | list of string | — | Package format filter: only publish artifacts matching these formats. |
 | `ids` | list of string | — | Build IDs filter: only publish artifacts from builds whose `id` is in this list. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the CloudSmith publisher is skipped. Render failure hard-errors. Config key: `cloudsmiths[].if:`. |
+| `keep_versions` | integer | — | Retain only the `N` most-recent release versions of each published package, pruning older ones from the CloudSmith repository after a successful upload.
+
+This is **opt-in** and **destructive**: leaving it unset (the default) prunes nothing. When set, after the just-uploaded artifacts are confirmed present the publisher lists every version of *this* package in the repository, ranks the distinct release versions by SemVer (newest first), keeps the top `N` — which always includes the version just published — and issues `DELETE` for every artifact (all formats and architectures) belonging to versions ranked beyond `N`. Other packages sharing the repository are never touched.
+
+All package formats of one release are treated as the same version: the deb/rpm epoch (`1:0.9.1-1`) and apk revision (`0.9.1-r1`) suffixes are normalized to the base SemVer (`0.9.1`) before ranking, so keeping `2` versions keeps every `.deb`/`.rpm`/`.apk` of the two newest releases.
+
+Pruning is **best-effort**: it runs only after the upload (the real work) has already succeeded, is skipped entirely in dry-run and snapshot mode, and a list/delete failure emits a prominent warning and continues rather than failing the release or rolling anything back. `keep_versions: 0` is rejected — anodizer never prunes every version.
+
+Primarily a remedy for storage-capped repositories (e.g. the CloudSmith free plan's 500 MB limit, which offers no server-side retention policy).
+
+```yaml cloudsmiths: - organization: acme repository: tools keep_versions: 3   # keep the 3 newest releases, prune older ones ``` |
 | `organization` | string | — | CloudSmith organization slug. |
 | `repository` | string | — | CloudSmith repository slug. |
 | `republish` | StringOrBool | — | When true, allow republishing over existing package versions. |

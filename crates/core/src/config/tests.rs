@@ -9445,3 +9445,20 @@ crates:
     let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(!all_builds_prebuilt(&cfg));
 }
+
+#[test]
+fn cloudsmith_keep_versions_parses_and_defaults_none() {
+    let yaml = r#"
+project_name: test
+cloudsmiths:
+  - organization: acme
+    repository: tools
+    keep_versions: 3
+  - organization: acme
+    repository: tools-no-prune
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let cs = cfg.cloudsmiths.as_ref().unwrap();
+    assert_eq!(cs[0].keep_versions, Some(3));
+    assert_eq!(cs[1].keep_versions, None);
+}

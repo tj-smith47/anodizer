@@ -158,6 +158,160 @@ pub(crate) fn classify_cloudsmith_package_response(
     Ok(CloudsmithPackageState::NotFound)
 }
 
+// ---------------------------------------------------------------------------
+// keep_versions pruning — pure selection
+// ---------------------------------------------------------------------------
+
+/// One CloudSmith package entry, as projected from a packages-list response,
+/// for `keep_versions` retention ranking. Each `(slug, version)` pair is a
+/// single uploaded artifact (one format/arch); many entries share a version.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CloudsmithVersionEntry {
+    /// Per-package permanent identifier (`slug_perm`, falling back to `slug`)
+    /// used as the DELETE target.
+    pub slug: String,
+    /// The CloudSmith `version` string for this artifact, e.g. `0.9.1`,
+    /// `1:0.9.1-1` (deb epoch + revision), or `0.9.1-r1` (apk revision).
+    pub version: String,
+    /// `uploaded_at` timestamp (RFC-3339); used as a tiebreak/fallback when a
+    /// version string won't parse as SemVer. Empty when absent.
+    pub uploaded_at: String,
+}
+
+/// Normalize a CloudSmith package `version` string to its base SemVer for
+/// grouping all formats of one release together.
+///
+/// CloudSmith carries packaging-specific decorations that differ per format
+/// for the same logical release:
+/// - deb/rpm epoch prefix: `1:0.9.1-1` → strip `N:` and the `-1` revision
+/// - apk revision suffix: `0.9.1-r1` → strip the `-rN` revision
+///
+/// Returns the bare `major.minor.patch[-prerelease]` so `0.9.1`, `1:0.9.1-1`,
+/// and `0.9.1-r1` all collapse to `0.9.1`. A SemVer prerelease (`0.9.1-rc.1`)
+/// is preserved (only the deb `-<digits>` / apk `-r<digits>` revision tails
+/// are stripped).
+pub(crate) fn normalize_cloudsmith_version(version: &str) -> String {
+    // Strip a leading `epoch:` (deb/rpm) — digits before the first colon.
+    let after_epoch = match version.split_once(':') {
+        Some((epoch, rest)) if !epoch.is_empty() && epoch.bytes().all(|b| b.is_ascii_digit()) => {
+            rest
+        }
+        _ => version,
+    };
+    // Strip a trailing packaging revision: apk `-rN` or deb `-N` where the
+    // tail after the final `-` is `r?<digits>` AND the head is itself a bare
+    // `major.minor.patch` SemVer. Gating on a SemVer head prevents truncating
+    // a legitimate prerelease that merely looks revision-shaped (`1.0.0-r1`,
+    // `1.0.0-rc-1`): those have a non-bare-SemVer head once the tail is split,
+    // so they survive intact.
+    if let Some((head, tail)) = after_epoch.rsplit_once('-') {
+        let revision_body = tail.strip_prefix('r').unwrap_or(tail);
+        let is_revision =
+            !revision_body.is_empty() && revision_body.bytes().all(|b| b.is_ascii_digit());
+        if is_revision && anodizer_core::git::parse_semver(head).is_ok() {
+            return head.to_string();
+        }
+    }
+    after_epoch.to_string()
+}
+
+/// Rank the distinct normalized versions present in `entries` newest-first,
+/// returning `(ordered_versions, buckets)` where `buckets` maps each
+/// normalized version to its member entries.
+///
+/// Ordering: by parsed SemVer descending when both compare; a parseable
+/// version always outranks an unparseable one (garbage versions sink to the
+/// bottom); two unparseable versions fall back to newest `uploaded_at` first.
+/// Both [`select_versions_to_prune`] and the operator summary share this one
+/// comparator so the "kept …" line can never disagree with what was deleted.
+fn rank_distinct_versions_desc(
+    entries: &[CloudsmithVersionEntry],
+) -> (Vec<String>, HashMap<String, Vec<&CloudsmithVersionEntry>>) {
+    let mut order: Vec<String> = Vec::new();
+    let mut buckets: HashMap<String, Vec<&CloudsmithVersionEntry>> = HashMap::new();
+    let mut newest_ts: HashMap<String, String> = HashMap::new();
+    for e in entries {
+        let norm = normalize_cloudsmith_version(&e.version);
+        if !buckets.contains_key(&norm) {
+            order.push(norm.clone());
+        }
+        let ts = newest_ts.entry(norm.clone()).or_default();
+        if e.uploaded_at > *ts {
+            *ts = e.uploaded_at.clone();
+        }
+        buckets.entry(norm).or_default().push(e);
+    }
+    order.sort_by(|a, b| {
+        use std::cmp::Ordering;
+        let sa = anodizer_core::git::parse_semver(a).ok();
+        let sb = anodizer_core::git::parse_semver(b).ok();
+        match (sa, sb) {
+            (Some(va), Some(vb)) => vb.cmp(&va), // descending semver
+            (Some(_), None) => Ordering::Less,   // parseable ranks first
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => {
+                let ta = newest_ts.get(a).map(String::as_str).unwrap_or("");
+                let tb = newest_ts.get(b).map(String::as_str).unwrap_or("");
+                tb.cmp(ta) // newest uploaded first
+            }
+        }
+    });
+    (order, buckets)
+}
+
+/// Decide which package slugs to DELETE so that only the `keep` most-recent
+/// distinct release versions remain — the heart of `cloudsmiths[].keep_versions`.
+///
+/// Pure (no I/O) so the destructive decision is unit-testable in isolation:
+///
+/// 1. Group every entry by its [`normalize_cloudsmith_version`] (so all
+///    formats/arches of one release share a bucket).
+/// 2. Rank the distinct normalized versions newest-first (see
+///    [`rank_distinct_versions_desc`]).
+/// 3. Keep the top `keep` versions; return the slugs of every entry whose
+///    version ranks beyond `keep`.
+///
+/// `current_version` is the just-published release: its normalized form is
+/// **always** kept regardless of ranking, so a ranking quirk can never delete
+/// the artifacts this run just uploaded. An EMPTY `current_version` normalizes
+/// to `""`, which matches no real bucket and so silently drops that
+/// safety-net; the I/O caller therefore refuses to prune when the version is
+/// unknown rather than relying on this function to notice. `keep == 0` returns
+/// an empty vec (refuses to prune everything; the caller rejects `0` earlier,
+/// this is a belt-and-braces guard).
+pub(crate) fn select_versions_to_prune(
+    entries: &[CloudsmithVersionEntry],
+    keep: u32,
+    current_version: &str,
+) -> Vec<String> {
+    if keep == 0 || entries.is_empty() {
+        return Vec::new();
+    }
+    let current_norm = normalize_cloudsmith_version(current_version);
+    let (order, buckets) = rank_distinct_versions_desc(entries);
+
+    // Keep the top `keep`, plus the current version wherever it ranks.
+    let keep = keep as usize;
+    let mut kept: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for v in order.iter().take(keep) {
+        kept.insert(v.as_str());
+    }
+    kept.insert(current_norm.as_str());
+
+    let mut to_delete: Vec<String> = Vec::new();
+    for v in &order {
+        if kept.contains(v.as_str()) {
+            continue;
+        }
+        if let Some(entries) = buckets.get(v) {
+            for e in entries {
+                to_delete.push(e.slug.clone());
+            }
+        }
+    }
+    to_delete
+}
+
 /// GET the Cloudsmith packages-list endpoint filtered by filename and
 /// classify the result. Retries 5xx/429/transport via the shared retry
 /// helper; 4xx fast-fails.
@@ -570,6 +724,11 @@ pub(crate) fn publish_to_cloudsmith(
             repository
         ));
 
+        // Distinct CloudSmith package names uploaded under this entry, used to
+        // scope post-upload `keep_versions` pruning to each package alone.
+        let mut prune_package_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
         for artifact in &artifacts {
             let path = &artifact.path;
             if !path.exists() {
@@ -830,14 +989,24 @@ pub(crate) fn publish_to_cloudsmith(
                     }
                 };
 
-                let slug = serde_json::from_str::<serde_json::Value>(&pkg_body)
-                    .ok()
-                    .and_then(|v| {
-                        v.get("slug_perm")
-                            .or_else(|| v.get("slug"))
-                            .and_then(|s| s.as_str())
-                            .map(|s| s.to_string())
-                    });
+                let pkg_json = serde_json::from_str::<serde_json::Value>(&pkg_body).ok();
+                let slug = pkg_json.as_ref().and_then(|v| {
+                    v.get("slug_perm")
+                        .or_else(|| v.get("slug"))
+                        .and_then(|s| s.as_str())
+                        .map(|s| s.to_string())
+                });
+                // Capture the CloudSmith package `name` so post-upload
+                // `keep_versions` pruning can scope its list+delete to this
+                // package alone (not siblings sharing the repo).
+                if let Some(name) = pkg_json
+                    .as_ref()
+                    .and_then(|v| v.get("name"))
+                    .and_then(|n| n.as_str())
+                    && !name.is_empty()
+                {
+                    prune_package_names.insert(name.to_string());
+                }
                 if let Some(ref s) = slug {
                     log.status(&format!(
                         "uploaded {} (slug={}{})",
@@ -865,9 +1034,261 @@ pub(crate) fn publish_to_cloudsmith(
             "cloudsmith upload complete for org '{}' repo '{}'",
             organization, repository
         ));
+
+        // --- Post-upload retention pruning (keep_versions) ---
+        //
+        // The upload (the real work) has already succeeded. Pruning is a
+        // best-effort follow-up: a list/delete failure warns and continues —
+        // it must NOT fail the stage or roll back the upload. `keep == 0` is
+        // refused; unset (None) prunes nothing.
+        if let Some(keep) = entry.keep_versions {
+            if ctx.is_snapshot() {
+                // Snapshot publishes are blocked by the release_version_guard,
+                // but guard the destructive prune independently so it can never
+                // delete real releases on behalf of a snapshot run.
+                log.verbose("cloudsmith keep_versions: skipping prune in snapshot mode");
+            } else if keep == 0 {
+                log.warn(
+                    "cloudsmith keep_versions: 0 is invalid (would prune every version); skipping prune",
+                );
+            } else if ctx.version().is_empty() {
+                // Without a known current version, the pure selector loses its
+                // "always keep the just-uploaded version" safety net (an empty
+                // version normalizes to "" and matches no bucket), so a ranking
+                // quirk could delete what this run just uploaded. Refuse rather
+                // than prune blind.
+                log.warn(
+                    "cloudsmith keep_versions: current version is unknown; skipping prune to avoid deleting the just-uploaded release",
+                );
+            } else {
+                let current_version = ctx.version();
+                for pkg_name in &prune_package_names {
+                    prune_cloudsmith_versions(
+                        &client,
+                        &cloudsmith_api_base(),
+                        &organization,
+                        &repository,
+                        pkg_name,
+                        &current_version,
+                        keep,
+                        &token,
+                        &policy,
+                        log,
+                    );
+                }
+            }
+        }
     }
 
     Ok(uploaded)
+}
+
+/// List every version of a single CloudSmith package and DELETE those that
+/// rank beyond the `keep` most-recent releases (`cloudsmiths[].keep_versions`).
+///
+/// Best-effort and non-fatal by contract: the upload already succeeded, so a
+/// list or delete failure here emits a PROMINENT warning (visible at default
+/// verbosity) naming what couldn't be pruned and returns without error — it
+/// never fails the publish stage or triggers a rollback. The selection itself
+/// is delegated to the pure [`select_versions_to_prune`] so the destructive
+/// decision is unit-tested HTTP-free.
+#[allow(clippy::too_many_arguments)]
+fn prune_cloudsmith_versions(
+    client: &reqwest::blocking::Client,
+    api_base: &str,
+    organization: &str,
+    repository: &str,
+    package_name: &str,
+    current_version: &str,
+    keep: u32,
+    token: &str,
+    policy: &RetryPolicy,
+    log: &StageLogger,
+) {
+    let list_url = format!("{}/packages/{}/{}/", api_base, organization, repository);
+    // Filter server-side to THIS package name so sibling packages sharing the
+    // repository are never listed (and therefore never pruned).
+    let query = format!("name:{}", package_name);
+
+    let entries = match list_cloudsmith_package_versions(
+        client,
+        &list_url,
+        &query,
+        package_name,
+        token,
+        policy,
+        log,
+    ) {
+        Ok(e) => e,
+        Err(err) => {
+            log.warn(&format!(
+                "cloudsmith keep_versions: could not list versions of '{}' in {}/{} ({}); \
+                 NOTHING was pruned — older versions may still consume storage",
+                package_name, organization, repository, err
+            ));
+            return;
+        }
+    };
+
+    let slugs_to_delete = select_versions_to_prune(&entries, keep, current_version);
+    if slugs_to_delete.is_empty() {
+        log.verbose(&format!(
+            "cloudsmith keep_versions: nothing to prune for '{}' (≤ {} versions present)",
+            package_name, keep
+        ));
+        return;
+    }
+
+    let mut deleted = 0usize;
+    let mut failed = 0usize;
+    let mut failed_slugs: Vec<String> = Vec::new();
+    for slug in &slugs_to_delete {
+        let url = format!(
+            "{}/packages/{}/{}/{}/",
+            api_base, organization, repository, slug
+        );
+        log.verbose(&format!("DELETE {} (keep_versions prune)", url));
+        match retry_request("packages/prune-delete", package_name, policy, log, || {
+            client
+                .delete(&url)
+                .header("Authorization", format!("token {}", token))
+                .header("Accept", "application/json")
+                .send()
+        }) {
+            Ok(_) => deleted += 1,
+            Err(err) => {
+                // 404/410 = already gone (concurrent prune / manual delete):
+                // count it as effectively pruned rather than a failure.
+                let msg = format!("{err:#}");
+                if msg.contains("HTTP 404") || msg.contains("HTTP 410") {
+                    deleted += 1;
+                } else {
+                    failed += 1;
+                    failed_slugs.push(slug.clone());
+                    log.warn(&format!(
+                        "cloudsmith keep_versions: failed to delete '{}' (slug {}): {}",
+                        package_name, slug, err
+                    ));
+                }
+            }
+        }
+    }
+
+    // Summary of the distinct versions kept, for the operator-visible line.
+    let kept_versions = retained_version_summary(&entries, keep, current_version);
+    if failed == 0 {
+        log.status(&format!(
+            "pruned {} old artifact(s) of '{}' from cloudsmith (kept {} most-recent: {})",
+            deleted, package_name, keep, kept_versions
+        ));
+    } else {
+        log.warn(&format!(
+            "cloudsmith keep_versions: pruned {} artifact(s) of '{}' but {} delete(s) FAILED \
+             (slugs: {}); those older versions remain and still consume storage",
+            deleted,
+            package_name,
+            failed,
+            failed_slugs.join(", ")
+        ));
+    }
+}
+
+/// Human-readable list of the distinct normalized versions that survive a
+/// `keep_versions` prune (the top `keep` plus the current upload), newest
+/// first, for the operator summary line.
+fn retained_version_summary(
+    entries: &[CloudsmithVersionEntry],
+    keep: u32,
+    current_version: &str,
+) -> String {
+    let current_norm = normalize_cloudsmith_version(current_version);
+    // Same comparator as the deletion decision so the "kept …" line can never
+    // name a different version than the one actually retained.
+    let (order, _buckets) = rank_distinct_versions_desc(entries);
+    let mut kept: Vec<String> = order.iter().take(keep as usize).cloned().collect();
+    if !kept.contains(&current_norm) {
+        kept.push(current_norm);
+    }
+    kept.join(", ")
+}
+
+/// Page through the CloudSmith packages-list endpoint (filtered to one
+/// package name) and project each entry into a [`CloudsmithVersionEntry`].
+///
+/// CloudSmith paginates at 100 results/page; a single package's
+/// versions × formats × arches can exceed one page in a long-lived repo, so
+/// this walks pages until a short (< page_size) page is returned. 4xx
+/// fast-fails; 5xx/429/transport retry via the shared helper.
+fn list_cloudsmith_package_versions(
+    client: &reqwest::blocking::Client,
+    list_url: &str,
+    query: &str,
+    package_name: &str,
+    token: &str,
+    policy: &RetryPolicy,
+    log: &StageLogger,
+) -> Result<Vec<CloudsmithVersionEntry>> {
+    const PAGE_SIZE: usize = 100;
+    let mut out: Vec<CloudsmithVersionEntry> = Vec::new();
+    let mut page = 1u32;
+    loop {
+        let page_str = page.to_string();
+        let page_size_str = PAGE_SIZE.to_string();
+        let (_status, body) =
+            retry_request("packages/list (prune)", package_name, policy, log, || {
+                client
+                    .get(list_url)
+                    .query(&[
+                        ("query", query),
+                        ("page", page_str.as_str()),
+                        ("page_size", page_size_str.as_str()),
+                    ])
+                    .header("Authorization", format!("token {}", token))
+                    .header("Accept", "application/json")
+                    .send()
+            })?;
+        let parsed: serde_json::Value = serde_json::from_str(&body)
+            .with_context(|| format!("cloudsmith: parse packages-list page {}", page))?;
+        let array = match parsed.as_array() {
+            Some(a) => a,
+            None => break,
+        };
+        let page_len = array.len();
+        for v in array {
+            // Defensively re-filter by exact package name: the `query` is a
+            // search term, not an exact match, so a substring sibling could
+            // slip in. Only entries whose `name` equals our package are
+            // candidates for pruning.
+            let name = v.get("name").and_then(|n| n.as_str()).unwrap_or("");
+            if name != package_name {
+                continue;
+            }
+            let slug = v
+                .get("slug_perm")
+                .or_else(|| v.get("slug"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+            if slug.is_empty() {
+                continue;
+            }
+            let version = v.get("version").and_then(|s| s.as_str()).unwrap_or("");
+            let uploaded_at = v
+                .get("uploaded_at")
+                .or_else(|| v.get("created_at"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("");
+            out.push(CloudsmithVersionEntry {
+                slug: slug.to_string(),
+                version: version.to_string(),
+                uploaded_at: uploaded_at.to_string(),
+            });
+        }
+        if page_len < PAGE_SIZE {
+            break;
+        }
+        page += 1;
+    }
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -1172,6 +1593,136 @@ mod tests {
                 ..Default::default()
             },
         )
+    }
+
+    fn entry(slug: &str, version: &str, uploaded_at: &str) -> CloudsmithVersionEntry {
+        CloudsmithVersionEntry {
+            slug: slug.to_string(),
+            version: version.to_string(),
+            uploaded_at: uploaded_at.to_string(),
+        }
+    }
+
+    // keep_versions=2 over 4 versions: the 2 oldest are deleted, the 2
+    // newest (incl. the current upload) are kept.
+    #[test]
+    fn prune_keep_2_of_4_deletes_two_oldest() {
+        let entries = vec![
+            entry("s-070", "0.7.0", "2026-06-13T00:00:00Z"),
+            entry("s-061", "0.6.1", "2026-05-13T00:00:00Z"),
+            entry("s-060", "0.6.0", "2026-04-13T00:00:00Z"),
+            entry("s-050", "0.5.0", "2026-03-13T00:00:00Z"),
+        ];
+        let mut to_delete = select_versions_to_prune(&entries, 2, "0.7.0");
+        to_delete.sort();
+        assert_eq!(to_delete, vec!["s-050".to_string(), "s-060".to_string()]);
+    }
+
+    // keep_versions never deletes the current upload even when ranking would
+    // otherwise rank it out of the top-N (e.g. a hotfix re-cut of an older
+    // line, or skewed timestamps).
+    #[test]
+    fn prune_never_deletes_current_version() {
+        let entries = vec![
+            entry("s-090", "0.9.0", "2026-06-13T00:00:00Z"),
+            entry("s-081", "0.8.1", "2026-06-12T00:00:00Z"),
+            entry("s-080", "0.8.0", "2026-06-11T00:00:00Z"),
+        ];
+        // keep=1 would normally keep only 0.9.0, but current is 0.8.0.
+        let to_delete = select_versions_to_prune(&entries, 1, "0.8.0");
+        assert!(
+            !to_delete.contains(&"s-080".to_string()),
+            "current version must never be pruned: {to_delete:?}"
+        );
+        // 0.9.0 (top-1) and 0.8.0 (current) kept; 0.8.1 pruned.
+        assert_eq!(to_delete, vec!["s-081".to_string()]);
+    }
+
+    // All formats of one release (deb epoch `1:0.9.1-1`, apk `0.9.1-r1`, rpm
+    // `0.9.1-1`, bare `0.9.1`) normalize to `0.9.1` and rank as ONE version.
+    #[test]
+    fn prune_normalizes_epoch_and_revision_into_one_version() {
+        let entries = vec![
+            entry("deb-091", "1:0.9.1-1", "2026-06-13T00:00:00Z"),
+            entry("apk-091", "0.9.1-r1", "2026-06-13T00:00:00Z"),
+            entry("rpm-091", "0.9.1-1", "2026-06-13T00:00:00Z"),
+            entry("deb-090", "1:0.9.0-1", "2026-05-13T00:00:00Z"),
+            entry("apk-090", "0.9.0-r1", "2026-05-13T00:00:00Z"),
+        ];
+        // keep=1, current 0.9.1 → keep all three 0.9.1 artifacts, prune both
+        // 0.9.0 artifacts.
+        let mut to_delete = select_versions_to_prune(&entries, 1, "0.9.1");
+        to_delete.sort();
+        assert_eq!(
+            to_delete,
+            vec!["apk-090".to_string(), "deb-090".to_string()]
+        );
+    }
+
+    #[test]
+    fn normalize_strips_epoch_and_revision() {
+        assert_eq!(normalize_cloudsmith_version("1:0.9.1-1"), "0.9.1");
+        assert_eq!(normalize_cloudsmith_version("0.9.1-r1"), "0.9.1");
+        assert_eq!(normalize_cloudsmith_version("0.9.1-1"), "0.9.1");
+        assert_eq!(normalize_cloudsmith_version("0.9.1"), "0.9.1");
+        assert_eq!(normalize_cloudsmith_version("2:1.2.3-5"), "1.2.3");
+        // SemVer prerelease tails survive (not a packaging revision).
+        assert_eq!(normalize_cloudsmith_version("0.9.1-rc.1"), "0.9.1-rc.1");
+        assert_eq!(normalize_cloudsmith_version("0.9.1-alpha"), "0.9.1-alpha");
+        // A non-numeric prerelease tail is NOT a packaging revision and
+        // survives intact (head `0.9.1` is bare SemVer but tail `beta` isn't
+        // `r?<digits>`).
+        assert_eq!(normalize_cloudsmith_version("0.9.1-beta"), "0.9.1-beta");
+        // A deb revision ON a prerelease strips only the trailing revision,
+        // keeping the prerelease: head `1.0.0-rc.1` parses as SemVer, tail `1`
+        // is a numeric revision. `1.0.0-rc-1` likewise → `1.0.0-rc`.
+        assert_eq!(normalize_cloudsmith_version("1.0.0-rc.1-1"), "1.0.0-rc.1");
+        assert_eq!(normalize_cloudsmith_version("1.0.0-rc-1"), "1.0.0-rc");
+        // A tail that isn't `r?<digits>` is never stripped even with a SemVer
+        // head, so a true single-segment prerelease is safe.
+        assert_eq!(normalize_cloudsmith_version("1.0.0-rc"), "1.0.0-rc");
+    }
+
+    // The operator "kept …" summary must name exactly the versions that
+    // survive deletion — both go through the same comparator.
+    #[test]
+    fn retained_summary_matches_selection() {
+        let entries = vec![
+            entry("s-100", "1.0.0", "2026-06-13T00:00:00Z"),
+            entry("s-091", "0.9.1", "2026-05-13T00:00:00Z"),
+            entry("s-090", "0.9.0", "2026-04-13T00:00:00Z"),
+        ];
+        let to_delete = select_versions_to_prune(&entries, 2, "1.0.0");
+        // 1.0.0 + 0.9.1 kept, 0.9.0 pruned.
+        assert_eq!(to_delete, vec!["s-090".to_string()]);
+        let summary = retained_version_summary(&entries, 2, "1.0.0");
+        assert_eq!(summary, "1.0.0, 0.9.1");
+    }
+
+    // keep=0 refuses to prune anything (belt-and-braces; caller rejects 0).
+    #[test]
+    fn prune_keep_zero_deletes_nothing() {
+        let entries = vec![
+            entry("s-090", "0.9.0", "2026-06-13T00:00:00Z"),
+            entry("s-080", "0.8.0", "2026-06-12T00:00:00Z"),
+        ];
+        assert!(select_versions_to_prune(&entries, 0, "0.9.0").is_empty());
+    }
+
+    // Versions that won't parse as SemVer fall back to uploaded_at ordering
+    // and rank below any parseable version.
+    #[test]
+    fn prune_unparseable_versions_fall_back_to_timestamp() {
+        let entries = vec![
+            entry("s-good", "1.0.0", "2026-01-01T00:00:00Z"),
+            entry("s-new", "nightly-xyz", "2026-06-13T00:00:00Z"),
+            entry("s-old", "nightly-abc", "2026-05-13T00:00:00Z"),
+        ];
+        // keep=2, current 1.0.0: parseable 1.0.0 ranks first and is kept;
+        // among the two unparseable, the newer (s-new) takes the 2nd slot,
+        // so s-old is pruned.
+        let to_delete = select_versions_to_prune(&entries, 2, "1.0.0");
+        assert_eq!(to_delete, vec!["s-old".to_string()]);
     }
 
     #[test]

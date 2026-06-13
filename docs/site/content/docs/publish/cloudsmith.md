@@ -54,6 +54,7 @@ cloudsmiths:
     component: main              # deb only
     secret_name: CLOUDSMITH_TOKEN
     republish: true              # allow overwriting existing versions
+    keep_versions: 3             # keep 3 newest releases, prune older (opt-in)
     ids: []                      # filter by build IDs
     skip: false                  # skip this config
 ```
@@ -74,6 +75,26 @@ cloudsmiths:
 
 When `republish: true`, anodizer opts into the Cloudsmith API's explicit replace-prior-version path, preventing MD5 conflicts when re-cutting a version. See [Recovery flags: cloudsmith.republish](../advanced/recovery-flags.md#cloudsmith-republish) for the full mechanism.
 
+## Retention: `keep_versions`
+
+`keep_versions: N` retains only the `N` most-recent **release** versions of each published package, pruning older ones from the repository after a successful upload. It is the durable remedy for storage-capped repositories — notably the Cloudsmith free plan's 500&nbsp;MB limit, which offers no server-side retention policy.
+
+```yaml
+cloudsmiths:
+  - organization: myorg
+    repository: releases
+    keep_versions: 3   # keep the 3 newest releases, prune anything older
+```
+
+Behavior:
+
+- **Opt-in and destructive.** Leaving `keep_versions` unset (the default) prunes nothing. `keep_versions: 0` is rejected — anodizer never prunes every version.
+- **Per package.** After upload, anodizer lists every version of *this* package, ranks the distinct releases by SemVer (newest first), keeps the top `N` — always including the version just published — and deletes every artifact (all formats and architectures) of versions ranked beyond `N`. Other packages sharing the repository are untouched.
+- **Format-aware.** The deb/rpm epoch (`1:0.9.1-1`) and apk revision (`0.9.1-r1`) suffixes are normalized to the base SemVer (`0.9.1`), so keeping `2` versions keeps every `.deb`/`.rpm`/`.apk` of the two newest releases — not two formats of one release.
+- **Best-effort, non-fatal.** Pruning runs only after the upload (the real work) has already succeeded, is skipped in dry-run and snapshot mode, and a list/delete failure emits a prominent warning and continues — it never fails the release or rolls anything back.
+
+The per-package summary appears at default verbosity (`pruned M old artifact(s) … (kept N most-recent: 0.9.1, 0.9.0, …)`); per-artifact `DELETE` detail is shown under `-v`.
+
 ## Cloudsmith config fields
 
 | Field | Type | Default | Description |
@@ -87,6 +108,7 @@ When `republish: true`, anodizer opts into the Cloudsmith API's explicit replace
 | `secret_name` | string | `CLOUDSMITH_TOKEN` | Environment variable name for the API key |
 | `skip` | string/bool | none | Skip this config |
 | `republish` | string/bool | `false` | Allow overwriting existing package versions. See [Recovery flags](../advanced/recovery-flags.md#cloudsmith-republish). |
+| `keep_versions` | integer | none | Retain only the `N` newest releases per package, pruning older ones after upload (opt-in, destructive, best-effort). See [Retention](#retention-keep_versions). |
 
 ## Format detection
 
