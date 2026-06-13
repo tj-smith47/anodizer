@@ -184,11 +184,15 @@ pub fn generate_nix_expression(params: &NixParams<'_>) -> Result<String> {
             )
         })
         .collect();
-    ctx.insert("archives", &archives);
-
-    // Platforms list
-    let platforms: Vec<&str> = params.archives.iter().map(|(s, _, _)| s.as_str()).collect();
+    // Platforms list. Derive from the deduped `archives` map keys (a BTreeMap,
+    // so already unique + sorted) rather than re-iterating `params.archives`:
+    // multiple artifacts can map to one nix system, and `meta.platforms` must
+    // list each platform exactly once, stably ordered, to stay consistent with
+    // the `urlMap`/`shaMap`/`src` the same map drives.
+    let platforms: Vec<&str> = archives.keys().map(String::as_str).collect();
     ctx.insert("platforms", &platforms);
+
+    ctx.insert("archives", &archives);
 
     ctx.insert("install_lines", &params.install_lines);
     ctx.insert("has_post_install", &!params.post_install_lines.is_empty());

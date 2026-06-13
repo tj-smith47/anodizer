@@ -456,10 +456,22 @@ fn build_archive_tuples(
     }
 
     let url_template = nix_cfg.url_template.as_deref();
+    // Multiple artifacts can map to one nix system (e.g. an Archive and an
+    // UploadableBinary for the same target, or several archive formats). The
+    // derivation's `urlMap`/`shaMap`/`src` and `meta.platforms` must each carry
+    // exactly one entry per system, so dedup by nix system here at the source.
+    // First occurrence wins (deterministic), matching the artifact ordering
+    // (`Archive` kind precedes `UploadableBinary`); without this the BTreeMap
+    // downstream collapsed urlMap last-writer-wins while `meta.platforms`
+    // triplicated, an inconsistency that also broke output reproducibility.
+    let mut seen_systems = std::collections::HashSet::new();
     let archives: Vec<(String, String, String)> = all_artifacts
         .iter()
         .filter_map(|a| {
             let system = nix_system(&a.os, &a.arch)?;
+            if !seen_systems.insert(system.clone()) {
+                return None;
+            }
             let download_url = if let Some(tmpl) = url_template {
                 util::render_url_template(tmpl, crate_name, version, &a.arch, &a.os)
             } else {
@@ -1184,6 +1196,95 @@ mod tests {
         assert_eq!(
             tuples[0].1,
             "https://mirror.example.com/mytool-1.2.3-linux-amd64.tar.gz"
+        );
+    }
+
+    #[test]
+    fn build_archive_tuples_dedupes_by_nix_system() {
+        // Both an Archive and an UploadableBinary for the same target collapse
+        // to one nix system (x86_64-linux). Without source dedup the pipeline
+        // carries N tuples per system, triplicating meta.platforms AND emitting
+        // an ambiguous urlMap/shaMap whose `selectSystem` winner is BTreeMap
+        // last-writer-wins. Source dedup must keep exactly one tuple per system.
+        let sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let arts = vec![
+            os_artifact("linux", "amd64", "https://example.com/a.tar.gz", sha),
+            os_artifact("linux", "amd64", "https://example.com/a.bin", sha),
+            os_artifact("linux", "amd64", "https://example.com/a2.tar.gz", sha),
+            os_artifact("darwin", "arm64", "https://example.com/d.tar.gz", sha),
+        ];
+        let cfg = NixConfig::default();
+        let tuples = build_archive_tuples(&arts, &cfg, "mytool", "1.0.0", &quiet_log()).unwrap();
+        let systems: Vec<&str> = tuples.iter().map(|(s, _, _)| s.as_str()).collect();
+        assert_eq!(
+            systems,
+            vec!["x86_64-linux", "aarch64-darwin"],
+            "one tuple per nix system, first occurrence kept, insertion order preserved"
+        );
+        // First occurrence wins so the urlMap winner is the first-seen archive,
+        // not a BTreeMap last-writer-wins surprise.
+        assert_eq!(tuples[0].1, "https://example.com/a.tar.gz");
+    }
+
+    #[test]
+    fn generate_nix_expression_emits_each_platform_once() {
+        // Even if a caller somehow passes duplicate-system tuples, the rendered
+        // meta.platforms must list each platform exactly once (deterministic,
+        // sorted) — the historical bug rendered 12 entries for 4 platforms.
+        let sha = "0bv1xkjqlf06hjyl3z7xj9zyq2k0q0k0q0k0q0k0q0k0q0k0q0k0";
+        let archives = vec![
+            (
+                "x86_64-linux".to_string(),
+                "https://e/a".to_string(),
+                sha.to_string(),
+            ),
+            (
+                "x86_64-linux".to_string(),
+                "https://e/b".to_string(),
+                sha.to_string(),
+            ),
+            (
+                "x86_64-linux".to_string(),
+                "https://e/c".to_string(),
+                sha.to_string(),
+            ),
+            (
+                "aarch64-darwin".to_string(),
+                "https://e/d".to_string(),
+                sha.to_string(),
+            ),
+        ];
+        let expr = generate_nix_expression(&NixParams {
+            name: "mytool",
+            version: "1.0.0",
+            description: "",
+            homepage: "",
+            license: "",
+            main_program: "",
+            archives: &archives,
+            install_lines: &[],
+            post_install_lines: &[],
+            needs_unzip: false,
+            needs_make_wrapper: false,
+            dep_args: &[],
+            source_root: Some("."),
+            source_root_map: None,
+            dynamically_linked: false,
+        })
+        .unwrap();
+        let platforms_line = expr
+            .lines()
+            .find(|l| l.trim_start().starts_with("platforms ="))
+            .expect("platforms line present");
+        assert_eq!(
+            platforms_line.matches("\"x86_64-linux\"").count(),
+            1,
+            "x86_64-linux must appear exactly once in: {platforms_line}"
+        );
+        assert_eq!(
+            platforms_line.matches("\"aarch64-darwin\"").count(),
+            1,
+            "aarch64-darwin must appear exactly once in: {platforms_line}"
         );
     }
 
