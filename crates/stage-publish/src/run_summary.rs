@@ -65,8 +65,38 @@ pub struct RunSummary {
     /// versions parseable by newer readers.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_policy: Option<FailurePolicyRecord>,
+    /// Outcome of the post-publish verification gate (`verify_release:`),
+    /// recorded on a SEPARATE axis from the publisher rows. The gate runs
+    /// LAST — after the irreversible publish — so the publisher rows still
+    /// read `succeeded` while this field states whether the published
+    /// release has unverified defects to investigate. `None` when the gate
+    /// did not run (disabled / skipped / dry-run / snapshot) and on
+    /// summaries written before the gate executed.
+    ///
+    /// `#[serde(default)]` keeps summaries written by older anodize
+    /// versions parseable by newer readers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify_release: Option<VerifyReleaseRecord>,
     pub results: Vec<RunSummaryResult>,
     pub determinism_allowlist: DeterminismAllowlist,
+}
+
+/// The verify-release gate's verdict for the run. See `verify_release:`.
+///
+/// `passed` is the headline boolean (`issue_count == 0`); `issues` carries the
+/// human-readable defect strings so the summary reader sees the same detail the
+/// gate logged before it bailed. Each issue string already names the offending
+/// `crate '<name>'`, so attribution survives the workspace fan-out.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct VerifyReleaseRecord {
+    /// True when the gate found no defects (`issue_count == 0`).
+    pub passed: bool,
+    /// Number of defects the gate reported.
+    pub issue_count: u32,
+    /// One message per detected defect; empty on a clean pass.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub issues: Vec<String>,
 }
 
 /// What the in-process failure policy decided and executed after a
@@ -207,6 +237,12 @@ impl RunSummary {
                 .any(|p| p.group == PublisherGroup::Submitter && outcome_landed(&p.outcome))
         });
 
+        let verify_release = ctx.verify_release.as_ref().map(|v| VerifyReleaseRecord {
+            passed: v.issues.is_empty(),
+            issue_count: v.issues.len() as u32,
+            issues: v.issues.clone(),
+        });
+
         Self {
             schema_version: Self::CURRENT_SCHEMA_VERSION,
             anodize_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -217,6 +253,7 @@ impl RunSummary {
             publishers_failed,
             irreversibly_published,
             failure_policy: None,
+            verify_release,
             results,
             determinism_allowlist: DeterminismAllowlist {
                 compile_time,
@@ -575,6 +612,26 @@ pub fn status_table_rows(
             ));
         }
     }
+    // Verify-release verdict on a separate axis from the publisher rows: the
+    // gate runs after the irreversible publish, so a FAILED verdict here does
+    // NOT mean a publish failed. The explicit "the release IS published"
+    // wording stops an operator misreading the row as a publish failure.
+    if let Some(vr) = summary.verify_release.as_ref() {
+        let value = if vr.passed {
+            "passed".to_string()
+        } else {
+            format!(
+                "FAILED ({} issue(s)) — the release IS published; investigate",
+                vr.issue_count
+            )
+        };
+        rows.push(("verify-release".to_string(), value));
+        // Fold each defect into its own sub-row so the operator sees the
+        // specifics inline rather than having to open summary.json.
+        for issue in &vr.issues {
+            rows.push((String::new(), format!("- {issue}")));
+        }
+    }
     rows.push((
         "run flags".to_string(),
         format!(
@@ -602,6 +659,7 @@ mod tests {
             publishers_failed: 0,
             irreversibly_published: false,
             failure_policy: None,
+            verify_release: None,
             results: vec![
                 RunSummaryResult {
                     name: "github-release".to_string(),
@@ -678,6 +736,109 @@ mod tests {
         assert!(
             !parsed.irreversibly_published,
             "missing irreversibly_published must default to false"
+        );
+    }
+
+    #[test]
+    fn run_summary_roundtrips_with_verify_release_present() {
+        // The new Option field serializes + deserializes losslessly when set.
+        let mut s = populated_summary();
+        s.verify_release = Some(VerifyReleaseRecord {
+            passed: false,
+            issue_count: 2,
+            issues: vec![
+                "install smoke-test failed for crate 'app' (app.deb)".to_string(),
+                "produced artifact missing for crate 'app': app.rpm".to_string(),
+            ],
+        });
+        let text = serde_json::to_string(&s).expect("serialize");
+        let back: RunSummary = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(back, s);
+        let vr = back
+            .verify_release
+            .expect("verify_release survives round-trip");
+        assert!(!vr.passed);
+        assert_eq!(vr.issue_count, 2);
+        assert_eq!(vr.issues.len(), 2);
+    }
+
+    #[test]
+    fn run_summary_parses_legacy_json_without_verify_release() {
+        // A summary written before the verify_release field existed must still
+        // deserialize; the field defaults to None (no spurious row).
+        let legacy = r#"{
+            "schema_version": 1,
+            "anodize_version": "0.0.0-test",
+            "tag": "v0.0.0",
+            "submitter_gated": false,
+            "announce_gated": false,
+            "results": [],
+            "determinism_allowlist": {"compile_time": [], "runtime": []}
+        }"#;
+        let parsed: RunSummary = serde_json::from_str(legacy).expect("legacy summary parses");
+        assert!(
+            parsed.verify_release.is_none(),
+            "missing verify_release must default to None"
+        );
+        // And re-serializing must NOT emit a `verify_release` key (skip_serializing_if).
+        let text = serde_json::to_string(&parsed).expect("serialize");
+        assert!(
+            !text.contains("verify_release"),
+            "None verify_release must be omitted from JSON: {text}"
+        );
+    }
+
+    #[test]
+    fn status_table_renders_failed_verify_release_row() {
+        // A failing verify-release verdict produces a FAILED row plus a sub-row
+        // per issue — the publisher rows stay untouched (separate axis).
+        let mut s = populated_summary();
+        s.verify_release = Some(VerifyReleaseRecord {
+            passed: false,
+            issue_count: 1,
+            issues: vec!["install smoke-test failed for crate 'app'".to_string()],
+        });
+        let rows = status_table_rows(&s, PublishDisposition::Ran);
+        let verdict = rows
+            .iter()
+            .find(|(k, _)| k == "verify-release")
+            .expect("a verify-release row must be present");
+        assert!(
+            verdict.1.contains("FAILED (1 issue(s))")
+                && verdict.1.contains("the release IS published"),
+            "FAILED verdict wording: {}",
+            verdict.1
+        );
+        assert!(
+            rows.iter()
+                .any(|(_, v)| v.contains("install smoke-test failed for crate 'app'")),
+            "the issue detail must appear as a sub-row: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn status_table_renders_passed_verify_release_row() {
+        let mut s = populated_summary();
+        s.verify_release = Some(VerifyReleaseRecord {
+            passed: true,
+            issue_count: 0,
+            issues: vec![],
+        });
+        let rows = status_table_rows(&s, PublishDisposition::Ran);
+        let verdict = rows
+            .iter()
+            .find(|(k, _)| k == "verify-release")
+            .expect("a verify-release row must be present");
+        assert_eq!(verdict.1, "passed");
+    }
+
+    #[test]
+    fn status_table_omits_verify_release_row_when_absent() {
+        let s = populated_summary(); // verify_release: None
+        let rows = status_table_rows(&s, PublishDisposition::Ran);
+        assert!(
+            !rows.iter().any(|(k, _)| k == "verify-release"),
+            "no verify-release row when the gate did not run: {rows:?}"
         );
     }
 
@@ -1120,6 +1281,7 @@ mod tests {
             publishers_failed: 0,
             irreversibly_published: false,
             failure_policy: None,
+            verify_release: None,
             results: vec![],
             determinism_allowlist: DeterminismAllowlist::default(),
         };
@@ -1165,6 +1327,7 @@ mod tests {
             publishers_failed: 0,
             irreversibly_published: false,
             failure_policy: None,
+            verify_release: None,
             results: vec![],
             determinism_allowlist: DeterminismAllowlist::default(),
         };
@@ -1194,6 +1357,7 @@ mod tests {
             publishers_failed: 0,
             irreversibly_published: false,
             failure_policy: None,
+            verify_release: None,
             results: vec![
                 RunSummaryResult {
                     name: "custom-publisher-with-long-id".to_string(), // 29 chars
@@ -1244,6 +1408,7 @@ mod tests {
             publishers_failed: 0,
             irreversibly_published: false,
             failure_policy: None,
+            verify_release: None,
             results: vec![RunSummaryResult {
                 name: long_name.clone(),
                 group: PublisherGroup::Assets,

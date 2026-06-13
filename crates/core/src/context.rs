@@ -7,6 +7,7 @@ use crate::partial::PartialTarget;
 use crate::publish_report::PublishReport;
 use crate::scm::ScmTokenType;
 use crate::template::TemplateVars;
+use crate::verify_release_summary::VerifyReleaseSummary;
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -369,6 +370,17 @@ pub struct Context {
     /// — the summary placeholder row uses the pair to distinguish
     /// "publish skipped" from "publish aborted before dispatch".
     pub publish_attempted: bool,
+    /// Verify-release verdict, set by `VerifyReleaseStage::run` immediately
+    /// before it returns (clean pass OR `bail!`). `None` until the gate runs
+    /// its checks — it stays `None` on the disabled / skipped / dry-run /
+    /// snapshot early-returns, where no published release exists to verify.
+    ///
+    /// Read by the run-summary builder so the end-of-pipeline Summary states
+    /// the verify-release outcome on a SEPARATE axis from the publisher rows:
+    /// the gate runs after the irreversible publish, so the publishes still
+    /// read `succeeded` while this slot records whether the published release
+    /// has unverified defects to investigate.
+    pub verify_release: Option<VerifyReleaseSummary>,
     /// SOURCE_DATE_EPOCH seed + non-determinism allow-list state for the
     /// run. `None` until a stage (typically `BuildStage`) seeds it from
     /// `resolve_reproducible_epoch(commit_timestamp)`; downstream stages
@@ -459,6 +471,7 @@ impl Context {
             skip_memento: crate::pipe_skip::SkipMemento::new(),
             publish_report: None,
             publish_attempted: false,
+            verify_release: None,
             determinism: None,
             pending_outcome: None,
             pending_evidence: None,

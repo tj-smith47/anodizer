@@ -514,6 +514,79 @@ fn asset_existence_bails_when_a_produced_asset_is_missing() {
 }
 
 #[test]
+fn verify_release_records_summary_slot_on_pass() {
+    // Clean pass: the gate sets ctx.verify_release = Some(ran:true, issues:[])
+    // so the run-summary can render a passing verify-release row.
+    let (addr, _log) = spawn_release_route(&["app.tar.gz", "checksums.txt"]);
+
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
+    add_artifact(&mut ctx, ArtifactKind::Checksum, "checksums.txt", "app");
+
+    assert!(VerifyReleaseStage.run(&mut ctx).is_ok());
+    let summary = ctx
+        .verify_release
+        .as_ref()
+        .expect("clean pass must still stamp the verify-release slot");
+    assert!(summary.ran, "ran must be true on the success path");
+    assert!(
+        summary.issues.is_empty(),
+        "a clean pass carries no issues: {:?}",
+        summary.issues
+    );
+}
+
+#[test]
+fn verify_release_records_summary_slot_before_bail() {
+    // Failure path: the slot is set with the issue(s) BEFORE the bail, so the
+    // pipeline-end summary (emit_summary fires after the stage returns Err)
+    // can render the FAILED verify-release row instead of a false all-green.
+    let (addr, _log) = spawn_release_route(&["app.tar.gz"]);
+
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
+    add_artifact(&mut ctx, ArtifactKind::Checksum, "checksums.txt", "app");
+
+    VerifyReleaseStage
+        .run(&mut ctx)
+        .expect_err("a missing produced asset must fail the gate");
+    let summary = ctx
+        .verify_release
+        .as_ref()
+        .expect("the failure path must stamp the verify-release slot before bailing");
+    assert!(summary.ran, "ran must be true on the failure path");
+    assert_eq!(
+        summary.issues.len(),
+        1,
+        "exactly one issue: {:?}",
+        summary.issues
+    );
+    assert!(
+        summary.issues[0].contains("checksums.txt"),
+        "the recorded issue names the missing asset: {:?}",
+        summary.issues
+    );
+}
+
+#[test]
+fn verify_release_slot_stays_none_when_disabled() {
+    // Early-return paths (disabled / skip / dry-run / snapshot) must NOT stamp
+    // the slot — no published release was verified, so no row should appear.
+    let mut ctx = TestContextBuilder::new()
+        .crates(vec![published_crate("app", None)])
+        .build();
+    ctx.config.verify_release = VerifyReleaseConfig {
+        enabled: false,
+        ..Default::default()
+    };
+    assert!(VerifyReleaseStage.run(&mut ctx).is_ok());
+    assert!(
+        ctx.verify_release.is_none(),
+        "a disabled gate must leave the slot None"
+    );
+}
+
+#[test]
 fn asset_existence_orphan_published_asset_is_advisory_not_failure() {
     // The release stores an EXTRA asset (stale.txt) not produced this run. An
     // orphan is advisory only — the gate still passes when nothing produced is

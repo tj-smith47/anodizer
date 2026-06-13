@@ -747,6 +747,62 @@ mod summary_tests {
     }
 
     #[test]
+    fn emit_summary_reports_verify_release_failure() {
+        // The regression this fix targets: every publisher SUCCEEDED, but the
+        // verify-release gate found a defect and bailed. The emitted summary
+        // must record verify_release.passed == false (not a uniform false
+        // green) while the publisher rows stay `succeeded`.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let summary_path = tmp.path().join("summary.json");
+
+        let mut report = PublishReport::default();
+        report.results.push(PublisherResult {
+            name: "github-release".to_string(),
+            group: PublisherGroup::Assets,
+            required: true,
+            outcome: PublisherOutcome::Succeeded,
+            evidence: None,
+        });
+        let mut ctx = ctx_with(
+            opts_with_summary_path(summary_path.clone()),
+            None,
+            Some(report),
+        );
+        ctx.verify_release = Some(anodizer_core::VerifyReleaseSummary {
+            ran: true,
+            issues: vec!["install smoke-test failed for crate 'app' (app.deb)".to_string()],
+        });
+        emit_summary(&mut ctx);
+
+        let summary = parse_summary(&summary_path);
+        let vr = summary
+            .verify_release
+            .as_ref()
+            .expect("verify_release must be recorded in summary.json");
+        assert!(
+            !vr.passed,
+            "a verify-release defect must read passed == false"
+        );
+        assert_eq!(vr.issue_count, 1);
+        // The publisher row is untouched — verify is a separate axis.
+        assert_eq!(summary.results.len(), 1);
+        assert_eq!(summary.results[0].status, "succeeded");
+        assert_eq!(summary.publishers_succeeded, 1);
+        assert_eq!(summary.publishers_failed, 0);
+
+        // The rendered status table carries a FAILED verify-release row.
+        let rows = anodizer_stage_publish::run_summary::status_table_rows(
+            &summary,
+            anodizer_stage_publish::run_summary::PublishDisposition::Ran,
+        );
+        assert!(
+            rows.iter()
+                .any(|(k, v)| k == "verify-release" && v.contains("FAILED")),
+            "a FAILED verify-release row must be present: {rows:?}"
+        );
+    }
+
+    #[test]
     fn emit_summary_defaults_to_dist_run_dir_when_path_unset() {
         // summary_json_path = None on a real (non-snapshot, non-dry-run)
         // release => the summary still lands at the derived

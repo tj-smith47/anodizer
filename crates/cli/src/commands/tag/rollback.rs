@@ -1520,6 +1520,7 @@ mod tests {
             publishers_failed: 0,
             irreversibly_published,
             failure_policy: None,
+            verify_release: None,
             results,
             determinism_allowlist: DeterminismAllowlist::default(),
         };

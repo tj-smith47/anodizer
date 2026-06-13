@@ -1550,7 +1550,13 @@ before_publish:
             fn name(&self) -> &str {
                 "verify-release"
             }
-            fn run(&self, _ctx: &mut anodizer_core::context::Context) -> anyhow::Result<()> {
+            fn run(&self, ctx: &mut anodizer_core::context::Context) -> anyhow::Result<()> {
+                // Mirror the real stage: stamp the verdict BEFORE bailing so
+                // the pipeline-end summary records it.
+                ctx.verify_release = Some(anodizer_core::VerifyReleaseSummary {
+                    ran: true,
+                    issues: vec!["install smoke-test failed for crate 'myapp'".to_string()],
+                });
                 anyhow::bail!("post-publish verification found issues")
             }
         }
@@ -1596,6 +1602,13 @@ before_publish:
             parsed.irreversibly_published,
             "a landed Submitter (cargo) must mark the version burned"
         );
+        // The publish landed, but verify-release failed: the summary must
+        // record the defect on its own axis (not a false all-green).
+        let vr = parsed
+            .verify_release
+            .expect("a failing verify-release stage must record its verdict");
+        assert!(!vr.passed, "verify-release defect => passed == false");
+        assert_eq!(vr.issue_count, 1);
     }
 
     #[test]

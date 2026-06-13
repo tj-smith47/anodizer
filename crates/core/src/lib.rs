@@ -52,6 +52,7 @@ pub mod tool_detect;
 pub mod url;
 pub mod user_command;
 pub mod util;
+pub mod verify_release_summary;
 pub mod version_files;
 
 pub use determinism::DeterminismState;
@@ -68,6 +69,7 @@ pub use publish_report::{
     PublishReport, PublisherGroup, PublisherOutcome, PublisherResult, SkipReason,
 };
 pub use publisher::{PreflightCheck, Publisher, rollback_empty_warning_msg};
+pub use verify_release_summary::VerifyReleaseSummary;
 
 #[cfg(feature = "test-helpers")]
 pub mod test_helpers;

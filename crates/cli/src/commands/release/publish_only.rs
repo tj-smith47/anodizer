@@ -312,6 +312,11 @@ pub(super) fn run_per_crate(
         // skipped publish as "aborted before dispatch".
         ctx.publish_report = None;
         ctx.publish_attempted = false;
+        // Reset the prior iteration's verify-release verdict so each crate's
+        // Summary reflects THIS crate's post-publish checks only. A leftover
+        // Some would render crate A's verify findings under crate B's
+        // Summary block.
+        ctx.verify_release = None;
         // Reset skip_stages to the original baseline before re-applying
         // the workspace overlay so a skip from a prior iteration's
         // workspace doesn't leak forward.
