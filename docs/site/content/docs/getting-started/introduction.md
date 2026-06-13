@@ -54,7 +54,8 @@ crates:
       cargo: {}              # empty map opts in; cargo publishes to crates.io
 
 # homebrew_casks is a top-level array — the canonical, warning-free Homebrew
-# surface. Each entry opens (or updates) a PR against its tap repo per release.
+# surface. Each entry pushes the cask straight to its tap repo per release
+# (set pull_request.enabled under repository to open a PR instead).
 homebrew_casks:
   - repository:
       owner: myorg
@@ -76,7 +77,7 @@ With that config in place, one command runs the whole pipeline:
 anodizer release
 ```
 
-Binaries are built, archived, checksummed, released on GitHub, published to crates.io, and a Homebrew cask PR is opened against `myorg/homebrew-tap`. The release stage needs a `GITHUB_TOKEN` with `contents:write` (and `pull_request:write` for the cask PR); `cargo` needs `CARGO_REGISTRY_TOKEN`. Start with `anodizer release --dry-run` to see the plan with no side effects — see the [Quick Start](@/docs/getting-started/quick-start.md) for the full first-release walkthrough.
+Binaries are built, archived, checksummed, released on GitHub, published to crates.io, and the Homebrew cask is pushed to `myorg/homebrew-tap`. The release stage needs a `GITHUB_TOKEN` with `contents:write` (the cask is committed directly to the tap by default; add `pull_request:write` only if you set `pull_request.enabled` to open a PR instead); `cargo` needs `CARGO_REGISTRY_TOKEN`. Start with `anodizer release --dry-run` to see the plan with no side effects — see the [Quick Start](@/docs/getting-started/quick-start.md) for the full first-release walkthrough.
 
 > **Prerequisite:** the tap repo (`myorg/homebrew-tap` above) must already exist before a release can push to it — anodizer writes the cask into it but does not create it. Create an empty `<owner>/homebrew-tap` repo first, and make sure the token has `contents:write` (direct push) or `pull_request:write` (PR workflow) on it.
 

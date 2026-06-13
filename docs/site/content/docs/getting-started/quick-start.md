@@ -61,11 +61,11 @@ export GITHUB_TOKEN="ghp_..."
 anodizer release --crate myapp
 ```
 
-This runs the full pipeline: build, archive, checksum, changelog, GitHub release with asset uploads, and any configured publishers. Each publisher reads its own credential from the environment — `GITHUB_TOKEN` (needs `contents:write` for the release, plus `pull_request:write` if a Homebrew cask or other PR-based tap is configured), `CARGO_REGISTRY_TOKEN` for crates.io, and so on. A `homebrew_casks` entry opens (or updates) a pull request against its tap repo on every release rather than committing directly, so review and merge happen on your terms.
+This runs the full pipeline: build, archive, checksum, changelog, GitHub release with asset uploads, and any configured publishers. Each publisher reads its own credential from the environment — `GITHUB_TOKEN` (needs `contents:write` for the release, plus `pull_request:write` only if a Homebrew cask or other tap is set to the PR workflow), `CARGO_REGISTRY_TOKEN` for crates.io, and so on. A `homebrew_casks` entry commits the cask directly to its tap repo on every release; set `pull_request.enabled` under the entry's `repository` to open a PR per release instead, so review and merge happen on your terms.
 
-> **Tap repos must already exist.** If you configure `homebrew_casks` (or a Scoop bucket, AUR repo, etc.), create the target repo — e.g. an empty `<owner>/homebrew-tap` — *before* your first release; anodizer writes into it but never creates it. The release token needs `contents:write` for a direct push, or `pull_request:write` if the tap uses the PR workflow (casks open a PR per release).
+> **Tap repos must already exist.** If you configure `homebrew_casks` (or a Scoop bucket, AUR repo, etc.), create the target repo — e.g. an empty `<owner>/homebrew-tap` — *before* your first release; anodizer writes into it but never creates it. The release token needs `contents:write` for the default direct push, plus `pull_request:write` only if the tap uses the PR workflow (`pull_request.enabled`).
 
-> **Preflight checks run before any publishing.** `--strict` promotes preflight warnings — an under-scoped token, or a feature you configured that would silently skip — into hard errors, so a misconfigured CI run fails at the top instead of half-publishing. `--strict-preflight` is the same as `--strict` and *additionally* treats a publisher whose remote state can't be determined (`Unknown`) as a blocker.
+> **Preflight checks run before any publishing.** `--strict` promotes preflight warnings — an under-scoped token, or a feature you configured that would silently skip — into hard errors, so a misconfigured CI run fails at the top instead of half-publishing. `--strict-preflight` is a back-compat alias for `--strict`; both also block when a publisher's remote state can't be determined (`Unknown`).
 
 ## What next?
 
