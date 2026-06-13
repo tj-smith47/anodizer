@@ -58,23 +58,127 @@ impl PackageType {
     }
 }
 
+/// Sentinel printed to stdout AFTER a successful install and BEFORE the
+/// version-check runs. Its presence in the captured stdout tells the failure
+/// classifier which step failed: absent ⇒ install failed; present ⇒ install
+/// succeeded and the version-check is the failing step. The token is fixed
+/// and contains no shell metacharacters, so it needs no quoting and cannot be
+/// forged by package output (it is emitted by our own `printf`, not the
+/// package).
+const SMOKE_STEP_MARKER: &str = "__ANODIZER_SMOKE_INSTALLED__";
+
 /// The `sh -c` body run inside the smoke container: install the package found at
 /// `container_pkg_path`, then version-check the installed binary. Identical
 /// across the bind-mount and copy strategies — only how the package reaches that
 /// path differs.
+///
+/// A [`SMOKE_STEP_MARKER`] is printed between the two steps so a failure can be
+/// attributed to the install OR the version-check: chaining them with a bare
+/// `&&` merged their output and hid which step failed (the v0.9.0 apk smoke
+/// reported the install's "OK: ... 17 packages" success while the real failure
+/// was `--version` exiting 127 on a glibc binary under musl).
 fn smoke_script(job: &SmokeJob, container_pkg_path: &str) -> String {
     let install = job.package_type.install_cmd(container_pkg_path);
-    format!("{install} && {} --version", sh_single_quote(&job.binary))
+    // `printf` (not `echo`) for portable, flag-free marker emission; only runs
+    // when install succeeded (`&&`), so the marker's presence is a reliable
+    // install-success signal.
+    format!(
+        "{install} && printf '%s\\n' {marker} && {bin} --version",
+        marker = sh_single_quote(SMOKE_STEP_MARKER),
+        bin = sh_single_quote(&job.binary)
+    )
 }
 
-/// Extract a diagnostic detail string from a finished process: prefer stderr,
-/// fall back to stdout.
+/// Extract a diagnostic detail string from a finished process: the exit status
+/// plus stderr and a tail of stdout. Used for the non-install/version steps
+/// (emulation probe, `docker create`/`cp`) where there is no install-vs-check
+/// boundary to attribute.
+///
+/// Always surfaces the exit code — for an exec failure (glibc binary on musl)
+/// the bare `127` IS the smoking gun, and it was absent from the v0.9.0 log.
+/// stderr carries the real error; a stdout tail is appended so a step that
+/// reports its failure on stdout (or succeeds noisily before failing) is not
+/// masked.
 fn output_detail(out: &std::process::Output) -> String {
-    let mut detail = String::from_utf8_lossy(&out.stderr).trim().to_string();
-    if detail.is_empty() {
-        detail = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    compose_detail(&out.status, stderr.trim(), stdout.trim())
+}
+
+/// Assemble a `(exit <code>) stderr=… stdout=…` detail string, omitting the
+/// empty streams. Shared by [`output_detail`] and [`smoke_failure_detail`] so
+/// the exit code is never dropped.
+fn compose_detail(status: &std::process::ExitStatus, stderr: &str, stdout: &str) -> String {
+    let mut parts = vec![exit_label(status)];
+    if !stderr.is_empty() {
+        parts.push(format!("stderr: {}", tail(stderr)));
     }
-    detail
+    if !stdout.is_empty() {
+        parts.push(format!("stdout: {}", tail(stdout)));
+    }
+    parts.join(" — ")
+}
+
+/// Human label for a process exit: `exit <code>` or `signal <n>` (Unix), so
+/// `exit 127` (exec failure) is always visible.
+fn exit_label(status: &std::process::ExitStatus) -> String {
+    match status.code() {
+        Some(code) => format!("exit {code}"),
+        None => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                if let Some(sig) = status.signal() {
+                    return format!("killed by signal {sig}");
+                }
+            }
+            "terminated without an exit code".to_string()
+        }
+    }
+}
+
+/// Last 2 KiB of a stream, prefixed with an elision marker when truncated, so a
+/// long install log does not bury the relevant tail (the failing step's output
+/// is at the end).
+fn tail(s: &str) -> String {
+    const MAX: usize = 2048;
+    if s.len() <= MAX {
+        return s.to_string();
+    }
+    // Truncate on a char boundary at or after the MAX-byte cut point.
+    let mut cut = s.len() - MAX;
+    while cut < s.len() && !s.is_char_boundary(cut) {
+        cut += 1;
+    }
+    format!("…(truncated) {}", &s[cut..])
+}
+
+/// Build the failure detail for the install+version container exec, attributing
+/// the failure to the install or the version-check step via [`SMOKE_STEP_MARKER`].
+///
+/// When the marker is absent from stdout the install step failed; its output
+/// (everything captured) is reported. When the marker is present the install
+/// succeeded and the version-check is the failing step; only the post-marker
+/// stdout is reported so the install's success banner does not mask the real
+/// error (the v0.9.0 apk case: install printed "OK: … 17 packages", then
+/// `--version` exited 127 — the classifier now attributes `exit 127` to the
+/// version-check and drops the install banner from the stdout tail).
+fn smoke_failure_detail(binary: &str, out: &std::process::Output) -> String {
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    match stdout.split_once(SMOKE_STEP_MARKER) {
+        // Marker present ⇒ install succeeded; version-check failed. Report only
+        // what the version-check produced on stdout (after the marker).
+        Some((_install_out, version_out)) => format!(
+            "version-check (`{binary} --version`) failed: {}",
+            compose_detail(&out.status, stderr.trim(), version_out.trim())
+        ),
+        // Marker absent ⇒ install never completed; report the install output.
+        None => format!(
+            "install step failed: {}",
+            compose_detail(&out.status, stderr.trim(), stdout.trim())
+        ),
+    }
 }
 
 /// Single-quote a token for safe interpolation into a `sh -c` string.
@@ -496,7 +600,7 @@ fn run_smoke_bind(job: &SmokeJob) -> anyhow::Result<SmokeOutcome> {
         Ok(SmokeOutcome::Passed)
     } else {
         Ok(SmokeOutcome::Failed {
-            detail: output_detail(&output),
+            detail: smoke_failure_detail(&job.binary, &output),
         })
     }
 }
@@ -550,8 +654,10 @@ fn run_smoke_copy_inner(job: &SmokeJob, container_id: &str) -> anyhow::Result<Sm
     if start.status.success() {
         Ok(SmokeOutcome::Passed)
     } else {
+        // `docker start -a` runs the install+version script, so attribute the
+        // failure to the right step exactly as the bind-mount path does.
         Ok(SmokeOutcome::Failed {
-            detail: output_detail(&start),
+            detail: smoke_failure_detail(&job.binary, &start),
         })
     }
 }
@@ -947,6 +1053,121 @@ mod tests {
             job_platform(Some("sparc64-unknown-linux-gnu")),
             host_docker_platform()
         );
+    }
+
+    /// Build a fake finished `Output` with a given exit code and streams, so
+    /// the failure-attribution logic can be tested without a Docker daemon.
+    #[cfg(unix)]
+    fn fake_output(code: i32, stdout: &str, stderr: &str) -> std::process::Output {
+        use std::os::unix::process::ExitStatusExt;
+        std::process::Output {
+            // `from_raw` takes a wait(2) status; the exit code lives in bits
+            // 8-15, so shift left by 8.
+            status: std::process::ExitStatus::from_raw(code << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn smoke_script_emits_marker_between_install_and_version() {
+        let s = smoke_script(&job("alpine:3.20", PackageType::Apk, "myapp"), "/pkg/x.apk");
+        // Install, then marker, then version-check — in order.
+        let install_pos = s.find("apk add").expect("install present");
+        let marker_pos = s.find(SMOKE_STEP_MARKER).expect("marker present");
+        let version_pos = s.find("'myapp' --version").expect("version present");
+        assert!(
+            install_pos < marker_pos && marker_pos < version_pos,
+            "ordering install < marker < version: {s}"
+        );
+        // The marker is gated behind `&&` so it only prints on install success.
+        assert!(
+            s.contains("&& printf"),
+            "marker gated on install success: {s}"
+        );
+    }
+
+    /// The v0.9.0 regression: install succeeds (stdout carries the apk
+    /// success banner) yet the version-check fails with exit 127 (glibc binary
+    /// on musl). The detail must attribute the failure to the version-check,
+    /// include `exit 127`, surface the real stderr, and NOT show the install
+    /// banner as the "error".
+    #[cfg(unix)]
+    #[test]
+    fn smoke_failure_detail_attributes_version_check_and_surfaces_exit() {
+        let stdout = format!(
+            "(1/1) Installing anodizer (0.9.0-r1)\nExecuting busybox trigger\nOK: 17.8 MiB in 17 packages\n{SMOKE_STEP_MARKER}\n"
+        );
+        let stderr = "sh: anodizer: not found";
+        let out = fake_output(127, &stdout, stderr);
+        let detail = smoke_failure_detail("anodizer", &out);
+
+        assert!(
+            detail.contains("version-check"),
+            "must attribute to the version-check step: {detail}"
+        );
+        assert!(
+            detail.contains("exit 127"),
+            "must include the exit code: {detail}"
+        );
+        assert!(
+            detail.contains("anodizer: not found"),
+            "must surface the real stderr: {detail}"
+        );
+        // The install success banner must NOT masquerade as the failure detail.
+        assert!(
+            !detail.contains("OK: 17.8 MiB"),
+            "install success banner must not mask the real error: {detail}"
+        );
+        assert!(
+            !detail.starts_with("install step failed"),
+            "must not blame the install step: {detail}"
+        );
+    }
+
+    /// When install itself fails the marker is absent; the detail must blame
+    /// the install step, include the exit code, and surface the install error.
+    #[cfg(unix)]
+    #[test]
+    fn smoke_failure_detail_attributes_install_when_marker_absent() {
+        let out = fake_output(
+            1,
+            "Installing...\n",
+            "ERROR: unable to select packages: conflicts",
+        );
+        let detail = smoke_failure_detail("anodizer", &out);
+        assert!(
+            detail.starts_with("install step failed"),
+            "must blame the install step when the marker is absent: {detail}"
+        );
+        assert!(
+            detail.contains("exit 1"),
+            "must include the exit code: {detail}"
+        );
+        assert!(
+            detail.contains("conflicts"),
+            "must surface the install error: {detail}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn output_detail_always_includes_exit_code() {
+        // A step that succeeds noisily on stdout but exits non-zero (no
+        // stderr): the exit code must still surface.
+        let out = fake_output(2, "some progress output", "");
+        let detail = output_detail(&out);
+        assert!(detail.contains("exit 2"), "{detail}");
+        assert!(detail.contains("some progress output"), "{detail}");
+    }
+
+    #[test]
+    fn tail_truncates_long_streams_keeping_the_end() {
+        let long = format!("HEAD{}TAILMARKER", "x".repeat(4096));
+        let t = tail(&long);
+        assert!(t.contains("TAILMARKER"), "keeps the end: {}", &t[..40]);
+        assert!(t.contains("truncated"), "marks truncation");
+        assert!(!t.contains("HEAD"), "drops the head");
     }
 
     #[test]
