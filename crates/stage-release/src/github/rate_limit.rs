@@ -231,7 +231,7 @@ mod sigterm_tests {
     //! Sending the signal to our own PID is safe in test context: the
     //! tokio signal driver registers a handler that swallows the default
     //! "terminate the process" disposition. The race is bounded by a
-    //! 2-second timeout so a regression (handler not installed, signal
+    //! generous timeout so a regression (handler not installed, signal
     //! lost) fails loudly instead of hanging the test runner.
     use super::*;
     use tokio::signal::unix::{SignalKind, signal};
@@ -259,13 +259,17 @@ mod sigterm_tests {
         });
 
         let recv = sigterm.recv();
-        let timeout = tokio::time::sleep(std::time::Duration::from_secs(2));
+        // Safety net, not a perf gate: delivery is normally sub-second, but
+        // under llvm-cov instrumentation the spawned `kill` + signal driver
+        // run far slower, so a tight bound would flake. 30s only catches a
+        // genuinely broken listener (handler not installed, signal lost).
+        let timeout = tokio::time::sleep(std::time::Duration::from_secs(30));
         tokio::select! {
             v = recv => {
                 assert!(v.is_some(), "signal stream closed before SIGTERM delivered");
             }
             _ = timeout => {
-                panic!("SIGTERM listener did not observe self-delivered signal within 2s");
+                panic!("SIGTERM listener did not observe self-delivered signal within 30s");
             }
         }
     }
