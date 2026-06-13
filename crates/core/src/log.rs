@@ -1304,17 +1304,49 @@ mod tests {
     /// `cargo nextest` (the CI test runner) each test is its own process with a
     /// real stderr pipe, so the swap captures the true bytes. A sentinel probe
     /// distinguishes the two: if the sentinel does not survive the round-trip,
-    /// fd 2 is not the real emit target and the caller must fall back. Unix-only
-    /// and process-global, so callers must already hold `SECTION_TEST_LOCK`.
+    /// fd 2 is not the real emit target and the caller must fall back.
+    ///
+    /// `f` must emit its header as the FIRST line it writes — callers slice the
+    /// header off with `.lines().next()`, which is only correct because the
+    /// caller's `group()` defers the header and `flush_pending` writes it ahead
+    /// of any body line. A change that made `f` emit anything before its header
+    /// would silently grab the wrong line.
+    ///
+    /// Unix-only. The fd-2 swap is process-global across the WHOLE
+    /// `anodizer-core` test binary, so callers carry the crate-wide unnamed
+    /// `#[serial_test::serial]` key (the convention in
+    /// [`crate::test_helpers`]) to mutually exclude against every other
+    /// env/cwd/fd-mutating test; `SECTION_TEST_LOCK` only orders the in-file
+    /// `PENDING`/`SECTION_DEPTH` state these callers also touch.
     #[cfg(unix)]
     fn capture_stderr(f: impl FnOnce()) -> Option<String> {
         use std::io::{Read, Seek, SeekFrom, Write};
         use std::os::unix::io::AsRawFd;
 
+        /// Restores fd 2 from the saved dup on EVERY exit path, including a
+        /// panic in `f` or the probe between the swap and the read. Without
+        /// this, an unwind would leave fd 2 pointed at the dropped tempfile, so
+        /// every later test's panic/`eprintln!` diagnostics in this shared
+        /// process would write to a dangling fd and vanish.
+        struct StderrRestore(libc::c_int);
+        impl Drop for StderrRestore {
+            fn drop(&mut self) {
+                // SAFETY: self.0 is the dup of the original stderr taken before
+                // the swap; restoring it on every exit path (including unwind)
+                // guarantees fd 2 is never left dangling at the tempfile.
+                unsafe {
+                    libc::dup2(self.0, libc::STDERR_FILENO);
+                    libc::close(self.0);
+                }
+            }
+        }
+
         let mut file = tempfile::tempfile().expect("tempfile for stderr capture");
         std::io::stderr().flush().ok();
-        // SAFETY: dup/dup2 on the live stderr fd; the saved fd is closed once
-        // stderr is restored, and the whole swap runs under SECTION_TEST_LOCK.
+        // SAFETY: dup/dup2 on the live stderr fd; the saved fd is owned by the
+        // StderrRestore guard below, which restores fd 2 and closes the dup on
+        // every exit path (panic-safe). The whole swap is serialized by the
+        // caller's crate-wide `#[serial]` key.
         let saved = unsafe { libc::dup(libc::STDERR_FILENO) };
         assert!(saved >= 0, "dup(stderr) failed");
         unsafe {
@@ -1323,16 +1355,13 @@ mod tests {
                 "dup2(tempfile, stderr) failed"
             );
         }
+        // Owns `saved` from here on; its Drop restores fd 2 even if `f` panics.
+        let _restore = StderrRestore(saved);
 
         const SENTINEL: &str = "__anodizer_capture_probe__";
         eprintln!("{SENTINEL}");
         f();
-
         std::io::stderr().flush().ok();
-        unsafe {
-            libc::dup2(saved, libc::STDERR_FILENO);
-            libc::close(saved);
-        }
 
         file.seek(SeekFrom::Start(0)).expect("rewind capture file");
         let mut out = String::new();
@@ -1360,8 +1389,9 @@ mod tests {
         // sees real output; under a bare in-process `cargo test` libtest
         // intercepts `eprintln!` and `capture_stderr` returns None, so the body
         // falls back to re-checking the shared helper rather than failing
-        // spuriously. SECTION_TEST_LOCK keeps a parallel section test's stderr
-        // out of the fd-swapped capture.
+        // spuriously. The crate-wide `#[serial]` key keeps every other
+        // env/fd-mutating test out of the fd-swapped capture; SECTION_TEST_LOCK
+        // only orders the in-file PENDING/SECTION_DEPTH state.
         let _guard = SECTION_TEST_LOCK.lock().unwrap();
         let log = StageLogger::new("sign", Verbosity::Normal);
         // Absolute depth both paths must render at (includes any inherited base
@@ -1418,15 +1448,24 @@ mod tests {
                     "header must be indent + gutter verb + space + message"
                 );
             }
-            // In-process `cargo test`: fd 2 is not the real emit target, so the
-            // real paths are unobservable here. Re-assert the shared helper so
-            // the test is not a silent no-op; nextest exercises the real bytes.
-            _ => {
+            // In-process `cargo test`: BOTH swaps were intercepted, so the real
+            // paths are unobservable here. Re-assert the shared helper so the
+            // test is not a silent no-op; nextest exercises the real bytes.
+            (None, None) => {
                 assert_eq!(
                     strip_ansi(&render_header(depth, "Signing", "artifacts")),
                     expected
                 );
             }
+            // The sentinel survived one swap but not the other — a real capture
+            // anomaly (a flaky/half-redirected environment), not the documented
+            // all-or-nothing fallback. Surface it loudly instead of silently
+            // running the weaker check.
+            (flushed, stepped) => panic!(
+                "inconsistent stderr capture: flush={} step={}",
+                flushed.is_some(),
+                stepped.is_some()
+            ),
         }
     }
 
@@ -1459,6 +1498,33 @@ mod tests {
                 assert_eq!(header, format!("{prefix}{:>VERB_COLUMN$}", "Publishing"));
                 assert!(!header.ends_with(' '));
             }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn test_capture_stderr_restores_fd_on_panic() {
+        // The fd-restore must run on the unwind path: a panic inside `f`
+        // (the asserts in the real callers are a reachable panic path) must
+        // not leave fd 2 dangling at the dropped tempfile, which would make
+        // every later test's stderr vanish in the shared process.
+        let _guard = SECTION_TEST_LOCK.lock().unwrap();
+        let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            capture_stderr(|| panic!("boom inside capture"));
+        }));
+        assert!(panicked.is_err(), "the injected panic must propagate");
+
+        // fd 2 is usable again: a fresh capture round-trips its sentinel. (Under
+        // in-process `cargo test` the sentinel is swallowed and the result is
+        // None — still a successful, non-dangling write; only a leaked fd 2
+        // would corrupt this follow-up capture.)
+        let after = capture_stderr(|| eprintln!("after panic"));
+        if let Some(body) = after {
+            assert!(
+                body.contains("after panic"),
+                "stderr must work after a mid-capture panic: {body:?}"
+            );
         }
     }
 
