@@ -276,6 +276,19 @@ pub struct ContextOptions {
     /// ONLY the standalone changelog command sets this; the release/tag
     /// pipelines leave it `false` so their guards stay fully intact.
     pub changelog_preview: bool,
+    /// `--allow-snapshot-publish`: downgrade the publish stage's non-release
+    /// version guard from a hard bail to a warning.
+    ///
+    /// By default the publish / blob / announce stages REFUSE to ship a
+    /// non-release version (snapshot / dev / dirty / `0.0.0`-sentinel — see
+    /// [`crate::version::is_release_version`]) to an external, often
+    /// irreversible, index. The canonical accident this prevents: a CI run
+    /// that resolved `0.0.0~SNAPSHOT-<sha>` and pushed it to a package
+    /// registry. This flag is the deliberate opt-in for the legitimate
+    /// "publish a snapshot to a private channel" case; it is the ONLY thing
+    /// required to opt in (the version is not re-stated). Default `false`
+    /// (fail-closed).
+    pub allow_snapshot_publish: bool,
 }
 
 impl Default for ContextOptions {
@@ -316,6 +329,7 @@ impl Default for ContextOptions {
             changelog_full_history: false,
             changelog_to: None,
             changelog_preview: false,
+            allow_snapshot_publish: false,
         }
     }
 }

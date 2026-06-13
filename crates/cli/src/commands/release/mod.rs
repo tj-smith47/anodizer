@@ -154,6 +154,12 @@ pub struct ReleaseOpts {
     /// (fail-closed) aborts the release on any provider error so the
     /// operator notices instead of shipping the pre-AI body silently.
     pub allow_ai_failure: bool,
+    /// `--allow-snapshot-publish`: downgrade the publish stage's non-release
+    /// version guard from a hard bail to a warning, allowing a snapshot / dev
+    /// / `0.0.0`-sentinel version to be published. Default `false`
+    /// (fail-closed): a non-release version reaching a one-way-door index is
+    /// almost always an accident.
+    pub allow_snapshot_publish: bool,
 }
 
 /// Decide whether the pre-flight publisher-state check should run.
@@ -1150,6 +1156,7 @@ fn build_context_options(
         // intact. Only the standalone `changelog --format release-notes`
         // command sets this true.
         changelog_preview: false,
+        allow_snapshot_publish: opts.allow_snapshot_publish,
     }
 }
 
@@ -1862,6 +1869,7 @@ mod tests {
             allow_nondeterministic: vec![],
             summary_json: None,
             allow_ai_failure: false,
+            allow_snapshot_publish: false,
         }
     }
 

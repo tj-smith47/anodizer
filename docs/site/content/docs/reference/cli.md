@@ -66,6 +66,7 @@ Run the full release pipeline
 | `--allow-nondeterministic` | — | — | Runtime non-determinism opt-out for a specific artifact (repeatable). Mutually exclusive with --strict. |
 | `--summary-json` | — | — | Write the per-publisher run summary JSON to this path. Without it, real (non-snapshot, non-dry-run) releases write <dist>/run-<id>/summary.json — even when a stage fails — so recovery tooling always has machine-readable publish state. |
 | `--allow-ai-failure` | — | — | If `changelog.ai` is configured and the AI provider fails, log a warning and keep the pre-AI release notes instead of aborting the release. |
+| `--allow-snapshot-publish` | — | — | DANGEROUS: allow publishing a non-release version (snapshot / dev / dirty / 0.0.0-sentinel, e.g. 0.0.0~SNAPSHOT-<sha>) to external publishers. By default publish refuses such versions — several indexes (crates.io, Cloudsmith, Chocolatey, winget, AUR) are one-way doors. Use ONLY for a private/test channel. |
 | `--split` | — | — | Run only the build stage for split CI fan-out (outputs artifacts JSON to dist/) |
 | `--merge` | — | — | Merge artifacts from split build jobs and resume the pipeline from post-build stages |
 | `--publish-only` | — | — | Load artifacts from dist/ (preserved by `anodize check determinism --preserve-dist`) and run only the sign + publish pipeline. Skips build/archive/nfpm/sbom/checksum — those stages' outputs must already be present in dist/. |

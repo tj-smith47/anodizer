@@ -333,6 +333,7 @@ mod tests {
             allow_nondeterministic: vec![],
             summary_json: None,
             allow_ai_failure: false,
+            allow_snapshot_publish: false,
         }
     }
 

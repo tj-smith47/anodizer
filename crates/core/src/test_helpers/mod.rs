@@ -476,6 +476,7 @@ impl TestContextBuilder {
             changelog_full_history: self.changelog_full_history,
             changelog_to: self.changelog_to,
             changelog_preview: self.changelog_preview,
+            allow_snapshot_publish: false,
         };
 
         let mut ctx = Context::new(config, options);

@@ -222,6 +222,11 @@ pub enum Commands {
         )]
         allow_ai_failure: bool,
         #[arg(
+            long = "allow-snapshot-publish",
+            help = "DANGEROUS: allow publishing a non-release version (snapshot / dev / dirty / 0.0.0-sentinel, e.g. 0.0.0~SNAPSHOT-<sha>) to external publishers. By default publish refuses such versions — several indexes (crates.io, Cloudsmith, Chocolatey, winget, AUR) are one-way doors. Use ONLY for a private/test channel."
+        )]
+        allow_snapshot_publish: bool,
+        #[arg(
             long,
             conflicts_with = "merge",
             help = "Run only the build stage for split CI fan-out (outputs artifacts JSON to dist/)"

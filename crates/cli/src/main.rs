@@ -341,6 +341,7 @@ fn run() {
             allow_nondeterministic,
             summary_json,
             allow_ai_failure,
+            allow_snapshot_publish,
         } => {
             let duration = parse_timeout_or_exit(&timeout);
 
@@ -445,6 +446,7 @@ fn run() {
                     allow_nondeterministic,
                     summary_json,
                     allow_ai_failure,
+                    allow_snapshot_publish,
                 })
             })
         }

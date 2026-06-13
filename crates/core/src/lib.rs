@@ -53,6 +53,7 @@ pub mod url;
 pub mod user_command;
 pub mod util;
 pub mod verify_release_summary;
+pub mod version;
 pub mod version_files;
 
 pub use determinism::DeterminismState;

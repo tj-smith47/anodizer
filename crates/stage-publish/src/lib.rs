@@ -23,6 +23,7 @@ pub mod npm;
 pub mod post_publish;
 pub mod preflight;
 pub mod registry;
+pub(crate) mod release_version_guard;
 pub mod rollback;
 pub mod rollback_only;
 pub mod run_summary;
@@ -1018,6 +1019,15 @@ impl Stage for PublishStage {
         // `configured_publishers` is the single source of truth for
         // which publishers run.
         let publishers = registry::configured_publishers(ctx);
+
+        // Refuse to publish a non-release version (snapshot / dev / dirty /
+        // 0.0.0-sentinel) to any external publisher. Runs BEFORE the first
+        // publisher fires because several are one-way-door indexes; the
+        // `--allow-snapshot-publish` flag downgrades the bail to a warning.
+        let publisher_names: Vec<String> =
+            publishers.iter().map(|p| p.name().to_string()).collect();
+        release_version_guard::guard_release_version(ctx, &log, &publisher_names)?;
+
         // Surface the release-optional + dependent-manifest-publisher coupling
         // before any publisher fires (a manifest pointing at a 404 release URL
         // ships silently otherwise).
