@@ -630,10 +630,9 @@ impl StageLogger {
     /// (for inline `https://<user>:<pass>@host` URL credentials that may
     /// not match any exported env-var value).
     pub fn redact(&self, s: &str) -> String {
-        let credential_stripped = crate::redact::redact_url_credentials(s);
         match self.env.as_deref() {
-            Some(env) => crate::redact::string(&credential_stripped, env),
-            None => credential_stripped,
+            Some(env) => crate::redact::with_env(s, env),
+            None => crate::redact::redact_url_credentials(s),
         }
     }
 

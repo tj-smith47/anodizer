@@ -471,6 +471,22 @@ pub struct Context {
     /// provider sends it. Only message bodies are affected; titles and other
     /// templated fields still render normally.
     pub literal_message: bool,
+    /// When true (the default), outbound announce message BODIES have
+    /// known-secret env values masked before send (same policy as log
+    /// redaction). `anodizer notify --allow-secrets` sets this false to send a
+    /// secret deliberately over a trusted channel. Only the outbound body is
+    /// affected; anodizer's own logs are redacted unconditionally regardless of
+    /// this flag.
+    pub redact_body: bool,
+    /// Memoized `std::env::vars()` snapshot — the immutable half of the
+    /// redaction env. `env_for_redact` is called once per provider per
+    /// dispatch (and per `StageLogger`), and the process env never changes
+    /// for the lifetime of a run, so collecting it once and merging only the
+    /// cheap, dynamic template-var portion fresh on each call avoids
+    /// re-walking the whole process environment every time. Lazily filled on
+    /// first use via [`std::cell::OnceCell`] (Context is already `!Sync` via
+    /// `render_strict`, so the single-threaded cell weakens no auto-trait).
+    process_env_cache: std::cell::OnceCell<std::collections::HashMap<String, String>>,
 }
 
 impl Context {
@@ -498,7 +514,17 @@ impl Context {
             log_capture: None,
             render_strict: std::cell::Cell::new(false),
             literal_message: false,
+            redact_body: true,
+            process_env_cache: std::cell::OnceCell::new(),
         }
+    }
+
+    /// Redact known-secret env values from outbound announce text, using the
+    /// same combined env (template engine env + process env) and the same
+    /// policy as log redaction. Always redacts; gating on `redact_body` is the
+    /// caller's responsibility (see `render_message_with_default`).
+    pub fn redact(&self, s: &str) -> String {
+        crate::redact::with_env(s, &self.env_for_redact())
     }
 
     /// Read an environment variable through the injected source.
@@ -822,9 +848,17 @@ impl Context {
     /// (process env + config env + `.env` file values) with the current
     /// `std::env::vars` snapshot, deduplicating by key (template-engine
     /// values win because they reflect any user overrides).
+    ///
+    /// The `std::env::vars` half is memoized in `process_env_cache` (it is
+    /// immutable for the process lifetime); only the cheap template-var
+    /// overlay is rebuilt per call. The merged output is identical to
+    /// collecting both fresh each time.
     fn env_for_redact(&self) -> Vec<(String, String)> {
         use std::collections::HashMap;
-        let mut map: HashMap<String, String> = std::env::vars().collect();
+        let mut map: HashMap<String, String> = self
+            .process_env_cache
+            .get_or_init(|| std::env::vars().collect())
+            .clone();
         for (k, v) in self.template_vars.all_env() {
             map.insert(k.clone(), v.clone());
         }

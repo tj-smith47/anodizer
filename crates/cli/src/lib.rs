@@ -668,6 +668,11 @@ pub enum Commands {
         /// on_error hook).
         #[arg(long)]
         raw: bool,
+        /// Send secrets in the message body verbatim (disable outbound
+        /// redaction). For trusted private channels only; log output stays
+        /// redacted.
+        #[arg(long = "allow-secrets")]
+        allow_secrets: bool,
         /// Run without sending (dry-run mode).
         #[arg(long)]
         dry_run: bool,

@@ -19,6 +19,10 @@ pub struct NotifyOpts {
     /// message contains untrusted text (e.g. error output in an on_error hook)
     /// so an `Env`-reference cannot be expanded into the outbound message.
     pub raw: bool,
+    /// Send secrets in the outbound body verbatim, disabling body redaction.
+    /// Use ONLY for a trusted private channel; anodizer's own log output stays
+    /// redacted regardless.
+    pub allow_secrets: bool,
     pub config_override: Option<std::path::PathBuf>,
     pub verbose: bool,
     pub debug: bool,
@@ -43,7 +47,14 @@ pub fn run(opts: NotifyOpts) -> Result<()> {
     let (_config, mut ctx) =
         helpers::init_merge_stage_ctx(opts.config_override.as_deref(), ctx_opts, &log)?;
 
-    run_with_ctx(&mut ctx, opts.message, opts.publishers, opts.skip, opts.raw)
+    run_with_ctx(
+        &mut ctx,
+        opts.message,
+        opts.publishers,
+        opts.skip,
+        opts.raw,
+        opts.allow_secrets,
+    )
 }
 
 /// Inner dispatch — takes an already-constructed `Context` so tests can drive
@@ -54,6 +65,7 @@ pub(crate) fn run_with_ctx(
     publishers: Option<Vec<String>>,
     skip: Vec<String>,
     raw: bool,
+    allow_secrets: bool,
 ) -> Result<()> {
     // Resolve the body ONCE, here, while `ctx.literal_message` is still false:
     // a non-raw message renders through Tera exactly once; a raw message is
@@ -79,6 +91,9 @@ pub(crate) fn run_with_ctx(
     // closing both. Set immediately before dispatch so only the announce send
     // path is affected.
     ctx.literal_message = true;
+    // Outbound bodies are redacted by default; --allow-secrets opts out for a
+    // trusted private channel. anodizer's own log redaction is unaffected.
+    ctx.redact_body = !allow_secrets;
 
     let retry_policy = ctx.retry_policy();
     let log = ctx.logger("notify");
@@ -177,7 +192,7 @@ mod tests {
     #[test]
     fn no_announce_config_bails() {
         let mut ctx = minimal_ctx();
-        let err = run_with_ctx(&mut ctx, "hello".to_string(), None, vec![], false)
+        let err = run_with_ctx(&mut ctx, "hello".to_string(), None, vec![], false, false)
             .unwrap_err()
             .to_string();
         assert!(err.contains("no announce config found"), "{err}");
@@ -217,6 +232,7 @@ mod tests {
             publishers: Some(vec!["slack".to_string()]),
             skip: vec!["discord".to_string()],
             raw: false,
+            allow_secrets: false,
             config_override: None,
             verbose: false,
             debug: false,
@@ -304,7 +320,43 @@ mod tests {
         };
         let mut ctx = Context::new(config, ContextOptions::default());
         // No providers configured → dispatch fires nothing, returns Ok.
-        let result = run_with_ctx(&mut ctx, "hello".to_string(), None, vec![], false);
+        let result = run_with_ctx(&mut ctx, "hello".to_string(), None, vec![], false, false);
         assert!(result.is_ok(), "{result:?}");
+    }
+
+    /// `allow_secrets` drives `ctx.redact_body`: true disables outbound body
+    /// redaction, false (the default) keeps it on. Observed on the same ctx
+    /// after dispatch (empty announce config dispatches nothing but still runs
+    /// the flag-setting path right before dispatch), not by re-reading the arg.
+    #[test]
+    fn allow_secrets_drives_redact_body() {
+        use anodizer_core::config::AnnounceConfig;
+        fn run_observe(allow_secrets: bool) -> bool {
+            let config = anodizer_core::config::Config {
+                project_name: "test".to_string(),
+                announce: Some(AnnounceConfig::default()),
+                ..Default::default()
+            };
+            let mut ctx = Context::new(config, ContextOptions::default());
+            assert!(ctx.redact_body, "default must be redact-on before dispatch");
+            run_with_ctx(
+                &mut ctx,
+                "hi".to_string(),
+                None,
+                vec![],
+                false,
+                allow_secrets,
+            )
+            .unwrap();
+            ctx.redact_body
+        }
+        assert!(
+            !run_observe(true),
+            "--allow-secrets must set redact_body = false"
+        );
+        assert!(
+            run_observe(false),
+            "default (no --allow-secrets) must keep redact_body = true"
+        );
     }
 }

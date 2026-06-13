@@ -747,6 +747,7 @@ fn run() {
             publishers,
             skip,
             raw,
+            allow_secrets,
             dry_run,
         } => commands::notify::run(commands::notify::NotifyOpts {
             message,
@@ -757,6 +758,7 @@ fn run() {
             },
             skip,
             raw,
+            allow_secrets,
             config_override: cli.config.clone(),
             verbose: cli.verbose,
             debug: cli.debug,

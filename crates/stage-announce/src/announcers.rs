@@ -2625,6 +2625,53 @@ mod tests {
         );
     }
 
+    /// Default body redaction (`redact_body == true`) masks a known-secret env
+    /// value that a templated `Env`-reference (or untrusted on_error text)
+    /// smuggled into the body, so the channel never receives the raw secret.
+    /// Drives the universal body chokepoint directly.
+    #[test]
+    fn render_message_with_default_redacts_secret_by_default() {
+        let mut ctx = render_ctx(AnnounceConfig::default());
+        ctx.template_vars_mut()
+            .set_env("CARGO_REGISTRY_TOKEN", "ghp_realsecretvalue");
+        // literal_message so the secret travels in the body verbatim up to the
+        // redaction step — this isolates redaction from Tera expansion.
+        ctx.literal_message = true;
+        assert!(ctx.redact_body, "default must be redact-on");
+        let out = render_message_with_default(
+            &mut ctx,
+            Some("release done: ghp_realsecretvalue shipped"),
+            "default",
+        )
+        .unwrap();
+        assert_eq!(out, "release done: $CARGO_REGISTRY_TOKEN shipped");
+        assert!(
+            !out.contains("ghp_realsecretvalue"),
+            "raw secret must not reach the channel: {out}"
+        );
+    }
+
+    /// `redact_body == false` (the `--allow-secrets` path) sends the secret
+    /// verbatim — the deliberate opt-out for a trusted private channel.
+    #[test]
+    fn render_message_with_default_allow_secrets_keeps_verbatim() {
+        let mut ctx = render_ctx(AnnounceConfig::default());
+        ctx.template_vars_mut()
+            .set_env("CARGO_REGISTRY_TOKEN", "ghp_realsecretvalue");
+        ctx.literal_message = true;
+        ctx.redact_body = false;
+        let out = render_message_with_default(
+            &mut ctx,
+            Some("release done: ghp_realsecretvalue shipped"),
+            "default",
+        )
+        .unwrap();
+        assert_eq!(
+            out, "release done: ghp_realsecretvalue shipped",
+            "--allow-secrets must leave the secret untouched"
+        );
+    }
+
     /// Same regression guard for opencollective's body render.
     #[test]
     fn opencollective_body_render_is_literal_under_literal_message() {

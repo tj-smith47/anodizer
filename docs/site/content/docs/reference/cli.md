@@ -327,5 +327,6 @@ Send a notification through configured announce integrations
 | `--publishers` | — | — | Comma-separated list of integration names to fire (default: all). Valid names: discord, discourse, slack, webhook, telegram, teams, mattermost, reddit, twitter, mastodon, bluesky, linkedin |
 | `--skip` | — | — | Comma-separated list of integration names to omit |
 | `--raw` | — | — | Send the message literally, without Tera template rendering. Use when the message contains untrusted text (e.g. error output in an on_error hook) |
+| `--allow-secrets` | — | — | Send secrets in the message body verbatim (disable outbound redaction). For trusted private channels only; log output stays redacted |
 | `--dry-run` | — | — | Run without sending (dry-run mode) |
 

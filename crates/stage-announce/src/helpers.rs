@@ -156,17 +156,27 @@ pub(crate) fn require_env_all_with_env<E: EnvSource + ?Sized>(
 /// Otherwise the body renders through Tera as usual. Per-provider message
 /// defaults differ (plain-text vs the webhook JSON envelope vs the Telegram
 /// MarkdownV2 form), so callers pass their own `default`.
+///
+/// The final body also has known-secret env values masked (same policy as log
+/// redaction) unless [`Context::redact_body`](anodizer_core::context::Context::redact_body)
+/// is false (`anodizer notify --allow-secrets`), so a templated `Env`-reference
+/// or untrusted text cannot leak a secret to the channel.
 pub(crate) fn render_message_with_default(
     ctx: &mut Context,
     tmpl: Option<&str>,
     default: &str,
 ) -> Result<String> {
     let t = tmpl.unwrap_or(default);
-    if ctx.literal_message {
-        Ok(t.to_owned())
+    let body = if ctx.literal_message {
+        t.to_owned()
     } else {
-        ctx.render_template(t)
-    }
+        ctx.render_template(t)?
+    };
+    Ok(if ctx.redact_body {
+        ctx.redact(&body)
+    } else {
+        body
+    })
 }
 
 /// Render a message-BODY template, falling back to the standard plain-text

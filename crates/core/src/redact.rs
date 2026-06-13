@@ -64,6 +64,14 @@ pub fn string(input: &str, env: &[(String, String)]) -> String {
     result
 }
 
+/// Apply the full outbound-text redaction policy: strip inline URL
+/// credentials, then mask known-secret env values. The single definition
+/// shared by log redaction ([`crate::log::StageLogger::redact`]) and
+/// announce body redaction so the two can never diverge.
+pub fn with_env(input: &str, env: &[(String, String)]) -> String {
+    string(&redact_url_credentials(input), env)
+}
+
 /// Convenience wrapper: redact secrets in `input` using the current
 /// process env (`std::env::vars()`) PLUS strip inline URL credentials.
 ///
@@ -73,8 +81,7 @@ pub fn string(input: &str, env: &[(String, String)]) -> String {
 /// by `string(..., &process_env_vec)`.
 pub fn redact_process_env(input: &str) -> String {
     let env: Vec<(String, String)> = std::env::vars().collect();
-    let stripped = redact_url_credentials(input);
-    string(&stripped, &env)
+    with_env(input, &env)
 }
 
 /// Strip embedded userinfo (credentials) from any URLs found in `input`.
@@ -360,6 +367,26 @@ mod tests {
         ];
         let result = string("prefix a_longer_secret_value_here suffix", &env);
         assert_eq!(result, "prefix $A_TOKEN suffix");
+    }
+
+    #[test]
+    fn test_with_env_composes_url_strip_and_env_mask() {
+        // The canonical outbound policy must apply BOTH layers in one call:
+        // inline URL-credential stripping AND known-secret env masking. A body
+        // carrying both must come out clean on both axes — proving composition,
+        // not either layer alone.
+        let env = vec![(
+            "CARGO_REGISTRY_TOKEN".to_string(),
+            "ghp_realsecretvalue".to_string(),
+        )];
+        let input = "pushed via https://tok@host/x then logged ghp_realsecretvalue";
+        let result = with_env(input, &env);
+        assert_eq!(
+            result,
+            "pushed via https://<redacted>@host/x then logged $CARGO_REGISTRY_TOKEN"
+        );
+        assert!(!result.contains("ghp_realsecretvalue"));
+        assert!(!result.contains("tok@host"));
     }
 
     #[test]
