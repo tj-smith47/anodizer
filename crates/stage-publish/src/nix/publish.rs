@@ -98,7 +98,7 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
     std::fs::write(&nix_file, &nix_expr)
         .with_context(|| format!("nix: write {}", nix_file.display()))?;
 
-    run_formatter(ctx, nix_cfg, &nix_file, log)?;
+    run_formatter(nix_cfg, &nix_file, log)?;
 
     log.status(&format!("wrote Nix expression {}", nix_file.display()));
 
@@ -681,45 +681,62 @@ fn detect_dynamically_linked(ctx: &Context, crate_name: &str) -> bool {
 // Formatter + commit/push helpers
 // ---------------------------------------------------------------------------
 
-/// Runs the optional `alejandra` / `nixfmt` formatter against the
-/// generated file. Strict-mode guards fire on a non-zero exit, a
-/// missing binary, or an unrecognized formatter name.
-fn run_formatter(
-    ctx: &mut Context,
-    nix_cfg: &NixConfig,
-    nix_file: &Path,
-    log: &StageLogger,
-) -> Result<()> {
+/// Runs the configured `alejandra` / `nixfmt` formatter against the
+/// generated derivation. Formatting is opt-in (no `formatter` set is a
+/// no-op, matching GoReleaser), but once a formatter IS configured it is
+/// MANDATORY: a missing binary, a non-zero exit, or an unrecognized name
+/// each `bail!`s so the unformatted derivation is never committed/pushed
+/// to the external nix repo.
+///
+/// This is INTENTIONALLY stricter than GoReleaser, whose `nix.go::format`
+/// only warns on failure — the "no unformatted push" requirement justifies
+/// the divergence; the opt-in gating (format only when a formatter is set)
+/// still matches GR.
+fn run_formatter(nix_cfg: &NixConfig, nix_file: &Path, log: &StageLogger) -> Result<()> {
     let Some(ref formatter) = nix_cfg.formatter else {
         return Ok(());
     };
-    let nix_file_str = nix_file.to_string_lossy();
     match formatter.as_str() {
-        "alejandra" | "nixfmt" => {
-            if let Ok(output) = std::process::Command::new(formatter)
-                .arg(&*nix_file_str)
-                .output()
-            {
-                if !output.status.success() {
-                    ctx.strict_guard(
-                        log,
-                        &format!("{} formatting failed for the nix expression", formatter),
-                    )?;
-                }
-            } else {
-                ctx.strict_guard(
-                    log,
-                    &format!("skipping nix format — {} not available", formatter),
-                )?;
-            }
-        }
+        "alejandra" | "nixfmt" => {}
         _ => {
-            ctx.strict_guard(
-                log,
-                &format!("skipping nix format — unknown formatter '{}'", formatter),
-            )?;
+            anyhow::bail!(
+                "nix: unknown formatter '{}' (expected alejandra or nixfmt)",
+                formatter
+            );
         }
     }
+
+    // Detect-and-fail-loud (no runtime auto-install) — consistent with
+    // cosign/syft being required-present. The CI base image
+    // (anodizer-action `install:`) provisions the formatter.
+    if !anodizer_core::tool_detect::tool_available(formatter).unwrap_or(false) {
+        anyhow::bail!(
+            "nix: formatter '{formatter}' not found on PATH — install it \
+             (anodizer-action install: list / CI base image) so the generated \
+             derivation is formatted before push"
+        );
+    }
+
+    let nix_file_str = nix_file.to_string_lossy();
+    let output = std::process::Command::new(formatter)
+        .arg(&*nix_file_str)
+        .output()
+        .with_context(|| format!("nix: spawn formatter '{formatter}'"))?;
+    if !output.status.success() {
+        let code = output
+            .status
+            .code()
+            .map(|c| c.to_string())
+            .unwrap_or_else(|| "signal".to_string());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        anyhow::bail!(
+            "nix: {formatter} formatting failed for {} (exit {code}); \
+             refusing to push an unformatted derivation\n{stderr}{stdout}",
+            nix_file.display()
+        );
+    }
+    log.status(&format!("formatted nix derivation with {formatter}"));
     Ok(())
 }
 
@@ -1930,22 +1947,20 @@ mod tests {
         }
 
         // -------------------------------------------------------------
-        // run_formatter — strict-guard matrix (no formatter, unknown,
-        // success, non-zero exit, missing binary).
+        // run_formatter — mandatory-format matrix. Formatting is opt-in
+        // (None = no-op, matches GR) but once a formatter is configured it
+        // is MANDATORY in EVERY mode (no --strict gate): a missing binary,
+        // a non-zero exit, or an unknown name each bail so an unformatted
+        // derivation is never pushed. INTENTIONALLY stricter than GR.
         // -------------------------------------------------------------
-
-        fn lenient_ctx() -> Context {
-            TestContextBuilder::new().project_name("demo").build()
-        }
 
         #[test]
         fn run_formatter_none_is_noop() {
-            let mut ctx = lenient_ctx();
             let cfg = NixConfig::default();
             let tmp = tempfile::tempdir().unwrap();
             let f = tmp.path().join("default.nix");
             std::fs::write(&f, "{}\n").unwrap();
-            run_formatter(&mut ctx, &cfg, &f, &quiet_log()).expect("no formatter is Ok");
+            run_formatter(&cfg, &f, &quiet_log()).expect("no formatter is Ok");
         }
 
         #[test]
@@ -1954,7 +1969,6 @@ mod tests {
             let tools = FakeToolDir::new();
             tools.tool("alejandra").install();
             let _path = tools.activate();
-            let mut ctx = lenient_ctx();
             let cfg = NixConfig {
                 formatter: Some("alejandra".to_string()),
                 ..Default::default()
@@ -1962,24 +1976,32 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let f = tmp.path().join("default.nix");
             std::fs::write(&f, "{}\n").unwrap();
-            run_formatter(&mut ctx, &cfg, &f, &quiet_log()).expect("formatter success is Ok");
+            run_formatter(&cfg, &f, &quiet_log()).expect("formatter success is Ok");
+            // The version-flag probe (`tool_available`) and the format run
+            // each invoke the fake tool once.
             let calls = tools.calls("alejandra");
-            assert_eq!(calls.len(), 1, "alejandra invoked exactly once");
             assert_eq!(
-                calls[0],
-                vec![f.to_string_lossy().to_string()],
+                calls.last().expect("alejandra invoked"),
+                &vec![f.to_string_lossy().to_string()],
                 "formatter receives the generated file path as its sole arg"
             );
         }
 
         #[test]
         #[serial]
-        fn run_formatter_nonzero_exit_strict_bails() {
+        fn run_formatter_nonzero_exit_bails_even_in_lenient_mode() {
+            // No --strict set: the bail must fire regardless, so an
+            // unformatted derivation is never pushed. The stub answers the
+            // presence probe (`--version`) with exit 0 but fails the actual
+            // format invocation with exit 3.
             let tools = FakeToolDir::new();
-            tools.tool("nixfmt").exit(3).install();
+            tools
+                .tool("nixfmt")
+                .script(
+                    "case \"$1\" in --version) exit 0 ;; *) echo 'parse error' 1>&2; exit 3 ;; esac",
+                )
+                .install();
             let _path = tools.activate();
-            let mut ctx = lenient_ctx();
-            ctx.options.strict = true;
             let cfg = NixConfig {
                 formatter: Some("nixfmt".to_string()),
                 ..Default::default()
@@ -1987,53 +2009,46 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let f = tmp.path().join("default.nix");
             std::fs::write(&f, "{}\n").unwrap();
-            let err = run_formatter(&mut ctx, &cfg, &f, &quiet_log())
-                .expect_err("non-zero formatter exit must bail under strict");
+            let err = run_formatter(&cfg, &f, &quiet_log())
+                .expect_err("non-zero formatter exit must bail in lenient mode too");
             let msg = format!("{err}");
             assert!(msg.contains("nixfmt formatting failed"), "{msg}");
-            assert!(msg.contains("strict mode"), "{msg}");
+            assert!(
+                msg.contains("refusing to push an unformatted derivation"),
+                "{msg}"
+            );
+            assert!(msg.contains("exit 3"), "{msg}");
         }
 
         #[test]
         #[serial]
-        fn run_formatter_nonzero_exit_lenient_warns_and_continues() {
+        fn run_formatter_missing_binary_bails_with_install_remedy() {
+            // A FakeToolDir that installs NO formatter: `alejandra` is a
+            // recognized name but absent from PATH, so the presence probe
+            // fails and run_formatter bails (no --strict needed). Prepending
+            // (rather than emptying) PATH keeps git/sh available for other
+            // concurrently-running tests and avoids a process-wide PATH race.
             let tools = FakeToolDir::new();
-            tools.tool("nixfmt").exit(3).install();
             let _path = tools.activate();
-            let mut ctx = lenient_ctx();
             let cfg = NixConfig {
-                formatter: Some("nixfmt".to_string()),
+                formatter: Some("alejandra".to_string()),
                 ..Default::default()
             };
             let tmp = tempfile::tempdir().unwrap();
             let f = tmp.path().join("default.nix");
             std::fs::write(&f, "{}\n").unwrap();
-            run_formatter(&mut ctx, &cfg, &f, &quiet_log())
-                .expect("lenient mode warns but returns Ok on formatter failure");
+            let err = run_formatter(&cfg, &f, &quiet_log())
+                .expect_err("missing formatter binary must bail in lenient mode");
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("formatter 'alejandra' not found on PATH"),
+                "{msg}"
+            );
+            assert!(msg.contains("install it"), "{msg}");
         }
 
         #[test]
-        fn run_formatter_missing_binary_strict_bails() {
-            // Use an absolute empty PATH-free dir so the named formatter cannot
-            // be found; the spawn `Err` routes through strict_guard.
-            let mut ctx = lenient_ctx();
-            ctx.options.strict = true;
-            let cfg = NixConfig {
-                formatter: Some("alejandra-definitely-not-installed-xyz".to_string()),
-                ..Default::default()
-            };
-            let tmp = tempfile::tempdir().unwrap();
-            let f = tmp.path().join("default.nix");
-            std::fs::write(&f, "{}\n").unwrap();
-            let err = run_formatter(&mut ctx, &cfg, &f, &quiet_log())
-                .expect_err("unknown formatter name must bail under strict");
-            assert!(format!("{err}").contains("skipping"));
-        }
-
-        #[test]
-        fn run_formatter_unknown_name_strict_bails() {
-            let mut ctx = lenient_ctx();
-            ctx.options.strict = true;
+        fn run_formatter_unknown_name_bails_in_lenient_mode() {
             let cfg = NixConfig {
                 formatter: Some("rustfmt".to_string()),
                 ..Default::default()
@@ -2041,9 +2056,11 @@ mod tests {
             let tmp = tempfile::tempdir().unwrap();
             let f = tmp.path().join("default.nix");
             std::fs::write(&f, "{}\n").unwrap();
-            let err = run_formatter(&mut ctx, &cfg, &f, &quiet_log())
-                .expect_err("unrecognized formatter must bail under strict");
-            assert!(format!("{err}").contains("unknown formatter 'rustfmt'"));
+            let err = run_formatter(&cfg, &f, &quiet_log())
+                .expect_err("unrecognized formatter must bail in lenient mode");
+            let msg = format!("{err}");
+            assert!(msg.contains("unknown formatter 'rustfmt'"), "{msg}");
+            assert!(msg.contains("alejandra or nixfmt"), "{msg}");
         }
 
         // -------------------------------------------------------------
@@ -2084,6 +2101,42 @@ mod tests {
                 subject.contains("mytool") && subject.contains("1.2.3"),
                 "commit subject must name package + version; got: {subject}"
             );
+            drop(bare);
+        }
+
+        #[test]
+        #[serial]
+        fn publish_to_nix_formatter_absent_errors_and_pushes_nothing() {
+            // A configured formatter that is absent from PATH must abort the
+            // crate's nix publish BEFORE flake write / commit / push — nothing
+            // lands on the overlay branch. The FakeToolDir installs NO
+            // alejandra (prepend, not empty, so the file-URL clone's git still
+            // resolves), so the presence probe fails after clone+write.
+            let (bare_url, bare) = make_bare_repo("main");
+            let mut nix = nix_cfg_local(&bare_url, "main");
+            nix.formatter = Some("alejandra".to_string());
+            let mut ctx = ctx_for(nix, two_archives());
+
+            let bare_path = Path::new(&bare_url);
+            let before = git_stdout(bare_path, &["rev-parse", "main"]);
+
+            let tools = FakeToolDir::new();
+            let _path = tools.activate();
+            let res = publish_to_nix(&mut ctx, "mytool", &quiet_log());
+            drop(_path);
+
+            let err = res.expect_err("missing formatter must abort the publish");
+            assert!(format!("{err}").contains("not found on PATH"), "{err}");
+            // The overlay branch is untouched: same tip, no default.nix landed.
+            let after = git_stdout(bare_path, &["rev-parse", "main"]);
+            assert_eq!(before, after, "no commit must reach the overlay branch");
+            let drv_present = Command::new("git")
+                .args(["cat-file", "-e", "main:pkgs/mytool/default.nix"])
+                .current_dir(bare_path)
+                .status()
+                .expect("git cat-file")
+                .success();
+            assert!(!drv_present, "no unformatted derivation must be pushed");
             drop(bare);
         }
 
@@ -2243,14 +2296,16 @@ mod tests {
             let mut ctx = ctx_for(nix, two_archives());
             let pushed = publish_to_nix(&mut ctx, "mytool", &quiet_log()).expect("publish ok");
             assert!(pushed);
+            // run_formatter probes presence (`--version`) then formats; assert
+            // the generated default.nix path was handed to the format call.
             let calls = tools.calls("nixfmt");
-            assert_eq!(calls.len(), 1, "formatter invoked exactly once in-pipeline");
+            let formatted = calls.iter().any(|c| {
+                c.last()
+                    .is_some_and(|p| p.ends_with("pkgs/mytool/default.nix"))
+            });
             assert!(
-                calls[0]
-                    .last()
-                    .is_some_and(|p| p.ends_with("pkgs/mytool/default.nix")),
-                "formatter must receive the generated derivation path: {:?}",
-                calls[0]
+                formatted,
+                "formatter must receive the generated derivation path: {calls:?}"
             );
             drop(bare);
         }

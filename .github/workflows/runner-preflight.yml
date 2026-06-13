@@ -29,7 +29,7 @@ jobs:
           from-artifact: anodizer-linux
           artifact-workflow: ci.yml
           artifact-run-id: auto
-          install: nfpm,makeself,snapcraft,rpmbuild,cosign,syft
+          install: nfpm,makeself,snapcraft,rpmbuild,cosign,syft,alejandra
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
           args: preflight --publish-only
@@ -49,7 +49,7 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          for check in "nfpm --version" "makeself --version" "snapcraft version" "rpmbuild --version" "cosign version" "syft version"; do
+          for check in "nfpm --version" "makeself --version" "snapcraft version" "rpmbuild --version" "cosign version" "syft version" "alejandra --version"; do
             tool="${check%% *}"
             arg="${check#* }"
             if "$tool" "$arg" >/dev/null 2>&1; then

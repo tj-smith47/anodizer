@@ -167,7 +167,7 @@ jobs:
           version: ${{ needs.tag.outputs.publish_version }}
           artifact-run-id: auto
           artifact-workflow: ci.yml
-          install: nfpm,makeself,snapcraft,rpmbuild,cosign,syft
+          install: nfpm,makeself,snapcraft,rpmbuild,cosign,syft,alejandra
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
           args: release --publish-only
