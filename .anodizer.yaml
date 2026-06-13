@@ -300,9 +300,23 @@ crates:
       - anodizer-stage-verify-release
       - anodizer-stage-prepublish-guard
     builds:
-      - binary: anodizer
+      # GNU build — feeds archives + deb + rpm. Inherits defaults.targets
+      # (the six gnu/darwin/msvc triples). The hermetic glibc floor
+      # (verify_release.glibc_ceiling) and Debian/RHEL portability ride on it.
+      - id: anodizer
+        binary: anodizer
         features: []
         no_default_features: false
+      # musl build — feeds the apk ONLY. apk ships on Alpine (musl); a glibc
+      # binary EXITs 127 there. `targets:` REPLACES defaults.targets, so this
+      # build compiles ONLY the two musl triples via cargo-zigbuild.
+      - id: anodizer-musl
+        binary: anodizer
+        features: []
+        no_default_features: false
+        targets:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
     dockers_v2:
       - id: anodizer
         dockerfile: Dockerfile
@@ -322,6 +336,10 @@ crates:
       # rather than appearing as a second entry.
       - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
         formats: [tar.gz]
+        # Bind to the GNU build only. Without this, archives auto-collect ALL
+        # builds; the musl x86_64 binary maps to the same linux/amd64 name as
+        # the gnu one and the two archives collide on the same output filename.
+        ids: [anodizer]
         files:
           - LICENSE
           - README.md
@@ -331,6 +349,7 @@ crates:
       # primary entry above.
       - id: extra
         name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}-extra"
+        ids: [anodizer]
         formats: [tar.xz, tar.zst]
         format_overrides:
           - os: windows
@@ -495,12 +514,16 @@ crates:
           name: TJ Smith
           email: tj@jarvispro.io
     nfpm:
+      # deb + rpm packers — bound to the GNU build (`ids: [anodizer]`). deb
+      # (Debian/Ubuntu) and rpm (RHEL/Fedora/SUSE) ship glibc; the hermetic
+      # glibc floor (verify_release.glibc_ceiling) keeps these portable.
       - id: default
         package_name: anodizer
+        ids:
+          - anodizer
         formats:
           - deb
           - rpm
-          - apk
         vendor: "TJ Smith"
         homepage: "https://github.com/tj-smith47/anodizer"
         maintainer: "TJ Smith <tj@jarvispro.io>"
@@ -542,6 +565,38 @@ crates:
           packager: "TJ Smith <tj@jarvispro.io>"
           signature:
             key_file: "{{ .Env.GPG_KEY_PATH }}"
+      # apk packer — bound to the musl build (`ids: [anodizer-musl]`). apk
+      # installs on Alpine, which ships musl libc; a glibc binary EXITs 127
+      # there. Splitting apk into its own config (musl) while deb/rpm stay
+      # glibc preserves the glibc floor for the portable formats.
+      - id: apk
+        package_name: anodizer
+        ids:
+          - anodizer-musl
+        formats:
+          - apk
+        vendor: "TJ Smith"
+        homepage: "https://github.com/tj-smith47/anodizer"
+        maintainer: "TJ Smith <tj@jarvispro.io>"
+        description: "A Rust-native release automation tool"
+        license: MIT
+        bindir: /usr/bin
+        section: utils
+        priority: optional
+        epoch: "1"
+        release: "1"
+        umask: "0o002"
+        mtime: "{{ CommitDate }}"
+        recommends:
+          - git
+        suggests:
+          - upx
+        file_name_template: "{{ ProjectName }}_{{ RawVersion }}_{{ Os }}_{{ Arch }}"
+        contents:
+          - src: LICENSE
+            dst: /usr/share/doc/anodizer/LICENSE
+          - src: README.md
+            dst: /usr/share/doc/anodizer/README.md
         apk:
           signature:
             # apk-tools uses its own RSA-PSS scheme, not OpenPGP. nfpm's apk

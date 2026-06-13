@@ -116,9 +116,15 @@ pub(crate) fn detect_cross_strategy_for_target_impl(
     // floor silently tracks the CI runner image (ubuntu-24.04 produces a
     // GLIBC_2.39 requirement, uninstallable on Debian 12 / Ubuntu 22.04).
     // zig ships its own libc headers, keeping the floor hermetic and
-    // independent of runner upgrades. musl triples are unaffected: they
-    // link libc statically and carry no glibc floor.
-    if is_linux_gnu(target) && zigbuild_available {
+    // independent of runner upgrades.
+    //
+    // musl Linux triples route through zigbuild for a different reason:
+    // anodizer ships the apk package as a musl binary, and the glibc CI
+    // release host always cross-compiles musl. Plain cargo then dies in
+    // cc-rs (no musl cross C toolchain on stock runners). cargo-zigbuild
+    // bundles musl headers for x86_64 and aarch64 alike, so it cross-builds
+    // musl cleanly without `cross` or musl-tools.
+    if (is_linux_gnu(target) || is_linux_musl(target)) && zigbuild_available {
         return CrossStrategy::Zigbuild;
     }
 
@@ -193,6 +199,12 @@ pub(crate) fn cross_gnu_cargo_fallback_warning(
 /// `x86_64-unknown-linux-gnu.2.17`. musl triples return false.
 pub(crate) fn is_linux_gnu(target: &str) -> bool {
     target.contains("-linux-gnu")
+}
+
+/// True for musl-linked Linux triples: `*-linux-musl` and ABI-suffixed forms
+/// like `*-linux-musleabihf`. glibc triples return false.
+pub(crate) fn is_linux_musl(target: &str) -> bool {
+    target.contains("-linux-musl")
 }
 
 /// True when both triples target Apple's Darwin kernel. Matches

@@ -1501,6 +1501,110 @@ fn test_ids_filter_with_multiple_matching_ids() {
 }
 
 #[test]
+fn test_apk_binds_musl_build_deb_rpm_bind_gnu_build() {
+    // anodizer's own dogfood split: the apk must ship a musl binary (Alpine
+    // runs musl; a glibc binary EXITs 127), while deb/rpm keep glibc. Two
+    // nfpm configs — `default` (deb+rpm, ids: [anodizer]) and `apk` (apk,
+    // ids: [anodizer-musl]) — must each draw ONLY from their bound build id.
+    use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+
+    let default_cfg = NfpmConfig {
+        package_name: Some("anodizer".to_string()),
+        formats: vec!["deb".to_string(), "rpm".to_string()],
+        ids: Some(vec!["anodizer".to_string()]),
+        ..Default::default()
+    };
+    let apk_cfg = NfpmConfig {
+        id: Some("apk".to_string()),
+        package_name: Some("anodizer".to_string()),
+        formats: vec!["apk".to_string()],
+        ids: Some(vec!["anodizer-musl".to_string()]),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "anodizer".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "anodizer".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        nfpms: Some(vec![default_cfg, apk_cfg]),
+        ..Default::default()
+    }];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+
+    // GNU build artifact (feeds deb + rpm).
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: std::path::PathBuf::from("dist/anodizer-gnu"),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "anodizer".to_string(),
+        metadata: HashMap::from([("id".to_string(), "anodizer".to_string())]),
+        size: None,
+    });
+    // musl build artifact (feeds apk ONLY).
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: std::path::PathBuf::from("dist/anodizer-musl"),
+        target: Some("x86_64-unknown-linux-musl".to_string()),
+        crate_name: "anodizer".to_string(),
+        metadata: HashMap::from([("id".to_string(), "anodizer-musl".to_string())]),
+        size: None,
+    });
+
+    NfpmStage.run(&mut ctx).unwrap();
+
+    let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+
+    // apk packages must come from the musl-targeted binary ONLY.
+    let apks: Vec<_> = pkgs
+        .iter()
+        .filter(|p| p.metadata.get("format").map(String::as_str) == Some("apk"))
+        .collect();
+    assert_eq!(apks.len(), 1, "exactly one apk (x86_64 musl)");
+    for p in &apks {
+        let t = p.target.as_deref().unwrap_or("");
+        assert!(
+            t.contains("-linux-musl"),
+            "apk must be built from a musl binary, got target {t:?}"
+        );
+    }
+
+    // deb + rpm must come from the gnu-targeted binary ONLY.
+    let glibc_pkgs: Vec<_> = pkgs
+        .iter()
+        .filter(|p| {
+            matches!(
+                p.metadata.get("format").map(String::as_str),
+                Some("deb") | Some("rpm")
+            )
+        })
+        .collect();
+    assert_eq!(glibc_pkgs.len(), 2, "one deb + one rpm (x86_64 gnu)");
+    for p in &glibc_pkgs {
+        let t = p.target.as_deref().unwrap_or("");
+        assert!(
+            t.contains("-linux-gnu"),
+            "deb/rpm must be built from a gnu binary, got target {t:?}"
+        );
+    }
+}
+
+#[test]
 fn test_nfpm_yaml_dependencies_serializes_as_flat_depends() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),

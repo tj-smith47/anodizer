@@ -1995,24 +1995,35 @@ fn test_detect_cross_strategy_host_linux_gnu_without_zigbuild_uses_cargo() {
 }
 
 #[test]
-fn test_detect_cross_strategy_host_musl_keeps_cargo() {
-    // musl triples link libc statically — no glibc floor to protect — so a
-    // host-triple musl build keeps the native-cargo short-circuit.
-    let strategy = detect_cross_strategy_for_target_impl(
-        "x86_64-unknown-linux-musl",
-        "x86_64-unknown-linux-musl",
-        true,
-        true,
-    );
-    assert_eq!(strategy, CrossStrategy::Cargo);
-
-    // Cross-compiled musl still goes through the tool-detect path
-    // (unchanged behaviour).
+fn test_detect_cross_strategy_musl_routes_through_zigbuild() {
+    // musl Linux triples route through zigbuild whenever it is available,
+    // mirroring the linux-gnu rule. The apk package ships a musl binary, and
+    // on the glibc CI release host a musl build is always a cross-libc compile
+    // — plain cargo dies in cc-rs (no musl cross C toolchain). cargo-zigbuild
+    // bundles musl headers for every arch, so it cross-compiles musl cleanly.
     let strategy = detect_cross_strategy_for_target_impl(
         "x86_64-unknown-linux-gnu",
         "x86_64-unknown-linux-musl",
         true,
         false,
+    );
+    assert_eq!(strategy, CrossStrategy::Zigbuild);
+
+    let strategy = detect_cross_strategy_for_target_impl(
+        "x86_64-unknown-linux-gnu",
+        "aarch64-unknown-linux-musl",
+        true,
+        false,
+    );
+    assert_eq!(strategy, CrossStrategy::Zigbuild);
+
+    // Even when the target is the exact host triple, musl routes through
+    // zigbuild (uniform with the linux-gnu rule); no native-cargo shortcut.
+    let strategy = detect_cross_strategy_for_target_impl(
+        "x86_64-unknown-linux-musl",
+        "x86_64-unknown-linux-musl",
+        true,
+        true,
     );
     assert_eq!(strategy, CrossStrategy::Zigbuild);
 }
