@@ -2067,13 +2067,22 @@ fn test_docker_sign_signs_by_digest_not_tag() {
         // call shapes it — so the per-arg digest-collapse applies. A shell
         // captures `$1` to the marker file.
         let (cmd, args) = if cfg!(windows) {
+            // A real `.bat` is required: `cmd.exe /C "echo %1>marker"` never
+            // binds `%1` to a positional arg (`%1` is a parameter reference
+            // only inside a batch FILE), so the literal `%1` leaked into the
+            // marker. Write the batch into this iteration's `tmp` and let
+            // `Command::new(<bat>).arg(<ref>)` bind it. Leading-redirect form
+            // (`>"file" echo %~1`) — NOT `echo %1>file` — because a digit
+            // immediately before `>` (the `1>`) is parsed as a stdout-stream
+            // redirect, corrupting the capture; redirect-first sidesteps that.
+            // `%~1` strips any surrounding quotes. The ref has no spaces or
+            // `% !` so Windows arg-escaping and env/delayed expansion are moot.
+            let bat = tmp.path().join("capture.bat");
+            std::fs::write(&bat, format!(">\"{marker_str}\" echo %~1\r\n"))
+                .expect("write capture.bat");
             (
-                "cmd.exe".to_string(),
-                vec![
-                    "/C".to_string(),
-                    format!("echo %1> {}", marker_str),
-                    args_template.to_string(),
-                ],
+                bat.to_string_lossy().to_string(),
+                vec![args_template.to_string()],
             )
         } else {
             (
