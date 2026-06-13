@@ -1179,3 +1179,71 @@ mod summary_tests {
         assert_eq!(summary, "short and fine");
     }
 }
+
+#[cfg(test)]
+mod id_binding_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn bin(path: &str, target: &str, id: &str) -> Artifact {
+        Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: std::path::PathBuf::from(path),
+            target: Some(target.to_string()),
+            crate_name: "anodizer".to_string(),
+            metadata: HashMap::from([("id".to_string(), id.to_string())]),
+            size: None,
+        }
+    }
+
+    #[test]
+    fn ids_filter_binds_gnu_build_excludes_musl() {
+        // The snap must ship the glibc binary. snapcraft groups by Os/Arch and
+        // map_target collapses gnu and musl x86_64 to linux/amd64, so without
+        // an `ids:` bind the musl binary renders the same linux_amd64 snap name
+        // and clobbers (last-writer-wins). `ids: [anodizer]` must keep ONLY the
+        // gnu build, never the musl one.
+        let gnu = bin("dist/anodizer-gnu", "x86_64-unknown-linux-gnu", "anodizer");
+        let musl = bin(
+            "dist/anodizer-musl",
+            "x86_64-unknown-linux-musl",
+            "anodizer-musl",
+        );
+        let all = vec![&gnu, &musl];
+
+        let ids = vec!["anodizer".to_string()];
+        let filtered = filter_binaries_by_ids(&all, Some(&ids));
+
+        assert_eq!(filtered.len(), 1, "exactly the gnu build survives the bind");
+        let t = filtered[0].target.as_deref().unwrap_or("");
+        assert!(
+            t.contains("-linux-gnu"),
+            "bound build must be the gnu binary, got target {t:?}"
+        );
+        assert!(
+            !filtered
+                .iter()
+                .any(|b| b.target.as_deref().unwrap_or("").contains("-linux-musl")),
+            "the musl binary must never reach the glibc snap"
+        );
+    }
+
+    #[test]
+    fn no_ids_auto_collects_both_builds_the_collision_we_guard_against() {
+        // Documents the auto-collect hazard the bind fixes: with `ids` unset
+        // BOTH x86_64 builds are admitted, and since they share os/arch the
+        // snap filename collides. This is exactly why the config sets
+        // `ids: [anodizer]` on `snapcrafts:`.
+        let gnu = bin("dist/anodizer-gnu", "x86_64-unknown-linux-gnu", "anodizer");
+        let musl = bin(
+            "dist/anodizer-musl",
+            "x86_64-unknown-linux-musl",
+            "anodizer-musl",
+        );
+        let all = vec![&gnu, &musl];
+
+        let filtered = filter_binaries_by_ids(&all, None);
+        assert_eq!(filtered.len(), 2, "auto-collect admits both (the hazard)");
+    }
+}

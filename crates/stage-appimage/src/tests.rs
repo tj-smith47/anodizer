@@ -702,3 +702,84 @@ fn group_by_platform_is_deterministic() {
     let keys: Vec<_> = groups.keys().cloned().collect();
     assert_eq!(keys, vec!["linux_amd64".to_string(), "linux_arm64".into()]);
 }
+
+/// Build a Context holding a gnu and a musl x86_64 binary tagged with the
+/// build ids the dogfood config uses.
+fn ctx_with_gnu_and_musl(dist: &Path) -> Context {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("anodizer")
+        .tag("v1.0.0")
+        .populate_git_vars(true)
+        .dist(dist.to_path_buf())
+        .dry_run(true)
+        .build();
+    fs::create_dir_all(dist).unwrap();
+    for (target, id) in [
+        ("x86_64-unknown-linux-gnu", "anodizer"),
+        ("x86_64-unknown-linux-musl", "anodizer-musl"),
+    ] {
+        let p = dist.join(format!("anodizer-{id}"));
+        fs::write(&p, b"bin").unwrap();
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("binary".to_string(), "anodizer".to_string());
+        metadata.insert("id".to_string(), id.to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: format!("anodizer-{id}"),
+            path: p,
+            target: Some(target.to_string()),
+            crate_name: "anodizer".to_string(),
+            metadata,
+            size: None,
+        });
+    }
+    ctx
+}
+
+#[test]
+fn ids_bind_keeps_gnu_excludes_musl() {
+    // The AppImage wraps glibc libraries (linuxdeploy). gnu and musl x86_64
+    // both group to linux_amd64 and the filename renders only Arch (amd64),
+    // so without an `ids:` bind the musl binary clobbers the gnu AppImage.
+    // `ids: [anodizer]` must keep ONLY the gnu binary.
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    let ctx = ctx_with_gnu_and_musl(&dist);
+
+    let cfg = AppImageConfig {
+        id: Some("default".to_string()),
+        ids: Some(vec!["anodizer".to_string()]),
+        ..Default::default()
+    };
+    let bins = collect_matching_binaries(&ctx, &cfg, &["linux".to_string()]);
+    assert_eq!(bins.len(), 1, "only the gnu build survives the bind");
+    let t = bins[0].target.as_deref().unwrap_or("");
+    assert!(
+        t.contains("-linux-gnu"),
+        "bound AppImage build must be gnu, got {t:?}"
+    );
+}
+
+#[test]
+fn no_ids_admits_both_builds_the_collision_we_guard_against() {
+    // Documents the auto-collect hazard: with `ids` unset both x86_64 builds
+    // are admitted and group to the same linux_amd64 key — the collision the
+    // `ids: [anodizer]` bind on `appimages:` prevents.
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    let ctx = ctx_with_gnu_and_musl(&dist);
+
+    let cfg = AppImageConfig {
+        id: Some("default".to_string()),
+        ids: None,
+        ..Default::default()
+    };
+    let bins = collect_matching_binaries(&ctx, &cfg, &["linux".to_string()]);
+    assert_eq!(bins.len(), 2, "auto-collect admits both (the hazard)");
+    let groups = group_by_platform(&bins);
+    assert_eq!(
+        groups.get("linux_amd64").map(Vec::len),
+        Some(2),
+        "both x86_64 builds collide on the linux_amd64 group key"
+    );
+}

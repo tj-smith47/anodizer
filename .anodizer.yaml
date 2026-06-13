@@ -318,7 +318,12 @@ crates:
           - x86_64-unknown-linux-musl
           - aarch64-unknown-linux-musl
     dockers_v2:
+      # Bind to the GNU build. Docker stages binaries into a per-platform dir
+      # by Os/Arch match; gnu and musl x86_64 both match linux/amd64 and copy
+      # to the same dest path (last-writer-wins). The image is glibc
+      # (distroless cc-debian12), so it must stage the gnu binary.
       - id: anodizer
+        ids: [anodizer]
         dockerfile: Dockerfile
         images:
           - ghcr.io/tj-smith47/anodizer
@@ -608,7 +613,13 @@ crates:
             # and derives the matching public key alongside.
             key_file: "{{ .Env.APK_PRIVATE_KEY_PATH }}"
     snapcrafts:
+      # Bind to the GNU build. snapcraft groups binaries by Os/Arch, and
+      # map_target collapses both gnu and musl x86_64 to linux/amd64 — without
+      # this bind the musl binary renders the same anodizer_<ver>_linux_amd64
+      # .snap and clobbers (last-writer-wins). The snap is glibc (core24 base),
+      # so it must ship the gnu binary.
       - id: default
+        ids: [anodizer]
         name: anodizer
         title: "anodizer"
         # icon: omitted intentionally — Snap Store snap.json validation
@@ -807,6 +818,11 @@ upx:
   - id: default
     enabled: true
     binary: upx
+    # Bind to the GNU build. The `targets:` list below already excludes musl,
+    # but `ids:` makes the exclusion explicit and drift-proof: a future edit
+    # adding a musl triple to `targets:` would otherwise silently compress the
+    # apk's musl binary (UPX can corrupt musl-static binaries).
+    ids: [anodizer]
     args:
       - "--best"
       - "--lzma"
@@ -940,7 +956,12 @@ mcp:
 # Produces one .AppImage per Linux target architecture.
 # linuxdeploy is auto-installed by anodizer-action when auto-install: true.
 appimages:
-  - desktop: "assets/anodizer.desktop"
+  # Bind to the GNU build. AppImage groups binaries by Os/Arch, and the
+  # filename renders only Arch (amd64) — gnu and musl x86_64 both produce
+  # anodizer-<ver>-amd64.AppImage and clobber. linuxdeploy bundles glibc
+  # libraries, so the AppImage must wrap the gnu binary.
+  - ids: [anodizer]
+    desktop: "assets/anodizer.desktop"
     icon: "assets/logo.png"
     filename: "{{ ProjectName }}-{{ Version }}-{{ Arch }}.AppImage"
     update_information: "gh-releases-zsync|tj-smith47|anodizer|latest|*.AppImage.zsync"
@@ -971,7 +992,12 @@ srpm:
 
 # Makeself self-extracting archives
 makeselfs:
+  # Bind to the GNU build. makeself groups binaries by Os/Arch and the
+  # filename renders Os-Arch (linux-amd64) — gnu and musl x86_64 both produce
+  # anodizer-<ver>-linux-amd64-installer.run and clobber. The installer wraps
+  # a glibc binary, so it must use the gnu build.
   - id: default
+    ids: [anodizer]
     name: "anodizer Installer"
     script: scripts/makeself-install.sh
     filename: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}-installer.run"
