@@ -1,6 +1,4 @@
-use std::io::Write as _;
-
-use anyhow::{Context as _, Result, bail};
+use anyhow::{Context as _, Result};
 use base64::Engine as _;
 
 use crate::provider::Provider;
@@ -129,30 +127,31 @@ pub(crate) fn run_kms_cli_with_stdin(
     args: &[&str],
     stdin: &[u8],
     label: &str,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<Vec<u8>> {
-    let mut child = std::process::Command::new(program)
-        .args(args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .with_context(|| format!("blobs: failed to spawn '{program}' for {label}"))?;
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| anyhow::anyhow!("blobs: {label}: child has no stdin"))?
-        .write_all(stdin)
-        .with_context(|| format!("blobs: {label}: failed to write plaintext to {program} stdin"))?;
-    let output = child
-        .wait_with_output()
-        .with_context(|| format!("blobs: {label}: failed to wait for {program}"))?;
-    if !output.status.success() {
-        bail!(
-            "blobs: {label} ({program}) failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args);
+    // KMS output is raw/ciphertext bytes; never tee it live. The helper keys
+    // its live-stream on the logger's verbosity, so route through a
+    // Normal-verbosity clone (env preserved for redaction) so ciphertext is
+    // captured silently regardless of the run's `--verbose` flag.
+    let quiet_log = quiet_for_kms(log);
+    let output = anodizer_core::run::run_checked_with_stdin(
+        &mut cmd,
+        stdin,
+        &quiet_log,
+        &format!("blobs: {label}"),
+    )?;
     Ok(output.stdout)
+}
+
+/// A Normal-verbosity clone of `log` for the KMS encrypt subprocesses, so the
+/// shared run helper captures (never streams) the raw ciphertext bytes the
+/// cloud CLIs emit on stdout, while still carrying the original logger's env
+/// for secret redaction of any stderr.
+fn quiet_for_kms(log: &anodizer_core::log::StageLogger) -> anodizer_core::log::StageLogger {
+    anodizer_core::log::StageLogger::new("blob", anodizer_core::log::Verbosity::Normal)
+        .with_env(log.redaction_env())
 }
 
 /// Encrypt `data` client-side using the appropriate cloud CLI tool.
@@ -164,6 +163,7 @@ pub(crate) fn encrypt_with_kms(
     data: &[u8],
     kms_key: &str,
     provider: KmsProvider,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<Vec<u8>> {
     match provider {
         KmsProvider::Aws => {
@@ -186,6 +186,7 @@ pub(crate) fn encrypt_with_kms(
                 ],
                 data,
                 "aws kms encrypt",
+                log,
             )?;
             let resp: serde_json::Value = serde_json::from_slice(&stdout)
                 .context("blobs: failed to parse aws kms encrypt JSON response")?;
@@ -217,6 +218,7 @@ pub(crate) fn encrypt_with_kms(
                 ],
                 data,
                 "gcloud kms encrypt",
+                log,
             )
         }
 
@@ -234,34 +236,31 @@ pub(crate) fn encrypt_with_kms(
                 .get(2)
                 .context("missing key name in azurekeyvault:// URL (expected vault/keys/name)")?;
             let b64_data = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data);
-            // `az` reads --value, no stdin — use a one-shot Command::output here
-            // because run_kms_cli_with_stdin assumes stdin-driven I/O.
-            let output = std::process::Command::new("az")
-                .args([
-                    "keyvault",
-                    "key",
-                    "encrypt",
-                    "--vault-name",
-                    vault_name,
-                    "--name",
-                    key_name,
-                    "--algorithm",
-                    "RSA-OAEP-256",
-                    "--value",
-                    &b64_data,
-                    "--output",
-                    "json",
-                ])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .output()
-                .context("blobs: failed to spawn 'az' for keyvault encrypt")?;
-            if !output.status.success() {
-                bail!(
-                    "blobs: az keyvault key encrypt failed: {}",
-                    String::from_utf8_lossy(&output.stderr).trim()
-                );
-            }
+            // `az` reads --value, no stdin — route the no-stdin variant of the
+            // shared run helper. Like the stdin arms, ciphertext is captured
+            // silently (quiet logger) rather than teed at verbose.
+            let mut cmd = std::process::Command::new("az");
+            cmd.args([
+                "keyvault",
+                "key",
+                "encrypt",
+                "--vault-name",
+                vault_name,
+                "--name",
+                key_name,
+                "--algorithm",
+                "RSA-OAEP-256",
+                "--value",
+                &b64_data,
+                "--output",
+                "json",
+            ]);
+            let quiet_log = quiet_for_kms(log);
+            let output = anodizer_core::run::run_checked(
+                &mut cmd,
+                &quiet_log,
+                "blobs: az keyvault key encrypt",
+            )?;
             let resp: serde_json::Value = serde_json::from_slice(&output.stdout)
                 .context("blobs: failed to parse az keyvault encrypt JSON response")?;
             let result = resp["result"]
@@ -287,6 +286,13 @@ mod tests {
     // or the import reads as unused on a Windows build.
     #[cfg(unix)]
     use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+    /// A quiet test logger for the KMS run-helper calls. Verbosity is
+    /// irrelevant to these tests (the helper captures ciphertext silently);
+    /// a default logger keeps the call sites terse.
+    fn tlog() -> anodizer_core::log::StageLogger {
+        anodizer_core::log::StageLogger::new("blob-test", anodizer_core::log::Verbosity::Normal)
+    }
 
     // -------------------------------------------------------------------
     // validate_kms_provider_match — scheme↔provider compatibility gate.
@@ -423,6 +429,7 @@ mod tests {
             &["kms", "encrypt", "--key-id", "abc"],
             b"plaintext",
             "aws kms encrypt",
+            &tlog(),
         )
         .expect("stubbed aws exits 0");
         assert_eq!(out, b"SIGNED-OUTPUT", "stdout of the CLI must be returned");
@@ -448,8 +455,14 @@ mod tests {
             .install();
         let _guard = tools.activate();
 
-        let err = run_kms_cli_with_stdin("gcloud", &["kms", "encrypt"], b"x", "gcloud kms encrypt")
-            .expect_err("nonzero exit must error");
+        let err = run_kms_cli_with_stdin(
+            "gcloud",
+            &["kms", "encrypt"],
+            b"x",
+            "gcloud kms encrypt",
+            &tlog(),
+        )
+        .expect_err("nonzero exit must error");
         let msg = format!("{err:#}");
         assert!(
             msg.contains("PERMISSION_DENIED") && msg.contains("gcloud kms encrypt"),
@@ -484,6 +497,7 @@ mod tests {
             b"plaintext-data",
             "awskms:///arn:aws:kms:us-east-1:1:key/abc",
             KmsProvider::Aws,
+            &tlog(),
         )
         .expect("aws encrypt happy path");
         assert_eq!(
@@ -514,7 +528,7 @@ mod tests {
         tools.tool("aws").stdout("not json at all").install();
         let _guard = tools.activate();
 
-        let err = encrypt_with_kms(b"data", "awskms://k", KmsProvider::Aws)
+        let err = encrypt_with_kms(b"data", "awskms://k", KmsProvider::Aws, &tlog())
             .expect_err("malformed JSON must error");
         assert!(
             format!("{err:#}").contains("parse aws kms encrypt JSON"),
@@ -531,7 +545,7 @@ mod tests {
         tools.tool("aws").stdout("{\"Other\":\"x\"}").install();
         let _guard = tools.activate();
 
-        let err = encrypt_with_kms(b"data", "awskms://k", KmsProvider::Aws)
+        let err = encrypt_with_kms(b"data", "awskms://k", KmsProvider::Aws, &tlog())
             .expect_err("missing CiphertextBlob must error");
         assert!(
             format!("{err:#}").contains("CiphertextBlob"),
@@ -544,7 +558,7 @@ mod tests {
         // encrypt_with_kms(Aws, ...) requires the awskms:// prefix on the key.
         // A bare key with KmsProvider::Aws is a programming error and must
         // bail before any spawn.
-        let err = encrypt_with_kms(b"data", "plain-key", KmsProvider::Aws)
+        let err = encrypt_with_kms(b"data", "plain-key", KmsProvider::Aws, &tlog())
             .expect_err("Aws arm requires awskms:// scheme");
         assert!(
             format!("{err:#}").contains("awskms://"),
@@ -569,6 +583,7 @@ mod tests {
             b"plaintext",
             &format!("gcpkms://{resource}"),
             KmsProvider::Gcp,
+            &tlog(),
         )
         .expect("gcp encrypt happy path");
         assert_eq!(
@@ -598,7 +613,7 @@ mod tests {
 
     #[test]
     fn encrypt_gcp_rejects_wrong_scheme() {
-        let err = encrypt_with_kms(b"data", "awskms://k", KmsProvider::Gcp)
+        let err = encrypt_with_kms(b"data", "awskms://k", KmsProvider::Gcp, &tlog())
             .expect_err("Gcp arm requires gcpkms:// scheme");
         assert!(
             format!("{err:#}").contains("gcpkms://"),
@@ -627,6 +642,7 @@ mod tests {
             plaintext,
             "azurekeyvault://my-vault/keys/my-key/v2",
             KmsProvider::Azure,
+            &tlog(),
         )
         .expect("azure encrypt happy path");
         assert_eq!(
@@ -670,8 +686,13 @@ mod tests {
             .install();
         let _guard = tools.activate();
 
-        let err = encrypt_with_kms(b"data", "azurekeyvault://v/keys/k", KmsProvider::Azure)
-            .expect_err("az nonzero exit must error");
+        let err = encrypt_with_kms(
+            b"data",
+            "azurekeyvault://v/keys/k",
+            KmsProvider::Azure,
+            &tlog(),
+        )
+        .expect_err("az nonzero exit must error");
         assert!(
             format!("{err:#}").contains("Forbidden: key not found"),
             "az failure must surface the CLI stderr; got: {err:#}"
@@ -680,7 +701,7 @@ mod tests {
 
     #[test]
     fn encrypt_azure_rejects_wrong_scheme() {
-        let err = encrypt_with_kms(b"data", "gcpkms://k", KmsProvider::Azure)
+        let err = encrypt_with_kms(b"data", "gcpkms://k", KmsProvider::Azure, &tlog())
             .expect_err("Azure arm requires azurekeyvault:// scheme");
         assert!(
             format!("{err:#}").contains("azurekeyvault://"),

@@ -367,29 +367,13 @@ fn execute_makeself_job(
 
     thread_log.status(&format!("creating makeself package {}", job.filename));
 
-    let output = Command::new("makeself")
-        .args(&args)
-        .current_dir(&job.work_dir)
-        .output()
-        .with_context(|| {
-            format!(
-                "makeself: failed to spawn 'makeself {}' in {}",
-                args.join(" "),
-                job.work_dir.display()
-            )
-        })?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        anyhow::bail!(
-            "makeself command failed for '{}' (id={}): {}{}",
-            job.filename,
-            job.id,
-            stdout,
-            stderr
-        );
-    }
+    let mut command = Command::new("makeself");
+    command.args(&args).current_dir(&job.work_dir);
+    anodizer_core::run::run_checked(
+        &mut command,
+        &thread_log,
+        &format!("makeself '{}' (id={})", job.filename, job.id),
+    )?;
 
     let built_path = job.work_dir.join(&job.filename);
     fs::rename(&built_path, &job.output_path)
@@ -1613,7 +1597,7 @@ crates:
         let _g = tools.activate();
 
         let err = MakeselfStage.run(&mut ctx).unwrap_err().to_string();
-        assert!(err.contains("makeself command failed"), "{err}");
+        assert!(err.contains("makeself"), "{err}");
         assert!(err.contains("boomcfg"), "error must name the id: {err}");
         assert!(
             err.contains("boom: archive failed"),

@@ -38,6 +38,7 @@ pub mod publish_report;
 pub mod publisher;
 pub mod redact;
 pub mod retry;
+pub mod run;
 pub mod scm;
 pub mod sde;
 pub mod signing;

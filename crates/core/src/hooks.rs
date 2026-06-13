@@ -206,29 +206,27 @@ pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> R
                     command.env(k, v);
                 }
             }
-            let output = command
-                .output()
-                .with_context(|| format!("failed to spawn {} hook: {}", label, cmd_str))?;
+            // Run via the shared helper: captures stdout+stderr, surfaces
+            // them on failure, and (at verbose) streams the hook's output
+            // live so a long-running before/after hook shows progress. Hook
+            // output may contain secrets from the inherited host env, so the
+            // helper logger carries the full process env for redaction —
+            // matching the prior `redact_secrets` (process-env) coverage,
+            // which is broader than the caller logger's attached env.
+            let redacting_log = log.clone().with_env(std::env::vars().collect::<Vec<_>>());
+            let output = crate::run::run_checked(
+                &mut command,
+                &redacting_log,
+                &format!("{} hook: {}", label, cmd_str),
+            )?;
 
-            // Redact secrets from stdout/stderr before any logging so that
-            // sensitive env var values never leak to CI logs or terminals.
-            let redacted_stdout = redact_secrets(&String::from_utf8_lossy(&output.stdout));
-            let redacted_stderr = redact_secrets(&String::from_utf8_lossy(&output.stderr));
-
-            // When output flag is true, print the hook's stdout to the log
-            if output_flag == Some(true) && !redacted_stdout.trim().is_empty() {
-                log.status(&format!("[hook output] {}", redacted_stdout.trim()));
+            // When output flag is true, echo the hook's (redacted) stdout.
+            if output_flag == Some(true) {
+                let redacted_stdout = redact_secrets(&String::from_utf8_lossy(&output.stdout));
+                if !redacted_stdout.trim().is_empty() {
+                    log.status(&format!("[hook output] {}", redacted_stdout.trim()));
+                }
             }
-
-            // Build a synthetic Output with redacted content for check_output,
-            // so that error messages also have secrets scrubbed.
-            let redacted_output = std::process::Output {
-                status: output.status,
-                stdout: redacted_stdout.into_bytes(),
-                stderr: redacted_stderr.into_bytes(),
-            };
-
-            log.check_output(redacted_output, &format!("{} hook: {}", label, cmd_str))?;
         }
     }
     Ok(())

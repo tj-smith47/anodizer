@@ -1589,7 +1589,7 @@ impl Announcer for EmailAnnouncer {
                 "email",
                 &format!("via sendmail {log_line}"),
                 key_width,
-                || email::send_sendmail(&email_params),
+                || email::send_sendmail(&email_params, log),
             )?;
         }
         Ok(())

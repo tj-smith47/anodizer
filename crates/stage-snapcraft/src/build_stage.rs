@@ -1003,16 +1003,9 @@ fn run_snap_jobs(
 
         thread_log.status(&format!("running {}", job.cmd_args.join(" ")));
 
-        let output = Command::new(&job.cmd_args[0])
-            .args(&job.cmd_args[1..])
-            .output()
-            .with_context(|| {
-                format!(
-                    "execute snapcraft for crate {} target {:?}",
-                    job.crate_name, job.target
-                )
-            })?;
-        thread_log.check_output(output, "snapcraft pack")?;
+        let mut command = Command::new(&job.cmd_args[0]);
+        command.args(&job.cmd_args[1..]);
+        anodizer_core::run::run_checked(&mut command, &thread_log, "snapcraft pack")?;
 
         Ok(Artifact {
             kind: ArtifactKind::Snap,

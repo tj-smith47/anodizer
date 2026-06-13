@@ -374,7 +374,9 @@ fn test_parse_kms_provider_server_side() {
 fn test_encrypt_with_kms_server_side_passthrough() {
     // ServerSide should return data unchanged
     let data = b"hello world";
-    let result = encrypt_with_kms(data, "some-key-arn", KmsProvider::ServerSide).unwrap();
+    let log =
+        anodizer_core::log::StageLogger::new("blob-test", anodizer_core::log::Verbosity::Normal);
+    let result = encrypt_with_kms(data, "some-key-arn", KmsProvider::ServerSide, &log).unwrap();
     assert_eq!(result, data);
 }
 

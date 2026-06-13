@@ -259,35 +259,26 @@ fn gh_api_post_with_binary(
     gh_binary: &Path,
     endpoint: &str,
     body: &serde_json::Value,
+    log: &crate::log::StageLogger,
 ) -> Result<serde_json::Value> {
-    use std::io::Write;
-
     let body_str = serde_json::to_string(body)?;
 
-    let mut child = Command::new(gh_binary)
-        .args(["api", "--method", "POST", endpoint, "--input", "-"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .with_context(|| format!("failed to spawn gh CLI ({})", gh_binary.display()))?;
+    let mut cmd = Command::new(gh_binary);
+    cmd.args(["api", "--method", "POST", endpoint, "--input", "-"]);
 
-    if let Some(ref mut stdin) = child.stdin {
-        stdin.write_all(body_str.as_bytes())?;
-    }
-    child.stdin.take(); // close stdin
-
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        let stderr_raw = String::from_utf8_lossy(&output.stderr);
-        // `gh_api_post` does not currently accept a token argument, but
-        // routing through `redact_process_env` still covers any token
-        // exported as `GITHUB_TOKEN` / `GH_TOKEN` in the parent env, plus
-        // inline URL credentials. Redact the full bail string so an
-        // endpoint containing a secret-shaped path segment is also covered.
-        let raw = format!("gh api POST {} failed: {}", endpoint, stderr_raw.trim());
-        bail!("{}", crate::redact::redact_process_env(&raw));
-    }
+    // `gh api` may echo a token from the parent env (`GITHUB_TOKEN` /
+    // `GH_TOKEN`) on stderr; carry the full process env on a logger clone so
+    // the helper's redaction matches the prior `redact_process_env` coverage
+    // (broader than this caller's attached env). The "gh CLI" label keeps the
+    // spawn-failure string the caller pattern-matches on
+    // (`failed to spawn gh CLI`) for its git-fallback decision.
+    let redacting_log = log.clone().with_env(std::env::vars().collect::<Vec<_>>());
+    let output = crate::run::run_checked_with_stdin(
+        &mut cmd,
+        body_str.as_bytes(),
+        &redacting_log,
+        "gh CLI",
+    )?;
 
     let response: serde_json::Value = serde_json::from_slice(&output.stdout)
         .with_context(|| format!("failed to parse GitHub API response from {}", endpoint))?;
@@ -363,7 +354,7 @@ pub fn create_tag_via_github_api_in(
     });
 
     let tag_endpoint = format!("/repos/{owner}/{repo}/git/tags");
-    let response = match gh_api_post_with_binary(gh_binary, &tag_endpoint, &body) {
+    let response = match gh_api_post_with_binary(gh_binary, &tag_endpoint, &body, log) {
         Ok(resp) => resp,
         Err(e) => {
             if e.to_string().contains("failed to spawn gh CLI") {
@@ -389,7 +380,7 @@ pub fn create_tag_via_github_api_in(
     });
 
     let ref_endpoint = format!("/repos/{owner}/{repo}/git/refs");
-    gh_api_post_with_binary(gh_binary, &ref_endpoint, &ref_body)?;
+    gh_api_post_with_binary(gh_binary, &ref_endpoint, &ref_body, log)?;
 
     Ok(())
 }

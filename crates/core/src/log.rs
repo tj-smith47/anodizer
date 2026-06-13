@@ -905,6 +905,16 @@ impl StageLogger {
         self.verbosity
     }
 
+    /// Snapshot this logger's redaction env-pairs (empty when none is
+    /// attached). Lets a caller construct a sibling logger at a different
+    /// verbosity while preserving the same secret-redaction policy — e.g. the
+    /// blob KMS path, which runs its encrypt subprocesses through a
+    /// Normal-verbosity clone so ciphertext is never teed live, yet must keep
+    /// the original logger's redaction coverage.
+    pub fn redaction_env(&self) -> Vec<(String, String)> {
+        self.env.as_deref().cloned().unwrap_or_default()
+    }
+
     /// Check if verbose output is enabled.
     pub fn is_verbose(&self) -> bool {
         self.verbosity >= Verbosity::Verbose
@@ -913,6 +923,43 @@ impl StageLogger {
     /// Check if debug output is enabled.
     pub fn is_debug(&self) -> bool {
         self.verbosity >= Verbosity::Debug
+    }
+
+    /// Tee a single line of a child process's standard output to this
+    /// process's stdout, unmodified except for secret redaction.
+    ///
+    /// Used by the verbose live-stream in [`crate::run::run_checked`]: long
+    /// tools (cargo, snapcraft, nix-build) show progress as they run. Unlike
+    /// the marker-prefixed body register ([`Self::verbose`]), the line is
+    /// written *raw* — no `•` marker, no section indent — so the streamed
+    /// output looks exactly as the tool produced it, matching a tee. The
+    /// line is recorded into any attached [`LogCapture`] at
+    /// [`LogLevel::Verbose`] so tests can assert the stream surfaced.
+    ///
+    /// `line` must be a single line with its trailing newline already
+    /// stripped (the caller's line reader does this); the newline is added
+    /// here by `println!`.
+    pub fn stream_child_stdout(&self, line: &str) {
+        let redacted = self.redact(line);
+        println!("{redacted}");
+        #[cfg(feature = "test-helpers")]
+        if let Some(cap) = &self.capture {
+            cap.record(LogLevel::Verbose, redacted);
+        }
+    }
+
+    /// Tee a single line of a child process's standard error to this
+    /// process's stderr, unmodified except for secret redaction. The stderr
+    /// companion to [`Self::stream_child_stdout`]; recorded at
+    /// [`LogLevel::Error`] so the verbose-failure double-emit guard is
+    /// observable in tests.
+    pub fn stream_child_stderr(&self, line: &str) {
+        let redacted = self.redact(line);
+        eprintln!("{redacted}");
+        #[cfg(feature = "test-helpers")]
+        if let Some(cap) = &self.capture {
+            cap.record(LogLevel::Error, redacted);
+        }
     }
 
     /// Check command output, log stderr/stdout on failure, and bail with context.
@@ -930,13 +977,46 @@ impl StageLogger {
         output: std::process::Output,
         label: &str,
     ) -> anyhow::Result<std::process::Output> {
+        self.check_output_inner(output, label, false)
+    }
+
+    /// Like [`StageLogger::check_output`], but for callers that already
+    /// streamed the child's stdout/stderr live (the verbose tee in
+    /// [`crate::run::run_checked`]). Suppresses the stderr/stdout re-emit
+    /// — both on the success-verbose path and the failure path — so output
+    /// that was teed line-by-line is not printed a second time. The
+    /// `bail!` embed (tail-truncated, redacted stderr in the error chain)
+    /// is preserved unchanged, so error-chain consumers still see context.
+    pub fn check_output_streamed(
+        &self,
+        output: std::process::Output,
+        label: &str,
+    ) -> anyhow::Result<std::process::Output> {
+        self.check_output_inner(output, label, true)
+    }
+
+    /// Shared body of [`check_output`](Self::check_output) and
+    /// [`check_output_streamed`](Self::check_output_streamed).
+    ///
+    /// `already_streamed` suppresses the stderr/stdout log re-emit (the
+    /// caller's live tee already wrote those lines), but never the `bail!`
+    /// embed: an error chain propagated past the logger still carries the
+    /// redacted, truncated stderr tail regardless of streaming.
+    fn check_output_inner(
+        &self,
+        output: std::process::Output,
+        label: &str,
+        already_streamed: bool,
+    ) -> anyhow::Result<std::process::Output> {
         let (stderr_line, stdout_line) = self.format_output_lines(&output, label);
         if !output.status.success() {
-            if let Some(line) = stderr_line {
-                self.error(&line);
-            }
-            if let Some(line) = stdout_line {
-                self.error(&line);
+            if !already_streamed {
+                if let Some(line) = stderr_line {
+                    self.error(&line);
+                }
+                if let Some(line) = stdout_line {
+                    self.error(&line);
+                }
             }
             // Embed a (truncated, redacted) stderr tail in the bubbled
             // error so operators reading the final anyhow chain see
@@ -970,7 +1050,8 @@ impl StageLogger {
                 stderr_tail
             );
         }
-        if self.is_verbose()
+        if !already_streamed
+            && self.is_verbose()
             && let Some(line) = stdout_line
         {
             self.verbose(&line);

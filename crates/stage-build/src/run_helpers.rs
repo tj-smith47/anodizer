@@ -408,13 +408,9 @@ pub(crate) fn run_sequential(
             .context("build job has no cmd (programmer bug: planner should populate)")?;
         exec.log
             .status(&format!("running {} {}", cmd.program, cmd.args.join(" ")));
-        let output = Command::new(&cmd.program)
-            .args(&cmd.args)
-            .envs(&cmd.env)
-            .current_dir(&cmd.cwd)
-            .output()
-            .with_context(|| format!("failed to spawn {}", cmd.program))?;
-        exec.log.check_output(output, &cmd.program)?;
+        let mut command = Command::new(&cmd.program);
+        command.args(&cmd.args).envs(&cmd.env).current_dir(&cmd.cwd);
+        anodizer_core::run::run_checked(&mut command, exec.log, &cmd.program)?;
 
         let resolved_bin = resolve_binary_path(&job.bin_path, &job.crate_path);
 
@@ -577,33 +573,9 @@ pub(crate) fn run_parallel(
                         }
 
                         thread_log.status(&format!("running {} {}", program, args.join(" ")));
-                        let output = Command::new(&program)
-                            .args(&args)
-                            .envs(&env)
-                            .current_dir(&cwd)
-                            .output()
-                            .with_context(|| format!("failed to spawn {}", program))?;
-
-                        if !output.status.success() {
-                            // Redact secrets in stderr/stdout before interpolating
-                            // into the bail message.
-                            let stderr = thread_log
-                                .redact(&String::from_utf8_lossy(&output.stderr));
-                            let stdout = thread_log
-                                .redact(&String::from_utf8_lossy(&output.stdout));
-                            let mut msg = format!(
-                                "{} failed with exit code: {}",
-                                program,
-                                output.status.code().unwrap_or(-1)
-                            );
-                            if !stderr.is_empty() {
-                                msg.push_str(&format!("\nstderr:\n{}", stderr));
-                            }
-                            if !stdout.is_empty() {
-                                msg.push_str(&format!("\nstdout:\n{}", stdout));
-                            }
-                            anyhow::bail!("{}", msg);
-                        }
+                        let mut command = Command::new(&program);
+                        command.args(&args).envs(&env).current_dir(&cwd);
+                        anodizer_core::run::run_checked(&mut command, &thread_log, &program)?;
 
                         let bin_path = resolve_binary_path(&bin_path, &job_crate_path);
 

@@ -34,9 +34,8 @@ pub(crate) fn generate_release_notes(
     tag_name: &str,
     previous_tag_name: Option<&str>,
     token: Option<&str>,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<String> {
-    use std::io::Write;
-
     // `tag_name` is a required field on `POST /repos/{owner}/{repo}/releases/
     // generate-notes` per the GitHub REST docs (Releases > Generate release
     // notes content for a release). Submitting an empty string surfaces as
@@ -70,27 +69,12 @@ pub(crate) fn generate_release_notes(
         cmd.env("GITHUB_TOKEN", tok);
     }
 
-    let mut child = cmd
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .context("changelog: failed to spawn gh CLI for generate-notes")?;
-
-    if let Some(ref mut stdin) = child.stdin {
-        stdin.write_all(body_str.as_bytes())?;
-    }
-    child.stdin.take(); // close stdin
-
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(
-            "changelog: gh api POST {} failed: {}",
-            endpoint,
-            stderr.trim()
-        );
-    }
+    let output = anodizer_core::run::run_checked_with_stdin(
+        &mut cmd,
+        body_str.as_bytes(),
+        log,
+        &format!("changelog: gh api POST {}", endpoint),
+    )?;
 
     let response: serde_json::Value =
         serde_json::from_slice(&output.stdout).with_context(|| {
@@ -175,7 +159,8 @@ mod tests {
         // that hides the real cause: the snapshot path leaves `Tag`
         // unset in template vars. The helper must bail before spawning
         // `gh` so the user sees an actionable error.
-        let err = generate_release_notes("myorg", "myrepo", "", None, None)
+        let log = anodizer_core::log::StageLogger::new("changelog", Default::default());
+        let err = generate_release_notes("myorg", "myrepo", "", None, None, &log)
             .expect_err("empty tag_name must bail before spawning gh");
         let chain = format!("{err:#}");
         assert!(

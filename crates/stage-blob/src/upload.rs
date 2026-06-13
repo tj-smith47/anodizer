@@ -307,9 +307,14 @@ pub(crate) fn upload_files_owned(
                 // Capture before the Option is consumed by the if-let below.
                 let kms_in_use = client_kms.is_some();
                 let upload_data = if let Some((kms_key, provider)) = client_kms {
-                    tokio::task::spawn_blocking(move || encrypt_with_kms(&data, &kms_key, provider))
-                        .await
-                        .map_err(|e| anyhow::anyhow!("KMS encryption task panicked: {}", e))??
+                    // Dedicated clone moved into the blocking task; `task_log`
+                    // is still needed by the status/lock-recover calls below.
+                    let kms_log = task_log.clone();
+                    tokio::task::spawn_blocking(move || {
+                        encrypt_with_kms(&data, &kms_key, provider, &kms_log)
+                    })
+                    .await
+                    .map_err(|e| anyhow::anyhow!("KMS encryption task panicked: {}", e))??
                 } else {
                     data
                 };

@@ -335,6 +335,82 @@ crates:
 }
 
 #[test]
+fn test_failing_before_hook_stderr_surfaces_once_when_verbose() {
+    // A failing `before:` hook routes through the consolidated run helper
+    // (anodizer_core::run::run_checked). At --verbose the helper tees the
+    // hook's stderr live AND captures it; the streaming-aware check_output
+    // variant must then SUPPRESS its own stderr re-emit so the captured
+    // output is not printed a second time.
+    //
+    // The token is produced at runtime (`printf` building the string from
+    // fragments) so it never appears in the literal hook command text — only
+    // genuine *stderr surfacing* of the token is counted, isolating the
+    // double-emit guard from the command-echo lines.
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+before:
+  hooks:
+    - "printf '%s%s\n' HOOKFAIL TOKEN42 >&2; exit 7"
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+    // Commit the freshly-written config so the dirty-repo gate (which runs
+    // before the before-hooks) does not abort first.
+    Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(tmp.path())
+        .status()
+        .ok();
+    Command::new("git")
+        .args(["commit", "--amend", "--no-edit"])
+        .current_dir(tmp.path())
+        .status()
+        .ok();
+    Command::new("git")
+        .args(["tag", "-f", "v0.1.0"])
+        .current_dir(tmp.path())
+        .status()
+        .ok();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["release", "--snapshot", "--verbose"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "release with a failing before-hook must exit non-zero"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // The assembled token "HOOKFAILTOKEN42" surfaces once from the live tee.
+    // The bail! embed at the end of the run carries it a second time inside
+    // the propagated error chain (defense-in-depth, not the log re-emit the
+    // streaming guard suppresses), so the live-stream surfacing is bounded at
+    // one and the total stays at the documented two.
+    let hits = stderr.matches("HOOKFAILTOKEN42").count();
+    assert!(
+        hits <= 2,
+        "failing before-hook stderr must not be triple-printed at --verbose \
+         (live tee once + bail embed once); got {hits} in stderr:\n{stderr}"
+    );
+    assert!(
+        hits >= 1,
+        "failing before-hook stderr must surface at least once; \
+         got {hits} in stderr:\n{stderr}"
+    );
+}
+
+#[test]
 fn test_man_renders_roff() {
     // Smoke test for `anodizer man`: the parser test in main.rs asserts the
     // subcommand dispatches; this asserts the rendering path actually emits

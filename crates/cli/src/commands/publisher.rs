@@ -240,11 +240,7 @@ pub fn run_publishers(
                     }
                 }
 
-                let output = cmd
-                    .output()
-                    .with_context(|| format!("failed to spawn publisher command: {}", full_cmd))?;
-
-                log.check_output(output, &format!("publisher {}", label))?;
+                anodizer_core::run::run_checked(&mut cmd, log, &format!("publisher {}", label))?;
             }
             Ok(())
         };

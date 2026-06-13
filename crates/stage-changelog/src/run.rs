@@ -394,6 +394,7 @@ fn handle_github_native_changelog(
                 &current_tag,
                 prev_tag.as_deref(),
                 token.as_deref(),
+                log,
             )
             .with_context(|| {
                 format!(

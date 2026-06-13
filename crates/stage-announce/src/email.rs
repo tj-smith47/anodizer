@@ -262,7 +262,10 @@ pub(crate) fn build_rfc2822_message(params: &EmailParams<'_>) -> Result<String> 
 ///
 /// Tries `sendmail -t` first; falls back to `msmtp -t` if sendmail is not
 /// found. Both commands read recipients from the message headers via `-t`.
-pub fn send_sendmail(params: &EmailParams<'_>) -> Result<()> {
+pub fn send_sendmail(
+    params: &EmailParams<'_>,
+    log: &anodizer_core::log::StageLogger,
+) -> Result<()> {
     let message = build_rfc2822_message(params)?;
 
     // Try sendmail first, then msmtp
@@ -277,26 +280,9 @@ pub fn send_sendmail(params: &EmailParams<'_>) -> Result<()> {
         );
     };
 
-    let output = Command::new(program)
-        .args(&args)
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .and_then(|mut child| {
-            use std::io::Write;
-            if let Some(ref mut stdin) = child.stdin {
-                stdin.write_all(message.as_bytes())?;
-            }
-            child.wait_with_output()
-        })
-        .with_context(|| format!("failed to run {program}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("{program} exited with {}: {stderr}", output.status);
-    }
-
+    let mut cmd = Command::new(program);
+    cmd.args(&args);
+    anodizer_core::run::run_checked_with_stdin(&mut cmd, message.as_bytes(), log, program)?;
     Ok(())
 }
 
