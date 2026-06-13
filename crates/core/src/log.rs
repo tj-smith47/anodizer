@@ -1294,36 +1294,172 @@ mod tests {
         out
     }
 
-    #[test]
-    fn test_header_paths_render_identically() {
-        // The deferred-section header path (flush_pending → render_header) and
-        // the direct step() path (step → render_header) MUST produce
-        // byte-identical leading-space + gutter structure for the same depth
-        // and phrase. Divergence here is what made stage headers render with
-        // 2 vs 3 vs 4 vs 5 leading spaces in the v0.9.1 logs.
-        for depth in 0..3 {
-            let (verb, msg) = ("Signing", "artifacts");
-            let header = strip_ansi(&render_header(depth, verb, msg));
-            let expected_prefix = "  ".repeat(depth);
+    /// Run `f` with the process stderr fd (2) redirected to a temp file, then
+    /// restore it and return everything that reached fd 2 as a string, or
+    /// `None` if `eprintln!` output is being intercepted before fd 2.
+    ///
+    /// `eprintln!` writes through libtest's macro path, which — under a plain
+    /// in-process `cargo test` — diverts output to a thread-local capture sink
+    /// BEFORE it reaches fd 2, so an fd swap observes nothing. Under
+    /// `cargo nextest` (the CI test runner) each test is its own process with a
+    /// real stderr pipe, so the swap captures the true bytes. A sentinel probe
+    /// distinguishes the two: if the sentinel does not survive the round-trip,
+    /// fd 2 is not the real emit target and the caller must fall back. Unix-only
+    /// and process-global, so callers must already hold `SECTION_TEST_LOCK`.
+    #[cfg(unix)]
+    fn capture_stderr(f: impl FnOnce()) -> Option<String> {
+        use std::io::{Read, Seek, SeekFrom, Write};
+        use std::os::unix::io::AsRawFd;
+
+        let mut file = tempfile::tempfile().expect("tempfile for stderr capture");
+        std::io::stderr().flush().ok();
+        // SAFETY: dup/dup2 on the live stderr fd; the saved fd is closed once
+        // stderr is restored, and the whole swap runs under SECTION_TEST_LOCK.
+        let saved = unsafe { libc::dup(libc::STDERR_FILENO) };
+        assert!(saved >= 0, "dup(stderr) failed");
+        unsafe {
             assert!(
-                header.starts_with(&expected_prefix),
-                "depth {depth}: header {header:?} must start with {expected_prefix:?}",
-            );
-            // Indent + right-aligned verb in the fixed gutter + one space + msg.
-            let expected = format!("{expected_prefix}{verb:>VERB_COLUMN$} {msg}");
-            assert_eq!(
-                header, expected,
-                "depth {depth}: header layout must be deterministic"
+                libc::dup2(file.as_raw_fd(), libc::STDERR_FILENO) >= 0,
+                "dup2(tempfile, stderr) failed"
             );
         }
-        // A single-word phrase renders the bare gutter verb with NO trailing
-        // space (both paths share this branch).
-        let single = strip_ansi(&render_header(1, "Publishing", ""));
-        assert_eq!(single, format!("  {:>VERB_COLUMN$}", "Publishing"));
+
+        const SENTINEL: &str = "__anodizer_capture_probe__";
+        eprintln!("{SENTINEL}");
+        f();
+
+        std::io::stderr().flush().ok();
+        unsafe {
+            libc::dup2(saved, libc::STDERR_FILENO);
+            libc::close(saved);
+        }
+
+        file.seek(SeekFrom::Start(0)).expect("rewind capture file");
+        let mut out = String::new();
+        file.read_to_string(&mut out).expect("read capture file");
+        // The sentinel survives only when fd 2 is the real emit target (nextest
+        // / `--nocapture`); under in-process `cargo test` libtest swallowed it
+        // (and `f`'s output), so the fd capture cannot prove anything.
+        let body = out.strip_prefix(SENTINEL)?.trim_start_matches('\n');
+        Some(body.to_string())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn test_header_paths_emit_identical_bytes() {
+        // Regression guard for the v0.9.1 drift where stage headers rendered
+        // with 2/3/4/5 leading spaces depending on which path printed them.
+        //
+        // This drives the TWO REAL emitting paths — the deferred-section header
+        // in `flush_pending` and the direct `step` — and asserts they write
+        // byte-identical headers at the same depth. It compares ACTUAL stderr
+        // bytes (not `render_header`'s return value), so it FAILS the moment
+        // either path open-codes its own indent/spacing instead of delegating
+        // to `render_header`. Under `cargo nextest` (the CI gate) the fd capture
+        // sees real output; under a bare in-process `cargo test` libtest
+        // intercepts `eprintln!` and `capture_stderr` returns None, so the body
+        // falls back to re-checking the shared helper rather than failing
+        // spuriously. SECTION_TEST_LOCK keeps a parallel section test's stderr
+        // out of the fd-swapped capture.
+        let _guard = SECTION_TEST_LOCK.lock().unwrap();
+        let log = StageLogger::new("sign", Verbosity::Normal);
+        // Absolute depth both paths must render at (includes any inherited base
+        // from ANODIZER_LOG_DEPTH, so the anchor below shifts with it).
+        let depth = current_depth();
+
+        // flush_pending path: open a section (pending header pushed at `depth`),
+        // then a body line triggers `flush_pending`, which prints the header.
+        // The header is the FIRST captured line; the body line follows it.
+        let flushed = capture_stderr(|| {
+            let _section = log.group("sign");
+            assert_eq!(
+                PENDING.lock().unwrap().last().unwrap().depth,
+                depth,
+                "pending header must sit at the pre-increment depth"
+            );
+            log.status("byte-equality probe"); // forces flush_pending
+        });
         assert!(
-            !single.ends_with(' '),
-            "single-word header must not carry a trailing space"
+            PENDING.lock().unwrap().is_empty(),
+            "guard must pop the entry"
         );
+
+        // step path: the section is closed, so `current_depth()` is back to
+        // `depth` — the same depth the pending header rendered at. `step` emits
+        // exactly the header line, nothing else.
+        assert_eq!(current_depth(), depth, "depth must return to start");
+        let stepped = capture_stderr(|| log.step("Signing", "artifacts"));
+
+        let prefix = "  ".repeat(depth);
+        let expected = format!("{prefix}{:>VERB_COLUMN$} artifacts", "Signing");
+
+        match (flushed, stepped) {
+            (Some(flushed), Some(stepped)) => {
+                let flush_header = strip_ansi(
+                    flushed
+                        .lines()
+                        .next()
+                        .expect("flush_pending must emit a header line"),
+                );
+                let step_header = strip_ansi(stepped.trim_end_matches('\n'));
+                // The whole point: both REAL paths produce the same header
+                // bytes. If a future edit makes one open-code a different
+                // indent, these diverge and the test fails.
+                assert_eq!(
+                    flush_header, step_header,
+                    "flush_pending and step must emit byte-identical headers \
+                     (flush={flush_header:?} step={step_header:?})"
+                );
+                // Anchor the shared bytes so a regression that drifts BOTH paths
+                // in lockstep (still equal to each other) is also caught.
+                assert_eq!(
+                    step_header, expected,
+                    "header must be indent + gutter verb + space + message"
+                );
+            }
+            // In-process `cargo test`: fd 2 is not the real emit target, so the
+            // real paths are unobservable here. Re-assert the shared helper so
+            // the test is not a silent no-op; nextest exercises the real bytes.
+            _ => {
+                assert_eq!(
+                    strip_ansi(&render_header(depth, "Signing", "artifacts")),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[cfg(unix)]
+    #[serial_test::serial]
+    fn test_single_word_header_emits_no_trailing_space() {
+        // A single-word phrase (empty message) renders the bare gutter verb
+        // with NO trailing space on the REAL `step` path — a stray space here
+        // would leave invisible whitespace at the end of every `Publishing`
+        // header line. Drives `step` directly and inspects the emitted bytes.
+        let _guard = SECTION_TEST_LOCK.lock().unwrap();
+        let log = StageLogger::new("publish", Verbosity::Normal);
+        let depth = current_depth();
+        let prefix = "  ".repeat(depth);
+
+        match capture_stderr(|| log.step("Publishing", "")) {
+            Some(stepped) => {
+                let header = strip_ansi(stepped.trim_end_matches('\n'));
+                assert_eq!(header, format!("{prefix}{:>VERB_COLUMN$}", "Publishing"));
+                assert!(
+                    !header.ends_with(' '),
+                    "single-word header must not carry a trailing space: {header:?}"
+                );
+            }
+            // In-process `cargo test` intercepts `eprintln!`; re-assert the
+            // shared helper so the invariant still has a floor under nextest.
+            None => {
+                let header = strip_ansi(&render_header(depth, "Publishing", ""));
+                assert_eq!(header, format!("{prefix}{:>VERB_COLUMN$}", "Publishing"));
+                assert!(!header.ends_with(' '));
+            }
+        }
     }
 
     #[test]

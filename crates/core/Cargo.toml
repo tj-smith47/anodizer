@@ -16,6 +16,12 @@ test-helpers = ["dep:rustls", "dep:rcgen"]
 anodizer-core = { path = ".", features = ["test-helpers"] }
 serial_test.workspace = true
 tracing-subscriber.workspace = true
+# Test-only: redirect the process stderr fd (dup/dup2) so the section-header
+# regression guard can capture the EXACT bytes `flush_pending`/`step` emit via
+# `eprintln!` and prove both real paths delegate to `render_header`. Never
+# linked into the shipped binary, so it cannot perturb the hermetic glibc floor.
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"
 
 [dependencies]
 anyhow.workspace = true

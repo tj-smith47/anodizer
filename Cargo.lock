@@ -118,6 +118,7 @@ dependencies = [
  "colored",
  "crc32fast",
  "glob",
+ "libc",
  "md-5",
  "percent-encoding",
  "rcgen",
