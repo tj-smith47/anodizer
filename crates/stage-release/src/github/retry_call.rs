@@ -62,8 +62,35 @@ use crate::release_log;
 /// Extracted so the two retry pathways can't drift on label format. The
 /// `format_retry_warn_shape_pins_shared_format` test below pins the exact
 /// format string both pathways emit.
+///
+/// A `status` of `0` denotes a transport-layer failure where no HTTP response
+/// was received. Rendering a bare `status=0` reads as a success code, so that
+/// case is spelled out as `transport error (no HTTP response)` instead; a real
+/// HTTP status (`>0`) is shown as `status=<code>`. Either way the line ends in
+/// `; will retry` so the operator reads it unambiguously as "this attempt
+/// failed, retrying".
 pub(crate) fn format_retry_warn(label: &str, attempt: u32, max: u32, status: u16) -> String {
-    format!("{label} failed (retriable, attempt {attempt}/{max}, status={status})")
+    let cause = if status == 0 {
+        "transport error (no HTTP response)".to_string()
+    } else {
+        format!("status={status}")
+    };
+    format!("{label} failed (attempt {attempt}/{max}, {cause}); will retry")
+}
+
+/// Closing line after a retry loop resolves to SUCCESS on attempt `attempts`
+/// (only emitted when `attempts > 1`, i.e. at least one retry was needed — a
+/// first-try success stays silent). Closes the gap where the operator saw the
+/// penultimate attempt's warning and then nothing.
+pub(crate) fn format_retry_succeeded(label: &str, attempts: u32) -> String {
+    format!("{label} succeeded after {attempts} attempt(s)")
+}
+
+/// Closing line after a retry loop EXHAUSTS every attempt and gives up,
+/// emitted before the error propagates so the operator sees a definite
+/// terminal outcome rather than silence after the last per-attempt warning.
+pub(crate) fn format_retry_giving_up(label: &str, attempts: u32) -> String {
+    format!("{label} failed after {attempts} attempt(s), giving up")
 }
 
 /// Run an octocrab call through the shared retry policy.
@@ -111,18 +138,33 @@ where
         }
 
         match make_call().await {
-            Ok(v) => return Ok(v),
+            Ok(v) => {
+                // Close the loop: a success that needed >1 attempt gets a
+                // single confirming line so the operator who saw the prior
+                // attempts' warnings sees the resolution rather than silence.
+                // A first-try success stays silent (no retry happened).
+                if attempt > 1 {
+                    release_log().status(&format_retry_succeeded(label, attempt));
+                }
+                return Ok(v);
+            }
             Err(err) => {
                 let secondary_rl = is_secondary_rate_limit(&err);
                 let (status, retriable) = classify_retriability(&err);
                 // A secondary rate-limit 403 is not retriable by the default
                 // classifier (which only retries 5xx/429), but it IS a
-                // transient condition that must be retried after a delay.
+                // transient condition that must be retried after a delay. A
+                // non-retriable error fast-fails WITHOUT a "giving up" line:
+                // that closing line marks retry EXHAUSTION, not a clean
+                // fast-fail (which surfaces its own error directly).
                 if !retriable && !secondary_rl {
                     return Err(err);
                 }
                 release_log().warn(&format_retry_warn(label, attempt, max, status));
                 if attempt >= max {
+                    // Exhausted every retry: emit a definite terminal line
+                    // before the error propagates.
+                    release_log().warn(&format_retry_giving_up(label, attempt));
                     return Err(err);
                 }
                 // Secondary rate-limit: sleep the dedicated RL delay (with
@@ -300,7 +342,46 @@ mod tests {
         let s = format_retry_warn("delete release", 3, 10, 503);
         assert_eq!(
             s,
-            "delete release failed (retriable, attempt 3/10, status=503)"
+            "delete release failed (attempt 3/10, status=503); will retry"
+        );
+    }
+
+    #[test]
+    fn format_retry_warn_status_zero_reads_as_transport_error() {
+        // A transport-layer failure (no HTTP response) carries status 0. A
+        // bare `status=0` reads as an HTTP success code; the warning must
+        // instead name the transport error explicitly and never contain a
+        // misleading `status=0`.
+        let s = format_retry_warn("create release", 1, 10, 0);
+        assert_eq!(
+            s,
+            "create release failed (attempt 1/10, transport error (no HTTP response)); will retry"
+        );
+        assert!(
+            !s.contains("status=0"),
+            "transport-error warning must not contain a misleading `status=0`: {s}"
+        );
+        assert!(
+            s.contains("will retry"),
+            "per-attempt warning must read as a retry, not a terminal failure: {s}"
+        );
+    }
+
+    #[test]
+    fn format_retry_succeeded_shape() {
+        // The closing success line emitted only when >1 attempt was needed.
+        assert_eq!(
+            format_retry_succeeded("create release", 3),
+            "create release succeeded after 3 attempt(s)"
+        );
+    }
+
+    #[test]
+    fn format_retry_giving_up_shape() {
+        // The closing exhaustion line emitted before the error propagates.
+        assert_eq!(
+            format_retry_giving_up("create release", 10),
+            "create release failed after 10 attempt(s), giving up"
         );
     }
 

@@ -173,14 +173,28 @@ fn flush_pending() {
         if entry.flushed {
             continue;
         }
-        let prefix = "  ".repeat(entry.depth);
-        let verb = format!("{:>VERB_COLUMN$}", entry.verb).green().bold();
-        if entry.msg.is_empty() {
-            eprintln!("{prefix}{verb}");
-        } else {
-            eprintln!("{prefix}{verb} {}", entry.msg);
-        }
+        eprintln!("{}", render_header(entry.depth, &entry.verb, &entry.msg));
         entry.flushed = true;
+    }
+}
+
+/// Render a section/stage header line at `depth`: the 2-space-per-level
+/// nesting indent, a bold-green verb right-aligned in the [`VERB_COLUMN`]
+/// gutter, then (only for a non-empty `msg`) a single space and the message.
+///
+/// The single source of truth shared by both header-emitting paths — the
+/// deferred section header in [`flush_pending`] and the direct
+/// [`StageLogger::step`] — so interleaved headers and steps land in
+/// byte-identical columns for the same depth. A single-word phrase (empty
+/// `msg`) renders the bare gutter verb with no trailing space, so headers
+/// never carry stray whitespace.
+fn render_header(depth: usize, verb: &str, msg: &str) -> String {
+    let prefix = "  ".repeat(depth);
+    let verb = format!("{verb:>VERB_COLUMN$}").green().bold();
+    if msg.is_empty() {
+        format!("{prefix}{verb}")
+    } else {
+        format!("{prefix}{verb} {msg}")
     }
 }
 
@@ -796,12 +810,7 @@ impl StageLogger {
     /// verb; plain key-action lines stay on [`StageLogger::status`].
     pub fn step(&self, verb: &str, msg: &str) {
         if self.verbosity >= Verbosity::Normal {
-            eprintln!(
-                "{}{} {}",
-                indent(),
-                format!("{verb:>VERB_COLUMN$}").green().bold(),
-                msg
-            );
+            eprintln!("{}", render_header(current_depth(), verb, msg));
         }
         #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
@@ -1265,6 +1274,58 @@ mod tests {
         assert!(PENDING.lock().unwrap().is_empty());
     }
 
+    /// Strip ANSI SGR escapes so a colorized header can be compared on its
+    /// plain-text layout (leading indent + gutter) alone.
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                // Skip the CSI sequence up to and including its final byte.
+                for ec in chars.by_ref() {
+                    if ec.is_ascii_alphabetic() {
+                        break;
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn test_header_paths_render_identically() {
+        // The deferred-section header path (flush_pending → render_header) and
+        // the direct step() path (step → render_header) MUST produce
+        // byte-identical leading-space + gutter structure for the same depth
+        // and phrase. Divergence here is what made stage headers render with
+        // 2 vs 3 vs 4 vs 5 leading spaces in the v0.9.1 logs.
+        for depth in 0..3 {
+            let (verb, msg) = ("Signing", "artifacts");
+            let header = strip_ansi(&render_header(depth, verb, msg));
+            let expected_prefix = "  ".repeat(depth);
+            assert!(
+                header.starts_with(&expected_prefix),
+                "depth {depth}: header {header:?} must start with {expected_prefix:?}",
+            );
+            // Indent + right-aligned verb in the fixed gutter + one space + msg.
+            let expected = format!("{expected_prefix}{verb:>VERB_COLUMN$} {msg}");
+            assert_eq!(
+                header, expected,
+                "depth {depth}: header layout must be deterministic"
+            );
+        }
+        // A single-word phrase renders the bare gutter verb with NO trailing
+        // space (both paths share this branch).
+        let single = strip_ansi(&render_header(1, "Publishing", ""));
+        assert_eq!(single, format!("  {:>VERB_COLUMN$}", "Publishing"));
+        assert!(
+            !single.ends_with(' '),
+            "single-word header must not carry a trailing space"
+        );
+    }
+
     #[test]
     fn test_indent_reflects_section_depth() {
         // Indentation tracks the open-section depth (2 spaces per level)
@@ -1711,6 +1772,10 @@ mod tests {
     fn test_kv_pads_plain_key_so_values_align() {
         // The padded key width counts the PLAIN key, not the ANSI-dimmed
         // bytes, so a short key and a long key share the same value column.
+        // Emitting a body line drains the process-global PENDING stack via
+        // `flush_pending`, so serialize against the section-depth tests that
+        // assert on that stack.
+        let _guard = SECTION_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (log, cap) = StageLogger::with_capture("check", Verbosity::Normal);
         let w = ["targets", "runs"].iter().map(|k| k.len()).max().unwrap();
         log.kv("targets", "aarch64", w);
@@ -1731,6 +1796,9 @@ mod tests {
         // The retagged clone shares the capture sink, and the plain
         // delegations still record at the right level — locking the plumbing
         // independent of the rendered tag (which the capture does not store).
+        // Emitting body lines drains the global PENDING stack via
+        // `flush_pending`; serialize against the section-depth tests.
+        let _guard = SECTION_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (log, cap) = StageLogger::with_capture("release", Verbosity::Normal);
 
         log.with_stage("finalize").status("x");
@@ -1754,6 +1822,9 @@ mod tests {
         // The default (show=false) routes a per-crate "no config block" skip to
         // debug() so it stays invisible at Normal/Verbose and only surfaces at
         // --debug — the fix for the 300+-line workspace skip-noise problem.
+        // skip_line emits a body line that drains the global PENDING stack;
+        // serialize against the section-depth tests.
+        let _guard = SECTION_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (log, cap) = StageLogger::with_capture("homebrew", Verbosity::Normal);
         log.skip_line(
             false,
@@ -1774,6 +1845,9 @@ mod tests {
     fn skip_line_records_status_when_shown() {
         // --show-skipped (show=true) forces the skip line back to status so the
         // operator can diagnose why a publisher didn't run for a given crate.
+        // skip_line emits a body line that drains the global PENDING stack;
+        // serialize against the section-depth tests.
+        let _guard = SECTION_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (log, cap) = StageLogger::with_capture("homebrew", Verbosity::Normal);
         log.skip_line(
             true,
