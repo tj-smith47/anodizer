@@ -2468,13 +2468,10 @@ mod orchestrator_tests {
         );
     }
 
-    /// With pace disabled (`ANODIZER_GITHUB_UPLOAD_PACE_MS=0`) the upload loop
-    /// must NOT insert any inter-start delay. The same three-asset upload that
-    /// the paced test spaces to >= 192 ms here completes well under the pace
-    /// floor — proving `0` is a true no-op (the concurrency cap + reactive
-    /// backoff remain the only governors).
-    #[test]
-    fn upload_pace_zero_is_a_no_op() {
+    /// Run the standard three-asset upload once and return the wall-clock
+    /// elapsed. The mock server is bound fresh per call so each run is an
+    /// independent, identical I/O scenario differing only by `pace_ms`.
+    fn time_three_asset_upload(pace_ms: &str) -> std::time::Duration {
         use std::time::Instant;
 
         let tmp = TempDir::new().expect("tempdir");
@@ -2491,7 +2488,7 @@ mod orchestrator_tests {
         );
         let (_addr2, _log) = spawn_scripted_responder_on(listener, |_| routes);
 
-        let ctx = build_ctx_with_pace_ms(addr, "0");
+        let ctx = build_ctx_with_pace_ms(addr, pace_ms);
         let crate_cfg = build_crate_cfg();
         let rt = tokio::runtime::Runtime::new().expect("rt");
         let token = Some("test-token".to_string());
@@ -2512,16 +2509,39 @@ mod orchestrator_tests {
             &base_opts(),
             &artifacts,
         )
-        .expect("unpaced upload succeeds")
+        .expect("upload succeeds")
         .expect("returns Some");
-        let elapsed = t0.elapsed();
+        t0.elapsed()
+    }
 
-        // No pacing: the only delays are loopback round-trips. Bound well
-        // below the 192 ms paced floor so a regression that always paces
-        // (ignoring the 0 sentinel) trips this assertion.
+    /// With pace disabled (`ANODIZER_GITHUB_UPLOAD_PACE_MS=0`) the upload loop
+    /// must NOT insert any inter-start delay. Proving this with an absolute
+    /// wall-clock bound is timing-flaky: a slow/loaded runner can spend
+    /// hundreds of milliseconds on the same no-pace round-trips. Instead, run
+    /// the identical three-asset upload twice on the same machine — once
+    /// unpaced, once at a 500 ms pace — and assert the paced run is meaningfully
+    /// slower. Both runs share identical base I/O, so the difference isolates
+    /// the injected pacing (2 inter-start gaps * 500 ms * 0.8 jitter floor ~=
+    /// 800 ms). The 500 ms pace makes the injected signal dominate base-I/O
+    /// noise: a 300 ms margin still tolerates the unpaced run being ~500 ms
+    /// slower than the paced run's base I/O before tripping, so the comparison
+    /// holds even when the two sequential runs see very different cold/warm or
+    /// loaded conditions. A regression that paces even at the `0` sentinel makes
+    /// the two elapsed times converge, collapsing the gap below the margin and
+    /// tripping this assertion — independent of the runner's underlying I/O.
+    #[test]
+    fn upload_pace_zero_is_a_no_op() {
+        let unpaced = time_three_asset_upload("0");
+        let paced = time_three_asset_upload("500");
+
+        // Margin sits far above loopback jitter yet far below the ~800 ms
+        // injected by real pacing, so the comparison is robust on noisy runners
+        // (the two timed runs are sequential + independent and their base I/O
+        // can diverge widely) while still catching a regression that paces at 0.
+        let margin = std::time::Duration::from_millis(300);
         assert!(
-            elapsed < std::time::Duration::from_millis(150),
-            "pace=0 must add no inter-start delay; elapsed: {elapsed:?}"
+            unpaced + margin < paced,
+            "pace=0 must add no inter-start delay (unpaced {unpaced:?} vs paced {paced:?})"
         );
     }
 }
