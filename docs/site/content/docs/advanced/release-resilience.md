@@ -84,7 +84,7 @@ opportunistic. Override per-publisher in your config:
 
 ```yaml
 publish:
-  homebrew:
+  homebrew_cask:
     required: true     # block submitter dispatch + announce on tap failure
 ```
 
@@ -147,7 +147,7 @@ Any publisher can opt out of rollback via a per-block flag:
 
 ```yaml
 publish:
-  homebrew:
+  homebrew_cask:
     retain_on_rollback: true   # homebrew tap survives a triggered rollback
   cargo:
     retain_on_rollback: false  # (default) cargo yank runs on rollback

@@ -10,15 +10,17 @@ Every publisher block accepts a `required:` field that controls whether a failur
 from that publisher fails the overall release.
 
 ```yaml
-crates:
-  - name: myapp
-    publish:
-      homebrew:
-        repository:
-          owner: myorg
-          name: homebrew-tap
-        required: true   # release fails if the Homebrew push fails
+homebrew_casks:
+  - repository:
+      owner: myorg
+      name: homebrew-tap
+    required: true   # release fails if the Homebrew cask push fails
 ```
+
+`required:` sits on every publisher block the same way — the example above
+happens to show the top-level `homebrew_casks` array, but a per-crate
+`publish.scoop`, `publish.cargo`, or `publish.homebrew_cask` block takes it
+identically.
 
 ### Behavior
 
