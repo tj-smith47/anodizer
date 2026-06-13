@@ -926,26 +926,26 @@ impl StageLogger {
     }
 
     /// Tee a single line of a child process's standard output to this
-    /// process's stdout, unmodified except for secret redaction.
+    /// process's STDERR, unmodified except for secret redaction.
     ///
     /// Used by the verbose live-stream in [`crate::run::run_checked`]: long
     /// tools (cargo, snapcraft, nix-build) show progress as they run. Unlike
     /// the marker-prefixed body register ([`Self::verbose`]), the line is
     /// written *raw* — no `•` marker, no section indent — so the streamed
-    /// output looks exactly as the tool produced it, matching a tee. The
-    /// line is recorded into any attached [`LogCapture`] at
+    /// output looks exactly as the tool produced it, matching a tee.
+    ///
+    /// The tee goes to **stderr**, not stdout: anodizer's stdout is a
+    /// machine-readable data channel (GHA step outputs like `new_tag=…`, plus
+    /// json/changelog/metadata payloads), and a hook's child stdout teed onto
+    /// stdout would corrupt it. Progress UX belongs on stderr with every other
+    /// human/log line. Recorded into any attached [`LogCapture`] at
     /// [`LogLevel::Verbose`] so tests can assert the stream surfaced.
     ///
     /// `line` must be a single line with its trailing newline already
     /// stripped (the caller's line reader does this); the newline is added
-    /// here by `println!`.
+    /// here by `eprintln!`.
     pub fn stream_child_stdout(&self, line: &str) {
-        let redacted = self.redact(line);
-        println!("{redacted}");
-        #[cfg(feature = "test-helpers")]
-        if let Some(cap) = &self.capture {
-            cap.record(LogLevel::Verbose, redacted);
-        }
+        self.stream_child_line(line, false);
     }
 
     /// Tee a single line of a child process's standard error to this
@@ -954,12 +954,37 @@ impl StageLogger {
     /// [`LogLevel::Error`] so the verbose-failure double-emit guard is
     /// observable in tests.
     pub fn stream_child_stderr(&self, line: &str) {
+        self.stream_child_line(line, true);
+    }
+
+    /// Shared body of [`stream_child_stdout`](Self::stream_child_stdout) and
+    /// [`stream_child_stderr`](Self::stream_child_stderr): flush any deferred
+    /// section header, write the redacted line to stderr, and record it.
+    /// Both child streams tee to stderr (see
+    /// [`stream_child_stdout`](Self::stream_child_stdout)); the methods differ
+    /// only in which capture level the line is recorded under
+    /// (`from_stderr` selects [`LogLevel::Error`] vs [`LogLevel::Verbose`]),
+    /// so the write lives here once.
+    ///
+    /// `flush_pending()` runs first so a streamed line never prints *above* its
+    /// deferred section header — the same header-before-body ordering every
+    /// other body-line emitter (`verbose` / `status` / `error` / `debug`)
+    /// upholds.
+    fn stream_child_line(&self, line: &str, from_stderr: bool) {
         let redacted = self.redact(line);
+        flush_pending();
         eprintln!("{redacted}");
         #[cfg(feature = "test-helpers")]
         if let Some(cap) = &self.capture {
-            cap.record(LogLevel::Error, redacted);
+            let level = if from_stderr {
+                LogLevel::Error
+            } else {
+                LogLevel::Verbose
+            };
+            cap.record(level, redacted);
         }
+        #[cfg(not(feature = "test-helpers"))]
+        let _ = from_stderr;
     }
 
     /// Check command output, log stderr/stdout on failure, and bail with context.

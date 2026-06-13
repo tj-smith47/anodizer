@@ -1866,3 +1866,78 @@ fn same_prefix_flat_bump_collapses_to_one_section() {
     }
     assert_section_no_graft(&head, "[0.2.0]", &["Docs", "Features"]);
 }
+
+// ---------------------------------------------------------------------------
+// C1 guard: the verbose live tee must NOT pollute stdout (the machine-readable
+// GHA-output channel). `tag` emits `new_tag=…` on stdout; a `tag_pre_hooks`
+// hook that echoes to its own stdout, at --verbose, must surface ONLY on
+// stderr — never interleaved into the `new_tag=` stream.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn verbose_tag_pre_hook_stdout_does_not_pollute_stdout_channel() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/app\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("crates/app/src")).unwrap();
+    fs::write(
+        root.join("crates/app/Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/app/src/lib.rs"), "").unwrap();
+    // A tag_pre_hooks hook that prints a unique token to ITS stdout. At
+    // --verbose the run helper tees that line live; the fix routes the tee to
+    // stderr, so the token must never appear on anodizer's stdout.
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: single
+tag:
+  tag_pre_hooks:
+    - "echo HOOKSTDOUTPOLLUTANT"
+crates:
+  - name: app
+    path: crates/app
+    tag_template: "v{{ .Version }}"
+    version_sync:
+      enabled: true
+"#,
+    )
+    .unwrap();
+
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/app/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "feat: add a thing");
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--crate", "app", "--verbose"])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
+
+    // The structured channel is intact.
+    assert!(
+        stdout.contains("new_tag=v0.2.0"),
+        "stdout must carry the structured new_tag token; got: {stdout:?}"
+    );
+    // The hook's stdout was teed to STDERR, never to anodizer's stdout.
+    assert!(
+        !stdout.contains("HOOKSTDOUTPOLLUTANT"),
+        "verbose hook stdout must NOT leak into the machine-readable stdout \
+         channel; got stdout: {stdout:?}"
+    );
+    assert!(
+        stderr.contains("HOOKSTDOUTPOLLUTANT"),
+        "the hook's stdout must still surface live on stderr at --verbose; \
+         got stderr: {stderr:?}"
+    );
+}

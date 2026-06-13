@@ -220,8 +220,12 @@ pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> R
                 &format!("{} hook: {}", label, cmd_str),
             )?;
 
-            // When output flag is true, echo the hook's (redacted) stdout.
-            if output_flag == Some(true) {
+            // When output flag is true, echo the hook's (redacted) stdout as a
+            // `[hook output]` summary line — but NOT at verbose, where the run
+            // helper already teed that stdout live; echoing again would print
+            // it twice. The summary exists precisely for the non-verbose case
+            // where the live stream is suppressed.
+            if output_flag == Some(true) && !log.is_verbose() {
                 let redacted_stdout = redact_secrets(&String::from_utf8_lossy(&output.stdout));
                 if !redacted_stdout.trim().is_empty() {
                     log.status(&format!("[hook output] {}", redacted_stdout.trim()));
@@ -667,6 +671,66 @@ mod tests {
         assert!(
             chain.contains("template render failed") || chain.contains("UndefinedSymbol"),
             "expected render-error diagnostic, got: {chain}",
+        );
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn hook_output_summary_suppressed_at_verbose() {
+        // With `output: true` the run helper tees the hook's stdout live at
+        // verbose, so the `[hook output]` status summary must NOT also fire —
+        // otherwise the same line prints twice. The capture records the status
+        // lines; none may carry the `[hook output]` prefix at verbose.
+        let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+        let hooks = vec![HookEntry::Structured(StructuredHook {
+            cmd: "echo HOOKSTDOUTLINE".to_string(),
+            output: Some(true),
+            ..Default::default()
+        })];
+        let vars = TemplateVars::new();
+        run_hooks(
+            &hooks,
+            "test",
+            HookRunContext::new(false, &log, Some(&vars)),
+        )
+        .expect("hook must run");
+        let summarized = cap
+            .all_messages()
+            .into_iter()
+            .any(|(_, m)| m.contains("[hook output]"));
+        assert!(
+            !summarized,
+            "at verbose the live tee owns the hook stdout; the [hook output] \
+             summary must be suppressed to avoid a double print"
+        );
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn hook_output_summary_present_at_normal() {
+        // The complementary pin: at non-verbose verbosity the live stream is
+        // suppressed, so the `[hook output]` summary IS the only surface for
+        // the hook's stdout and must still fire.
+        let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let hooks = vec![HookEntry::Structured(StructuredHook {
+            cmd: "echo HOOKSTDOUTLINE".to_string(),
+            output: Some(true),
+            ..Default::default()
+        })];
+        let vars = TemplateVars::new();
+        run_hooks(
+            &hooks,
+            "test",
+            HookRunContext::new(false, &log, Some(&vars)),
+        )
+        .expect("hook must run");
+        let summarized = cap
+            .all_messages()
+            .into_iter()
+            .any(|(_, m)| m.contains("[hook output]") && m.contains("HOOKSTDOUTLINE"));
+        assert!(
+            summarized,
+            "at normal verbosity the [hook output] summary must carry the hook's stdout"
         );
     }
 }
