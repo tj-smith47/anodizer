@@ -18,8 +18,8 @@ use anyhow::Result;
 use crate::dispatch::dispatch;
 use crate::helpers::{
     DEFAULT_DISPLAY_NAME, WEBHOOK_DEFAULT_MESSAGE_TEMPLATE, is_enabled, render_json_template,
-    render_message, require_env_all_with_env, require_env_with_env, require_non_empty_env_with_env,
-    resolve_smtp_port, resolve_webhook_headers,
+    render_message, render_message_with_default, require_env_all_with_env, require_env_with_env,
+    require_non_empty_env_with_env, resolve_smtp_port, resolve_webhook_headers,
 };
 use crate::{
     bluesky, discord, discourse, email, linkedin, mastodon, mattermost, opencollective, reddit,
@@ -33,6 +33,11 @@ use crate::{
 /// `render_only` so the pre-publish guard exercises the exact default `send`
 /// would use. Pinned by `test_telegram_default_template_renders_without_tilde`.
 const TELEGRAM_DEFAULT_TEMPLATE: &str = "{{ ProjectName | mdv2escape }} {{ Tag | mdv2escape }} is out\\! Check it out at {{ ReleaseURL | mdv2escape }}";
+
+/// Default email body, shared by `send` and `render_only` so the pre-publish
+/// guard exercises the exact default `send` would use, and so the two sites
+/// can never drift apart.
+const EMAIL_DEFAULT_MESSAGE_TEMPLATE: &str = "You can view details from: {{ ReleaseURL }}";
 
 // ---------------------------------------------------------------------------
 // Rendered-value validators — shared by `send` and `render_only`
@@ -663,10 +668,10 @@ impl Announcer for WebhookAnnouncer {
         // webhook uses a JSON-envelope
         // default distinct from the plain-text default used by other
         // providers; receivers expect a parseable JSON body.
-        let message = ctx.render_template(
-            cfg.message_template
-                .as_deref()
-                .unwrap_or(WEBHOOK_DEFAULT_MESSAGE_TEMPLATE),
+        let message = render_message_with_default(
+            ctx,
+            cfg.message_template.as_deref(),
+            WEBHOOK_DEFAULT_MESSAGE_TEMPLATE,
         )?;
 
         let raw_headers = cfg.headers.clone().unwrap_or_default();
@@ -729,10 +734,10 @@ impl Announcer for WebhookAnnouncer {
             let url = ctx.render_template(raw)?;
             validate_webhook_endpoint_url(&url)?;
         }
-        ctx.render_template(
-            cfg.message_template
-                .as_deref()
-                .unwrap_or(WEBHOOK_DEFAULT_MESSAGE_TEMPLATE),
+        render_message_with_default(
+            ctx,
+            cfg.message_template.as_deref(),
+            WEBHOOK_DEFAULT_MESSAGE_TEMPLATE,
         )?;
         for (_, v) in cfg.headers.clone().unwrap_or_default() {
             ctx.render_template(&v)?;
@@ -806,10 +811,10 @@ impl Announcer for TelegramAnnouncer {
         // is `{{ … }}`-only and copy-pastes cleanly into custom
         // user templates. Pinned by
         // `test_telegram_default_template_renders_without_tilde`.
-        let message = ctx.render_template(
-            cfg.message_template
-                .as_deref()
-                .unwrap_or(TELEGRAM_DEFAULT_TEMPLATE),
+        let message = render_message_with_default(
+            ctx,
+            cfg.message_template.as_deref(),
+            TELEGRAM_DEFAULT_TEMPLATE,
         )?;
         // Default parse_mode to "MarkdownV2".
         // Validate against known values; default to MarkdownV2 with a warning for unknowns.
@@ -856,10 +861,10 @@ impl Announcer for TelegramAnnouncer {
         if let Some(raw) = cfg.chat_id.as_deref() {
             ctx.render_template(raw)?;
         }
-        ctx.render_template(
-            cfg.message_template
-                .as_deref()
-                .unwrap_or(TELEGRAM_DEFAULT_TEMPLATE),
+        render_message_with_default(
+            ctx,
+            cfg.message_template.as_deref(),
+            TELEGRAM_DEFAULT_TEMPLATE,
         )?;
         let parse_mode_raw = cfg.parse_mode.as_deref().unwrap_or("MarkdownV2");
         let parse_mode_validated = match parse_mode_raw {
@@ -1438,10 +1443,10 @@ impl Announcer for OpenCollectiveAnnouncer {
                 .as_deref()
                 .unwrap_or(opencollective::DEFAULT_TITLE_TEMPLATE),
         )?;
-        let html = ctx.render_template(
-            cfg.message_template
-                .as_deref()
-                .unwrap_or(opencollective::DEFAULT_MESSAGE_TEMPLATE),
+        let html = render_message_with_default(
+            ctx,
+            cfg.message_template.as_deref(),
+            opencollective::DEFAULT_MESSAGE_TEMPLATE,
         )?;
         let token =
             require_env_with_env("opencollective", "OPENCOLLECTIVE_TOKEN", ctx.env_source())?;
@@ -1467,10 +1472,10 @@ impl Announcer for OpenCollectiveAnnouncer {
                 .as_deref()
                 .unwrap_or(opencollective::DEFAULT_TITLE_TEMPLATE),
         )?;
-        ctx.render_template(
-            cfg.message_template
-                .as_deref()
-                .unwrap_or(opencollective::DEFAULT_MESSAGE_TEMPLATE),
+        render_message_with_default(
+            ctx,
+            cfg.message_template.as_deref(),
+            opencollective::DEFAULT_MESSAGE_TEMPLATE,
         )?;
         Ok(())
     }
@@ -1524,10 +1529,10 @@ impl Announcer for EmailAnnouncer {
                 .as_deref()
                 .unwrap_or("{{ ProjectName }} {{ Tag }} is out!"),
         )?;
-        let body = ctx.render_template(
-            cfg.message_template
-                .as_deref()
-                .unwrap_or("You can view details from: {{ ReleaseURL }}"),
+        let body = render_message_with_default(
+            ctx,
+            cfg.message_template.as_deref(),
+            EMAIL_DEFAULT_MESSAGE_TEMPLATE,
         )?;
 
         let email_params = email::EmailParams {
@@ -1607,10 +1612,10 @@ impl Announcer for EmailAnnouncer {
                 .as_deref()
                 .unwrap_or("{{ ProjectName }} {{ Tag }} is out!"),
         )?;
-        ctx.render_template(
-            cfg.message_template
-                .as_deref()
-                .unwrap_or("You can view details from: {{ ReleaseURL }}"),
+        render_message_with_default(
+            ctx,
+            cfg.message_template.as_deref(),
+            EMAIL_DEFAULT_MESSAGE_TEMPLATE,
         )?;
         Ok(())
     }
@@ -2587,6 +2592,64 @@ mod tests {
         };
         let mut ctx = render_ctx(announce.clone());
         assert!(SlackAnnouncer.render_only(&mut ctx, &announce).is_err());
+    }
+
+    /// `literal_message` makes email's BODY render a no-op end-to-end: a body
+    /// that would error (or expand a secret) when rendered passes untouched,
+    /// proving email's send/render_only routes its body through the
+    /// `render_message` chokepoint rather than a raw `render_template`. Guards
+    /// against the leak reopening on a provider we dogfood as an on_error hook.
+    #[test]
+    fn email_body_render_is_literal_under_literal_message() {
+        let announce = AnnounceConfig {
+            email: Some(EmailAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                from: Some("bot@example.com".to_string()),
+                to: vec!["dev@example.com".to_string()],
+                // An undefined var would surface from a real body render; in
+                // literal mode the body is never rendered, so it does not.
+                message_template: Some("{{ NoSuchVar }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = render_ctx(announce.clone());
+        assert!(
+            EmailAnnouncer.render_only(&mut ctx, &announce).is_err(),
+            "control: a broken body must surface when rendered"
+        );
+        ctx.literal_message = true;
+        assert!(
+            EmailAnnouncer.render_only(&mut ctx, &announce).is_ok(),
+            "literal_message must skip the email body render — no expansion, no leak"
+        );
+    }
+
+    /// Same regression guard for opencollective's body render.
+    #[test]
+    fn opencollective_body_render_is_literal_under_literal_message() {
+        let announce = AnnounceConfig {
+            opencollective: Some(OpenCollectiveAnnounce {
+                enabled: Some(StringOrBool::Bool(true)),
+                message_template: Some("{{ NoSuchVar }}".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut ctx = render_ctx(announce.clone());
+        assert!(
+            OpenCollectiveAnnouncer
+                .render_only(&mut ctx, &announce)
+                .is_err(),
+            "control: a broken body must surface when rendered"
+        );
+        ctx.literal_message = true;
+        assert!(
+            OpenCollectiveAnnouncer
+                .render_only(&mut ctx, &announce)
+                .is_ok(),
+            "literal_message must skip the opencollective body render"
+        );
     }
 
     /// `render_only` runs the SAME color validator `send` does: an

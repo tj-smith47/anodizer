@@ -146,9 +146,34 @@ pub(crate) fn require_env_all_with_env<E: EnvSource + ?Sized>(
     Ok(values)
 }
 
-/// Render a message template, falling back to the standard default.
+/// Render a message-BODY template, falling back to `default` when unset.
+///
+/// The single send-time chokepoint for announce message bodies. When
+/// [`Context::literal_message`](anodizer_core::context::Context::literal_message)
+/// is set (by `anodizer notify`), the body is returned verbatim — already-final
+/// operator text that must NOT be run through Tera again, so an untrusted
+/// message cannot expand an `Env`-reference into a secret at send time.
+/// Otherwise the body renders through Tera as usual. Per-provider message
+/// defaults differ (plain-text vs the webhook JSON envelope vs the Telegram
+/// MarkdownV2 form), so callers pass their own `default`.
+pub(crate) fn render_message_with_default(
+    ctx: &mut Context,
+    tmpl: Option<&str>,
+    default: &str,
+) -> Result<String> {
+    let t = tmpl.unwrap_or(default);
+    if ctx.literal_message {
+        Ok(t.to_owned())
+    } else {
+        ctx.render_template(t)
+    }
+}
+
+/// Render a message-BODY template, falling back to the standard plain-text
+/// default. Thin wrapper over [`render_message_with_default`] for the providers
+/// that use [`DEFAULT_MESSAGE_TEMPLATE`].
 pub(crate) fn render_message(ctx: &mut Context, tmpl: Option<&str>) -> Result<String> {
-    ctx.render_template(tmpl.unwrap_or(DEFAULT_MESSAGE_TEMPLATE))
+    render_message_with_default(ctx, tmpl, DEFAULT_MESSAGE_TEMPLATE)
 }
 
 /// Resolve the effective SMTP port from (config, SMTP_PORT env, default).

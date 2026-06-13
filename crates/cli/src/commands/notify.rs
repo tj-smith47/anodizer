@@ -15,6 +15,10 @@ pub struct NotifyOpts {
     pub publishers: Option<Vec<String>>,
     /// Integration names to omit.
     pub skip: Vec<String>,
+    /// Send the message literally, skipping Tera rendering. Set this when the
+    /// message contains untrusted text (e.g. error output in an on_error hook)
+    /// so an `Env`-reference cannot be expanded into the outbound message.
+    pub raw: bool,
     pub config_override: Option<std::path::PathBuf>,
     pub verbose: bool,
     pub debug: bool,
@@ -39,7 +43,7 @@ pub fn run(opts: NotifyOpts) -> Result<()> {
     let (_config, mut ctx) =
         helpers::init_merge_stage_ctx(opts.config_override.as_deref(), ctx_opts, &log)?;
 
-    run_with_ctx(&mut ctx, opts.message, opts.publishers, opts.skip)
+    run_with_ctx(&mut ctx, opts.message, opts.publishers, opts.skip, opts.raw)
 }
 
 /// Inner dispatch — takes an already-constructed `Context` so tests can drive
@@ -49,23 +53,32 @@ pub(crate) fn run_with_ctx(
     message: String,
     publishers: Option<Vec<String>>,
     skip: Vec<String>,
+    raw: bool,
 ) -> Result<()> {
-    // Render the message template up front so a broken template surfaces
-    // before any network call fires. The rendered text is then injected into
-    // every enabled provider's `message_template`, overriding the per-provider
-    // default so all integrations send the same operator-supplied message.
-    let rendered = ctx.render_template(&message)?;
+    // Resolve the body ONCE, here, while `ctx.literal_message` is still false:
+    // a non-raw message renders through Tera exactly once; a raw message is
+    // passed through verbatim (render skipped — the first half of the
+    // secret-leak defense for untrusted text).
+    let rendered = resolve_message(ctx, message, raw)?;
 
     let mut announce = match ctx.config.announce.as_ref() {
         Some(a) => a.clone(),
         None => anyhow::bail!("notify: no announce config found"),
     };
 
-    // Override each provider's message_template with the already-rendered
-    // text. Using the literal rendered string (not a Tera expression) means
-    // the providers' own render pass will return it verbatim — no double-
-    // rendering of Tera syntax that may be present in the user's message.
+    // Inject the already-final body into every provider's `message_template`,
+    // overriding the per-provider default so all integrations send the same
+    // operator-supplied message.
     inject_message(&mut announce, &rendered);
+
+    // The injected body is FINAL — `render_template` is not idempotent on
+    // `{{ ... }}` (it re-expands), so letting each provider render it at send
+    // time would double-render the non-raw body AND, for a raw untrusted
+    // message, expand a smuggled `Env`-reference into a secret on the wire.
+    // `literal_message` makes every provider's send-time body render a no-op,
+    // closing both. Set immediately before dispatch so only the announce send
+    // path is affected.
+    ctx.literal_message = true;
 
     let retry_policy = ctx.retry_policy();
     let log = ctx.logger("notify");
@@ -95,6 +108,25 @@ pub(crate) fn run_with_ctx(
     }
 
     Ok(())
+}
+
+/// Resolve the outbound message body, honoring `raw`.
+///
+/// Non-raw: render `message` through Tera so standard vars (`{{ Tag }}`, …)
+/// expand, surfacing a broken template before any network call. Raw: return
+/// `message` verbatim — no template is validated.
+///
+/// This is the FIRST half of the untrusted-text defense: skipping this render
+/// for raw text means a smuggled `Env`-reference is never expanded here. The
+/// SECOND half is `ctx.literal_message`, set before dispatch, which stops every
+/// provider from re-rendering the (already-final) body at send time — without
+/// it the skipped render would simply happen again on the provider side.
+fn resolve_message(ctx: &mut Context, message: String, raw: bool) -> Result<String> {
+    if raw {
+        Ok(message)
+    } else {
+        Ok(ctx.render_template(&message)?)
+    }
 }
 
 /// Override every configured provider's `message_template` with `msg` so all
@@ -145,7 +177,7 @@ mod tests {
     #[test]
     fn no_announce_config_bails() {
         let mut ctx = minimal_ctx();
-        let err = run_with_ctx(&mut ctx, "hello".to_string(), None, vec![])
+        let err = run_with_ctx(&mut ctx, "hello".to_string(), None, vec![], false)
             .unwrap_err()
             .to_string();
         assert!(err.contains("no announce config found"), "{err}");
@@ -184,6 +216,7 @@ mod tests {
             message: "test {{ ProjectName }}".to_string(),
             publishers: Some(vec!["slack".to_string()]),
             skip: vec!["discord".to_string()],
+            raw: false,
             config_override: None,
             verbose: false,
             debug: false,
@@ -236,6 +269,32 @@ mod tests {
     }
 
     #[test]
+    fn raw_skips_tera_rendering_keeps_message_verbatim() {
+        let mut ctx = minimal_ctx();
+        // An Env-reference plus arbitrary Tera braces stand in for untrusted
+        // error text. In raw mode none of it may be expanded — the secret-leak
+        // vector this flag exists to close.
+        let untrusted = "boom: {{ Env.CARGO_REGISTRY_TOKEN }} {{ ProjectName }}".to_string();
+        let out = resolve_message(&mut ctx, untrusted.clone(), true).unwrap();
+        assert_eq!(
+            out, untrusted,
+            "raw mode must pass the message through verbatim"
+        );
+    }
+
+    #[test]
+    fn non_raw_renders_tera_template() {
+        // Contrast: without --raw the same standard var IS expanded. project_name
+        // is "test" (see minimal_ctx), so `{{ ProjectName }}` resolves to `test`.
+        let mut ctx = minimal_ctx();
+        let out = resolve_message(&mut ctx, "hello {{ ProjectName }}".to_string(), false).unwrap();
+        assert_eq!(
+            out, "hello test",
+            "non-raw mode must render the Tera template"
+        );
+    }
+
+    #[test]
     fn dispatch_with_empty_announce_config_succeeds() {
         use anodizer_core::config::AnnounceConfig;
         let config = anodizer_core::config::Config {
@@ -245,7 +304,7 @@ mod tests {
         };
         let mut ctx = Context::new(config, ContextOptions::default());
         // No providers configured → dispatch fires nothing, returns Ok.
-        let result = run_with_ctx(&mut ctx, "hello".to_string(), None, vec![]);
+        let result = run_with_ctx(&mut ctx, "hello".to_string(), None, vec![], false);
         assert!(result.is_ok(), "{result:?}");
     }
 }

@@ -15,7 +15,10 @@ use anodizer_core::stage::Stage;
 use serial_test::serial;
 
 use crate::AnnounceStage;
-use crate::helpers::{render_json_template, resolve_smtp_port, resolve_webhook_headers};
+use crate::helpers::{
+    render_json_template, render_message, render_message_with_default, resolve_smtp_port,
+    resolve_webhook_headers,
+};
 
 /// A process-unique dist directory so the per-version announce sent-marker
 /// (`<dist>/.announce-sent-<version>.json`) written by one test can never leak
@@ -2405,4 +2408,62 @@ fn announce_retry_classifier_matches_5xx_via_anyhow_chain() {
         !is_retriable(wrapped.root_cause()),
         "root_cause() reaches the leaf — wrong API for chain-walk classification"
     );
+}
+
+/// Without `literal_message`, the send-time body render expands an
+/// `Env`-reference — this is the second Tera pass that `--raw` alone did NOT
+/// suppress, and the exact path a secret would leak through. A non-`*_TOKEN`
+/// var name is used so the redaction layer does not mask the expansion (a
+/// secret can be reached via an arbitrarily named env var, e.g. a webhook URL
+/// query token), making the leak directly observable.
+#[test]
+fn render_message_expands_env_when_not_literal() {
+    let mut ctx = make_ctx(None);
+    // `set_env` populates `TemplateVars::env`, consulted before any host-env
+    // fallback — deterministic, no process-env dependency.
+    ctx.template_vars_mut()
+        .set_env("REGISTRY_CREDENTIAL", "leaked-value");
+    assert!(!ctx.literal_message);
+    let out = render_message(&mut ctx, Some("token={{ Env.REGISTRY_CREDENTIAL }}")).unwrap();
+    assert_eq!(out, "token=leaked-value");
+}
+
+/// With `literal_message`, the send-time body render is a no-op — the
+/// `Env`-reference survives verbatim and no secret reaches the wire.
+#[test]
+fn render_message_is_literal_when_literal_message_set() {
+    let mut ctx = make_ctx(None);
+    ctx.template_vars_mut()
+        .set_env("REGISTRY_CREDENTIAL", "leaked-value");
+    ctx.literal_message = true;
+    let out = render_message(&mut ctx, Some("token={{ Env.REGISTRY_CREDENTIAL }}")).unwrap();
+    assert_eq!(
+        out, "token={{ Env.REGISTRY_CREDENTIAL }}",
+        "literal_message must skip the send-time render so no secret expands"
+    );
+}
+
+/// Same contract on the webhook/telegram path, which carries a non-default
+/// per-provider template through `render_message_with_default`.
+#[test]
+fn render_message_with_default_respects_literal_message() {
+    let mut ctx = make_ctx(None);
+    ctx.template_vars_mut().set_env("LEAK", "leak");
+    let tmpl = Some("body {{ Env.LEAK }}");
+    let provider_default = "fallback {{ Env.LEAK }}";
+
+    let rendered = render_message_with_default(&mut ctx, tmpl, provider_default).unwrap();
+    assert_eq!(rendered, "body leak", "non-literal must expand the env ref");
+
+    ctx.literal_message = true;
+    let literal = render_message_with_default(&mut ctx, tmpl, provider_default).unwrap();
+    assert_eq!(
+        literal, "body {{ Env.LEAK }}",
+        "literal mode must pass the body through verbatim"
+    );
+
+    // The provider default is likewise verbatim in literal mode (no second
+    // pass), so a missing user template can't smuggle an env ref either.
+    let literal_default = render_message_with_default(&mut ctx, None, provider_default).unwrap();
+    assert_eq!(literal_default, "fallback {{ Env.LEAK }}");
 }

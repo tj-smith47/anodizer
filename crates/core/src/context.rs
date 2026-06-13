@@ -464,6 +464,13 @@ pub struct Context {
     /// [`Context::render_is_strict`] ORs this with `is_strict()`, so the user's
     /// global `--strict` also makes every render strict everywhere.
     render_strict: std::cell::Cell<bool>,
+    /// When true, announce message BODIES are treated as already-final text and
+    /// are NOT run through Tera at send time. Set by `anodizer notify` so an
+    /// operator-supplied (possibly untrusted) message — e.g. an on_error error
+    /// string — cannot expand an `Env`-reference into a secret when the
+    /// provider sends it. Only message bodies are affected; titles and other
+    /// templated fields still render normally.
+    pub literal_message: bool,
 }
 
 impl Context {
@@ -490,6 +497,7 @@ impl Context {
             #[cfg(feature = "test-helpers")]
             log_capture: None,
             render_strict: std::cell::Cell::new(false),
+            literal_message: false,
         }
     }
 

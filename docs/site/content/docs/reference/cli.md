@@ -326,5 +326,6 @@ Send a notification through configured announce integrations
 | `<message>` | — | — | Message template to send. Supports standard Tera template vars (e.g. `{{ ProjectName }}`, `{{ Tag }}`, `{{ Version }}`) |
 | `--publishers` | — | — | Comma-separated list of integration names to fire (default: all). Valid names: discord, discourse, slack, webhook, telegram, teams, mattermost, reddit, twitter, mastodon, bluesky, linkedin |
 | `--skip` | — | — | Comma-separated list of integration names to omit |
+| `--raw` | — | — | Send the message literally, without Tera template rendering. Use when the message contains untrusted text (e.g. error output in an on_error hook) |
 | `--dry-run` | — | — | Run without sending (dry-run mode) |
 

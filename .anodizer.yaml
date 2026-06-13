@@ -113,11 +113,13 @@ defaults:
       required: true
       retain_on_rollback: true
     on_error:
-      # ANODIZER_* env vars (not template interpolation): the error text is
-      # remote-controlled (HTTP bodies, git stderr) and must never be spliced
-      # into the sh -c command string. printf, not echo: dash's builtin echo
-      # mangles backslash escapes in error bodies.
-      - cmd: 'printf ''%s\n'' "anodizer: publisher $ANODIZER_PUBLISHER failed for $ANODIZER_TAG: $ANODIZER_ERROR"'
+      # anodizer notify --raw: --raw skips Tera rendering so the
+      # remote-controlled $ANODIZER_ERROR (HTTP bodies / git stderr) can never
+      # smuggle a {{ Env.SECRET }} reference into the outbound message. The
+      # error text is passed via the ANODIZER_* env channel (double-quoted, so
+      # sh expands it into a single argv) — never template-spliced into the
+      # command string, where shell metacharacters would be injection.
+      - cmd: 'anodizer notify --raw "anodizer: publisher $ANODIZER_PUBLISHER failed for $ANODIZER_TAG: $ANODIZER_ERROR"'
 
 before:
   hooks:

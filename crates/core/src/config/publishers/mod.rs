@@ -196,12 +196,14 @@ pub struct PublishConfig {
     /// `{{ .Error }}` carries untrusted remote text (HTTP error bodies, git
     /// stderr) — interpolating it into `cmd` lets crafted error content
     /// break quoting and execute. Read untrusted values from the env vars
-    /// instead:
+    /// instead, and pass `anodizer notify --raw` so the untrusted text is not
+    /// Tera-rendered (without `--raw`, a `{{ Env.SECRET }}` reference smuggled
+    /// into the error body would expand a secret into the outbound message):
     ///
     /// ```yaml
     /// publish:
     ///   on_error:
-    ///     - cmd: 'notify "anodizer: $ANODIZER_PUBLISHER failed @ $ANODIZER_VERSION: $ANODIZER_ERROR"'
+    ///     - cmd: 'anodizer notify --raw "anodizer: $ANODIZER_PUBLISHER failed @ $ANODIZER_VERSION: $ANODIZER_ERROR"'
     /// ```
     pub on_error: Option<Vec<HookEntry>>,
 }

@@ -167,8 +167,11 @@ Shell hooks that fire once per FAILED publisher, after rollback has run (so
 ```yaml
 publish:
   on_error:
-    - cmd: 'notify "anodizer: $ANODIZER_PUBLISHER failed @ $ANODIZER_VERSION: $ANODIZER_ERROR"'
+    - cmd: 'anodizer notify --raw "anodizer: $ANODIZER_PUBLISHER failed @ $ANODIZER_VERSION: $ANODIZER_ERROR"'
 ```
+
+`--raw` sends the message literally, skipping Tera rendering — required here
+because `$ANODIZER_ERROR` is untrusted (see the security note below).
 
 The failure context is available on two channels — environment variables on
 the hook process, and template variables rendered into `cmd`:
@@ -194,15 +197,23 @@ shell code:
 
 ```yaml
 # UNSAFE: a single quote in the error body breaks out of the quoting
-- cmd: "notify 'failed: {{ .Error }}'"
+- cmd: "anodizer notify 'failed: {{ .Error }}'"
 
 # SAFE: the shell expands $ANODIZER_ERROR at run time; the value is
-# never parsed as shell code
-- cmd: 'notify "failed: $ANODIZER_ERROR"'
+# never parsed as shell code, and --raw stops Tera from expanding a
+# `{{ Env.SECRET }}` smuggled into the error text into the message
+- cmd: 'anodizer notify --raw "failed: $ANODIZER_ERROR"'
 ```
 
 Template interpolation remains fine for values anodizer controls
 (`{{ .Publisher }}`, `{{ .Version }}`, `{{ .Tag }}`, ...).
+
+When the message body carries untrusted text (any `$ANODIZER_ERROR` or
+`{{ .Error }}` value), pass `--raw` to `anodizer notify` so the message is
+sent literally. Without `--raw`, `anodizer notify` renders the message
+through Tera, and a crafted error body containing `{{ Env.CARGO_REGISTRY_TOKEN }}`
+(or any other secret reference) would expand the secret into the outbound
+notification.
 
 Hook failures are logged as warnings and never change the release outcome.
 For ad-hoc notifications (outside a release), use `anodizer notify`.
@@ -697,6 +708,9 @@ anodizer notify "deploy started" --publishers=slack,discord
 
 # Omit an integration:
 anodizer notify "v0.8.1 is live" --skip=webhook
+
+# Send untrusted text literally (no Tera rendering) — e.g. from an on_error hook:
+anodizer notify --raw "publish failed: $ANODIZER_ERROR"
 ```
 
 | Flag | Semantics |
@@ -704,6 +718,7 @@ anodizer notify "v0.8.1 is live" --skip=webhook
 | `<message>` (positional) | Message body. Supports Tera templates — `{{ .Version }}`, `{{ .ProjectName }}`, etc. |
 | `--publishers=<list>` | Comma-separated integration names to fire. Default: all configured. |
 | `--skip=<list>` | Comma-separated integration names to omit. |
+| `--raw` | Send the message literally, without Tera rendering. Use when the message contains untrusted text (e.g. error output in an `on_error` hook) so a `{{ Env.SECRET }}` reference smuggled into that text cannot expand a secret into the outbound notification. |
 | `--dry-run` | Print what would be sent; do not call external APIs. |
 
 `anodizer notify` reads the same `announce:` config block as `anodizer release`.

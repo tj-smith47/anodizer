@@ -663,6 +663,11 @@ pub enum Commands {
         /// Comma-separated list of integration names to omit.
         #[arg(long = "skip", value_delimiter = ',')]
         skip: Vec<String>,
+        /// Send the message literally, without Tera template rendering. Use
+        /// when the message contains untrusted text (e.g. error output in an
+        /// on_error hook).
+        #[arg(long)]
+        raw: bool,
         /// Run without sending (dry-run mode).
         #[arg(long)]
         dry_run: bool,

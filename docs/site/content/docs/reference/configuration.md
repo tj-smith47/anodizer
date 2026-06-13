@@ -990,9 +990,9 @@ Uses the unified `HomebrewCaskConfig` which carries all fields from both the per
 | `nix` | NixConfig | — | Nix derivation publishing configuration. |
 | `on_error` | list of HookEntry | — | Hooks that fire once per FAILED publisher, after rollback has been attempted. Each entry is a standard hook (`cmd` / `dir` / `env` / `output`); the template surface adds `{{ .Publisher }}`, `{{ .Error }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}` (Assets/Manager/Submitter), `{{ .Required }}`, and `{{ .RolledBack }}` — true if any publisher was rolled back (or rollback was attempted and failed) during this run. The same values are also exported to the hook process as environment variables: `ANODIZER_PUBLISHER`, `ANODIZER_ERROR`, `ANODIZER_VERSION`, `ANODIZER_TAG`, `ANODIZER_GROUP`, `ANODIZER_REQUIRED`, `ANODIZER_ROLLED_BACK`. A hook's own failure is logged as a warning and never changes the release outcome.
 
-Security: the rendered `cmd` string is parsed by `sh -c`, and `{{ .Error }}` carries untrusted remote text (HTTP error bodies, git stderr) — interpolating it into `cmd` lets crafted error content break quoting and execute. Read untrusted values from the env vars instead:
+Security: the rendered `cmd` string is parsed by `sh -c`, and `{{ .Error }}` carries untrusted remote text (HTTP error bodies, git stderr) — interpolating it into `cmd` lets crafted error content break quoting and execute. Read untrusted values from the env vars instead, and pass `anodizer notify --raw` so the untrusted text is not Tera-rendered (without `--raw`, a `{{ Env.SECRET }}` reference smuggled into the error body would expand a secret into the outbound message):
 
-```yaml publish: on_error: - cmd: 'notify "anodizer: $ANODIZER_PUBLISHER failed @ $ANODIZER_VERSION: $ANODIZER_ERROR"' ``` |
+```yaml publish: on_error: - cmd: 'anodizer notify --raw "anodizer: $ANODIZER_PUBLISHER failed @ $ANODIZER_VERSION: $ANODIZER_ERROR"' ``` |
 | `scoop` | ScoopConfig | — | Scoop manifest publishing configuration. |
 | `winget` | WingetConfig | — | WinGet manifest publishing configuration. |
 
