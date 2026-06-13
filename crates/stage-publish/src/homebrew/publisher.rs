@@ -786,6 +786,47 @@ mod publisher_tests {
     }
 
     #[test]
+    fn homebrew_no_config_skip_surfaces_at_debug_verbosity() {
+        // Without --show-skipped (show_skipped=false) but at --debug
+        // verbosity, the no-op skip still surfaces: skip_line routes to
+        // debug(), which prints at Verbosity::Debug. Mirrors the default
+        // fixture exactly, differing only in the logger's verbosity.
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![
+                homebrew_crate("configured"),
+                homebrew_crate("unconfigured"),
+            ])
+            .show_skipped(false)
+            .debug(true)
+            .build();
+        ctx.config.crates[1].publish = None;
+        let cap = LogCapture::new();
+        ctx.with_log_capture(cap.clone());
+        let log = ctx.logger("homebrew");
+        let crate_name = "unconfigured";
+        assert!(
+            !is_homebrew_per_crate_configured(&ctx, crate_name),
+            "fixture must leave the crate unconfigured so the skip branch fires"
+        );
+        log.skip_line(
+            ctx.options.show_skipped,
+            &run_skip_unconfigured_message(crate_name),
+        );
+        let lines = cap.all_messages();
+        assert_eq!(cap.debug_count(), 1, "{lines:?}");
+        let debug_lines: Vec<&String> = lines
+            .iter()
+            .filter(|(l, _)| *l == LogLevel::Debug)
+            .map(|(_, m)| m)
+            .collect();
+        assert_eq!(debug_lines.len(), 1, "{lines:?}");
+        assert!(
+            debug_lines[0].contains("no homebrew config block"),
+            "{lines:?}"
+        );
+    }
+
+    #[test]
     fn run_done_message_reports_processed_count() {
         let msg = run_done_message(2);
         assert!(msg.starts_with("finished homebrew publish"), "{msg}");
