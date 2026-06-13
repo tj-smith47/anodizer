@@ -1020,7 +1020,7 @@ impl Stage for PublishStage {
         // which publishers run.
         let publishers = registry::configured_publishers(ctx);
 
-        // Refuse to publish a non-release version (snapshot / dev / dirty /
+        // Refuse to publish a non-release version (snapshot / dirty /
         // 0.0.0-sentinel) to any external publisher. Runs BEFORE the first
         // publisher fires because several are one-way-door indexes; the
         // `--allow-snapshot-publish` flag downgrades the bail to a warning.
@@ -1753,6 +1753,55 @@ mod tests {
             submitter.outcome,
             PublisherOutcome::Skipped(SkipReason::SubmitterGated)
         ));
+    }
+
+    /// Pins that the non-release version guard is WIRED into
+    /// `PublishStage::run` — not merely that `guard_release_version` works in
+    /// isolation. Drives the real `Stage::run` entrypoint with a configured
+    /// cargo publisher and a `0.0.0~SNAPSHOT-<sha>` version in a real-release
+    /// (non-snapshot, non-dry-run) context, and asserts it bails BEFORE any
+    /// publisher fires (`publish_report` stays `None`) with an error naming the
+    /// version, a publisher, and the override flag. Deleting the
+    /// `guard_release_version` call at the `PublishStage::run` call site makes
+    /// this test fail (the run would proceed past the guard into dispatch).
+    #[test]
+    fn publish_stage_run_bails_on_non_release_version() {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mylib".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                cargo: Some(CargoPublishConfig::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        // Real release: NOT snapshot, NOT dry-run, so the guard is live.
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut()
+            .set("Version", "0.0.0~SNAPSHOT-d7813f0");
+
+        let err = PublishStage
+            .run(&mut ctx)
+            .expect_err("a non-release version must bail at PublishStage::run");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("0.0.0~SNAPSHOT-d7813f0"),
+            "error must name the offending version: {msg}",
+        );
+        assert!(
+            msg.contains("cargo"),
+            "error must name a publisher about to run: {msg}",
+        );
+        assert!(
+            msg.contains("--allow-snapshot-publish"),
+            "error must tell the operator how to override: {msg}",
+        );
+        assert!(
+            ctx.publish_report().is_none(),
+            "guard must abort BEFORE the dispatcher initializes the publish report",
+        );
     }
 
     #[test]

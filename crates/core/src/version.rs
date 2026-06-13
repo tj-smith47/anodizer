@@ -9,7 +9,7 @@
 //! cannot drift on what counts as "non-release".
 
 /// Returns `true` when `version` is safe to publish to an external index —
-/// i.e. it is NOT a snapshot / dev / dirty / `0.0.0`-sentinel marker.
+/// i.e. it is NOT a snapshot / dirty / `0.0.0`-sentinel marker.
 ///
 /// A version is classified **non-release** (returns `false`) when, after
 /// trimming, ANY of the following hold:
@@ -18,9 +18,14 @@
 /// - it matches the `0.0.0` missing-version sentinel — `0.0.0` optionally
 ///   followed by a `-`, `+`, or `~` pre-release / build / packaging suffix
 ///   (`0.0.0`, `0.0.0-SNAPSHOT-abc`, `0.0.0~SNAPSHOT_abc`, `0.0.0+dirty`), OR
-/// - it carries a snapshot / dev / dirty marker anywhere in the string —
-///   `SNAPSHOT` (case-insensitive), `-dev` / `.dev`, or a `dirty` git-state
-///   marker.
+/// - it carries a snapshot / dirty marker anywhere in the string —
+///   `SNAPSHOT` (case-insensitive) or a `dirty` git-state marker.
+///
+/// Conventional semver pre-releases (`-rc`, `-beta`, `-alpha`, `-dev`) are
+/// genuine releases: a `-dev` pre-release is the same release class as `-rc`
+/// and is published deliberately, so it is NOT blocked. The real accident this
+/// guards (`0.0.0~SNAPSHOT-<sha>`) is already caught by both the `0.0.0`
+/// sentinel and the `SNAPSHOT` marker.
 ///
 /// The check is intentionally substring/prefix based rather than strict
 /// semver parsing: the synthesized snapshot version
@@ -45,11 +50,6 @@ pub fn non_release_reason(version: &str) -> Option<&'static str> {
     let lower = v.to_ascii_lowercase();
     if lower.contains("snapshot") {
         return Some("snapshot marker");
-    }
-    // `-dev` / `.dev` pre-release segment (but not a substring like
-    // "developer" appearing mid-token — anchor on the segment separator).
-    if lower.contains("-dev") || lower.contains(".dev") {
-        return Some("dev pre-release marker");
     }
     if lower.contains("dirty") {
         return Some("git-dirty marker");
@@ -112,20 +112,48 @@ mod tests {
     }
 
     #[test]
-    fn dev_and_dirty_markers_are_non_release() {
-        assert!(!is_release_version("1.2.3-dev"));
-        assert!(!is_release_version("1.2.3-dev.4"));
-        assert!(!is_release_version("1.2.3.dev5"));
+    fn dirty_marker_is_non_release() {
         assert!(!is_release_version("1.2.3+dirty"));
         assert!(!is_release_version("1.2.3-20240101-dirty"));
+        assert_eq!(non_release_reason("1.2.3+dirty"), Some("git-dirty marker"));
     }
 
     #[test]
-    fn release_version_with_dev_substring_in_metadata_is_not_falsely_flagged() {
-        // "+devel-tools" would trip a naive `contains("dev")`; the `-dev`/`.dev`
-        // anchoring means a build-metadata word starting with "dev" without the
-        // separator is treated as a marker only when it follows `-`/`.`. Here the
-        // segment is `+devel` which starts at `+`, so it is NOT a dev marker.
-        assert!(is_release_version("1.2.3+develtools"));
+    fn dev_pre_release_is_a_release_version() {
+        // `-dev` is a conventional semver pre-release, the same class as
+        // `-rc` / `-beta`, and is published deliberately. Blocking it while
+        // allowing `-rc` would be arbitrary; the real accident
+        // (`0.0.0~SNAPSHOT`) is caught by the 0.0.0 sentinel + SNAPSHOT marker.
+        for v in ["1.0.0-dev.1", "1.2.3-dev", "1.2.3.dev5", "1.0.0-alpha.dev"] {
+            assert!(is_release_version(v), "{v} must be a release version");
+            assert_eq!(non_release_reason(v), None, "{v}");
+        }
+    }
+
+    /// Pins the corrected predicate so the deliberate `-dev` decision and the
+    /// kept anodizer-specific markers cannot silently regress.
+    #[test]
+    fn predicate_marker_list_is_pinned() {
+        // PASS — genuine releases, including every conventional pre-release.
+        for v in [
+            "1.0.0-dev.1",
+            "1.0.0-rc.1",
+            "2.0.0-beta",
+            "1.0.0-alpha.dev",
+            "1.2.3+build.5",
+        ] {
+            assert!(is_release_version(v), "{v} must be a release version");
+        }
+        // FAIL — anodizer's non-release signals: empty, 0.0.0 sentinel,
+        // SNAPSHOT marker, dirty.
+        for v in [
+            "",
+            "0.0.0",
+            "0.0.0-rc.1",
+            "0.9.0-SNAPSHOT-abc123",
+            "1.2.3+dirty",
+        ] {
+            assert!(!is_release_version(v), "{v} must be non-release");
+        }
     }
 }
