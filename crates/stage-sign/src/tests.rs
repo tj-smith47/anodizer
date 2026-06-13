@@ -9,14 +9,13 @@ use super::helpers::{
 use super::process::{ArtifactFilter, process_sign_configs};
 use super::{DockerSignStage, SignStage};
 
-/// Test shim: call `should_sign_artifact` with empty metadata (the common
-/// case). Tests that need the combined-checksum distinction call the real
-/// 3-arg `should_sign_artifact` with a populated metadata map directly.
+/// Readability alias for the kind-filter predicate at call sites.
 fn should_sign(kind: ArtifactKind, filter: &str) -> anyhow::Result<bool> {
-    should_sign_artifact(kind, &std::collections::HashMap::new(), filter)
+    should_sign_artifact(kind, filter)
 }
 
-/// Metadata marking a Checksum artifact as the combined `checksums.txt`.
+/// Metadata marking a Checksum artifact as the combined `checksums.txt`,
+/// used by stage-level fixtures that register a combined checksum file.
 fn combined_meta() -> std::collections::HashMap<String, String> {
     std::collections::HashMap::from([(
         anodizer_core::artifact::COMBINED_CHECKSUM_META.to_string(),
@@ -95,40 +94,37 @@ fn test_resolve_sign_args() {
 
 #[test]
 fn test_filter_artifacts_checksum() {
-    // `artifacts: checksum` signs ONLY the combined `checksums.txt`, never a
-    // per-artifact split sidecar — signing each `X.sha256` is what produced the
-    // recursive sha256.sig garbage.
+    // GoReleaser parity (internal/pipe/sign/sign.go:93-94):
+    // `artifacts: checksum` -> artifact.ByType(artifact.Checksum) — EVERY
+    // Checksum, the combined `checksums.txt` AND each per-artifact split
+    // `.sha256` sidecar. A checksum's metadata is irrelevant to the match.
     assert!(
-        should_sign_artifact(ArtifactKind::Checksum, &combined_meta(), "checksum").unwrap(),
-        "combined checksums.txt is signed by artifacts: checksum"
-    );
-    assert!(
-        !should_sign(ArtifactKind::Checksum, "checksum").unwrap(),
-        "a split sidecar (no combined=true) is NEVER signed"
+        should_sign(ArtifactKind::Checksum, "checksum").unwrap(),
+        "every Checksum kind is signed by artifacts: checksum (GoReleaser parity)"
     );
     assert!(!should_sign(ArtifactKind::Archive, "checksum").unwrap());
     assert!(!should_sign(ArtifactKind::Binary, "checksum").unwrap());
+    assert!(!should_sign(ArtifactKind::Signature, "checksum").unwrap());
 }
 
 #[test]
 fn test_filter_artifacts_all() {
     // "all" matches anodizer_core::artifact::signable_subject_kinds() (the
-    // PRIMARY subjects) PLUS the combined checksums file (GoReleaser parity).
-    // Installer-family kinds (MSI/NSIS as Installer, DMG as DiskImage, PKG as
-    // MacOsPackage) are primary so they are signed alongside archives. Dedicated
-    // filters (`installer`, `diskimage`, `macos_package`) remain available for
-    // finer-grain selection.
+    // PRIMARY subjects) PLUS every Checksum (GoReleaser parity:
+    // ReleaseUploadableTypes() minus only Signature/Certificate;
+    // internal/pipe/sign/sign.go:103-108). Installer-family kinds (MSI/NSIS as
+    // Installer, DMG as DiskImage, PKG as MacOsPackage) are primary so they are
+    // signed alongside archives. Dedicated filters (`installer`, `diskimage`,
+    // `macos_package`) remain available for finer-grain selection.
     //
-    // The COMBINED checksums file IS signed by `all` (→ checksums.txt.sig); a
-    // split per-artifact `.sha256` sidecar (no combined=true) is NOT — signing
-    // each sidecar is what produced the recursive sha256.sig chains.
+    // Every Checksum IS signed by `all` — combined `checksums.txt` AND split
+    // `.sha256` sidecars alike (→ one `X.sha256.sig` each). This cannot recurse
+    // into `X.sha256.sig.sha256`: the checksum stage's subject set is primary-
+    // only and `refresh_combined_checksums` skips derived sidecars, so the
+    // produced `.sig` is never re-hashed.
     assert!(
-        should_sign_artifact(ArtifactKind::Checksum, &combined_meta(), "all").unwrap(),
-        "combined checksums.txt is signed by artifacts: all (GoReleaser parity)"
-    );
-    assert!(
-        !should_sign(ArtifactKind::Checksum, "all").unwrap(),
-        "a split checksum sidecar (no combined=true) is NEVER signed by all"
+        should_sign(ArtifactKind::Checksum, "all").unwrap(),
+        "every Checksum is signed by artifacts: all (GoReleaser parity)"
     );
     assert!(should_sign(ArtifactKind::Archive, "all").unwrap());
     assert!(should_sign(ArtifactKind::UploadableBinary, "all").unwrap());
@@ -182,17 +178,19 @@ fn test_filter_artifacts_none() {
 }
 
 #[test]
-fn all_filter_signs_combined_checksum_not_split_sidecars_no_chain() {
-    // P1 / GoReleaser parity: `sign.artifacts: all` signs the COMBINED
-    // checksums file (→ checksums.txt.sig) so combined-mode consumers get a
-    // signature of their checksum manifest. It must NOT sign a per-artifact
-    // split `.sha256` sidecar (that is what produced the recursive
-    // `.sha256.sig` chains), and the resulting asset set must contain no
-    // `(.sha256|.sig){2,}` chain.
+fn all_and_checksum_filters_sign_every_checksum_kind_without_recursion() {
+    // GoReleaser parity: BOTH `artifacts: all` and `artifacts: checksum` sign
+    // EVERY Checksum — the combined `checksums.txt` AND each per-artifact split
+    // `.sha256` sidecar (internal/pipe/sign/sign.go:93-94, 103-108) — yielding
+    // one legitimate `X.sha256.sig` each. `all` additionally signs primaries
+    // (the archive); `checksum` does not. NEITHER produces a forbidden
+    // `(.sha256|.sig)` re-derivation chain: the produced `.sig` is never
+    // re-checksummed (checksum input is primary-only) nor re-signed (Signature
+    // is not in the sign set).
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use anodizer_core::test_helpers::has_recursive_sidecar_chain;
 
-    let signs = vec![SignConfig {
+    let gpg_sign = |filter: &str| SignConfig {
         id: Some("gpg".to_string()),
         cmd: Some("gpg".to_string()),
         args: Some(vec![
@@ -201,7 +199,7 @@ fn all_filter_signs_combined_checksum_not_split_sidecars_no_chain() {
             "--detach-sign".to_string(),
             "{{ .Artifact }}".to_string(),
         ]),
-        artifacts: Some("all".to_string()),
+        artifacts: Some(filter.to_string()),
         ids: None,
         signature: None,
         stdin: None,
@@ -210,77 +208,87 @@ fn all_filter_signs_combined_checksum_not_split_sidecars_no_chain() {
         certificate: None,
         output: None,
         if_condition: None,
-    }];
-
-    let mut ctx = TestContextBuilder::new().dry_run(true).signs(signs).build();
-
-    let add = |ctx: &mut anodizer_core::context::Context,
-               kind: ArtifactKind,
-               name: &str,
-               meta: std::collections::HashMap<String, String>| {
-        ctx.artifacts.add(Artifact {
-            kind,
-            name: name.to_string(),
-            path: std::path::PathBuf::from(format!("/tmp/{name}")),
-            target: None,
-            crate_name: "myapp".to_string(),
-            metadata: meta,
-            size: None,
-        });
     };
 
-    add(
-        &mut ctx,
-        ArtifactKind::Archive,
-        "myapp.tar.gz",
-        Default::default(),
-    );
-    // Combined checksums file — SHOULD be signed under `all`.
-    add(
-        &mut ctx,
-        ArtifactKind::Checksum,
-        "myapp_checksums.txt",
-        combined_meta(),
-    );
-    // Split per-artifact sidecar — must NOT be signed.
-    add(
-        &mut ctx,
-        ArtifactKind::Checksum,
-        "myapp.tar.gz.sha256",
-        Default::default(),
-    );
+    // (filter, archive should be signed?)
+    for (filter, archive_signed) in [("all", true), ("checksum", false)] {
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .signs(vec![gpg_sign(filter)])
+            .build();
 
-    SignStage.run(&mut ctx).unwrap();
+        let add = |ctx: &mut anodizer_core::context::Context,
+                   kind: ArtifactKind,
+                   name: &str,
+                   meta: std::collections::HashMap<String, String>| {
+            ctx.artifacts.add(Artifact {
+                kind,
+                name: name.to_string(),
+                path: std::path::PathBuf::from(format!("/tmp/{name}")),
+                target: None,
+                crate_name: "myapp".to_string(),
+                metadata: meta,
+                size: None,
+            });
+        };
 
-    let sig_names: Vec<String> = ctx
-        .artifacts
-        .by_kind(ArtifactKind::Signature)
-        .into_iter()
-        .map(|a| a.name.clone())
-        .collect();
-
-    assert!(
-        sig_names.iter().any(|n| n == "myapp_checksums.txt.sig"),
-        "combined checksums file must be signed under `all`; got {sig_names:?}"
-    );
-    assert!(
-        sig_names.iter().any(|n| n == "myapp.tar.gz.sig"),
-        "primary archive must be signed under `all`; got {sig_names:?}"
-    );
-    assert!(
-        !sig_names.iter().any(|n| n == "myapp.tar.gz.sha256.sig"),
-        "split checksum sidecar must NOT be signed; got {sig_names:?}"
-    );
-
-    // No registered artifact (subjects or freshly-produced signatures) may
-    // carry a recursive sidecar chain.
-    for a in ctx.artifacts.all() {
-        assert!(
-            !has_recursive_sidecar_chain(&a.name),
-            "recursive sidecar chain registered: {} (kind={:?})",
-            a.name,
-            a.kind
+        add(
+            &mut ctx,
+            ArtifactKind::Archive,
+            "myapp.tar.gz",
+            Default::default(),
         );
+        // Combined checksums file.
+        add(
+            &mut ctx,
+            ArtifactKind::Checksum,
+            "myapp_checksums.txt",
+            combined_meta(),
+        );
+        // Split per-artifact checksum sidecar.
+        add(
+            &mut ctx,
+            ArtifactKind::Checksum,
+            "myapp.tar.gz.sha256",
+            Default::default(),
+        );
+
+        SignStage.run(&mut ctx).unwrap();
+
+        let sig_names: Vec<String> = ctx
+            .artifacts
+            .by_kind(ArtifactKind::Signature)
+            .into_iter()
+            .map(|a| a.name.clone())
+            .collect();
+
+        // Both the combined file AND the split sidecar are signed (GR parity).
+        assert!(
+            sig_names.iter().any(|n| n == "myapp_checksums.txt.sig"),
+            "[{filter}] combined checksums file must be signed; got {sig_names:?}"
+        );
+        assert!(
+            sig_names.iter().any(|n| n == "myapp.tar.gz.sha256.sig"),
+            "[{filter}] split checksum sidecar must be signed (GR parity); got {sig_names:?}"
+        );
+        // The primary archive is signed only under `all`, never under `checksum`.
+        assert_eq!(
+            sig_names.iter().any(|n| n == "myapp.tar.gz.sig"),
+            archive_signed,
+            "[{filter}] archive signed == {archive_signed}; got {sig_names:?}"
+        );
+
+        // No registered artifact (subjects or produced signatures) may carry a
+        // forbidden recursive chain. `myapp.tar.gz.sha256.sig` (a sig of a
+        // checksum) is the GR-legit second level and is NOT a violation.
+        for a in ctx.artifacts.all() {
+            assert!(
+                !has_recursive_sidecar_chain(&a.name),
+                "[{filter}] forbidden recursive chain registered: {} (kind={:?})",
+                a.name,
+                a.kind
+            );
+        }
     }
 }
 
@@ -474,20 +482,21 @@ fn test_multiple_sign_configs_run_independently() {
 
 #[test]
 fn test_artifacts_filter_selects_correct_kinds() {
-    // "all" = signable_subject_kinds() (primary subjects). Installer-family
-    // kinds (MSI/NSIS as Installer, DMG as DiskImage, PKG as MacOsPackage) are
-    // all primary, so all three are signed under "all".
+    // "all" = signable_subject_kinds() (primary subjects) PLUS every Checksum
+    // (GoReleaser parity). Installer-family kinds (MSI/NSIS as Installer, DMG as
+    // DiskImage, PKG as MacOsPackage) are all primary, so all three are signed
+    // under "all".
     assert!(should_sign(ArtifactKind::Archive, "all").unwrap());
     assert!(should_sign(ArtifactKind::UploadableBinary, "all").unwrap());
-    // Checksum is a derived sidecar, NOT a primary subject: never signed.
-    assert!(!should_sign(ArtifactKind::Checksum, "all").unwrap());
+    // Checksum IS signed under `all` (GR signs checksums); one `X.sha256.sig`.
+    assert!(should_sign(ArtifactKind::Checksum, "all").unwrap());
     assert!(should_sign(ArtifactKind::LinuxPackage, "all").unwrap());
     assert!(should_sign(ArtifactKind::Sbom, "all").unwrap());
     assert!(should_sign(ArtifactKind::Installer, "all").unwrap());
     assert!(should_sign(ArtifactKind::DiskImage, "all").unwrap());
     assert!(should_sign(ArtifactKind::MacOsPackage, "all").unwrap());
-    // Signature + Certificate + Checksum + Metadata are excluded from `all` to
-    // prevent recursive signing.
+    // Signature + Certificate + Metadata are excluded from `all` to prevent
+    // recursive signing (never sign a sig).
     assert!(!should_sign(ArtifactKind::Signature, "all").unwrap());
     assert!(!should_sign(ArtifactKind::Certificate, "all").unwrap());
 
@@ -633,7 +642,7 @@ fn test_ids_filter_restricts_signed_artifacts() {
     // 2. If ids is set, artifact metadata "id" or "name" must match
     let ids = &sign_cfg.ids;
     let should_sign = |a: &Artifact| -> bool {
-        if !should_sign_artifact(a.kind, &a.metadata, filter).unwrap() {
+        if !should_sign_artifact(a.kind, filter).unwrap() {
             return false;
         }
         if let Some(id_list) = ids {
@@ -2648,12 +2657,12 @@ fn test_all_filter_includes_primary_subject_types() {
     assert!(should_sign(ArtifactKind::DiskImage, "all").unwrap());
     assert!(should_sign(ArtifactKind::MacOsPackage, "all").unwrap());
     assert!(should_sign(ArtifactKind::Sbom, "all").unwrap());
-    // Checksum is a derived sidecar, NOT a primary subject: excluded from `all`.
-    assert!(!should_sign(ArtifactKind::Checksum, "all").unwrap());
+    // Checksum IS signed under `all` (GoReleaser parity); one `X.sha256.sig`.
+    assert!(should_sign(ArtifactKind::Checksum, "all").unwrap());
     assert!(should_sign(ArtifactKind::UploadableFile, "all").unwrap());
-    // Signature + Certificate + Metadata are derived sidecars, excluded from
-    // `all` so re-running sign on a partially-built dist does not produce
-    // sig.sig chains.
+    // Signature + Certificate + Metadata are excluded from `all` so re-running
+    // sign on a partially-built dist does not produce sig.sig chains (never
+    // sign a sig).
     assert!(!should_sign(ArtifactKind::Signature, "all").unwrap());
     assert!(!should_sign(ArtifactKind::Certificate, "all").unwrap());
 

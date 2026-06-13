@@ -263,7 +263,7 @@ pub(crate) fn process_sign_configs(
             for a in ctx.artifacts.all().iter() {
                 match filter_mode {
                     ArtifactFilter::FromConfig => {
-                        if !should_sign_artifact(a.kind, &a.metadata, config_filter)? {
+                        if !should_sign_artifact(a.kind, config_filter)? {
                             continue;
                         }
                     }

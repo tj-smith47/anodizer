@@ -65,15 +65,19 @@ fn add_combined_checksum(ctx: &mut Context, name: &str, crate_name: &str) {
 use anodizer_core::test_helpers::has_recursive_sidecar_chain;
 
 #[test]
-fn verify_release_never_demands_signature_of_a_checksum_or_signature() {
+fn verify_release_never_demands_signature_of_a_signature_or_certificate() {
     use anodizer_core::config::SignConfig;
 
     // Mirror anodizer's own posture: `signs: artifacts: checksum`. Register an
     // archive, its COMBINED checksums file, a per-artifact split sidecar, plus a
-    // Signature and Certificate (the dist state on a publish-only resume). The
-    // config-derived expected set must demand ONLY the combined checksums file's
-    // signature — never a signature of a split sidecar, a signature, or a
-    // certificate (which would manifest as a recursive chain).
+    // Signature and Certificate (the dist state on a publish-only resume).
+    //
+    // GoReleaser parity: `artifacts: checksum` signs EVERY Checksum, so the
+    // derivation legitimately demands BOTH the combined `checksums.txt.sig` AND
+    // the split `app.tar.gz.sha256.sig` (the GR-legit second level). It must
+    // NEVER demand a signature OF a signature or OF a certificate, and no
+    // demanded name may form a forbidden recursive chain (a checksum of a sig,
+    // a sig of a sig, etc.).
     let sign_cfg = SignConfig {
         id: Some("default".to_string()),
         artifacts: Some("checksum".to_string()),
@@ -88,28 +92,31 @@ fn verify_release_never_demands_signature_of_a_checksum_or_signature() {
         .build();
 
     add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
-    // Combined checksums file (the only legitimate sign subject under `checksum`).
     add_combined_checksum(&mut ctx, "app_checksums.txt", "app");
-    // Split sidecar plus a signature/certificate that must NOT be re-signed by
-    // the derivation.
     add_artifact(&mut ctx, ArtifactKind::Checksum, "app.tar.gz.sha256", "app");
+    // A signature/certificate that must NOT be re-signed by the derivation.
     add_artifact(&mut ctx, ArtifactKind::Signature, "app.tar.gz.sig", "app");
     add_artifact(&mut ctx, ArtifactKind::Certificate, "app.tar.gz.pem", "app");
 
     let derived = config_expected_asset_names(&ctx, "app", None).expect("derivation");
 
+    // Both the combined file and the split sidecar are signed (GR parity).
     assert!(
         derived.contains(&"app_checksums.txt.sig".to_string()),
         "must demand the combined checksums signature; got {derived:?}"
     );
+    assert!(
+        derived.contains(&"app.tar.gz.sha256.sig".to_string()),
+        "must demand the split sidecar signature (GR parity); got {derived:?}"
+    );
+    // No demanded name may form a forbidden recursive chain.
     for name in &derived {
         assert!(
             !has_recursive_sidecar_chain(name),
-            "verify-release demanded a recursive sidecar asset: {name}"
+            "verify-release demanded a forbidden recursive sidecar asset: {name}"
         );
     }
-    // Specifically: never a signature of the split sidecar or of a signature.
-    assert!(!derived.contains(&"app.tar.gz.sha256.sig".to_string()));
+    // Specifically: never a signature OF a signature or OF a certificate.
     assert!(!derived.contains(&"app.tar.gz.sig.sig".to_string()));
     assert!(!derived.contains(&"app.tar.gz.pem.sig".to_string()));
 }
@@ -1442,14 +1449,18 @@ fn real_sboms_config() -> Vec<anodizer_core::config::SbomConfig> {
 }
 
 #[test]
-fn v080_mirror_split_checksum_signing_demands_no_recursive_sig_chains() {
-    // Reproduction of the v0.8.0 / v0.9.0 asset shape: split (`split: true`)
-    // per-artifact `.sha256` sidecars, the real signs (`artifacts: checksum`) /
-    // sboms (`artifacts: archive`) config, and the real published set. The
-    // pathological combo (sign every per-artifact checksum) is now
-    // unrepresentable: `artifacts: checksum` signs ONLY a combined `checksums.txt`,
-    // and a split run has none — so the sign config demands ZERO signatures and
-    // the gate must NEVER demand a `.sha256.sig` (let alone a `.sha256.sig.sha256`).
+fn v080_mirror_split_checksum_signing_demands_second_level_sigs_no_recursion() {
+    // Reproduction of the v0.8.0 asset shape: split (`split: true`) per-artifact
+    // `.sha256` sidecars, the real signs (`artifacts: checksum`) / sboms
+    // (`artifacts: archive`) config, and the real published set — which has
+    // every `.sha256` checksum but NO `.sig` (the v0.8.0 sign-skip bug).
+    //
+    // GoReleaser parity: `artifacts: checksum` signs EVERY Checksum, so the
+    // derivation demands one legit `X.sha256.sig` (second level) per checksum
+    // asset (42). None were uploaded, so the gate must FAIL listing them. It
+    // must NEVER demand a third-level `X.sha256.sig.sha256` — that forbidden
+    // recursion stays unrepresentable (checksum input is primary-only, refresh
+    // skips derived sidecars).
     let (addr, _log) = spawn_release_route(V080_PUBLISHED_ASSETS);
 
     let mut ctx = asset_ctx(addr, vec![published_crate("anodizer", None)]);
@@ -1460,30 +1471,49 @@ fn v080_mirror_split_checksum_signing_demands_no_recursive_sig_chains() {
 
     let derived = config_expected_asset_names(&ctx, "anodizer", None).expect("derivation");
 
-    // The sign config (checksum + split) contributes nothing; only the SBOM
-    // config demands `X.cdx.json` for archives — all already published.
+    // Every demanded asset is a legit terminal — no forbidden recursive chain.
     for name in &derived {
         assert!(
             !has_recursive_sidecar_chain(name),
-            "config demanded a recursive sidecar asset: {name}"
-        );
-        assert!(
-            !name.ends_with(".sha256.sig"),
-            "no signature of a per-artifact checksum may be demanded: {name}"
+            "config demanded a forbidden recursive sidecar asset: {name}"
         );
     }
+    // The 42 second-level checksum signatures ARE demanded (GR parity)...
+    let checksum_sigs = derived
+        .iter()
+        .filter(|n| n.ends_with(".sha256.sig"))
+        .count();
+    assert_eq!(
+        checksum_sigs, 42,
+        "one X.sha256.sig per checksum asset is demanded (GR parity); got {derived:?}"
+    );
     assert!(
-        !derived
+        derived
             .iter()
             .any(|n| n == "anodizer-0.8.0-linux-amd64.tar.gz.sha256.sig"),
-        "the v0.8.0/v0.9.0 phantom sig-of-a-checksum must not be demanded: {derived:?}"
+        "the legit second-level checksum signature is demanded: {derived:?}"
+    );
+    // ...but NO third-level checksum-of-a-signature is ever demanded.
+    assert!(
+        !derived.iter().any(|n| n.ends_with(".sha256.sig.sha256")),
+        "the forbidden third-level chain must never be demanded: {derived:?}"
     );
 
-    // The whole gate passes: every produced asset is published, and the
-    // config-derived SBOM expectations are satisfied by the published set.
-    VerifyReleaseStage
+    // The gate FAILS: the 42 demanded `.sha256.sig` assets were never produced
+    // or uploaded (the v0.8.0 sign-skip bug), and that is precisely what the
+    // config-derived expectation catches.
+    let err = VerifyReleaseStage
         .run(&mut ctx)
-        .expect("split-checksum signing demands no phantom sigs; gate passes");
+        .expect_err("the unsigned v0.8.0 asset set must fail the gate");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("signature/SBOM asset(s) required by the resolved signs/sboms config"),
+        "the gate names the missing config-required signatures: {msg}"
+    );
+    assert!(
+        msg.contains("anodizer-0.8.0-linux-amd64.tar.gz.sha256.sig"),
+        "the missing second-level signatures are named precisely: {msg}"
+    );
 }
 
 #[test]

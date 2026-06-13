@@ -567,28 +567,49 @@ pub fn create_config(dir: &Path, content: &str) {
         .unwrap_or_else(|e| panic!("failed to write .anodizer.yaml: {e}"));
 }
 
-/// `true` when `name` ends in two or more consecutive `.sha256` / `.sig`
-/// segments — the recursive sidecar pattern `(\.sha256|\.sig){2,}` such as
-/// `X.sha256.sig` or `X.sha256.sig.sha256`. A single trailing `.sha256` or
-/// `.sig` is a legitimate sidecar and returns `false`.
+/// `true` when `name`'s trailing `.sha256` / `.sig` segments form a FORBIDDEN
+/// recursive chain — a checksum or signature applied to a derived sidecar.
 ///
-/// Shared by the checksum-stage and verify-release regression suites, which
-/// both assert that no produced/demanded asset name matches the chain.
+/// GoReleaser-parity legitimate sidecar terminals (return `false`):
+///   - `X.sha256`            — checksum of a primary
+///   - `X.sig`               — signature of a primary
+///   - `X.sha256.sig`        — signature of a checksum (GR signs checksums)
+///   - `X.cdx.json.sha256`   — checksum of an SBOM
+///
+/// Forbidden chains (return `true`) — a derived sidecar fed back as a subject:
+///   - `X.sha256.sig.sha256` — checksum OF a signature (the v0.9.0 bug)
+///   - `X.sig.sig`           — signature of a signature
+///   - `X.sig.sha256`        — checksum of a signature
+///   - `X.sha256.sha256`     — checksum of a checksum
+///
+/// The single allowed adjacency among trailing sidecar segments is `.sig`
+/// following `.sha256` (signing a checksum). Any other adjacency — `.sha256`
+/// after `.sha256`, `.sha256` after `.sig`, or `.sig` after `.sig` — is a
+/// re-derivation of a sidecar and is forbidden.
+///
+/// Shared by the checksum-stage, sign-stage, and verify-release regression
+/// suites, which assert that no produced/demanded asset name matches the chain.
 pub fn has_recursive_sidecar_chain(name: &str) -> bool {
+    // Peel trailing sidecar segments off the end; record them outermost-first.
     let mut rest = name;
-    let mut run = 0usize;
+    let mut outer_to_inner: Vec<&str> = Vec::new();
     loop {
         if let Some(stripped) = rest.strip_suffix(".sha256") {
             rest = stripped;
-            run += 1;
+            outer_to_inner.push("sha256");
         } else if let Some(stripped) = rest.strip_suffix(".sig") {
             rest = stripped;
-            run += 1;
+            outer_to_inner.push("sig");
         } else {
             break;
         }
     }
-    run >= 2
+    // Re-order inner→outer (the order sidecars were actually applied) and check
+    // each adjacency. The ONLY legitimate adjacency is sha256 -> sig.
+    let inner_to_outer: Vec<&str> = outer_to_inner.into_iter().rev().collect();
+    inner_to_outer
+        .windows(2)
+        .any(|pair| !(pair[0] == "sha256" && pair[1] == "sig"))
 }
 
 /// Create a fake binary file at `dir/<name>` for testing archive/checksum stages.
@@ -711,11 +732,32 @@ mod tests {
 
     #[test]
     fn recursive_sidecar_chain_detector_classification() {
-        assert!(has_recursive_sidecar_chain("x.sha256.sig"));
-        assert!(has_recursive_sidecar_chain("x.sha256.sig.sha256"));
-        assert!(has_recursive_sidecar_chain("x.tar.gz.sig.sig"));
-        assert!(has_recursive_sidecar_chain("x.cdx.json.sha256.sig.sha256"));
-        // Single legitimate sidecars are fine.
+        // Forbidden: a checksum/signature applied to a derived sidecar.
+        assert!(
+            has_recursive_sidecar_chain("x.sha256.sig.sha256"),
+            "checksum of a signature"
+        );
+        assert!(
+            has_recursive_sidecar_chain("x.tar.gz.sig.sig"),
+            "signature of a signature"
+        );
+        assert!(
+            has_recursive_sidecar_chain("x.tar.gz.sig.sha256"),
+            "checksum of a signature"
+        );
+        assert!(
+            has_recursive_sidecar_chain("x.tar.gz.sha256.sha256"),
+            "checksum of a checksum"
+        );
+        assert!(
+            has_recursive_sidecar_chain("x.cdx.json.sha256.sig.sha256"),
+            "checksum of a signature-of-a-checksum"
+        );
+        // Legitimate GoReleaser-parity terminals.
+        assert!(
+            !has_recursive_sidecar_chain("x.tar.gz.sha256.sig"),
+            "signature of a checksum is GR-legit (the second level)"
+        );
         assert!(!has_recursive_sidecar_chain("x.tar.gz.sha256"));
         assert!(!has_recursive_sidecar_chain("x.tar.gz.sig"));
         assert!(!has_recursive_sidecar_chain("x.cdx.json.sha256"));

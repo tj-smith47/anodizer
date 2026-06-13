@@ -95,7 +95,7 @@ pub fn expected_signature_assets(
             if artifact.crate_name != crate_name {
                 continue;
             }
-            if !should_sign_artifact(artifact.kind, &artifact.metadata, filter)? {
+            if !should_sign_artifact(artifact.kind, filter)? {
                 continue;
             }
             if !sign_ids_match(&artifact.metadata, cfg.ids.as_ref()) {

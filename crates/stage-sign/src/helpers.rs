@@ -21,13 +21,13 @@ use anodizer_core::env_expand::expand_with_preserve;
 /// - `"all"` / `"any"` → the PRIMARY subject kinds
 ///   (`signable_subject_kinds()`: Archive, UploadableBinary, SourceArchive,
 ///   UploadableFile, Makeself, AppImage, LinuxPackage, Flatpak, SourceRpm,
-///   Installer, DiskImage, MacOsPackage, Sbom), PLUS the COMBINED
-///   `checksums.txt` (a `Checksum` with `combined = "true"`) — GoReleaser's
-///   `sign.artifacts: all` signs the combined checksums file too, so combined-
-///   mode consumers get `checksums.txt.sig`. Every other DERIVED sidecar
-///   (a split per-artifact `.sha256`, Signature, Certificate, Metadata) is
-///   excluded by construction, so re-running the sign stage on a partially-
-///   built dist can never produce `*.sig.sig` / `*.sha256.sig` chains.
+///   Installer, DiskImage, MacOsPackage, Sbom) PLUS every `Checksum`
+///   (combined `checksums.txt` AND per-artifact split `.sha256` sidecars) —
+///   GoReleaser's `sign.artifacts: all` is `ReleaseUploadableTypes()` minus
+///   only `Signature, Certificate`, and `Checksum` is in that set
+///   (`internal/pipe/sign/sign.go:103-108`). `Signature` and `Certificate`
+///   ARE excluded: signing a signature is never valid. Signing a checksum
+///   yields one legitimate `X.sha256.sig` and CANNOT recurse — see below.
 /// - `"source"`        → only `ArtifactKind::SourceArchive`
 /// - `"archive"`       → only `ArtifactKind::Archive`
 /// - `"binary"`        → only `ArtifactKind::Binary`
@@ -37,26 +37,32 @@ use anodizer_core::env_expand::expand_with_preserve;
 /// - `"sbom"`          → only `ArtifactKind::Sbom`
 /// - `"snap"`          → only `ArtifactKind::Snap`
 /// - `"macos_package"` → only `ArtifactKind::MacOsPackage`
-/// - `"checksum"`      → only the COMBINED `checksums.txt` artifact
-///   (`ArtifactKind::Checksum` with `combined = "true"`). Per-artifact split
-///   sidecars are NEVER signed: signing each `X.sha256` is what produced the
-///   `X.sha256.sig` (and downstream `X.sha256.sig.sha256`) garbage. A run using
-///   `split: true` has no combined file, so `artifacts: checksum` signs nothing
-///   — the correct posture there is `artifacts: all` (sign primaries directly).
+/// - `"checksum"`      → every `ArtifactKind::Checksum`, combined file and
+///   per-artifact split sidecars alike (GoReleaser:
+///   `artifact.ByType(artifact.Checksum)`,
+///   `internal/pipe/sign/sign.go:93-94`). Each yields one `X.sha256.sig`.
 ///
-/// `metadata` is the candidate artifact's metadata, consulted only by the
-/// `"checksum"` filter to distinguish the combined file from split sidecars.
+/// ## Why this cannot recurse into `X.sha256.sig.sha256`
+///
+/// Signing a checksum produces a `Signature` (`X.sha256.sig`). The
+/// anti-recursion guard is NOT in this filter — it is upstream, mirroring
+/// GoReleaser's `refreshAll` `Not(Checksum, Signature, Certificate)`
+/// (`internal/pipe/checksums/checksums.go:189-190`). Two upstream facts close
+/// the loop: the checksum stage's subject set is `checksummable_subject_kinds()`
+/// (PRIMARY only — it never hashes a `.sig` or a `.sha256`), and
+/// `refresh_combined_checksums` skips every `is_derived_sidecar_kind`. So a
+/// freshly-produced `X.sha256.sig` is never re-checksummed (no third level
+/// forms) and never re-signed (`Signature` is excluded here). The legit second
+/// level `X.sha256.sig` is GoReleaser-parity; the third level is
+/// unrepresentable.
+///
 /// Any other value returns an error.
-pub(crate) fn should_sign_artifact(
-    kind: ArtifactKind,
-    metadata: &HashMap<String, String>,
-    filter: &str,
-) -> Result<bool> {
+pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> Result<bool> {
     match filter {
         "none" => Ok(false),
         "all" | "any" => Ok(
             anodizer_core::artifact::signable_subject_kinds().contains(&kind)
-                || is_combined_checksum(kind, metadata),
+                || kind == ArtifactKind::Checksum,
         ),
         "source" => Ok(kind == ArtifactKind::SourceArchive),
         "archive" => Ok(kind == ArtifactKind::Archive),
@@ -67,22 +73,9 @@ pub(crate) fn should_sign_artifact(
         "sbom" => Ok(kind == ArtifactKind::Sbom),
         "snap" => Ok(kind == ArtifactKind::Snap),
         "macos_package" => Ok(kind == ArtifactKind::MacOsPackage),
-        "checksum" => Ok(is_combined_checksum(kind, metadata)),
+        "checksum" => Ok(kind == ArtifactKind::Checksum),
         other => anyhow::bail!("invalid sign artifacts filter: {other}"),
     }
-}
-
-/// `true` when the artifact is the COMBINED `checksums.txt` (a `Checksum`
-/// carrying the `combined = "true"` marker), as opposed to a per-artifact split
-/// `.sha256` sidecar. Signing the combined file is safe (it is signed once and
-/// never re-checksummed); signing a split sidecar is what produced the
-/// recursive `.sha256.sig` chains, so split sidecars are never matched.
-fn is_combined_checksum(kind: ArtifactKind, metadata: &HashMap<String, String>) -> bool {
-    kind == ArtifactKind::Checksum
-        && metadata
-            .get(anodizer_core::artifact::COMBINED_CHECKSUM_META)
-            .map(|s| s.as_str())
-            == Some(anodizer_core::artifact::COMBINED_CHECKSUM_VALUE)
 }
 
 /// Validate a sign-config list's ids: unique, and never colliding with the
