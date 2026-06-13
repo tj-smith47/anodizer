@@ -605,6 +605,71 @@ pub fn release_uploadable_kinds() -> &'static [ArtifactKind] {
     ]
 }
 
+/// PRIMARY artifact kinds: the real, distributable build outputs that MAY be
+/// inputs (subjects) to the checksum and sign stages.
+///
+/// Deliberately EXCLUDES every DERIVED sidecar kind ([`ArtifactKind::Checksum`],
+/// [`ArtifactKind::Signature`], [`ArtifactKind::Certificate`],
+/// [`ArtifactKind::Metadata`]). A sidecar is the *output* of checksumming or
+/// signing — feeding it back in as a subject is what produces the pathological
+/// recursive chains (a checksum-of-a-signature-of-a-checksum:
+/// `X.sha256.sig.sha256`). By construction those kinds are not in this list, so
+/// no checksum or sign stage can ever take one as input.
+///
+/// [`ArtifactKind::Sbom`] IS primary: a primary artifact's SBOM (`X.cdx.json`)
+/// may be checksummed once (→ `X.cdx.json.sha256`) and signed once, matching
+/// GoReleaser (which lists SBOMs in `checksums.txt`). The HARD invariant is
+/// only that a Checksum/Signature/Certificate/Metadata is NEVER an input — an
+/// SBOM, being a first-class catalog artifact rather than a checksum/signature
+/// of something, is safe to checksum/sign once with no recursion.
+pub fn primary_subject_kinds() -> &'static [ArtifactKind] {
+    &[
+        ArtifactKind::Archive,
+        ArtifactKind::UploadableBinary,
+        ArtifactKind::SourceArchive,
+        ArtifactKind::UploadableFile,
+        ArtifactKind::Makeself,
+        ArtifactKind::AppImage,
+        ArtifactKind::LinuxPackage,
+        ArtifactKind::Flatpak,
+        ArtifactKind::SourceRpm,
+        ArtifactKind::Installer,
+        ArtifactKind::DiskImage,
+        ArtifactKind::MacOsPackage,
+        ArtifactKind::Sbom,
+    ]
+}
+
+/// The kinds the checksum stage may take as subjects. Identical to
+/// [`primary_subject_kinds`] — a primary artifact (including its SBOM) is
+/// checksummed exactly once; a derived sidecar never is.
+pub fn checksummable_subject_kinds() -> &'static [ArtifactKind] {
+    primary_subject_kinds()
+}
+
+/// The kinds the sign stage's `artifacts: all` / `artifacts: any` filter may
+/// take as subjects. Identical to [`primary_subject_kinds`] — a derived sidecar
+/// (Checksum/Signature/Certificate/Metadata) is never signed, so the stage can
+/// never produce a `.sig.sig` / `.sha256.sig` chain from `artifacts: all`.
+pub fn signable_subject_kinds() -> &'static [ArtifactKind] {
+    primary_subject_kinds()
+}
+
+/// `true` when `kind` is a DERIVED sidecar — the OUTPUT of checksumming,
+/// signing, or run metadata, and therefore something that must NEVER be an
+/// input (subject) to the checksum or sign stages. The single guard that makes
+/// the recursive `(.sha256|.sig)`-chain bug unrepresentable: any code building a
+/// subject set asserts `!is_derived_sidecar_kind(kind)`.
+pub fn is_derived_sidecar_kind(kind: ArtifactKind) -> bool {
+    matches!(
+        kind,
+        ArtifactKind::Checksum
+            | ArtifactKind::Signature
+            | ArtifactKind::Certificate
+            | ArtifactKind::Metadata
+    )
+}
+
 /// Check if an artifact kind is uploadable.
 fn is_uploadable(kind: ArtifactKind) -> bool {
     uploadable_kinds().contains(&kind)
@@ -941,6 +1006,50 @@ mod tests {
         let ids = vec!["keep".to_string()];
         assert!(matches_id_filter(&kept, Some(&ids)));
         assert!(!matches_id_filter(&dropped, Some(&ids)));
+    }
+
+    #[test]
+    fn primary_subject_set_excludes_every_derived_sidecar() {
+        // The HARD invariant: no Checksum/Signature/Certificate/Metadata is
+        // ever a checksum or sign subject. If any leak in, the recursive
+        // X.sha256.sig.sha256 chain becomes representable again.
+        for set in [
+            primary_subject_kinds(),
+            checksummable_subject_kinds(),
+            signable_subject_kinds(),
+        ] {
+            for &k in set {
+                assert!(
+                    !is_derived_sidecar_kind(k),
+                    "derived sidecar {k:?} must never be a checksum/sign subject"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn derived_sidecar_classification() {
+        for k in [
+            ArtifactKind::Checksum,
+            ArtifactKind::Signature,
+            ArtifactKind::Certificate,
+            ArtifactKind::Metadata,
+        ] {
+            assert!(is_derived_sidecar_kind(k), "{k:?} is a derived sidecar");
+        }
+        // SBOM is a first-class catalog artifact, not a derived sidecar: it may
+        // be checksummed/signed once without recursion.
+        for k in [
+            ArtifactKind::Sbom,
+            ArtifactKind::Archive,
+            ArtifactKind::UploadableBinary,
+        ] {
+            assert!(
+                !is_derived_sidecar_kind(k),
+                "{k:?} is NOT a derived sidecar"
+            );
+            assert!(primary_subject_kinds().contains(&k));
+        }
     }
 
     #[test]

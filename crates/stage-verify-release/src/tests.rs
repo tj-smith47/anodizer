@@ -45,6 +45,97 @@ fn add_artifact(ctx: &mut Context, kind: ArtifactKind, name: &str, crate_name: &
     });
 }
 
+/// Register a COMBINED `checksums.txt` artifact — the only Checksum kind that
+/// `signs: artifacts: checksum` signs (split sidecars are never signed).
+fn add_combined_checksum(ctx: &mut Context, name: &str, crate_name: &str) {
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Checksum,
+        name: name.to_string(),
+        path: std::path::PathBuf::from(name),
+        target: None,
+        crate_name: crate_name.to_string(),
+        metadata: HashMap::from([("combined".to_string(), "true".to_string())]),
+        size: None,
+    });
+}
+
+/// `true` when `name` ends in two or more consecutive `.sha256` / `.sig`
+/// segments (the recursive sidecar pattern such as `X.sha256.sig`).
+fn has_recursive_sidecar_chain(name: &str) -> bool {
+    let mut rest = name;
+    let mut run = 0usize;
+    loop {
+        if let Some(s) = rest.strip_suffix(".sha256") {
+            rest = s;
+            run += 1;
+        } else if let Some(s) = rest.strip_suffix(".sig") {
+            rest = s;
+            run += 1;
+        } else {
+            break;
+        }
+    }
+    run >= 2
+}
+
+#[test]
+fn verify_release_never_demands_signature_of_a_checksum_or_signature() {
+    use anodizer_core::config::SignConfig;
+
+    // Mirror anodizer's own posture: `signs: artifacts: checksum`. Register an
+    // archive, its COMBINED checksums file, a per-artifact split sidecar, plus a
+    // Signature and Certificate (the dist state on a publish-only resume). The
+    // config-derived expected set must demand ONLY the combined checksums file's
+    // signature — never a signature of a split sidecar, a signature, or a
+    // certificate (which would manifest as a recursive chain).
+    let sign_cfg = SignConfig {
+        id: Some("default".to_string()),
+        artifacts: Some("checksum".to_string()),
+        cmd: Some("true".to_string()),
+        args: Some(vec![]),
+        ..Default::default()
+    };
+    let mut ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![published_crate("app", None)])
+        .signs(vec![sign_cfg])
+        .build();
+
+    add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
+    // Combined checksums file (the only legitimate sign subject under `checksum`).
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Checksum,
+        name: "app_checksums.txt".to_string(),
+        path: std::path::PathBuf::from("app_checksums.txt"),
+        target: None,
+        crate_name: "app".to_string(),
+        metadata: HashMap::from([("combined".to_string(), "true".to_string())]),
+        size: None,
+    });
+    // Split sidecar plus a signature/certificate that must NOT be re-signed by
+    // the derivation.
+    add_artifact(&mut ctx, ArtifactKind::Checksum, "app.tar.gz.sha256", "app");
+    add_artifact(&mut ctx, ArtifactKind::Signature, "app.tar.gz.sig", "app");
+    add_artifact(&mut ctx, ArtifactKind::Certificate, "app.tar.gz.pem", "app");
+
+    let derived = config_expected_asset_names(&ctx, "app", None).expect("derivation");
+
+    assert!(
+        derived.contains(&"app_checksums.txt.sig".to_string()),
+        "must demand the combined checksums signature; got {derived:?}"
+    );
+    for name in &derived {
+        assert!(
+            !has_recursive_sidecar_chain(name),
+            "verify-release demanded a recursive sidecar asset: {name}"
+        );
+    }
+    // Specifically: never a signature of the split sidecar or of a signature.
+    assert!(!derived.contains(&"app.tar.gz.sha256.sig".to_string()));
+    assert!(!derived.contains(&"app.tar.gz.sig.sig".to_string()));
+    assert!(!derived.contains(&"app.tar.gz.pem.sig".to_string()));
+}
+
 #[test]
 fn disabled_is_noop() {
     let mut ctx = TestContextBuilder::new()
@@ -1017,7 +1108,7 @@ fn derived_expectations_include_per_artifact_sigs_when_signing_enabled() {
         .crates(vec![published_crate("app", None)])
         .build();
     ctx.config.signs = vec![checksum_gpg_sign()];
-    add_artifact(&mut ctx, ArtifactKind::Checksum, "app_checksums.txt", "app");
+    add_combined_checksum(&mut ctx, "app_checksums.txt", "app");
     add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
 
     let derived = config_expected_asset_names(&ctx, "app", None).expect("derivation");
@@ -1070,8 +1161,9 @@ fn derived_expectations_empty_when_run_recorded_intentional_skip() {
 #[test]
 fn derived_expectations_follow_subject_verdict_under_release_ids() {
     // A signature inherits its SUBJECT's release.ids verdict: a sig of an
-    // ids-excluded archive is not expected, a sig of an ids-included archive
-    // is, and checksum-file sigs (always-pass subjects) are always expected.
+    // ids-excluded archive is not expected, a sig of an ids-included archive is.
+    // Under `artifacts: all` the combined checksum is a derived sidecar (NOT a
+    // primary subject), so it is never signed and contributes no expectation.
     let mut ctx = TestContextBuilder::new()
         .tag("v1.0.0")
         .crates(vec![published_crate("app", None)])
@@ -1080,7 +1172,7 @@ fn derived_expectations_follow_subject_verdict_under_release_ids() {
         artifacts: Some("all".to_string()),
         ..checksum_gpg_sign()
     }];
-    add_artifact(&mut ctx, ArtifactKind::Checksum, "app_checksums.txt", "app");
+    add_combined_checksum(&mut ctx, "app_checksums.txt", "app");
     let mut keep = HashMap::new();
     keep.insert("id".to_string(), "keep".to_string());
     ctx.artifacts.add(Artifact {
@@ -1108,11 +1200,9 @@ fn derived_expectations_follow_subject_verdict_under_release_ids() {
     let derived = config_expected_asset_names(&ctx, "app", Some(&ids)).expect("derivation");
     assert_eq!(
         derived,
-        vec![
-            "app_checksums.txt.sig".to_string(),
-            "keep.tar.gz.sig".to_string()
-        ],
-        "checksum + ids-included subjects expected; ids-excluded subject not"
+        vec!["keep.tar.gz.sig".to_string()],
+        "only the ids-included primary subject is signed under `all`; the \
+         ids-excluded archive and the derived checksum sidecar contribute none"
     );
 }
 
@@ -1128,18 +1218,8 @@ fn derived_expectations_resolve_per_crate() {
         ])
         .build();
     ctx.config.signs = vec![checksum_gpg_sign()];
-    add_artifact(
-        &mut ctx,
-        ArtifactKind::Checksum,
-        "a_checksums.txt",
-        "crate-a",
-    );
-    add_artifact(
-        &mut ctx,
-        ArtifactKind::Checksum,
-        "b_checksums.txt",
-        "crate-b",
-    );
+    add_combined_checksum(&mut ctx, "a_checksums.txt", "crate-a");
+    add_combined_checksum(&mut ctx, "b_checksums.txt", "crate-b");
 
     let a = config_expected_asset_names(&ctx, "crate-a", None).expect("derivation");
     let b = config_expected_asset_names(&ctx, "crate-b", None).expect("derivation");
@@ -1158,7 +1238,7 @@ fn unsigned_release_fails_listing_missing_signature_assets() {
     let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
     ctx.config.signs = vec![checksum_gpg_sign()];
     add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
-    add_artifact(&mut ctx, ArtifactKind::Checksum, "app_checksums.txt", "app");
+    add_combined_checksum(&mut ctx, "app_checksums.txt", "app");
 
     let err = VerifyReleaseStage
         .run(&mut ctx)
@@ -1381,13 +1461,14 @@ fn real_sboms_config() -> Vec<anodizer_core::config::SbomConfig> {
 }
 
 #[test]
-fn v080_mirror_unsigned_release_fails_listing_all_42_missing_sigs() {
-    // Full-fidelity reproduction of the v0.8.0 live failure: the real
-    // published asset list, the real signs/sboms config shapes (including
-    // the release-mode if: condition), and a registry holding exactly what
-    // that run produced — everything EXCEPT signatures. The gate must fail
-    // demanding one .sig per checksum asset (42), and must NOT complain
-    // about the SBOMs (they were produced and uploaded).
+fn v080_mirror_split_checksum_signing_demands_no_recursive_sig_chains() {
+    // Reproduction of the v0.8.0 / v0.9.0 asset shape: split (`split: true`)
+    // per-artifact `.sha256` sidecars, the real signs (`artifacts: checksum`) /
+    // sboms (`artifacts: archive`) config, and the real published set. The
+    // pathological combo (sign every per-artifact checksum) is now
+    // unrepresentable: `artifacts: checksum` signs ONLY a combined `checksums.txt`,
+    // and a split run has none — so the sign config demands ZERO signatures and
+    // the gate must NEVER demand a `.sha256.sig` (let alone a `.sha256.sig.sha256`).
     let (addr, _log) = spawn_release_route(V080_PUBLISHED_ASSETS);
 
     let mut ctx = asset_ctx(addr, vec![published_crate("anodizer", None)]);
@@ -1396,32 +1477,32 @@ fn v080_mirror_unsigned_release_fails_listing_all_42_missing_sigs() {
     ctx.config.sboms = real_sboms_config();
     register_v080_produced_set(&mut ctx, "anodizer");
 
-    let err = VerifyReleaseStage
-        .run(&mut ctx)
-        .expect_err("the unsigned v0.8.0 asset set must fail the gate");
-    let msg = format!("{err:#}");
+    let derived = config_expected_asset_names(&ctx, "anodizer", None).expect("derivation");
 
+    // The sign config (checksum + split) contributes nothing; only the SBOM
+    // config demands `X.cdx.json` for archives — all already published.
+    for name in &derived {
+        assert!(
+            !has_recursive_sidecar_chain(name),
+            "config demanded a recursive sidecar asset: {name}"
+        );
+        assert!(
+            !name.ends_with(".sha256.sig"),
+            "no signature of a per-artifact checksum may be demanded: {name}"
+        );
+    }
     assert!(
-        msg.contains("42 signature/SBOM asset(s) required by the resolved signs/sboms config"),
-        "exactly the 42 missing checksum signatures are demanded: {msg}"
+        !derived
+            .iter()
+            .any(|n| n == "anodizer-0.8.0-linux-amd64.tar.gz.sha256.sig"),
+        "the v0.8.0/v0.9.0 phantom sig-of-a-checksum must not be demanded: {derived:?}"
     );
-    assert!(
-        msg.contains("anodizer-0.8.0-linux-amd64.tar.gz.sha256.sig"),
-        "missing sig assets are named precisely: {msg}"
-    );
-    assert!(
-        msg.contains("install.sh.sha256.sig"),
-        "extra-file checksum sigs are demanded too: {msg}"
-    );
-    assert!(
-        !msg.contains("produced artifact(s) missing"),
-        "every produced artifact IS on the release; only config-derived \
-         expectations are missing: {msg}"
-    );
-    assert!(
-        !msg.contains(".cdx.json,") && !msg.contains(".cdx.json\n"),
-        "uploaded SBOMs must not be reported missing: {msg}"
-    );
+
+    // The whole gate passes: every produced asset is published, and the
+    // config-derived SBOM expectations are satisfied by the published set.
+    VerifyReleaseStage
+        .run(&mut ctx)
+        .expect("split-checksum signing demands no phantom sigs; gate passes");
 }
 
 #[test]

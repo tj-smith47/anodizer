@@ -18,16 +18,13 @@ use anodizer_core::env_expand::expand_with_preserve;
 ///
 /// Filter values:
 /// - `"none"`          → nothing is signed
-/// - `"all"` / `"any"` → release-uploadable artifact kinds (Archive,
-///   Binary, LinuxPackage,
-///   SourceArchive, Makeself, Flatpak, Sbom, Snap, MacOsPackage,
-///   Installer, DiskImage, Checksum, but NOT internal types like
-///   DockerImage, BrewFormula, etc.). `Signature` and `Certificate`
-///   ARE in `release_uploadable_kinds()` (they DO get uploaded), but
-///   are explicitly excluded from this filter so re-running the sign
-///   stage on a partially-built dist doesn't produce `*.sig.sig` /
-///   `*.pem.sig` chains.
-///   (`Not(ByTypes(Signature, Certificate))`, fix #6509).
+/// - `"all"` / `"any"` → the PRIMARY subject kinds only
+///   (`signable_subject_kinds()`: Archive, UploadableBinary, SourceArchive,
+///   UploadableFile, Makeself, AppImage, LinuxPackage, Flatpak, SourceRpm,
+///   Installer, DiskImage, MacOsPackage, Sbom). Every DERIVED sidecar
+///   (Checksum/Signature/Certificate/Metadata) is excluded by construction, so
+///   re-running the sign stage on a partially-built dist can never produce
+///   `*.sig.sig` / `*.sha256.sig` chains.
 /// - `"source"`        → only `ArtifactKind::SourceArchive`
 /// - `"archive"`       → only `ArtifactKind::Archive`
 /// - `"binary"`        → only `ArtifactKind::Binary`
@@ -37,14 +34,24 @@ use anodizer_core::env_expand::expand_with_preserve;
 /// - `"sbom"`          → only `ArtifactKind::Sbom`
 /// - `"snap"`          → only `ArtifactKind::Snap`
 /// - `"macos_package"` → only `ArtifactKind::MacOsPackage`
-/// - `"checksum"`      → only `ArtifactKind::Checksum`
+/// - `"checksum"`      → only the COMBINED `checksums.txt` artifact
+///   (`ArtifactKind::Checksum` with `combined = "true"`). Per-artifact split
+///   sidecars are NEVER signed: signing each `X.sha256` is what produced the
+///   `X.sha256.sig` (and downstream `X.sha256.sig.sha256`) garbage. A run using
+///   `split: true` has no combined file, so `artifacts: checksum` signs nothing
+///   — the correct posture there is `artifacts: all` (sign primaries directly).
 ///
+/// `metadata` is the candidate artifact's metadata, consulted only by the
+/// `"checksum"` filter to distinguish the combined file from split sidecars.
 /// Any other value returns an error.
-pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> Result<bool> {
+pub(crate) fn should_sign_artifact(
+    kind: ArtifactKind,
+    metadata: &HashMap<String, String>,
+    filter: &str,
+) -> Result<bool> {
     match filter {
         "none" => Ok(false),
-        "all" | "any" => Ok(is_release_uploadable(kind)
-            && !matches!(kind, ArtifactKind::Signature | ArtifactKind::Certificate)),
+        "all" | "any" => Ok(anodizer_core::artifact::signable_subject_kinds().contains(&kind)),
         "source" => Ok(kind == ArtifactKind::SourceArchive),
         "archive" => Ok(kind == ArtifactKind::Archive),
         "binary" => Ok(kind == ArtifactKind::Binary),
@@ -54,19 +61,10 @@ pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> Result<b
         "sbom" => Ok(kind == ArtifactKind::Sbom),
         "snap" => Ok(kind == ArtifactKind::Snap),
         "macos_package" => Ok(kind == ArtifactKind::MacOsPackage),
-        "checksum" => Ok(kind == ArtifactKind::Checksum),
+        "checksum" => Ok(kind == ArtifactKind::Checksum
+            && metadata.get("combined").map(|s| s.as_str()) == Some("true")),
         other => anyhow::bail!("invalid sign artifacts filter: {other}"),
     }
-}
-
-/// Returns `true` if the given artifact kind is in the shared release-uploadable
-/// list — i.e. the kinds that the `artifacts: all` sign filter selects.
-///
-/// Delegates to `anodizer_core::artifact::release_uploadable_kinds()` so the
-/// stage-sign and stage-release paths stay in lockstep on the
-/// release-uploadable type set.
-fn is_release_uploadable(kind: ArtifactKind) -> bool {
-    anodizer_core::artifact::release_uploadable_kinds().contains(&kind)
 }
 
 /// Validate a sign-config list's ids: unique, and never colliding with the

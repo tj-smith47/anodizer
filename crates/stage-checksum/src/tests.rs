@@ -2287,12 +2287,14 @@ fn test_checksum_stage_with_templated_extra_files() {
 }
 
 #[test]
-fn test_checksum_source_list_cross_links_release_uploadable_kinds() {
-    // Pins C-new-23: stage-checksum's source-list is the cross-linked
-    // `release_uploadable_kinds()` minus `Checksum` (the
-    // `Not(ByType(Checksum))` filter). Six kinds previously absent —
-    // Makeself, Flatpak, SourceRpm, UploadableFile, Signature, Certificate
-    // — must now be checksummed; Snap and raw Binary must NOT.
+fn test_checksum_source_list_is_primary_subject_kinds() {
+    // stage-checksum's source-list is `checksummable_subject_kinds()` — the
+    // PRIMARY subject taxonomy. Every PRIMARY kind (Archive, UploadableBinary,
+    // UploadableFile, SourceArchive, Makeself, LinuxPackage, Flatpak, SourceRpm,
+    // Installer, DiskImage, MacOsPackage, Sbom) is checksummed. Every DERIVED
+    // sidecar (Signature, Certificate, Checksum, Metadata) must NOT be — hashing
+    // a `.sig` is what produced the recursive sha256.sig.sha256 chains. Snap
+    // (snap-store-bound) and raw Binary are also absent.
     use anodizer_core::config::CrateConfig;
     use anodizer_core::test_helpers::TestContextBuilder;
 
@@ -2320,13 +2322,16 @@ fn test_checksum_source_list_cross_links_release_uploadable_kinds() {
         (ArtifactKind::DiskImage, "myapp.dmg", true),
         (ArtifactKind::MacOsPackage, "myapp.pkg", true),
         (ArtifactKind::Sbom, "myapp.sbom.json", true),
-        (ArtifactKind::Signature, "myapp-sig.tar.gz.sig", true),
-        (ArtifactKind::Certificate, "myapp.crt", true),
+        // Derived sidecars are NEVER checksummed — this is the invariant that
+        // makes the recursive sha256.sig.sha256 chain unrepresentable.
+        (ArtifactKind::Signature, "myapp-sig.tar.gz.sig", false),
+        (ArtifactKind::Certificate, "myapp.crt", false),
+        (ArtifactKind::Metadata, "metadata.json", false),
         // Excluded: snap-store-bound + raw build output.
         (ArtifactKind::Snap, "myapp.snap", false),
         (ArtifactKind::Binary, "myapp-raw-bin", false),
         // Recursion-prevention: Checksum artifacts already in the
-        // registry (from a prior pipe pass or a merge step) must be
+        // registry (from an earlier invocation or a merge step) must be
         // filtered out of the source list so the new combined file
         // does not list itself.
         (ArtifactKind::Checksum, "prior.checksums.txt", false),
@@ -2383,6 +2388,120 @@ fn test_checksum_source_list_cross_links_release_uploadable_kinds() {
             if *must_be_in { "present" } else { "absent" },
         );
     }
+}
+
+/// `true` when `name` ends in two or more consecutive `.sha256` / `.sig`
+/// segments — the recursive sidecar pattern `(\.sha256|\.sig){2,}` such as
+/// `X.sha256.sig` or `X.sha256.sig.sha256`. A single trailing `.sha256` or
+/// `.sig` is legitimate and returns `false`.
+fn has_recursive_sidecar_chain(name: &str) -> bool {
+    let mut rest = name;
+    let mut run = 0usize;
+    loop {
+        if let Some(stripped) = rest.strip_suffix(".sha256") {
+            rest = stripped;
+            run += 1;
+        } else if let Some(stripped) = rest.strip_suffix(".sig") {
+            rest = stripped;
+            run += 1;
+        } else {
+            break;
+        }
+    }
+    run >= 2
+}
+
+#[test]
+fn checksum_stage_never_produces_recursive_sidecar_chains() {
+    // Regression: feeding a Signature/Sbom/Checksum into the checksum stage
+    // must NOT yield a checksum-of-a-signature (`X.sig.sha256`) or any deeper
+    // chain. The taxonomy excludes derived sidecars from the subject set, so
+    // after the stage runs no registered artifact matches (.sha256|.sig){2,}.
+    use anodizer_core::config::CrateConfig;
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    fs::create_dir_all(&dist).unwrap();
+
+    // Populate a dist carrying a Signature (the state on a publish-only resume,
+    // where sign ran in an earlier invocation) plus an SBOM and a checksum.
+    let fixtures: &[(ArtifactKind, &str)] = &[
+        (ArtifactKind::Archive, "app-linux-amd64.tar.gz"),
+        (ArtifactKind::Sbom, "app-linux-amd64.tar.gz.cdx.json"),
+        (ArtifactKind::Signature, "app-linux-amd64.tar.gz.sig"),
+        (ArtifactKind::Checksum, "app-linux-amd64.tar.gz.sha256"),
+        (ArtifactKind::Certificate, "app-linux-amd64.tar.gz.pem"),
+    ];
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("app")
+        .tag("v1.0.0")
+        .dist(dist.clone())
+        .crates(vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }])
+        .build();
+
+    for (kind, filename) in fixtures {
+        let path = dist.join(filename);
+        fs::write(&path, format!("contents of {filename}")).unwrap();
+        ctx.artifacts.add(Artifact {
+            kind: *kind,
+            name: filename.to_string(),
+            path,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+    }
+
+    ChecksumStage.run(&mut ctx).unwrap();
+
+    // No artifact the stage registered (and none it was handed) may carry a
+    // recursive sidecar chain. The new `.sha256` of `app-...tar.gz.sig` would
+    // be `...tar.gz.sig.sha256` — exactly what must never appear.
+    for a in ctx.artifacts.all() {
+        assert!(
+            !has_recursive_sidecar_chain(&a.name),
+            "recursive sidecar chain registered: {} (kind={:?})",
+            a.name,
+            a.kind
+        );
+    }
+    // And the combined checksums file must not list any signature/checksum.
+    let combined = dist.join("app_1.0.0_checksums.txt");
+    if combined.exists() {
+        let content = fs::read_to_string(&combined).unwrap();
+        for line in content.lines() {
+            let name = line.split_once("  ").map(|(_, n)| n).unwrap_or(line);
+            assert!(
+                !name.ends_with(".sig") && !name.ends_with(".pem"),
+                "checksums.txt must not list a signature/certificate: {name}"
+            );
+            assert!(
+                !has_recursive_sidecar_chain(name),
+                "checksums.txt lists a recursive chain: {name}"
+            );
+        }
+    }
+}
+
+#[test]
+fn recursive_sidecar_chain_detector_classification() {
+    assert!(has_recursive_sidecar_chain("x.sha256.sig"));
+    assert!(has_recursive_sidecar_chain("x.sha256.sig.sha256"));
+    assert!(has_recursive_sidecar_chain("x.tar.gz.sig.sig"));
+    assert!(has_recursive_sidecar_chain("x.cdx.json.sha256.sig.sha256"));
+    // Single legitimate sidecars are fine.
+    assert!(!has_recursive_sidecar_chain("x.tar.gz.sha256"));
+    assert!(!has_recursive_sidecar_chain("x.tar.gz.sig"));
+    assert!(!has_recursive_sidecar_chain("x.cdx.json.sha256"));
+    assert!(!has_recursive_sidecar_chain("x.tar.gz"));
 }
 
 // ---------------------------------------------------------------------------

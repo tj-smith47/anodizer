@@ -713,7 +713,14 @@ changelog:
 
 signs:
   - id: default
-    artifacts: checksum
+    # Sign PRIMARY artifacts directly (one `X.sig` per archive/package/SBOM),
+    # NOT per-artifact checksums. With `checksum.split: true` there is no
+    # combined `checksums.txt`, so `artifacts: checksum` would either sign
+    # nothing or (the v0.8.0/v0.9.0 bug) sign every `.sha256` sidecar and
+    # produce recursive `.sha256.sig` / `.sha256.sig.sha256` chains. `all`
+    # targets the primary-subject set only — the derived sidecars
+    # (checksum/signature/certificate) are excluded by construction.
+    artifacts: all
     cmd: gpg
     args:
       - "--batch"

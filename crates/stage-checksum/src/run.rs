@@ -277,13 +277,15 @@ fn resolve_per_crate_config(
     }
 }
 
-/// Gather checksummable artifacts for one crate: every registered uploadable
-/// artifact (minus checksums), filtered by `ids`, plus synthetic entries
-/// derived from `extra_files` and `templated_extra_files`. Source-of-truth
-/// for "what gets hashed" is `release_uploadable_kinds()` — mirroring
-/// the `Not(ByType(Checksum))` filter when building the artifact list. Cross-linking
-/// here means stage-checksum, stage-release upload, and the stage-sign "all"
-/// filter all reason about the same artifact set.
+/// Gather checksummable artifacts for one crate: every registered PRIMARY
+/// subject artifact, filtered by `ids`, plus synthetic entries derived from
+/// `extra_files` and `templated_extra_files`. Source-of-truth for "what gets
+/// hashed" is `checksummable_subject_kinds()` — the primary subject taxonomy
+/// that EXCLUDES every derived sidecar (Checksum/Signature/Certificate/
+/// Metadata). Driving from the subject set (not `release_uploadable_kinds()`,
+/// which legitimately contains those sidecars as upload targets) makes a
+/// checksum-of-a-signature (`X.sig.sha256`) — and thus the recursive
+/// sha256.sig.sha256 chain — unrepresentable by construction.
 fn collect_source_artifacts(
     ctx: &mut Context,
     log: &StageLogger,
@@ -295,10 +297,9 @@ fn collect_source_artifacts(
     let crate_name = &crate_cfg.name;
     let mut source_artifacts: Vec<Artifact> = Vec::new();
 
-    for kind in anodizer_core::artifact::release_uploadable_kinds()
+    for kind in anodizer_core::artifact::checksummable_subject_kinds()
         .iter()
         .copied()
-        .filter(|k| *k != ArtifactKind::Checksum)
     {
         let artifacts = ctx
             .artifacts
@@ -741,20 +742,15 @@ pub fn refresh_combined_checksums(ctx: &mut Context, dry_run: bool) -> Result<()
     }
 
     for (checksum_path, algorithm, crate_name) in combined {
-        // Kinds that are checksummed upstream; Signature/Certificate/Checksum
-        // are never hashed (they're the signing/checksum output themselves).
-        let skip_kinds = [
-            ArtifactKind::Checksum,
-            ArtifactKind::Signature,
-            ArtifactKind::Certificate,
-        ];
-
         let mut lines: Vec<String> = Vec::new();
         for artifact in ctx.artifacts.all() {
             if artifact.crate_name != crate_name {
                 continue;
             }
-            if skip_kinds.contains(&artifact.kind) {
+            // Derived sidecars (Checksum/Signature/Certificate/Metadata) are
+            // the output of checksumming/signing, never a subject — re-hashing
+            // a .sig here is what produced the sha256.sig.sha256 chains.
+            if anodizer_core::artifact::is_derived_sidecar_kind(artifact.kind) {
                 continue;
             }
             if !artifact.path.exists() {

@@ -95,7 +95,7 @@ pub fn expected_signature_assets(
             if artifact.crate_name != crate_name {
                 continue;
             }
-            if !should_sign_artifact(artifact.kind, filter)? {
+            if !should_sign_artifact(artifact.kind, &artifact.metadata, filter)? {
                 continue;
             }
             if !sign_ids_match(&artifact.metadata, cfg.ids.as_ref()) {
@@ -235,6 +235,15 @@ mod tests {
         }
     }
 
+    /// A combined `checksums.txt` artifact — the only Checksum kind that
+    /// `artifacts: checksum` signs (split sidecars are never signed).
+    fn combined_checksum(name: &str, crate_name: &str) -> Artifact {
+        let mut a = artifact(ArtifactKind::Checksum, name, crate_name, None);
+        a.metadata
+            .insert("combined".to_string(), "true".to_string());
+        a
+    }
+
     fn checksum_sign(artifacts: &str) -> SignConfig {
         SignConfig {
             id: Some("default".to_string()),
@@ -250,17 +259,13 @@ mod tests {
         let mut ctx = TestContextBuilder::new()
             .signs(vec![checksum_sign("checksum")])
             .build();
-        ctx.artifacts.add(artifact(
-            ArtifactKind::Checksum,
-            "app_checksums.txt",
-            "app",
-            None,
-        ));
+        ctx.artifacts
+            .add(combined_checksum("app_checksums.txt", "app"));
         ctx.artifacts
             .add(artifact(ArtifactKind::Archive, "app.tar.gz", "app", None));
 
         let expected = expected_signature_assets(&ctx, "app", None).expect("derivation");
-        // `artifacts: checksum` signs only the Checksum artifact.
+        // `artifacts: checksum` signs only the COMBINED checksums file.
         assert_eq!(expected, vec!["app_checksums.txt.sig".to_string()]);
     }
 
@@ -288,8 +293,7 @@ mod tests {
             ..checksum_sign("checksum")
         };
         let mut ctx = TestContextBuilder::new().signs(vec![cfg]).build();
-        ctx.artifacts
-            .add(artifact(ArtifactKind::Checksum, "sums.txt", "app", None));
+        ctx.artifacts.add(combined_checksum("sums.txt", "app"));
 
         let expected = expected_signature_assets(&ctx, "app", None).expect("derivation");
         assert_eq!(expected, vec!["sums.txt.asc".to_string()]);
@@ -351,8 +355,7 @@ mod tests {
         let mut ctx = TestContextBuilder::new()
             .signs(vec![checksum_sign("checksum")])
             .build();
-        ctx.artifacts
-            .add(artifact(ArtifactKind::Checksum, "sums.txt", "app", None));
+        ctx.artifacts.add(combined_checksum("sums.txt", "app"));
         ctx.remember_skip("sign", "some-other-config", "artifacts: none");
         let expected = expected_signature_assets(&ctx, "app", None).expect("derivation");
         assert_eq!(expected, vec!["sums.txt.sig".to_string()]);
@@ -403,18 +406,10 @@ mod tests {
         let mut ctx = TestContextBuilder::new()
             .signs(vec![checksum_sign("checksum")])
             .build();
-        ctx.artifacts.add(artifact(
-            ArtifactKind::Checksum,
-            "a_checksums.txt",
-            "crate-a",
-            None,
-        ));
-        ctx.artifacts.add(artifact(
-            ArtifactKind::Checksum,
-            "b_checksums.txt",
-            "crate-b",
-            None,
-        ));
+        ctx.artifacts
+            .add(combined_checksum("a_checksums.txt", "crate-a"));
+        ctx.artifacts
+            .add(combined_checksum("b_checksums.txt", "crate-b"));
 
         let a = expected_signature_assets(&ctx, "crate-a", None).expect("derivation");
         let b = expected_signature_assets(&ctx, "crate-b", None).expect("derivation");
@@ -459,12 +454,8 @@ mod tests {
             },
         ];
         let mut ctx = TestContextBuilder::new().signs(cfgs).build();
-        ctx.artifacts.add(artifact(
-            ArtifactKind::Checksum,
-            "app_checksums.txt",
-            "app",
-            None,
-        ));
+        ctx.artifacts
+            .add(combined_checksum("app_checksums.txt", "app"));
         ctx.artifacts.add(artifact(
             ArtifactKind::Archive,
             "app_linux_amd64.tar.gz",
