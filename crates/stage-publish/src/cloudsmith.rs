@@ -507,6 +507,20 @@ fn stage_cloudsmith_file(
 // publish_to_cloudsmith
 // ---------------------------------------------------------------------------
 
+/// Format the single default-verbosity summary line for one cloudsmith entry,
+/// collapsing the per-file `uploading …` / `uploaded …` / `skipping …`
+/// firehose into one line. `uploaded` counts artifacts this run newly landed;
+/// `skipped` counts artifacts already present with a matching md5 (no upload
+/// issued).
+pub(crate) fn cloudsmith_upload_summary(
+    uploaded: usize,
+    skipped: usize,
+    org: &str,
+    repo: &str,
+) -> String {
+    format!("uploaded {uploaded} artifact(s), skipped {skipped} (already present) → {org}/{repo}")
+}
+
 /// Upload packages to CloudSmith via the CloudSmith API.
 ///
 /// This is a top-level publisher: it reads from `ctx.config.cloudsmiths` rather
@@ -729,6 +743,14 @@ pub(crate) fn publish_to_cloudsmith(
         let mut prune_package_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
 
+        // Per-entry tallies for the single default-verbosity summary line; the
+        // per-file upload/skip detail below is verbose-only. `uploaded_count`
+        // increments per landed package-create (per distro slug, matching the
+        // verbose `uploaded …` lines); `skipped_count` per already-present
+        // idempotent skip.
+        let mut uploaded_count = 0usize;
+        let mut skipped_count = 0usize;
+
         for artifact in &artifacts {
             let path = &artifact.path;
             if !path.exists() {
@@ -799,10 +821,13 @@ pub(crate) fn publish_to_cloudsmith(
                     log,
                 )? {
                     CloudsmithPackageState::SkipIdempotent => {
-                        log.status(&format!(
+                        // Per-file skip detail is verbose-only; the entry
+                        // summary reports the aggregate skip count.
+                        log.verbose(&format!(
                             "skipping '{}' — already uploaded with matching md5",
                             art_name
                         ));
+                        skipped_count += 1;
                         continue;
                     }
                     CloudsmithPackageState::Md5Mismatch { remote } => {
@@ -831,7 +856,9 @@ pub(crate) fn publish_to_cloudsmith(
                 distro_slugs.clone()
             };
 
-            log.status(&format!(
+            // Per-file upload detail is verbose-only; the entry summary
+            // reports the aggregate upload count at default verbosity.
+            log.verbose(&format!(
                 "uploading {} ({}, {} bytes, md5={}) -> org '{}' repo '{}'{}",
                 art_name,
                 fmt,
@@ -962,10 +989,15 @@ pub(crate) fn publish_to_cloudsmith(
                                     art_name
                                 );
                                 if republish {
+                                    // A racing uploader landing the same bytes
+                                    // while republish was requested is a real
+                                    // surprise worth surfacing at default
+                                    // verbosity.
                                     log.warn(&msg);
                                 } else {
-                                    log.status(&msg);
+                                    log.verbose(&msg);
                                 }
+                                skipped_count += 1;
                                 continue;
                             }
                             CloudsmithPackageState::Md5Mismatch { remote } => {
@@ -1007,8 +1039,10 @@ pub(crate) fn publish_to_cloudsmith(
                 {
                     prune_package_names.insert(name.to_string());
                 }
+                // Per-file upload-success detail is verbose-only; the entry
+                // summary reports the aggregate upload count.
                 if let Some(ref s) = slug {
-                    log.status(&format!(
+                    log.verbose(&format!(
                         "uploaded {} (slug={}{})",
                         art_name,
                         s,
@@ -1019,8 +1053,9 @@ pub(crate) fn publish_to_cloudsmith(
                         }
                     ));
                 } else {
-                    log.status(&format!("uploaded {} (HTTP {})", art_name, pkg_status));
+                    log.verbose(&format!("uploaded {} (HTTP {})", art_name, pkg_status));
                 }
+                uploaded_count += 1;
                 uploaded.push(CloudsmithTarget {
                     org: organization.clone(),
                     repo: repository.clone(),
@@ -1030,9 +1065,11 @@ pub(crate) fn publish_to_cloudsmith(
             }
         }
 
-        log.status(&format!(
-            "cloudsmith upload complete for org '{}' repo '{}'",
-            organization, repository
+        log.status(&cloudsmith_upload_summary(
+            uploaded_count,
+            skipped_count,
+            &organization,
+            &repository,
         ));
 
         // --- Post-upload retention pruning (keep_versions) ---
@@ -1593,6 +1630,29 @@ mod tests {
                 ..Default::default()
             },
         )
+    }
+
+    /// The per-entry summary reports the uploaded artifact count and the
+    /// already-present skip count taken from the loop's own tallies, so an
+    /// entry that uploaded 4 and skipped 1 renders `uploaded 4 …, skipped 1`.
+    #[test]
+    fn upload_summary_reflects_uploaded_and_skipped_counts() {
+        let line = cloudsmith_upload_summary(4, 1, "acme", "stable");
+        assert_eq!(
+            line,
+            "uploaded 4 artifact(s), skipped 1 (already present) → acme/stable"
+        );
+    }
+
+    /// A fully-idempotent re-run (nothing newly uploaded) still renders a
+    /// factual summary with a zero upload count rather than suppressing it.
+    #[test]
+    fn upload_summary_handles_zero_uploads() {
+        let line = cloudsmith_upload_summary(0, 3, "acme", "edge");
+        assert_eq!(
+            line,
+            "uploaded 0 artifact(s), skipped 3 (already present) → acme/edge"
+        );
     }
 
     fn entry(slug: &str, version: &str, uploaded_at: &str) -> CloudsmithVersionEntry {

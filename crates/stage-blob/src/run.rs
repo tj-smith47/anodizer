@@ -556,9 +556,12 @@ impl BlobStage {
                     continue;
                 }
 
-                // Log each file in the serial prep phase so the per-config
-                // announcement order stays deterministic; the actual upload
-                // runs later in parallel where ordering is not guaranteed.
+                // Per-file detail belongs behind `-v`: at default verbosity a
+                // release uploading hundreds of objects would otherwise bury
+                // the rest of the run. The single status summary (with real
+                // uploaded/skipped counts) is emitted per job after the upload
+                // loop below. The serial prep order keeps the verbose lines
+                // deterministic even though the actual upload runs in parallel.
                 for (local_path, remote_key) in &upload_items {
                     let remote = format_remote_path(
                         provider,
@@ -566,7 +569,7 @@ impl BlobStage {
                         &rendered_directory,
                         remote_key,
                     );
-                    log.status(&format!("uploading {} -> {}", local_path.display(), remote));
+                    log.verbose(&format!("uploading {} -> {}", local_path.display(), remote));
                 }
 
                 let store: Arc<dyn ObjectStore> =
@@ -660,6 +663,21 @@ impl BlobStage {
                 &job_log,
             ) {
                 Ok(report) => {
+                    // One factual default-verbosity line per job, collapsing
+                    // the per-file `uploading …`/`skipping …` firehose (now
+                    // verbose-only). Counts come straight from this job's
+                    // report, so per-crate mode reports one summary per
+                    // published crate's job with that crate's own counts.
+                    let destination = crate::upload::format_remote_prefix(
+                        job.provider_display,
+                        &job.rendered_bucket,
+                        &job.rendered_directory,
+                    );
+                    job_log.status(&crate::upload::blob_upload_summary(
+                        report.uploaded.len(),
+                        report.skipped_identical.len(),
+                        &destination,
+                    ));
                     skipped_identical.fetch_add(
                         report.skipped_identical.len(),
                         std::sync::atomic::Ordering::SeqCst,
@@ -700,18 +718,6 @@ impl BlobStage {
         let mut targets =
             anodizer_core::parallel::lock_recover(&uploaded_targets, &log, "blob targets").clone();
         targets.sort_by_key(blob_target_url);
-
-        if result.is_ok() {
-            for job in &jobs {
-                log.status(&format!(
-                    "uploaded {} file(s) to {} {}/{}",
-                    job.upload_items.len(),
-                    job.provider_display,
-                    job.rendered_bucket,
-                    job.rendered_directory,
-                ));
-            }
-        }
 
         // Collapse `Vec<()>` -> `()` so the inner Result has the same
         // shape as `Stage::run`'s return — the per-job successes have

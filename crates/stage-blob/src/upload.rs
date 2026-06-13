@@ -333,7 +333,9 @@ pub(crate) fn upload_files_owned(
                     && let Some(true) =
                         object_is_identical(&store, &object_path, &upload_data).await
                 {
-                    task_log.status(&format!(
+                    // Per-file skip detail is verbose-only; the job summary
+                    // (default verbosity) reports the aggregate skip count.
+                    task_log.verbose(&format!(
                         "skipping {} — identical object already present",
                         key_display
                     ));
@@ -390,6 +392,20 @@ pub(crate) fn upload_files_owned(
     })
 }
 
+/// Build the `scheme://bucket[/dir]` destination prefix (no trailing slash,
+/// no object key) for a job's summary line. `scheme` is the provider's
+/// display name (`s3` / `gs` / `azblob`) — the same token
+/// [`crate::publisher::blob_target_url`] uses for evidence URLs — so the
+/// summary destination matches what rollback evidence records.
+pub(crate) fn format_remote_prefix(scheme: &str, bucket: &str, directory: &str) -> String {
+    let dir_trimmed = directory.trim_matches('/');
+    if dir_trimmed.is_empty() {
+        format!("{scheme}://{bucket}")
+    } else {
+        format!("{scheme}://{bucket}/{dir_trimmed}")
+    }
+}
+
 pub(crate) fn format_remote_path(
     provider: Provider,
     bucket: &str,
@@ -403,6 +419,15 @@ pub(crate) fn format_remote_path(
     } else {
         format!("{}://{}/{}/{}", scheme, bucket, dir_trimmed, key)
     }
+}
+
+/// Format the single default-verbosity summary line for one blob upload job,
+/// collapsing the per-file `uploading …` / `skipping …` firehose into one
+/// line. `destination` is the `provider://bucket/dir` prefix the objects
+/// landed under. Skips are objects already present byte-identical (no PUT
+/// issued); uploads are objects this run actually wrote.
+pub(crate) fn blob_upload_summary(uploaded: usize, skipped: usize, destination: &str) -> String {
+    format!("uploaded {uploaded} object(s), skipped {skipped} (identical) → {destination}")
 }
 
 pub(crate) fn handle_upload_error(
@@ -443,5 +468,41 @@ pub(crate) fn handle_upload_error(
                 err
             )
         }
+    }
+}
+
+#[cfg(test)]
+mod summary_tests {
+    use super::*;
+
+    /// The job summary reports the upload count and the identical-skip count
+    /// taken straight from the `UploadReport` vec lengths, so a job that PUT
+    /// 5 objects and skipped 2 identical ones renders `uploaded 5 …, skipped 2`.
+    #[test]
+    fn summary_reflects_uploaded_and_skipped_counts() {
+        let report = UploadReport {
+            uploaded: (0..5).map(|i| format!("dir/obj{i}")).collect(),
+            skipped_identical: (0..2).map(|i| format!("dir/old{i}")).collect(),
+        };
+        let line = blob_upload_summary(
+            report.uploaded.len(),
+            report.skipped_identical.len(),
+            "s3://my-bucket/demo/v1.0.0",
+        );
+        assert_eq!(
+            line,
+            "uploaded 5 object(s), skipped 2 (identical) → s3://my-bucket/demo/v1.0.0"
+        );
+    }
+
+    /// An all-idempotent re-run (nothing new PUT) still renders a factual
+    /// summary with a zero upload count rather than suppressing the line.
+    #[test]
+    fn summary_handles_zero_uploads() {
+        let line = blob_upload_summary(0, 3, "gs://bucket/demo/v2");
+        assert_eq!(
+            line,
+            "uploaded 0 object(s), skipped 3 (identical) → gs://bucket/demo/v2"
+        );
     }
 }
