@@ -3,12 +3,10 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result};
 
-use anodizer_core::archive_name::{binstall_pkg_fmt, render_archive_asset_name};
-use anodizer_core::config::{
-    ArchiveConfig, ArchivesConfig, BinstallConfig, BinstallOverride, CrateConfig,
-};
-use anodizer_core::context::Context;
-use anodizer_core::target::map_target;
+use crate::archive_name::{binstall_pkg_fmt, render_archive_asset_name};
+use crate::config::{ArchiveConfig, ArchivesConfig, BinstallConfig, BinstallOverride, CrateConfig};
+use crate::context::Context;
+use crate::target::map_target;
 
 /// Sentinel substituted into the rendered tag + asset name in place of the
 /// release version, then swapped for cargo-binstall's own `{ version }` token.
@@ -31,7 +29,7 @@ const VERSION_SENTINEL: &str = "__ANODIZE_BINSTALL_VERSION__";
 /// `archive.name_template` the archive stage uses, with the version positions
 /// expressed as cargo-binstall's `{ version }` token so the URL resolves for
 /// whatever version is being installed. Because the asset name is derived from
-/// the single source of truth ([`anodizer_core::archive_name`]), a derived URL
+/// the single source of truth ([`crate::archive_name`]), a derived URL
 /// can never drift from the asset the release actually uploads (the "binstall
 /// 404" class is eliminated by construction).
 ///
@@ -267,7 +265,7 @@ fn render_overrides_map(
 /// GitHub release download URL for that target's archive, with the version
 /// positions expressed as cargo-binstall's `{ version }` token. The asset name
 /// is rendered through the *same* `archive.name_template` the archive stage
-/// uses (via [`anodizer_core::archive_name`]), so the URL is byte-identical to
+/// uses (via [`crate::archive_name`]), so the URL is byte-identical to
 /// the asset the release uploads — no drift, no 404.
 ///
 /// Returns `None` (no derivation) when the crate has no release repo, no
@@ -478,9 +476,9 @@ fn restore_version(ctx: &mut Context, prior: Vec<(&'static str, Option<String>)>
 /// single-crate default. Matches the archive stage's own default selection.
 fn default_archive_name_template(ctx: &Context) -> String {
     if ctx.config.crates.len() > 1 {
-        anodizer_core::archive_name::DEFAULT_NAME_TEMPLATE_MULTI_CRATE.to_string()
+        crate::archive_name::DEFAULT_NAME_TEMPLATE_MULTI_CRATE.to_string()
     } else {
-        anodizer_core::archive_name::DEFAULT_NAME_TEMPLATE.to_string()
+        crate::archive_name::DEFAULT_NAME_TEMPLATE.to_string()
     }
 }
 
@@ -530,11 +528,11 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use anodizer_core::config::{
+    use crate::config::{
         ArchiveConfig, ArchivesConfig, BinstallConfig, BinstallOverride, Config, FormatOverride,
         GitHubConfig, ReleaseConfig,
     };
-    use anodizer_core::context::{Context, ContextOptions};
+    use crate::context::{Context, ContextOptions};
 
     fn make_ctx() -> Context {
         let config = Config {
@@ -1045,7 +1043,7 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
             } else {
                 "tar.gz"
             };
-            let expected = anodizer_core::archive_name::render_archive_asset_name(
+            let expected = crate::archive_name::render_archive_asset_name(
                 &mut check_ctx,
                 name_tmpl,
                 triple,
@@ -1092,6 +1090,95 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
             binstall.get("pkg-url").is_none(),
             "auto-derivation must not write a top-level pkg-url, got:\n{updated}"
         );
+    }
+
+    #[test]
+    fn auto_derive_matches_real_v091_release_assets() {
+        // Real-world guard: anodize's own crate config (owner/repo/name_template/
+        // tag_template from `.anodizer.yaml`) must auto-derive overrides whose
+        // `pkg-url`s resolve, for a concrete version, to the EXACT asset names
+        // the v0.9.1 GitHub release uploaded. A drift here is the "cargo binstall
+        // 404 / source-compile" bug this whole path exists to prevent. The
+        // expected strings are the literal v0.9.1 release assets, hand-written so
+        // a refactor of the rendering can't move both sides in lockstep.
+        let tmp = tempfile::tempdir().unwrap();
+        let cargo_toml = tmp.path().join("Cargo.toml");
+        std::fs::write(
+            &cargo_toml,
+            "[package]\nname = \"anodizer\"\nversion = \"0.9.1\"\nedition = \"2024\"\n",
+        )
+        .unwrap();
+
+        let cfg = BinstallConfig {
+            enabled: Some(true),
+            ..Default::default()
+        };
+        let mut ctx = make_ctx();
+        ctx.template_vars_mut().set("ProjectName", "anodizer");
+        gen_with_crate(
+            tmp.path().to_str().unwrap(),
+            anodize_like_crate(),
+            &cfg,
+            &six_targets(),
+            &mut ctx,
+        )
+        .unwrap();
+
+        let updated = std::fs::read_to_string(&cargo_toml).unwrap();
+        let doc = updated.parse::<toml_edit::DocumentMut>().unwrap();
+        let binstall = &doc["package"]["metadata"]["binstall"];
+
+        // (triple, real v0.9.1 asset name, real v0.9.1 pkg-fmt)
+        let expected: &[(&str, &str, &str)] = &[
+            (
+                "x86_64-unknown-linux-gnu",
+                "anodizer-0.9.1-linux-amd64.tar.gz",
+                "tgz",
+            ),
+            (
+                "aarch64-unknown-linux-gnu",
+                "anodizer-0.9.1-linux-arm64.tar.gz",
+                "tgz",
+            ),
+            (
+                "x86_64-apple-darwin",
+                "anodizer-0.9.1-darwin-amd64.tar.gz",
+                "tgz",
+            ),
+            (
+                "aarch64-apple-darwin",
+                "anodizer-0.9.1-darwin-arm64.tar.gz",
+                "tgz",
+            ),
+            (
+                "x86_64-pc-windows-msvc",
+                "anodizer-0.9.1-windows-amd64.zip",
+                "zip",
+            ),
+            (
+                "aarch64-pc-windows-msvc",
+                "anodizer-0.9.1-windows-arm64.zip",
+                "zip",
+            ),
+        ];
+
+        for (triple, asset, fmt) in expected {
+            let url = binstall["overrides"][*triple]["pkg-url"].as_str().unwrap();
+            // The override carries cargo-binstall's `{ version }` token; resolved
+            // for 0.9.1 it must equal the real release download URL byte-for-byte.
+            let resolved = url.replace("{ version }", "0.9.1");
+            let want =
+                format!("https://github.com/tj-smith47/anodizer/releases/download/v0.9.1/{asset}");
+            assert_eq!(
+                resolved, want,
+                "override for {triple} must resolve to the real v0.9.1 asset URL"
+            );
+            assert_eq!(
+                binstall["overrides"][*triple]["pkg-fmt"].as_str().unwrap(),
+                *fmt,
+                "pkg-fmt for {triple} must match the real v0.9.1 asset format"
+            );
+        }
     }
 
     #[test]

@@ -1,4 +1,8 @@
-pub mod binstall;
+/// Binstall metadata emission relocated to [`anodizer_core::binstall`] so the
+/// cargo publisher (which depends on core, not this stage) can guarantee the
+/// metadata is present on the published manifest even on the build-stage-skipping
+/// `--publish-only` path. Re-exported here to keep the former path working.
+pub use anodizer_core::binstall;
 pub mod version_sync;
 
 // ---------------------------------------------------------------------------

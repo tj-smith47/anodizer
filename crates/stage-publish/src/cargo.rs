@@ -1398,6 +1398,108 @@ pub(crate) fn cargo_publish_plan(
     })
 }
 
+/// Resolve the project-wide `default_targets` the build stage would use:
+/// `defaults.targets` when non-empty, else the canonical [`DEFAULT_TARGETS`].
+///
+/// Kept byte-identical to the build stage's own resolution
+/// (`crates/stage-build/src/run.rs`) so the binstall override set the cargo
+/// publisher emits equals the one the build stage emits for the same config —
+/// any divergence here would surface as a per-target asset mismatch between the
+/// two paths.
+fn resolve_default_targets(ctx: &Context) -> Vec<String> {
+    ctx.config
+        .defaults
+        .as_ref()
+        .and_then(|d| d.targets.clone())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| {
+            anodizer_core::target::DEFAULT_TARGETS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect()
+        })
+}
+
+/// Guarantee `[package.metadata.binstall]` is present and current in
+/// `crate_cfg`'s on-disk `Cargo.toml` immediately before `cargo publish`.
+///
+/// Binstall metadata is a *published-manifest* property: `cargo binstall`
+/// reads it from the manifest on crates.io to fetch a prebuilt asset instead
+/// of compiling from source. The build stage emits it too, but the real
+/// release runs `anodizer release --publish-only`, which consumes preserved
+/// dist artifacts and skips the build stage entirely — so without this call the
+/// published manifest carries no binstall metadata and `cargo binstall`
+/// silently falls back to a source compile.
+///
+/// The emitter is idempotent (it re-writes only the keys it owns and preserves
+/// user-authored ones), so invoking it here when the build stage already ran in
+/// the full pipeline is a safe no-op-equivalent rewrite, not a double-write
+/// divergence. Per-crate template vars are re-scoped via [`with_crate_scope`]
+/// exactly as the build stage does, so the emitted overrides are byte-identical
+/// across the two paths in single-crate, workspace-lockstep, and workspace
+/// per-crate modes.
+///
+/// Honors `dry_run` (the emitter does not mutate under dry-run); the caller
+/// already early-returns before the publish loop on `ctx.is_dry_run()`, so in
+/// practice this only runs on a real publish.
+fn ensure_binstall_metadata(
+    ctx: &mut Context,
+    crate_cfg: &CrateConfig,
+    dry_run: bool,
+    log: &StageLogger,
+) -> Result<()> {
+    ensure_binstall_metadata_with(
+        ctx,
+        crate_cfg,
+        dry_run,
+        log,
+        &anodizer_core::crate_scope::resolve_crate_tag,
+    )
+}
+
+/// Inner body of [`ensure_binstall_metadata`] with the per-crate tag source
+/// injected. Production passes [`anodizer_core::crate_scope::resolve_crate_tag`]
+/// (git-backed); tests pass a closure returning a fixed tag so the per-crate
+/// var scoping — and the resulting override set — can be exercised without a git
+/// fixture. Mirrors the build stage's `apply_source_mutations_with_resolver`
+/// seam so both paths are testable the same way.
+fn ensure_binstall_metadata_with(
+    ctx: &mut Context,
+    crate_cfg: &CrateConfig,
+    dry_run: bool,
+    log: &StageLogger,
+    resolve_tag: &dyn Fn(&Context, &CrateConfig) -> Option<String>,
+) -> Result<()> {
+    let Some(ref binstall_cfg) = crate_cfg.binstall else {
+        return Ok(());
+    };
+    if !binstall_cfg.enabled.unwrap_or(false) {
+        return Ok(());
+    }
+    let default_targets = resolve_default_targets(ctx);
+    let binstall_cfg = binstall_cfg.clone();
+    anodizer_core::crate_scope::with_crate_scope(ctx, crate_cfg, resolve_tag, |ctx| {
+        anodizer_core::binstall::generate_binstall_metadata(
+            crate_cfg,
+            &binstall_cfg,
+            &default_targets,
+            ctx,
+            dry_run,
+        )
+    })
+    .with_context(|| {
+        format!(
+            "publish: ensure binstall metadata for '{}' before cargo publish",
+            crate_cfg.name
+        )
+    })?;
+    log.verbose(&format!(
+        "ensured [package.metadata.binstall] in {}/Cargo.toml before publish",
+        crate_cfg.path
+    ));
+    Ok(())
+}
+
 /// Publish every eligible crate, in topological order, recording each
 /// crate's published identity into `record` AT THE MOMENT its
 /// `cargo publish` succeeds.
@@ -1560,6 +1662,17 @@ fn publish_to_cargo_with(
         }
 
         let cargo_cfg = cargo_cfgs.get(name);
+
+        // Published-manifest guarantee: emit/refresh this crate's
+        // [package.metadata.binstall] in its on-disk Cargo.toml right before
+        // `cargo publish`, so `cargo binstall` fetches the prebuilt release
+        // asset instead of compiling from source. Done here (not only in the
+        // build stage) because the real release runs `--publish-only`, which
+        // skips the build stage entirely. Cloned out of `all_crates` so the
+        // re-scope inside can take `&mut ctx` without aliasing the universe.
+        if let Some(crate_cfg) = all_crates.iter().find(|c| &c.name == name).cloned() {
+            ensure_binstall_metadata(ctx, &crate_cfg, false, log)?;
+        }
 
         // Pre-publish gate: in multi-tag-multi-crate workspaces (e.g. cfgd)
         // per-crate tags fire independent Release.yml runs, so the upstream
@@ -5889,6 +6002,273 @@ mod dep_guard_tests {
             *seen.borrow(),
             vec![("anodizer-core".to_string(), "0.8.0".to_string())],
             "probe must target the real package at the root-pinned version"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// binstall-metadata-on-publish tests
+//
+// The cargo publisher emits [package.metadata.binstall] into each published
+// crate's on-disk Cargo.toml right before `cargo publish`, so `cargo binstall`
+// fetches the prebuilt asset rather than compiling from source — even on the
+// `--publish-only` path that skips the build stage entirely. These tests drive
+// `ensure_binstall_metadata_with` with a fixed-tag closure (no git fixture
+// needed) across single-crate and workspace per-crate modes, proving the
+// emitted overrides carry each crate's OWN name_template / tag / version.
+// ---------------------------------------------------------------------------
+#[cfg(test)]
+mod binstall_on_publish_tests {
+    use super::*;
+    use anodizer_core::config::{
+        ArchiveConfig, ArchivesConfig, BinstallConfig, Defaults, FormatOverride, GitHubConfig,
+        ReleaseConfig,
+    };
+    use anodizer_core::log::Verbosity;
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    fn quiet_log() -> StageLogger {
+        StageLogger::new("publish-test", Verbosity::Normal)
+    }
+
+    /// An anodize-style archive: explicit name_template, tar.gz default, windows→zip.
+    fn anodize_archive() -> ArchiveConfig {
+        ArchiveConfig {
+            name_template: Some("{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}".to_string()),
+            formats: Some(vec!["tar.gz".to_string()]),
+            format_overrides: Some(vec![FormatOverride {
+                os: "windows".to_string(),
+                formats: Some(vec!["zip".to_string()]),
+            }]),
+            ..Default::default()
+        }
+    }
+
+    /// A binstall-enabled crate rooted at `path`, owning `name`, with a GitHub
+    /// release at `tj-smith47/<repo>` and the anodize-style archive.
+    fn binstall_crate(name: &str, repo: &str, path: &str) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: path.to_string(),
+            tag_template: "v{{ Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![anodize_archive()]),
+            release: Some(ReleaseConfig {
+                github: Some(GitHubConfig {
+                    owner: "tj-smith47".to_string(),
+                    name: repo.to_string(),
+                }),
+                ..Default::default()
+            }),
+            binstall: Some(BinstallConfig {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn write_manifest(dir: &std::path::Path, name: &str, version: &str) -> std::path::PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let p = dir.join("Cargo.toml");
+        std::fs::write(
+            &p,
+            format!("[package]\nname = \"{name}\"\nversion = \"{version}\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        p
+    }
+
+    /// Read the emitted override asset leaf for `triple`, resolving the
+    /// cargo-binstall `{ version }` token back to `version`.
+    fn override_asset(manifest: &std::path::Path, triple: &str, version: &str) -> String {
+        let doc = std::fs::read_to_string(manifest)
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        let url = doc["package"]["metadata"]["binstall"]["overrides"][triple]["pkg-url"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        url.rsplit('/')
+            .next()
+            .unwrap()
+            .replace("{ version }", version)
+    }
+
+    /// Single-crate mode: a lone crate gets its binstall overrides emitted with
+    /// its own name_template, resolving to the real per-target asset names.
+    #[test]
+    fn single_crate_emits_binstall_overrides() {
+        let tmp = tempfile::tempdir().unwrap();
+        let crate_dir = tmp.path().join("app");
+        let manifest = write_manifest(&crate_dir, "anodizer", "1.2.3");
+
+        let crate_cfg = binstall_crate("anodizer", "anodizer", crate_dir.to_str().unwrap());
+        let mut ctx = TestContextBuilder::new()
+            .project_name("anodizer")
+            .crates(vec![crate_cfg.clone()])
+            .build();
+
+        let fixed_tag = |_: &Context, _: &CrateConfig| Some("v1.2.3".to_string());
+        ensure_binstall_metadata_with(&mut ctx, &crate_cfg, false, &quiet_log(), &fixed_tag)
+            .unwrap();
+
+        assert_eq!(
+            override_asset(&manifest, "x86_64-unknown-linux-gnu", "1.2.3"),
+            "anodizer-1.2.3-linux-amd64.tar.gz"
+        );
+        assert_eq!(
+            override_asset(&manifest, "aarch64-pc-windows-msvc", "1.2.3"),
+            "anodizer-1.2.3-windows-arm64.zip"
+        );
+    }
+
+    /// Disabled binstall is a no-op: the manifest is left pristine.
+    #[test]
+    fn disabled_binstall_does_not_mutate_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let crate_dir = tmp.path().join("app");
+        let manifest = write_manifest(&crate_dir, "anodizer", "1.2.3");
+        let original = std::fs::read_to_string(&manifest).unwrap();
+
+        let mut crate_cfg = binstall_crate("anodizer", "anodizer", crate_dir.to_str().unwrap());
+        crate_cfg.binstall = Some(BinstallConfig {
+            enabled: Some(false),
+            ..Default::default()
+        });
+        let mut ctx = TestContextBuilder::new()
+            .project_name("anodizer")
+            .crates(vec![crate_cfg.clone()])
+            .build();
+
+        let fixed_tag = |_: &Context, _: &CrateConfig| Some("v1.2.3".to_string());
+        ensure_binstall_metadata_with(&mut ctx, &crate_cfg, false, &quiet_log(), &fixed_tag)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&manifest).unwrap(),
+            original,
+            "disabled binstall must leave the manifest untouched"
+        );
+    }
+
+    /// dry_run honored: the emitter does not mutate the manifest under dry-run.
+    #[test]
+    fn dry_run_does_not_mutate_manifest() {
+        let tmp = tempfile::tempdir().unwrap();
+        let crate_dir = tmp.path().join("app");
+        let manifest = write_manifest(&crate_dir, "anodizer", "1.2.3");
+        let original = std::fs::read_to_string(&manifest).unwrap();
+
+        let crate_cfg = binstall_crate("anodizer", "anodizer", crate_dir.to_str().unwrap());
+        let mut ctx = TestContextBuilder::new()
+            .project_name("anodizer")
+            .crates(vec![crate_cfg.clone()])
+            .build();
+
+        let fixed_tag = |_: &Context, _: &CrateConfig| Some("v1.2.3".to_string());
+        ensure_binstall_metadata_with(&mut ctx, &crate_cfg, true, &quiet_log(), &fixed_tag)
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&manifest).unwrap(),
+            original,
+            "dry-run binstall emission must leave the manifest untouched"
+        );
+    }
+
+    /// Workspace per-crate mode: two crates with DIFFERENT versions, repos, and
+    /// (via the fixed-tag closure) tags. Each crate's emitted overrides must
+    /// carry its OWN version/repo — never a shared/global value — proving the
+    /// per-crate re-scope. This is the canonical anodize-only bug family the
+    /// all-config-modes rule guards against.
+    #[test]
+    fn workspace_per_crate_emits_each_crates_own_version_and_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir_a = tmp.path().join("crate-a");
+        let dir_b = tmp.path().join("crate-b");
+        let manifest_a = write_manifest(&dir_a, "alpha", "1.0.0");
+        let manifest_b = write_manifest(&dir_b, "beta", "2.5.0");
+
+        let crate_a = binstall_crate("alpha", "alpha-repo", dir_a.to_str().unwrap());
+        let crate_b = binstall_crate("beta", "beta-repo", dir_b.to_str().unwrap());
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("alpha")
+            .crates(vec![crate_a.clone(), crate_b.clone()])
+            .build();
+
+        // Each crate resolves to its OWN tag — a per-crate-cadence workspace.
+        let tag_a = |_: &Context, _: &CrateConfig| Some("v1.0.0".to_string());
+        let tag_b = |_: &Context, _: &CrateConfig| Some("v2.5.0".to_string());
+
+        ensure_binstall_metadata_with(&mut ctx, &crate_a, false, &quiet_log(), &tag_a).unwrap();
+        ensure_binstall_metadata_with(&mut ctx, &crate_b, false, &quiet_log(), &tag_b).unwrap();
+
+        // crate-a: alpha @ 1.0.0 at alpha-repo.
+        assert_eq!(
+            override_asset(&manifest_a, "x86_64-unknown-linux-gnu", "1.0.0"),
+            "alpha-1.0.0-linux-amd64.tar.gz"
+        );
+        let doc_a = std::fs::read_to_string(&manifest_a)
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        let url_a = doc_a["package"]["metadata"]["binstall"]["overrides"]
+            ["x86_64-unknown-linux-gnu"]["pkg-url"]
+            .as_str()
+            .unwrap();
+        assert!(
+            url_a.contains("tj-smith47/alpha-repo") && url_a.contains("/v{ version }/"),
+            "crate-a override must target its OWN repo + tag token, got: {url_a}"
+        );
+
+        // crate-b: beta @ 2.5.0 at beta-repo — NOT alpha's version/repo.
+        assert_eq!(
+            override_asset(&manifest_b, "aarch64-apple-darwin", "2.5.0"),
+            "beta-2.5.0-darwin-arm64.tar.gz"
+        );
+        let doc_b = std::fs::read_to_string(&manifest_b)
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        let url_b = doc_b["package"]["metadata"]["binstall"]["overrides"]["aarch64-apple-darwin"]
+            ["pkg-url"]
+            .as_str()
+            .unwrap();
+        assert!(
+            url_b.contains("tj-smith47/beta-repo"),
+            "crate-b override must target its OWN repo, not crate-a's, got: {url_b}"
+        );
+        assert!(
+            !url_b.contains("alpha"),
+            "crate-b override must not leak crate-a's name/version, got: {url_b}"
+        );
+    }
+
+    /// `defaults.targets` drives the override set when no per-build targets are
+    /// configured — `resolve_default_targets` must mirror the build stage so the
+    /// emitted triples equal the released asset set.
+    #[test]
+    fn resolve_default_targets_honors_config_then_falls_back() {
+        // Explicit defaults.targets wins.
+        let ctx = TestContextBuilder::new()
+            .defaults(Defaults {
+                targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
+                ..Default::default()
+            })
+            .build();
+        assert_eq!(
+            resolve_default_targets(&ctx),
+            vec!["x86_64-unknown-linux-gnu".to_string()]
+        );
+
+        // No defaults.targets → canonical DEFAULT_TARGETS (the six-triple matrix).
+        let ctx2 = TestContextBuilder::new().build();
+        assert_eq!(
+            resolve_default_targets(&ctx2),
+            anodizer_core::target::DEFAULT_TARGETS
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>()
         );
     }
 }

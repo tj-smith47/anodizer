@@ -1,6 +1,7 @@
 pub mod archive_name;
 pub mod artifact;
 pub mod binary_artifact_guard;
+pub mod binstall;
 pub mod cargo_lock;
 pub mod cargo_package;
 pub mod changelog_scope;
