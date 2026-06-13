@@ -23,7 +23,6 @@ pub mod npm;
 pub mod post_publish;
 pub mod preflight;
 pub mod registry;
-pub(crate) mod release_version_guard;
 pub mod rollback;
 pub mod rollback_only;
 pub mod run_summary;
@@ -1024,9 +1023,11 @@ impl Stage for PublishStage {
         // 0.0.0-sentinel) to any external publisher. Runs BEFORE the first
         // publisher fires because several are one-way-door indexes; the
         // `--allow-snapshot-publish` flag downgrades the bail to a warning.
+        // The same shared guard is wired into the blob and announce stages so a
+        // `--skip=publish` run still cannot leak a non-release version.
         let publisher_names: Vec<String> =
             publishers.iter().map(|p| p.name().to_string()).collect();
-        release_version_guard::guard_release_version(ctx, &log, &publisher_names)?;
+        anodizer_core::version::guard_release_version(ctx, &log, "publish", &publisher_names)?;
 
         // Surface the release-optional + dependent-manifest-publisher coupling
         // before any publisher fires (a manifest pointing at a 404 release URL

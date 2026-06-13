@@ -304,6 +304,35 @@ pub(crate) fn dispatch_filtered_announcers(
 /// both [`dispatch_all_announcers`] (which sends) and [`render_all_announcers`]
 /// (which only renders), so the pre-publish guard exercises exactly the set the
 /// real announce path would.
+/// The names of every announcer whose config block is present, for the
+/// non-release version guard's error message. Presence-based (not `enabled:`
+/// template evaluation) so it is side-effect-free and can run BEFORE any
+/// dispatch — it only needs to name the channels a snapshot version was about
+/// to broadcast to, not the exact final enabled set.
+pub(crate) fn configured_announcer_names(announce: &AnnounceConfig) -> Vec<String> {
+    let mut names = Vec::new();
+    let mut push = |present: bool, name: &str| {
+        if present {
+            names.push(name.to_string());
+        }
+    };
+    push(announce.discord.is_some(), "discord");
+    push(announce.discourse.is_some(), "discourse");
+    push(announce.slack.is_some(), "slack");
+    push(announce.webhook.is_some(), "webhook");
+    push(announce.telegram.is_some(), "telegram");
+    push(announce.teams.is_some(), "teams");
+    push(announce.mattermost.is_some(), "mattermost");
+    push(announce.reddit.is_some(), "reddit");
+    push(announce.twitter.is_some(), "twitter");
+    push(announce.mastodon.is_some(), "mastodon");
+    push(announce.bluesky.is_some(), "bluesky");
+    push(announce.linkedin.is_some(), "linkedin");
+    push(announce.opencollective.is_some(), "opencollective");
+    push(announce.email.is_some(), "email");
+    names
+}
+
 fn announcer_registry() -> &'static [&'static dyn Announcer] {
     &[
         &DiscordAnnouncer,

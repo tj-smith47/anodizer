@@ -722,6 +722,7 @@ fn test_resolve_extra_files_with_name_template() {
 
     let mut ctx = make_ctx();
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     let resolved = resolve_extra_files(&extras, &ctx, &test_log()).unwrap();
     assert_eq!(resolved[0].1, "LICENSE-v1.0.0");
 }
@@ -946,6 +947,7 @@ fn test_blob_stage_skips_when_no_config() {
     let opts = ContextOptions::default();
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set("ProjectName", "test");
 
     let stage = BlobStage;
@@ -973,6 +975,7 @@ fn test_blob_stage_skips_disabled_config() {
     let opts = ContextOptions::default();
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set("ProjectName", "test");
 
     let stage = BlobStage;
@@ -999,6 +1002,7 @@ fn test_blob_stage_empty_provider_error() {
     let opts = ContextOptions::default();
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set("ProjectName", "test");
 
     let stage = BlobStage;
@@ -1031,6 +1035,7 @@ fn test_blob_stage_empty_bucket_error() {
     let opts = ContextOptions::default();
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set("ProjectName", "test");
 
     let stage = BlobStage;
@@ -1063,6 +1068,7 @@ fn test_blob_stage_invalid_provider() {
     let opts = ContextOptions::default();
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set("ProjectName", "test");
 
     let stage = BlobStage;
@@ -1091,6 +1097,7 @@ fn test_blob_stage_dry_run_logs_commands() {
     opts.dry_run = true;
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set("ProjectName", "test");
 
     // Add an artifact so there's something to "upload"
@@ -1147,6 +1154,7 @@ fn test_q9_1_provider_template_resolves_to_s3_for_acl_dispatch() {
     opts.dry_run = true;
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set("ProjectName", "test");
     ctx.template_vars_mut().set("ProviderName", "s3");
 
@@ -1231,6 +1239,7 @@ fn test_q9_1_templated_provider_routes_through_s3_acl_validator() {
         ctx_opts,
     );
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set("ProjectName", "test");
     ctx.template_vars_mut().set("ProviderName", "s3");
 
@@ -1523,6 +1532,7 @@ fn make_ctx() -> Context {
     let opts = ContextOptions::default();
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set("ProjectName", "test");
     ctx.template_vars_mut().set("IsSnapshot", "false");
     ctx
@@ -1537,6 +1547,7 @@ fn make_ctx_with_snapshot() -> Context {
     opts.snapshot = true;
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set("ProjectName", "test");
     ctx.template_vars_mut().set("IsSnapshot", "true");
     ctx
@@ -1773,6 +1784,7 @@ fn blob_stage_does_not_touch_publish_report_when_no_work() {
     let opts = ContextOptions::default();
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set("ProjectName", "test");
 
     let stage = BlobStage;

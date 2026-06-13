@@ -279,10 +279,11 @@ pub struct ContextOptions {
     /// `--allow-snapshot-publish`: downgrade the publish stage's non-release
     /// version guard from a hard bail to a warning.
     ///
-    /// By default the publish / blob / announce stages REFUSE to ship a
-    /// non-release version (snapshot / dev / dirty / `0.0.0`-sentinel — see
+    /// By default the publish, blob, and announce stages REFUSE to ship a
+    /// non-release version (snapshot / dirty / `0.0.0`-sentinel — see
+    /// [`crate::version::guard_release_version`] /
     /// [`crate::version::is_release_version`]) to an external, often
-    /// irreversible, index. The canonical accident this prevents: a CI run
+    /// irreversible, channel. The canonical accident this prevents: a CI run
     /// that resolved `0.0.0~SNAPSHOT-<sha>` and pushed it to a package
     /// registry. This flag is the deliberate opt-in for the legitimate
     /// "publish a snapshot to a private channel" case; it is the ONLY thing

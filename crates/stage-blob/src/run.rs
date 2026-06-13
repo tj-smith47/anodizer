@@ -126,6 +126,17 @@ impl Stage for BlobStage {
     }
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
+        // Refuse to upload a non-release version (snapshot / dirty /
+        // 0.0.0-sentinel) to an object store. A `--skip=publish` run reaches
+        // BlobStage without the publish guard ever firing, so the same shared
+        // guard runs here too — BEFORE any byte is uploaded. No-op in
+        // dry-run/snapshot; `--allow-snapshot-publish` downgrades to a warning.
+        {
+            let log = ctx.logger("blob");
+            let targets = blob_destinations(ctx);
+            anodizer_core::version::guard_release_version(ctx, &log, "blob", &targets)?;
+        }
+
         // BlobStage is Assets-group and writes its own outcome into
         // `ctx.publish_report` so the SnapcraftPublishStage submitter
         // gate (which runs AFTER BlobStage per the pipeline order) sees
@@ -287,6 +298,24 @@ pub(crate) fn derive_blob_required(ctx: &Context) -> bool {
         .filter_map(|c| c.blobs.as_ref())
         .flat_map(|configs| configs.iter())
         .any(|cfg| cfg.required.unwrap_or(false))
+}
+
+/// The `provider://bucket` destinations the blob stage was about to upload to
+/// across every selected crate's `blobs:` config. Names the targets in the
+/// non-release guard's error so the operator sees exactly which buckets a
+/// snapshot version was about to reach. Best-effort orientation only — the raw
+/// configured `provider`/`bucket` strings (templates unrendered) are enough to
+/// identify the destination without building object stores.
+fn blob_destinations(ctx: &Context) -> Vec<String> {
+    let selected = &ctx.options.selected_crates;
+    ctx.config
+        .crates
+        .iter()
+        .filter(|c| selected.is_empty() || selected.contains(&c.name))
+        .filter_map(|c| c.blobs.as_ref())
+        .flat_map(|configs| configs.iter())
+        .map(|cfg| format!("{}://{}", cfg.provider, cfg.bucket))
+        .collect()
 }
 
 impl BlobStage {
@@ -762,6 +791,7 @@ mod run_tests {
         };
         let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("Version", "1.0.0");
         ctx.template_vars_mut().set("ProjectName", "demo");
         ctx.template_vars_mut().set("IsSnapshot", "false");
         ctx
@@ -912,6 +942,7 @@ mod run_tests {
         };
         let mut ctx = Context::new(config_with_blob("c", cfg), opts);
         ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("Version", "1.0.0");
         ctx.template_vars_mut().set("ProjectName", "demo");
         ctx.template_vars_mut().set("IsSnapshot", "true");
         add_archive(&mut ctx, "c", "dist/c.tar.gz");
@@ -920,6 +951,58 @@ mod run_tests {
         assert!(
             ctx.publish_report.is_none(),
             "snapshot short-circuits the blob stage before any job is built"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // non-release version guard — wiring proof.
+    // -------------------------------------------------------------------
+
+    /// Pins that the non-release version guard is WIRED into `BlobStage::run`,
+    /// not merely that the shared `guard_release_version` works in isolation.
+    /// Drives the real `Stage::run` entrypoint with a configured blob and a
+    /// `0.0.0~SNAPSHOT-<sha>` version on a real-release (non-snapshot,
+    /// non-dry-run) ctx, asserting it bails BEFORE any upload (`publish_report`
+    /// stays `None`) with an error naming the stage, version, the bucket, and
+    /// the override flag. Deleting the `guard_release_version` call at the
+    /// `BlobStage::run` call site makes this test fail (the run would proceed
+    /// past the guard into preflight/upload).
+    #[test]
+    fn blob_stage_run_bails_on_non_release_version() {
+        let cfg = BlobConfig {
+            provider: "s3".to_string(),
+            bucket: "releases".to_string(),
+            ..Default::default()
+        };
+        // Real release: NOT snapshot, NOT dry-run, so the guard is live.
+        let mut ctx = Context::new(config_with_blob("c", cfg), ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "demo");
+        ctx.template_vars_mut().set("IsSnapshot", "false");
+        ctx.template_vars_mut()
+            .set("Version", "0.0.0~SNAPSHOT-d7813f0");
+        add_archive(&mut ctx, "c", "dist/c.tar.gz");
+
+        let err = BlobStage
+            .run(&mut ctx)
+            .expect_err("a non-release version must bail at BlobStage::run");
+        let msg = err.to_string();
+        assert!(msg.contains("blob"), "error must name the stage: {msg}");
+        assert!(
+            msg.contains("0.0.0~SNAPSHOT-d7813f0"),
+            "error must name the offending version: {msg}",
+        );
+        assert!(
+            msg.contains("s3://releases"),
+            "error must name the destination bucket: {msg}",
+        );
+        assert!(
+            msg.contains("--allow-snapshot-publish"),
+            "error must tell the operator how to override: {msg}",
+        );
+        assert!(
+            ctx.publish_report.is_none(),
+            "guard must abort BEFORE any upload or report entry",
         );
     }
 
@@ -967,6 +1050,7 @@ mod run_tests {
         };
         let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("Version", "1.0.0");
         ctx.template_vars_mut().set("ProjectName", "demo");
         ctx.template_vars_mut().set("IsSnapshot", "false");
         add_archive(&mut ctx, "alpha", "dist/alpha.tar.gz");
@@ -996,6 +1080,7 @@ mod run_tests {
         };
         let mut ctx = Context::new(config_with_blob("c", cfg), ContextOptions::default());
         ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("Version", "1.0.0");
         ctx.template_vars_mut().set("ProjectName", "demo");
         ctx.template_vars_mut().set("IsSnapshot", "false");
         add_archive(&mut ctx, "c", "dist/c.tar.gz");

@@ -1,12 +1,13 @@
 //! Release-version classification.
 //!
 //! A "release version" is one safe to ship to an external, often
-//! irreversible, package index (crates.io, Cloudsmith, Chocolatey,
-//! winget, AUR, …). A snapshot / dev / `0.0.0`-sentinel version is NOT:
-//! shipping it is essentially always a mistake, and several index
-//! publishers are one-way doors. This module is the single source of
-//! truth for that predicate so the publish / blob / announce stages
-//! cannot drift on what counts as "non-release".
+//! irreversible, channel (crates.io, Cloudsmith, Chocolatey, winget, AUR,
+//! object-store blobs, announcement broadcasts, …). A snapshot / dirty /
+//! `0.0.0`-sentinel version is NOT: shipping it is essentially always a
+//! mistake, and several index publishers are one-way doors. This module is
+//! the single source of truth for that predicate AND the shared guard so the
+//! publish, blob, and announce stages cannot drift on what counts as
+//! "non-release" or on how they refuse it.
 
 /// Returns `true` when `version` is safe to publish to an external index —
 /// i.e. it is NOT a snapshot / dirty / `0.0.0`-sentinel marker.
@@ -63,6 +64,101 @@ fn is_zero_sentinel(v: &str) -> bool {
         return false;
     };
     rest.is_empty() || matches!(rest.as_bytes()[0], b'-' | b'+' | b'~')
+}
+
+/// Refuse to release a non-release version from an external-effect stage.
+///
+/// Shared by the publish, blob, and announce stages: each calls this at its
+/// entrypoint — BEFORE any upload / submission / broadcast — so a snapshot /
+/// dirty / `0.0.0`-sentinel version can never reach an external channel,
+/// regardless of which stage runs (a `--skip=publish` run still guards its
+/// blob upload and its announce broadcast).
+///
+/// `stage` is the user-facing stage label (`"publish"` / `"blob"` /
+/// `"announce"`); `targets` are the destination names the stage was about to
+/// hit (publisher names, blob provider URLs, announcer names) and are named in
+/// the error so the operator sees exactly what was about to leak. Both the
+/// global resolved `Version` and every in-scope crate's per-crate resolved
+/// version are evaluated, so the guard is correct in all config modes —
+/// single-crate, workspace-lockstep, and per-crate.
+///
+/// No-op in dry-run and snapshot: neither produces an external effect (dry-run
+/// stages no-op their side effects; snapshot already short-circuits every one
+/// of these stages via `skip_in_snapshot`), so a non-release version there is a
+/// preview, not a leak. [`crate::context::ContextOptions::allow_snapshot_publish`]
+/// (the `--allow-snapshot-publish` flag) downgrades the bail to a single
+/// warning for the deliberate "ship a snapshot to a private channel" case.
+pub fn guard_release_version(
+    ctx: &crate::context::Context,
+    log: &crate::log::StageLogger,
+    stage: &str,
+    targets: &[String],
+) -> anyhow::Result<()> {
+    // Real-release only: dry-run and snapshot produce no external effect.
+    if ctx.is_dry_run() || ctx.is_snapshot() {
+        return Ok(());
+    }
+
+    let Some((version, reason)) = first_non_release_version(ctx) else {
+        return Ok(());
+    };
+
+    let dests = if targets.is_empty() {
+        "(none configured)".to_string()
+    } else {
+        targets.join(", ")
+    };
+
+    if ctx.options.allow_snapshot_publish {
+        log.warn(&format!(
+            "{stage}: releasing non-release version '{version}' ({reason}) to: {dests} \
+             — proceeding because --allow-snapshot-publish was set. This version is \
+             NOT a real release; only do this for a private/test channel.",
+        ));
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "{stage}: refusing to release non-release version '{version}' ({reason}) to: \
+         {dests}. These destinations include one-way-door / external channels; \
+         shipping a snapshot / 0.0.0 version is almost always a mistake (e.g. a \
+         missing base Version rendered as '0.0.0~SNAPSHOT-<sha>'). Cut a real release \
+         with a semver tag, or pass --allow-snapshot-publish to override (intended \
+         only for a private/test channel).",
+    );
+}
+
+/// The first non-release version across the global resolved version and every
+/// in-scope crate's per-crate resolved version, with the reason it is
+/// non-release. `None` when every resolved version is a genuine release.
+///
+/// The global `Version` is checked first because it is what the snapshot
+/// template stamps (`<base>-SNAPSHOT-<sha>`) and what the `0.0.0` sentinel
+/// surfaces as — the exact accident class. Per-crate versions are then checked
+/// so per-crate config mode (each crate rendering its own tag-derived version)
+/// is covered, not just a single global.
+fn first_non_release_version(ctx: &crate::context::Context) -> Option<(String, &'static str)> {
+    let global = ctx.version();
+    if let Some(reason) = non_release_reason(&global) {
+        return Some((global, reason));
+    }
+
+    // Per-crate: a crate may resolve its own version from its own tag in
+    // per-crate config mode. A crate with no resolvable tag yields `None` here
+    // (it would fail loud later at `with_crate_scope`); only an actually
+    // resolved, non-release per-crate version trips the guard.
+    let selected = &ctx.options.selected_crates;
+    for crate_cfg in crate::env_preflight::crate_universe(&ctx.config) {
+        if !selected.is_empty() && !selected.contains(&crate_cfg.name) {
+            continue;
+        }
+        if let Some(version) = crate::crate_scope::resolve_crate_tag(ctx, crate_cfg)
+            && let Some(reason) = non_release_reason(&version)
+        {
+            return Some((version, reason));
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -127,6 +223,62 @@ mod tests {
         for v in ["1.0.0-dev.1", "1.2.3-dev", "1.2.3.dev5", "1.0.0-alpha.dev"] {
             assert!(is_release_version(v), "{v} must be a release version");
             assert_eq!(non_release_reason(v), None, "{v}");
+        }
+    }
+
+    fn ctx_with_version(version: &str) -> crate::context::Context {
+        let mut ctx = crate::context::Context::test_fixture();
+        ctx.template_vars_mut().set("Version", version);
+        ctx
+    }
+
+    #[test]
+    fn guard_bails_naming_stage_version_and_targets() {
+        let ctx = ctx_with_version("0.0.0~SNAPSHOT-d7813f0");
+        let log = ctx.logger("blob-test");
+        let err = guard_release_version(&ctx, &log, "blob", &["s3://bucket/key".to_string()])
+            .expect_err("non-release version must bail before any external effect");
+        let msg = err.to_string();
+        assert!(msg.contains("blob"), "names the stage: {msg}");
+        assert!(
+            msg.contains("0.0.0~SNAPSHOT-d7813f0"),
+            "names the version: {msg}"
+        );
+        assert!(msg.contains("s3://bucket/key"), "names the target: {msg}");
+        assert!(
+            msg.contains("--allow-snapshot-publish"),
+            "tells the operator how to override: {msg}",
+        );
+    }
+
+    #[test]
+    fn guard_allow_snapshot_publish_downgrades_to_warning() {
+        let mut ctx = ctx_with_version("0.0.0~SNAPSHOT-d7813f0");
+        ctx.options.allow_snapshot_publish = true;
+        let log = ctx.logger("announce-test");
+        guard_release_version(&ctx, &log, "announce", &["slack".to_string()])
+            .expect("--allow-snapshot-publish must downgrade the bail to a warning");
+    }
+
+    #[test]
+    fn guard_real_semver_passes_silently() {
+        let ctx = ctx_with_version("1.4.2");
+        let log = ctx.logger("publish-test");
+        guard_release_version(&ctx, &log, "publish", &["cargo".to_string()])
+            .expect("a real semver version must not trip the guard");
+    }
+
+    #[test]
+    fn guard_steps_aside_in_dry_run_and_snapshot() {
+        for set_mode in [
+            (|c: &mut crate::context::Context| c.options.dry_run = true) as fn(&mut _),
+            (|c: &mut crate::context::Context| c.options.snapshot = true) as fn(&mut _),
+        ] {
+            let mut ctx = ctx_with_version("0.0.0~SNAPSHOT-d7813f0");
+            set_mode(&mut ctx);
+            let log = ctx.logger("blob-test");
+            guard_release_version(&ctx, &log, "blob", &["s3://bucket/key".to_string()])
+                .expect("dry-run / snapshot must not trip the non-release guard");
         }
     }
 

@@ -1080,9 +1080,9 @@ pub(crate) fn publish_to_cloudsmith(
         // refused; unset (None) prunes nothing.
         if let Some(keep) = entry.keep_versions {
             if ctx.is_snapshot() {
-                // Snapshot publishes are blocked by the release_version_guard,
-                // but guard the destructive prune independently so it can never
-                // delete real releases on behalf of a snapshot run.
+                // Snapshot publishes are blocked by the shared non-release
+                // version guard, but guard the destructive prune independently
+                // so it can never delete real releases on behalf of a snapshot run.
                 log.verbose("cloudsmith keep_versions: skipping prune in snapshot mode");
             } else if keep == 0 {
                 log.warn(

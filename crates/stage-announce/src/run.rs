@@ -181,6 +181,14 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
         }
     };
 
+    // Refuse to broadcast a non-release version (snapshot / dirty /
+    // 0.0.0-sentinel) to any announcer. A `--skip=publish` run reaches announce
+    // without the publish guard ever firing, so the same shared guard runs here
+    // too — BEFORE any message is sent. No-op in dry-run/snapshot;
+    // `--allow-snapshot-publish` downgrades to a warning.
+    let announcer_targets = crate::announcers::configured_announcer_names(&announce);
+    anodizer_core::version::guard_release_version(ctx, &log, "announce", &announcer_targets)?;
+
     // Single source of truth for the skip/if/gate_on decision (shared with
     // the pre-publish guard via `announce_should_run`). Only the
     // side-effecting bits — the log line and, on the gate path, the
@@ -326,6 +334,9 @@ mod gate_tests {
             ..Default::default()
         };
         let mut ctx = Context::new(config, ContextOptions::default());
+        // A real-release version so the non-release guard (now wired into
+        // AnnounceStage::run) passes and the gate logic under test is reached.
+        ctx.template_vars_mut().set("Version", "1.0.0");
         ctx.publish_report = report;
         ctx
     }
@@ -592,6 +603,53 @@ mod gate_tests {
         }
     }
 
+    /// Pins that the non-release version guard is WIRED into `AnnounceStage::run`,
+    /// not merely that the shared `guard_release_version` works in isolation.
+    /// Drives the real `Stage::run` entrypoint with a configured webhook
+    /// announcer and a `0.0.0~SNAPSHOT-<sha>` version on a real-release
+    /// (non-snapshot, non-dry-run) ctx, asserting it bails BEFORE any broadcast
+    /// with an error naming the stage, version, the announcer, and the override
+    /// flag. Deleting the `guard_release_version` call at the
+    /// `AnnounceStage::run` (announce_body) call site makes this test fail (the
+    /// run would proceed past the guard into the dispatch decision).
+    #[test]
+    fn announce_stage_run_bails_on_non_release_version() {
+        use anodizer_core::config::WebhookConfig;
+        let config = Config {
+            project_name: "myapp".to_string(),
+            announce: Some(AnnounceConfig {
+                webhook: Some(WebhookConfig {
+                    endpoint_url: Some("https://example.test/hook".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        // Real release: NOT snapshot, NOT dry-run, so the guard is live.
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut()
+            .set("Version", "0.0.0~SNAPSHOT-d7813f0");
+
+        let err = AnnounceStage
+            .run(&mut ctx)
+            .expect_err("a non-release version must bail at AnnounceStage::run");
+        let msg = err.to_string();
+        assert!(msg.contains("announce"), "error must name the stage: {msg}");
+        assert!(
+            msg.contains("0.0.0~SNAPSHOT-d7813f0"),
+            "error must name the offending version: {msg}",
+        );
+        assert!(
+            msg.contains("webhook"),
+            "error must name the configured announcer: {msg}",
+        );
+        assert!(
+            msg.contains("--allow-snapshot-publish"),
+            "error must tell the operator how to override: {msg}",
+        );
+    }
+
     #[test]
     fn announce_gate_serializes_as_snake_case() {
         let s = serde_json::to_string(&AnnounceGate::RequiredPublishers).expect("serialize");
@@ -640,6 +698,9 @@ mod summary_tests {
         };
         let mut ctx = Context::new(config, opts);
         ctx.template_vars_mut().set("Tag", "v1.2.3");
+        // A real-release version so the non-release guard (now wired into
+        // AnnounceStage::run) passes and the summary/gate path under test runs.
+        ctx.template_vars_mut().set("Version", "1.2.3");
         ctx.publish_report = report;
         ctx
     }

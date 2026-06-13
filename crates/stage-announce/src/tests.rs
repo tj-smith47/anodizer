@@ -45,6 +45,7 @@ fn make_ctx(announce: Option<AnnounceConfig>) -> Context {
     // assertion.
     ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
@@ -146,6 +147,7 @@ fn test_dry_run_discord_does_not_send() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     // Should not make a network call (URL is `.invalid`), just log.
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
@@ -173,6 +175,7 @@ fn test_dry_run_slack_does_not_send() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
 
@@ -208,6 +211,7 @@ fn test_slack_blocks_template_rendering() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v2.0.0");
+    ctx.template_vars_mut().set("Version", "2.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v2.0.0",
@@ -232,6 +236,7 @@ fn test_slack_blocks_template_vars_are_expanded() {
     config.project_name = "myapp".to_string();
     let mut ctx = Context::new(config, ContextOptions::default());
     ctx.template_vars_mut().set("Tag", "v2.0.0");
+    ctx.template_vars_mut().set("Version", "2.0.0");
     // Use the same render_json_template helper
     let rendered = render_json_template(&ctx, Some(&blocks_json))
         .unwrap()
@@ -265,6 +270,7 @@ fn test_dry_run_webhook_does_not_send() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
 
@@ -295,6 +301,7 @@ fn test_missing_webhook_url_returns_error() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     assert!(AnnounceStage.run(&mut ctx).is_err());
 }
 
@@ -323,6 +330,7 @@ fn test_missing_discord_webhook_url_warn_and_skip() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     AnnounceStage
         .run(&mut ctx)
         .expect("normal-mode missing webhook_url must skip cleanly, not error");
@@ -370,6 +378,7 @@ fn test_dry_run_telegram_does_not_send() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
 
@@ -396,6 +405,7 @@ fn test_missing_telegram_bot_token_returns_error() {
     let mut ctx = Context::new(config, opts);
     ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     assert!(AnnounceStage.run(&mut ctx).is_err());
 }
 
@@ -417,6 +427,7 @@ fn test_missing_telegram_bot_token_warn_and_skip() {
     let mut ctx = Context::new(config, ContextOptions::default());
     ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     AnnounceStage
         .run(&mut ctx)
         .expect("normal-mode missing telegram bot_token must skip cleanly, not error");
@@ -444,6 +455,7 @@ fn test_missing_telegram_chat_id_returns_error() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     assert!(AnnounceStage.run(&mut ctx).is_err());
 }
 
@@ -464,6 +476,7 @@ fn test_missing_telegram_chat_id_warn_and_skip() {
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     AnnounceStage
         .run(&mut ctx)
         .expect("normal-mode missing telegram chat_id must skip cleanly, not error");
@@ -508,6 +521,7 @@ fn test_dry_run_teams_does_not_send() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
 
@@ -533,6 +547,7 @@ fn test_missing_teams_webhook_url_returns_error() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     assert!(AnnounceStage.run(&mut ctx).is_err());
 }
 
@@ -580,6 +595,7 @@ fn test_dry_run_mattermost_does_not_send() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
 
@@ -604,6 +620,7 @@ fn test_missing_mattermost_webhook_url_returns_error() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     assert!(AnnounceStage.run(&mut ctx).is_err());
 }
 
@@ -649,6 +666,7 @@ fn test_dry_run_email_does_not_send() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
 
@@ -674,6 +692,7 @@ fn test_missing_email_from_returns_error() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     assert!(AnnounceStage.run(&mut ctx).is_err());
 }
 
@@ -699,6 +718,7 @@ fn test_missing_email_to_returns_error() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     assert!(AnnounceStage.run(&mut ctx).is_err());
 }
 
@@ -719,6 +739,7 @@ fn test_invalid_email_from_returns_error() {
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("missing @"),
@@ -821,6 +842,7 @@ fn test_dry_run_telegram_defaults_parse_mode_to_markdownv2() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     // Should succeed in dry-run without error.
     assert!(AnnounceStage.run(&mut ctx).is_ok());
 }
@@ -874,6 +896,7 @@ fn test_announce_skip_template_evaluated() {
     config.announce = Some(announce);
     let mut ctx = Context::new(config, ContextOptions::default());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set("IsNightly", "true");
     // Should skip because IsNightly renders to "true".
     // Discord would fail on the invalid URL if skip didn't work.
@@ -963,6 +986,7 @@ fn test_dry_run_reddit() {
         ],
     );
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
@@ -995,6 +1019,7 @@ fn test_missing_reddit_application_id_returns_error() {
     let mut ctx = Context::new(config, opts);
     ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("missing application_id"),
@@ -1065,6 +1090,7 @@ fn test_missing_reddit_username_returns_error() {
     let mut ctx = Context::new(config, opts);
     ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("missing username"),
@@ -1116,6 +1142,7 @@ fn test_missing_reddit_sub_returns_error() {
     let mut ctx = Context::new(config, opts);
     ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("missing sub"),
@@ -1172,6 +1199,7 @@ fn test_dry_run_twitter() {
         ],
     );
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
@@ -1196,6 +1224,7 @@ fn test_twitter_missing_env_var_returns_error() {
     let mut ctx = Context::new(config, ContextOptions::default());
     ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
@@ -1265,6 +1294,7 @@ fn test_dry_run_mastodon() {
     let mut ctx = Context::new(config, opts);
     set_mastodon_creds(&mut ctx);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
@@ -1294,6 +1324,7 @@ fn test_mastodon_missing_server_returns_error() {
     let mut ctx = Context::new(config, opts);
     set_mastodon_creds(&mut ctx);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("missing server"),
@@ -1318,6 +1349,7 @@ fn test_mastodon_missing_server_warn_and_skip() {
     let mut ctx = Context::new(config, ContextOptions::default());
     set_mastodon_creds(&mut ctx);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     AnnounceStage
         .run(&mut ctx)
         .expect("normal-mode missing mastodon server must skip cleanly, not error");
@@ -1340,6 +1372,7 @@ fn test_mastodon_missing_env_var_returns_error() {
     let mut ctx = Context::new(config, ContextOptions::default());
     ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
@@ -1394,6 +1427,7 @@ fn test_mastodon_missing_client_id_returns_error() {
         ],
     );
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
@@ -1430,6 +1464,7 @@ fn test_mastodon_missing_client_secret_returns_error() {
         ],
     );
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
@@ -1470,6 +1505,7 @@ fn test_telegram_default_template_renders_without_tilde() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut()
         .set("ReleaseURL", "https://example.com/r/v1.0.0");
     // Should succeed in dry-run without error — exercises the default
@@ -1547,6 +1583,7 @@ fn test_dry_run_bluesky() {
     let mut ctx = Context::new(config, opts);
     set_test_env(&mut ctx, &[("BLUESKY_APP_PASSWORD", "test_pass")]);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
@@ -1577,6 +1614,7 @@ fn test_bluesky_missing_username_errors() {
     let mut ctx = Context::new(config, opts);
     set_test_env(&mut ctx, &[("BLUESKY_APP_PASSWORD", "test_pass")]);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("missing username"),
@@ -1687,6 +1725,7 @@ fn test_dry_run_linkedin() {
         )],
     );
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
@@ -1710,6 +1749,7 @@ fn test_linkedin_missing_env_var_errors() {
     let mut ctx = Context::new(config, ContextOptions::default());
     ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
@@ -1785,6 +1825,7 @@ fn test_dry_run_opencollective() {
         )],
     );
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
@@ -1813,6 +1854,7 @@ fn test_opencollective_missing_slug_errors() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("missing slug"),
@@ -1868,6 +1910,7 @@ fn test_opencollective_missing_env_var_errors() {
     let mut ctx = Context::new(config, ContextOptions::default());
     ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
@@ -1944,6 +1987,7 @@ fn test_dry_run_discourse() {
     let mut ctx = Context::new(config, opts);
     set_test_env(&mut ctx, &[("DISCOURSE_API_KEY", "test_key")]);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
@@ -1974,6 +2018,7 @@ fn test_missing_discourse_server_returns_error() {
     let mut ctx = Context::new(config, opts);
     set_test_env(&mut ctx, &[("DISCOURSE_API_KEY", "test_key")]);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("missing server"),
@@ -2022,6 +2067,7 @@ fn test_missing_discourse_category_id_returns_error() {
     let mut ctx = Context::new(config, opts);
     set_test_env(&mut ctx, &[("DISCOURSE_API_KEY", "test_key")]);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     assert!(
         err.to_string().contains("missing category_id"),
@@ -2085,6 +2131,7 @@ fn test_discourse_missing_env_var_errors() {
     let mut ctx = Context::new(config, ContextOptions::default());
     ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
@@ -2186,6 +2233,7 @@ fn test_mattermost_renders_channel_template() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     let err = AnnounceStage.run(&mut ctx).unwrap_err();
     // Structural assertion against anodizer-controlled wrapping strings only:
     // - "announce errors:" comes from the stage aggregator (lib.rs:1046)
@@ -2237,6 +2285,7 @@ fn test_mattermost_channel_template_resolves_on_dry_run() {
     };
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
     ctx.template_vars_mut().set(
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",

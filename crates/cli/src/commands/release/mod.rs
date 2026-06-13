@@ -154,11 +154,11 @@ pub struct ReleaseOpts {
     /// (fail-closed) aborts the release on any provider error so the
     /// operator notices instead of shipping the pre-AI body silently.
     pub allow_ai_failure: bool,
-    /// `--allow-snapshot-publish`: downgrade the publish stage's non-release
-    /// version guard from a hard bail to a warning, allowing a snapshot / dev
-    /// / `0.0.0`-sentinel version to be published. Default `false`
-    /// (fail-closed): a non-release version reaching a one-way-door index is
-    /// almost always an accident.
+    /// `--allow-snapshot-publish`: downgrade the publish, blob, and announce
+    /// stages' non-release version guard from a hard bail to a warning, allowing
+    /// a snapshot / dirty / `0.0.0`-sentinel version to be released. Default
+    /// `false` (fail-closed): a non-release version reaching a one-way-door
+    /// index is almost always an accident.
     pub allow_snapshot_publish: bool,
 }
 
