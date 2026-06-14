@@ -1141,6 +1141,9 @@ Cannot be combined with `url.template:` — set one or the other. If both are pr
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `amd64_variant` | string | — | amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4"). Only artifacts matching this variant are included. Default: "v1". |
+| `checkver` | string | — | Scoop `checkver` strategy used by bucket maintainers to detect new releases. Defaults to `"github"` (derived from the configured GitHub repo) — `ScoopInstaller/Main` requires checkver for automated-update PRs. Override with a homepage regex when GitHub release detection is not appropriate.
+
+Example: `checkver: "github"` or `checkver: "v([\\d.]+)"`. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
 | `commit_msg_template` | string | — | Custom commit message template. |
 | `depends` | list of string | — | Application dependencies (other Scoop packages). |
@@ -1213,12 +1216,18 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `copyright_url` | string | — | Copyright URL. |
 | `dependencies` | list of WingetDependency | — | Package dependencies. |
 | `description` | string | — | Full package description displayed in the WinGet gallery. |
+| `documentations` | list of WingetDocumentation | — | Documentation links rendered as the `Documentations[]` block on the locale manifest. Each entry is a `{ label, url }` pair surfaced in the winget gallery (real ripgrep emits a `FAQ` and a `User Guide` entry). Omitted entirely when empty.
+
+Example: ```yaml documentations: - label: "User Guide" url: "https://github.com/owner/repo/blob/master/GUIDE.md" ``` |
 | `homepage` | string | — | Project homepage URL. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the WinGet publisher is skipped. Render failure hard-errors. Config key: `winget[].if:`. |
 | `installation_notes` | string | — | Post-install notes shown to the user. |
 | `license` | string | — | License identifier (required, e.g. "MIT"). |
 | `license_url` | string | — | License URL. |
+| `moniker` | string | — | Short invoke alias shown as the package `Moniker` (e.g. `rg` for ripgrep, `fd` for fd). This is the command users type, NOT the package/crate name. When unset, anodizer derives it from the single published binary name; with multiple binaries and no override the Moniker is omitted (winget treats it as optional).
+
+Example: `moniker: "rg"`. |
 | `name` | string | — | Override the package name (default: crate name). |
 | `package_identifier` | string | — | WinGet package identifier (e.g. "Publisher.AppName"). Auto-generated if empty. |
 | `package_name` | string | — | Package name as displayed (default: same as name). |
@@ -1237,9 +1246,15 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
 | `short_description` | string | — | Short description (required, max 256 chars). |
+| `silent_switch` | string | — | Silent-install switch string emitted as `InstallerSwitches.Silent` for actual installers (`wix`/`msi`/`exe`/`nsis`). When unset, anodizer derives the switch from the installer type (`/quiet` for msi, `/S` for exe/nsis). Never emitted for `zip`/`portable` artifacts.
+
+Example: `silent_switch: "/qn"`. |
 | `skip_upload` | StringOrBool | — | Skip publishing. `"true"` always skips; `"auto"` skips for prereleases. Accepts bool or template string. |
 | `tags` | list of string | — | Tags for package discovery (lowercased, spaces→hyphens). |
 | `update_existing_pr` | StringOrBool | — | When true, force-push the updated manifest to the existing PR branch when a PR for the same head branch already exists. The PR content is updated in place rather than creating a duplicate. When false (default), the push is skipped and a warning is emitted so the operator sees that the publisher did not update the PR. |
+| `upgrade_behavior` | string | — | Installer `UpgradeBehavior` for every installer entry. winget accepts `install`, `uninstallPrevious`, and `deny`. Defaults to `install` — the correct behavior for portable-zip CLI tools (`uninstallPrevious` forces a clobbering reinstall).
+
+Example: `upgrade_behavior: "uninstallPrevious"`. |
 | `url_template` | string | — | Custom URL template for download URLs (overrides release URL). |
 | `use` | string | — | Artifact selection: "archive" (default), "msi", or "nsis". |
 

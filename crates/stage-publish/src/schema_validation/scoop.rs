@@ -129,6 +129,7 @@ mod tests {
             pre_install: Some(vec!["echo pre-install".to_string()]),
             post_install: Some(vec!["echo post-install".to_string()]),
             shortcuts: Some(vec![vec!["widget.exe".to_string(), "Widget".to_string()]]),
+            checkver: Some("github".to_string()),
             skip_upload: None,
             commit_msg_template: Some("Scoop: {{ ProjectName }} {{ Tag }}".to_string()),
             ids: None,

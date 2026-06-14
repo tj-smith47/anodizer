@@ -531,6 +531,14 @@ pub struct ScoopConfig {
     pub post_install: Option<Vec<String>>,
     /// Start menu shortcuts as `[executable, label]` pairs.
     pub shortcuts: Option<Vec<Vec<String>>>,
+    /// Scoop `checkver` strategy used by bucket maintainers to detect new
+    /// releases. Defaults to `"github"` (derived from the configured GitHub
+    /// repo) — `ScoopInstaller/Main` requires checkver for automated-update
+    /// PRs. Override with a homepage regex when GitHub release detection is
+    /// not appropriate.
+    ///
+    /// Example: `checkver: "github"` or `checkver: "v([\\d.]+)"`.
+    pub checkver: Option<String>,
     /// Skip publishing the manifest.  `"true"` always skips; `"auto"` skips
     /// for prerelease versions. Accepts bool or template string.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]

@@ -12607,6 +12607,14 @@
             "null"
           ]
         },
+        "checkver": {
+          "description": "Scoop `checkver` strategy used by bucket maintainers to detect new releases. Defaults to `\"github\"` (derived from the configured GitHub repo) — `ScoopInstaller/Main` requires checkver for automated-update PRs. Override with a homepage regex when GitHub release detection is not appropriate.\n\nExample: `checkver: \"github\"` or `checkver: \"v([\\\\d.]+)\"`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "commit_author": {
           "description": "Commit author with optional signing.",
           "default": null,
@@ -15173,6 +15181,17 @@
             "null"
           ]
         },
+        "documentations": {
+          "description": "Documentation links rendered as the `Documentations[]` block on the locale manifest. Each entry is a `{ label, url }` pair surfaced in the winget gallery (real ripgrep emits a `FAQ` and a `User Guide` entry). Omitted entirely when empty.\n\nExample: ```yaml documentations: - label: \"User Guide\" url: \"https://github.com/owner/repo/blob/master/GUIDE.md\" ```",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/WingetDocumentation"
+          }
+        },
         "homepage": {
           "description": "Project homepage URL.",
           "default": null,
@@ -15218,6 +15237,14 @@
         },
         "license_url": {
           "description": "License URL.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "moniker": {
+          "description": "Short invoke alias shown as the package `Moniker` (e.g. `rg` for ripgrep, `fd` for fd). This is the command users type, NOT the package/crate name. When unset, anodizer derives it from the single published binary name; with multiple binaries and no override the Moniker is omitted (winget treats it as optional).\n\nExample: `moniker: \"rg\"`.",
           "default": null,
           "type": [
             "string",
@@ -15359,6 +15386,14 @@
             "null"
           ]
         },
+        "silent_switch": {
+          "description": "Silent-install switch string emitted as `InstallerSwitches.Silent` for actual installers (`wix`/`msi`/`exe`/`nsis`). When unset, anodizer derives the switch from the installer type (`/quiet` for msi, `/S` for exe/nsis). Never emitted for `zip`/`portable` artifacts.\n\nExample: `silent_switch: \"/qn\"`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "skip_upload": {
           "description": "Skip publishing. `\"true\"` always skips; `\"auto\"` skips for prereleases. Accepts bool or template string.",
           "default": null,
@@ -15394,6 +15429,14 @@
             }
           ]
         },
+        "upgrade_behavior": {
+          "description": "Installer `UpgradeBehavior` for every installer entry. winget accepts `install`, `uninstallPrevious`, and `deny`. Defaults to `install` — the correct behavior for portable-zip CLI tools (`uninstallPrevious` forces a clobbering reinstall).\n\nExample: `upgrade_behavior: \"uninstallPrevious\"`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "url_template": {
           "description": "Custom URL template for download URLs (overrides release URL).",
           "default": null,
@@ -15427,6 +15470,23 @@
         },
         "package_identifier": {
           "description": "WinGet package identifier of the dependency (e.g., \"Publisher.App\").",
+          "default": "",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+    "WingetDocumentation": {
+      "description": "A single documentation link rendered into the winget locale manifest's `Documentations[]` block as `{ DocumentLabel, DocumentUrl }`.",
+      "type": "object",
+      "properties": {
+        "label": {
+          "description": "Display label for the link (e.g. `FAQ`, `User Guide`).",
+          "default": "",
+          "type": "string"
+        },
+        "url": {
+          "description": "Target URL for the documentation entry.",
           "default": "",
           "type": "string"
         }

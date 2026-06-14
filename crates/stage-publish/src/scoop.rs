@@ -29,6 +29,43 @@ pub(crate) struct ManifestOptions<'a> {
     /// When set, these are used instead of deriving from the manifest name.
     /// Multiple entries produce a JSON array in the `bin` field.
     pub(crate) bin: Option<&'a [String]>,
+    /// `checkver` strategy. When `Some`, emitted verbatim (`"github"` or a
+    /// homepage regex). When `None`, the key is omitted.
+    pub(crate) checkver: Option<String>,
+    /// How `autoupdate.hash` should be resolved for each architecture. When
+    /// `None`, no `autoupdate` block is emitted (and no `checkver` either,
+    /// since a checkver without autoupdate is a dead half-manifest).
+    pub(crate) autoupdate_hash: Option<AutoupdateHash>,
+}
+
+/// How scoop's `autoupdate.architecture.<arch>.hash` is resolved, mirroring
+/// what anodizer actually publishes (see the checksum stage):
+/// - [`AutoupdateHash::UrlSidecar`] when split mode emits per-asset
+///   `<asset>.sha256` sidecars — scoop fetches `$url.sha256`.
+/// - [`AutoupdateHash::ChecksumsRegex`] when the combined `checksums.txt` is
+///   the only hash source — scoop fetches that file and extracts the line for
+///   the asset via a regex over `<sha>␠<basename>`.
+#[derive(Clone)]
+pub(crate) enum AutoupdateHash {
+    /// Per-asset sidecar: `hash: { "url": "$url.sha256" }`.
+    UrlSidecar,
+    /// Combined checksums file. `url_template` carries the file URL with the
+    /// version already substituted by `$version`.
+    ChecksumsRegex { url_template: String },
+}
+
+/// Replace every occurrence of the concrete `version` in `s` with scoop's
+/// `$version` placeholder, producing an autoupdate-ready template. The version
+/// appears in both the release tag path and the asset filename, so all
+/// occurrences are substituted (the standard scoop autoupdate convention).
+///
+/// When `version` is empty the input is returned unchanged — an empty needle
+/// would otherwise splice `$version` between every byte.
+fn substitute_version(s: &str, version: &str) -> String {
+    if version.is_empty() {
+        return s.to_string();
+    }
+    s.replace(version, "$version")
 }
 
 /// A single architecture entry for the Scoop manifest.
@@ -72,6 +109,92 @@ pub(crate) fn generate_manifest(
     )
 }
 
+/// Resolve how scoop's `autoupdate.hash` should be derived for this crate,
+/// reading the crate's effective checksum config (per-crate override falling
+/// back to `defaults.checksum`).
+///
+/// - **split mode** (`checksum.split: true`): anodizer emits a per-asset
+///   `<asset>.sha256` sidecar, so scoop fetches `$url.sha256`.
+/// - **combined mode** (default): the only hash source is the single
+///   `checksums.txt`, so scoop fetches that file (URL templated with
+///   `$version`) and extracts the per-asset line via a regex.
+///
+/// Hard-fails when combined mode is in effect but no release asset URL is
+/// available to anchor the checksums-file URL — emitting an autoupdate block
+/// pointing at a URL that 404s would silently break every future auto-bump.
+fn resolve_autoupdate_hash(
+    ctx: &Context,
+    crate_cfg: &anodizer_core::config::CrateConfig,
+    crate_name: &str,
+    version: &str,
+    arch_entries: &[ArchEntry],
+) -> Result<AutoupdateHash> {
+    use anodizer_core::config::ChecksumConfig;
+
+    // Effective split mode: crate override → defaults.checksum.split → false.
+    let split = crate_cfg
+        .checksum
+        .as_ref()
+        .and_then(|c| c.split)
+        .or_else(|| {
+            ctx.config
+                .defaults
+                .as_ref()
+                .and_then(|d| d.checksum.as_ref())
+                .and_then(|c| c.split)
+        })
+        .unwrap_or(false);
+
+    if split {
+        return Ok(AutoupdateHash::UrlSidecar);
+    }
+
+    // Combined mode: build the checksums-file URL by replacing the asset
+    // basename in a real release URL with the rendered checksums filename,
+    // then substituting the version with `$version`.
+    let sample_url = arch_entries
+        .first()
+        .map(|e| e.url.as_str())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "scoop: cannot build autoupdate.hash for crate '{}': no release \
+                 asset URL is available to anchor the combined checksums-file URL. \
+                 Either enable per-asset sidecars (`checksum.split: true`) or \
+                 ensure a Windows archive artifact carries its release `url` metadata.",
+                crate_name
+            )
+        })?;
+
+    // Resolve the combined checksums filename via the same template the
+    // checksum stage uses, then map the concrete version to `$version`.
+    let name_template = crate_cfg
+        .checksum
+        .as_ref()
+        .and_then(|c| c.name_template.clone())
+        .or_else(|| {
+            ctx.config
+                .defaults
+                .as_ref()
+                .and_then(|d| d.checksum.as_ref())
+                .and_then(|c| c.name_template.clone())
+        })
+        .unwrap_or_else(|| ChecksumConfig::DEFAULT_NAME_TEMPLATE.to_string());
+    let checksums_name = ctx.render_template(&name_template).with_context(|| {
+        format!("scoop: render checksums name template for autoupdate ('{crate_name}')")
+    })?;
+
+    // Replace the asset filename (last path segment) with the checksums file.
+    let base = sample_url.rsplit_once('/').map(|(b, _)| b).unwrap_or("");
+    let checksums_url = if base.is_empty() {
+        checksums_name.clone()
+    } else {
+        format!("{}/{}", base, checksums_name)
+    };
+    let url_template = substitute_version(&checksums_url, version);
+
+    Ok(AutoupdateHash::ChecksumsRegex { url_template })
+}
+
 /// Generate a Scoop JSON manifest string with extended options.
 ///
 /// Accepts multiple architecture entries. Each entry maps to a key in
@@ -102,48 +225,61 @@ pub(crate) fn generate_manifest_with_opts(
         }
     };
 
-    // Compute bin value for a given wrap_in_directory prefix.
-    // When wrap_in_directory is set, each bin entry becomes a pair:
-    //   ["wrap_dir/binary.exe", "alias"]
-    // where alias is the binary name without the .exe extension.
-    let make_bin_value = |wrap_dir: Option<&str>| -> serde_json::Value {
-        let raw_bins: Vec<String> = match opts.bin {
-            Some(bins) if !bins.is_empty() => bins.iter().map(|b| ensure_exe(b)).collect(),
-            _ => vec![ensure_exe(name)],
-        };
-        match wrap_dir {
-            Some(dir) if !dir.is_empty() => {
-                let pairs: Vec<serde_json::Value> = raw_bins
-                    .iter()
-                    .map(|exe| {
-                        let alias = exe.strip_suffix(".exe").unwrap_or(exe);
-                        // filepath.ToSlash → forward-slash.
-                        serde_json::json!([format!("{}/{}", dir, exe), alias])
-                    })
-                    .collect();
-                serde_json::json!(pairs)
-            }
-            _ => {
-                // `bin` is always emitted as an array, even for a single
-                // binary. Manifest validators that pin the schema to
-                // `array of strings` reject the singleton-string form.
-                serde_json::json!(raw_bins)
-            }
-        }
+    // Scoop `bin` is a flat list of executable names (e.g. `rg.exe`). When the
+    // archive wraps its contents in a top-level directory, that directory is
+    // expressed once via per-arch `extract_dir` — NOT baked into each bin
+    // path. Baking it in breaks `scoop which`/shortcut resolution, which
+    // expect a flat extract; the idiomatic ripgrep/fd manifests set
+    // `extract_dir` and keep `bin` flat.
+    //
+    // `bin` is always an array, even for a single binary: validators that pin
+    // the schema to `array of strings` reject the singleton-string form.
+    let flat_bins: Vec<String> = match opts.bin {
+        Some(bins) if !bins.is_empty() => bins.iter().map(|b| ensure_exe(b)).collect(),
+        _ => vec![ensure_exe(name)],
     };
+    let bin_value = serde_json::json!(flat_bins);
 
-    // Build the architecture block from entries.
+    // Build the architecture block from entries. `extract_dir` is set only when
+    // the archive actually wraps in a directory; flat archives must NOT carry
+    // an `extract_dir` (scoop would look for a non-existent subdir).
     let mut arch_obj = serde_json::Map::new();
+    let mut autoupdate_arch_obj = serde_json::Map::new();
     for entry in arch_entries {
-        let bin_value = make_bin_value(entry.wrap_in_directory.as_deref());
+        let wrap = entry.wrap_in_directory.as_deref().filter(|d| !d.is_empty());
+
+        let mut arch_block = serde_json::Map::new();
+        arch_block.insert("url".to_string(), serde_json::json!(entry.url));
+        arch_block.insert("hash".to_string(), serde_json::json!(entry.hash));
+        arch_block.insert("bin".to_string(), bin_value.clone());
+        if let Some(dir) = wrap {
+            arch_block.insert("extract_dir".to_string(), serde_json::json!(dir));
+        }
         arch_obj.insert(
             entry.scoop_arch.clone(),
-            serde_json::json!({
-                "url": entry.url,
-                "hash": entry.hash,
-                "bin": bin_value
-            }),
+            serde_json::Value::Object(arch_block),
         );
+
+        // autoupdate per-arch: substitute the concrete version with scoop's
+        // `$version` placeholder in both the url and the extract_dir so the
+        // bucket auto-bumps on the next release.
+        if opts.autoupdate_hash.is_some() {
+            let mut au_block = serde_json::Map::new();
+            au_block.insert(
+                "url".to_string(),
+                serde_json::json!(substitute_version(&entry.url, version)),
+            );
+            if let Some(dir) = wrap {
+                au_block.insert(
+                    "extract_dir".to_string(),
+                    serde_json::json!(substitute_version(dir, version)),
+                );
+            }
+            autoupdate_arch_obj.insert(
+                entry.scoop_arch.clone(),
+                serde_json::Value::Object(au_block),
+            );
+        }
     }
 
     let mut manifest = serde_json::json!({
@@ -160,6 +296,29 @@ pub(crate) fn generate_manifest_with_opts(
     let obj = manifest
         .as_object_mut()
         .ok_or_else(|| anyhow::anyhow!("scoop: manifest root is not a JSON object"))?;
+
+    // checkver + autoupdate: ScoopInstaller/Main requires both for
+    // automated-update PRs. They are emitted together — a checkver without an
+    // autoupdate block is a dead half-manifest.
+    if let Some(hash_mode) = opts.autoupdate_hash.as_ref() {
+        if let Some(checkver) = opts.checkver.as_deref() {
+            obj.insert("checkver".to_string(), serde_json::json!(checkver));
+        }
+        let hash_value = match hash_mode {
+            AutoupdateHash::UrlSidecar => serde_json::json!({ "url": "$url.sha256" }),
+            AutoupdateHash::ChecksumsRegex { url_template } => serde_json::json!({
+                "url": url_template,
+                // scoop substitutes $basename with the per-arch asset filename;
+                // match `<sha256>␠␠<asset>` as emitted by the checksum stage.
+                "regex": "$sha256\\s+$basename"
+            }),
+        };
+        let autoupdate = serde_json::json!({
+            "architecture": autoupdate_arch_obj,
+            "hash": hash_value,
+        });
+        obj.insert("autoupdate".to_string(), autoupdate);
+    }
 
     if let Some(persist) = opts.persist {
         obj.insert("persist".to_string(), serde_json::json!(persist));
@@ -500,6 +659,32 @@ pub(crate) fn render_scoop_manifest_for_crate(
         .and_then(|r| r.github.as_ref())
         .map(|gh| format!("{}/{}", gh.owner, gh.name));
 
+    // checkver: explicit override → `"github"` when the repo is known →
+    // None (no autoupdate possible without a release source). ScoopInstaller/
+    // Main requires checkver+autoupdate for automated-update PRs.
+    let checkver = match scoop_cfg.checkver.as_deref().filter(|s| !s.is_empty()) {
+        Some(c) => Some(c.to_string()),
+        None if github_slug.is_some() => Some("github".to_string()),
+        None => None,
+    };
+
+    // autoupdate.hash mode mirrors what the checksum stage actually emits:
+    // split mode → per-asset `<asset>.sha256` sidecars (`$url.sha256`);
+    // combined mode → the single `checksums.txt` file + a per-asset regex.
+    // Only build an autoupdate block when checkver is resolvable (no release
+    // source ⇒ no auto-bump target).
+    let autoupdate_hash = if checkver.is_some() {
+        Some(resolve_autoupdate_hash(
+            ctx,
+            crate_cfg,
+            crate_name,
+            &version,
+            &arch_entries,
+        )?)
+    } else {
+        None
+    };
+
     // Template-render homepage so users can write
     // `homepage: "https://{{ .Env.HOSTED_DOMAIN }}/{{ .ProjectName }}"`.
     // Name, Description, Homepage, and SkipUpload are all template-rendered.
@@ -523,6 +708,8 @@ pub(crate) fn render_scoop_manifest_for_crate(
         post_install: scoop_cfg.post_install.as_deref(),
         shortcuts: scoop_cfg.shortcuts.as_deref(),
         bin: bin_names_ref,
+        checkver,
+        autoupdate_hash,
     };
 
     let manifest = generate_manifest_with_opts(
@@ -1881,6 +2068,8 @@ mod tests {
             post_install: Some(&post),
             shortcuts: Some(&shortcuts),
             bin: None,
+            checkver: None,
+            autoupdate_hash: None,
         };
         let entries = arch_64("https://example.com/a.zip", "abc");
         let manifest =
@@ -1990,14 +2179,20 @@ mod tests {
         )
         .unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
-        // With wrap_in_directory, single bin becomes a pair: ["dir/bin.exe", "alias"]
-        // Paths use forward slashes.
-        let bin = &json["architecture"]["64bit"]["bin"];
-        assert!(bin.is_array(), "bin should be an array");
-        let pair = &bin[0];
-        assert!(pair.is_array(), "bin entry should be a [path, alias] pair");
-        assert_eq!(pair[0], "app-1.0.0/app.exe");
-        assert_eq!(pair[1], "app");
+        // S5: a wrapping archive keeps `bin` as a flat array of plain exe
+        // names and expresses the wrap dir once via per-arch `extract_dir`
+        // (matching real ripgrep/fd). The old baked `["dir/bin.exe", alias]`
+        // pair broke `scoop which` / shortcut resolution.
+        let arch = &json["architecture"]["64bit"];
+        assert_eq!(
+            arch["bin"],
+            serde_json::json!(["app.exe"]),
+            "bin must be a flat array of plain exe names, got:\n{arch}"
+        );
+        assert_eq!(
+            arch["extract_dir"], "app-1.0.0",
+            "extract_dir must carry the wrap directory, got:\n{arch}"
+        );
     }
 
     #[test]
@@ -2017,13 +2212,14 @@ mod tests {
             generate_manifest_with_opts("suite", "1.0.0", &entries, "A suite", "MIT", &opts)
                 .unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
-        let bin = &json["architecture"]["64bit"]["bin"];
-        assert!(bin.is_array());
-        assert_eq!(bin.as_array().unwrap().len(), 2);
-        assert_eq!(bin[0][0], "suite-1.0.0/cli.exe");
-        assert_eq!(bin[0][1], "cli");
-        assert_eq!(bin[1][0], "suite-1.0.0/daemon.exe");
-        assert_eq!(bin[1][1], "daemon");
+        // S5: multiple binaries stay flat; extract_dir is shared once.
+        let arch = &json["architecture"]["64bit"];
+        assert_eq!(
+            arch["bin"],
+            serde_json::json!(["cli.exe", "daemon.exe"]),
+            "bin must be a flat array of plain exe names, got:\n{arch}"
+        );
+        assert_eq!(arch["extract_dir"], "suite-1.0.0");
     }
 
     #[test]
@@ -2046,11 +2242,112 @@ mod tests {
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
         // Without wrap_in_directory, single-binary `bin` is still a
         // JSON array, not a bare string.
+        let arch = &json["architecture"]["64bit"];
         assert_eq!(
-            json["architecture"]["64bit"]["bin"],
+            arch["bin"],
             serde_json::json!(["app.exe"]),
             "single-binary `bin` must still be a JSON array"
         );
+        // S5: a FLAT archive must NOT carry extract_dir (scoop would look for
+        // a non-existent subdir).
+        assert!(
+            arch.get("extract_dir").is_none(),
+            "flat archive must not emit extract_dir, got:\n{arch}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // checkver + autoupdate (S6, S7)
+    // -----------------------------------------------------------------------
+
+    /// S6/S7: with `checkver` + sidecar hash mode, the manifest carries
+    /// `checkver: github` and an `autoupdate` block whose per-arch url has the
+    /// version templated to `$version` and whose hash points at `$url.sha256`
+    /// — the exact shape real ripgrep/fd scoop manifests use for sidecars.
+    #[test]
+    fn test_scoop_checkver_and_autoupdate_sidecar() {
+        let entries = vec![ArchEntry {
+            scoop_arch: "64bit".to_string(),
+            url: "https://github.com/owner/repo/releases/download/v1.2.3/repo-1.2.3-x86_64-pc-windows-msvc.zip".to_string(),
+            hash: "abc123".to_string(),
+            wrap_in_directory: Some("repo-1.2.3-x86_64-pc-windows-msvc".to_string()),
+        }];
+        let opts = ManifestOptions {
+            github_slug: Some("owner/repo".to_string()),
+            checkver: Some("github".to_string()),
+            autoupdate_hash: Some(AutoupdateHash::UrlSidecar),
+            ..Default::default()
+        };
+        let manifest =
+            generate_manifest_with_opts("repo", "1.2.3", &entries, "desc", "MIT", &opts).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+
+        assert_eq!(json["checkver"], "github");
+        let au = &json["autoupdate"];
+        assert_eq!(
+            au["architecture"]["64bit"]["url"],
+            "https://github.com/owner/repo/releases/download/v$version/repo-$version-x86_64-pc-windows-msvc.zip",
+            "autoupdate url must template the version with $version, got:\n{au}"
+        );
+        assert_eq!(
+            au["architecture"]["64bit"]["extract_dir"], "repo-$version-x86_64-pc-windows-msvc",
+            "autoupdate extract_dir must template the version, got:\n{au}"
+        );
+        assert_eq!(
+            au["hash"]["url"], "$url.sha256",
+            "sidecar mode → hash.url = $url.sha256"
+        );
+    }
+
+    /// S7: combined-checksums mode points the autoupdate hash at the
+    /// version-templated checksums file URL plus a per-asset extraction regex.
+    #[test]
+    fn test_scoop_autoupdate_combined_checksums() {
+        let entries = vec![ArchEntry {
+            scoop_arch: "64bit".to_string(),
+            url: "https://github.com/owner/repo/releases/download/v2.0.0/repo-2.0.0-windows-amd64.zip".to_string(),
+            hash: "abc".to_string(),
+            wrap_in_directory: None,
+        }];
+        let opts = ManifestOptions {
+            github_slug: Some("owner/repo".to_string()),
+            checkver: Some("github".to_string()),
+            autoupdate_hash: Some(AutoupdateHash::ChecksumsRegex {
+                url_template: "https://github.com/owner/repo/releases/download/v$version/repo_$version_checksums.txt".to_string(),
+            }),
+            ..Default::default()
+        };
+        let manifest =
+            generate_manifest_with_opts("repo", "2.0.0", &entries, "desc", "MIT", &opts).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert_eq!(
+            json["autoupdate"]["hash"]["url"],
+            "https://github.com/owner/repo/releases/download/v$version/repo_$version_checksums.txt"
+        );
+        assert_eq!(json["autoupdate"]["hash"]["regex"], "$sha256\\s+$basename");
+    }
+
+    /// S6/S7: with no autoupdate hash mode resolvable, NEITHER checkver nor
+    /// autoupdate is emitted (a checkver without autoupdate is a dead
+    /// half-manifest).
+    #[test]
+    fn test_scoop_no_autoupdate_omits_both_keys() {
+        let entries = vec![ArchEntry {
+            scoop_arch: "64bit".to_string(),
+            url: "https://example.com/app.zip".to_string(),
+            hash: "h".to_string(),
+            wrap_in_directory: None,
+        }];
+        let opts = ManifestOptions {
+            checkver: Some("github".to_string()),
+            autoupdate_hash: None,
+            ..Default::default()
+        };
+        let manifest =
+            generate_manifest_with_opts("app", "1.0.0", &entries, "desc", "MIT", &opts).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert!(json.get("checkver").is_none());
+        assert!(json.get("autoupdate").is_none());
     }
 
     // -----------------------------------------------------------------------
@@ -2749,6 +3046,143 @@ mod publish_flow_tests {
             json["architecture"]["64bit"]["bin"],
             serde_json::json!(["widget.exe"]),
             "bin must derive from the `binary` metadata + .exe suffix"
+        );
+    }
+
+    /// Register a wrapping Windows archive whose URL + wrap directory both
+    /// embed the version (the real ripgrep/fd shape), for the S5/S7 e2e tests.
+    fn add_wrapping_windows_archive(
+        ctx: &mut Context,
+        crate_name: &str,
+        binary: &str,
+        version: &str,
+        sha: &str,
+    ) {
+        let wrap = format!("{binary}-{version}-x86_64-pc-windows-msvc");
+        let mut meta = HashMap::new();
+        meta.insert(
+            "url".to_string(),
+            format!("https://github.com/acme/widget/releases/download/v{version}/{wrap}.zip"),
+        );
+        meta.insert("sha256".to_string(), sha.to_string());
+        meta.insert("format".to_string(), "zip".to_string());
+        meta.insert("binary".to_string(), binary.to_string());
+        meta.insert("wrap_in_directory".to_string(), wrap.clone());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("/dist/{wrap}.zip")),
+            name: format!("{wrap}.zip"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: meta,
+            size: None,
+        });
+    }
+
+    /// S5/S6/S7 single-crate: a wrapping archive yields a FLAT bin +
+    /// `extract_dir`, a derived `checkver: github`, and an `autoupdate` block
+    /// whose url/extract_dir are version-templated — matching real ripgrep/fd.
+    #[test]
+    fn render_scoop_extract_dir_checkver_autoupdate_default() {
+        let c = scoop_crate_for_bucket("widget", "/unused");
+        let mut ctx = build_ctx(vec![c], "1.2.3");
+        add_wrapping_windows_archive(&mut ctx, "widget", "rg", "1.2.3", &"c".repeat(64));
+        let manifest = render_scoop_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect("render ok")
+            .expect("not skipped");
+        let json: serde_json::Value = serde_json::from_str(&manifest).expect("valid JSON");
+
+        // S5: flat bin + extract_dir.
+        let arch = &json["architecture"]["64bit"];
+        assert_eq!(arch["bin"], serde_json::json!(["rg.exe"]));
+        assert_eq!(arch["extract_dir"], "rg-1.2.3-x86_64-pc-windows-msvc");
+
+        // S6: derived checkver.
+        assert_eq!(json["checkver"], "github");
+
+        // S7: autoupdate with version-templated url + extract_dir, and a
+        // combined-checksums hash (default mode emits checksums.txt).
+        let au = &json["autoupdate"];
+        assert_eq!(
+            au["architecture"]["64bit"]["url"],
+            "https://github.com/acme/widget/releases/download/v$version/rg-$version-x86_64-pc-windows-msvc.zip"
+        );
+        assert_eq!(
+            au["architecture"]["64bit"]["extract_dir"],
+            "rg-$version-x86_64-pc-windows-msvc"
+        );
+        assert_eq!(au["hash"]["regex"], "$sha256\\s+$basename");
+        assert!(
+            au["hash"]["url"].as_str().unwrap().contains("$version"),
+            "combined checksums url must template the version, got:\n{au}"
+        );
+    }
+
+    /// S5/S7 per-crate, NO leakage: two crates in one workspace must each get
+    /// their OWN extract_dir + autoupdate asset url; crate A's wrap dir / asset
+    /// name must never appear in crate B's manifest (the recurring anodizer
+    /// cross-crate leakage bug family).
+    #[test]
+    fn render_scoop_per_crate_extract_dir_autoupdate_no_leakage() {
+        let alpha = scoop_crate_for_bucket("alpha", "/unused");
+        let beta = scoop_crate_for_bucket("beta", "/unused");
+        let mut ctx = build_ctx(vec![alpha, beta], "1.0.0");
+        add_wrapping_windows_archive(&mut ctx, "alpha", "alpha", "1.0.0", &"a".repeat(64));
+        add_wrapping_windows_archive(&mut ctx, "beta", "beta", "1.0.0", &"b".repeat(64));
+
+        let alpha_m = render_scoop_manifest_for_crate(&ctx, "alpha", &quiet())
+            .expect("render ok")
+            .expect("not skipped");
+        let beta_m = render_scoop_manifest_for_crate(&ctx, "beta", &quiet())
+            .expect("render ok")
+            .expect("not skipped");
+
+        // alpha carries only alpha's wrap dir + asset; never beta's.
+        assert!(alpha_m.contains("alpha-1.0.0-x86_64-pc-windows-msvc"));
+        assert!(
+            !alpha_m.contains("beta-1.0.0-x86_64-pc-windows-msvc"),
+            "alpha manifest leaked beta's asset:\n{alpha_m}"
+        );
+        // beta carries only beta's; never alpha's.
+        assert!(beta_m.contains("beta-1.0.0-x86_64-pc-windows-msvc"));
+        assert!(
+            !beta_m.contains("alpha-1.0.0-x86_64-pc-windows-msvc"),
+            "beta manifest leaked alpha's asset:\n{beta_m}"
+        );
+
+        // Both carry their own version-templated autoupdate extract_dir.
+        let a: serde_json::Value = serde_json::from_str(&alpha_m).unwrap();
+        let b: serde_json::Value = serde_json::from_str(&beta_m).unwrap();
+        assert_eq!(
+            a["autoupdate"]["architecture"]["64bit"]["extract_dir"],
+            "alpha-$version-x86_64-pc-windows-msvc"
+        );
+        assert_eq!(
+            b["autoupdate"]["architecture"]["64bit"]["extract_dir"],
+            "beta-$version-x86_64-pc-windows-msvc"
+        );
+    }
+
+    /// S7 split mode: when the crate enables per-asset `.sha256` sidecars, the
+    /// autoupdate hash points at `$url.sha256` instead of a checksums file.
+    #[test]
+    fn render_scoop_autoupdate_sidecar_when_split() {
+        use anodizer_core::config::ChecksumConfig;
+        let mut c = scoop_crate_for_bucket("widget", "/unused");
+        c.checksum = Some(ChecksumConfig {
+            split: Some(true),
+            ..Default::default()
+        });
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        add_wrapping_windows_archive(&mut ctx, "widget", "widget", "1.0.0", &"d".repeat(64));
+        let manifest = render_scoop_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect("render ok")
+            .expect("not skipped");
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert_eq!(json["autoupdate"]["hash"]["url"], "$url.sha256");
+        assert!(
+            json["autoupdate"]["hash"].get("regex").is_none(),
+            "sidecar mode must not carry a checksums regex"
         );
     }
 
