@@ -7230,7 +7230,7 @@
           ]
         },
         "generate_completions_from_executable": {
-          "description": "Generate completions by running the installed binary at install time. Renders the modern homebrew-core idiom `generate_completions_from_executable(bin/\"<exe>\", ...)` in the install block. Preferred over [`Self::completions`] when the binary can emit its own completions; the two are independent and may both be set.",
+          "description": "Generate completions by running the installed binary at install time. Renders the modern homebrew-core idiom `generate_completions_from_executable(bin/\"<exe>\", ...)` in the install block. Preferred over `completions` when the binary can emit its own completions; the two are independent and may both be set.",
           "default": null,
           "anyOf": [
             {

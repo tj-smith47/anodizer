@@ -809,7 +809,7 @@ fn render_formula_inner(
         custom_block: hb_cfg.custom_block.as_deref(),
         plist: hb_cfg.plist.as_deref(),
         service: hb_cfg.service.as_deref(),
-        livecheck: super::formula::render_formula_livecheck(hb_cfg.livecheck.as_ref()),
+        livecheck: super::formula::render_formula_livecheck(hb_cfg.livecheck.as_ref(), log),
         // Render the `license` stanza from the parsed SPDX expression so a dual
         // license (`Apache-2.0 OR MIT`) becomes `license any_of: [...]` rather
         // than an invalid bare string. `None` when no license resolved → the
@@ -1985,6 +1985,38 @@ mod tests {
         assert!(
             !body.contains("skip \"Auto-generated"),
             "active livecheck must NOT skip; got:\n{body}"
+        );
+    }
+
+    /// `skip: false` with NO strategy/url/regex is a no-op opt-in: an empty
+    /// `livecheck do…end` is invalid Ruby, so the renderer falls back to `skip`
+    /// (and warns — the warning is surfaced, not asserted here, since it goes to
+    /// stderr). The rendered formula must still carry a valid `skip` block.
+    #[test]
+    fn render_formula_livecheck_skip_false_without_strategy_falls_back_to_skip() {
+        let hb = HomebrewConfig {
+            livecheck: Some(HomebrewLivecheck {
+                skip: Some(false),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = single_crate_ctx(
+            hb,
+            vec![archive(
+                "x86_64-unknown-linux-gnu",
+                "https://e/x.tar.gz",
+                "s",
+            )],
+        );
+        let body = render_homebrew_formula_for_crate(&ctx, "mytool", &quiet_log())
+            .expect("render")
+            .expect("not skipped")
+            .formula;
+        assert!(body.contains("livecheck do"), "{body}");
+        assert!(
+            body.contains("skip \"Auto-generated on release.\""),
+            "no-op opt-in must fall back to a valid skip block; got:\n{body}"
         );
     }
 

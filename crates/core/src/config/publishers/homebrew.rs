@@ -83,7 +83,7 @@ pub struct HomebrewConfig {
     /// Generate completions by running the installed binary at install time.
     /// Renders the modern homebrew-core idiom
     /// `generate_completions_from_executable(bin/"<exe>", ...)` in the install
-    /// block. Preferred over [`Self::completions`] when the binary can emit its
+    /// block. Preferred over `completions` when the binary can emit its
     /// own completions; the two are independent and may both be set.
     pub generate_completions_from_executable: Option<HomebrewCaskGeneratedCompletions>,
     /// `livecheck` stanza configuration for the formula. When unset, a binary

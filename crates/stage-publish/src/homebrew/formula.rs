@@ -681,8 +681,14 @@ fn ruby_string_array(ids: &[String]) -> String {
 ///   active livecheck has nothing stable to poll.
 /// - `skip: false` + a `strategy`/`url`/`regex` ⇒ an active block
 ///   (`url :stable` / `strategy :github_latest` / `regex(...)`).
+///
+/// When the user explicitly sets `skip: false` but supplies none of
+/// `strategy`/`url`/`regex`, an active block would render an empty (invalid)
+/// `livecheck do … end`, so the renderer falls back to `skip` and emits a
+/// `log.warn` so the ignored opt-in is visible rather than silently dropped.
 pub fn render_formula_livecheck(
     cfg: Option<&anodizer_core::config::HomebrewLivecheck>,
+    log: &anodizer_core::log::StageLogger,
 ) -> Option<String> {
     let cfg = cfg.cloned().unwrap_or_default();
     let has_active = cfg.strategy.as_deref().is_some_and(|s| !s.is_empty())
@@ -695,6 +701,15 @@ pub fn render_formula_livecheck(
         None => !has_active,
     };
     if skip || !has_active {
+        // Surface a requested-but-ignored active livecheck: the user asked for
+        // `skip: false` yet gave nothing to poll, so we fall back to `skip`.
+        if cfg.skip == Some(false) && !has_active {
+            log.warn(
+                "homebrew livecheck: `skip: false` was set but no \
+                 `strategy`/`url`/`regex` was provided — an active livecheck \
+                 needs at least one. Falling back to `skip`.",
+            );
+        }
         let reason = cfg
             .skip_reason
             .as_deref()

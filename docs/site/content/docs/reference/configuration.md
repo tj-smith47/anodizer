@@ -1065,7 +1065,7 @@ Single-crate workspaces and lockstep-bumped monorepos (anodizer itself) leave th
 | `directory` | string | — | Formula directory in the tap (e.g. "Formula"). |
 | `download_strategy` | string | — | Custom download strategy class name (e.g. `:using => GitHubPrivateRepositoryReleaseDownloadStrategy`). |
 | `extra_install` | string | — | Additional install commands appended after the main install block. |
-| `generate_completions_from_executable` | HomebrewCaskGeneratedCompletions | — | Generate completions by running the installed binary at install time. Renders the modern homebrew-core idiom `generate_completions_from_executable(bin/"<exe>", ...)` in the install block. Preferred over [`Self::completions`] when the binary can emit its own completions; the two are independent and may both be set. |
+| `generate_completions_from_executable` | HomebrewCaskGeneratedCompletions | — | Generate completions by running the installed binary at install time. Renders the modern homebrew-core idiom `generate_completions_from_executable(bin/"<exe>", ...)` in the install block. Preferred over `completions` when the binary can emit its own completions; the two are independent and may both be set. |
 | `homepage` | string | — | Project homepage URL. Falls back to the GitHub release URL when unset. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew publisher is skipped. Render failure hard-errors. Config key: `brews[].if:`. |
