@@ -90,7 +90,10 @@ homepage = "https://tj-smith47.github.io/anodizer"
 documentation = "https://tj-smith47.github.io/anodizer"
 authors = ["TJ Smith <tj@jarvispro.io>"]
 keywords = ["release", "automation", "cargo", "ci-cd", "packaging"]
-categories = ["command-line-utilities", "development-tools", "development-tools::build-utils"]
+# command-line-utilities ("Applications to run at the command line") fits
+# only the cli binary crate, which overrides this literally; the other 29
+# published crates are pure libraries, so the workspace default omits it.
+categories = ["development-tools", "development-tools::build-utils"]
 
 [workspace.dependencies]
 anodizer-core = { path = "crates/core", version = "0.9.1" }

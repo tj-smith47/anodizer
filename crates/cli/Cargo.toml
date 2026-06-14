@@ -7,7 +7,9 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 keywords.workspace = true
-categories.workspace = true
+# Literal override: only this crate ships a binary, so it adds
+# command-line-utilities on top of the workspace library categories.
+categories = ["command-line-utilities", "development-tools", "development-tools::build-utils"]
 rust-version.workspace = true
 homepage.workspace = true
 documentation.workspace = true
