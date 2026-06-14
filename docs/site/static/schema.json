@@ -1403,6 +1403,36 @@
             "type": "string"
           }
         },
+        "deb_architecture": {
+          "description": "Override the Debian architecture for `.deb` uploads (`;deb.architecture=`). When unset (the default), the architecture is derived from each artifact's build target (`x86_64` → `amd64`, `aarch64` → `arm64`, `armv7` → `armhf`, `i686` → `i386`, …), so it never needs to be set by hand. Set this only to force a value for an artifact whose target can't be mapped. Ignored for non-`.deb` artifacts.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "deb_components": {
+          "description": "Debian repository component(s) for `.deb` uploads, written into the `;deb.component=` matrix param. Defaults to `[\"main\"]` when unset. Multiple components are emitted comma-separated. Ignored for non-`.deb` artifacts.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "deb_distributions": {
+          "description": "Debian repository distribution(s) for `.deb` uploads, written into the Artifactory `;deb.distribution=` upload matrix param so apt can index the package. Defaults to `[\"stable\"]` when unset. A multi-element list is emitted as Artifactory's comma-separated form (`deb.distribution=bookworm,bullseye`), publishing the same `.deb` into several distributions at once. Ignored for non-`.deb` artifacts.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "extra_files": {
           "description": "Extra files to upload alongside build artifacts.",
           "default": null,

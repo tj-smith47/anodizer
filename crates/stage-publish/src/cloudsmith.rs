@@ -95,6 +95,26 @@ fn detect_format(filename: &str) -> &str {
 /// to avoid noise in the request body.
 const COMPONENT_BEARING_FORMATS: &[&str] = &["deb"];
 
+/// The accept-all distribution slug CloudSmith requires for a `format` when
+/// the user configured no `distributions.<format>` entry, or `None` for
+/// formats that don't require a distribution.
+///
+/// CloudSmith's `.deb` and `alpine`/`.apk` uploads MUST carry a
+/// `distribution`; omitting it leaves the package accepted-but-unindexed and
+/// thus not `apt`/`apk` installable. Per CloudSmith's docs the catch-all
+/// values are `any-distro/any-version` (deb) and `alpine/any-version`
+/// (alpine), which keep the package installable across distro versions while
+/// still letting a user pin a real distro (`debian/bookworm`) via config.
+/// `rpm`/`srpm`/`raw` do not require a distribution, so they return `None`
+/// and continue to upload with the key omitted.
+fn cloudsmith_default_distribution(format: &str) -> Option<&'static str> {
+    match format {
+        "deb" => Some("any-distro/any-version"),
+        "alpine" => Some("alpine/any-version"),
+        _ => None,
+    }
+}
+
 /// Outcome of checking whether a package already exists on Cloudsmith.
 /// Returned by [`check_cloudsmith_package_exists`].
 #[derive(Debug, PartialEq, Eq)]
@@ -848,10 +868,23 @@ pub(crate) fn publish_to_cloudsmith(
             }
 
             // Iterate at least once even when no distributions are
-            // configured. An empty slug means "no distribution override"
-            // (some repos are not distro-pinned).
+            // configured. For formats CloudSmith requires a distribution on
+            // (`deb`, `alpine`), fall back to the accept-all catch-all slug so
+            // the package still indexes and stays installable; an empty slug
+            // for those would land the bytes unindexed. Formats that don't
+            // require a distribution (`rpm`/`srpm`/`raw`) keep the
+            // empty-slug "no override" behaviour.
             let upload_slugs: Vec<String> = if distro_slugs.is_empty() {
-                vec![String::new()]
+                match cloudsmith_default_distribution(fmt) {
+                    Some(default_distro) => {
+                        log.verbose(&format!(
+                            "no distribution configured for '{}' ({}); defaulting to '{}' so it indexes (set `distributions.{}` to pin a real distro)",
+                            art_name, fmt, default_distro, fmt
+                        ));
+                        vec![default_distro.to_string()]
+                    }
+                    None => vec![String::new()],
+                }
             } else {
                 distro_slugs.clone()
             };
@@ -1635,6 +1668,24 @@ mod tests {
     /// The per-entry summary reports the uploaded artifact count and the
     /// already-present skip count taken from the loop's own tallies, so an
     /// entry that uploaded 4 and skipped 1 renders `uploaded 4 …, skipped 1`.
+    /// CloudSmith requires a distribution for deb/alpine; when the user
+    /// configures none, the accept-all catch-all keeps the package
+    /// installable. rpm/srpm/raw need no distribution and return None.
+    #[test]
+    fn cloudsmith_default_distribution_per_format() {
+        assert_eq!(
+            cloudsmith_default_distribution("deb"),
+            Some("any-distro/any-version")
+        );
+        assert_eq!(
+            cloudsmith_default_distribution("alpine"),
+            Some("alpine/any-version")
+        );
+        assert_eq!(cloudsmith_default_distribution("rpm"), None);
+        assert_eq!(cloudsmith_default_distribution("srpm"), None);
+        assert_eq!(cloudsmith_default_distribution("raw"), None);
+    }
+
     #[test]
     fn upload_summary_reflects_uploaded_and_skipped_counts() {
         let line = cloudsmith_upload_summary(4, 1, "acme", "stable");

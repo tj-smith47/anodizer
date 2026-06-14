@@ -219,6 +219,8 @@ fn process_nfpm_format(
 ) -> Result<()> {
     validate_format(format).with_context(|| format!("nfpm config for crate {}", crate_name))?;
 
+    require_deb_apk_maintainer(&ctx.config, nfpm_cfg, crate_name, format)?;
+
     let Some((os, arch)) = resolve_format_os_arch(base_os, base_arch, format, log) else {
         return Ok(());
     };
@@ -436,10 +438,13 @@ fn validate_unique_config_ids(crates: &[anodizer_core::config::CrateConfig]) -> 
     Ok(())
 }
 
-/// Evaluate per-config skip predicates (`if`, empty `formats`) and maintainer warning.
+/// Evaluate per-config skip predicates (`if`, empty `formats`).
 ///
 /// Returns `Ok(true)` when the caller should `continue` (skip this config),
-/// `Ok(false)` to proceed.
+/// `Ok(false)` to proceed. The deb/apk maintainer requirement is enforced
+/// later, per-format, in [`require_deb_apk_maintainer`] — only once the
+/// Cargo-derived fallback has been applied and the format is known, so a
+/// derivable maintainer or an rpm-only build doesn't trip it.
 fn should_skip_nfpm_config(
     ctx: &mut Context,
     nfpm_cfg: &anodizer_core::config::NfpmConfig,
@@ -467,15 +472,70 @@ fn should_skip_nfpm_config(
         return Ok(true);
     }
 
-    let maintainer = nfpm_cfg.maintainer.as_deref().unwrap_or("");
-    if maintainer.is_empty() {
-        log.warn(&format!(
-            "maintainer is empty for nfpm config '{}' (required for deb packages)",
-            nfpm_id_for_log
-        ));
-    }
-
     Ok(false)
+}
+
+/// Returns `true` when a packaging format requires a non-empty `Maintainer`
+/// to be installable: `deb` (Debian Policy 5.3 makes `Maintainer` mandatory —
+/// lintian rejects an empty field and apt renders the package as "unknown")
+/// and `apk` (Alpine's `APKINDEX` carries the maintainer the same way). `rpm`
+/// and the other formats tolerate a missing packager differently, so they are
+/// not gated.
+fn format_requires_maintainer(format: &str) -> bool {
+    matches!(format, "deb" | "termux.deb" | "apk")
+}
+
+/// Resolve the effective maintainer for a crate's nfpm config: the explicit
+/// `nfpm.maintainer`, else the first Cargo `authors` entry (via
+/// `meta_first_maintainer_for`). Returns the trimmed value, or `None` when
+/// neither source supplies one.
+///
+/// Mirrors the derivation order in [`render_nfpm_config_fields`] so the
+/// pre-flight check and the rendered YAML agree on what the maintainer is.
+fn resolve_effective_maintainer<'a>(
+    config: &'a anodizer_core::config::Config,
+    nfpm_cfg: &'a anodizer_core::config::NfpmConfig,
+    crate_name: &str,
+) -> Option<&'a str> {
+    nfpm_cfg
+        .maintainer
+        .as_deref()
+        .or_else(|| config.meta_first_maintainer_for(crate_name))
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+}
+
+/// Hard-fail when a `deb`/`apk` package is being built but no maintainer can
+/// be resolved — neither from `nfpm.maintainer` nor a derivable Cargo
+/// `authors` entry. A deb/apk with an empty `Maintainer` is not apt/apk
+/// installable (the index marks it "unknown" and lintian rejects it), so
+/// shipping one is a release defect, not a warning. Scoped to deb/apk via
+/// [`format_requires_maintainer`]: an rpm-only build still succeeds.
+///
+/// This is a Rust-additive correctness improvement beyond GoReleaser (which
+/// only warns), per the repo rule against advisory/continue-on-error on a
+/// genuinely-broken output.
+fn require_deb_apk_maintainer(
+    config: &anodizer_core::config::Config,
+    nfpm_cfg: &anodizer_core::config::NfpmConfig,
+    crate_name: &str,
+    format: &str,
+) -> Result<()> {
+    if !format_requires_maintainer(format) {
+        return Ok(());
+    }
+    if resolve_effective_maintainer(config, nfpm_cfg, crate_name).is_some() {
+        return Ok(());
+    }
+    let id = nfpm_cfg.id.as_deref().unwrap_or("default");
+    bail!(
+        "nfpm config '{id}' builds a '{format}' package for crate '{crate_name}' but its \
+         Maintainer field is empty and could not be derived. A {format} package with no \
+         Maintainer is not installable (the repository index marks it \"unknown\" and \
+         lintian rejects it). Set it via the `maintainer:` field on this nfpm config \
+         (e.g. `maintainer: \"Jane Doe <jane@example.com>\"`) or add an `authors` entry \
+         to the crate's Cargo.toml so anodizer can derive it."
+    );
 }
 
 /// Evaluate one nfpm config's `if:` gate against the current template vars.

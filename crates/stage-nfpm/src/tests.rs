@@ -259,6 +259,9 @@ fn test_stage_dry_run_registers_artifacts() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string(), "rpm".to_string()],
+        // deb requires a Maintainer to be apt-installable; supply one so the
+        // deb format isn't rejected by the deb/apk maintainer guard.
+        maintainer: Some("Jane Doe <jane@example.com>".to_string()),
         ..Default::default()
     };
 
@@ -772,6 +775,7 @@ fn test_multiple_formats_in_one_pass() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string(), "rpm".to_string(), "apk".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         ..Default::default()
     };
 
@@ -820,6 +824,7 @@ fn test_file_name_template_rendering() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         file_name_template: Some(
             "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}".to_string(),
         ),
@@ -871,6 +876,7 @@ fn test_artifact_registration_of_linux_package() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         ..Default::default()
     };
 
@@ -1067,6 +1073,7 @@ fn test_invalid_file_name_template_errors() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         // Invalid Tera template -- unclosed tag
         file_name_template: Some("{{ bad_template".to_string()),
         ..Default::default()
@@ -1167,6 +1174,7 @@ fn test_ids_filter_includes_matching_binaries_only() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         ids: Some(vec!["build-server".to_string()]),
         ..Default::default()
     };
@@ -1281,6 +1289,7 @@ fn test_no_ids_includes_all_binaries() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         ids: None,
         ..Default::default()
     };
@@ -1342,6 +1351,7 @@ fn test_id_metadata_set_on_created_artifacts() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         id: Some("server-pkg".to_string()),
         ..Default::default()
     };
@@ -1389,6 +1399,7 @@ fn test_no_id_means_no_id_in_metadata() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         id: None,
         ..Default::default()
     };
@@ -1435,6 +1446,7 @@ fn test_ids_filter_with_multiple_matching_ids() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         ids: Some(vec!["build-server".to_string(), "build-cli".to_string()]),
         ..Default::default()
     };
@@ -1514,6 +1526,7 @@ fn test_apk_binds_musl_build_deb_rpm_bind_gnu_build() {
     let default_cfg = NfpmConfig {
         package_name: Some("anodizer".to_string()),
         formats: vec!["deb".to_string(), "rpm".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         ids: Some(vec!["anodizer".to_string()]),
         ..Default::default()
     };
@@ -1521,6 +1534,7 @@ fn test_apk_binds_musl_build_deb_rpm_bind_gnu_build() {
         id: Some("apk".to_string()),
         package_name: Some("anodizer".to_string()),
         formats: vec!["apk".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         ids: Some(vec!["anodizer-musl".to_string()]),
         ..Default::default()
     };
@@ -2306,6 +2320,7 @@ fn test_termux_deb_format_produces_artifact() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["termux.deb".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         ..Default::default()
     };
 
@@ -2879,6 +2894,7 @@ fn test_default_filename_includes_arch() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         ..Default::default()
     };
 
@@ -2935,6 +2951,7 @@ fn test_default_filename_no_overwrite_multiple_arches() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         ..Default::default()
     };
 
@@ -3077,6 +3094,7 @@ fn test_conventional_extension_template_var() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         file_name_template: Some(
             "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}{{ .ConventionalExtension }}".to_string(),
         ),
@@ -3186,6 +3204,7 @@ fn test_template_vars_cleared_after_stage() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         ..Default::default()
     };
 
@@ -3633,6 +3652,7 @@ fn test_epoch_template_var_in_file_name_template() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         epoch: Some("3".to_string()),
         file_name_template: Some(
             "{{ .PackageName }}_{{ .Epoch }}_{{ .Version }}_{{ .Arch }}".to_string(),
@@ -3683,6 +3703,7 @@ fn test_release_and_epoch_default_to_empty_string() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         file_name_template: Some(
             "{{ .PackageName }}{{ .Release }}{{ .Epoch }}_{{ .Version }}".to_string(),
         ),
@@ -4121,6 +4142,7 @@ fn test_owner_group_template_rendering_in_stage() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         contents: Some(vec![NfpmContent {
             src: "/src/config".to_string(),
             dst: "/etc/myapp/config".to_string(),
@@ -4538,6 +4560,7 @@ fn test_template_rendering_in_nfpm_stage() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         bindir: Some("{{ .Env.PREFIX }}/bin".to_string()),
         mtime: Some("{{ .CommitDate }}".to_string()),
         scripts: Some(NfpmScripts {
@@ -5220,6 +5243,7 @@ fn nfpm_amd64_variant_test_ctx(
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
+        maintainer: Some("test@example.com".to_string()),
         amd64_variant: amd64_variant.map(|v| v.into_iter().map(str::to_string).collect()),
         ..Default::default()
     };
@@ -5644,4 +5668,253 @@ fn test_nfpm_loop_emits_libc_conflict_in_yaml_for_musl() {
         !yaml_gnu.contains("fd-musl"),
         "gnu build must not carry the musl conflict, got:\n{yaml_gnu}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// deb/apk maintainer hard-fail (Debian Policy 5.3 — Maintainer mandatory)
+// ---------------------------------------------------------------------------
+
+/// Build a single-crate `Context` with one nfpm config for the given formats,
+/// optional explicit maintainer, and optional derived Cargo-`authors`
+/// maintainer (simulated via `derived_metadata`). Used by the maintainer-guard
+/// tests below.
+fn maintainer_guard_ctx(
+    formats: &[&str],
+    explicit_maintainer: Option<&str>,
+    derived_author: Option<&str>,
+) -> (TempDir, anodizer_core::context::Context) {
+    use anodizer_core::config::{Config, CrateConfig, MetadataConfig, NfpmConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+
+    let nfpm_cfg = NfpmConfig {
+        package_name: Some("myapp".to_string()),
+        formats: formats.iter().map(|s| s.to_string()).collect(),
+        maintainer: explicit_maintainer.map(str::to_string),
+        ..Default::default()
+    };
+    config.crates = vec![CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        nfpms: Some(vec![nfpm_cfg]),
+        ..Default::default()
+    }];
+    // Simulate a derivable `Cargo.toml [package].authors` entry for the crate.
+    if let Some(author) = derived_author {
+        config.derived_metadata.insert(
+            "myapp".to_string(),
+            MetadataConfig {
+                maintainers: Some(vec![author.to_string()]),
+                ..Default::default()
+            },
+        );
+    }
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    (tmp, ctx)
+}
+
+/// deb format + empty/underivable maintainer → hard error naming the field,
+/// crate, and how to set it.
+#[test]
+fn test_deb_empty_underivable_maintainer_hard_fails() {
+    let (_tmp, mut ctx) = maintainer_guard_ctx(&["deb"], None, None);
+    let err = NfpmStage
+        .run(&mut ctx)
+        .expect_err("deb with no maintainer must hard-fail");
+    let msg = err.to_string();
+    assert!(msg.contains("Maintainer"), "names the field: {msg}");
+    assert!(msg.contains("myapp"), "names the crate: {msg}");
+    assert!(msg.contains("maintainer:"), "names the config field: {msg}");
+    assert!(msg.contains("authors"), "names the Cargo fallback: {msg}");
+}
+
+/// apk format is gated the same as deb — Alpine's APKINDEX carries the
+/// maintainer.
+#[test]
+fn test_apk_empty_underivable_maintainer_hard_fails() {
+    let (_tmp, mut ctx) = maintainer_guard_ctx(&["apk"], None, None);
+    let err = NfpmStage
+        .run(&mut ctx)
+        .expect_err("apk with no maintainer must hard-fail");
+    assert!(err.to_string().contains("apk"), "names the format");
+}
+
+/// deb + a maintainer derivable from Cargo `authors` → succeeds with the
+/// derived value (no hard-fail; the deb is installable).
+#[test]
+fn test_deb_maintainer_derived_from_cargo_authors_succeeds() {
+    let (_tmp, mut ctx) = maintainer_guard_ctx(&["deb"], None, Some("Jane Doe <jane@example.com>"));
+    NfpmStage
+        .run(&mut ctx)
+        .expect("deb with a Cargo-derived maintainer must succeed");
+    let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+    assert_eq!(pkgs.len(), 1, "one deb registered");
+}
+
+/// rpm-only build + empty maintainer → still succeeds. The hard-fail must be
+/// scoped to deb/apk; rpm tolerates a missing packager and must not be gated.
+#[test]
+fn test_rpm_only_empty_maintainer_succeeds() {
+    let (_tmp, mut ctx) = maintainer_guard_ctx(&["rpm"], None, None);
+    NfpmStage
+        .run(&mut ctx)
+        .expect("rpm-only with empty maintainer must NOT hard-fail");
+    let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+    assert_eq!(pkgs.len(), 1, "one rpm registered");
+}
+
+/// A mixed deb+rpm build with no maintainer still fails — the deb component
+/// is unindexable, so the whole build is rejected (not silently shipping a
+/// broken deb alongside a valid rpm).
+#[test]
+fn test_deb_plus_rpm_empty_maintainer_hard_fails_on_deb() {
+    let (_tmp, mut ctx) = maintainer_guard_ctx(&["deb", "rpm"], None, None);
+    let err = NfpmStage
+        .run(&mut ctx)
+        .expect_err("deb+rpm with no maintainer must fail on the deb");
+    assert!(err.to_string().contains("deb"), "fails on the deb format");
+}
+
+/// Per-crate workspace mode: each published crate resolves its own maintainer.
+/// A crate whose deb has neither an explicit nor a derivable maintainer
+/// hard-fails even when a sibling crate is fully configured — the guard
+/// resolves per-crate, not globally.
+#[test]
+fn test_per_crate_mode_deb_maintainer_resolves_per_crate() {
+    use anodizer_core::config::{Config, CrateConfig, MetadataConfig, NfpmConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let mut config = Config::default();
+    config.project_name = "ws".to_string();
+    config.dist = tmp.path().join("dist");
+
+    // Crate A: explicit maintainer — fine on its own.
+    let crate_a = CrateConfig {
+        name: "alpha".to_string(),
+        path: "crates/alpha".to_string(),
+        tag_template: "alpha-v{{ .Version }}".to_string(),
+        nfpms: Some(vec![NfpmConfig {
+            id: Some("alpha".to_string()),
+            package_name: Some("alpha".to_string()),
+            formats: vec!["deb".to_string()],
+            maintainer: Some("Alpha Owner <a@example.com>".to_string()),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    // Crate B: no explicit maintainer AND no derivable author → must fail.
+    let crate_b = CrateConfig {
+        name: "beta".to_string(),
+        path: "crates/beta".to_string(),
+        tag_template: "beta-v{{ .Version }}".to_string(),
+        nfpms: Some(vec![NfpmConfig {
+            id: Some("beta".to_string()),
+            package_name: Some("beta".to_string()),
+            formats: vec!["deb".to_string()],
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    config.crates = vec![crate_a, crate_b];
+    // Only crate alpha has a derivable author; beta has none.
+    config.derived_metadata.insert(
+        "alpha".to_string(),
+        MetadataConfig {
+            maintainers: Some(vec!["Alpha Owner <a@example.com>".to_string()]),
+            ..Default::default()
+        },
+    );
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    let err = NfpmStage
+        .run(&mut ctx)
+        .expect_err("per-crate: beta's deb has no maintainer and must fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("beta"),
+        "fails specifically on crate beta: {msg}"
+    );
+}
+
+/// Per-crate workspace mode, all-configured: each crate resolves its own
+/// maintainer (one explicit, one Cargo-derived) and both debs build.
+#[test]
+fn test_per_crate_mode_all_maintainers_resolve_succeeds() {
+    use anodizer_core::config::{Config, CrateConfig, MetadataConfig, NfpmConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let mut config = Config::default();
+    config.project_name = "ws".to_string();
+    config.dist = tmp.path().join("dist");
+
+    let crate_a = CrateConfig {
+        name: "alpha".to_string(),
+        path: "crates/alpha".to_string(),
+        tag_template: "alpha-v{{ .Version }}".to_string(),
+        nfpms: Some(vec![NfpmConfig {
+            id: Some("alpha".to_string()),
+            package_name: Some("alpha".to_string()),
+            formats: vec!["deb".to_string()],
+            maintainer: Some("Alpha Owner <a@example.com>".to_string()),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let crate_b = CrateConfig {
+        name: "beta".to_string(),
+        path: "crates/beta".to_string(),
+        tag_template: "beta-v{{ .Version }}".to_string(),
+        nfpms: Some(vec![NfpmConfig {
+            id: Some("beta".to_string()),
+            package_name: Some("beta".to_string()),
+            formats: vec!["deb".to_string()],
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    config.crates = vec![crate_a, crate_b];
+    // beta's maintainer is derivable from its Cargo authors.
+    config.derived_metadata.insert(
+        "beta".to_string(),
+        MetadataConfig {
+            maintainers: Some(vec!["Beta Owner <b@example.com>".to_string()]),
+            ..Default::default()
+        },
+    );
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    NfpmStage
+        .run(&mut ctx)
+        .expect("per-crate: both crates resolve a maintainer and succeed");
+    let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+    assert_eq!(pkgs.len(), 2, "one deb per crate");
 }

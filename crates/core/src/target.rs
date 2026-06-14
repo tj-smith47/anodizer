@@ -100,6 +100,36 @@ pub fn libc_from_target(triple: &str) -> &'static str {
     }
 }
 
+/// Map a target triple to its Debian architecture name (the value apt and
+/// the Debian repository index use), e.g. `amd64`, `arm64`, `armhf`, `i386`.
+///
+/// This differs from [`map_target`]'s GoReleaser-style arch in the names
+/// Debian spells differently: `386` → `i386`, `armv7` → `armhf`,
+/// `armv6` → `armel`, `ppc64le` → `ppc64el`. The result is suitable for the
+/// `deb.architecture=` Artifactory matrix param so an uploaded `.deb` lands
+/// in the correct architecture slice of the repo index. Falls back to the
+/// GoReleaser arch spelling for any value that already matches Debian's
+/// (`amd64`, `arm64`, `s390x`, `riscv64`, …).
+pub fn debian_arch_from_target(triple: &str) -> String {
+    let (_, arch) = map_target(triple);
+    debian_arch_from_arch(&arch)
+}
+
+/// Map a GoReleaser-style arch name (as produced by [`map_target`]) to its
+/// Debian architecture spelling. Split out from [`debian_arch_from_target`]
+/// so callers that already hold the `(os, arch)` pair don't re-parse the
+/// triple.
+pub fn debian_arch_from_arch(arch: &str) -> String {
+    match arch {
+        "386" => "i386",
+        "armv7" => "armhf",
+        "armv6" => "armel",
+        "ppc64le" => "ppc64el",
+        other => other,
+    }
+    .to_string()
+}
+
 /// Returns `true` if the target triple represents a macOS (Darwin) target.
 pub fn is_darwin(triple: &str) -> bool {
     triple.contains("darwin") || triple.contains("apple")
@@ -302,6 +332,35 @@ mod tests {
         assert_eq!(libc_from_target("x86_64-apple-darwin"), "");
         assert_eq!(libc_from_target("x86_64-pc-windows-msvc"), "");
         assert_eq!(libc_from_target("x86_64-pc-windows-gnu"), "gnu");
+    }
+
+    #[test]
+    fn test_debian_arch_from_target() {
+        // Names Debian spells differently from GoReleaser-style arch.
+        assert_eq!(debian_arch_from_target("x86_64-unknown-linux-gnu"), "amd64");
+        assert_eq!(
+            debian_arch_from_target("aarch64-unknown-linux-gnu"),
+            "arm64"
+        );
+        assert_eq!(
+            debian_arch_from_target("armv7-unknown-linux-gnueabihf"),
+            "armhf"
+        );
+        assert_eq!(debian_arch_from_target("i686-unknown-linux-gnu"), "i386");
+        assert_eq!(
+            debian_arch_from_target("arm-unknown-linux-gnueabi"),
+            "armel"
+        );
+        assert_eq!(
+            debian_arch_from_target("powerpc64le-unknown-linux-gnu"),
+            "ppc64el"
+        );
+        // Names already matching Debian pass through unchanged.
+        assert_eq!(debian_arch_from_target("s390x-unknown-linux-gnu"), "s390x");
+        assert_eq!(
+            debian_arch_from_target("riscv64gc-unknown-linux-gnu"),
+            "riscv64"
+        );
     }
 
     #[test]

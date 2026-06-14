@@ -247,6 +247,67 @@ pub fn render_artifact_url(
     Ok(rendered)
 }
 
+/// Returns `true` when the artifact is a Debian package (`.deb`) that needs
+/// the Artifactory Debian matrix params to be indexed by apt.
+fn is_deb_artifact(artifact: &Artifact) -> bool {
+    artifact.name().to_ascii_lowercase().ends_with(".deb")
+}
+
+/// Append Artifactory's Debian repository matrix params to a `.deb` upload
+/// URL so the package is indexed (without them the uploaded `.deb` is a
+/// dangling file apt never sees). Per JFrog's Debian-repo upload docs, the
+/// params are semicolon-prefixed and appended to the path:
+///
+/// ```text
+/// PUT .../pool/p.deb;deb.distribution=stable;deb.component=main;deb.architecture=amd64
+/// ```
+///
+/// - `distribution` defaults to `["stable"]`, `component` to `["main"]`; both
+///   are overridable via config and accept a comma-separated list (Artifactory
+///   indexes the same `.deb` into every listed distribution/component).
+/// - `architecture` is derived from the artifact's build target
+///   ([`debian_arch_from_target`]); an explicit `deb_architecture` override
+///   wins. When the target is absent and no override is set, the
+///   `deb.architecture` param is omitted (Artifactory then reads it from the
+///   package's own control file).
+///
+/// A no-op for non-`.deb` artifacts: the URL is returned unchanged.
+fn append_deb_matrix_params(
+    url: &str,
+    artifact: &Artifact,
+    entry: &anodizer_core::config::ArtifactoryConfig,
+) -> String {
+    if !is_deb_artifact(artifact) {
+        return url.to_string();
+    }
+
+    let distributions = entry
+        .deb_distributions
+        .as_deref()
+        .filter(|d| !d.is_empty())
+        .map(|d| d.join(","))
+        .unwrap_or_else(|| "stable".to_string());
+    let components = entry
+        .deb_components
+        .as_deref()
+        .filter(|c| !c.is_empty())
+        .map(|c| c.join(","))
+        .unwrap_or_else(|| "main".to_string());
+
+    let mut out = format!("{url};deb.distribution={distributions};deb.component={components}");
+
+    let architecture = entry.deb_architecture.clone().or_else(|| {
+        artifact
+            .target
+            .as_deref()
+            .map(anodizer_core::target::debian_arch_from_target)
+    });
+    if let Some(arch) = architecture.filter(|a| !a.is_empty()) {
+        out.push_str(&format!(";deb.architecture={arch}"));
+    }
+    out
+}
+
 // ---------------------------------------------------------------------------
 // upload_single_artifact
 // ---------------------------------------------------------------------------
@@ -761,6 +822,7 @@ pub fn publish_to_artifactory(
             // so dry-run reflects template behaviour exactly.
             for a in &artifacts {
                 let url = render_artifact_url(ctx, target_template, a, custom_artifact_name)?;
+                let url = append_deb_matrix_params(&url, a, entry);
                 log.status(&format!("(dry-run)   {} ({}) → {}", a.name(), a.kind, url));
             }
             continue;
@@ -818,6 +880,7 @@ pub fn publish_to_artifactory(
         // Upload each artifact
         for artifact in &artifacts {
             let url = render_artifact_url(ctx, target_template, artifact, custom_artifact_name)?;
+            let url = append_deb_matrix_params(&url, artifact, entry);
             match upload_single_artifact(
                 &client,
                 &UploadHeaders {
@@ -912,6 +975,7 @@ pub(crate) fn collect_artifactory_targets(ctx: &Context) -> Vec<ArtifactoryTarge
         );
         for a in &artifacts {
             if let Ok(url) = render_artifact_url(ctx, target_template, a, custom_artifact_name) {
+                let url = append_deb_matrix_params(&url, a, entry);
                 out.push(ArtifactoryTarget {
                     entry: entry_name.clone(),
                     url,
@@ -1849,6 +1913,96 @@ mod tests {
         let url =
             render_artifact_url(&ctx, "https://art.example.com/repo", &artifact, true).unwrap();
         assert!(!url.ends_with("/myapp-1.0.0.tar.gz"));
+    }
+
+    fn deb_artifact(name: &str, target: Option<&str>) -> Artifact {
+        Artifact {
+            kind: ArtifactKind::LinuxPackage,
+            name: name.to_string(),
+            path: PathBuf::from(format!("dist/linux/{name}")),
+            target: target.map(str::to_string),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        }
+    }
+
+    /// A `.deb` with default config gets `stable`/`main` and a target-derived
+    /// architecture appended as Artifactory matrix params — the exact shape
+    /// JFrog's Debian-repo upload docs require for indexing.
+    #[test]
+    fn deb_matrix_params_default_amd64() {
+        let entry = ArtifactoryConfig::default();
+        let art = deb_artifact("myapp_1.0.0_amd64.deb", Some("x86_64-unknown-linux-gnu"));
+        let url =
+            append_deb_matrix_params("https://art.example.com/deb-repo/myapp.deb", &art, &entry);
+        assert_eq!(
+            url,
+            "https://art.example.com/deb-repo/myapp.deb;deb.distribution=stable;deb.component=main;deb.architecture=amd64"
+        );
+    }
+
+    /// arm64 / armhf / i386 derive the correct Debian arch from the target.
+    #[test]
+    fn deb_matrix_params_derives_debian_arch() {
+        let entry = ArtifactoryConfig::default();
+        for (target, want) in [
+            ("aarch64-unknown-linux-gnu", "arm64"),
+            ("armv7-unknown-linux-gnueabihf", "armhf"),
+            ("i686-unknown-linux-gnu", "i386"),
+        ] {
+            let art = deb_artifact("p.deb", Some(target));
+            let url = append_deb_matrix_params("https://a/p.deb", &art, &entry);
+            assert!(
+                url.ends_with(&format!(";deb.architecture={want}")),
+                "target {target} → {want}, got: {url}"
+            );
+        }
+    }
+
+    /// Multiple distributions/components are emitted comma-separated
+    /// (Artifactory's list form), and an explicit architecture override wins
+    /// over the target-derived value.
+    #[test]
+    fn deb_matrix_params_multi_and_override() {
+        let entry = ArtifactoryConfig {
+            deb_distributions: Some(vec!["bookworm".to_string(), "bullseye".to_string()]),
+            deb_components: Some(vec!["main".to_string(), "contrib".to_string()]),
+            deb_architecture: Some("all".to_string()),
+            ..Default::default()
+        };
+        let art = deb_artifact("p.deb", Some("x86_64-unknown-linux-gnu"));
+        let url = append_deb_matrix_params("https://a/p.deb", &art, &entry);
+        assert_eq!(
+            url,
+            "https://a/p.deb;deb.distribution=bookworm,bullseye;deb.component=main,contrib;deb.architecture=all"
+        );
+    }
+
+    /// A `.deb` with no target and no override omits the architecture param
+    /// (Artifactory then reads it from the package control file) but still
+    /// carries distribution + component.
+    #[test]
+    fn deb_matrix_params_no_target_omits_arch() {
+        let entry = ArtifactoryConfig::default();
+        let art = deb_artifact("p.deb", None);
+        let url = append_deb_matrix_params("https://a/p.deb", &art, &entry);
+        assert_eq!(
+            url,
+            "https://a/p.deb;deb.distribution=stable;deb.component=main"
+        );
+    }
+
+    /// Non-`.deb` artifacts are never touched — no matrix params, URL
+    /// returned verbatim (rpm/archive uploads keep their plain PUT path).
+    #[test]
+    fn deb_matrix_params_noop_for_non_deb() {
+        let entry = ArtifactoryConfig::default();
+        for name in ["myapp-1.0.0.tar.gz", "myapp-1.0.0.x86_64.rpm", "myapp.apk"] {
+            let art = deb_artifact(name, Some("x86_64-unknown-linux-gnu"));
+            let url = append_deb_matrix_params("https://a/repo/file", &art, &entry);
+            assert_eq!(url, "https://a/repo/file", "{name} must be untouched");
+        }
     }
 
     #[test]
