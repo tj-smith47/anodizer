@@ -35,6 +35,7 @@ use super::MetadataConfig;
 ///   `license-file` instead, no SPDX id can be synthesised, so `license`
 ///   is left unset rather than fabricated.
 /// - `homepage` ← `package.homepage`, falling back to `package.repository`.
+/// - `documentation` ← `package.documentation`.
 /// - `maintainers` ← `package.authors`.
 ///
 /// A field that is `{ workspace = true }` is resolved against the workspace
@@ -72,11 +73,14 @@ pub fn derive_metadata_from_cargo_toml(crate_dir: &Path) -> MetadataConfig {
     let homepage = string_field(package, &workspace_pkg, "homepage")
         .or_else(|| string_field(package, &workspace_pkg, "repository"));
 
+    let documentation = string_field(package, &workspace_pkg, "documentation");
+
     let maintainers = string_array_field(package, &workspace_pkg, "authors");
 
     MetadataConfig {
         description,
         homepage,
+        documentation,
         license,
         maintainers,
         mod_timestamp: None,
@@ -197,6 +201,7 @@ name = "demo"
 description = "a demo crate"
 license = "MIT"
 homepage = "https://demo.example"
+documentation = "https://docs.rs/demo"
 repository = "https://github.com/acme/demo"
 authors = ["Ada <ada@example.com>", "Grace"]
 "#,
@@ -205,6 +210,7 @@ authors = ["Ada <ada@example.com>", "Grace"]
         assert_eq!(m.description.as_deref(), Some("a demo crate"));
         assert_eq!(m.license.as_deref(), Some("MIT"));
         assert_eq!(m.homepage.as_deref(), Some("https://demo.example"));
+        assert_eq!(m.documentation.as_deref(), Some("https://docs.rs/demo"));
         assert_eq!(
             m.maintainers,
             Some(vec![

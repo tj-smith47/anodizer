@@ -72,6 +72,17 @@ pub fn source_date_epoch() -> Option<DateTime<Utc>> {
     source_date_epoch_with_env(&ProcessEnvSource)
 }
 
+/// Format a seconds-since-epoch value as an RFC 3339 / ISO-8601 UTC string
+/// (e.g. `2024-05-06T15:33:20+00:00`), or `None` when `secs` is out of the
+/// representable range.
+///
+/// Used by writers that stamp a reproducible build date into an artifact
+/// (e.g. the OCI `org.opencontainers.image.created` label) directly from the
+/// resolved `SOURCE_DATE_EPOCH`, never from wall-clock time.
+pub fn rfc3339_utc_from_epoch(secs: i64) -> Option<String> {
+    DateTime::<Utc>::from_timestamp(secs, 0).map(|dt| dt.to_rfc3339())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

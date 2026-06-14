@@ -566,6 +566,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 |-------|------|---------|-------------|
 | `commit_author` | CommitAuthorConfig | — | Commit author identity for commit workflows. Reuses the shared `CommitAuthorConfig` (name + email + optional signing). Exposed as `{{ Metadata.CommitAuthor.Name }}` / `{{ Metadata.CommitAuthor.Email }}`. |
 | `description` | string | — | Human-readable project description (exposed as `{{ Metadata.Description }}`). |
+| `documentation` | string | — | Project documentation URL, e.g. a docs.rs or hosted-docs link (exposed as `{{ Metadata.Documentation }}`). Derived from `Cargo.toml [package].documentation` when unset. |
 | `full_description` | ContentSource | — | Long-form project description. Supports inline string, `from_file`, or `from_url`. Exposed as `{{ Metadata.FullDescription }}`. FromUrl is resolved lazily (requires the release stage); FromFile is resolved at context-populate time with template-rendered path. |
 | `homepage` | string | — | Project homepage URL (exposed as `{{ Metadata.Homepage }}`). |
 | `license` | string | — | Project license identifier, e.g. "MIT" or "Apache-2.0" (exposed as `{{ Metadata.License }}`). |
@@ -960,6 +961,7 @@ Each value is template-expanded and forwarded verbatim to buildx (one argv token
 | `ids` | list of string | — | Build IDs filter: only include binary artifacts whose metadata `id` is in this list. |
 | `images` | list of string | `[]` | Base image names (e.g., ["ghcr.io/owner/app"]). Combined with `tags` to form full references. |
 | `labels` | map | — | OCI labels to apply to the image via `--label key=value` flags. |
+| `oci_labels` | StringOrBool | — | Auto-inject the standard predefined `org.opencontainers.image.*` labels (created, source, revision, version, title, description, licenses, url, documentation, vendor), derived from project/git/Cargo context. Default ON; set `oci_labels: false` to opt out. Each auto-label is emitted only when its value is derivable, and any key the user also supplies in `labels:` wins (the auto value never clobbers an explicit user label). `created` is derived from `SOURCE_DATE_EPOCH` for byte-reproducibility (never wall-clock) and is omitted when no reproducible source date is resolvable. |
 | `platforms` | list of string | — | Target platforms for multi-arch builds (e.g., ["linux/amd64", "linux/arm64"]). |
 | `retry` | DockerRetryConfig | — | Retry configuration for docker push operations. |
 | `sbom` | StringOrBool | — | When truthy, adds `--sbom=true` to buildx. Supports templates. |

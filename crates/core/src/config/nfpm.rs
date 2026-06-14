@@ -18,7 +18,10 @@ pub struct NfpmConfig {
     pub package_name: Option<String>,
     /// Package formats to produce: deb, rpm, apk, archlinux (at least one required).
     pub formats: Vec<String>,
-    /// Package vendor name.
+    /// Package vendor name — the distributing entity recorded in the
+    /// rpm/deb Vendor field. When unset, derived from the crate's first
+    /// `Cargo.toml [package].authors` entry with any `<email>` suffix
+    /// stripped (e.g. `"Ada Lovelace <ada@x>"` → `"Ada Lovelace"`).
     pub vendor: Option<String>,
     /// Project homepage URL.
     pub homepage: Option<String>,

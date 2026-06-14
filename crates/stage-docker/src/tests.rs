@@ -6419,3 +6419,310 @@ fn workspace_per_crate_docker_renders_distinct_image_per_crate() {
     assert!(tags.contains("ghcr.io/acme/svc-a:v1.0.0"), "got {tags:?}");
     assert!(tags.contains("ghcr.io/acme/svc-b:v1.0.0"), "got {tags:?}");
 }
+
+// ---------------------------------------------------------------------------
+// Auto-injected org.opencontainers.image.* labels
+// ---------------------------------------------------------------------------
+
+mod oci_labels {
+    use std::collections::{BTreeMap, HashMap};
+
+    use anodizer_core::config::{Config, CrateConfig, MetadataConfig, StringOrBool};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    use crate::run::{auto_oci_labels, merge_oci_labels, oci_labels_enabled};
+
+    const SDE: i64 = 1_715_000_000; // 2024-05-06T12:53:20Z
+
+    /// A single-crate config carrying full per-crate metadata, with the
+    /// global git/version template vars and a seeded determinism state.
+    fn ctx_with_full_metadata() -> (Context, CrateConfig) {
+        let krate = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.crates = vec![krate.clone()];
+        config.derived_metadata.insert(
+            "myapp".to_string(),
+            MetadataConfig {
+                description: Some("A demo app".to_string()),
+                homepage: Some("https://myapp.example".to_string()),
+                documentation: Some("https://docs.rs/myapp".to_string()),
+                license: Some("MIT OR Apache-2.0".to_string()),
+                maintainers: Some(vec!["Ada Lovelace <ada@example.com>".to_string()]),
+                ..Default::default()
+            },
+        );
+
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.2.3");
+        ctx.template_vars_mut().set("Tag", "v1.2.3");
+        ctx.template_vars_mut()
+            .set("GitURL", "https://github.com/acme/myapp");
+        ctx.template_vars_mut()
+            .set("FullCommit", "abc123def456abc123def456abc123def456abcd");
+        ctx.determinism = Some(
+            anodizer_core::DeterminismState::seed_from_commit(SDE).expect("non-negative epoch"),
+        );
+        (ctx, krate)
+    }
+
+    fn as_map(pairs: &[(String, String)]) -> BTreeMap<&str, &str> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect()
+    }
+
+    fn as_map_owned(pairs: &[(String, String)]) -> HashMap<String, String> {
+        pairs.iter().cloned().collect()
+    }
+
+    #[test]
+    fn injects_all_standard_labels_from_context() {
+        let (ctx, krate) = ctx_with_full_metadata();
+        let labels = auto_oci_labels(&ctx, &krate);
+        let m = as_map(&labels);
+
+        assert_eq!(
+            m.get("org.opencontainers.image.source"),
+            Some(&"https://github.com/acme/myapp")
+        );
+        assert_eq!(
+            m.get("org.opencontainers.image.revision"),
+            Some(&"abc123def456abc123def456abc123def456abcd")
+        );
+        assert_eq!(m.get("org.opencontainers.image.version"), Some(&"1.2.3"));
+        assert_eq!(m.get("org.opencontainers.image.title"), Some(&"myapp"));
+        assert_eq!(
+            m.get("org.opencontainers.image.description"),
+            Some(&"A demo app")
+        );
+        assert_eq!(
+            m.get("org.opencontainers.image.licenses"),
+            Some(&"MIT OR Apache-2.0")
+        );
+        assert_eq!(
+            m.get("org.opencontainers.image.url"),
+            Some(&"https://myapp.example")
+        );
+        assert_eq!(
+            m.get("org.opencontainers.image.documentation"),
+            Some(&"https://docs.rs/myapp")
+        );
+        assert_eq!(
+            m.get("org.opencontainers.image.vendor"),
+            Some(&"Ada Lovelace")
+        );
+    }
+
+    #[test]
+    fn source_normalizes_ssh_remote_to_browsable_https() {
+        let (mut ctx, krate) = ctx_with_full_metadata();
+        ctx.template_vars_mut()
+            .set("GitURL", "git@github.com:acme/myapp.git");
+        let labels = auto_oci_labels(&ctx, &krate);
+        let m = as_map(&labels);
+        assert_eq!(
+            m.get("org.opencontainers.image.source"),
+            Some(&"https://github.com/acme/myapp"),
+            "an SSH remote must be normalized to a browsable https URL for the OCI source annotation"
+        );
+    }
+
+    #[test]
+    fn created_is_deterministic_from_source_date_epoch_not_wall_clock() {
+        let (ctx, krate) = ctx_with_full_metadata();
+        let first = as_map(&auto_oci_labels(&ctx, &krate))
+            .get("org.opencontainers.image.created")
+            .map(|s| s.to_string());
+        let second = as_map(&auto_oci_labels(&ctx, &krate))
+            .get("org.opencontainers.image.created")
+            .map(|s| s.to_string());
+
+        // Two renders with the SAME SOURCE_DATE_EPOCH produce the SAME created.
+        assert_eq!(first, second);
+        // And it is the SDE-derived instant — never the current wall-clock
+        // time. The fixed 2024-05-06 epoch proves it is not "now" (the suite
+        // runs well after that date).
+        assert_eq!(first.as_deref(), Some("2024-05-06T12:53:20+00:00"));
+        let wall_clock_now = anodizer_core::sde::resolve_now_with_env(
+            &anodizer_core::env_source::MapEnvSource::new(),
+        )
+        .to_rfc3339();
+        assert_ne!(
+            first.as_deref(),
+            Some(wall_clock_now.as_str()),
+            "created must be the fixed SDE date, not wall-clock now"
+        );
+    }
+
+    #[test]
+    fn created_omitted_when_no_source_date_resolvable() {
+        let (mut ctx, krate) = ctx_with_full_metadata();
+        ctx.determinism = None;
+        let labels = auto_oci_labels(&ctx, &krate);
+        let m = as_map(&labels);
+        assert!(
+            !m.contains_key("org.opencontainers.image.created"),
+            "created must be omitted (never wall-clock) when no SDE is resolvable"
+        );
+    }
+
+    #[test]
+    fn omits_labels_with_no_derivable_value() {
+        let krate = CrateConfig {
+            name: "bare".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.crates = vec![krate.clone()];
+        // No metadata, no git vars, no determinism.
+        let ctx = Context::new(config, ContextOptions::default());
+
+        let labels = auto_oci_labels(&ctx, &krate);
+        let m = as_map(&labels);
+        // title is always derivable from the crate name; everything else is omitted.
+        assert_eq!(m.get("org.opencontainers.image.title"), Some(&"bare"));
+        for k in [
+            "created",
+            "source",
+            "revision",
+            "version",
+            "description",
+            "licenses",
+            "url",
+            "documentation",
+            "vendor",
+        ] {
+            assert!(
+                !m.contains_key(format!("org.opencontainers.image.{k}").as_str()),
+                "label {k} must be omitted when not derivable (no empty labels)"
+            );
+        }
+    }
+
+    #[test]
+    fn user_label_wins_over_auto_derived() {
+        let (ctx, krate) = ctx_with_full_metadata();
+        let auto = auto_oci_labels(&ctx, &krate);
+        // A user explicitly overrides source with their own value.
+        let user = vec![(
+            "org.opencontainers.image.source".to_string(),
+            "https://example.com/forked".to_string(),
+        )];
+        let merged = merge_oci_labels(auto, user);
+        let m = as_map(&merged);
+
+        assert_eq!(
+            m.get("org.opencontainers.image.source"),
+            Some(&"https://example.com/forked"),
+            "explicit user label must win over the auto-derived one"
+        );
+        // exactly one source entry (no duplicate flag emission).
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|(k, _)| k == "org.opencontainers.image.source")
+                .count(),
+            1
+        );
+        // a non-conflicting auto label survives the merge.
+        assert_eq!(m.get("org.opencontainers.image.title"), Some(&"myapp"));
+    }
+
+    #[test]
+    fn opt_out_disables_injection() {
+        let (ctx, _krate) = ctx_with_full_metadata();
+        assert!(oci_labels_enabled(&None, &ctx).unwrap(), "default is ON");
+        assert!(oci_labels_enabled(&Some(StringOrBool::Bool(true)), &ctx).unwrap());
+        assert!(
+            !oci_labels_enabled(&Some(StringOrBool::Bool(false)), &ctx).unwrap(),
+            "oci_labels: false must opt out"
+        );
+    }
+
+    #[test]
+    fn per_crate_title_and_metadata_no_cross_crate_leakage() {
+        let alpha = CrateConfig {
+            name: "alpha".to_string(),
+            path: "crates/alpha".to_string(),
+            tag_template: "alpha-v{{ .Version }}".to_string(),
+            ..Default::default()
+        };
+        let beta = CrateConfig {
+            name: "beta".to_string(),
+            path: "crates/beta".to_string(),
+            tag_template: "beta-v{{ .Version }}".to_string(),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.crates = vec![alpha.clone(), beta.clone()];
+        config.derived_metadata.insert(
+            "alpha".to_string(),
+            MetadataConfig {
+                description: Some("Alpha service".to_string()),
+                license: Some("MIT".to_string()),
+                maintainers: Some(vec!["Alpha Team <a@example.com>".to_string()]),
+                ..Default::default()
+            },
+        );
+        config.derived_metadata.insert(
+            "beta".to_string(),
+            MetadataConfig {
+                description: Some("Beta service".to_string()),
+                license: Some("Apache-2.0".to_string()),
+                maintainers: Some(vec!["Beta Team <b@example.com>".to_string()]),
+                ..Default::default()
+            },
+        );
+        let ctx = Context::new(config, ContextOptions::default());
+
+        let a = as_map_owned(&auto_oci_labels(&ctx, &alpha));
+        let b = as_map_owned(&auto_oci_labels(&ctx, &beta));
+
+        assert_eq!(
+            a.get("org.opencontainers.image.title").map(String::as_str),
+            Some("alpha")
+        );
+        assert_eq!(
+            a.get("org.opencontainers.image.description")
+                .map(String::as_str),
+            Some("Alpha service")
+        );
+        assert_eq!(
+            a.get("org.opencontainers.image.licenses")
+                .map(String::as_str),
+            Some("MIT")
+        );
+        assert_eq!(
+            a.get("org.opencontainers.image.vendor").map(String::as_str),
+            Some("Alpha Team")
+        );
+
+        assert_eq!(
+            b.get("org.opencontainers.image.title").map(String::as_str),
+            Some("beta")
+        );
+        assert_eq!(
+            b.get("org.opencontainers.image.description")
+                .map(String::as_str),
+            Some("Beta service")
+        );
+        assert_eq!(
+            b.get("org.opencontainers.image.licenses")
+                .map(String::as_str),
+            Some("Apache-2.0")
+        );
+        assert_eq!(
+            b.get("org.opencontainers.image.vendor").map(String::as_str),
+            Some("Beta Team")
+        );
+    }
+}

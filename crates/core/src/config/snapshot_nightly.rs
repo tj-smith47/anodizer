@@ -146,6 +146,10 @@ pub struct MetadataConfig {
     pub description: Option<String>,
     /// Project homepage URL (exposed as `{{ Metadata.Homepage }}`).
     pub homepage: Option<String>,
+    /// Project documentation URL, e.g. a docs.rs or hosted-docs link
+    /// (exposed as `{{ Metadata.Documentation }}`). Derived from
+    /// `Cargo.toml [package].documentation` when unset.
+    pub documentation: Option<String>,
     /// Project license identifier, e.g. "MIT" or "Apache-2.0" (exposed as `{{ Metadata.License }}`).
     pub license: Option<String>,
     /// List of project maintainers (exposed as `{{ Metadata.Maintainers }}`).

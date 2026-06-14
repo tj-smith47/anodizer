@@ -816,7 +816,8 @@ pub(crate) fn render_and_generate_nfpm_yaml(
 /// Clone the nfpm config and template-render every string field that
 /// participates in the generated YAML. Project-level `metadata.*` fall back
 /// values are applied before rendering when the per-config field is unset
-/// (fallback to `metadata.homepage/license/description/maintainers`).
+/// (fallback to `metadata.homepage/license/description/maintainers`, and the
+/// crate's first author for `vendor`).
 pub(crate) fn render_nfpm_config_fields(
     nfpm_cfg: &anodizer_core::config::NfpmConfig,
     config: &anodizer_core::config::Config,
@@ -837,6 +838,12 @@ pub(crate) fn render_nfpm_config_fields(
     }
     if rendered_cfg.license.is_none() {
         rendered_cfg.license = config.meta_license_for(crate_name).map(str::to_string);
+    }
+    if rendered_cfg.vendor.is_none() {
+        // rpm/deb consumers expect a Vendor field (the distributing entity);
+        // the crate's first author with its `<email>` stripped is the closest
+        // accurate source, matching how a Debian/RPM Vendor is written.
+        rendered_cfg.vendor = config.meta_vendor_for(crate_name);
     }
     render_in_place(&mut rendered_cfg.description, vars)?;
     render_in_place(&mut rendered_cfg.maintainer, vars)?;

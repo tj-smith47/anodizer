@@ -469,6 +469,13 @@ impl Config {
             .and_then(|m| m.description.as_deref())
     }
 
+    /// Project documentation URL from `metadata.documentation` (top-level YAML only).
+    pub fn meta_documentation(&self) -> Option<&str> {
+        self.metadata
+            .as_ref()
+            .and_then(|m| m.documentation.as_deref())
+    }
+
     /// Project maintainers from `metadata.maintainers` (top-level YAML only).
     pub fn meta_maintainers(&self) -> &[String] {
         self.metadata
@@ -505,6 +512,13 @@ impl Config {
             .or_else(|| self.derived_for(crate_name)?.description.as_deref())
     }
 
+    /// Documentation URL for `crate_name`: top-level `metadata.documentation`
+    /// wins, else the crate's `Cargo.toml [package].documentation`.
+    pub fn meta_documentation_for(&self, crate_name: &str) -> Option<&str> {
+        self.meta_documentation()
+            .or_else(|| self.derived_for(crate_name)?.documentation.as_deref())
+    }
+
     /// Maintainers for `crate_name`: top-level `metadata.maintainers` wins
     /// (when non-empty), else the crate's `Cargo.toml [package].authors`.
     pub fn meta_maintainers_for(&self, crate_name: &str) -> &[String] {
@@ -522,6 +536,16 @@ impl Config {
         self.meta_maintainers_for(crate_name)
             .first()
             .map(|s| s.as_str())
+    }
+
+    /// Vendor / distributing-entity name for `crate_name`: the first
+    /// maintainer with any `<email>` suffix stripped (e.g.
+    /// `"Ada Lovelace <ada@x>"` → `"Ada Lovelace"`). `None` when no maintainer
+    /// is derivable or the result is empty, so a Vendor field is never emitted
+    /// blank. Reused by the rpm/deb Vendor and the OCI image `vendor` label.
+    pub fn meta_vendor_for(&self, crate_name: &str) -> Option<String> {
+        self.meta_first_maintainer_for(crate_name)
+            .and_then(maintainer_name_only)
     }
 
     /// Populate [`Config::derived_metadata`] by reading each crate's
@@ -2278,6 +2302,15 @@ pub use snapshot_nightly::*;
 
 mod cargo_metadata;
 pub use cargo_metadata::derive_metadata_from_cargo_toml;
+
+/// Extract the name portion of a `"Name <email>"` maintainer/author string,
+/// dropping any `<…>` email suffix. Returns `None` when the result is empty
+/// (e.g. a bare-email `<ada@example.com>`), so a derived Vendor / OCI `vendor`
+/// value is never emitted blank.
+pub fn maintainer_name_only(maintainer: &str) -> Option<String> {
+    let name = maintainer.split('<').next().unwrap_or(maintainer).trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
 
 // ---------------------------------------------------------------------------
 // TemplateFileConfig

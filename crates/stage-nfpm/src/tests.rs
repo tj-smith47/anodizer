@@ -6212,3 +6212,154 @@ fn test_rpm_and_archlinux_only_empty_maintainer_succeeds() {
         assert_eq!(pkgs.len(), 1, "{format}-only produces exactly one package");
     }
 }
+
+// ---------------------------------------------------------------------------
+// nfpm vendor derivation
+// ---------------------------------------------------------------------------
+
+mod vendor_derivation {
+    use anodizer_core::config::{Config, CrateConfig, MetadataConfig, NfpmConfig};
+    use anodizer_core::template::TemplateVars;
+
+    use super::render_nfpm_config_fields;
+
+    /// Build a `Config` whose `derived_metadata` carries the given maintainers
+    /// for crate `name`, mirroring the Cargo `[package].authors` derivation.
+    fn config_with_authors(name: &str, authors: Vec<String>) -> Config {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }];
+        config.derived_metadata.insert(
+            name.to_string(),
+            MetadataConfig {
+                maintainers: Some(authors),
+                ..Default::default()
+            },
+        );
+        config
+    }
+
+    #[test]
+    fn vendor_derives_maintainer_name_without_email() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["rpm".to_string()],
+            ..Default::default()
+        };
+        let config =
+            config_with_authors("myapp", vec!["Ada Lovelace <ada@example.com>".to_string()]);
+        let vars = TemplateVars::new();
+
+        let rendered = render_nfpm_config_fields(&nfpm_cfg, &config, &vars, "myapp").unwrap();
+
+        // The Vendor field is the distributing entity's name only — the
+        // `<email>` portion of the author string is not part of a Vendor.
+        assert_eq!(rendered.vendor.as_deref(), Some("Ada Lovelace"));
+    }
+
+    #[test]
+    fn vendor_derives_bare_author_when_no_email() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["rpm".to_string()],
+            ..Default::default()
+        };
+        let config = config_with_authors("myapp", vec!["Acme Corp".to_string()]);
+        let vars = TemplateVars::new();
+
+        let rendered = render_nfpm_config_fields(&nfpm_cfg, &config, &vars, "myapp").unwrap();
+
+        assert_eq!(rendered.vendor.as_deref(), Some("Acme Corp"));
+    }
+
+    #[test]
+    fn explicit_vendor_overrides_derived() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["rpm".to_string()],
+            vendor: Some("Explicit Vendor Inc".to_string()),
+            ..Default::default()
+        };
+        let config =
+            config_with_authors("myapp", vec!["Ada Lovelace <ada@example.com>".to_string()]);
+        let vars = TemplateVars::new();
+
+        let rendered = render_nfpm_config_fields(&nfpm_cfg, &config, &vars, "myapp").unwrap();
+
+        assert_eq!(rendered.vendor.as_deref(), Some("Explicit Vendor Inc"));
+    }
+
+    #[test]
+    fn vendor_stays_unset_when_no_author_derivable() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["rpm".to_string()],
+            ..Default::default()
+        };
+        // No derived_metadata entry → no maintainers → no vendor.
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }];
+        let vars = TemplateVars::new();
+
+        let rendered = render_nfpm_config_fields(&nfpm_cfg, &config, &vars, "myapp").unwrap();
+
+        assert!(
+            rendered.vendor.is_none(),
+            "vendor must stay unset (never empty) when no author is derivable"
+        );
+    }
+
+    #[test]
+    fn vendor_is_per_crate_with_no_cross_crate_leakage() {
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("pkg".to_string()),
+            formats: vec!["rpm".to_string()],
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.crates = vec![
+            CrateConfig {
+                name: "alpha".to_string(),
+                path: "crates/alpha".to_string(),
+                tag_template: "alpha-v{{ .Version }}".to_string(),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "beta".to_string(),
+                path: "crates/beta".to_string(),
+                tag_template: "beta-v{{ .Version }}".to_string(),
+                ..Default::default()
+            },
+        ];
+        config.derived_metadata.insert(
+            "alpha".to_string(),
+            MetadataConfig {
+                maintainers: Some(vec!["Alpha Team <alpha@example.com>".to_string()]),
+                ..Default::default()
+            },
+        );
+        config.derived_metadata.insert(
+            "beta".to_string(),
+            MetadataConfig {
+                maintainers: Some(vec!["Beta Team <beta@example.com>".to_string()]),
+                ..Default::default()
+            },
+        );
+        let vars = TemplateVars::new();
+
+        let alpha = render_nfpm_config_fields(&nfpm_cfg, &config, &vars, "alpha").unwrap();
+        let beta = render_nfpm_config_fields(&nfpm_cfg, &config, &vars, "beta").unwrap();
+
+        assert_eq!(alpha.vendor.as_deref(), Some("Alpha Team"));
+        assert_eq!(beta.vendor.as_deref(), Some("Beta Team"));
+    }
+}

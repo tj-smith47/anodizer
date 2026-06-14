@@ -68,6 +68,17 @@ pub struct DockerV2Config {
     pub tags: Vec<String>,
     /// OCI labels to apply to the image via `--label key=value` flags.
     pub labels: Option<HashMap<String, String>>,
+    /// Auto-inject the standard predefined `org.opencontainers.image.*` labels
+    /// (created, source, revision, version, title, description, licenses, url,
+    /// documentation, vendor), derived from project/git/Cargo context. Default
+    /// ON; set `oci_labels: false` to opt out. Each auto-label is emitted only
+    /// when its value is derivable, and any key the user also supplies in
+    /// `labels:` wins (the auto value never clobbers an explicit user label).
+    /// `created` is derived from `SOURCE_DATE_EPOCH` for byte-reproducibility
+    /// (never wall-clock) and is omitted when no reproducible source date is
+    /// resolvable.
+    #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
+    pub oci_labels: Option<StringOrBool>,
     /// OCI annotations to apply via `--annotation key=value` flags.
     pub annotations: Option<HashMap<String, String>>,
     /// Extra files to copy into the Docker build context.
