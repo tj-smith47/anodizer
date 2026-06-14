@@ -1056,6 +1056,7 @@ Single-crate workspaces and lockstep-bumped monorepos (anodizer itself) leave th
 | `caveats` | string | — | Post-install user-facing notes shown by `brew info`. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
 | `commit_msg_template` | string | — | Custom commit message template. Rendered via Tera with the standard release template variables (`ProjectName`, `Tag`, `Version`, etc.). Default: `"Brew formula update for {{ ProjectName }} version {{ Tag }}"` (set in `crates/stage-publish/src/homebrew.rs::default_commit_msg_template`). |
+| `completions` | HomebrewCaskCompletions | — | Prebuilt shell-completion file paths to install. When set, the formula emits `bash_completion.install "<path>"` / `zsh_completion.install` / `fish_completion.install` in its install block — the form used when the archive ships ready-made completion files. |
 | `conflicts` | list of HomebrewConflict | — | Conflicting formula names with optional reason. |
 | `custom_block` | string | — | Custom Ruby code block inserted into the formula class body. |
 | `custom_require` | string | — | Ruby `require` statement for custom download strategies. |
@@ -1064,11 +1065,14 @@ Single-crate workspaces and lockstep-bumped monorepos (anodizer itself) leave th
 | `directory` | string | — | Formula directory in the tap (e.g. "Formula"). |
 | `download_strategy` | string | — | Custom download strategy class name (e.g. `:using => GitHubPrivateRepositoryReleaseDownloadStrategy`). |
 | `extra_install` | string | — | Additional install commands appended after the main install block. |
+| `generate_completions_from_executable` | HomebrewCaskGeneratedCompletions | — | Generate completions by running the installed binary at install time. Renders the modern homebrew-core idiom `generate_completions_from_executable(bin/"<exe>", ...)` in the install block. Preferred over [`Self::completions`] when the binary can emit its own completions; the two are independent and may both be set. |
 | `homepage` | string | — | Project homepage URL. Falls back to the GitHub release URL when unset. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew publisher is skipped. Render failure hard-errors. Config key: `brews[].if:`. |
 | `install` | string | — | Ruby `install` block content for the formula. |
 | `license` | string | — | SPDX license identifier (e.g., "MIT", "Apache-2.0"). |
+| `livecheck` | HomebrewLivecheck | — | `livecheck` stanza configuration for the formula. When unset, a binary tap formula emits `livecheck { skip "Auto-generated on release." }` to match the cask (the archive URL/sha are rewritten on every release, so `brew livecheck` cannot meaningfully poll). Set `strategy:` / `regex:`/`url:` to opt into active version detection instead. |
+| `manpages` | list of string | — | Manpage file paths to install into the formula's `man1` (e.g. `["mytool.1"]`). Each entry renders a `man1.install "<path>"` line in the install block, mirroring real Rust-CLI formulae (ripgrep, fd, bat). A path ending in `.N` (where N is 1–8) routes to the matching `manN` section; anything else defaults to `man1`. |
 | `name` | string | — | Override the formula name (default: crate name). |
 | `plist` | string | — | Launchd plist content for `brew services`. |
 | `post_install` | string | — | Post-install commands (separate `def post_install` block in formula). |

@@ -27,6 +27,7 @@ pub mod harness_signing;
 pub mod hashing;
 pub mod hooks;
 pub mod http;
+pub mod license;
 pub mod log;
 pub mod packagers;
 pub mod parallel;

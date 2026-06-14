@@ -7147,6 +7147,18 @@
             "null"
           ]
         },
+        "completions": {
+          "description": "Prebuilt shell-completion file paths to install. When set, the formula emits `bash_completion.install \"<path>\"` / `zsh_completion.install` / `fish_completion.install` in its install block — the form used when the archive ships ready-made completion files.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HomebrewCaskCompletions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "conflicts": {
           "description": "Conflicting formula names with optional reason.",
           "default": null,
@@ -7217,6 +7229,18 @@
             "null"
           ]
         },
+        "generate_completions_from_executable": {
+          "description": "Generate completions by running the installed binary at install time. Renders the modern homebrew-core idiom `generate_completions_from_executable(bin/\"<exe>\", ...)` in the install block. Preferred over [`Self::completions`] when the binary can emit its own completions; the two are independent and may both be set.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HomebrewCaskGeneratedCompletions"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "homepage": {
           "description": "Project homepage URL. Falls back to the GitHub release URL when unset.",
           "default": null,
@@ -7259,6 +7283,29 @@
             "string",
             "null"
           ]
+        },
+        "livecheck": {
+          "description": "`livecheck` stanza configuration for the formula. When unset, a binary tap formula emits `livecheck { skip \"Auto-generated on release.\" }` to match the cask (the archive URL/sha are rewritten on every release, so `brew livecheck` cannot meaningfully poll). Set `strategy:` / `regex:`/`url:` to opt into active version detection instead.",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HomebrewLivecheck"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "manpages": {
+          "description": "Manpage file paths to install into the formula's `man1` (e.g. `[\"mytool.1\"]`). Each entry renders a `man1.install \"<path>\"` line in the install block, mirroring real Rust-CLI formulae (ripgrep, fd, bat). A path ending in `.N` (where N is 1–8) routes to the matching `manN` section; anything else defaults to `man1`.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
         },
         "name": {
           "description": "Override the formula name (default: crate name).",
@@ -7412,6 +7459,53 @@
         },
         "version": {
           "description": "Version constraint for the dependency (e.g. `\">= 1.1\"`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "HomebrewLivecheck": {
+      "description": "`livecheck` stanza configuration for a Homebrew formula.\n\nDefault (the struct absent from config): the formula emits a `livecheck { skip \"Auto-generated on release.\" }` block — correct for a binary tap whose archive URL/sha256 are rewritten every release. To opt into active version polling, set `skip: false` and a `strategy:` (and optionally `url:` / `regex:`):\n\n```yaml livecheck: strategy: github_latest ```\n\nrenders:\n\n```ruby livecheck do url :stable strategy :github_latest end ```",
+      "type": "object",
+      "properties": {
+        "regex": {
+          "description": "`regex(...)` argument for `page_match`-style strategies. Emitted verbatim inside `regex(...)`, so it is raw Ruby (e.g. `%r{v(\\d+\\.\\d+)}i`).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "skip": {
+          "description": "Force the `skip \"<reason>\"` form even when a strategy is set, or set to `false` to opt out of the default skip and emit an active livecheck. When `None` (the default), the formula skips iff no `strategy`/`url` is configured.",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "skip_reason": {
+          "description": "Reason text for the `skip \"<reason>\"` form. Default: `\"Auto-generated on release.\"`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "strategy": {
+          "description": "`livecheck` strategy symbol (e.g. `github_latest`, `git`, `page_match`). Rendered as a Ruby symbol: `strategy :github_latest`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "`url` for the livecheck. Accepts a Ruby symbol shorthand (`stable` / `head` / `homepage` → `url :stable`) or a literal URL string (`url \"https://...\"`). Defaults to `:stable` when a strategy is set without an explicit url.",
+          "default": null,
           "type": [
             "string",
             "null"

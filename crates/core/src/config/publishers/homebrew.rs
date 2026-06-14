@@ -69,6 +69,29 @@ pub struct HomebrewConfig {
     pub plist: Option<String>,
     /// Homebrew service block content (alternative to plist).
     pub service: Option<String>,
+    /// Manpage file paths to install into the formula's `man1` (e.g.
+    /// `["mytool.1"]`). Each entry renders a `man1.install "<path>"` line in
+    /// the install block, mirroring real Rust-CLI formulae (ripgrep, fd, bat).
+    /// A path ending in `.N` (where N is 1–8) routes to the matching `manN`
+    /// section; anything else defaults to `man1`.
+    pub manpages: Option<Vec<String>>,
+    /// Prebuilt shell-completion file paths to install. When set, the formula
+    /// emits `bash_completion.install "<path>"` / `zsh_completion.install` /
+    /// `fish_completion.install` in its install block — the form used when the
+    /// archive ships ready-made completion files.
+    pub completions: Option<HomebrewCaskCompletions>,
+    /// Generate completions by running the installed binary at install time.
+    /// Renders the modern homebrew-core idiom
+    /// `generate_completions_from_executable(bin/"<exe>", ...)` in the install
+    /// block. Preferred over [`Self::completions`] when the binary can emit its
+    /// own completions; the two are independent and may both be set.
+    pub generate_completions_from_executable: Option<HomebrewCaskGeneratedCompletions>,
+    /// `livecheck` stanza configuration for the formula. When unset, a binary
+    /// tap formula emits `livecheck { skip "Auto-generated on release." }` to
+    /// match the cask (the archive URL/sha are rewritten on every release, so
+    /// `brew livecheck` cannot meaningfully poll). Set `strategy:` /
+    /// `regex:`/`url:` to opt into active version detection instead.
+    pub livecheck: Option<HomebrewLivecheck>,
     /// Homebrew Cask configuration (macOS .app bundles).
     pub cask: Option<HomebrewCaskConfig>,
     /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
@@ -137,6 +160,51 @@ impl HomebrewConflict {
             Self::WithReason { because, .. } => because.as_deref(),
         }
     }
+}
+
+/// `livecheck` stanza configuration for a Homebrew formula.
+///
+/// Default (the struct absent from config): the formula emits a
+/// `livecheck { skip "Auto-generated on release." }` block — correct for a
+/// binary tap whose archive URL/sha256 are rewritten every release. To opt
+/// into active version polling, set `skip: false` and a `strategy:` (and
+/// optionally `url:` / `regex:`):
+///
+/// ```yaml
+/// livecheck:
+///   strategy: github_latest
+/// ```
+///
+/// renders:
+///
+/// ```ruby
+/// livecheck do
+///   url :stable
+///   strategy :github_latest
+/// end
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct HomebrewLivecheck {
+    /// Force the `skip "<reason>"` form even when a strategy is set, or set to
+    /// `false` to opt out of the default skip and emit an active livecheck.
+    /// When `None` (the default), the formula skips iff no `strategy`/`url`
+    /// is configured.
+    pub skip: Option<bool>,
+    /// Reason text for the `skip "<reason>"` form.
+    /// Default: `"Auto-generated on release."`.
+    pub skip_reason: Option<String>,
+    /// `livecheck` strategy symbol (e.g. `github_latest`, `git`, `page_match`).
+    /// Rendered as a Ruby symbol: `strategy :github_latest`.
+    pub strategy: Option<String>,
+    /// `url` for the livecheck. Accepts a Ruby symbol shorthand
+    /// (`stable` / `head` / `homepage` → `url :stable`) or a literal URL
+    /// string (`url "https://..."`). Defaults to `:stable` when a strategy
+    /// is set without an explicit url.
+    pub url: Option<String>,
+    /// `regex(...)` argument for `page_match`-style strategies. Emitted
+    /// verbatim inside `regex(...)`, so it is raw Ruby (e.g. `%r{v(\d+\.\d+)}i`).
+    pub regex: Option<String>,
 }
 
 /// Unified Homebrew Cask configuration.

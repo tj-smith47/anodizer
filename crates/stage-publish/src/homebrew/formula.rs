@@ -15,7 +15,8 @@ require_relative "{{ custom_require | ruby_escape }}"
 class {{ class_name }} < Formula
   desc "{{ description | ruby_escape }}"
   homepage "{{ homepage | ruby_escape }}"
-{% if license %}  license "{{ license | ruby_escape }}"
+{% if license_stanza %}  {{ license_stanza }}
+{% elif license %}  license "{{ license | ruby_escape }}"
 {% endif %}
   version "{{ version | ruby_escape }}"
 
@@ -131,7 +132,11 @@ class {{ class_name }} < Formula
 {% for line in post_install_lines %}    {{ line }}
 {% endfor %}  end
 {% endif %}
-  test do
+{% if has_livecheck %}  livecheck do
+{% for line in livecheck_lines %}    {{ line }}
+{% endfor %}  end
+
+{% endif %}  test do
 {% for line in test_lines %}    {{ line }}
 {% endfor %}  end
 {% if has_caveats %}
@@ -187,6 +192,16 @@ pub struct FormulaOptions<'a> {
     pub plist: Option<&'a str>,
     /// Homebrew service block content.
     pub service: Option<&'a str>,
+    /// Pre-rendered `livecheck do … end` block body (the lines *between*
+    /// `livecheck do` and `end`, already indented). `None` ⇒ no livecheck
+    /// stanza. Build via [`render_formula_livecheck`].
+    pub livecheck: Option<String>,
+    /// License stanza override. When `Some`, this raw Ruby replaces the
+    /// `license "<id>"` form so dual-license SPDX expressions can render as
+    /// `license any_of: [...]` / `license all_of: [...]`. When `None`, the
+    /// renderer falls back to `license "<FormulaCore.license>"` (single id).
+    /// Build via [`render_formula_license`].
+    pub license_stanza: Option<String>,
 }
 
 /// Package identity — name, version, description, license. The fields
@@ -555,6 +570,28 @@ pub fn generate_formula_with_opts(
     ctx.insert("has_service", &has_service);
     ctx.insert("service", &opts.service.unwrap_or(""));
 
+    // Livecheck stanza (lines between `livecheck do` and `end`).
+    let has_livecheck = opts.livecheck.is_some();
+    ctx.insert("has_livecheck", &has_livecheck);
+    let livecheck_lines: Vec<&str> = opts
+        .livecheck
+        .as_deref()
+        .map(|s| s.lines().collect())
+        .unwrap_or_default();
+    ctx.insert("livecheck_lines", &livecheck_lines);
+
+    // License stanza override (dual-license `any_of:`/`all_of:` form).
+    let has_license_stanza = opts.license_stanza.is_some();
+    ctx.insert(
+        "license_stanza",
+        opts.license_stanza.as_deref().unwrap_or(""),
+    );
+    // When a structured stanza is present, blank the plain-string `license`
+    // var so the template's `{% elif license %}` branch never double-emits.
+    if has_license_stanza {
+        ctx.insert("license", "");
+    }
+
     anodizer_core::template::render_static(&tera, "formula", &ctx, "homebrew")
 }
 /// Build depends_on directives from structured cask dependency config.
@@ -599,3 +636,157 @@ pub(super) fn build_conflicts_directives(
 // `build_uninstall_directives` was removed when the cask renderer switched
 // to multi-key Ruby array rendering — see
 // `cask::{render_zap_block, render_uninstall_block}`.
+
+/// Render the formula's `license` stanza from a parsed SPDX expression.
+///
+/// - single id → `license "MIT"`
+/// - `A OR B` → `license any_of: ["A", "B"]`
+/// - `A AND B` → `license all_of: ["A", "B"]`
+///
+/// A dual-license literal like `Apache-2.0 OR MIT` is an *invalid* argument to
+/// brew's `license` stanza — Homebrew requires the structured `any_of:` form —
+/// so this is the difference between a formula that passes `brew audit` and one
+/// that does not. Returns `None` for an empty license so the caller omits the
+/// stanza entirely.
+pub fn render_formula_license(license: &str) -> Option<String> {
+    use anodizer_core::license::{SpdxExpr, parse_spdx_expression};
+    if license.trim().is_empty() {
+        return None;
+    }
+    let stanza = match parse_spdx_expression(license) {
+        SpdxExpr::Single(id) => format!("license \"{}\"", ruby_escape_str(&id)),
+        SpdxExpr::AnyOf(ids) => format!("license any_of: [{}]", ruby_string_array(&ids)),
+        SpdxExpr::AllOf(ids) => format!("license all_of: [{}]", ruby_string_array(&ids)),
+    };
+    Some(stanza)
+}
+
+/// Join license ids into a Ruby string-array body: `"A", "B", "C"`.
+fn ruby_string_array(ids: &[String]) -> String {
+    ids.iter()
+        .map(|id| format!("\"{}\"", ruby_escape_str(id)))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Render the body of a formula `livecheck do … end` block from config.
+///
+/// Returns `None` when no livecheck should be emitted. The returned string is
+/// the inner lines (already trimmed of the `do`/`end` wrapper, no leading
+/// indent — the template indents each line). Behavior:
+///
+/// - config absent OR `skip` truthy OR (no `strategy`/`url`/`regex` set) ⇒
+///   `skip "<reason>"` (default reason `Auto-generated on release.`), matching
+///   the cask. A binary tap's archive URL/sha change every release, so an
+///   active livecheck has nothing stable to poll.
+/// - `skip: false` + a `strategy`/`url`/`regex` ⇒ an active block
+///   (`url :stable` / `strategy :github_latest` / `regex(...)`).
+pub fn render_formula_livecheck(
+    cfg: Option<&anodizer_core::config::HomebrewLivecheck>,
+) -> Option<String> {
+    let cfg = cfg.cloned().unwrap_or_default();
+    let has_active = cfg.strategy.as_deref().is_some_and(|s| !s.is_empty())
+        || cfg.url.as_deref().is_some_and(|s| !s.is_empty())
+        || cfg.regex.as_deref().is_some_and(|s| !s.is_empty());
+    // Skip is the default unless the user explicitly opts into an active check
+    // (skip == Some(false) AND at least one active field present).
+    let skip = match cfg.skip {
+        Some(s) => s,
+        None => !has_active,
+    };
+    if skip || !has_active {
+        let reason = cfg
+            .skip_reason
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Auto-generated on release.");
+        return Some(format!("skip \"{}\"", ruby_escape_str(reason)));
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    // `url`: a bare symbol shorthand (`stable`/`head`/`homepage`) renders as a
+    // Ruby symbol; anything containing `:` or `/` is treated as a literal URL.
+    let url_val = cfg
+        .url
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("stable");
+    if let Some(sym) = livecheck_url_symbol(url_val) {
+        lines.push(format!("url :{}", sym));
+    } else {
+        lines.push(format!("url \"{}\"", ruby_escape_str(url_val)));
+    }
+    if let Some(strategy) = cfg.strategy.as_deref().filter(|s| !s.is_empty()) {
+        // `strategy` is a Ruby symbol; strip a user-supplied leading `:`.
+        lines.push(format!("strategy :{}", strategy.trim_start_matches(':')));
+    }
+    if let Some(regex) = cfg.regex.as_deref().filter(|s| !s.is_empty()) {
+        // `regex` is raw Ruby (a `%r{...}` or `/.../ ` literal), emitted verbatim.
+        lines.push(format!("regex({})", regex));
+    }
+    Some(lines.join("\n"))
+}
+
+/// Map a livecheck `url` config value to its Ruby symbol when it is one of the
+/// recognised shorthands (`stable`/`head`/`homepage`). Returns `None` for a
+/// literal URL (which the caller renders as a quoted string).
+fn livecheck_url_symbol(url: &str) -> Option<&str> {
+    let u = url.trim().trim_start_matches(':');
+    matches!(u, "stable" | "head" | "homepage").then_some(u)
+}
+
+/// Build the extra install-block lines for prebuilt completion files and
+/// manpages: `bash_completion.install "<path>"`, `man1.install "<path>"`, etc.
+///
+/// `completions` carries explicit prebuilt completion file paths (one per
+/// shell). `manpages` carries manpage file paths; each is routed to the
+/// matching `manN` section by its `.N` suffix (defaulting to `man1`).
+/// Returns the lines in a stable order (completions then manpages) so the
+/// rendered formula is byte-deterministic across runs.
+pub fn build_completion_and_manpage_install_lines(
+    completions: Option<&anodizer_core::config::HomebrewCaskCompletions>,
+    manpages: Option<&[String]>,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(c) = completions {
+        if let Some(p) = c.bash.as_deref().filter(|s| !s.is_empty()) {
+            lines.push(format!(
+                "bash_completion.install \"{}\"",
+                ruby_escape_str(p)
+            ));
+        }
+        if let Some(p) = c.zsh.as_deref().filter(|s| !s.is_empty()) {
+            lines.push(format!("zsh_completion.install \"{}\"", ruby_escape_str(p)));
+        }
+        if let Some(p) = c.fish.as_deref().filter(|s| !s.is_empty()) {
+            lines.push(format!(
+                "fish_completion.install \"{}\"",
+                ruby_escape_str(p)
+            ));
+        }
+    }
+    for path in manpages.unwrap_or(&[]) {
+        if path.is_empty() {
+            continue;
+        }
+        let section = manpage_section(path);
+        lines.push(format!(
+            "man{}.install \"{}\"",
+            section,
+            ruby_escape_str(path)
+        ));
+    }
+    lines
+}
+
+/// Determine the `manN` section a manpage path installs into, from its numeric
+/// extension (`foo.1` → 1, `foo.8` → 8). Defaults to section 1 — the
+/// overwhelmingly common case for a CLI's primary manpage — when the path has
+/// no recognised `.1`–`.8` suffix.
+fn manpage_section(path: &str) -> u8 {
+    path.rsplit('.')
+        .next()
+        .and_then(|ext| ext.parse::<u8>().ok())
+        .filter(|n| (1..=8).contains(n))
+        .unwrap_or(1)
+}

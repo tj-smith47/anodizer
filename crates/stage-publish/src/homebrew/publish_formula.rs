@@ -159,6 +159,33 @@ fn render_install_and_test_blocks(
                 .join("\n")
         }
     };
+    // Append completion + manpage installs (prebuilt files) and the
+    // `generate_completions_from_executable` directive when configured. These
+    // ride inside every per-OS `def install` block so a real Rust CLI formula
+    // ships shell completions + manpages like ripgrep/fd/bat, not a bare
+    // `bin.install`. Only appended to the auto-derived install block — when the
+    // user hand-writes `install:`, they own the full block (including any
+    // completions) and we must not double-emit.
+    let install_raw = if hb_cfg.install.is_some() {
+        install_raw
+    } else {
+        let mut extra = super::formula::build_completion_and_manpage_install_lines(
+            hb_cfg.completions.as_ref(),
+            hb_cfg.manpages.as_deref(),
+        );
+        if let Some(line) = hb_cfg
+            .generate_completions_from_executable
+            .as_ref()
+            .and_then(super::cask::render_generate_completions)
+        {
+            extra.push(line);
+        }
+        if extra.is_empty() {
+            install_raw
+        } else {
+            format!("{}\n{}", install_raw, extra.join("\n"))
+        }
+    };
     let install = crate::util::render_or_warn_with_vars(
         &tmpl_vars,
         log,
@@ -782,6 +809,15 @@ fn render_formula_inner(
         custom_block: hb_cfg.custom_block.as_deref(),
         plist: hb_cfg.plist.as_deref(),
         service: hb_cfg.service.as_deref(),
+        livecheck: super::formula::render_formula_livecheck(hb_cfg.livecheck.as_ref()),
+        // Render the `license` stanza from the parsed SPDX expression so a dual
+        // license (`Apache-2.0 OR MIT`) becomes `license any_of: [...]` rather
+        // than an invalid bare string. `None` when no license resolved → the
+        // template omits the stanza.
+        license_stanza: meta
+            .license
+            .as_deref()
+            .and_then(super::formula::render_formula_license),
     };
 
     let archive_data = collect_archive_entries(ctx, hb_cfg, crate_name, &version, log)?;
@@ -938,8 +974,9 @@ mod tests {
     use crate::util::CommitOutcome;
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use anodizer_core::config::{
-        Config, CrateConfig, GitRepoConfig, HomebrewCaskConfig, HomebrewCaskURL, HomebrewConfig,
-        HomebrewDependency, PublishConfig, PullRequestConfig, ReleaseConfig, RepositoryConfig,
+        Config, CrateConfig, GitRepoConfig, HomebrewCaskCompletions, HomebrewCaskConfig,
+        HomebrewCaskGeneratedCompletions, HomebrewCaskURL, HomebrewConfig, HomebrewDependency,
+        HomebrewLivecheck, PublishConfig, PullRequestConfig, ReleaseConfig, RepositoryConfig,
         StringOrBool, WorkspaceConfig,
     };
     use anodizer_core::context::{Context, ContextOptions};
@@ -1754,5 +1791,364 @@ mod tests {
             "error must name the publisher; got: {msg}"
         );
         drop(bogus);
+    }
+
+    // ===================================================================
+    // completions / manpages / livecheck / dual-license — the homebrew-core
+    // citizen fields the formula previously lacked (the cask already had).
+    // Validated against the real ripgrep/fd/bat exemplar idioms.
+    // ===================================================================
+
+    /// Single-crate mode: prebuilt completion files + a manpage render as
+    /// `bash_completion.install` / `zsh_completion.install` /
+    /// `fish_completion.install` / `man1.install` lines INSIDE the install
+    /// block — exactly the idiom ripgrep/fd/bat ship.
+    #[test]
+    fn render_formula_emits_completion_and_manpage_installs_single_crate() {
+        let hb = HomebrewConfig {
+            completions: Some(HomebrewCaskCompletions {
+                bash: Some("completions/mytool.bash".to_string()),
+                zsh: Some("completions/_mytool".to_string()),
+                fish: Some("completions/mytool.fish".to_string()),
+            }),
+            manpages: Some(vec!["man/mytool.1".to_string()]),
+            ..Default::default()
+        };
+        let ctx = single_crate_ctx(
+            hb,
+            vec![archive(
+                "x86_64-unknown-linux-gnu",
+                "https://e/x.tar.gz",
+                "s",
+            )],
+        );
+        let body = render_homebrew_formula_for_crate(&ctx, "mytool", &quiet_log())
+            .expect("render")
+            .expect("not skipped")
+            .formula;
+        assert!(body.contains("bin.install \"mytool\""), "{body}");
+        assert!(
+            body.contains("bash_completion.install \"completions/mytool.bash\""),
+            "{body}"
+        );
+        assert!(
+            body.contains("zsh_completion.install \"completions/_mytool\""),
+            "{body}"
+        );
+        assert!(
+            body.contains("fish_completion.install \"completions/mytool.fish\""),
+            "{body}"
+        );
+        assert!(body.contains("man1.install \"man/mytool.1\""), "{body}");
+    }
+
+    /// A manpage path ending in `.8` routes to `man8.install`, not `man1`.
+    #[test]
+    fn render_formula_routes_manpage_to_numbered_section() {
+        let hb = HomebrewConfig {
+            manpages: Some(vec!["man/mytool.8".to_string()]),
+            ..Default::default()
+        };
+        let ctx = single_crate_ctx(
+            hb,
+            vec![archive(
+                "x86_64-unknown-linux-gnu",
+                "https://e/x.tar.gz",
+                "s",
+            )],
+        );
+        let body = render_homebrew_formula_for_crate(&ctx, "mytool", &quiet_log())
+            .expect("render")
+            .expect("not skipped")
+            .formula;
+        assert!(body.contains("man8.install \"man/mytool.8\""), "{body}");
+    }
+
+    /// `generate_completions_from_executable` (the modern homebrew-core idiom)
+    /// renders inside the install block when configured.
+    #[test]
+    fn render_formula_emits_generate_completions_from_executable() {
+        let hb = HomebrewConfig {
+            generate_completions_from_executable: Some(HomebrewCaskGeneratedCompletions {
+                executable: Some("bin/mytool".to_string()),
+                args: Some(vec!["completions".to_string()]),
+                shells: Some(vec![
+                    "bash".to_string(),
+                    "zsh".to_string(),
+                    "fish".to_string(),
+                ]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = single_crate_ctx(
+            hb,
+            vec![archive(
+                "x86_64-unknown-linux-gnu",
+                "https://e/x.tar.gz",
+                "s",
+            )],
+        );
+        let body = render_homebrew_formula_for_crate(&ctx, "mytool", &quiet_log())
+            .expect("render")
+            .expect("not skipped")
+            .formula;
+        assert!(
+            body.contains("generate_completions_from_executable \"bin/mytool\", \"completions\""),
+            "{body}"
+        );
+        assert!(body.contains("shells: [:bash, :zsh, :fish]"), "{body}");
+    }
+
+    /// A user-supplied `install:` block OWNS the install body — anodizer must
+    /// NOT append auto-completion/man lines (no double-emit).
+    #[test]
+    fn render_formula_custom_install_does_not_append_completions() {
+        let hb = HomebrewConfig {
+            install: Some("bin.install \"mytool\"".to_string()),
+            completions: Some(HomebrewCaskCompletions {
+                bash: Some("c.bash".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = single_crate_ctx(
+            hb,
+            vec![archive(
+                "x86_64-unknown-linux-gnu",
+                "https://e/x.tar.gz",
+                "s",
+            )],
+        );
+        let body = render_homebrew_formula_for_crate(&ctx, "mytool", &quiet_log())
+            .expect("render")
+            .expect("not skipped")
+            .formula;
+        assert!(
+            !body.contains("bash_completion.install"),
+            "custom install owns the block; got:\n{body}"
+        );
+    }
+
+    /// Default livecheck: a binary tap formula with NO livecheck config emits
+    /// `livecheck do\n  skip "Auto-generated on release."\nend`, mirroring the
+    /// cask (the archive URL/sha change every release).
+    #[test]
+    fn render_formula_emits_default_livecheck_skip() {
+        let hb = HomebrewConfig::default();
+        let ctx = single_crate_ctx(
+            hb,
+            vec![archive(
+                "x86_64-unknown-linux-gnu",
+                "https://e/x.tar.gz",
+                "s",
+            )],
+        );
+        let body = render_homebrew_formula_for_crate(&ctx, "mytool", &quiet_log())
+            .expect("render")
+            .expect("not skipped")
+            .formula;
+        assert!(body.contains("livecheck do"), "{body}");
+        assert!(
+            body.contains("skip \"Auto-generated on release.\""),
+            "{body}"
+        );
+    }
+
+    /// Active livecheck: opting in with `skip: false` + a strategy renders a
+    /// `url :stable` / `strategy :github_latest` block, matching ripgrep.
+    #[test]
+    fn render_formula_emits_active_livecheck_strategy() {
+        let hb = HomebrewConfig {
+            livecheck: Some(HomebrewLivecheck {
+                skip: Some(false),
+                strategy: Some("github_latest".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = single_crate_ctx(
+            hb,
+            vec![archive(
+                "x86_64-unknown-linux-gnu",
+                "https://e/x.tar.gz",
+                "s",
+            )],
+        );
+        let body = render_homebrew_formula_for_crate(&ctx, "mytool", &quiet_log())
+            .expect("render")
+            .expect("not skipped")
+            .formula;
+        assert!(body.contains("livecheck do"), "{body}");
+        assert!(body.contains("url :stable"), "{body}");
+        assert!(body.contains("strategy :github_latest"), "{body}");
+        assert!(
+            !body.contains("skip \"Auto-generated"),
+            "active livecheck must NOT skip; got:\n{body}"
+        );
+    }
+
+    /// Dual-license SPDX (`Apache-2.0 OR MIT`) — the Rust-CLI norm — renders as
+    /// `license any_of: ["Apache-2.0", "MIT"]`, NOT an invalid bare string.
+    #[test]
+    fn render_formula_dual_license_renders_any_of_single_crate() {
+        let hb = HomebrewConfig {
+            license: Some("Apache-2.0 OR MIT".to_string()),
+            ..Default::default()
+        };
+        let ctx = single_crate_ctx(
+            hb,
+            vec![archive(
+                "x86_64-unknown-linux-gnu",
+                "https://e/x.tar.gz",
+                "s",
+            )],
+        );
+        let body = render_homebrew_formula_for_crate(&ctx, "mytool", &quiet_log())
+            .expect("render")
+            .expect("not skipped")
+            .formula;
+        assert!(
+            body.contains("license any_of: [\"Apache-2.0\", \"MIT\"]"),
+            "{body}"
+        );
+        assert!(
+            !body.contains("license \"Apache-2.0 OR MIT\""),
+            "must not emit the invalid bare-string form; got:\n{body}"
+        );
+    }
+
+    /// AND dual-license renders `license all_of: [...]`.
+    #[test]
+    fn render_formula_and_license_renders_all_of() {
+        let hb = HomebrewConfig {
+            license: Some("Apache-2.0 AND MIT".to_string()),
+            ..Default::default()
+        };
+        let ctx = single_crate_ctx(
+            hb,
+            vec![archive(
+                "x86_64-unknown-linux-gnu",
+                "https://e/x.tar.gz",
+                "s",
+            )],
+        );
+        let body = render_homebrew_formula_for_crate(&ctx, "mytool", &quiet_log())
+            .expect("render")
+            .expect("not skipped")
+            .formula;
+        assert!(
+            body.contains("license all_of: [\"Apache-2.0\", \"MIT\"]"),
+            "{body}"
+        );
+    }
+
+    /// A single-id license still renders the plain `license "MIT"` form.
+    #[test]
+    fn render_formula_single_license_renders_plain_string() {
+        let hb = HomebrewConfig {
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        };
+        let ctx = single_crate_ctx(
+            hb,
+            vec![archive(
+                "x86_64-unknown-linux-gnu",
+                "https://e/x.tar.gz",
+                "s",
+            )],
+        );
+        let body = render_homebrew_formula_for_crate(&ctx, "mytool", &quiet_log())
+            .expect("render")
+            .expect("not skipped")
+            .formula;
+        assert!(body.contains("license \"MIT\""), "{body}");
+        assert!(!body.contains("any_of"), "{body}");
+    }
+
+    /// Workspace per-crate mode: two crates carry DISTINCT dual licenses +
+    /// distinct completion sets. Each formula must render ITS OWN license
+    /// `any_of:` and ITS OWN completion installs — proving per-crate resolution
+    /// of the new fields, not last-writer-wins.
+    #[test]
+    fn render_formula_per_crate_distinct_license_and_completions() {
+        let hb_a = HomebrewConfig {
+            name: Some("alpha".to_string()),
+            license: Some("Apache-2.0 OR MIT".to_string()),
+            completions: Some(HomebrewCaskCompletions {
+                bash: Some("a.bash".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let hb_b = HomebrewConfig {
+            name: Some("beta".to_string()),
+            license: Some("BSD-3-Clause".to_string()),
+            completions: Some(HomebrewCaskCompletions {
+                zsh: Some("_beta".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let crate_with = |name: &str, hb: HomebrewConfig| CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                homebrew: Some(hb),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let config = Config {
+            workspaces: Some(vec![WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![crate_with("crate-a", hb_a), crate_with("crate-b", hb_b)],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let mut art_a = archive("x86_64-unknown-linux-gnu", "https://e/a.tar.gz", "sa");
+        art_a.crate_name = "crate-a".to_string();
+        let mut art_b = archive("x86_64-unknown-linux-gnu", "https://e/b.tar.gz", "sb");
+        art_b.crate_name = "crate-b".to_string();
+        ctx.artifacts.add(art_a);
+        ctx.artifacts.add(art_b);
+
+        let body_a = render_homebrew_formula_for_crate(&ctx, "crate-a", &quiet_log())
+            .expect("render a")
+            .expect("not skipped")
+            .formula;
+        let body_b = render_homebrew_formula_for_crate(&ctx, "crate-b", &quiet_log())
+            .expect("render b")
+            .expect("not skipped")
+            .formula;
+
+        // crate-a: dual license any_of + bash completion only.
+        assert!(
+            body_a.contains("license any_of: [\"Apache-2.0\", \"MIT\"]"),
+            "a:\n{body_a}"
+        );
+        assert!(
+            body_a.contains("bash_completion.install \"a.bash\""),
+            "a:\n{body_a}"
+        );
+        assert!(
+            !body_a.contains("_beta"),
+            "no cross-contamination; a:\n{body_a}"
+        );
+
+        // crate-b: single license + zsh completion only.
+        assert!(body_b.contains("license \"BSD-3-Clause\""), "b:\n{body_b}");
+        assert!(!body_b.contains("any_of"), "b:\n{body_b}");
+        assert!(
+            body_b.contains("zsh_completion.install \"_beta\""),
+            "b:\n{body_b}"
+        );
+        assert!(
+            !body_b.contains("a.bash"),
+            "no cross-contamination; b:\n{body_b}"
+        );
     }
 }
