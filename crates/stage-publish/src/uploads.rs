@@ -17,7 +17,7 @@ use std::collections::HashMap;
 
 use crate::artifactory::{
     ArtifactoryTarget, CollectFlags, build_reqwest_client, collect_upload_artifacts,
-    render_artifact_url, validate_upload_mode_for,
+    collect_upload_artifacts_owned, render_artifact_url, validate_upload_mode_for,
 };
 
 /// Tally of what a generic-uploads publish run did, so the caller can decide
@@ -209,13 +209,16 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
                 named_env_var
             ));
 
-            let artifacts = collect_upload_artifacts(
+            let artifacts = collect_upload_artifacts_owned(
                 ctx,
+                "uploads",
                 mode,
                 entry.ids.as_deref(),
                 entry.exts.as_deref(),
                 flags,
-            );
+                entry.extra_files.as_deref(),
+                log,
+            )?;
             log.status(&format!("(dry-run) {} artifacts matched", artifacts.len()));
             // Render per-artifact URLs through the same path live mode uses so
             // dry-run reflects template behaviour exactly.
@@ -246,13 +249,16 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
             entry.trusted_certificates.as_deref(),
         )?;
 
-        let artifacts = collect_upload_artifacts(
+        let artifacts = collect_upload_artifacts_owned(
             ctx,
+            "uploads",
             mode,
             entry.ids.as_deref(),
             entry.exts.as_deref(),
             flags,
-        );
+            entry.extra_files.as_deref(),
+            log,
+        )?;
 
         if artifacts.is_empty() {
             log.status(&format!(
@@ -280,6 +286,7 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
             target_template,
             &artifacts,
             &crate::http_upload::UploadEntryRequest {
+                publisher: "uploads",
                 method,
                 checksum_header,
                 custom_headers,
@@ -335,13 +342,34 @@ pub(crate) fn collect_upload_targets(ctx: &Context) -> Vec<ArtifactoryTarget> {
         let target_template = entry.target.as_str();
         let mode = entry.mode.as_deref().unwrap_or("archive");
         let custom_artifact_name = entry.custom_artifact_name.unwrap_or(false);
-        let artifacts = collect_upload_artifacts(
+        // Best-effort: a quiet logger absorbs extra_files glob warnings, and a
+        // resolution error only narrows the rollback checklist (the publish
+        // path already surfaced any real blocker), so fall back to the
+        // filtered set when extra_files can't resolve.
+        let quiet =
+            anodizer_core::log::StageLogger::new("uploads", anodizer_core::log::Verbosity::Quiet);
+        let artifacts = collect_upload_artifacts_owned(
             ctx,
+            "uploads",
             mode,
             entry.ids.as_deref(),
             entry.exts.as_deref(),
             entry_collect_flags(entry),
-        );
+            entry.extra_files.as_deref(),
+            &quiet,
+        )
+        .unwrap_or_else(|_| {
+            collect_upload_artifacts(
+                ctx,
+                mode,
+                entry.ids.as_deref(),
+                entry.exts.as_deref(),
+                entry_collect_flags(entry),
+            )
+            .into_iter()
+            .cloned()
+            .collect()
+        });
         for a in &artifacts {
             if let Ok(url) = render_artifact_url(ctx, target_template, a, custom_artifact_name) {
                 out.push(ArtifactoryTarget {
@@ -727,8 +755,8 @@ mod tests {
     /// Half-set credentials (password without username) must hard-error even
     /// though `uploads` tolerates fully-anonymous endpoints — a half-set pair
     /// is always a config bug, never an intentional anonymous upload. Live
-    /// mode only; dry-run skips credential validation. We register no
-    /// artifacts so the loop reaches credential resolution and bails there.
+    /// mode only; dry-run skips credential validation. No artifacts are
+    /// registered so the loop reaches credential resolution and bails there.
     #[test]
     fn half_set_credentials_error_in_live_mode() {
         let mut config = Config::default();
@@ -860,7 +888,7 @@ mod tests {
     /// `mode`/`ids`/`exts`/`checksum`/`signature` selection: archive mode with
     /// an ext filter selects only matching archives; `checksum: true` and
     /// `signature: true` pull in the sidecars. Asserted through the dry-run
-    /// per-artifact lines so we exercise the live selection path.
+    /// per-artifact lines, which exercise the live selection path.
     #[test]
     fn dry_run_selects_by_mode_exts_and_sidecars() {
         let mut config = Config::default();
@@ -915,6 +943,117 @@ mod tests {
         assert!(
             joined.contains("https://uploads.example.com/core-crate/0.5.0/core-crate-0.5.0.tar.gz"),
             "per-crate rendered target missing:\n{joined}"
+        );
+    }
+
+    /// An `extra_files` glob spec resolves to an uploadable artifact and is
+    /// appended to the normal upload set (GoReleaser's `extrafiles.Find`
+    /// behaviour). Proven through the dry-run per-artifact lines.
+    #[test]
+    fn extra_files_spec_resolves_and_uploads() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("LICENSE.txt"), b"MIT").unwrap();
+        let glob = format!("{}/LICENSE.txt", tmp.path().display());
+
+        let mut config = Config::default();
+        config.uploads = Some(vec![UploadConfig {
+            name: Some("ef".to_string()),
+            target: "https://uploads.example.com/".to_string(),
+            extra_files: Some(vec![anodizer_core::config::ExtraFileSpec::Glob(glob)]),
+            ..Default::default()
+        }]);
+        let mut ctx = dry_run_ctx_versioned(config);
+        add_archive(&mut ctx, "app.tar.gz", None);
+        let joined = capture_dry_run(&ctx).join("\n");
+        // The normal archive AND the resolved extra file both appear.
+        assert!(joined.contains("app.tar.gz (archive) →"), "{joined}");
+        assert!(
+            joined.contains(
+                "LICENSE.txt (uploadable_file) → PUT https://uploads.example.com/LICENSE.txt"
+            ),
+            "resolved extra_file missing:\n{joined}"
+        );
+        assert!(joined.contains("2 artifacts matched"), "{joined}");
+    }
+
+    /// `extra_files_only: true` uploads ONLY the resolved extra files — the
+    /// normal mode-filtered release set is skipped.
+    #[test]
+    fn extra_files_only_uploads_only_extra_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("notes.md"), b"notes").unwrap();
+        let glob = format!("{}/notes.md", tmp.path().display());
+
+        let mut config = Config::default();
+        config.uploads = Some(vec![UploadConfig {
+            name: Some("efo".to_string()),
+            target: "https://uploads.example.com/".to_string(),
+            extra_files: Some(vec![anodizer_core::config::ExtraFileSpec::Glob(glob)]),
+            extra_files_only: Some(true),
+            ..Default::default()
+        }]);
+        let mut ctx = dry_run_ctx_versioned(config);
+        // This archive must NOT be uploaded under extra_files_only.
+        add_archive(&mut ctx, "app.tar.gz", None);
+        let joined = capture_dry_run(&ctx).join("\n");
+        assert!(
+            joined.contains("notes.md (uploadable_file) →"),
+            "resolved extra_file missing:\n{joined}"
+        );
+        assert!(
+            !joined.contains("app.tar.gz (archive) →"),
+            "archive should be excluded under extra_files_only:\n{joined}"
+        );
+        assert!(joined.contains("1 artifacts matched"), "{joined}");
+    }
+
+    /// A glob matching multiple files expands to one artifact per match, and a
+    /// `name_template` override renders against the context template vars.
+    #[test]
+    fn extra_files_glob_expansion_and_name_template() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("a.bin"), b"a").unwrap();
+        std::fs::write(tmp.path().join("b.bin"), b"b").unwrap();
+        let multi_glob = format!("{}/*.bin", tmp.path().display());
+
+        // Multi-match glob → two artifacts (no name_template).
+        let mut config = Config::default();
+        config.uploads = Some(vec![UploadConfig {
+            name: Some("glob".to_string()),
+            target: "https://uploads.example.com/".to_string(),
+            extra_files: Some(vec![anodizer_core::config::ExtraFileSpec::Glob(multi_glob)]),
+            extra_files_only: Some(true),
+            ..Default::default()
+        }]);
+        let ctx = dry_run_ctx_versioned(config);
+        let joined = capture_dry_run(&ctx).join("\n");
+        assert!(joined.contains("a.bin (uploadable_file) →"), "{joined}");
+        assert!(joined.contains("b.bin (uploadable_file) →"), "{joined}");
+        assert!(joined.contains("2 artifacts matched"), "{joined}");
+
+        // name_template override renders against {{ .ProjectName }}.
+        std::fs::write(tmp.path().join("single.bin"), b"x").unwrap();
+        let one_glob = format!("{}/single.bin", tmp.path().display());
+        let mut config2 = Config::default();
+        config2.uploads = Some(vec![UploadConfig {
+            name: Some("nt".to_string()),
+            target: "https://uploads.example.com/".to_string(),
+            extra_files: Some(vec![anodizer_core::config::ExtraFileSpec::Detailed {
+                glob: one_glob,
+                name_template: Some("{{ .ProjectName }}-renamed.bin".to_string()),
+                allow_empty: false,
+            }]),
+            extra_files_only: Some(true),
+            ..Default::default()
+        }]);
+        let ctx2 = dry_run_ctx_versioned(config2);
+        let joined2 = capture_dry_run(&ctx2).join("\n");
+        assert!(
+            joined2.contains(
+                "anodizer-renamed.bin (uploadable_file) → PUT \
+                 https://uploads.example.com/anodizer-renamed.bin"
+            ),
+            "name_template override missing:\n{joined2}"
         );
     }
 

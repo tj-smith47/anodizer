@@ -156,12 +156,8 @@ before_publish:
         - "ANODIZER_ARTIFACT={{ ArtifactPath }}"
       output: true
     # Gate 2: every primary release archive (id=default) must be a non-empty,
-    # readable tarball/zip. The `extra`-id archives are excluded by the id
-    # filter. `dir: dist` runs the check inside the dist tree; ArtifactName is
-    # the bare filename (no `dist/` prefix), so it resolves correctly relative
-    # to dist/ — this exercises the working-directory field for real. (Using
-    # ArtifactPath here would double the prefix to dist/dist/... since the
-    # path is already project-root-relative; ArtifactName is the right join.)
+    # readable tarball/zip. ArtifactPath is project-root-relative, so under
+    # `dir: dist` use ArtifactName (bare filename) to avoid a dist/dist/ prefix.
     - cmd: 'test -s "$ANODIZER_ARTIFACT" || { echo "FATAL: archive missing or empty: $ANODIZER_ARTIFACT" >&2; exit 1; }'
       artifacts: archive
       ids: [default]

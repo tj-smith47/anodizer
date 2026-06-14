@@ -31,7 +31,7 @@ pub(crate) struct CredentialResolveSpec<'a> {
     pub env_prefix: &'a str,
     /// When false (artifactory), an unresolved credential pair bails. When
     /// true (upload), an entirely empty pair is acceptable for anonymous
-    /// targets and we only refuse the half-set state.
+    /// targets and only the half-set state is refused.
     pub anonymous_ok: bool,
 }
 
@@ -136,10 +136,11 @@ pub(crate) struct UploadEntryCounts {
 /// Per-artifact request parameters shared across an entry's whole upload set.
 ///
 /// Bundles the request-shaping inputs that are constant for every artifact in
-/// one upload entry (method, checksum header, custom headers, basic-auth, and
-/// the `custom_artifact_name` URL-append toggle) so the shared driver can
-/// thread them through without a long argument list.
+/// one upload entry (publisher label, method, checksum header, custom headers,
+/// basic-auth, and the `custom_artifact_name` URL-append toggle) so the shared
+/// driver can thread them through without a long argument list.
 pub(crate) struct UploadEntryRequest<'a> {
+    pub publisher: &'a str,
     pub method: &'a str,
     pub checksum_header: &'a str,
     pub custom_headers: &'a std::collections::HashMap<String, String>,
@@ -166,7 +167,7 @@ pub(crate) fn upload_artifact_set(
     ctx: &Context,
     client: &reqwest::blocking::Client,
     target_template: &str,
-    artifacts: &[&Artifact],
+    artifacts: &[Artifact],
     req: &UploadEntryRequest<'_>,
     policy: &RetryPolicy,
     log: &StageLogger,
@@ -179,6 +180,7 @@ pub(crate) fn upload_artifact_set(
         match crate::artifactory::upload_single_artifact(
             client,
             &UploadHeaders {
+                publisher: req.publisher,
                 method: req.method,
                 url: &url,
                 checksum_header: req.checksum_header,

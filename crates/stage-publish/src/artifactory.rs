@@ -153,6 +153,98 @@ pub(crate) fn collect_upload_artifacts<'a>(
     artifacts
 }
 
+/// Resolve an upload entry's `extra_files` specs into synthetic
+/// [`ArtifactKind::UploadableFile`] artifacts, mirroring GoReleaser's
+/// `extrafiles.Find` (glob expansion, optional per-file `name_template`
+/// override, directory filtering, path de-duplication).
+///
+/// `publisher` labels any error so the same shared resolver serves both the
+/// Artifactory and the generic `uploads:` publisher with a correct prefix.
+/// The `name_template` (when set) is rendered through the context's template
+/// vars so a user can write `name_template: "{{ .ProjectName }}-extra.txt"`;
+/// when unset, the file's base name is used (GoReleaser's default). The
+/// resulting artifacts carry no build target, so the per-artifact URL renders
+/// without `Os`/`Arch`/`Target` bindings — matching how a non-build asset
+/// uploads.
+pub(crate) fn resolve_extra_file_artifacts(
+    ctx: &Context,
+    publisher: &str,
+    specs: &[anodizer_core::config::ExtraFileSpec],
+    log: &StageLogger,
+) -> Result<Vec<Artifact>> {
+    let resolved = anodizer_core::extrafiles::resolve(specs, log)
+        .with_context(|| format!("{publisher}: resolve extra_files"))?;
+    let mut out = Vec::with_capacity(resolved.len());
+    for r in resolved {
+        // Render the optional name override; fall back to the file's base name
+        // (GoReleaser's default when no name_template is set).
+        let name = match r.name_template.as_deref() {
+            Some(tmpl) => ctx.render_template(tmpl).with_context(|| {
+                format!("{publisher}: render extra_files name_template '{tmpl}'")
+            })?,
+            None => r
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        };
+        out.push(Artifact {
+            kind: ArtifactKind::UploadableFile,
+            path: r.path,
+            name,
+            target: None,
+            crate_name: ctx.config.project_name.clone(),
+            metadata: std::collections::HashMap::new(),
+            size: None,
+        });
+    }
+    Ok(out)
+}
+
+/// Collect an upload entry's full owned artifact set: the mode/ids/exts-filtered
+/// release artifacts (plus checksum/signature/meta sidecars) **and** the
+/// entry's `extra_files` specs resolved into uploadable artifacts.
+///
+/// This is the GoReleaser-parity entry point both HTTP-upload publishers drive
+/// (`uploadWithFilter` in GoReleaser appends `extrafiles.Find` results to the
+/// filtered set on every run). Resolved `extra_files` artifacts are ALWAYS
+/// included — with `extra_files_only: true` they are returned alongside any
+/// pre-registered [`ArtifactKind::UploadableFile`] artifacts (e.g. from the
+/// `template_files:` stage) and the mode-filtered release set is skipped;
+/// otherwise they are appended to it. De-duplicates by on-disk path so a file
+/// matched by both a glob and a pre-registered artifact uploads once.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn collect_upload_artifacts_owned(
+    ctx: &Context,
+    publisher: &str,
+    mode: &str,
+    ids: Option<&[String]>,
+    exts: Option<&[String]>,
+    flags: CollectFlags,
+    extra_files: Option<&[anodizer_core::config::ExtraFileSpec]>,
+    log: &StageLogger,
+) -> Result<Vec<Artifact>> {
+    let mut out: Vec<Artifact> = collect_upload_artifacts(ctx, mode, ids, exts, flags)
+        .into_iter()
+        .cloned()
+        .collect();
+
+    if let Some(specs) = extra_files
+        && !specs.is_empty()
+    {
+        let resolved = resolve_extra_file_artifacts(ctx, publisher, specs, log)?;
+        let mut seen: std::collections::HashSet<std::path::PathBuf> =
+            out.iter().map(|a| a.path.clone()).collect();
+        for a in resolved {
+            if seen.insert(a.path.clone()) {
+                out.push(a);
+            }
+        }
+    }
+
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
 // build_reqwest_client
 // ---------------------------------------------------------------------------
@@ -401,12 +493,14 @@ fn append_deb_matrix_params(
 
 /// HTTP request descriptor for [`upload_single_artifact`].
 ///
-/// Bundles the four "what URL / how to address it" fields. The
-/// `checksum_header` slot, when non-empty, names a custom HTTP header
-/// (e.g. `X-Checksum-Sha256`) that is set to the artifact's hex SHA-256
-/// before the request is dispatched.
+/// Bundles the "what URL / how to address it" fields. The `checksum_header`
+/// slot, when non-empty, names a custom HTTP header (e.g. `X-Checksum-Sha256`)
+/// that is set to the artifact's hex SHA-256 before the request is dispatched.
+/// `publisher` labels error messages so the shared upload path attributes a
+/// failure to the calling publisher (`artifactory` / `uploads`).
 #[derive(Clone, Copy)]
 pub(crate) struct UploadHeaders<'a> {
+    pub(crate) publisher: &'a str,
     pub(crate) method: &'a str,
     pub(crate) url: &'a str,
     pub(crate) checksum_header: &'a str,
@@ -422,7 +516,7 @@ pub(crate) struct UploadAuth<'a> {
 }
 
 /// Whether the target path already holds an artifact, and (when present)
-/// whether its stored SHA-256 matches what we are about to upload.
+/// whether its stored SHA-256 matches the bytes about to be uploaded.
 ///
 /// The tri-state mirrors cargo's `is_already_published` and chocolatey's
 /// `FeedHashResult`: the `Unknown` arm exists so a probe that can't prove
@@ -524,6 +618,7 @@ pub(crate) fn upload_single_artifact(
     log: &StageLogger,
 ) -> Result<UploadOutcome> {
     let UploadHeaders {
+        publisher,
         method,
         url,
         checksum_header,
@@ -532,11 +627,11 @@ pub(crate) fn upload_single_artifact(
     let UploadAuth { username, password } = *auth;
     let path = &artifact.path;
     if !path.exists() {
-        bail!("artifactory: artifact file not found: {}", path.display());
+        bail!("{publisher}: artifact file not found: {}", path.display());
     }
     if path.is_dir() {
         bail!(
-            "artifactory: upload failed: the asset to upload can't be a directory: {}",
+            "{publisher}: upload failed: the asset to upload can't be a directory: {}",
             path.display()
         );
     }
@@ -558,7 +653,7 @@ pub(crate) fn upload_single_artifact(
             }
             ArtifactPresence::PresentDiffering { remote_checksum } => {
                 bail!(
-                    "artifactory: '{}' already exists at {} with a different sha256 \
+                    "{publisher}: '{}' already exists at {} with a different sha256 \
                      (remote {}, local {}). Artifact paths are immutable per release; \
                      bump the version or set `overwrite: true` to replace it.",
                     artifact.name(),
@@ -574,7 +669,7 @@ pub(crate) fn upload_single_artifact(
 
     // Read file body
     let body = fs::read(path)
-        .with_context(|| format!("artifactory: failed to read '{}'", path.display()))?;
+        .with_context(|| format!("{publisher}: failed to read '{}'", path.display()))?;
 
     log.status(&format!(
         "uploading {} ({} bytes) to {}",
@@ -583,7 +678,7 @@ pub(crate) fn upload_single_artifact(
         url
     ));
 
-    // Pre-compute rendered custom-header values so we don't re-render on
+    // Pre-compute rendered custom-header values to avoid re-rendering on
     // every retry attempt (and so render failures fail-fast outside the
     // retry loop, where they belong).
     //
@@ -605,7 +700,7 @@ pub(crate) fn upload_single_artifact(
         }
         let rendered_v = anodizer_core::template::render(v, &vars).with_context(|| {
             format!(
-                "artifactory: rendering custom header '{}' for '{}'",
+                "{publisher}: rendering custom header '{}' for '{}'",
                 k,
                 artifact.name()
             )
@@ -620,10 +715,10 @@ pub(crate) fn upload_single_artifact(
     let method_upper = method.to_uppercase();
     match method_upper.as_str() {
         "PUT" | "POST" => {}
-        other => bail!("artifactory: unsupported HTTP method '{}'", other),
+        other => bail!("{publisher}: unsupported HTTP method '{}'", other),
     }
 
-    let label = format!("artifactory: upload of '{}'", artifact.name());
+    let label = format!("{publisher}: upload of '{}'", artifact.name());
     let art_name = artifact.name().to_string();
     let (status, _body) = retry_http_blocking(
         &label,
@@ -659,7 +754,7 @@ pub(crate) fn upload_single_artifact(
             // retry and 4xx to fast-fail.
             let detail = decode_artifactory_error_body(resp_body);
             format!(
-                "artifactory: upload of '{art_name}' failed: {method_upper} {status} — {detail}"
+                "{publisher}: upload of '{art_name}' failed: {method_upper} {status} — {detail}"
             )
         },
     )?;
@@ -672,10 +767,10 @@ pub(crate) fn upload_single_artifact(
 /// envelope into a human-readable string. Falls back to the raw body when
 /// JSON decoding fails or the envelope shape doesn't match.
 fn decode_artifactory_error_body(body: &str) -> String {
-    // Defense-in-depth: if Artifactory echoes our Authorization header back
+    // Defense-in-depth: if Artifactory echoes the Authorization header back
     // in the error envelope, scrub the token before it lands in the
     // user-visible log. Applied at the fallback / joined-output boundary so
-    // we redact once regardless of which path produces the message.
+    // redaction runs once regardless of which path produces the message.
     let Ok(json) = serde_json::from_str::<serde_json::Value>(body) else {
         return redact_bearer_tokens(body);
     };
@@ -895,9 +990,11 @@ pub fn publish_to_artifactory(
                 named_env_var
             ));
 
-            // Log matching artifacts in dry-run
-            let artifacts = collect_upload_artifacts(
+            // Log matching artifacts in dry-run (extra_files specs resolved so
+            // the preview reflects the real upload set).
+            let artifacts = collect_upload_artifacts_owned(
                 ctx,
+                "artifactory",
                 mode,
                 entry.ids.as_deref(),
                 entry.exts.as_deref(),
@@ -907,7 +1004,9 @@ pub fn publish_to_artifactory(
                     meta: include_meta,
                     extra_files_only,
                 },
-            );
+                entry.extra_files.as_deref(),
+                log,
+            )?;
             log.status(&format!("(dry-run) {} artifacts matched", artifacts.len()));
             // Render per-artifact URLs through the same path live mode uses
             // so dry-run reflects template behaviour exactly.
@@ -937,9 +1036,10 @@ pub fn publish_to_artifactory(
             entry.trusted_certificates.as_deref(),
         )?;
 
-        // Collect artifacts
-        let artifacts = collect_upload_artifacts(
+        // Collect artifacts (incl. resolved extra_files specs).
+        let artifacts = collect_upload_artifacts_owned(
             ctx,
+            "artifactory",
             mode,
             entry.ids.as_deref(),
             entry.exts.as_deref(),
@@ -949,7 +1049,9 @@ pub fn publish_to_artifactory(
                 meta: include_meta,
                 extra_files_only,
             },
-        );
+            entry.extra_files.as_deref(),
+            log,
+        )?;
 
         if artifacts.is_empty() {
             log.status(&format!(
@@ -979,6 +1081,7 @@ pub fn publish_to_artifactory(
             target_template,
             &artifacts,
             &crate::http_upload::UploadEntryRequest {
+                publisher: "artifactory",
                 method,
                 checksum_header,
                 custom_headers,
@@ -1051,18 +1154,39 @@ pub(crate) fn collect_artifactory_targets(ctx: &Context) -> Vec<ArtifactoryTarge
         let include_meta = entry.meta.unwrap_or(false);
         let custom_artifact_name = entry.custom_artifact_name.unwrap_or(false);
         let extra_files_only = entry.extra_files_only.unwrap_or(false);
-        let artifacts = collect_upload_artifacts(
+        let flags = CollectFlags {
+            checksum: include_checksum,
+            signature: include_signature,
+            meta: include_meta,
+            extra_files_only,
+        };
+        // Best-effort: a quiet logger absorbs extra_files glob warnings, and a
+        // resolution error only narrows the rollback checklist (the publish
+        // path already surfaced any real blocker), so fall back to the
+        // filtered set when extra_files can't resolve.
+        let quiet = StageLogger::new("artifactory", anodizer_core::log::Verbosity::Quiet);
+        let artifacts = collect_upload_artifacts_owned(
             ctx,
+            "artifactory",
             mode,
             entry.ids.as_deref(),
             entry.exts.as_deref(),
-            CollectFlags {
-                checksum: include_checksum,
-                signature: include_signature,
-                meta: include_meta,
-                extra_files_only,
-            },
-        );
+            flags,
+            entry.extra_files.as_deref(),
+            &quiet,
+        )
+        .unwrap_or_else(|_| {
+            collect_upload_artifacts(
+                ctx,
+                mode,
+                entry.ids.as_deref(),
+                entry.exts.as_deref(),
+                flags,
+            )
+            .into_iter()
+            .cloned()
+            .collect()
+        });
         for a in &artifacts {
             // Best-effort (see fn doc): a render failure or an underivable deb
             // arch only narrows the rollback checklist — the publish path's own
@@ -1127,8 +1251,9 @@ fn resolve_rollback_credentials(ctx: &Context, entry_name: &str) -> Option<(Stri
             config_username: entry.username.as_deref(),
             config_password: entry.password.as_deref(),
             env_prefix: "ARTIFACTORY",
-            // Rollback is best-effort; tolerate anonymous so we surface a
-            // 401 in the deletion summary rather than bailing here.
+            // Rollback is best-effort; tolerate anonymous so a missing
+            // credential surfaces as a 401 in the deletion summary rather
+            // than bailing here.
             anonymous_ok: true,
         },
     )
@@ -2327,7 +2452,7 @@ mod tests {
         assert!(publish_to_artifactory(&ctx, &log).is_ok());
     }
 
-    /// Defense-in-depth: an Artifactory response body that echoes our
+    /// Defense-in-depth: an Artifactory response body that echoes the
     /// `Authorization: Bearer <PAT>` header back must not leak the token
     /// into the user-visible error chain. The decode helper sits on the
     /// JSON-parse fallback, raw-body fallback, and joined-output paths;
@@ -2450,6 +2575,7 @@ mod tests {
         upload_single_artifact(
             &client,
             &UploadHeaders {
+                publisher: "artifactory",
                 method: "PUT",
                 url: &url,
                 checksum_header: "X-Checksum-SHA256",
@@ -2496,6 +2622,7 @@ mod tests {
         upload_single_artifact(
             &client,
             &UploadHeaders {
+                publisher: "artifactory",
                 method: "POST",
                 url: &url,
                 checksum_header: "",
@@ -2544,6 +2671,7 @@ mod tests {
         upload_single_artifact(
             &client,
             &UploadHeaders {
+                publisher: "artifactory",
                 method: "PUT",
                 url: &url,
                 checksum_header: "X-Checksum-SHA256",
@@ -2584,6 +2712,7 @@ mod tests {
         let err = upload_single_artifact(
             &client,
             &UploadHeaders {
+                publisher: "artifactory",
                 method: "PUT",
                 url: &url,
                 checksum_header: "X-Checksum-SHA256",
@@ -2636,6 +2765,7 @@ mod tests {
         let err = upload_single_artifact(
             &client,
             &UploadHeaders {
+                publisher: "artifactory",
                 method: "PUT",
                 url: &url,
                 checksum_header: "X-Checksum-SHA256",
@@ -2686,6 +2816,7 @@ mod tests {
         let err = upload_single_artifact(
             &client,
             &UploadHeaders {
+                publisher: "artifactory",
                 method: "DELETE",
                 url: &url,
                 checksum_header: "",
@@ -2731,6 +2862,7 @@ mod tests {
         let err = upload_single_artifact(
             &client,
             &UploadHeaders {
+                publisher: "artifactory",
                 method: "PUT",
                 url: "http://127.0.0.1:1/repo/gone.tar.gz",
                 checksum_header: "",
@@ -2774,6 +2906,7 @@ mod tests {
         let err = upload_single_artifact(
             &client,
             &UploadHeaders {
+                publisher: "artifactory",
                 method: "PUT",
                 url: "http://127.0.0.1:1/repo/adir",
                 checksum_header: "",
@@ -2821,6 +2954,7 @@ mod tests {
         let err = upload_single_artifact(
             &client,
             &UploadHeaders {
+                publisher: "artifactory",
                 method: "PUT",
                 url: &url,
                 checksum_header: "",
