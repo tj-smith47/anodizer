@@ -667,23 +667,26 @@ fn derive_krew_files(a: &OsArtifact, bin: &str) -> Vec<KrewFileEntry> {
     // install root). Real plugins emit exactly one LICENSE entry; `archive_files`
     // is deterministically ordered (lowercase glob before uppercase) so the pick
     // is stable.
-    if let Some(license) = a
+    let license_path = a
         .archive_files
         .iter()
-        .find(|p| basename(p).to_ascii_lowercase().starts_with("license"))
-    {
+        .find(|p| is_license(basename(p)))
+        .cloned();
+    if let Some(ref license) = license_path {
         files.push(KrewFileEntry {
             from: license.clone(),
             to: ".".to_string(),
         });
     }
 
-    // README / markdown docs: include each bundled `*.md` (typically README.md).
-    for md in a
-        .archive_files
-        .iter()
-        .filter(|p| basename(p).to_ascii_lowercase().ends_with(".md"))
-    {
+    // README / markdown docs: include each bundled `*.md` (typically README.md),
+    // but NOT the changelog (`CHANGELOG.md` is excluded from the krew install)
+    // and NOT a `LICENSE.md` already selected above (it matches both the license
+    // glob and `*.md`, which would otherwise duplicate the entry).
+    for md in a.archive_files.iter().filter(|p| {
+        let b = basename(p).to_ascii_lowercase();
+        b.ends_with(".md") && !b.starts_with("changelog") && !is_license(basename(p))
+    }) {
         files.push(KrewFileEntry {
             from: md.clone(),
             to: ".".to_string(),
@@ -691,6 +694,12 @@ fn derive_krew_files(a: &OsArtifact, bin: &str) -> Vec<KrewFileEntry> {
     }
 
     files
+}
+
+/// Whether an in-archive file basename is a LICENSE file (case-insensitive),
+/// e.g. `LICENSE`, `license.txt`, `LICENSE.md`, `LICENSE-MIT`.
+fn is_license(basename: &str) -> bool {
+    basename.to_ascii_lowercase().starts_with("license")
 }
 
 /// The final path component of a `/`-separated in-archive path.
@@ -2026,8 +2035,9 @@ mod tests {
         assert_eq!(files[0].from, "cfgd");
     }
 
-    /// CHANGELOG / non-license non-markdown bundled files are NOT pulled into
-    /// the krew `files:` list — only the binary, LICENSE, and `*.md` docs.
+    /// CHANGELOG (even `CHANGELOG.md`, the common case stage-archive bundles by
+    /// default) + non-license non-markdown bundled files are NOT pulled into the
+    /// krew `files:` list — only the binary, LICENSE, and non-changelog `*.md`.
     #[test]
     fn derive_krew_files_ignores_changelog_and_completions() {
         let a = make_os_artifact_full(
@@ -2037,7 +2047,7 @@ mod tests {
             None,
             &[
                 "LICENSE",
-                "CHANGELOG.txt",
+                "CHANGELOG.md",
                 "completions/cfgd.bash",
                 "README.md",
             ],
@@ -2047,6 +2057,37 @@ mod tests {
             .map(|f| f.from.clone())
             .collect();
         assert_eq!(froms, vec!["cfgd", "LICENSE", "README.md"]);
+        assert!(
+            !froms.iter().any(|f| f.contains("CHANGELOG")),
+            "CHANGELOG.md must not leak into the krew files: list, got {froms:?}"
+        );
+    }
+
+    /// `LICENSE.md` matches BOTH the license glob and the `*.md` README filter;
+    /// it must be emitted exactly ONCE (krew would otherwise copy it twice).
+    #[test]
+    fn derive_krew_files_license_md_emitted_once() {
+        let a = make_os_artifact_full(
+            "linux",
+            "amd64",
+            Some("cfgd"),
+            None,
+            &["LICENSE.md", "README.md"],
+        );
+        let froms: Vec<String> = derive_krew_files(&a, "cfgd")
+            .iter()
+            .map(|f| f.from.clone())
+            .collect();
+        assert_eq!(
+            froms,
+            vec!["cfgd", "LICENSE.md", "README.md"],
+            "LICENSE.md must appear once (as the license), README.md once"
+        );
+        assert_eq!(
+            froms.iter().filter(|f| f.as_str() == "LICENSE.md").count(),
+            1,
+            "LICENSE.md must not be duplicated, got {froms:?}"
+        );
     }
 
     /// LICENSE matching is case-insensitive (`license`, `LICENSE.txt`, …).

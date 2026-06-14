@@ -980,9 +980,12 @@ fn archive_one_config(
                 // Record the bundled non-binary in-archive paths (LICENSE /
                 // README / completions / man) so the krew publisher can emit a
                 // `files:` extraction list gated on each file's actual presence.
-                // The order is stable because `sort_entries` already ordered the
-                // archive; `archive_extra_files` preserves the `extra_entries`
-                // order (which `resolve_default_extra_files` fixes deterministically).
+                // `archive_extra_files` preserves the raw `extra_entries` order
+                // (license / readme / changelog as `resolve_default_extra_files`
+                // fixes it deterministically), collected BEFORE `deduplicate_entries`
+                // — so it is NOT the archive's alphabetical `sort_entries` order.
+                // Harmless for krew, which re-selects by basename rather than
+                // relying on the list order.
                 if !archive_extra_files.is_empty() {
                     metadata.insert("archive_files".to_string(), archive_extra_files.join(","));
                 }
