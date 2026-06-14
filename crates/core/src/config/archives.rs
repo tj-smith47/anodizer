@@ -566,7 +566,11 @@ pub struct TemplatedExtraFile {
 pub struct ChecksumConfig {
     /// Checksum filename template (default: "{{ ProjectName }}_{{ Version }}_checksums.txt").
     pub name_template: Option<String>,
-    /// Hash algorithm: sha256, sha512, sha1, md5, crc32 (default: sha256).
+    /// Hash algorithm (default: `sha256`). Accepted values: `sha1`, `sha224`,
+    /// `sha256`, `sha384`, `sha512`, `sha3-224`, `sha3-256`, `sha3-384`,
+    /// `sha3-512`, `blake2b`, `blake2s`, `blake3`, `crc32`, `md5`. An
+    /// unrecognized value is rejected at checksum-stage entry. The authoritative
+    /// set is [`ChecksumConfig::SUPPORTED_ALGORITHMS`].
     pub algorithm: Option<String>,
     /// Disable checksums. Accepts bool or template string.
     /// Accepts the legacy `disable:` spelling via serde alias for back-compat.
@@ -594,6 +598,16 @@ impl ChecksumConfig {
 
     /// Default hash algorithm (`sha256`).
     pub const DEFAULT_ALGORITHM: &'static str = "sha256";
+
+    /// The closed set of accepted [`Self::algorithm`] values. This is the
+    /// authoritative list the checksum stage's hash dispatch and
+    /// `validate_algorithm` are kept in sync with (a `stage-checksum`
+    /// drift-guard test asserts the two never diverge), so the config rustdoc
+    /// can name the full set without hand-copying a list that rots.
+    pub const SUPPORTED_ALGORITHMS: &'static [&'static str] = &[
+        "sha1", "sha224", "sha256", "sha384", "sha512", "sha3-224", "sha3-256", "sha3-384",
+        "sha3-512", "blake2b", "blake2s", "blake3", "crc32", "md5",
+    ];
 
     /// Resolve the hash algorithm, falling back to the project default
     /// when the user did not specify one. Stages MUST call this rather

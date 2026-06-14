@@ -3484,7 +3484,7 @@
       "type": "object",
       "properties": {
         "algorithm": {
-          "description": "Hash algorithm: sha256, sha512, sha1, md5, crc32 (default: sha256).",
+          "description": "Hash algorithm (default: `sha256`). Accepted values: `sha1`, `sha224`, `sha256`, `sha384`, `sha512`, `sha3-224`, `sha3-256`, `sha3-384`, `sha3-512`, `blake2b`, `blake2s`, `blake3`, `crc32`, `md5`. An unrecognized value is rejected at checksum-stage entry. The authoritative set is [`ChecksumConfig::SUPPORTED_ALGORITHMS`].",
           "default": null,
           "type": [
             "string",

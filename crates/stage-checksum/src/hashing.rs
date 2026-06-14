@@ -102,12 +102,14 @@ pub(super) fn hash_hex_len(algorithm: &str) -> usize {
     }
 }
 
-/// Closed set of supported checksum algorithm names. Kept in sync with
-/// `hash_file` and used by `validate_algorithm` for Default()-time checks.
-pub const SUPPORTED_ALGORITHMS: &[&str] = &[
-    "sha1", "sha224", "sha256", "sha384", "sha512", "sha3-224", "sha3-256", "sha3-384", "sha3-512",
-    "blake2b", "blake2s", "blake3", "crc32", "md5",
-];
+/// Closed set of supported checksum algorithm names. Re-exported from the
+/// authoritative [`ChecksumConfig::SUPPORTED_ALGORITHMS`] in `anodizer-core`
+/// (colocated with the config field it documents) so the config rustdoc, the
+/// `validate_algorithm` Default()-time check, and `hash_file`'s dispatch all
+/// share one list. A `tests::hash_file_covers_every_supported_algorithm`
+/// drift-guard asserts `hash_file` handles every name in the set.
+pub const SUPPORTED_ALGORITHMS: &[&str] =
+    anodizer_core::config::ChecksumConfig::SUPPORTED_ALGORITHMS;
 
 /// Validate a configured checksum algorithm name. Call this at stage entry
 /// (before any artifact-source iteration) so a typo like `algorithm: sha257`

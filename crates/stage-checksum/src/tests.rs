@@ -13,9 +13,10 @@ use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::stage::Stage;
 
 use super::hashing::{
-    blake2b_file, blake2s_file, blake3_file, crc32_file, format_checksum_line, hash_file, md5_file,
-    sha1_file, sha3_224_file, sha3_256_file, sha3_384_file, sha3_512_file, sha224_file,
-    sha256_file, sha384_file, sha512_file,
+    SUPPORTED_ALGORITHMS, blake2b_file, blake2s_file, blake3_file, crc32_file,
+    format_checksum_line, hash_file, md5_file, sha1_file, sha3_224_file, sha3_256_file,
+    sha3_384_file, sha3_512_file, sha224_file, sha256_file, sha384_file, sha512_file,
+    validate_algorithm,
 };
 use super::run::ChecksumStage;
 
@@ -291,6 +292,30 @@ fn test_hash_file_dispatches() {
 
     // Unsupported algorithm should fail
     assert!(hash_file(&f, "bogus").is_err());
+}
+
+/// Drift guard: every name advertised in `SUPPORTED_ALGORITHMS` (the
+/// authoritative list `ChecksumConfig.algorithm`'s rustdoc names) must be both
+/// accepted by `validate_algorithm` AND produce a real digest from `hash_file`.
+/// If a name is added to the const but not the dispatch (or vice-versa), the
+/// config doc would advertise an algorithm the pipeline rejects mid-run — this
+/// fails the build instead.
+#[test]
+fn hash_file_covers_every_supported_algorithm() {
+    let tmp = TempDir::new().unwrap();
+    let f = tmp.path().join("test.txt");
+    fs::write(&f, b"hello world").unwrap();
+
+    for &alg in SUPPORTED_ALGORITHMS {
+        validate_algorithm(alg)
+            .unwrap_or_else(|e| panic!("validate_algorithm rejected advertised `{alg}`: {e}"));
+        let digest = hash_file(&f, alg)
+            .unwrap_or_else(|e| panic!("hash_file has no dispatch for advertised `{alg}`: {e}"));
+        assert!(
+            !digest.is_empty(),
+            "hash_file produced an empty digest for `{alg}`"
+        );
+    }
 }
 
 #[test]

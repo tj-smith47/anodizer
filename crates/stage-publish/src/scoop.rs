@@ -194,6 +194,7 @@ fn resolve_autoupdate_hash(
             crate_name,
             &effective.algorithm,
             effective.name_template.as_deref(),
+            arch_entries,
         )?;
         return Ok(AutoupdateHash::UrlSidecar { suffix });
     }
@@ -246,21 +247,32 @@ fn resolve_autoupdate_hash(
 /// `ArtifactName` and confirming the result is `<sentinel>.<suffix>`. Anything
 /// else (the asset name embedded mid-string, a different prefix, …) cannot be
 /// expressed as `$url.<suffix>` and hard-fails — never a guessed, 404-ing URL.
+///
+/// One further trap: a template may embed `{{ ArtifactExt }}` in the *suffix*
+/// (e.g. `{{ ArtifactName }}.{{ ArtifactExt }}.sha256`). Scoop's `$url.<suffix>`
+/// is a single static string, so a suffix that varies with the asset extension
+/// is only sound when every windows asset shares one extension. If the assets
+/// are not uniformly `.zip` (scoop also accepts `.tar.gz`/`.tgz`), the suffix
+/// would 404 for the non-matching asset, so this hard-fails rather than bake a
+/// per-asset-varying extension into a static suffix.
 fn resolve_sidecar_suffix(
     ctx: &Context,
     crate_name: &str,
     algorithm: &str,
     name_template: Option<&str>,
+    arch_entries: &[ArchEntry],
 ) -> Result<String> {
     let Some(tmpl) = name_template else {
         // No template → checksum stage writes `<asset>.<algorithm>`.
         return Ok(algorithm.to_string());
     };
 
-    // Probe the template with a sentinel asset name. The checksum stage exposes
-    // ArtifactName / ArtifactExt / Algorithm to the split name_template.
+    // Probe the template with sentinel ArtifactName / ArtifactExt values. The
+    // checksum stage exposes ArtifactName / ArtifactExt / Algorithm to the
+    // split name_template. Distinct sentinels let us detect, after rendering,
+    // whether the asset extension leaked into the suffix portion.
     const SENTINEL: &str = "\u{1}ANODIZER_ASSET\u{1}";
-    const SENTINEL_EXT: &str = "zip";
+    const SENTINEL_EXT: &str = "\u{1}ANODIZER_EXT\u{1}";
     let mut vars = ctx.template_vars().clone();
     vars.set("ArtifactName", SENTINEL);
     vars.set("ArtifactExt", SENTINEL_EXT);
@@ -275,7 +287,28 @@ fn resolve_sidecar_suffix(
         && !suffix.is_empty()
         && !suffix.contains(SENTINEL)
     {
-        return Ok(suffix.to_string());
+        // The suffix references the asset extension. A static `$url.<suffix>`
+        // only works when every asset shares that extension; otherwise the
+        // non-matching asset's sidecar URL 404s.
+        if suffix.contains(SENTINEL_EXT) && !windows_assets_uniformly_zip(arch_entries) {
+            anyhow::bail!(
+                "scoop: cannot build autoupdate.hash for crate '{}': the split checksum \
+                 `name_template` ({:?}) embeds the asset extension (`{{{{ ArtifactExt }}}}`) \
+                 in the sidecar suffix, but this package's windows assets are not all `.zip` \
+                 (scoop also accepts `.tar.gz`/`.tgz`). Scoop's `$url.<suffix>` is a single \
+                 static string, so a per-asset-varying extension would 404 for the \
+                 non-matching asset. Drop `{{{{ ArtifactExt }}}}` from the suffix (use a \
+                 fixed extension like `{{{{ ArtifactName }}}}.sha256`), ship a single \
+                 windows archive format, or switch to combined-checksums mode \
+                 (`checksum.split: false`).",
+                crate_name,
+                tmpl,
+            );
+        }
+        // Re-render with the real `.zip` extension so the emitted suffix is
+        // concrete (the SENTINEL_EXT token must never reach the manifest).
+        let concrete = suffix.replace(SENTINEL_EXT, "zip");
+        return Ok(concrete);
     }
 
     anyhow::bail!(
@@ -290,6 +323,27 @@ fn resolve_sidecar_suffix(
         tmpl,
         algorithm,
     )
+}
+
+/// True when every windows asset URL in `arch_entries` ends in `.zip` — the
+/// precondition for baking a `{{ ArtifactExt }}`-derived suffix into scoop's
+/// single static `$url.<suffix>`. An empty set is vacuously uniform.
+fn windows_assets_uniformly_zip(arch_entries: &[ArchEntry]) -> bool {
+    arch_entries
+        .iter()
+        .all(|e| asset_url_extension(&e.url) == Some("zip"))
+}
+
+/// The scoop-relevant archive extension of an asset URL: `zip`, `tar.gz`, or
+/// `tgz` (the [`SCOOP_PREFERRED_FORMATS`] set), longest-match first so
+/// `.tar.gz` is not mis-read as `gz`. `None` when no known archive extension
+/// matches.
+fn asset_url_extension(url: &str) -> Option<&'static str> {
+    let filename = url.rsplit('/').next().unwrap_or(url);
+    SCOOP_PREFERRED_FORMATS
+        .iter()
+        .copied()
+        .find(|ext| filename.ends_with(&format!(".{ext}")))
 }
 
 /// Generate a Scoop JSON manifest string with extended options.
@@ -2927,6 +2981,106 @@ mod publish_flow_tests {
             metadata: meta,
             size: None,
         });
+    }
+
+    /// Register a Windows `.tar.gz` archive on `target`/`arch` — the non-`.zip`
+    /// format scoop also accepts. Pairs with [`add_windows_archive`] to build a
+    /// package whose windows assets are not uniformly `.zip`.
+    fn add_windows_targz_archive(
+        ctx: &mut Context,
+        crate_name: &str,
+        target: &str,
+        arch: &str,
+        binary: &str,
+        sha: &str,
+    ) {
+        let mut meta = HashMap::new();
+        meta.insert(
+            "url".to_string(),
+            format!(
+                "https://github.com/acme/widget/releases/download/v1.0.0/{binary}-windows-{arch}.tar.gz"
+            ),
+        );
+        meta.insert("sha256".to_string(), sha.to_string());
+        meta.insert("format".to_string(), "tar.gz".to_string());
+        meta.insert("binary".to_string(), binary.to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("/dist/{binary}-windows-{arch}.tar.gz")),
+            name: format!("{binary}-windows-{arch}.tar.gz"),
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: meta,
+            size: None,
+        });
+    }
+
+    /// Split mode, custom `name_template` that embeds `{{ ArtifactExt }}` in the
+    /// sidecar SUFFIX, with non-uniform windows assets (one `.zip`, one
+    /// `.tar.gz`). Scoop's `$url.<suffix>` is a single static string, so a
+    /// per-asset-varying extension would 404 for the non-matching asset — the
+    /// render must HARD-FAIL naming the crate + template rather than bake a
+    /// guessed `zip.sha256` suffix.
+    #[test]
+    fn render_scoop_autoupdate_sidecar_artifactext_in_suffix_non_uniform_errors() {
+        use anodizer_core::config::ChecksumConfig;
+        let mut c = scoop_crate_for_bucket("widget", "/unused");
+        c.checksum = Some(ChecksumConfig {
+            split: Some(true),
+            name_template: Some("{{ ArtifactName }}.{{ ArtifactExt }}.sha256".to_string()),
+            ..Default::default()
+        });
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        // Non-uniform: amd64 ships .zip, arm64 ships .tar.gz.
+        add_windows_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-pc-windows-msvc",
+            "amd64",
+            "widget",
+            &"a".repeat(64),
+        );
+        add_windows_targz_archive(
+            &mut ctx,
+            "widget",
+            "aarch64-pc-windows-msvc",
+            "arm64",
+            "widget",
+            &"b".repeat(64),
+        );
+        let err = render_scoop_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect_err("ArtifactExt-in-suffix with non-uniform assets must hard-fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("widget") && msg.contains("name_template"),
+            "error must name the crate + the offending field, got: {msg}"
+        );
+        assert!(
+            msg.contains("ArtifactExt"),
+            "error must call out the asset-extension embedding, got: {msg}"
+        );
+    }
+
+    /// Mirror: the SAME `{{ ArtifactExt }}`-in-suffix template is sound when
+    /// every windows asset shares the `.zip` extension — the static suffix
+    /// resolves to a concrete `zip.sha256` (the sentinel ext token must never
+    /// leak into the emitted manifest).
+    #[test]
+    fn render_scoop_autoupdate_sidecar_artifactext_in_suffix_uniform_zip_ok() {
+        use anodizer_core::config::ChecksumConfig;
+        let mut c = scoop_crate_for_bucket("widget", "/unused");
+        c.checksum = Some(ChecksumConfig {
+            split: Some(true),
+            name_template: Some("{{ ArtifactName }}.{{ ArtifactExt }}.sha256".to_string()),
+            ..Default::default()
+        });
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        add_wrapping_windows_archive(&mut ctx, "widget", "widget", "1.0.0", &"d".repeat(64));
+        let manifest = render_scoop_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect("render ok")
+            .expect("not skipped");
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert_eq!(json["autoupdate"]["hash"]["url"], "$url.zip.sha256");
     }
 
     // -----------------------------------------------------------------

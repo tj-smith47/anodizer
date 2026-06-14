@@ -289,69 +289,6 @@ struct LocaleManifest {
     manifest_version: String,
 }
 
-// Legacy single-file manifest for backward compatibility
-#[allow(dead_code)]
-#[derive(Serialize)]
-#[serde(rename_all = "PascalCase")]
-struct WingetManifest {
-    package_identifier: String,
-    package_version: String,
-    package_name: String,
-    publisher: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    publisher_url: Option<String>,
-    license: String,
-    short_description: String,
-    installers: Vec<LegacyInstaller>,
-    manifest_type: String,
-    manifest_version: String,
-}
-
-#[allow(dead_code)]
-#[derive(Serialize)]
-#[serde(rename_all = "PascalCase")]
-struct LegacyInstaller {
-    architecture: String,
-    installer_url: String,
-    #[serde(rename = "InstallerSha256")]
-    installer_sha256: String,
-    installer_type: String,
-}
-
-// ---------------------------------------------------------------------------
-// generate_manifest (legacy single-file)
-// ---------------------------------------------------------------------------
-
-/// Generate a legacy singleton WinGet YAML manifest string.
-#[allow(dead_code)]
-pub(crate) fn generate_manifest(params: &WingetManifestParams<'_>) -> Result<String> {
-    let manifest = WingetManifest {
-        package_identifier: params.package_id.to_string(),
-        package_version: params.version.to_string(),
-        package_name: params.name.to_string(),
-        publisher: params.publisher.to_string(),
-        publisher_url: params
-            .publisher_url
-            .map(|s| s.to_string())
-            .filter(|s| !s.is_empty()),
-        license: params.license.to_string(),
-        short_description: params.short_description.to_string(),
-        installers: params
-            .installers
-            .iter()
-            .map(|i| LegacyInstaller {
-                architecture: i.architecture.clone(),
-                installer_url: i.url.clone(),
-                installer_sha256: i.sha256.clone(),
-                installer_type: "zip".to_string(),
-            })
-            .collect(),
-        manifest_type: "singleton".to_string(),
-        manifest_version: "1.12.0".to_string(),
-    };
-    serde_yaml_ng::to_string(&manifest).context("winget: serialize manifest")
-}
-
 /// Resolve `InstallerSwitches.Silent` for an installer entry.
 ///
 /// Only actual installers carry a silent switch — `zip`/`portable` archives
@@ -2812,35 +2749,6 @@ mod tests {
             upgrade_behavior: "install",
             documentations: &[],
         }
-    }
-
-    #[test]
-    fn test_generate_manifest_basic() {
-        let manifest = generate_manifest(&default_params()).unwrap();
-        assert!(manifest.contains("PackageIdentifier: Org.MyTool"));
-        assert!(manifest.contains("PackageVersion: 1.0.0"));
-        assert!(manifest.contains("PackageName: mytool"));
-        assert!(manifest.contains("Publisher: My Org"));
-        assert!(manifest.contains("PublisherUrl: https://example.com"));
-        assert!(manifest.contains("License: MIT"));
-        assert!(manifest.contains("ShortDescription: A great tool"));
-        assert!(manifest.contains("Installers:"));
-        assert!(manifest.contains("Architecture: x64"));
-        assert!(
-            manifest.contains("InstallerUrl: https://example.com/mytool-1.0.0-windows-amd64.zip")
-        );
-        assert!(manifest.contains("InstallerSha256: deadbeef1234567890abcdef"));
-        assert!(manifest.contains("ManifestType: singleton"));
-        assert!(manifest.contains("ManifestVersion: 1.12.0"));
-    }
-
-    #[test]
-    fn test_generate_manifest_no_publisher_url() {
-        let mut params = default_params();
-        params.publisher_url = None;
-        let manifest = generate_manifest(&params).unwrap();
-        assert!(!manifest.contains("PublisherUrl:"));
-        assert!(manifest.contains("Publisher: My Org"));
     }
 
     #[test]
