@@ -562,6 +562,7 @@ const SECOND_LEVEL_SECTIONS: &[(&str, &str, &str)] = &[
         "docker_manifests",
     ),
     ("crates[].docker_digest", "CrateConfig", "docker_digest"),
+    ("crates[].nfpms", "CrateConfig", "nfpms"),
     ("crates[].publish", "CrateConfig", "publish"),
     ("crates[].publish.cargo", "PublishConfig", "cargo"),
     ("crates[].publish.homebrew", "PublishConfig", "homebrew"),

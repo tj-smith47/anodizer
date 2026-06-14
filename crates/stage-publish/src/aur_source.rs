@@ -132,15 +132,45 @@ fn render_aur_source_inner(
         raw_name.to_string()
     };
 
-    let description = cfg.description.as_deref().unwrap_or(default_name);
-    let homepage = cfg.homepage.as_deref().unwrap_or("");
+    // Per-crate metadata resolution mirrors the `-bin` AUR publisher
+    // (`aur::aur_resolve_fields`): an explicit `aur_source` field wins, else the
+    // value resolves through `metadata.*` → the crate's `Cargo.toml [package]`
+    // for `default_name`. In workspace per-crate mode `default_name` is the
+    // crate name, so each source PKGBUILD carries that crate's real
+    // description / homepage / license / maintainers rather than a hardcoded
+    // default (which would ship the crate name as description, an empty url, and
+    // `MIT` regardless of the crate's true license).
+    let description = cfg
+        .description
+        .as_deref()
+        .or_else(|| ctx.config.meta_description_for(default_name))
+        .unwrap_or(default_name);
+    let homepage = cfg
+        .homepage
+        .as_deref()
+        .or_else(|| ctx.config.meta_homepage_for(default_name))
+        .unwrap_or("");
     // Render the license into the pacman `license=()` array via the shared SPDX
     // parser so a dual-licensed crate (`MIT OR Apache-2.0`) emits
-    // `license=('MIT' 'Apache-2.0')` rather than understating to one id.
-    let license: Vec<String> =
-        anodizer_core::license::parse_spdx_expression(cfg.license.as_deref().unwrap_or("MIT"))
+    // `license=('MIT' 'Apache-2.0')` rather than understating to one id. The
+    // resolved license (explicit → metadata → crate Cargo.toml) is fed in; an
+    // empty result yields an empty `license=()` array, never a `MIT` invention.
+    let license_raw = cfg
+        .license
+        .clone()
+        .or_else(|| {
+            ctx.config
+                .meta_license_for(default_name)
+                .map(str::to_string)
+        })
+        .unwrap_or_default();
+    let license: Vec<String> = if license_raw.trim().is_empty() {
+        Vec::new()
+    } else {
+        anodizer_core::license::parse_spdx_expression(&license_raw)
             .ids()
-            .to_vec();
+            .to_vec()
+    };
 
     // Derive the pacman `arch=()` set from the linux build targets this source
     // package supports (per-crate when `default_name` names a configured crate
@@ -207,7 +237,10 @@ fn render_aur_source_inner(
         format!("https://github.com/{owner}/{project}/archive/refs/tags/{tag}.tar.gz",)
     };
 
-    let maintainers = cfg.maintainers.clone().unwrap_or_default();
+    let maintainers = cfg
+        .maintainers
+        .clone()
+        .unwrap_or_else(|| ctx.config.meta_maintainers_for(default_name).to_vec());
     let contributors = cfg.contributors.clone().unwrap_or_default();
     let depends = cfg.depends.clone().unwrap_or_default();
     let optdepends = cfg.optdepends.clone().unwrap_or_default();
@@ -2130,6 +2163,112 @@ crates:
             render.rendered.pkgbuild.contains("pkgver='0.0.0'"),
             "missing Version var must default to 0.0.0:\n{}",
             render.rendered.pkgbuild
+        );
+    }
+
+    /// Workspace per-crate mode: an `aur_sources[]`/`aur_source` entry for crate
+    /// `bravo` that omits description/homepage/license/maintainers must resolve
+    /// each through `bravo`'s OWN `Cargo.toml` metadata — never crate `alfa`'s
+    /// (no cross-crate leakage), never the crate name as description, never an
+    /// empty url, and never a hardcoded `MIT` license. Mirrors the `-bin` AUR
+    /// publisher's `meta_*_for(<crate>)` resolution.
+    #[test]
+    fn render_inner_per_crate_metadata_no_cross_crate_leakage() {
+        use anodizer_core::config::MetadataConfig;
+
+        let mut ctx = source_ctx("https://github.com/o/ws.git", "ws", "1.0.0", "v1.0.0");
+        // Two crates' derived Cargo.toml metadata, as populate_derived_metadata
+        // would key them. `bravo` carries a non-MIT license and a real homepage.
+        ctx.config.derived_metadata.insert(
+            "alfa".to_string(),
+            MetadataConfig {
+                description: Some("Alfa the first tool".to_string()),
+                homepage: Some("https://alfa.example".to_string()),
+                license: Some("Apache-2.0".to_string()),
+                maintainers: Some(vec!["Alfa Author <alfa@example.com>".to_string()]),
+                ..Default::default()
+            },
+        );
+        ctx.config.derived_metadata.insert(
+            "bravo".to_string(),
+            MetadataConfig {
+                description: Some("Bravo the second tool".to_string()),
+                homepage: Some("https://bravo.example".to_string()),
+                license: Some("GPL-3.0-or-later".to_string()),
+                maintainers: Some(vec!["Bravo Author <bravo@example.com>".to_string()]),
+                ..Default::default()
+            },
+        );
+
+        // The `bravo` entry omits every metadata field — they must come from
+        // bravo's own Cargo.toml, resolved by default_name = "bravo".
+        let cfg = AurSourceConfig::default();
+        let render =
+            render_aur_source_inner(&ctx, &cfg, "bravo", false, "aur_source", &quiet_log())
+                .expect("render ok");
+        let pkgbuild = &render.rendered.pkgbuild;
+
+        assert!(
+            pkgbuild.contains("pkgdesc=\"Bravo the second tool\""),
+            "description must be bravo's real Cargo.toml description, not the \
+             crate name or alfa's:\n{}",
+            pkgbuild
+        );
+        assert!(
+            pkgbuild.contains("url='https://bravo.example'"),
+            "homepage/url must be bravo's real Cargo.toml homepage, not empty or \
+             alfa's:\n{}",
+            pkgbuild
+        );
+        assert!(
+            pkgbuild.contains("license=('GPL-3.0-or-later')"),
+            "license must be bravo's real Cargo.toml license, not a hardcoded MIT \
+             or alfa's:\n{}",
+            pkgbuild
+        );
+        assert!(
+            pkgbuild.contains("# Maintainer: Bravo Author <bravo@example.com>"),
+            "maintainer must be bravo's real Cargo.toml author, not empty or \
+             alfa's:\n{}",
+            pkgbuild
+        );
+
+        // Prove no alfa leakage anywhere in the rendered artifact.
+        assert!(
+            !pkgbuild.contains("alfa")
+                && !pkgbuild.contains("Alfa")
+                && !pkgbuild.contains("Apache"),
+            "crate alfa's metadata must not leak into bravo's PKGBUILD:\n{}",
+            pkgbuild
+        );
+        assert!(
+            !pkgbuild.contains("license=('MIT')"),
+            "license must never fall back to a hardcoded MIT:\n{}",
+            pkgbuild
+        );
+
+        // Explicit config still wins over the resolver: an entry that DOES set a
+        // field uses the literal value, not the crate metadata.
+        let cfg_explicit = AurSourceConfig {
+            license: Some("BSD-3-Clause".to_string()),
+            ..Default::default()
+        };
+        let render_explicit = render_aur_source_inner(
+            &ctx,
+            &cfg_explicit,
+            "bravo",
+            false,
+            "aur_source",
+            &quiet_log(),
+        )
+        .expect("render ok");
+        assert!(
+            render_explicit
+                .rendered
+                .pkgbuild
+                .contains("license=('BSD-3-Clause')"),
+            "explicit license must override the crate-metadata fallback:\n{}",
+            render_explicit.rendered.pkgbuild
         );
     }
 

@@ -693,16 +693,33 @@ pub(crate) fn render_scoop_manifest_for_crate(
     let raw_arch_entries: Vec<(ArchEntry, String)> = all_artifacts
         .into_iter()
         .filter(|a| filters.matches(a))
-        .map(|a| -> Result<(ArchEntry, String)> {
+        .map(|a| -> Result<Option<(ArchEntry, String)>> {
             let target = a.target.as_deref().unwrap_or("");
             let (_, raw_arch) = anodizer_core::target::map_target(target);
 
-            // Map architecture to Scoop keys.
+            // Scoop manifests can only key on `64bit` / `arm64` / `32bit`. Map
+            // the architectures it can represent; for any other architecture
+            // (riscv64, ppc64le, s390x, …) warn-and-skip THIS entry rather than
+            // mislabeling it as `64bit` (which would have `scoop install`
+            // download an incompatible archive on x64 hosts) or hard-failing the
+            // whole manifest (which would block the valid x86_64 entry). The
+            // autoupdate / extract_dir blocks are derived from the surviving
+            // entries below, so omitting this entry leaves no dangling reference.
             let scoop_arch = match raw_arch.as_str() {
                 "amd64" => "64bit",
                 "386" => "32bit",
                 "arm64" => "arm64",
-                _ => "64bit",
+                other => {
+                    log.warn(&format!(
+                        "skipped scoop artifact '{}' for '{}' — arch '{}' has no \
+                         scoop architecture key (scoop supports only \
+                         64bit/arm64/32bit); omitting it from the manifest",
+                        a.name(),
+                        crate_name,
+                        other
+                    ));
+                    return Ok(None);
+                }
             };
 
             // Resolve download URL: use url_template if set, otherwise artifact metadata.
@@ -747,7 +764,7 @@ pub(crate) fn render_scoop_manifest_for_crate(
             // lowest preference tier — it does not ship anywhere downstream.
             let format = a.metadata.get("format").cloned().unwrap_or_default();
 
-            Ok((
+            Ok(Some((
                 ArchEntry {
                     scoop_arch: scoop_arch.to_string(),
                     url,
@@ -755,9 +772,12 @@ pub(crate) fn render_scoop_manifest_for_crate(
                     wrap_in_directory,
                 },
                 format,
-            ))
+            )))
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect();
 
     if raw_arch_entries.is_empty() {
         anyhow::bail!(
@@ -3301,6 +3321,94 @@ mod publish_flow_tests {
             json["architecture"]["64bit"]["bin"],
             serde_json::json!(["widget.exe"]),
             "bin must derive from the `binary` metadata + .exe suffix"
+        );
+    }
+
+    /// An artifact set including an architecture scoop cannot represent
+    /// (riscv64) must NOT be relabeled as `64bit` (which would have scoop
+    /// download an incompatible archive) and must NOT hard-fail the whole
+    /// manifest (which would block the valid x86_64 entry). Instead the riscv64
+    /// entry is warn-and-skipped: it is omitted from `architecture` and from
+    /// `autoupdate.architecture`, while the known arches still render correctly.
+    #[test]
+    fn render_scoop_unrepresentable_arch_warn_skipped() {
+        let c = scoop_crate_for_bucket("widget", "/unused");
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        let sha_amd = "a".repeat(64);
+        let sha_arm = "b".repeat(64);
+        let sha_riscv = "c".repeat(64);
+        add_windows_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-pc-windows-msvc",
+            "amd64",
+            "widget",
+            &sha_amd,
+        );
+        add_windows_archive(
+            &mut ctx,
+            "widget",
+            "aarch64-pc-windows-msvc",
+            "arm64",
+            "widget",
+            &sha_arm,
+        );
+        // riscv64: scoop has no architecture key for it.
+        add_windows_archive(
+            &mut ctx,
+            "widget",
+            "riscv64gc-unknown-linux-gnu",
+            "riscv64",
+            "widget",
+            &sha_riscv,
+        );
+
+        let capture = anodizer_core::log::LogCapture::new();
+        ctx.with_log_capture(capture.clone());
+        let log = ctx.logger("publish");
+
+        let manifest = render_scoop_manifest_for_crate(&ctx, "widget", &log)
+            .expect("render ok")
+            .expect("not skipped");
+        let json: serde_json::Value = serde_json::from_str(&manifest).expect("valid JSON");
+
+        // Known arches render with their real hashes.
+        assert_eq!(json["architecture"]["64bit"]["hash"], sha_amd);
+        assert_eq!(json["architecture"]["arm64"]["hash"], sha_arm);
+
+        // The unrepresentable arch is omitted entirely — never relabeled as
+        // 64bit (the amd64 hash, not the riscv hash, must own the 64bit slot).
+        assert_ne!(
+            json["architecture"]["64bit"]["hash"], sha_riscv,
+            "riscv64 must not be relabeled into the 64bit slot:\n{json}"
+        );
+        let arch_keys: Vec<&str> = json["architecture"]
+            .as_object()
+            .expect("architecture object")
+            .keys()
+            .map(|s| s.as_str())
+            .collect();
+        assert!(
+            !arch_keys.contains(&"riscv64"),
+            "no riscv64 architecture key may be emitted, got: {arch_keys:?}"
+        );
+
+        // No dangling autoupdate/extract_dir reference for the skipped arch.
+        let manifest_str = manifest.as_str();
+        assert!(
+            !manifest_str.contains("riscv64"),
+            "the skipped arch must not appear anywhere in the manifest \
+             (including autoupdate/extract_dir):\n{manifest_str}"
+        );
+
+        // A warning names the crate + the skipped arch + that scoop can't
+        // represent it.
+        assert!(
+            capture.warn_messages().iter().any(|m| {
+                m.contains("widget") && m.contains("riscv64") && m.contains("scoop supports only")
+            }),
+            "a warn must name the crate + skipped arch + scoop's supported set; got: {:?}",
+            capture.warn_messages()
         );
     }
 

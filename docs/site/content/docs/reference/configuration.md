@@ -997,6 +997,53 @@ After each docker image push, a digest file (containing the sha256 digest) is wr
 | `name_template` | string | — | Template for the digest artifact filename. Default: tag-based naming (e.g., "ghcr.io_owner_app_v1.0.0.digest"). |
 | `skip` | StringOrBool | — | When truthy, disable docker digest artifact creation. Accepts the legacy `disable:` spelling via serde alias for back-compat. |
 
+## `crates[].nfpms`
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `amd64_variant` | list of string | — | amd64 microarchitecture variant filter (`["v1"]`, `["v2", "v3"]`, etc.), set via the `amd64_variant:` key. When set, only amd64 binaries with `amd64_variant` matching one of the listed values are included. The legacy `goamd64:` spelling is accepted via serde alias for back-compat with imported configs. When unset, all amd64 variants are included (no filtering). |
+| `apk` | NfpmApkConfig | — | APK-specific configuration. |
+| `archlinux` | NfpmArchlinuxConfig | — | Archlinux-specific configuration. |
+| `bin_alias` | string | — | Rename the installed binary inside the package only.
+
+When set, the auto-emitted binary content entry is installed under this name (in `bindir`) instead of the built file's name; the archive/build output is untouched. Use this to resolve Debian/RPM name clashes — e.g. `fd` ships its binary as `fdfind` in the Debian package while the tarball keeps `fd`. Templated. |
+| `bindir` | string | — | Installation directory for binaries (default: /usr/bin). |
+| `changelog` | string | — | Path to a YAML-format changelog file for deb/rpm packages. |
+| `conflicts` | list of string | — | Packages this package conflicts with. |
+| `contents` | list of NfpmContent | — | Files to include in the package beyond the main binary. |
+| `deb` | NfpmDebConfig | — | Deb-specific configuration. |
+| `dependencies` | map | — | Runtime package dependencies keyed by format (e.g., {"deb": ["libc6"], "rpm": ["glibc"]}). |
+| `description` | string | — | Package description (multiline supported). |
+| `epoch` | string | — | Package epoch for versioning (integer as string). |
+| `file_name_template` | string | — | Package filename template (supports templates). |
+| `formats` | list of string | `[]` | Package formats to produce: deb, rpm, apk, archlinux (at least one required). |
+| `homepage` | string | — | Project homepage URL. |
+| `id` | string | — | Unique identifier for cross-referencing this nFPM config. |
+| `ids` | list of string | — | Build IDs filter: only include artifacts from builds whose `id` is in this list. Accepts the deprecated `builds:` spelling via serde alias for back-compat with imported configs (the legacy `builds` key marked `deprecated`, aliasing `ids`). |
+| `if` | string | — | Template-conditional: skip this nfpm config if rendered result is "false" or empty. Conditional-skip gate. |
+| `ipk` | NfpmIpkConfig | — | IPK-specific configuration (OpenWrt packages). |
+| `libdirs` | NfpmLibdirs | — | CGo library installation directories (header, carchive, cshared). |
+| `license` | string | — | SPDX license identifier (e.g., "MIT", "Apache-2.0"). |
+| `maintainer` | string | — | Package maintainer in "Name <email>" format. |
+| `meta` | bool | — | Whether this is a meta-package (no files, only dependencies). |
+| `mtime` | string | — | Default modification time for files in the package. |
+| `overrides` | map | — | Per-format setting overrides (e.g., {"deb": {compression: "xz"}}). |
+| `package_name` | string | — | Package name (defaults to crate name). |
+| `prerelease` | string | — | Prerelease version suffix. |
+| `priority` | string | — | Package priority (e.g. "optional", "required"). |
+| `provides` | list of string | — | Virtual packages provided by this package. |
+| `recommends` | list of string | — | Packages recommended (soft dependency) by this package. |
+| `release` | string | — | Package release number. |
+| `replaces` | list of string | — | Packages this package replaces (for upgrade paths from old package names). |
+| `rpm` | NfpmRpmConfig | — | RPM-specific configuration. |
+| `scripts` | NfpmScripts | — | Package lifecycle scripts (preinstall, postinstall, preremove, postremove). |
+| `section` | string | — | Package section (e.g. "utils", "devel"). |
+| `suggests` | list of string | — | Packages suggested (weaker than recommends) by this package. |
+| `templated_contents` | list of NfpmContent | — | Extra file contents whose source files are Tera-rendered before packaging. Each entry mirrors `contents`; the difference is that at stage time the file at `src` is read, rendered through the template engine, written to a temp file, and then included in the package at `dst` using the temp file as the real source. Useful for shipping config files with templated values (version, commit, maintainer, etc.). |
+| `templated_scripts` | NfpmScripts | — | Lifecycle scripts whose script-file bodies are Tera-rendered before packaging Each path is read, rendered through the template engine, written to a temp file, and used as the real script. If a field is set on both `scripts` and `templated_scripts`, the templated version wins. |
+| `umask` | integer | — | File permission umask. Accepts a YAML int (`18`), an octal-prefixed string (`"0o022"`), or a leading-zero octal string (`"022"`). |
+| `vendor` | string | — | Package vendor name — the distributing entity recorded in the rpm/deb Vendor field. When unset, derived from the crate's first `Cargo.toml [package].authors` entry with any `<email>` suffix stripped (e.g. `"Ada Lovelace <ada@x>"` → `"Ada Lovelace"`). |
+| `version_metadata` | string | — | Version metadata (e.g. git commit hash). |
+
 ## `crates[].publish`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
