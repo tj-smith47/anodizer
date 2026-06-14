@@ -109,7 +109,7 @@ package/
 | `format` | string | `tgz` | Download archive format (`postinstall` only) |
 | `url_template` | string | derived | Download URL template override (`postinstall` only) |
 | `registry` | string | `https://registry.npmjs.org` | Registry endpoint |
-| `token` | string | `NPM_TOKEN` env var | Auth token (templated; prefer env var) |
+| `token` | string | `NPM_TOKEN` env var | Auth token (templated; prefer env var). Optional under Trusted Publishing — omit it to authenticate via GitHub Actions OIDC. |
 | `extra_files` | list | `[README*, LICENSE*]` | Glob set of files to include |
 | `templated_extra_files` | list | none | Template-rendered file mappings (`{src, dst}`) |
 | `extra` | map | none | Free-form root-level `package.json` fields (shallow-merged) |
@@ -119,7 +119,32 @@ package/
 
 ## Authentication
 
-Set the `NPM_TOKEN` env var to your npm auth token; anodizer writes a process-private `.npmrc` carrying `//registry.npmjs.org/:_authToken=$NPM_TOKEN` and passes `--userconfig <that .npmrc>` to `npm publish`. The token is never placed on the argv and the `.npmrc` is deleted after publish completes.
+Anodizer authenticates to npm in one of two ways, resolved per publish. It never publishes anonymously: with neither credential present it hard-errors.
+
+### Trusted Publishing (tokenless OIDC) — recommended
+
+Under GitHub Actions, npm's [Trusted Publishing](https://docs.npmjs.com/trusted-publishers) exchanges the workflow's OIDC token for a short-lived publish credential — **no long-lived `NPM_TOKEN` secret in the workflow**, and [provenance](https://docs.npmjs.com/generating-provenance-statements) is attached automatically.
+
+Requirements:
+
+- **npm CLI ≥ 11.5.1** and **Node ≥ 22.14.0** on the runner (the version that ships the OIDC exchange).
+- The publishing job grants `permissions: id-token: write`.
+- A Trusted Publisher is configured on npmjs.com for the package.
+
+Configure the Trusted Publisher once per package: **npmjs.com → the package → Settings → Trusted Publishing → Add a GitHub Actions publisher**, with:
+
+| Field | Value |
+|-------|-------|
+| Organization or user | `tj-smith47` |
+| Repository | `anodizer` |
+| Workflow filename | `release.yml` |
+| Environment | *(leave blank unless your job uses one)* |
+
+Once configured, anodizer detects the OIDC context (the GitHub-injected `ACTIONS_ID_TOKEN_REQUEST_URL` / `ACTIONS_ID_TOKEN_REQUEST_TOKEN` env vars), writes a process-private `.npmrc` carrying **no token line**, and threads those OIDC request vars into the `npm publish` subprocess so the npm CLI performs the exchange itself. No secret is read or written.
+
+### `NPM_TOKEN` fallback
+
+A Trusted Publisher cannot be attached to a package that does not yet exist, so the **first** publish that creates the package needs a token. Set the `NPM_TOKEN` env var (an [automation token](https://docs.npmjs.com/creating-and-viewing-access-tokens)); anodizer writes a process-private `.npmrc` carrying `//registry.npmjs.org/:_authToken=$NPM_TOKEN` and passes `--userconfig <that .npmrc>` to `npm publish`. The token is never placed on the argv and the `.npmrc` is deleted after publish completes. A present token always takes precedence over OIDC — drop the secret once the package exists and the Trusted Publisher is configured, and subsequent releases run tokenless.
 
 For a private registry (e.g. GitHub Packages):
 
@@ -141,7 +166,7 @@ Within the 72-hour window after publishing, `anodize publish --rollback-only` ru
 
 ## Common gotchas
 
-- **`NPM_TOKEN` required for non-dry-run publishes.** Anodizer hard-errors when the token is unset and `--dry-run` is not active. The error message names the env var.
+- **A credential is required for non-dry-run publishes.** Anodizer hard-errors when neither `NPM_TOKEN` nor a GitHub Actions OIDC context is present and `--dry-run` is not active. The error names both paths. It never publishes anonymously.
 - **`access: public` required for scoped packages.** Without it, the first publish to a free npm account fails with `403`.
 - **`scope:` required in `optional-deps` mode.** The per-platform packages need a scope; anodizer hard-errors when it is unset.
 - **72-hour unpublish window.** After that, the version is permanent. The `required: true` default exists to give you a chance to spot a bad release before that window closes.

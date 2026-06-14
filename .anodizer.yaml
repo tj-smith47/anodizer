@@ -1011,14 +1011,25 @@ cloudsmiths:
     republish: true  # prevents MD5 conflict when re-cutting a version
 
 # NPM registry publisher — ships a metapackage + per-platform packages so
-# `npm install -g anodizer` works for JS toolchain users (biome / git-cliff
-# pattern). Requires NPM_TOKEN. Disabled until a token is provisioned.
+# `npm install -g @tj-smith47/anodizer` works for JS toolchain users (the
+# biome / git-cliff pattern).
+#
+# Auth is npm Trusted Publishing (tokenless OIDC): under GitHub Actions with
+# id-token: write, npm CLI >= 11.5.1 / Node >= 22.14.0 exchanges the OIDC token
+# for a short-lived publish credential once a Trusted Publisher is configured on
+# npmjs.com — no long-lived secret in the workflow. NPM_TOKEN remains the
+# fallback for the FIRST publish that creates @tj-smith47/anodizer (a Trusted
+# Publisher cannot be attached to a package that does not yet exist); after the
+# package exists and the Trusted Publisher is configured, drop the token.
+# description/homepage/license/author are derived from Cargo.toml — never set
+# here so they cannot drift from the crate metadata.
 npms:
-  - skip: true
-    scope: "@tj-smith47"
+  - scope: "@tj-smith47"
     metapackage: anodizer
     bin: anodizer
     mode: optional-deps
+    access: public
+    provenance: true
 
 # MCP (Model Context Protocol) server registry publisher.
 #

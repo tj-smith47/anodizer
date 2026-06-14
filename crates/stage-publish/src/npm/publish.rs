@@ -9,10 +9,17 @@
 //!   * `postinstall`: packs + publishes a single package whose `postinstall.js`
 //!     downloads the matching archive at install time.
 //!
-//! Token handling:
-//!   * The token is resolved from `cfg.token` (templated) or the `NPM_TOKEN`
-//!     env var and is **never** placed on the `npm publish` argv — npm reads
-//!     `_authToken` from a process-private `.npmrc` written to a `TempDir`.
+//! Auth handling — two mutually exclusive credentials, never anonymous:
+//!   * **Token** (`cfg.token` templated, else the `NPM_TOKEN` env var): npm
+//!     reads `_authToken` from a process-private `.npmrc` in a `TempDir`; the
+//!     token never touches the `npm publish` argv.
+//!   * **Trusted Publishing (OIDC)**: under GitHub Actions with `id-token:
+//!     write`, npm CLI ≥ 11.5.1 / Node ≥ 22.14.0 exchanges the OIDC token for a
+//!     short-lived publish credential when a trusted publisher is configured on
+//!     the registry. anodizer writes a token-less `.npmrc` (registry + access)
+//!     and threads the `ACTIONS_ID_TOKEN_REQUEST_*` env into the `npm publish`
+//!     subprocess so the CLI performs the exchange itself.
+//!   * Neither present → hard error (never publish anonymously, never skip).
 
 use std::fs;
 use std::io::Write;
@@ -494,12 +501,74 @@ pub(crate) fn resolve_token(ctx: &Context, cfg: &NpmConfig) -> Result<String> {
     Ok(env.var(token_env_var(cfg)).unwrap_or_default().to_string())
 }
 
-/// Write a per-run `.npmrc` carrying `_authToken` for `registry` under
-/// `cfg_dir` (0600). The caller keeps `cfg_dir` alive across `npm publish`.
+/// The two GitHub Actions OIDC request variables npm's Trusted Publishing
+/// exchange consumes. Both must be present for an OIDC context to exist — the
+/// URL is the token-mint endpoint, the token authorizes the mint request.
+pub(crate) const OIDC_ENV_VARS: [&str; 2] = [
+    "ACTIONS_ID_TOKEN_REQUEST_URL",
+    "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+];
+
+/// Resolved npm publish credential. Exactly one variant authorizes a publish;
+/// there is no anonymous variant by construction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum NpmAuth {
+    /// A long-lived registry token (`NPM_TOKEN` / `cfg.token`). Written as
+    /// `_authToken` into the per-run `.npmrc`.
+    Token(String),
+    /// A GitHub Actions OIDC context (Trusted Publishing). Carries the
+    /// `ACTIONS_ID_TOKEN_REQUEST_*` pairs to thread into the `npm publish`
+    /// subprocess so the npm CLI mints a short-lived credential itself; the
+    /// `.npmrc` carries no token line.
+    Oidc(Vec<(String, String)>),
+}
+
+/// Resolve the publish credential, preferring an explicit token over OIDC.
+///
+/// Order matters: a present token reproduces today's behaviour exactly (the
+/// initial publish that *creates* the package needs `NPM_TOKEN`, since a
+/// trusted publisher cannot be configured for a package that does not yet
+/// exist). Once the package exists and a trusted publisher is configured the
+/// operator drops the token, and the OIDC branch takes over. With neither this
+/// hard-errors rather than publish anonymously — an `npm publish` is
+/// irreversible after the 72h unpublish window, so a credential-less publish
+/// must never silently proceed or be skipped.
+pub(crate) fn resolve_auth(ctx: &Context, cfg: &NpmConfig) -> Result<NpmAuth> {
+    let token = resolve_token(ctx, cfg)?;
+    if !token.is_empty() {
+        return Ok(NpmAuth::Token(token));
+    }
+    if let Some(oidc) = resolve_oidc_env(ctx) {
+        return Ok(NpmAuth::Oidc(oidc));
+    }
+    bail!(
+        "npm: cannot authenticate — set NPM_TOKEN (or cfg.token), or run under \
+         GitHub Actions OIDC (id-token: write) with a Trusted Publisher \
+         configured on the registry. Refusing to publish anonymously."
+    )
+}
+
+/// Snapshot the GitHub Actions OIDC request env when BOTH variables are present
+/// and non-empty, returning every entry to thread into the publish subprocess.
+/// Returns `None` (no OIDC context) when either variable is missing/empty.
+fn resolve_oidc_env(ctx: &Context) -> Option<Vec<(String, String)>> {
+    let env = ctx.env_source();
+    let mut out = Vec::with_capacity(OIDC_ENV_VARS.len());
+    for name in OIDC_ENV_VARS {
+        let val = env.var(name).filter(|v| !v.is_empty())?;
+        out.push((name.to_string(), val));
+    }
+    Some(out)
+}
+
+/// Write a per-run `.npmrc` under `cfg_dir` (0600). For [`NpmAuth::Token`] the
+/// `_authToken` line carries the credential; for [`NpmAuth::Oidc`] no token line
+/// is written (npm mints a short-lived credential via the OIDC exchange). The
+/// caller keeps `cfg_dir` alive across `npm publish`.
 pub(crate) fn write_npmrc(
     cfg_dir: &Path,
     registry: &str,
-    token: &str,
+    auth: &NpmAuth,
     access: Option<&str>,
 ) -> Result<PathBuf> {
     let path = cfg_dir.join(".npmrc");
@@ -509,7 +578,9 @@ pub(crate) fn write_npmrc(
         .trim_end_matches('/');
     let mut body = String::new();
     body.push_str(&format!("registry={}\n", registry));
-    body.push_str(&format!("//{}/:_authToken={}\n", registry_host, token));
+    if let NpmAuth::Token(token) = auth {
+        body.push_str(&format!("//{}/:_authToken={}\n", registry_host, token));
+    }
     if let Some(a) = access {
         body.push_str(&format!("access={}\n", a));
     }
@@ -600,17 +671,9 @@ fn publish_optional_deps(
         return Ok(());
     }
 
-    let token = resolve_token(ctx, cfg)?;
-    if token.is_empty() {
-        bail!(
-            "npm: NPM_TOKEN env var (or cfg.token) is required to publish '{}@{}' to {}",
-            layout.metapackage,
-            version,
-            registry
-        );
-    }
+    let auth = resolve_auth(ctx, cfg)?;
     let cfg_dir = TempDir::new().context("npm: create .npmrc temp dir")?;
-    write_npmrc(cfg_dir.path(), &registry, &token, access.as_deref())?;
+    write_npmrc(cfg_dir.path(), &registry, &auth, access.as_deref())?;
 
     let policy = ctx.retry_policy();
 
@@ -661,6 +724,7 @@ fn publish_optional_deps(
             &dist_tag,
             &access,
             cfg_dir.path(),
+            &auth,
             &policy,
             cfg,
             log,
@@ -708,17 +772,9 @@ fn publish_postinstall(
         return Ok(());
     }
 
-    let token = resolve_token(ctx, cfg)?;
-    if token.is_empty() {
-        bail!(
-            "npm: NPM_TOKEN env var (or cfg.token) is required to publish '{}@{}' to {}",
-            staged.package,
-            version,
-            registry
-        );
-    }
+    let auth = resolve_auth(ctx, cfg)?;
     let cfg_dir = TempDir::new().context("npm: create .npmrc temp dir")?;
-    write_npmrc(cfg_dir.path(), &registry, &token, access.as_deref())?;
+    write_npmrc(cfg_dir.path(), &registry, &auth, access.as_deref())?;
 
     let policy = ctx.retry_policy();
     if let Some(t) = publish_one_tarball(
@@ -728,6 +784,7 @@ fn publish_postinstall(
         &dist_tag,
         &access,
         cfg_dir.path(),
+        &auth,
         &policy,
         cfg,
         log,
@@ -748,6 +805,7 @@ fn publish_one_tarball(
     dist_tag: &str,
     access: &Option<String>,
     cfg_dir: &Path,
+    auth: &NpmAuth,
     policy: &RetryPolicy,
     cfg: &NpmConfig,
     log: &StageLogger,
@@ -772,6 +830,7 @@ fn publish_one_tarball(
         registry,
         dist_tag,
         access.as_deref(),
+        auth,
         policy,
         log,
     )?;
@@ -785,15 +844,52 @@ fn publish_one_tarball(
     }))
 }
 
+/// Build the `npm publish` command for one tarball. Under [`NpmAuth::Oidc`] the
+/// resolved `ACTIONS_ID_TOKEN_REQUEST_*` pairs are threaded onto the subprocess
+/// env so the npm CLI performs the Trusted Publishing token exchange itself; a
+/// token credential reaches npm only via the `.npmrc` `--userconfig`, never the
+/// subprocess env or argv.
+pub(crate) fn build_npm_publish_command(
+    tarball: &Path,
+    cfg_dir: &Path,
+    registry: &str,
+    dist_tag: &str,
+    access: Option<&str>,
+    auth: &NpmAuth,
+) -> Command {
+    let mut cmd = Command::new("npm");
+    cmd.arg("publish")
+        .arg(tarball)
+        .arg("--userconfig")
+        .arg(cfg_dir.join(".npmrc"))
+        .arg("--registry")
+        .arg(registry)
+        .arg("--tag")
+        .arg(dist_tag);
+    if let Some(a) = access {
+        cmd.arg("--access").arg(a);
+    }
+    if let NpmAuth::Oidc(oidc_env) = auth {
+        for (name, value) in oidc_env {
+            cmd.env(name, value);
+        }
+    }
+    cmd
+}
+
 /// `npm publish <tarball> --userconfig <.npmrc> --registry <url> --tag
-/// <dist_tag> [--access <a>]`, wrapped in [`retry_sync`]. Token is read from
-/// `.npmrc`, never argv. Transient registry failures retry; others break.
+/// <dist_tag> [--access <a>]`, wrapped in [`retry_sync`]. A token is read from
+/// `.npmrc`, never argv; under OIDC the npm CLI mints a short-lived credential
+/// from the threaded `ACTIONS_ID_TOKEN_REQUEST_*` env. Transient registry
+/// failures retry; others break.
+#[allow(clippy::too_many_arguments)]
 fn run_npm_publish(
     tarball: &Path,
     cfg_dir: &Path,
     registry: &str,
     dist_tag: &str,
     access: Option<&str>,
+    auth: &NpmAuth,
     policy: &RetryPolicy,
     log: &StageLogger,
 ) -> Result<()> {
@@ -806,18 +902,7 @@ fn run_npm_publish(
                 max_attempts
             ));
         }
-        let mut cmd = Command::new("npm");
-        cmd.arg("publish")
-            .arg(tarball)
-            .arg("--userconfig")
-            .arg(cfg_dir.join(".npmrc"))
-            .arg("--registry")
-            .arg(registry)
-            .arg("--tag")
-            .arg(dist_tag);
-        if let Some(a) = access {
-            cmd.arg("--access").arg(a);
-        }
+        let mut cmd = build_npm_publish_command(tarball, cfg_dir, registry, dist_tag, access, auth);
         log.status(&format!(
             "running npm publish {} --registry {} --tag {}",
             tarball.display(),

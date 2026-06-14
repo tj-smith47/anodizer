@@ -18,7 +18,8 @@ use super::manifest::{
 };
 use super::optional_deps::generate_layout;
 use super::publish::{
-    assemble_optional_deps_tarball, assemble_postinstall_tarball, publish_to_npm,
+    NpmAuth, assemble_optional_deps_tarball, assemble_postinstall_tarball,
+    build_npm_publish_command, publish_to_npm, resolve_auth, write_npmrc,
 };
 use super::publisher::NpmPublisher;
 
@@ -802,6 +803,146 @@ fn publish_postinstall_no_matching_binaries_warns_and_returns_empty() {
     let mut targets = Vec::new();
     publish_to_npm(&ctx, &cfg, "demo", &log, &mut targets).expect("publish");
     assert!(targets.is_empty());
+}
+
+// -----------------------------------------------------------------------------
+// Auth resolution — token vs Trusted Publishing (OIDC) vs neither
+// -----------------------------------------------------------------------------
+
+const OIDC_URL_VAR: &str = "ACTIONS_ID_TOKEN_REQUEST_URL";
+const OIDC_TOKEN_VAR: &str = "ACTIONS_ID_TOKEN_REQUEST_TOKEN";
+
+/// Read the `.npmrc` body written by [`write_npmrc`] for the resolved auth.
+fn npmrc_body(auth: &NpmAuth) -> String {
+    let dir = tempfile::TempDir::new().expect("tmp");
+    let path = write_npmrc(
+        dir.path(),
+        "https://registry.npmjs.org",
+        auth,
+        Some("public"),
+    )
+    .expect("npmrc");
+    std::fs::read_to_string(path).expect("read npmrc")
+}
+
+#[test]
+fn auth_token_present_writes_authtoken_line() {
+    // NPM_TOKEN set → today's behaviour: `_authToken` in the .npmrc, no OIDC.
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .env("NPM_TOKEN", "npm_secretvalue")
+        .build();
+    let cfg = opt_cfg();
+    let auth = resolve_auth(&ctx, &cfg).expect("auth resolves to token");
+    assert_eq!(auth, NpmAuth::Token("npm_secretvalue".to_string()));
+
+    let body = npmrc_body(&auth);
+    assert!(
+        body.contains("_authToken=npm_secretvalue"),
+        "token .npmrc must carry _authToken: {body:?}"
+    );
+}
+
+#[test]
+fn auth_oidc_present_writes_no_token_and_threads_env() {
+    // No NPM_TOKEN but both OIDC request vars set → tokenless Trusted Publishing:
+    // the .npmrc carries NO _authToken, and the publish command's env carries
+    // the OIDC request vars so the npm CLI performs the exchange.
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .env(OIDC_URL_VAR, "https://token.actions.example/req")
+        .env(OIDC_TOKEN_VAR, "oidc-request-jwt")
+        .build();
+    let cfg = opt_cfg();
+    let auth = resolve_auth(&ctx, &cfg).expect("auth resolves to oidc");
+    match &auth {
+        NpmAuth::Oidc(pairs) => {
+            assert!(
+                pairs
+                    .iter()
+                    .any(|(k, v)| k == OIDC_URL_VAR && v == "https://token.actions.example/req")
+            );
+            assert!(
+                pairs
+                    .iter()
+                    .any(|(k, v)| k == OIDC_TOKEN_VAR && v == "oidc-request-jwt")
+            );
+        }
+        other => panic!("expected OIDC auth, got {other:?}"),
+    }
+
+    let body = npmrc_body(&auth);
+    assert!(
+        !body.contains("_authToken"),
+        "OIDC .npmrc must NOT carry _authToken: {body:?}"
+    );
+
+    // The publish subprocess must inherit the OIDC request vars.
+    let dir = tempfile::TempDir::new().expect("tmp");
+    let cmd = build_npm_publish_command(
+        std::path::Path::new("/tmp/demo-1.0.0.tgz"),
+        dir.path(),
+        "https://registry.npmjs.org",
+        "latest",
+        Some("public"),
+        &auth,
+    );
+    let envs: std::collections::HashMap<String, Option<String>> = cmd
+        .get_envs()
+        .map(|(k, v)| {
+            (
+                k.to_string_lossy().into_owned(),
+                v.map(|v| v.to_string_lossy().into_owned()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        envs.get(OIDC_URL_VAR),
+        Some(&Some("https://token.actions.example/req".to_string())),
+        "publish command must thread the OIDC URL var"
+    );
+    assert_eq!(
+        envs.get(OIDC_TOKEN_VAR),
+        Some(&Some("oidc-request-jwt".to_string())),
+        "publish command must thread the OIDC token var"
+    );
+}
+
+#[test]
+fn auth_no_token_no_oidc_is_clear_error_not_panic_or_skip() {
+    // Neither credential present → hard error, never anonymous publish, never
+    // silent skip. Seeding one unrelated override forces a CLOSED MapEnvSource
+    // so the dev/CI host's real NPM_TOKEN / OIDC vars cannot leak in.
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .env("UNRELATED", "x")
+        .build();
+    let cfg = opt_cfg();
+    let err = resolve_auth(&ctx, &cfg).expect_err("must error with no credential");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("cannot authenticate"),
+        "error must name the auth failure: {msg}"
+    );
+    assert!(
+        msg.contains("NPM_TOKEN") && msg.contains("OIDC"),
+        "error must point at both credential paths: {msg}"
+    );
+}
+
+#[test]
+fn auth_oidc_requires_both_vars_present() {
+    // Only the URL var set (no request token) is NOT an OIDC context — must fall
+    // through to the no-credential error, not a partial/anonymous publish.
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .env(OIDC_URL_VAR, "https://token.actions.example/req")
+        .build();
+    let cfg = opt_cfg();
+    assert!(
+        resolve_auth(&ctx, &cfg).is_err(),
+        "a single OIDC var must not authorize a publish"
+    );
 }
 
 // -----------------------------------------------------------------------------

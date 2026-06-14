@@ -12,6 +12,53 @@ cold without re-investigating.
 
 ## Open
 
+### Dogfooding coverage gaps (2026-06-14) — anodizer's share
+
+The three repos (anodizer + cfgd + brontes) must, as a UNION, exercise every non-paid
+config field as live release evidence. cfgd already owns `workspaces`/`retry`/`version_files`/
+`aur_source`; brontes owns single-crate mode + the `flatpaks` gap. These are anodizer's to add.
+Config-only unless marked CODE.
+
+- [ ] **Custom registry image push.** Add `registry.jarvispro.io/anodizer` to the CLI crate's
+  `dockers_v2[].images` alongside `ghcr.io`. The arc-anodizer runner already pushes to
+  `registry.jarvispro.io` (basic auth via `registry-credentials`/`docker-ci-credentials` secrets
+  in ns `jarvispro`); add a `docker login registry.jarvispro.io` step to the release job if the
+  runner's ambient docker auth doesn't already cover the push.
+- [x] **npm Trusted Publishing (tokenless OIDC) — user-requested, CODE.** DONE 2026-06-14:
+  `resolve_auth` in `crates/stage-publish/src/npm/publish.rs` returns `NpmAuth::Token` (token
+  present), `NpmAuth::Oidc` (no token + both `ACTIONS_ID_TOKEN_REQUEST_URL/TOKEN` present →
+  token-less `.npmrc` + OIDC env threaded into `npm publish`), or hard-errors (neither). `npms:`
+  enabled in `.anodizer.yaml`. CI-only gap: a live tokenless publish can only be proven under real
+  GHA OIDC. Needs runner npm ≥ 11.5.1 + Node ≥ 22.14.0 and the trusted publisher set on npmjs.com
+  (org `tj-smith47`, repo `anodizer`, workflow `release.yml`, action `npm publish`). One initial
+  token-based publish creates `@tj-smith47/anodizer`; then drop the token.
+- [ ] **Docker Hub README sync.** Drop `skip: true` on `dockerhub:`. Needs a free Docker Hub repo
+  `tj-smith47/anodizer` + `DOCKERHUB_USERNAME` + `DOCKERHUB_PASSWORD` GH secrets.
+- [ ] **gemfury.** Add a `gemfury:` block (account `jarvispro`). Needs a free fury.io OSS account
+  + push-token GH secret.
+- [ ] **macOS app_bundle + dmg + pkg (unsigned).** Replace the `skip: true` stubs with real
+  entries (bundle id `io.github.tj-smith47.anodizer`, an Info.plist; dmg depends on app_bundle).
+  Unsigned is free; SIGNED pkg/dmg needs an Apple Developer ID cert (PAID, below).
+- [ ] **Windows msi (WiX) + nsis (unsigned).** Author a `.wxs` (WiX) template and a `.nsi` NSIS
+  script, then enable `msis`/`nsis`. Unsigned is free; code-signing needs a Windows cert (PAID).
+- [ ] **uploads (generic HTTP PUT).** Add an `uploads:` entry targeting a real endpoint (the MinIO
+  already used by `blobs:` or a `registry.jarvispro.io` path). Reuse blob/registry creds.
+- [ ] **before_publish hook.** Add a `before_publish.hooks` entry running a real pre-publish check
+  (e.g. an asset lint / `verify-release` dry-run). Must be a genuine action, not a no-op.
+- [ ] **publishers (generic custom command).** Add a `publishers:` entry wrapping a real custom
+  publish step (GR's escape-hatch). Must be genuine, not an echo.
+
+PAID — record only, user decides: `notarize` + signed `pkgs`/`dmgs` (Apple Developer Program,
+$99/yr; MACOS_SIGN_P12 / MACOS_NOTARY_* secrets), signed `msis`/`nsis` (Windows code-signing cert),
+`artifactories` (JFrog instance).
+
+N/A — no host exists in the ecosystem: `github_urls`/`gitlab_urls`/`gitea_urls` (all on github.com),
+`force_token` (niche per-token-kind override).
+
+`monorepo` (GR tag-prefix multi-component model) is an ALTERNATIVE to cfgd's `workspaces` and
+anodizer's `crates` models; exercising it literally needs a repo restructured for tag-prefixed
+component tags. DECISION NEEDED — flagged, not forced.
+
 ## Resolved
 
 - [x] **`release.ids` silently drops signature/certificate/SBOM uploads —

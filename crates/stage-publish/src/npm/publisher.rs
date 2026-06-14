@@ -232,7 +232,12 @@ impl anodizer_core::Publisher for NpmPublisher {
                     continue;
                 }
             };
-            if let Err(e) = super::publish::write_npmrc(cfg_dir.path(), &t.registry, &token, None) {
+            // Rollback (`npm unpublish`) requires a long-lived token — OIDC
+            // mints short-lived publish-only credentials that cannot unpublish.
+            // The empty-token skip above already routes OIDC-published packages
+            // to the manual-unpublish warning.
+            let auth = super::publish::NpmAuth::Token(token);
+            if let Err(e) = super::publish::write_npmrc(cfg_dir.path(), &t.registry, &auth, None) {
                 log.warn(&format!(
                     "npm rollback of '{}@{}' could not write .npmrc ({:#}); \
                      manual cleanup required",
