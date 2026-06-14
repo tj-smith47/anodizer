@@ -131,6 +131,12 @@ pub(crate) struct WingetManifestParams<'a> {
     pub(crate) product_code: Option<&'a str>,
     /// Release date in YYYY-MM-DD format.
     pub(crate) release_date: Option<&'a str>,
+    /// Short invoke alias (`Moniker`). `None` omits the key entirely.
+    pub(crate) moniker: Option<&'a str>,
+    /// `UpgradeBehavior` for every installer entry (default resolved upstream).
+    pub(crate) upgrade_behavior: &'a str,
+    /// Documentation links (`Documentations[]`). Empty omits the key.
+    pub(crate) documentations: &'a [anodizer_core::config::WingetDocumentation],
 }
 
 /// A single installer entry in the WinGet manifest.
@@ -148,6 +154,10 @@ pub(crate) struct WingetInstallerItem {
     pub(crate) wrap_in_directory: Option<String>,
     /// Commands for portable binaries (the binary filename without extension).
     pub(crate) commands: Vec<String>,
+    /// Explicit silent-install switch override from config. When `None`, an
+    /// actual-installer entry (`wix`/`msi`/`exe`/`nsis`) derives its switch
+    /// from the installer type; `zip`/`portable` entries emit no switch.
+    pub(crate) silent_switch_override: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -194,9 +204,24 @@ struct InstallerEntry {
     installer_sha256: String,
     upgrade_behavior: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    installer_switches: Option<InstallerSwitches>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     nested_installer_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     nested_installer_files: Option<Vec<NestedInstallerFile>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct InstallerSwitches {
+    silent: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "PascalCase")]
+struct Documentation {
+    document_label: String,
+    document_url: String,
 }
 
 #[derive(Serialize)]
@@ -248,13 +273,16 @@ struct LocaleManifest {
     short_description: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     description: Option<String>,
-    moniker: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    moniker: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     tags: Option<Vec<String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     release_notes: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     release_notes_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    documentations: Option<Vec<Documentation>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     installation_notes: Option<String>,
     manifest_type: String,
@@ -322,6 +350,30 @@ pub(crate) fn generate_manifest(params: &WingetManifestParams<'_>) -> Result<Str
         manifest_version: "1.12.0".to_string(),
     };
     serde_yaml_ng::to_string(&manifest).context("winget: serialize manifest")
+}
+
+/// Resolve `InstallerSwitches.Silent` for an installer entry.
+///
+/// Only actual installers carry a silent switch — `zip`/`portable` archives
+/// are unpacked, not run, so emitting a switch would be meaningless. The
+/// config override wins when set; otherwise the switch is derived from the
+/// installer type: `/quiet` for msi (Windows Installer), `/S` for the NSIS /
+/// Inno-style exe installers.
+fn resolve_installer_switches(
+    installer_type: &str,
+    override_switch: Option<&str>,
+) -> Option<InstallerSwitches> {
+    // zip / portable archives are unpacked, not executed — never a silent
+    // switch, even when an override is set (it would be meaningless), so the
+    // type gate comes before the override.
+    let derived = match installer_type {
+        "wix" | "msi" => "/quiet",
+        "exe" | "nsis" => "/S",
+        _ => return None,
+    };
+    Some(InstallerSwitches {
+        silent: override_switch.unwrap_or(derived).to_string(),
+    })
 }
 
 /// Generate the 3-file WinGet manifest set: (version, installer, locale).
@@ -411,7 +463,11 @@ pub(crate) fn generate_manifests(
                     architecture: i.architecture.clone(),
                     installer_url: i.url.clone(),
                     installer_sha256: i.sha256.clone(),
-                    upgrade_behavior: "uninstallPrevious".to_string(),
+                    upgrade_behavior: params.upgrade_behavior.to_string(),
+                    installer_switches: resolve_installer_switches(
+                        &i.installer_type,
+                        i.silent_switch_override.as_deref(),
+                    ),
                     nested_installer_type: nested_type,
                     nested_installer_files: nested_files,
                 }
@@ -474,7 +530,10 @@ pub(crate) fn generate_manifests(
         } else {
             Some(params.description.to_string())
         },
-        moniker: params.name.to_string(),
+        moniker: params
+            .moniker
+            .map(|s| s.to_string())
+            .filter(|s| !s.is_empty()),
         tags,
         release_notes: params
             .release_notes
@@ -484,6 +543,20 @@ pub(crate) fn generate_manifests(
             .release_notes_url
             .map(|s| s.to_string())
             .filter(|s| !s.is_empty()),
+        documentations: if params.documentations.is_empty() {
+            None
+        } else {
+            Some(
+                params
+                    .documentations
+                    .iter()
+                    .map(|d| Documentation {
+                        document_label: d.label.clone(),
+                        document_url: d.url.clone(),
+                    })
+                    .collect(),
+            )
+        },
         installation_notes: params
             .installation_notes
             .map(|s| s.to_string())
@@ -627,6 +700,38 @@ fn collect_windows_binary_names_by_target(
     map
 }
 
+/// Resolve the winget `Moniker` (short invoke alias).
+///
+/// Precedence: explicit `winget.moniker` config override → the single
+/// published binary name when exactly one is built → `None` (omit the key)
+/// when multiple binaries exist and no override is set. winget treats the
+/// Moniker as the command users type (`rg`, `fd`), never the package name, so
+/// defaulting to the crate name (the old behavior) was wrong; omitting is the
+/// honest default real ripgrep/fd manifests follow when ambiguous.
+fn resolve_winget_moniker(
+    ctx: &Context,
+    crate_name: &str,
+    winget_cfg: &anodizer_core::config::WingetConfig,
+) -> Option<String> {
+    if let Some(m) = winget_cfg.moniker.as_deref().filter(|s| !s.is_empty()) {
+        return Some(m.to_string());
+    }
+    // Collect the distinct binary names across all windows Build artifacts.
+    let by_target = collect_windows_binary_names_by_target(ctx, crate_name);
+    let mut distinct: Vec<String> = Vec::new();
+    for names in by_target.values() {
+        for n in names {
+            if !distinct.contains(n) {
+                distinct.push(n.clone());
+            }
+        }
+    }
+    match distinct.as_slice() {
+        [single] => Some(single.clone()),
+        _ => None,
+    }
+}
+
 /// Map a raw architecture string to the WinGet vocabulary.
 fn map_winget_arch(raw_arch: &str) -> &str {
     match raw_arch {
@@ -735,6 +840,7 @@ fn build_archive_installer(
     name: &str,
     version: &str,
     binary_names_by_target: &std::collections::HashMap<String, Vec<String>>,
+    silent_switch: Option<&str>,
 ) -> Result<WingetInstallerItem> {
     let target = a.target.as_deref().unwrap_or("");
     let (_, raw_arch) = anodizer_core::target::map_target(target);
@@ -764,6 +870,7 @@ fn build_archive_installer(
         binaries,
         wrap_in_directory,
         commands: Vec::new(),
+        silent_switch_override: silent_switch.map(str::to_string),
     })
 }
 
@@ -775,6 +882,7 @@ fn build_portable_installer(
     url_template: Option<&str>,
     name: &str,
     version: &str,
+    silent_switch: Option<&str>,
 ) -> Result<WingetInstallerItem> {
     let target = a.target.as_deref().unwrap_or("");
     let (_, raw_arch) = anodizer_core::target::map_target(target);
@@ -804,6 +912,7 @@ fn build_portable_installer(
         binaries: Vec::new(),
         wrap_in_directory: None,
         commands: vec![cmd],
+        silent_switch_override: silent_switch.map(str::to_string),
     })
 }
 
@@ -829,6 +938,7 @@ fn collect_winget_installers(
     );
 
     let filters = WingetArtifactFilters::from_config(winget_cfg);
+    let silent_switch = winget_cfg.silent_switch.as_deref();
 
     let mut installers: Vec<WingetInstallerItem> = Vec::new();
     let mut zip_count = 0u32;
@@ -849,6 +959,7 @@ fn collect_winget_installers(
             name,
             version,
             &binary_names_by_target,
+            silent_switch,
         )?);
     }
 
@@ -863,6 +974,7 @@ fn collect_winget_installers(
             url_template,
             name,
             version,
+            silent_switch,
         )?);
     }
 
@@ -1287,6 +1399,16 @@ fn render_winget_manifests_with_identity(
     let release_date = resolve_winget_release_date(ctx);
     let release_date_ref = release_date.as_deref();
 
+    let moniker = resolve_winget_moniker(ctx, crate_name, winget_cfg);
+    // winget upgrade behavior: default `install` (correct for portable-zip
+    // tools); `uninstallPrevious` forces a clobbering reinstall.
+    let upgrade_behavior = winget_cfg
+        .upgrade_behavior
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or("install");
+    let documentations = winget_cfg.documentations.as_deref().unwrap_or(&[]);
+
     let rendered = render_winget_fields(
         ctx,
         winget_cfg,
@@ -1323,6 +1445,9 @@ fn render_winget_manifests_with_identity(
         installers,
         product_code: winget_cfg.product_code.as_deref(),
         release_date: release_date_ref,
+        moniker: moniker.as_deref(),
+        upgrade_behavior,
+        documentations,
     })?;
 
     Ok(RenderedWingetManifests {
@@ -2001,6 +2126,85 @@ mod publisher_tests {
         );
     }
 
+    /// W1 per-crate, no leakage: each crate's Moniker derives from its OWN
+    /// single binary name (`add_windows_zip` stamps `binary = crate_name`).
+    /// alpha's manifest must carry `Moniker: alpha` and never `beta`, and
+    /// vice-versa — the recurring cross-crate-leakage bug family.
+    #[test]
+    fn live_per_crate_moniker_no_leakage() {
+        let alpha = winget_crate_with("alpha", "alpha-v{{ .Version }}", "AcmeCo.Alpha");
+        let beta = winget_crate_with("beta", "beta-v{{ .Version }}", "AcmeCo.Beta");
+
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![alpha, beta])
+            .build();
+        ctx.template_vars_mut().set("Version", "2.0.0");
+        ctx.template_vars_mut().set("RawVersion", "2.0.0");
+        ctx.template_vars_mut().set("Tag", "alpha-v2.0.0");
+        add_windows_zip(&mut ctx, "alpha");
+        add_windows_zip(&mut ctx, "beta");
+
+        let alpha_locale = render_winget_manifests_for_crate(&ctx, "alpha", &ctx.logger("publish"))
+            .unwrap()
+            .expect("alpha not skipped")
+            .locale_yaml;
+        let beta_locale = render_winget_manifests_for_crate(&ctx, "beta", &ctx.logger("publish"))
+            .unwrap()
+            .expect("beta not skipped")
+            .locale_yaml;
+
+        assert!(
+            alpha_locale.contains("Moniker: alpha"),
+            "alpha must derive its own moniker; got:\n{alpha_locale}"
+        );
+        assert!(
+            !alpha_locale.contains("Moniker: beta"),
+            "alpha manifest must NOT carry beta's moniker; got:\n{alpha_locale}"
+        );
+        assert!(
+            beta_locale.contains("Moniker: beta"),
+            "beta must derive its own moniker; got:\n{beta_locale}"
+        );
+        assert!(
+            !beta_locale.contains("Moniker: alpha"),
+            "beta manifest must NOT carry alpha's moniker; got:\n{beta_locale}"
+        );
+    }
+
+    /// W1/W3 single-crate live path: the default install behavior and a
+    /// derived moniker both surface through the real per-crate render.
+    #[test]
+    fn live_single_crate_default_moniker_and_upgrade_behavior() {
+        let demo = winget_crate_with("demo", "v{{ .Version }}", "AcmeCo.Demo");
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![demo])
+            .build();
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("RawVersion", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        add_windows_zip(&mut ctx, "demo");
+
+        let rendered = render_winget_manifests_for_crate(&ctx, "demo", &ctx.logger("publish"))
+            .unwrap()
+            .expect("demo not skipped");
+        assert!(
+            rendered.locale_yaml.contains("Moniker: demo"),
+            "single-binary moniker derives from the bin name; got:\n{}",
+            rendered.locale_yaml
+        );
+        assert!(
+            rendered.installer_yaml.contains("UpgradeBehavior: install"),
+            "default upgrade behavior must be install; got:\n{}",
+            rendered.installer_yaml
+        );
+        assert!(
+            !rendered.installer_yaml.contains("uninstallPrevious"),
+            "default must not be the clobbering uninstallPrevious"
+        );
+    }
+
     /// The shard-guard and the live collector must agree on what a winget
     /// Windows installer is. A linux-only `UploadableBinary` (the portable
     /// path) is NOT a Windows installer, so the guard returns `false` — letting
@@ -2520,9 +2724,13 @@ mod tests {
                 binaries: vec![],
                 wrap_in_directory: None,
                 commands: vec![],
+                silent_switch_override: None,
             }],
             product_code: None,
             release_date: None,
+            moniker: Some("mytool"),
+            upgrade_behavior: "install",
+            documentations: &[],
         }
     }
 
@@ -2565,7 +2773,12 @@ mod tests {
 
         assert!(inst.contains("ManifestType: installer"));
         assert!(inst.contains("InstallerSha256: deadbeef1234567890abcdef"));
-        assert!(inst.contains("UpgradeBehavior: uninstallPrevious"));
+        // Default upgrade behavior is `install` (correct for portable-zip
+        // tools); never the clobbering `uninstallPrevious`.
+        assert!(inst.contains("UpgradeBehavior: install"));
+        assert!(!inst.contains("uninstallPrevious"));
+        // zip/portable installers carry NO silent switch.
+        assert!(!inst.contains("InstallerSwitches"));
         // Nested installer fields for zip type
         assert!(inst.contains("NestedInstallerType: portable"));
         assert!(inst.contains("RelativeFilePath: mytool.exe"));
@@ -2707,9 +2920,13 @@ mod tests {
                 binaries: vec![],
                 wrap_in_directory: None,
                 commands: vec![],
+                silent_switch_override: None,
             }],
             product_code: Some("{12345678-1234-1234-1234-123456789012}"),
             release_date: Some("2026-03-29"),
+            moniker: Some("mytool"),
+            upgrade_behavior: "install",
+            documentations: &[],
         };
 
         let (ver, inst, locale) = generate_manifests(&params).unwrap();
@@ -2766,6 +2983,126 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // Moniker / UpgradeBehavior / Documentations / InstallerSwitches (W1-W4)
+    // -----------------------------------------------------------------------
+
+    /// W1: a configured Moniker is emitted as the short invoke alias, matching
+    /// real ripgrep's `Moniker: rg` (NOT the package name `ripgrep`).
+    #[test]
+    fn test_winget_moniker_emitted_as_alias() {
+        let mut params = default_params();
+        params.moniker = Some("rg");
+        let (_, _, locale) = generate_manifests(&params).unwrap();
+        assert!(
+            locale.contains("Moniker: rg"),
+            "Moniker must be the invoke alias, got:\n{locale}"
+        );
+    }
+
+    /// W1: with no Moniker resolvable (multi-binary, no override) the key is
+    /// omitted entirely — never defaulted to the crate name.
+    #[test]
+    fn test_winget_moniker_omitted_when_none() {
+        let mut params = default_params();
+        params.moniker = None;
+        let (_, _, locale) = generate_manifests(&params).unwrap();
+        assert!(
+            !locale.contains("Moniker:"),
+            "Moniker must be omitted when unresolved, got:\n{locale}"
+        );
+    }
+
+    /// W3: default UpgradeBehavior is `install`; the override is honored.
+    #[test]
+    fn test_winget_upgrade_behavior_override() {
+        let mut params = default_params();
+        params.upgrade_behavior = "uninstallPrevious";
+        let (_, inst, _) = generate_manifests(&params).unwrap();
+        assert!(inst.contains("UpgradeBehavior: uninstallPrevious"));
+    }
+
+    /// W2: Documentations[] renders `DocumentLabel`/`DocumentUrl` pairs, the
+    /// exact shape real ripgrep's locale manifest carries (`FAQ`, `User Guide`).
+    #[test]
+    fn test_winget_documentations_emitted() {
+        let docs = vec![
+            anodizer_core::config::WingetDocumentation {
+                label: "FAQ".to_string(),
+                url: "https://github.com/owner/repo/blob/master/FAQ.md".to_string(),
+            },
+            anodizer_core::config::WingetDocumentation {
+                label: "User Guide".to_string(),
+                url: "https://github.com/owner/repo/blob/master/GUIDE.md".to_string(),
+            },
+        ];
+        let mut params = default_params();
+        params.documentations = &docs;
+        let (_, _, locale) = generate_manifests(&params).unwrap();
+        assert!(locale.contains("Documentations:"));
+        assert!(locale.contains("DocumentLabel: FAQ"));
+        assert!(locale.contains("DocumentUrl: https://github.com/owner/repo/blob/master/FAQ.md"));
+        assert!(locale.contains("DocumentLabel: User Guide"));
+        assert!(locale.contains("DocumentUrl: https://github.com/owner/repo/blob/master/GUIDE.md"));
+    }
+
+    /// W2: an empty documentations list omits the key entirely.
+    #[test]
+    fn test_winget_documentations_omitted_when_empty() {
+        let params = default_params();
+        let (_, _, locale) = generate_manifests(&params).unwrap();
+        assert!(!locale.contains("Documentations:"));
+    }
+
+    /// W4: zip/portable installers carry NO InstallerSwitches.
+    #[test]
+    fn test_winget_installer_switches_absent_for_zip() {
+        let params = default_params();
+        let (_, inst, _) = generate_manifests(&params).unwrap();
+        assert!(!inst.contains("InstallerSwitches"));
+        assert!(!inst.contains("Silent:"));
+    }
+
+    /// W4: an actual installer (msi) derives `/quiet`; exe/nsis derive `/S`;
+    /// the config override wins. zip/portable always omit the switch.
+    #[test]
+    fn test_resolve_installer_switches_per_type() {
+        let msi = resolve_installer_switches("msi", None).expect("msi gets a switch");
+        assert_eq!(msi.silent, "/quiet");
+        let wix = resolve_installer_switches("wix", None).expect("wix gets a switch");
+        assert_eq!(wix.silent, "/quiet");
+        let exe = resolve_installer_switches("exe", None).expect("exe gets a switch");
+        assert_eq!(exe.silent, "/S");
+        let nsis = resolve_installer_switches("nsis", None).expect("nsis gets a switch");
+        assert_eq!(nsis.silent, "/S");
+        assert!(resolve_installer_switches("zip", None).is_none());
+        assert!(resolve_installer_switches("portable", None).is_none());
+        // Override wins for an actual installer.
+        let overridden = resolve_installer_switches("msi", Some("/qn")).expect("override");
+        assert_eq!(overridden.silent, "/qn");
+        // ...but an override on zip is still suppressed (zip is unpacked).
+        assert!(resolve_installer_switches("zip", Some("/qn")).is_none());
+    }
+
+    /// W4: an msi installer entry renders `InstallerSwitches.Silent: /quiet`.
+    #[test]
+    fn test_winget_installer_switches_emitted_for_msi() {
+        let mut params = default_params();
+        params.installers = vec![WingetInstallerItem {
+            architecture: "x64".to_string(),
+            url: "https://example.com/mytool-1.0.0-windows-amd64.msi".to_string(),
+            sha256: "deadbeef".to_string(),
+            installer_type: "msi".to_string(),
+            binaries: vec![],
+            wrap_in_directory: None,
+            commands: vec![],
+            silent_switch_override: None,
+        }];
+        let (_, inst, _) = generate_manifests(&params).unwrap();
+        assert!(inst.contains("InstallerSwitches:"));
+        assert!(inst.contains("Silent: /quiet"));
+    }
+
+    // -----------------------------------------------------------------------
     // wrap_in_directory tests
     // -----------------------------------------------------------------------
 
@@ -2801,9 +3138,13 @@ mod tests {
                 binaries: vec!["myapp".to_string()],
                 wrap_in_directory: Some("myapp-1.0.0".to_string()),
                 commands: vec![],
+                silent_switch_override: None,
             }],
             product_code: None,
             release_date: None,
+            moniker: Some("myapp"),
+            upgrade_behavior: "install",
+            documentations: &[],
         };
 
         let (_ver, inst, _locale) = generate_manifests(&params).unwrap();
@@ -2846,9 +3187,13 @@ mod tests {
                 binaries: vec!["myapp".to_string()],
                 wrap_in_directory: None,
                 commands: vec![],
+                silent_switch_override: None,
             }],
             product_code: None,
             release_date: None,
+            moniker: Some("myapp"),
+            upgrade_behavior: "install",
+            documentations: &[],
         };
 
         let (_ver, inst, _locale) = generate_manifests(&params).unwrap();
@@ -2895,9 +3240,13 @@ mod tests {
                 binaries: vec!["cli".to_string(), "daemon".to_string()],
                 wrap_in_directory: Some("suite-2.0.0".to_string()),
                 commands: vec![],
+                silent_switch_override: None,
             }],
             product_code: None,
             release_date: None,
+            moniker: None,
+            upgrade_behavior: "install",
+            documentations: &[],
         };
 
         let (_ver, inst, _locale) = generate_manifests(&params).unwrap();

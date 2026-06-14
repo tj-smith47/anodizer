@@ -70,6 +70,40 @@ pub struct WingetConfig {
     pub commit_author: Option<CommitAuthorConfig>,
     /// Product code for the installer (used in Add/Remove Programs).
     pub product_code: Option<String>,
+    /// Short invoke alias shown as the package `Moniker` (e.g. `rg` for
+    /// ripgrep, `fd` for fd). This is the command users type, NOT the
+    /// package/crate name. When unset, anodizer derives it from the single
+    /// published binary name; with multiple binaries and no override the
+    /// Moniker is omitted (winget treats it as optional).
+    ///
+    /// Example: `moniker: "rg"`.
+    pub moniker: Option<String>,
+    /// Documentation links rendered as the `Documentations[]` block on the
+    /// locale manifest. Each entry is a `{ label, url }` pair surfaced in the
+    /// winget gallery (real ripgrep emits a `FAQ` and a `User Guide` entry).
+    /// Omitted entirely when empty.
+    ///
+    /// Example:
+    /// ```yaml
+    /// documentations:
+    ///   - label: "User Guide"
+    ///     url: "https://github.com/owner/repo/blob/master/GUIDE.md"
+    /// ```
+    pub documentations: Option<Vec<WingetDocumentation>>,
+    /// Installer `UpgradeBehavior` for every installer entry. winget accepts
+    /// `install`, `uninstallPrevious`, and `deny`. Defaults to `install` —
+    /// the correct behavior for portable-zip CLI tools (`uninstallPrevious`
+    /// forces a clobbering reinstall).
+    ///
+    /// Example: `upgrade_behavior: "uninstallPrevious"`.
+    pub upgrade_behavior: Option<String>,
+    /// Silent-install switch string emitted as `InstallerSwitches.Silent` for
+    /// actual installers (`wix`/`msi`/`exe`/`nsis`). When unset, anodizer
+    /// derives the switch from the installer type (`/quiet` for msi, `/S` for
+    /// exe/nsis). Never emitted for `zip`/`portable` artifacts.
+    ///
+    /// Example: `silent_switch: "/qn"`.
+    pub silent_switch: Option<String>,
     /// Artifact selection: "archive" (default), "msi", or "nsis".
     #[serde(rename = "use")]
     pub use_artifact: Option<String>,
@@ -104,6 +138,17 @@ pub struct WingetConfig {
     /// When `true`, a triggered rollback leaves this publisher's work in
     /// place rather than attempting to undo it. Default `false`.
     pub retain_on_rollback: Option<bool>,
+}
+
+/// A single documentation link rendered into the winget locale manifest's
+/// `Documentations[]` block as `{ DocumentLabel, DocumentUrl }`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct WingetDocumentation {
+    /// Display label for the link (e.g. `FAQ`, `User Guide`).
+    pub label: String,
+    /// Target URL for the documentation entry.
+    pub url: String,
 }
 
 /// WinGet package dependency.

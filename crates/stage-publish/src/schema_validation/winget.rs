@@ -170,6 +170,13 @@ mod tests {
             }),
             commit_author: None,
             product_code: Some("{ACME-WIDGET-0001}".to_string()),
+            moniker: Some("widget".to_string()),
+            documentations: Some(vec![anodizer_core::config::WingetDocumentation {
+                label: "User Guide".to_string(),
+                url: "https://acme.example/widget/guide".to_string(),
+            }]),
+            upgrade_behavior: Some("install".to_string()),
+            silent_switch: None,
             use_artifact: None,
             amd64_variant: Some("v1".to_string()),
             post_publish_poll: None,
