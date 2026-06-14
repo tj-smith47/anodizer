@@ -245,6 +245,37 @@ pub(crate) fn collect_upload_artifacts_owned(
     Ok(out)
 }
 
+/// Collect an upload entry's owned artifact set for **rollback-target
+/// enumeration**, degrading to the mode/ids/exts-filtered set when
+/// `extra_files` resolution fails.
+///
+/// Used by both publishers' `collect_*_targets` evidence walkers. A quiet
+/// logger swallows the `extra_files` glob warnings (rollback enumeration is
+/// not a user-facing render pass), and a resolution error only narrows the
+/// rollback checklist — the publish path itself called
+/// [`collect_upload_artifacts_owned`] with `?`, so any genuine blocker has
+/// already surfaced there. The fallback therefore never hides a publish
+/// failure; it just keeps the rollback DELETE list as complete as the
+/// resolvable inputs allow.
+pub(crate) fn collect_target_artifacts_best_effort(
+    ctx: &Context,
+    publisher: &'static str,
+    mode: &str,
+    ids: Option<&[String]>,
+    exts: Option<&[String]>,
+    flags: CollectFlags,
+    extra_files: Option<&[anodizer_core::config::ExtraFileSpec]>,
+) -> Vec<Artifact> {
+    let quiet = StageLogger::new(publisher, anodizer_core::log::Verbosity::Quiet);
+    collect_upload_artifacts_owned(ctx, publisher, mode, ids, exts, flags, extra_files, &quiet)
+        .unwrap_or_else(|_| {
+            collect_upload_artifacts(ctx, mode, ids, exts, flags)
+                .into_iter()
+                .cloned()
+                .collect()
+        })
+}
+
 // ---------------------------------------------------------------------------
 // build_reqwest_client
 // ---------------------------------------------------------------------------
@@ -1160,12 +1191,7 @@ pub(crate) fn collect_artifactory_targets(ctx: &Context) -> Vec<ArtifactoryTarge
             meta: include_meta,
             extra_files_only,
         };
-        // Best-effort: a quiet logger absorbs extra_files glob warnings, and a
-        // resolution error only narrows the rollback checklist (the publish
-        // path already surfaced any real blocker), so fall back to the
-        // filtered set when extra_files can't resolve.
-        let quiet = StageLogger::new("artifactory", anodizer_core::log::Verbosity::Quiet);
-        let artifacts = collect_upload_artifacts_owned(
+        let artifacts = collect_target_artifacts_best_effort(
             ctx,
             "artifactory",
             mode,
@@ -1173,20 +1199,7 @@ pub(crate) fn collect_artifactory_targets(ctx: &Context) -> Vec<ArtifactoryTarge
             entry.exts.as_deref(),
             flags,
             entry.extra_files.as_deref(),
-            &quiet,
-        )
-        .unwrap_or_else(|_| {
-            collect_upload_artifacts(
-                ctx,
-                mode,
-                entry.ids.as_deref(),
-                entry.exts.as_deref(),
-                flags,
-            )
-            .into_iter()
-            .cloned()
-            .collect()
-        });
+        );
         for a in &artifacts {
             // Best-effort (see fn doc): a render failure or an underivable deb
             // arch only narrows the rollback checklist — the publish path's own

@@ -16,7 +16,7 @@ use anyhow::{Context as _, Result, bail};
 use std::collections::HashMap;
 
 use crate::artifactory::{
-    ArtifactoryTarget, CollectFlags, build_reqwest_client, collect_upload_artifacts,
+    ArtifactoryTarget, CollectFlags, build_reqwest_client, collect_target_artifacts_best_effort,
     collect_upload_artifacts_owned, render_artifact_url, validate_upload_mode_for,
 };
 
@@ -342,13 +342,7 @@ pub(crate) fn collect_upload_targets(ctx: &Context) -> Vec<ArtifactoryTarget> {
         let target_template = entry.target.as_str();
         let mode = entry.mode.as_deref().unwrap_or("archive");
         let custom_artifact_name = entry.custom_artifact_name.unwrap_or(false);
-        // Best-effort: a quiet logger absorbs extra_files glob warnings, and a
-        // resolution error only narrows the rollback checklist (the publish
-        // path already surfaced any real blocker), so fall back to the
-        // filtered set when extra_files can't resolve.
-        let quiet =
-            anodizer_core::log::StageLogger::new("uploads", anodizer_core::log::Verbosity::Quiet);
-        let artifacts = collect_upload_artifacts_owned(
+        let artifacts = collect_target_artifacts_best_effort(
             ctx,
             "uploads",
             mode,
@@ -356,20 +350,7 @@ pub(crate) fn collect_upload_targets(ctx: &Context) -> Vec<ArtifactoryTarget> {
             entry.exts.as_deref(),
             entry_collect_flags(entry),
             entry.extra_files.as_deref(),
-            &quiet,
-        )
-        .unwrap_or_else(|_| {
-            collect_upload_artifacts(
-                ctx,
-                mode,
-                entry.ids.as_deref(),
-                entry.exts.as_deref(),
-                entry_collect_flags(entry),
-            )
-            .into_iter()
-            .cloned()
-            .collect()
-        });
+        );
         for a in &artifacts {
             if let Ok(url) = render_artifact_url(ctx, target_template, a, custom_artifact_name) {
                 out.push(ArtifactoryTarget {
