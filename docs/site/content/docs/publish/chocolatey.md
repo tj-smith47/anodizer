@@ -82,15 +82,15 @@ crates:
         authors: "My Org"                   # optional
         description: "A CLI tool"           # optional (template)
         summary: "A CLI tool"               # optional (template)
-        license: MIT                        # optional; SPDX identifier
-        license_url: ""                     # optional; falls back to opensource.org
+        license: MIT                        # optional; SPDX expression (MIT OR Apache-2.0)
+        license_url: ""                     # optional; defaults to derived GitHub LICENSE blob URL
         require_license_acceptance: false   # optional
         project_url: ""                     # optional; defaults to GitHub repo URL
-        project_source_url: ""             # optional
+        project_source_url: ""             # optional; defaults to GitHub repo URL
         icon_url: ""                        # optional; package icon URL
         copyright: ""                       # optional (template)
         docs_url: ""                        # optional
-        bug_tracker_url: ""                 # optional
+        bug_tracker_url: ""                 # optional; defaults to <repo>/issues
         package_source_url: ""             # optional
         owners: ""                          # optional; Chocolatey gallery owner
         tags: []                            # optional; array or space-separated string
@@ -145,12 +145,12 @@ When `republish_in_moderation: true`, anodizer re-pushes a queued nupkg if the f
 | `icon_url` | string | none | URL to the package icon image |
 | `copyright` | string | none | Copyright notice (supports templates) |
 | `description` | string | Cargo `[package].description` | Package description (supports templates). Derived from `Cargo.toml`; falls back to crate name. |
-| `license` | string | Cargo `[package].license` | SPDX license identifier (e.g., `MIT`, `Apache-2.0`). Derived from `Cargo.toml`; required by Chocolatey, so set this if the crate has none. |
-| `license_url` | string | auto | Explicit license URL. Falls back to `https://opensource.org/licenses/<license>` |
+| `license` | string | Cargo `[package].license` | SPDX license expression (e.g. `MIT`, `Apache-2.0`, `MIT OR Apache-2.0`), emitted as the modern `<license type="expression">` element. Derived from `Cargo.toml`; required by Chocolatey, so set this if the crate has none. |
+| `license_url` | string | derived | Explicit `<licenseUrl>`. When unset, anodizer derives a real GitHub `…/blob/<tag>/LICENSE` URL from `repository`; with no repository, no `<licenseUrl>` is emitted. anodizer never synthesizes an `opensource.org/licenses/<spdx>` URL — it 404s for compound SPDX and is rejected at moderation. |
 | `require_license_acceptance` | bool | `false` | Require users to accept the license before install |
-| `project_source_url` | string | none | Source code repository URL |
+| `project_source_url` | string | repo URL | Source code repository URL; defaults to the derived `repository` URL |
 | `docs_url` | string | none | Documentation URL |
-| `bug_tracker_url` | string | none | Bug tracker URL |
+| `bug_tracker_url` | string | `<repo>/issues` | Bug tracker URL; defaults to `{repository}/issues` |
 | `tags` | string or string[] | package name | Space-separated string or array of tags for the gallery |
 | `summary` | string | none | Short summary of the package (supports templates) |
 | `release_notes` | string | none | Release notes for this version (supports templates) |
@@ -159,7 +159,7 @@ When `republish_in_moderation: true`, anodizer re-pushes a queued nupkg if the f
 | `source_repo` | string | `https://push.chocolatey.org/` | Push source URL |
 | `skip_publish` | bool | `false` | Skip pushing the `.nupkg` to the Chocolatey repository |
 | `disable` | bool or string | `false` | Disable this publisher entirely. Accepts a bool or a template string that evaluates to a truthy value |
-| `use` | string | `archive` | Artifact type to package: `archive`, `msi`, or `nsis` |
+| `use` | string | `archive` | Artifact type to package, which also routes the install cmdlet: `archive` → `Install-ChocolateyZipPackage` (unpacked into `tools/`); `msi` → `Install-ChocolateyPackage -FileType 'msi'` with `-SilentArgs '/qn /norestart'` and MSI `-ValidExitCodes @(0, 1641, 3010)`; `nsis` → `Install-ChocolateyPackage -FileType 'exe'` with `-SilentArgs '/S'`. |
 | `amd64_variant` | string | `v1` | amd64 microarchitecture variant filter (`v1`, `v2`, `v3`, `v4`) |
 | `republish_in_moderation` | bool or string | `false` | Re-push the nupkg when a version is already in the community moderation queue. See [Recovery flags](../advanced/recovery-flags.md#chocolatey-republish-in-moderation). |
 
@@ -178,7 +178,7 @@ When the publish stage runs for Chocolatey, Anodizer:
 
 1. **Finds Windows artifacts** from the build stage, filtering by `ids` and `amd64_variant` if configured. It looks for both 32-bit (i686/i386/x86) and 64-bit artifacts.
 2. **Generates a `.nuspec` XML manifest** containing all package metadata (name, version, authors, description, license, tags, dependencies, etc.). All XML special characters are properly escaped.
-3. **Generates a `chocolateyInstall.ps1` PowerShell script** placed in a `tools/` directory. The script uses `Install-ChocolateyZipPackage` with SHA-256 checksums. If both 32-bit and 64-bit artifacts are found, a dual-architecture script is generated that passes both URLs; otherwise a single-architecture script is produced.
+3. **Generates a `chocolateyInstall.ps1` PowerShell script** placed in a `tools/` directory, with SHA-256 checksums. The install cmdlet is routed by the artifact's installer type (the `use:` selector): an archive is unpacked via `Install-ChocolateyZipPackage`; an msi or nsis exe is run silently via `Install-ChocolateyPackage` (`-FileType 'msi'` / `'exe'` with the matching silent switches, plus MSI's reboot-aware `-ValidExitCodes`). If both 32-bit and 64-bit artifacts are found, a dual-architecture script is generated that passes both URLs; otherwise a single-architecture script is produced.
 4. **Runs `choco pack`** to create the `.nupkg` file from the nuspec and tools directory.
 5. **Runs `choco push`** to upload the `.nupkg` to the configured source repository (defaults to `https://push.chocolatey.org/`).
 

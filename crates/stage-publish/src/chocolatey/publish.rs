@@ -9,7 +9,9 @@ use anyhow::{Context as _, Result};
 
 use crate::util;
 
-use super::install::{InstallScriptDual, generate_install_script, generate_install_script_dual};
+use super::install::{
+    FileType, InstallScriptDual, generate_install_script, generate_install_script_dual,
+};
 use super::nuspec::{NuspecParams, generate_nuspec};
 use super::package::{
     FeedHashResult, compute_nupkg_hash, create_nupkg, package_feed_hash, push_nupkg,
@@ -21,10 +23,20 @@ use super::package::{
 struct ChocoMetadata {
     description: String,
     license: String,
+    /// Resolved `<licenseUrl>`: the explicit `license_url:` config when set,
+    /// else a derived GitHub `…/blob/<ref>/LICENSE` URL when the release repo
+    /// is known, else `None` (no `<licenseUrl>` is emitted — never a
+    /// synthesized 404ing `opensource.org` URL).
+    license_url: Option<String>,
     authors: String,
     project_url: String,
     icon_url: String,
     tags: Vec<String>,
+    /// Resolved `<projectSourceUrl>`: explicit config, else the derived repo
+    /// URL (real packages always set it; moderators expect it).
+    project_source_url: Option<String>,
+    /// Resolved `<bugTrackerUrl>`: explicit config, else `{repo}/issues`.
+    bug_tracker_url: Option<String>,
 }
 
 /// Optional, template-rendered text fields that flow into `<title>`,
@@ -135,7 +147,8 @@ pub fn publish_to_chocolatey(
         crate_name,
     )?;
 
-    let install_script = build_install_script(pkg_name, &install_mode)?;
+    let file_type = FileType::from_use(choco_cfg.use_artifact.as_deref());
+    let install_script = build_install_script(pkg_name, &install_mode, file_type)?;
 
     let staged = stage_package(pkg_name, &version, &nuspec, &install_script, log)?;
 
@@ -298,11 +311,11 @@ fn resolve_metadata(
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "chocolatey: license is required but not configured for crate '{}'. \
-                 An empty <license> field produces a broken licenseUrl \
-                 (`https://opensource.org/licenses/`) which Chocolatey gallery \
-                 moderators reject. Set `publish.chocolatey.license` (SPDX \
-                 identifier, e.g. \"MIT\") or top-level `metadata.license`, or \
-                 set `publish.chocolatey.license_url` to a custom URL.",
+                 The nuspec needs an SPDX expression for its \
+                 <license type=\"expression\"> element, which Chocolatey gallery \
+                 moderators expect. Set `publish.chocolatey.license` (SPDX \
+                 identifier, e.g. \"MIT\" or \"MIT OR Apache-2.0\") or top-level \
+                 `metadata.license`.",
                 crate_name,
             )
         })?;
@@ -315,16 +328,44 @@ fn resolve_metadata(
                 .map(str::to_string)
         })
         .unwrap_or_else(|| crate_name.to_string());
-    let project_url = choco_cfg.project_url.clone().unwrap_or_else(|| {
-        if repo_owner.is_empty() || repo_name.is_empty() {
-            // <projectUrl> is optional per nuspec.xsd (`xs:element minOccurs="0"`);
-            // empty value is suppressed by the Tera `{% if project_url %}` guard
-            // in nuspec.rs so no broken tag ships.
-            String::new()
-        } else {
-            format!("https://github.com/{}/{}", repo_owner, repo_name)
-        }
-    });
+    // The repo URL (`https://github.com/{owner}/{name}`) is the common base
+    // for <projectUrl>, <projectSourceUrl>, <bugTrackerUrl>, and the derived
+    // <licenseUrl>. None when the release repo is unknown (internal feed).
+    let repo_url = (!repo_owner.is_empty() && !repo_name.is_empty())
+        .then(|| format!("https://github.com/{}/{}", repo_owner, repo_name));
+
+    let project_url = choco_cfg
+        .project_url
+        .clone()
+        .or_else(|| repo_url.clone())
+        // <projectUrl> is optional per nuspec.xsd (`xs:element minOccurs="0"`);
+        // empty value is suppressed by the Tera `{% if project_url %}` guard
+        // in nuspec.rs so no broken tag ships.
+        .unwrap_or_default();
+
+    // <projectSourceUrl> defaults to the repo URL — real packages always set
+    // it and moderators expect it; explicit config wins.
+    let project_source_url = choco_cfg
+        .project_source_url
+        .clone()
+        .or_else(|| repo_url.clone());
+
+    // <bugTrackerUrl> defaults to `{repo}/issues`; explicit config wins.
+    let bug_tracker_url = choco_cfg
+        .bug_tracker_url
+        .clone()
+        .or_else(|| repo_url.as_ref().map(|u| format!("{u}/issues")));
+
+    // <licenseUrl>: explicit config wins; else derive a real GitHub LICENSE
+    // blob URL (`{repo}/blob/{ref}/LICENSE`) at the release tag — what every
+    // real exemplar (ripgrep/fd/gh) ships. NEVER synthesize an
+    // opensource.org URL: it 404s for compound SPDX and gets the package
+    // moderation-rejected. None when the repo is unknown → no <licenseUrl>.
+    let license_url = choco_cfg
+        .license_url
+        .clone()
+        .or_else(|| repo_url.as_ref().map(|u| derive_license_blob_url(ctx, u)));
+
     // <iconUrl> is optional per nuspec.xsd; nuspec.rs only emits the tag when
     // the value is non-empty (gated on `icon_url` truthy in the Tera template).
     let icon_url = choco_cfg.icon_url.clone().unwrap_or_default();
@@ -334,11 +375,30 @@ fn resolve_metadata(
     Ok(ChocoMetadata {
         description,
         license,
+        license_url,
         authors,
         project_url,
         icon_url,
         tags,
+        project_source_url,
+        bug_tracker_url,
     })
+}
+
+/// Derives the GitHub `…/blob/<ref>/LICENSE` URL for the release, pinning the
+/// blob at the release tag (`template_vars["Tag"]`) so the URL is stable for
+/// the published version. Falls back to the `HEAD` ref when no tag is in
+/// scope (e.g. a snapshot render before the tag is stamped). The repo's
+/// canonical license file is conventionally `LICENSE`; real exemplars point at
+/// the repo root LICENSE blob.
+fn derive_license_blob_url(ctx: &Context, repo_url: &str) -> String {
+    let git_ref = ctx
+        .template_vars()
+        .get("Tag")
+        .filter(|t| !t.is_empty())
+        .cloned()
+        .unwrap_or_else(|| "HEAD".to_string());
+    format!("{repo_url}/blob/{git_ref}/LICENSE")
 }
 
 /// Filters the crate's artifacts down to Windows targets (matching by
@@ -627,7 +687,7 @@ fn build_nuspec(
         version,
         description: &metadata.description,
         license: &metadata.license,
-        license_url: choco_cfg.license_url.as_deref(),
+        license_url: metadata.license_url.as_deref(),
         authors: &metadata.authors,
         project_url: &metadata.project_url,
         icon_url: &metadata.icon_url,
@@ -637,17 +697,24 @@ fn build_nuspec(
         title: text.title.as_deref(),
         copyright: text.copyright.as_deref(),
         require_license_acceptance: choco_cfg.require_license_acceptance.unwrap_or(false),
-        project_source_url: choco_cfg.project_source_url.as_deref(),
+        project_source_url: metadata.project_source_url.as_deref(),
         docs_url: choco_cfg.docs_url.as_deref(),
-        bug_tracker_url: choco_cfg.bug_tracker_url.as_deref(),
+        bug_tracker_url: metadata.bug_tracker_url.as_deref(),
         summary: text.summary.as_deref(),
         release_notes: text.release_notes.as_deref(),
         dependencies: choco_cfg.dependencies.as_deref().unwrap_or(&[]),
     })
 }
 
-/// Renders `chocolateyinstall.ps1` from the resolved `InstallMode`.
-fn build_install_script(pkg_name: &str, install_mode: &InstallMode) -> Result<String> {
+/// Renders `chocolateyinstall.ps1` from the resolved `InstallMode`, routing the
+/// emitted cmdlet by the artifact's installer type (`file_type`): a zip is
+/// unpacked via `Install-ChocolateyZipPackage`, an msi/nsis-exe is run silently
+/// via `Install-ChocolateyPackage`.
+fn build_install_script(
+    pkg_name: &str,
+    install_mode: &InstallMode,
+    file_type: FileType,
+) -> Result<String> {
     match install_mode {
         InstallMode::Dual {
             url32,
@@ -660,12 +727,13 @@ fn build_install_script(pkg_name: &str, install_mode: &InstallMode) -> Result<St
             hash32,
             url64,
             hash64,
+            file_type,
         }),
         InstallMode::Single {
             url,
             hash,
             is_32bit,
-        } => generate_install_script(pkg_name, url, hash, *is_32bit),
+        } => generate_install_script(pkg_name, url, hash, *is_32bit, file_type),
     }
 }
 
@@ -1453,10 +1521,13 @@ mod tests {
         let metadata = ChocoMetadata {
             description: "d".to_string(),
             license: "MIT".to_string(),
+            license_url: None,
             authors: "Alice".to_string(),
             project_url: "https://example.com".to_string(),
             icon_url: String::new(),
             tags: vec!["cli".to_string()],
+            project_source_url: None,
+            bug_tracker_url: None,
         };
         let text = ChocoTextFields {
             title: None,
@@ -1502,7 +1573,9 @@ mod tests {
             dependencies: &[],
         })
         .unwrap();
-        let install = generate_install_script(pkg_name, "https://e/x.zip", "abc", false).unwrap();
+        let install =
+            generate_install_script(pkg_name, "https://e/x.zip", "abc", false, FileType::Zip)
+                .unwrap();
         let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
         let staged = stage_package(pkg_name, version, &nuspec_xml, &install, &log).unwrap();
         assert!(staged.nupkg_path.exists(), "nupkg must be written");

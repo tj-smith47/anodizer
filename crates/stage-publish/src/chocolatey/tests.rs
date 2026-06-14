@@ -2,7 +2,9 @@
 
 #![allow(clippy::field_reassign_with_default)]
 
-use super::install::{InstallScriptDual, generate_install_script, generate_install_script_dual};
+use super::install::{
+    FileType, InstallScriptDual, generate_install_script, generate_install_script_dual,
+};
 use super::nuspec::{NuspecParams, generate_nuspec};
 use super::package::{create_nupkg, parse_xml_element};
 use super::publish::publish_to_chocolatey;
@@ -109,8 +111,11 @@ fn test_generate_nuspec_xml_escaping_title_and_tags() {
     assert!(nuspec.contains("<tags>c++ &amp; c#</tags>"));
 }
 
+/// A single-SPDX license with no explicit `license_url` emits the modern
+/// `<license type="expression">` element and NO synthesized `licenseUrl`
+/// (the opensource.org URL is never fabricated — it 404s for compound SPDX).
 #[test]
-fn test_generate_nuspec_has_license_url_default() {
+fn test_generate_nuspec_emits_license_expression_no_synthesized_url() {
     let nuspec = generate_nuspec(&NuspecParams {
         name: "tool",
         version: "2.0.0",
@@ -118,20 +123,49 @@ fn test_generate_nuspec_has_license_url_default() {
         ..default_nuspec_params()
     })
     .unwrap();
-    assert!(nuspec.contains("<licenseUrl>https://opensource.org/licenses/Apache-2.0</licenseUrl>"));
+    assert!(nuspec.contains("<license type=\"expression\">Apache-2.0</license>"));
+    assert!(
+        !nuspec.contains("opensource.org"),
+        "must never synthesize an opensource.org licenseUrl"
+    );
+    assert!(
+        !nuspec.contains("<licenseUrl>"),
+        "no licenseUrl when none is derivable; got: {nuspec}"
+    );
 }
 
+/// The canonical Rust dual license is a compound SPDX expression — it must
+/// land verbatim in `<license type="expression">` (the legacy licenseUrl
+/// synthesis 404'd on exactly this value).
 #[test]
-fn test_generate_nuspec_custom_license_url() {
+fn test_generate_nuspec_compound_spdx_expression() {
     let nuspec = generate_nuspec(&NuspecParams {
         name: "tool",
         version: "2.0.0",
-        license: "Proprietary",
-        license_url: Some("https://example.com/license"),
+        license: "MIT OR Apache-2.0",
         ..default_nuspec_params()
     })
     .unwrap();
-    assert!(nuspec.contains("<licenseUrl>https://example.com/license</licenseUrl>"));
+    assert!(nuspec.contains("<license type=\"expression\">MIT OR Apache-2.0</license>"));
+    assert!(!nuspec.contains("opensource.org"));
+}
+
+/// An explicit `license_url` (e.g. a GitHub LICENSE blob URL) is emitted as
+/// `<licenseUrl>` alongside the SPDX `<license type="expression">`.
+#[test]
+fn test_generate_nuspec_real_license_url_alongside_expression() {
+    let nuspec = generate_nuspec(&NuspecParams {
+        name: "tool",
+        version: "2.0.0",
+        license: "MIT",
+        license_url: Some("https://github.com/org/tool/blob/v2.0.0/LICENSE"),
+        ..default_nuspec_params()
+    })
+    .unwrap();
+    assert!(
+        nuspec.contains("<licenseUrl>https://github.com/org/tool/blob/v2.0.0/LICENSE</licenseUrl>")
+    );
+    assert!(nuspec.contains("<license type=\"expression\">MIT</license>"));
     assert!(!nuspec.contains("opensource.org"));
 }
 
@@ -168,6 +202,7 @@ fn test_generate_install_script_basic() {
         "https://example.com/mytool-1.0.0-windows-amd64.zip",
         "deadbeef",
         false,
+        FileType::Zip,
     )
     .unwrap();
     assert!(script.contains("$ErrorActionPreference = 'Stop'"));
@@ -187,6 +222,7 @@ fn test_generate_install_script_32bit() {
         "https://example.com/mytool-1.0.0-windows-x86.zip",
         "deadbeef",
         true,
+        FileType::Zip,
     )
     .unwrap();
     assert!(script.contains("packageName   = 'mytool'"));
@@ -198,17 +234,28 @@ fn test_generate_install_script_32bit() {
 
 #[test]
 fn test_generate_install_script_has_unzip_location() {
-    let script =
-        generate_install_script("tool", "https://example.com/tool.zip", "abc", false).unwrap();
+    let script = generate_install_script(
+        "tool",
+        "https://example.com/tool.zip",
+        "abc",
+        false,
+        FileType::Zip,
+    )
+    .unwrap();
     assert!(script.contains("unzipLocation"));
     assert!(script.contains("Split-Path"));
 }
 
 #[test]
 fn test_generate_install_script_structure() {
-    let script =
-        generate_install_script("my-app", "https://example.com/my-app.zip", "hash123", false)
-            .unwrap();
+    let script = generate_install_script(
+        "my-app",
+        "https://example.com/my-app.zip",
+        "hash123",
+        false,
+        FileType::Zip,
+    )
+    .unwrap();
     let lines: Vec<&str> = script.lines().collect();
     assert_eq!(lines[0], "$ErrorActionPreference = 'Stop'");
     assert_eq!(lines[1], "");
@@ -228,6 +275,7 @@ fn test_generate_install_script_dual_arch() {
         hash32: "hash32abc",
         url64: "https://example.com/mytool-1.0.0-windows-amd64.zip",
         hash64: "hash64def",
+        file_type: FileType::Zip,
     })
     .unwrap();
     assert!(script.contains("$ErrorActionPreference = 'Stop'"));
@@ -239,6 +287,108 @@ fn test_generate_install_script_dual_arch() {
     assert!(script.contains("Install-ChocolateyZipPackage $packageName $url $toolsDir $url64bit"));
     assert!(script.contains("-Checksum $checksum -ChecksumType 'sha256'"));
     assert!(script.contains("-Checksum64 $checksum64 -ChecksumType64 'sha256'"));
+}
+
+// ----- fileType routing: msi -----
+
+/// A 64-bit MSI artifact must be RUN (`Install-ChocolateyPackage` with
+/// `-FileType 'msi'` + `/qn /norestart` + MSI exit codes), not unpacked.
+#[test]
+fn test_generate_install_script_msi_64bit() {
+    let script = generate_install_script(
+        "mytool",
+        "https://example.com/mytool-1.0.0-x64.msi",
+        "msihash",
+        false,
+        FileType::Msi,
+    )
+    .unwrap();
+    assert!(script.contains("Install-ChocolateyPackage @packageArgs"));
+    assert!(!script.contains("Install-ChocolateyZipPackage"));
+    assert!(script.contains("fileType       = 'msi'"));
+    assert!(script.contains("url64bit       = 'https://example.com/mytool-1.0.0-x64.msi'"));
+    assert!(script.contains("checksum64     = 'msihash'"));
+    assert!(script.contains("checksumType64 = 'sha256'"));
+    assert!(script.contains("silentArgs     = '/qn /norestart'"));
+    assert!(script.contains("validExitCodes = @(0, 1641, 3010)"));
+    assert!(!script.contains("unzipLocation"));
+}
+
+/// A dual-arch MSI routes both URLs through `Install-ChocolateyPackage`.
+#[test]
+fn test_generate_install_script_msi_dual_arch() {
+    let script = generate_install_script_dual(&InstallScriptDual {
+        name: "mytool",
+        url32: "https://example.com/mytool-x86.msi",
+        hash32: "h32",
+        url64: "https://example.com/mytool-x64.msi",
+        hash64: "h64",
+        file_type: FileType::Msi,
+    })
+    .unwrap();
+    assert!(script.contains("Install-ChocolateyPackage @packageArgs"));
+    assert!(script.contains("fileType       = 'msi'"));
+    assert!(script.contains("url            = 'https://example.com/mytool-x86.msi'"));
+    assert!(script.contains("url64bit       = 'https://example.com/mytool-x64.msi'"));
+    assert!(script.contains("checksum       = 'h32'"));
+    assert!(script.contains("checksum64     = 'h64'"));
+    assert!(script.contains("silentArgs     = '/qn /norestart'"));
+    assert!(script.contains("validExitCodes = @(0, 1641, 3010)"));
+}
+
+// ----- fileType routing: nsis exe -----
+
+/// An NSIS-generated `.exe` must be RUN via `Install-ChocolateyPackage` with
+/// `-FileType 'exe'` and the NSIS silent switch `/S`, and NO validExitCodes
+/// (those are MSI-specific).
+#[test]
+fn test_generate_install_script_nsis_64bit() {
+    let script = generate_install_script(
+        "mytool",
+        "https://example.com/mytool-setup.exe",
+        "exehash",
+        false,
+        FileType::NsisExe,
+    )
+    .unwrap();
+    assert!(script.contains("Install-ChocolateyPackage @packageArgs"));
+    assert!(!script.contains("Install-ChocolateyZipPackage"));
+    assert!(script.contains("fileType       = 'exe'"));
+    assert!(script.contains("url64bit       = 'https://example.com/mytool-setup.exe'"));
+    assert!(script.contains("checksum64     = 'exehash'"));
+    assert!(script.contains("silentArgs     = '/S'"));
+    assert!(
+        !script.contains("validExitCodes"),
+        "validExitCodes is MSI-only; NSIS exe must omit it. got: {script}"
+    );
+}
+
+#[test]
+fn test_generate_install_script_nsis_32bit() {
+    let script = generate_install_script(
+        "mytool",
+        "https://example.com/mytool-setup-x86.exe",
+        "exehash32",
+        true,
+        FileType::NsisExe,
+    )
+    .unwrap();
+    assert!(script.contains("Install-ChocolateyPackage @packageArgs"));
+    assert!(script.contains("fileType     = 'exe'"));
+    assert!(script.contains("url          = 'https://example.com/mytool-setup-x86.exe'"));
+    assert!(script.contains("checksum     = 'exehash32'"));
+    assert!(script.contains("silentArgs   = '/S'"));
+    assert!(!script.contains("url64bit"));
+    assert!(!script.contains("validExitCodes"));
+}
+
+#[test]
+fn test_filetype_from_use_mapping() {
+    assert_eq!(FileType::from_use(None), FileType::Zip);
+    assert_eq!(FileType::from_use(Some("archive")), FileType::Zip);
+    assert_eq!(FileType::from_use(Some("zip")), FileType::Zip);
+    assert_eq!(FileType::from_use(Some("msi")), FileType::Msi);
+    assert_eq!(FileType::from_use(Some("nsis")), FileType::NsisExe);
 }
 
 /// Chocolatey only ships amd64/386. When the only Windows
@@ -573,8 +723,14 @@ fn test_create_nupkg_produces_valid_opc_zip() {
     // Write install script
     let tools_dir = pkg_dir.join("tools");
     std::fs::create_dir_all(&tools_dir).unwrap();
-    let script =
-        generate_install_script("mytool", "https://example.com/dl.zip", "abc123", false).unwrap();
+    let script = generate_install_script(
+        "mytool",
+        "https://example.com/dl.zip",
+        "abc123",
+        false,
+        FileType::Zip,
+    )
+    .unwrap();
     std::fs::write(tools_dir.join("chocolateyinstall.ps1"), &script).unwrap();
 
     // Create nupkg
@@ -946,10 +1102,10 @@ fn parse_xml_element_trims_whitespace() {
 }
 
 /// Building a chocolatey nuspec with neither `publish.chocolatey.license`
-/// nor top-level `metadata.license` must bail with an actionable error.
-/// Defaulting to `""` would produce `<licenseUrl>https://opensource.org/licenses/</licenseUrl>`,
-/// which Chocolatey gallery moderators reject (broken link). The bail
-/// message must name the publisher, the field, and the offending crate.
+/// nor top-level `metadata.license` must bail with an actionable error: the
+/// nuspec needs an SPDX expression for its `<license type="expression">`
+/// element, which Chocolatey gallery moderators expect. The bail message must
+/// name the publisher, the field, and the offending crate.
 #[test]
 fn chocolatey_license_empty_metadata_bails_with_actionable_error() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};

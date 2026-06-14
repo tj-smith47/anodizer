@@ -31,7 +31,16 @@ pub struct NuspecParams<'a> {
     pub name: &'a str,
     pub version: &'a str,
     pub description: &'a str,
+    /// SPDX license expression (e.g. `MIT`, `MIT OR Apache-2.0`). Emitted as
+    /// the modern `<license type="expression">…</license>` element, which
+    /// accepts compound expressions the legacy `<licenseUrl>` cannot encode.
     pub license: &'a str,
+    /// Explicit `<licenseUrl>` value. When `None`, no `<licenseUrl>` is
+    /// emitted — anodizer never synthesizes an `opensource.org/licenses/<spdx>`
+    /// URL, which 404s for compound SPDX expressions (the canonical Rust
+    /// `MIT OR Apache-2.0`) and gets the package rejected at moderation. The
+    /// orchestrator derives a real GitHub `…/blob/<ref>/LICENSE` URL when the
+    /// release repo is known.
     pub license_url: Option<&'a str>,
     pub authors: &'a str,
     pub project_url: &'a str,
@@ -63,11 +72,12 @@ const NUSPEC_TEMPLATE: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 {% endif %}{% if owners %}    <owners>{{ owners }}</owners>
 {% endif %}    <title>{{ title }}</title>
     <authors>{{ authors }}</authors>
-    <projectUrl>{{ project_url }}</projectUrl>
-{% if icon_url %}    <iconUrl>{{ icon_url }}</iconUrl>
+{% if project_url %}    <projectUrl>{{ project_url }}</projectUrl>
+{% endif %}{% if icon_url %}    <iconUrl>{{ icon_url }}</iconUrl>
 {% endif %}{% if copyright %}    <copyright>{{ copyright }}</copyright>
-{% endif %}    <licenseUrl>{{ license_url }}</licenseUrl>
-    <requireLicenseAcceptance>{{ require_license_acceptance }}</requireLicenseAcceptance>
+{% endif %}{% if license_expression %}    <license type="expression">{{ license_expression }}</license>
+{% endif %}{% if license_url %}    <licenseUrl>{{ license_url }}</licenseUrl>
+{% endif %}    <requireLicenseAcceptance>{{ require_license_acceptance }}</requireLicenseAcceptance>
 {% if project_source_url %}    <projectSourceUrl>{{ project_source_url }}</projectSourceUrl>
 {% endif %}{% if docs_url %}    <docsUrl>{{ docs_url }}</docsUrl>
 {% endif %}{% if bug_tracker_url %}    <bugTrackerUrl>{{ bug_tracker_url }}</bugTrackerUrl>
@@ -95,10 +105,15 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> Result<String> {
     } else {
         params.tags.join(" ")
     };
-    let license_url = match params.license_url {
-        Some(url) if !url.is_empty() => url.to_string(),
-        _ => format!("https://opensource.org/licenses/{}", params.license),
-    };
+    // `<licenseUrl>` is passed through verbatim when set, else omitted.
+    // anodizer NEVER synthesizes `https://opensource.org/licenses/<spdx>`:
+    // that URL 404s for every compound SPDX expression (`MIT OR Apache-2.0`,
+    // `… WITH LLVM-exception`, `CC0-1.0`), and a 404 licenseUrl gets the
+    // package rejected by Chocolatey moderation. The modern
+    // `<license type="expression">` element below carries the SPDX expression
+    // losslessly; a real `<licenseUrl>` (a GitHub LICENSE blob URL) is
+    // derived upstream when the release repo is known.
+    let license_url = params.license_url.filter(|u| !u.is_empty()).unwrap_or("");
     let title = params.title.unwrap_or(params.name);
 
     let tera = anodizer_core::template::parse_static("nuspec", NUSPEC_TEMPLATE)
@@ -115,7 +130,11 @@ pub fn generate_nuspec(params: &NuspecParams<'_>) -> Result<String> {
         "icon_url",
         &(!params.icon_url.is_empty()).then_some(escape_xml(params.icon_url)),
     );
-    ctx.insert("license_url", &escape_xml(&license_url));
+    ctx.insert("license_url", &escape_xml(license_url));
+    // The SPDX expression element: only emitted when a license is present.
+    // Empty string is falsy in Tera so the `{% if license_expression %}` guard
+    // drops the element rather than shipping `<license type="expression"></license>`.
+    ctx.insert("license_expression", &escape_xml(params.license));
     ctx.insert("tags_str", &escape_xml(&tags_str));
     // Each optional field below is wrapped in `{% if foo %}...{% endif %}` in
     // NUSPEC_TEMPLATE; empty string is falsy in Tera so the matching tag is

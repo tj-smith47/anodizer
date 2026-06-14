@@ -38,18 +38,25 @@ pub struct ChocolateyConfig {
     pub copyright: Option<String>,
     /// Package description (supports markdown).
     pub description: Option<String>,
-    /// SPDX license identifier (e.g., "MIT", "Apache-2.0").
+    /// SPDX license expression (e.g. "MIT", "Apache-2.0", "MIT OR Apache-2.0").
+    /// Emitted as the modern `<license type="expression">` element, which
+    /// accepts compound expressions losslessly.
     pub license: Option<String>,
-    /// Optional explicit license URL. Falls back to
-    /// `https://opensource.org/licenses/<license>` when not set.
+    /// Optional explicit `<licenseUrl>`. When unset, anodizer derives a real
+    /// GitHub `…/blob/<tag>/LICENSE` URL from `repository` (what ripgrep / fd /
+    /// gh ship); when no repository is known, no `<licenseUrl>` is emitted.
+    /// anodizer never synthesizes an `opensource.org/licenses/<spdx>` URL —
+    /// it 404s for compound SPDX and gets the package rejected at moderation.
     pub license_url: Option<String>,
     /// Require license acceptance before install.
     pub require_license_acceptance: Option<bool>,
-    /// Source code project URL.
+    /// Source code project URL (`<projectSourceUrl>`). Defaults to the derived
+    /// `repository` URL when unset.
     pub project_source_url: Option<String>,
     /// Documentation URL.
     pub docs_url: Option<String>,
-    /// Bug tracker URL.
+    /// Bug tracker URL (`<bugTrackerUrl>`). Defaults to `{repository}/issues`
+    /// when unset.
     pub bug_tracker_url: Option<String>,
     /// Tags for the Chocolatey gallery (joined with single spaces in the
     /// emitted nuspec). Always a typed list — the legacy

@@ -1163,7 +1163,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `amd64_variant` | string | — | amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4"). Only artifacts matching this variant are included. Default: "v1". |
 | `api_key` | string | — | Chocolatey API key for `choco push`. Falls back to `CHOCOLATEY_API_KEY` env var. |
 | `authors` | string | — | Package author(s) displayed in the Chocolatey gallery. |
-| `bug_tracker_url` | string | — | Bug tracker URL. |
+| `bug_tracker_url` | string | — | Bug tracker URL (`<bugTrackerUrl>`). Defaults to `{repository}/issues` when unset. |
 | `copyright` | string | — | Copyright notice. |
 | `dependencies` | list of ChocolateyDependency | — | Package dependencies with optional version constraints. |
 | `description` | string | — | Package description (supports markdown). |
@@ -1171,13 +1171,13 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `icon_url` | string | — | URL to the package icon image shown in the Chocolatey gallery. |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose `id` is in this list. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Chocolatey publisher is skipped. Render failure hard-errors. Config key: `chocolateys[].if:`. |
-| `license` | string | — | SPDX license identifier (e.g., "MIT", "Apache-2.0"). |
-| `license_url` | string | — | Optional explicit license URL. Falls back to `https://opensource.org/licenses/<license>` when not set. |
+| `license` | string | — | SPDX license expression (e.g. "MIT", "Apache-2.0", "MIT OR Apache-2.0"). Emitted as the modern `<license type="expression">` element, which accepts compound expressions losslessly. |
+| `license_url` | string | — | Optional explicit `<licenseUrl>`. When unset, anodizer derives a real GitHub `…/blob/<tag>/LICENSE` URL from `repository` (what ripgrep / fd / gh ship); when no repository is known, no `<licenseUrl>` is emitted. anodizer never synthesizes an `opensource.org/licenses/<spdx>` URL — it 404s for compound SPDX and gets the package rejected at moderation. |
 | `name` | string | — | Override the package name (default: crate name). |
 | `owners` | string | — | Package owners (Chocolatey gallery user). |
 | `package_source_url` | string | — | URL shown as the package source in the Chocolatey gallery. |
 | `post_publish_poll` | PostPublishPollConfig | — | Post-publish moderation-queue polling settings. Polling is disabled by default — Chocolatey's community moderation queue routinely takes hours to days, and blocking a CI workflow on that wait is wrong. Opt in per-publisher with `post_publish_poll: { enabled: true }` when running locally and willing to wait, or disable globally via `--no-post-publish-poll`. |
-| `project_source_url` | string | — | Source code project URL. |
+| `project_source_url` | string | — | Source code project URL (`<projectSourceUrl>`). Defaults to the derived `repository` URL when unset. |
 | `project_url` | string | — | Project homepage URL. |
 | `release_notes` | string | — | Release notes for this version. |
 | `repository` | RepositoryConfig | — | Unified project repo config (owner/name). Used to derive `<projectUrl>` (the Chocolatey gallery link) and download URLs. `<projectUrl>` resolves through `project_url:` (if set) → derived `https://github.com/{repository.owner}/{repository.name}`. |

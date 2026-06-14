@@ -556,6 +556,206 @@ mod tests {
         );
     }
 
+    /// A choco config that sets `repository` but leaves `license_url`,
+    /// `project_source_url`, and `bug_tracker_url` UNSET — exercising the
+    /// derived-default path. `license` is the canonical Rust compound SPDX,
+    /// proving the licenseUrl is derived (a GitHub blob URL) rather than the
+    /// 404ing `opensource.org` synthesis the audit flagged.
+    fn derive_defaults_choco_cfg(pkg: &str) -> ChocolateyConfig {
+        ChocolateyConfig {
+            name: Some(pkg.to_string()),
+            repository: Some(RepositoryConfig {
+                owner: Some("acme".to_string()),
+                name: Some(pkg.to_string()),
+                ..Default::default()
+            }),
+            authors: Some("Acme Corp".to_string()),
+            description: Some("A widget management tool".to_string()),
+            license: Some("MIT OR Apache-2.0".to_string()),
+            ..Default::default()
+        }
+    }
+
+    /// (a) Single-crate mode, derived defaults: the SPDX expression lands in
+    /// `<license type="expression">`, `<licenseUrl>` is the derived GitHub
+    /// LICENSE blob URL pinned at the tag, `<projectSourceUrl>` is the repo
+    /// URL, `<bugTrackerUrl>` is `{repo}/issues` — and NO opensource.org URL
+    /// is ever synthesized.
+    #[test]
+    fn single_crate_derives_license_expr_and_repo_urls() {
+        let cfg = derive_defaults_choco_cfg("widget");
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![choco_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+
+        let findings = ChocolateySchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("validation runs");
+        assert!(
+            findings.is_empty(),
+            "derived nuspec must conform: {findings:?}"
+        );
+
+        let nuspec = render_nuspec_for_crate(&ctx, "widget", &ctx.logger("publish"))
+            .expect("render ok")
+            .expect("not skipped");
+        assert!(
+            !nuspec.contains("opensource.org"),
+            "must never synthesize an opensource.org licenseUrl: {nuspec}"
+        );
+        assert!(
+            nuspec.contains("<license type=\"expression\">MIT OR Apache-2.0</license>"),
+            "compound SPDX must land as a license expression: {nuspec}"
+        );
+        assert!(
+            nuspec.contains(
+                "<licenseUrl>https://github.com/acme/widget/blob/v1.0.0/LICENSE</licenseUrl>"
+            ),
+            "licenseUrl must be the derived GitHub blob URL pinned at the tag: {nuspec}"
+        );
+        assert!(
+            nuspec.contains("<projectSourceUrl>https://github.com/acme/widget</projectSourceUrl>"),
+            "projectSourceUrl must derive from the repo: {nuspec}"
+        );
+        assert!(
+            nuspec.contains("<bugTrackerUrl>https://github.com/acme/widget/issues</bugTrackerUrl>"),
+            "bugTrackerUrl must derive as {{repo}}/issues: {nuspec}"
+        );
+    }
+
+    /// (c) Workspace per-crate mode, derived defaults: each crate's nuspec
+    /// resolves ITS OWN repo + version. alpha's licenseUrl/projectSourceUrl
+    /// must point at acme/alpha (not beta), pinned at alpha's own tag — proving
+    /// the derived fields resolve per published crate, not last-writer-wins.
+    #[test]
+    fn workspace_per_crate_derives_fields_per_crate() {
+        let alpha = choco_crate(
+            "alpha",
+            "alpha-v{{ .Version }}",
+            derive_defaults_choco_cfg("alpha"),
+        );
+        let beta = choco_crate(
+            "beta",
+            "beta-v{{ .Version }}",
+            derive_defaults_choco_cfg("beta"),
+        );
+
+        let mut ctx_a = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![alpha.clone(), beta.clone()])
+            .selected_crates(vec!["alpha".to_string()])
+            .build();
+        scope_version(&mut ctx_a, "2.0.0");
+        let nuspec_a = render_nuspec_for_crate(&ctx_a, "alpha", &ctx_a.logger("publish"))
+            .expect("render ok")
+            .expect("not skipped");
+        assert!(
+            nuspec_a.contains(
+                "<licenseUrl>https://github.com/acme/alpha/blob/v2.0.0/LICENSE</licenseUrl>"
+            ),
+            "alpha licenseUrl must be acme/alpha at its own tag: {nuspec_a}"
+        );
+        assert!(
+            nuspec_a.contains("<projectSourceUrl>https://github.com/acme/alpha</projectSourceUrl>"),
+            "alpha projectSourceUrl must be acme/alpha: {nuspec_a}"
+        );
+        assert!(
+            nuspec_a
+                .contains("<bugTrackerUrl>https://github.com/acme/alpha/issues</bugTrackerUrl>"),
+            "alpha bugTrackerUrl must be acme/alpha/issues: {nuspec_a}"
+        );
+        assert!(
+            !nuspec_a.contains("acme/beta"),
+            "alpha must not leak beta's repo"
+        );
+
+        let mut ctx_b = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![alpha, beta])
+            .selected_crates(vec!["beta".to_string()])
+            .build();
+        scope_version(&mut ctx_b, "3.1.0");
+        let nuspec_b = render_nuspec_for_crate(&ctx_b, "beta", &ctx_b.logger("publish"))
+            .expect("render ok")
+            .expect("not skipped");
+        assert!(
+            nuspec_b.contains(
+                "<licenseUrl>https://github.com/acme/beta/blob/v3.1.0/LICENSE</licenseUrl>"
+            ),
+            "beta licenseUrl must be acme/beta at its own tag: {nuspec_b}"
+        );
+        assert!(
+            !nuspec_b.contains("acme/alpha"),
+            "beta must not leak alpha's repo"
+        );
+    }
+
+    /// An explicit `license_url` / `project_source_url` / `bug_tracker_url`
+    /// always wins over the derived default (override semantics).
+    #[test]
+    fn explicit_urls_override_derived_defaults() {
+        let cfg = ChocolateyConfig {
+            license_url: Some("https://acme.example/license".to_string()),
+            project_source_url: Some("https://acme.example/src".to_string()),
+            bug_tracker_url: Some("https://acme.example/bugs".to_string()),
+            ..derive_defaults_choco_cfg("widget")
+        };
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![choco_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        let nuspec = render_nuspec_for_crate(&ctx, "widget", &ctx.logger("publish"))
+            .expect("render ok")
+            .expect("not skipped");
+        assert!(nuspec.contains("<licenseUrl>https://acme.example/license</licenseUrl>"));
+        assert!(nuspec.contains("<projectSourceUrl>https://acme.example/src</projectSourceUrl>"));
+        assert!(nuspec.contains("<bugTrackerUrl>https://acme.example/bugs</bugTrackerUrl>"));
+        assert!(
+            !nuspec.contains("/blob/"),
+            "explicit licenseUrl must not be overridden by blob derivation"
+        );
+    }
+
+    /// An internal feed (no `repository` configured) derives NO repo URLs and
+    /// NO licenseUrl — the SPDX `<license type="expression">` still ships, but
+    /// no fabricated URL does. Confirms the derivation is skipped, not 404'd.
+    #[test]
+    fn no_repo_omits_derived_urls_keeps_license_expression() {
+        let cfg = ChocolateyConfig {
+            name: Some("widget".to_string()),
+            authors: Some("Acme".to_string()),
+            description: Some("A widget".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![choco_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        let nuspec = render_nuspec_for_crate(&ctx, "widget", &ctx.logger("publish"))
+            .expect("render ok")
+            .expect("not skipped");
+        assert!(nuspec.contains("<license type=\"expression\">MIT</license>"));
+        assert!(
+            !nuspec.contains("<licenseUrl>"),
+            "no licenseUrl without a repo: {nuspec}"
+        );
+        assert!(
+            !nuspec.contains("<projectUrl>"),
+            "no projectUrl without a repo"
+        );
+        assert!(!nuspec.contains("<projectSourceUrl>"));
+        assert!(!nuspec.contains("<bugTrackerUrl>"));
+        assert!(!nuspec.contains("opensource.org"));
+    }
+
     /// The structural floor must BITE: an empty `<authors>` (a required,
     /// non-empty element per nuspec.xsd) is rejected with a finding naming the
     /// field. The corrected document produces zero findings, proving the test
