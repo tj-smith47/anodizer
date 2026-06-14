@@ -49,6 +49,27 @@ pub struct NixConfig {
     pub homepage: Option<String>,
     /// Nix license identifier (e.g. "mit", "asl20"). Validated against known licenses.
     pub license: Option<String>,
+    /// nixpkgs maintainer handles (from `lib.maintainers`) rendered as
+    /// `maintainers = with lib.maintainers; [ alice bob ];` in the
+    /// derivation's `meta`. These are nixpkgs *handles* (e.g. `globin`,
+    /// `zowoq`), NOT `Name <email>` author strings — a nixpkgs review
+    /// rejects a derivation whose `meta.maintainers` is absent. When unset
+    /// the derivation still emits `maintainers = [ ];` (an empty-but-present
+    /// list is valid and clears the "field absent" rejection); a user fills
+    /// in their handle. Each entry is rendered verbatim as a Nix identifier,
+    /// so values must be valid `lib.maintainers` attribute names.
+    pub maintainers: Option<Vec<String>>,
+    /// URL for `meta.changelog`. When unset, anodizer derives
+    /// `<host>/<owner>/<repo>/releases/tag/<tag>` from the crate's `release`
+    /// repository and the release tag (matching what ripgrep/fd set in
+    /// nixpkgs). Set this to override (e.g. a `…/blob/<tag>/CHANGELOG.md`
+    /// URL). Templated. Omitted only when no release repo is configured and
+    /// no explicit value is given.
+    pub changelog: Option<String>,
+    /// Long-form description for `meta.longDescription`, rendered as a
+    /// multi-line `longDescription = '' … '';` block. Optional; omitted when
+    /// unset. Templated.
+    pub long_description: Option<String>,
     /// Nix package dependencies with optional OS filtering.
     pub dependencies: Option<Vec<NixDependency>>,
     /// Nix formatter to run on the generated file: "alejandra" or "nixfmt".

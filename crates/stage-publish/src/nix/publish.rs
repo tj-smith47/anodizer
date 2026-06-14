@@ -13,7 +13,6 @@ use crate::util::{self, OsArtifact};
 use super::binary::is_dynamically_linked;
 use super::generate::{NixParams, SourceRootEntry, generate_nix_expression, nix_system};
 use super::hashing::hex_sha256_to_nix_base32;
-use super::resolve_nix_license;
 
 /// Render and push the Nix derivation for `crate_name`.
 ///
@@ -222,7 +221,7 @@ fn render_nix_derivation_inner(
     let name = util::render_or_warn(ctx, log, "nix.name", name_raw)?;
 
     let version = ctx.version();
-    let meta = resolve_nix_metadata(ctx, nix_cfg, crate_name, log)?;
+    let meta = resolve_nix_metadata(ctx, crate_cfg, nix_cfg, crate_name, log)?;
 
     let all_artifacts = collect_platform_artifacts(ctx, crate_name, nix_cfg)?;
     let archives = build_archive_tuples(&all_artifacts, nix_cfg, crate_name, &version, log)?;
@@ -248,8 +247,11 @@ fn render_nix_derivation_inner(
         name: &name,
         version: &version,
         description: meta.description.as_str(),
+        long_description: meta.long_description.as_str(),
         homepage: meta.homepage.as_str(),
-        license: meta.license.as_str(),
+        changelog: meta.changelog.as_str(),
+        license_expr: meta.license_expr.as_str(),
+        maintainers: &meta.maintainers,
         main_program: meta.main_program.as_str(),
         archives: &archives,
         install_lines: &install_lines,
@@ -284,8 +286,17 @@ struct RepoCoords {
 #[derive(Debug)]
 struct NixMetadata {
     description: String,
+    long_description: String,
     homepage: String,
-    license: String,
+    changelog: String,
+    /// Pre-rendered RHS of `meta.license` (after `license = `, no trailing
+    /// `;`). Empty suppresses the attribute. Built via
+    /// [`super::license::resolve_nix_license_meta`] so the only-valid-attr
+    /// guard lives in one place.
+    license_expr: String,
+    /// nixpkgs maintainer handles for `meta.maintainers` (rendered as a list;
+    /// empty stays present-but-empty).
+    maintainers: Vec<String>,
     main_program: String,
 }
 
@@ -363,6 +374,7 @@ fn resolve_repo_coords(
 /// corresponding `meta.<field>` attribute in the Tera template.
 fn resolve_nix_metadata(
     ctx: &Context,
+    crate_cfg: &anodizer_core::config::CrateConfig,
     nix_cfg: &NixConfig,
     crate_name: &str,
     log: &StageLogger,
@@ -374,6 +386,12 @@ fn resolve_nix_metadata(
         .unwrap_or("");
     let description = util::render_or_warn(ctx, log, "nix.description", description_raw)?;
 
+    // `longDescription` is optional and has no Cargo.toml-derived source, so it
+    // is emitted only when the user supplies `nix.long_description`.
+    let long_description_raw = nix_cfg.long_description.as_deref().unwrap_or("");
+    let long_description =
+        util::render_or_warn(ctx, log, "nix.long_description", long_description_raw)?;
+
     let homepage_raw = nix_cfg
         .homepage
         .as_deref()
@@ -383,20 +401,28 @@ fn resolve_nix_metadata(
         .render_template(homepage_raw)
         .with_context(|| format!("nix: render homepage template for '{}'", crate_name))?;
 
+    let changelog = resolve_nix_changelog(ctx, crate_cfg, nix_cfg, log)?;
+
     // The raw value can be a nix `lib.licenses` attribute (config-supplied,
-    // a direct nix attr) OR an SPDX id derived from `Cargo.toml`
-    // `[package].license`. Resolve to a nix attribute so both paths emit a
-    // valid `lib.licenses.<attr>`; an empty value suppresses `meta.license`.
+    // a direct nix attr), a single SPDX id, OR a dual/compound SPDX expression
+    // derived from `Cargo.toml` `[package].license`. `resolve_nix_license_meta`
+    // maps a single known id to `lib.licenses.<attr>`, an `OR`/`AND` list of
+    // known ids to `with lib.licenses; [ … ]`, and degrades any unknown id or
+    // unparseable compound to the verbatim string form (always valid in
+    // `meta`) rather than emit a bogus attr-path. Empty suppresses the field.
     let license_raw = nix_cfg
         .license
         .as_deref()
         .or_else(|| ctx.config.meta_license_for(crate_name))
         .unwrap_or("");
-    let license = if license_raw.is_empty() {
-        String::new()
-    } else {
-        resolve_nix_license(license_raw)?
-    };
+    let license_expr = render_license_expr(license_raw);
+
+    // `maintainers` are nixpkgs handles (from `lib.maintainers`), not the
+    // `Name <email>` author strings `meta_maintainers_for` derives from
+    // Cargo.toml — so this reads ONLY the explicit `nix.maintainers` config.
+    // Absent/empty still renders `maintainers = [ ];` (present-but-empty),
+    // which clears the nixpkgs-review "maintainers absent" rejection.
+    let maintainers = nix_cfg.maintainers.clone().unwrap_or_default();
 
     let main_program_raw = nix_cfg.main_program.as_deref().unwrap_or("");
     let main_program = ctx
@@ -405,10 +431,92 @@ fn resolve_nix_metadata(
 
     Ok(NixMetadata {
         description,
+        long_description,
         homepage,
-        license,
+        changelog,
+        license_expr,
+        maintainers,
         main_program,
     })
+}
+
+/// Render the `meta.license` right-hand side for a raw license value (an SPDX
+/// id, an `OR`/`AND` expression, or a direct nix attr). Returns the empty
+/// string for an empty input (which suppresses `meta.license`). See
+/// [`super::license::resolve_nix_license_meta`] for the mapping/fallback rules.
+fn render_license_expr(license_raw: &str) -> String {
+    use super::license::NixLicense;
+    match super::license::resolve_nix_license_meta(license_raw) {
+        None => String::new(),
+        Some(NixLicense::Single(attr)) => format!("lib.licenses.{attr}"),
+        Some(NixLicense::List(attrs)) => {
+            format!("with lib.licenses; [ {} ]", attrs.join(" "))
+        }
+        Some(NixLicense::Str(s)) => format!("\"{}\"", super::generate::nix_escape_string(&s)),
+    }
+}
+
+/// Resolve `meta.changelog`. An explicit `nix.changelog` (templated) wins;
+/// otherwise derive `<host>/<owner>/<repo>/releases/tag/<tag>` from the
+/// crate's `release` repository and the release tag — the form ripgrep/fd use
+/// in nixpkgs. Returns the empty string (suppressing the attribute) only when
+/// neither an explicit value nor a derivable release repo is available.
+fn resolve_nix_changelog(
+    ctx: &Context,
+    crate_cfg: &anodizer_core::config::CrateConfig,
+    nix_cfg: &NixConfig,
+    log: &StageLogger,
+) -> Result<String> {
+    if let Some(raw) = nix_cfg.changelog.as_deref() {
+        return util::render_or_warn(ctx, log, "nix.changelog", raw);
+    }
+    let Some((owner, repo, base)) = release_repo_coords(ctx, crate_cfg) else {
+        return Ok(String::new());
+    };
+    // Prefer the resolved git tag (e.g. `v1.2.3` / `core-v0.3.2`); fall back to
+    // `v<version>` when no tag var is set (snapshot/in-memory render paths).
+    let tag = ctx
+        .template_vars()
+        .get("Tag")
+        .cloned()
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| {
+            let v = ctx.version();
+            if v.is_empty() {
+                String::new()
+            } else {
+                format!("v{v}")
+            }
+        });
+    if tag.is_empty() {
+        return Ok(String::new());
+    }
+    Ok(format!("{base}/{owner}/{repo}/releases/tag/{tag}"))
+}
+
+/// Resolve the release repo `(owner, repo, host_base)` for `crate_cfg`,
+/// rendering owner/name templates. Returns `None` when no GitHub/GitLab/Gitea
+/// release repo is configured (no host to build a changelog URL from).
+fn release_repo_coords(
+    ctx: &Context,
+    crate_cfg: &anodizer_core::config::CrateConfig,
+) -> Option<(String, String, String)> {
+    let release = crate_cfg.release.as_ref()?;
+    let (repo_cfg, base) = if let Some(gh) = release.github.as_ref() {
+        (gh, "https://github.com")
+    } else if let Some(gl) = release.gitlab.as_ref() {
+        (gl, "https://gitlab.com")
+    } else if let Some(gt) = release.gitea.as_ref() {
+        (gt, "https://gitea.com")
+    } else {
+        return None;
+    };
+    let owner = ctx.render_template(&repo_cfg.owner).ok()?;
+    let repo = ctx.render_template(&repo_cfg.name).ok()?;
+    if owner.is_empty() || repo.is_empty() {
+        return None;
+    }
+    Some((owner, repo, base.to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -542,11 +650,94 @@ fn build_install_lines(
         lines.push(format!("cp -vr ./{bin} $out/bin/{bin}"));
         lines.push(format!("chmod +x $out/bin/{bin}"));
     }
+    // Install shell completions / man pages the archive bundles. The archive
+    // stage lays completions under `completions/` and man pages under
+    // `man/man1/` (the `*Config::DEFAULT_DST` dirs) inside every archive, so
+    // when the crate configures either block, the unpacked sourceRoot carries
+    // those files and `installShellCompletion` / `installManPage` route them
+    // into the derivation's `$out` rather than dropping them. Gated on the
+    // archive config actually requesting them — mirrors how ripgrep/fd install
+    // their completions/man in nixpkgs.
+    lines.extend(build_completion_install_lines(crate_cfg, &bin_names));
+    lines.extend(build_manpage_install_lines(crate_cfg));
     if let Some(ref extra) = nix_cfg.extra_install {
         lines.extend(extra.lines().map(|l| l.to_string()));
     }
     if needs_make_wrapper && let Some(wrap_line) = build_wrap_program_line(deps, name) {
         lines.push(wrap_line);
+    }
+    lines
+}
+
+/// Build `installShellCompletion` lines for any archive entry that bundles
+/// completions. The archive stage writes one file per shell into the entry's
+/// completions dir (default `completions/`) named per clap convention
+/// (`<bin>` / `_<bin>` / `<bin>.fish`), so `installShellCompletion
+/// --cmd <bin> --bash … --zsh … --fish …` picks each up by its on-disk name.
+/// Only bash/zsh/fish have an `installShellFiles` flag, so other shells the
+/// user generated are left in the archive (still distributed). Returns an
+/// empty vec when no archive entry configures completions.
+fn build_completion_install_lines(
+    crate_cfg: &anodizer_core::config::CrateConfig,
+    bin_names: &[String],
+) -> Vec<String> {
+    use anodizer_core::config::{ArchivesConfig, completion_filename};
+    let ArchivesConfig::Configs(cfgs) = &crate_cfg.archives else {
+        return Vec::new();
+    };
+    let primary_bin = bin_names.first().map(String::as_str).unwrap_or("");
+    let mut lines = Vec::new();
+    for cfg in cfgs {
+        let Some(comp) = cfg.completions.as_ref() else {
+            continue;
+        };
+        if matches!(comp.mode(), anodizer_core::config::GenMode::None) {
+            continue;
+        }
+        let dst = comp.resolved_dst();
+        let dir = dst.strip_suffix('/').unwrap_or(dst);
+        // Only the three shells `installShellCompletion` natively flags.
+        let mut flags = String::new();
+        for (shell, flag) in [("bash", "--bash"), ("zsh", "--zsh"), ("fish", "--fish")] {
+            if comp
+                .resolved_shells()
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(shell))
+            {
+                let file = completion_filename(primary_bin, shell);
+                flags.push_str(&format!(" {flag} {dir}/{file}"));
+            }
+        }
+        if !flags.is_empty() {
+            lines.push(format!("installShellCompletion --cmd {primary_bin}{flags}"));
+        }
+    }
+    lines
+}
+
+/// Build `installManPage` lines for any archive entry that bundles man pages.
+/// The archive stage writes man files into the entry's manpages dir (default
+/// `man/man1/`), so a glob over that dir installs whatever the archive ships.
+/// Returns an empty vec when no archive entry configures man pages.
+fn build_manpage_install_lines(crate_cfg: &anodizer_core::config::CrateConfig) -> Vec<String> {
+    use anodizer_core::config::{ArchivesConfig, GenMode};
+    let ArchivesConfig::Configs(cfgs) = &crate_cfg.archives else {
+        return Vec::new();
+    };
+    let mut lines = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for cfg in cfgs {
+        let Some(man) = cfg.manpages.as_ref() else {
+            continue;
+        };
+        if matches!(man.mode(), GenMode::None) {
+            continue;
+        }
+        let dst = man.resolved_dst();
+        let dir = dst.strip_suffix('/').unwrap_or(dst);
+        if seen.insert(dir.to_string()) {
+            lines.push(format!("installManPage {dir}/*"));
+        }
     }
     lines
 }
@@ -1261,8 +1452,11 @@ mod tests {
             name: "mytool",
             version: "1.0.0",
             description: "",
+            long_description: "",
             homepage: "",
-            license: "",
+            changelog: "",
+            license_expr: "",
+            maintainers: &[],
             main_program: "",
             archives: &archives,
             install_lines: &[],
@@ -1478,6 +1672,18 @@ mod tests {
             .build()
     }
 
+    /// A bare crate config (no release repo, no archives) for the
+    /// `resolve_nix_metadata` unit tests — they exercise description / homepage
+    /// / license / main_program resolution, none of which need build artifacts.
+    fn meta_crate_cfg() -> CrateConfig {
+        CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn resolve_nix_metadata_resolves_spdx_license_to_nix_attr() {
         let ctx = meta_ctx();
@@ -1488,11 +1694,12 @@ mod tests {
             main_program: Some("mytool".to_string()),
             ..Default::default()
         };
-        let meta = resolve_nix_metadata(&ctx, &cfg, "mytool", &quiet_log()).expect("resolve");
+        let meta = resolve_nix_metadata(&ctx, &meta_crate_cfg(), &cfg, "mytool", &quiet_log())
+            .expect("resolve");
         assert_eq!(meta.description, "a demo");
         assert_eq!(meta.homepage, "https://example.com");
         // SPDX `Apache-2.0` maps to the nix `lib.licenses.asl20` attribute.
-        assert_eq!(meta.license, "asl20");
+        assert_eq!(meta.license_expr, "lib.licenses.asl20");
         assert_eq!(meta.main_program, "mytool");
     }
 
@@ -1503,9 +1710,10 @@ mod tests {
             license: Some("mit".to_string()),
             ..Default::default()
         };
-        let meta = resolve_nix_metadata(&ctx, &cfg, "mytool", &quiet_log()).expect("resolve");
+        let meta = resolve_nix_metadata(&ctx, &meta_crate_cfg(), &cfg, "mytool", &quiet_log())
+            .expect("resolve");
         assert_eq!(
-            meta.license, "mit",
+            meta.license_expr, "lib.licenses.mit",
             "a valid nix attr passes through verbatim"
         );
     }
@@ -1517,22 +1725,28 @@ mod tests {
         // sentinel must short-circuit BEFORE resolve_nix_license (which would
         // bail on an empty string).
         let cfg = NixConfig::default();
-        let meta = resolve_nix_metadata(&ctx, &cfg, "mytool", &quiet_log()).expect("resolve");
-        assert_eq!(meta.license, "", "empty license must stay empty, not error");
+        let meta = resolve_nix_metadata(&ctx, &meta_crate_cfg(), &cfg, "mytool", &quiet_log())
+            .expect("resolve");
+        assert_eq!(
+            meta.license_expr, "",
+            "empty license must stay empty, not error"
+        );
         assert_eq!(meta.description, "");
         assert_eq!(meta.main_program, "");
     }
 
     #[test]
-    fn resolve_nix_metadata_invalid_license_bails() {
+    fn resolve_nix_metadata_invalid_license_degrades_to_string() {
         let ctx = meta_ctx();
         let cfg = NixConfig {
             license: Some("not-a-real-license-xyz".to_string()),
             ..Default::default()
         };
-        let err = resolve_nix_metadata(&ctx, &cfg, "mytool", &quiet_log())
-            .expect_err("unknown license must bail");
-        assert!(format!("{err}").contains("not-a-real-license-xyz"));
+        // An unmappable license no longer aborts the release; it degrades to
+        // the verbatim quoted-string form (always valid in `meta`).
+        let meta = resolve_nix_metadata(&ctx, &meta_crate_cfg(), &cfg, "mytool", &quiet_log())
+            .expect("unmappable license must degrade, not bail");
+        assert_eq!(meta.license_expr, "\"not-a-real-license-xyz\"");
     }
 
     #[test]
@@ -1548,10 +1762,11 @@ mod tests {
         // NixConfig supplies none of these, so each must fall through to the
         // project `metadata.*` value (and the SPDX `MIT` resolves to nix `mit`).
         let cfg = NixConfig::default();
-        let meta = resolve_nix_metadata(&ctx, &cfg, "mytool", &quiet_log()).expect("resolve");
+        let meta = resolve_nix_metadata(&ctx, &meta_crate_cfg(), &cfg, "mytool", &quiet_log())
+            .expect("resolve");
         assert_eq!(meta.description, "project-level description");
         assert_eq!(meta.homepage, "https://project.example");
-        assert_eq!(meta.license, "mit");
+        assert_eq!(meta.license_expr, "lib.licenses.mit");
     }
 
     #[test]
@@ -1570,13 +1785,17 @@ mod tests {
             license: Some("Apache-2.0".to_string()),
             ..Default::default()
         };
-        let meta = resolve_nix_metadata(&ctx, &cfg, "mytool", &quiet_log()).expect("resolve");
+        let meta = resolve_nix_metadata(&ctx, &meta_crate_cfg(), &cfg, "mytool", &quiet_log())
+            .expect("resolve");
         assert_eq!(
             meta.description, "nix-level",
             "nix config wins over metadata"
         );
         assert_eq!(meta.homepage, "https://nix.example");
-        assert_eq!(meta.license, "asl20", "Apache-2.0 resolves to asl20");
+        assert_eq!(
+            meta.license_expr, "lib.licenses.asl20",
+            "Apache-2.0 resolves to asl20"
+        );
     }
 
     #[test]
@@ -1588,7 +1807,7 @@ mod tests {
             homepage: Some("https://x/{{ unclosed".to_string()),
             ..Default::default()
         };
-        let err = resolve_nix_metadata(&ctx, &cfg, "mytool", &quiet_log())
+        let err = resolve_nix_metadata(&ctx, &meta_crate_cfg(), &cfg, "mytool", &quiet_log())
             .expect_err("malformed homepage template must bail");
         assert!(format!("{err:#}").contains("homepage"));
     }
@@ -1600,9 +1819,209 @@ mod tests {
             main_program: Some("{{ unclosed".to_string()),
             ..Default::default()
         };
-        let err = resolve_nix_metadata(&ctx, &cfg, "mytool", &quiet_log())
+        let err = resolve_nix_metadata(&ctx, &meta_crate_cfg(), &cfg, "mytool", &quiet_log())
             .expect_err("malformed main_program template must bail");
         assert!(format!("{err:#}").contains("main_program"));
+    }
+
+    // -----------------------------------------------------------------
+    // render_license_expr — RHS rendering for each NixLicense shape.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn render_license_expr_single_attr() {
+        assert_eq!(render_license_expr("MIT"), "lib.licenses.mit");
+    }
+
+    #[test]
+    fn render_license_expr_dual_or_is_with_list() {
+        assert_eq!(
+            render_license_expr("MIT OR Apache-2.0"),
+            "with lib.licenses; [ mit asl20 ]"
+        );
+    }
+
+    #[test]
+    fn render_license_expr_unknown_is_quoted_string() {
+        assert_eq!(render_license_expr("Weird-9.9"), "\"Weird-9.9\"");
+    }
+
+    #[test]
+    fn render_license_expr_compound_with_is_quoted_string() {
+        assert_eq!(
+            render_license_expr("Apache-2.0 WITH LLVM-exception"),
+            "\"Apache-2.0 WITH LLVM-exception\""
+        );
+    }
+
+    #[test]
+    fn render_license_expr_empty_is_empty() {
+        assert_eq!(render_license_expr(""), "");
+    }
+
+    // -----------------------------------------------------------------
+    // resolve_nix_changelog — explicit override + release-repo derivation.
+    // -----------------------------------------------------------------
+
+    fn crate_cfg_with_github_release(owner: &str, repo: &str) -> CrateConfig {
+        use anodizer_core::config::{ReleaseConfig, ScmRepoConfig};
+        CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            release: Some(ReleaseConfig {
+                github: Some(ScmRepoConfig {
+                    owner: owner.to_string(),
+                    name: repo.to_string(),
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn changelog_derived_from_release_repo_and_tag() {
+        let mut ctx = meta_ctx();
+        ctx.template_vars_mut().set("Tag", "v1.4.2");
+        let cc = crate_cfg_with_github_release("BurntSushi", "ripgrep");
+        let cfg = NixConfig::default();
+        let got = resolve_nix_changelog(&ctx, &cc, &cfg, &quiet_log()).expect("changelog");
+        assert_eq!(
+            got,
+            "https://github.com/BurntSushi/ripgrep/releases/tag/v1.4.2"
+        );
+    }
+
+    #[test]
+    fn changelog_explicit_override_wins_and_templates() {
+        let mut ctx = meta_ctx();
+        ctx.template_vars_mut().set("Tag", "v1.4.2");
+        let cc = crate_cfg_with_github_release("BurntSushi", "ripgrep");
+        let cfg = NixConfig {
+            changelog: Some(
+                "https://github.com/BurntSushi/ripgrep/blob/{{ Tag }}/CHANGELOG.md".to_string(),
+            ),
+            ..Default::default()
+        };
+        let got = resolve_nix_changelog(&ctx, &cc, &cfg, &quiet_log()).expect("changelog");
+        assert_eq!(
+            got,
+            "https://github.com/BurntSushi/ripgrep/blob/v1.4.2/CHANGELOG.md"
+        );
+    }
+
+    #[test]
+    fn changelog_empty_without_release_repo() {
+        let ctx = meta_ctx();
+        let cc = meta_crate_cfg();
+        let cfg = NixConfig::default();
+        let got = resolve_nix_changelog(&ctx, &cc, &cfg, &quiet_log()).expect("changelog");
+        assert_eq!(
+            got, "",
+            "no release repo + no override → suppress changelog"
+        );
+    }
+
+    #[test]
+    fn changelog_falls_back_to_v_version_when_no_tag_var() {
+        let mut ctx = meta_ctx();
+        // Model an in-memory/snapshot render where no resolved git `Tag` exists
+        // but a `Version` does — the URL falls back to `v<version>`.
+        ctx.template_vars_mut().unset("Tag");
+        ctx.template_vars_mut().set("Version", "2.0.0");
+        let cc = crate_cfg_with_github_release("me", "tool");
+        let cfg = NixConfig::default();
+        let got = resolve_nix_changelog(&ctx, &cc, &cfg, &quiet_log()).expect("changelog");
+        assert_eq!(got, "https://github.com/me/tool/releases/tag/v2.0.0");
+    }
+
+    // -----------------------------------------------------------------
+    // build_completion_install_lines / build_manpage_install_lines —
+    // gated on archive config; emit installShellCompletion / installManPage.
+    // -----------------------------------------------------------------
+
+    fn crate_cfg_with_archive(archive: anodizer_core::config::ArchiveConfig) -> CrateConfig {
+        use anodizer_core::config::ArchivesConfig;
+        CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![archive]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn no_completion_lines_when_archive_has_no_completions() {
+        let cc = crate_cfg_with_archive(anodizer_core::config::ArchiveConfig::default());
+        assert!(build_completion_install_lines(&cc, &["mytool".to_string()]).is_empty());
+        assert!(build_manpage_install_lines(&cc).is_empty());
+    }
+
+    #[test]
+    fn completion_lines_emitted_when_archive_bundles_completions() {
+        use anodizer_core::config::{ArchiveConfig, CompletionsConfig};
+        let archive = ArchiveConfig {
+            completions: Some(CompletionsConfig {
+                generate: Some("{{ ArtifactPath }} completions {{ Shell }}".to_string()),
+                shells: Some(vec![
+                    "bash".to_string(),
+                    "zsh".to_string(),
+                    "fish".to_string(),
+                ]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let cc = crate_cfg_with_archive(archive);
+        let lines = build_completion_install_lines(&cc, &["rg".to_string()]);
+        assert_eq!(
+            lines.len(),
+            1,
+            "one installShellCompletion line; got {lines:?}"
+        );
+        // clap filenames per shell under the default `completions/` dir.
+        assert_eq!(
+            lines[0],
+            "installShellCompletion --cmd rg --bash completions/rg --zsh completions/_rg --fish completions/rg.fish"
+        );
+    }
+
+    #[test]
+    fn completion_lines_skip_shells_without_install_flag() {
+        use anodizer_core::config::{ArchiveConfig, CompletionsConfig};
+        // powershell/elvish have no `installShellCompletion` flag — they stay
+        // bundled in the archive but are not install-flagged.
+        let archive = ArchiveConfig {
+            completions: Some(CompletionsConfig {
+                generate: Some("x".to_string()),
+                shells: Some(vec!["bash".to_string(), "powershell".to_string()]),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let cc = crate_cfg_with_archive(archive);
+        let lines = build_completion_install_lines(&cc, &["rg".to_string()]);
+        assert_eq!(
+            lines,
+            vec!["installShellCompletion --cmd rg --bash completions/rg"]
+        );
+    }
+
+    #[test]
+    fn manpage_line_emitted_when_archive_bundles_manpages() {
+        use anodizer_core::config::{ArchiveConfig, ManpagesConfig};
+        let archive = ArchiveConfig {
+            manpages: Some(ManpagesConfig {
+                generate: Some("{{ ArtifactPath }} --man".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let cc = crate_cfg_with_archive(archive);
+        let lines = build_manpage_install_lines(&cc);
+        assert_eq!(lines, vec!["installManPage man/man1/*"]);
     }
 
     // -----------------------------------------------------------------

@@ -1344,6 +1344,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `amd64_variant` | string | — | amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4"). Only artifacts matching this variant are included. Default: "v1". |
+| `changelog` | string | — | URL for `meta.changelog`. When unset, anodizer derives `<host>/<owner>/<repo>/releases/tag/<tag>` from the crate's `release` repository and the release tag (matching what ripgrep/fd set in nixpkgs). Set this to override (e.g. a `…/blob/<tag>/CHANGELOG.md` URL). Templated. Omitted only when no release repo is configured and no explicit value is given. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
 | `commit_msg_template` | string | — | Custom commit message template. |
 | `dependencies` | list of NixDependency | — | Nix package dependencies with optional OS filtering. |
@@ -1355,7 +1356,9 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Nix publisher is skipped. Render failure hard-errors. Config key: `nix[].if:`. |
 | `install` | string | — | Custom install commands (replaces auto-generated binary install). |
 | `license` | string | — | Nix license identifier (e.g. "mit", "asl20"). Validated against known licenses. |
+| `long_description` | string | — | Long-form description for `meta.longDescription`, rendered as a multi-line `longDescription = '' … '';` block. Optional; omitted when unset. Templated. |
 | `main_program` | string | — | Value for `meta.mainProgram` in the generated Nix derivation. When set, the rendered derivation includes `mainProgram = "<value>";` inside the `meta` block, telling Nix which binary `nix run` should execute when the derivation contains multiple executables. Templated: supports `{{ Version }}` etc. Omitted when unset. |
+| `maintainers` | list of string | — | nixpkgs maintainer handles (from `lib.maintainers`) rendered as `maintainers = with lib.maintainers; [ alice bob ];` in the derivation's `meta`. These are nixpkgs *handles* (e.g. `globin`, `zowoq`), NOT `Name <email>` author strings — a nixpkgs review rejects a derivation whose `meta.maintainers` is absent. When unset the derivation still emits `maintainers = [ ];` (an empty-but-present list is valid and clears the "field absent" rejection); a user fills in their handle. Each entry is rendered verbatim as a Nix identifier, so values must be valid `lib.maintainers` attribute names. |
 | `name` | string | — | Override the derivation name (default: crate name). |
 | `path` | string | — | Path for the .nix file in the repository (default: `pkgs/<name>/default.nix`). |
 | `post_install` | string | — | Post-install commands (postInstall phase). |

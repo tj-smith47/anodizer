@@ -52,7 +52,10 @@ fn test_generate_nix_expression_basic() {
         version: "1.0.0",
         description: "A great tool",
         homepage: "https://example.com",
-        license: "mit",
+        license_expr: "lib.licenses.mit",
+        long_description: "",
+        changelog: "",
+        maintainers: &[],
         main_program: "",
         archives: &archives,
         install_lines: &install_lines,
@@ -129,7 +132,10 @@ fn test_derivation_url_map_pairs_nix_double_with_go_arch_asset() {
         version: "1.0.0",
         description: "",
         homepage: "",
-        license: "mit",
+        license_expr: "lib.licenses.mit",
+        long_description: "",
+        changelog: "",
+        maintainers: &[],
         main_program: "",
         archives: &archives,
         install_lines: &["mkdir -p $out/bin".to_string()],
@@ -165,7 +171,10 @@ fn test_generate_nix_expression_with_unzip() {
         version: "1.0.0",
         description: "",
         homepage: "",
-        license: "mit",
+        license_expr: "lib.licenses.mit",
+        long_description: "",
+        changelog: "",
+        maintainers: &[],
         main_program: "",
         archives: &archives,
         install_lines: &install,
@@ -197,7 +206,10 @@ fn test_generate_nix_expression_with_post_install() {
         version: "1.0.0",
         description: "",
         homepage: "",
-        license: "mit",
+        license_expr: "lib.licenses.mit",
+        long_description: "",
+        changelog: "",
+        maintainers: &[],
         main_program: "",
         archives: &archives,
         install_lines: &install,
@@ -246,7 +258,10 @@ fn test_generate_nix_expression_with_deps_uses_make_bin_path() {
         version: "1.0.0",
         description: "A tool with deps",
         homepage: "",
-        license: "mit",
+        license_expr: "lib.licenses.mit",
+        long_description: "",
+        changelog: "",
+        maintainers: &[],
         main_program: "",
         archives: &archives,
         install_lines: &install,
@@ -288,7 +303,10 @@ fn test_generate_nix_expression_deps_in_native_build_inputs() {
         version: "1.0.0",
         description: "",
         homepage: "",
-        license: "mit",
+        license_expr: "lib.licenses.mit",
+        long_description: "",
+        changelog: "",
+        maintainers: &[],
         main_program: "",
         archives: &archives,
         install_lines: &install,
@@ -340,7 +358,10 @@ fn test_generate_nix_expression_no_rec() {
         version: "1.0.0",
         description: "",
         homepage: "",
-        license: "mit",
+        license_expr: "lib.licenses.mit",
+        long_description: "",
+        changelog: "",
+        maintainers: &[],
         main_program: "",
         archives: &archives,
         install_lines: &install,
@@ -378,7 +399,10 @@ fn test_generate_nix_expression_with_main_program() {
         version: "1.2.1",
         description: "my test",
         homepage: "https://example.com",
-        license: "mit",
+        license_expr: "lib.licenses.mit",
+        long_description: "",
+        changelog: "",
+        maintainers: &[],
         main_program: "drumroll",
         archives: &archives,
         install_lines: &install,
@@ -412,7 +436,10 @@ fn test_generate_nix_expression_omits_main_program_when_empty() {
         version: "1.0.0",
         description: "",
         homepage: "",
-        license: "mit",
+        license_expr: "lib.licenses.mit",
+        long_description: "",
+        changelog: "",
+        maintainers: &[],
         main_program: "",
         archives: &archives,
         install_lines: &install,
@@ -450,7 +477,10 @@ fn test_generate_nix_expression_escapes_main_program_quotes_backslashes_and_doll
         version: "1.0.0",
         description: "",
         homepage: "",
-        license: "mit",
+        license_expr: "lib.licenses.mit",
+        long_description: "",
+        changelog: "",
+        maintainers: &[],
         // Triple-hazard input: a quote, a backslash, and `${` (Nix
         // antiquotation start).
         main_program: r#"my"to\ol${X}"#,
@@ -791,10 +821,13 @@ fn test_publish_to_nix_dry_run_returns_false() {
     assert!(!got, "dry-run must return Ok(false): no push happened");
 }
 
-/// Bad license identifier => validate_nix_license bails with a parseable
-/// error. Pin the validator wiring (config-must-wire).
+/// An unmappable explicit `nix.license` no longer aborts the release: it
+/// degrades to a quoted string literal (always valid in `meta`) rather than
+/// emit a bogus `lib.licenses.<id>` attr-path. Pin the safe fallback so an
+/// exotic-but-legitimate license never blocks a release nor ships an
+/// unbuildable derivation.
 #[test]
-fn test_publish_to_nix_invalid_license_errors() {
+fn explicit_unmappable_license_degrades_to_string_literal() {
     use anodizer_core::config::{NixConfig, RepositoryConfig};
     let cfg = NixConfig {
         repository: Some(RepositoryConfig {
@@ -806,8 +839,19 @@ fn test_publish_to_nix_invalid_license_errors() {
         ..Default::default()
     };
     let mut ctx = nix_ctx(cfg, false);
-    let err = publish_to_nix(&mut ctx, "mytool", &nix_log()).unwrap_err();
-    assert!(format!("{err}").contains("not-a-real-spdx-id"));
+    add_linux_darwin_archives(&mut ctx, "mytool");
+    let expr = render_nix_for_validation(&ctx, "mytool", &nix_log())
+        .unwrap()
+        .expect("render should not skip")
+        .expr;
+    assert!(
+        expr.contains("license = \"not-a-real-spdx-id\";"),
+        "unmappable explicit license must degrade to a quoted string; got:\n{expr}"
+    );
+    assert!(
+        !expr.contains("lib.licenses.not-a-real-spdx-id"),
+        "must NOT emit a bogus lib.licenses attr; got:\n{expr}"
+    );
 }
 
 /// No artifacts at all => `no Linux/Darwin archive artifacts found` bail
@@ -1423,26 +1467,44 @@ fn explicit_nix_attr_license_passes_through_unchanged() {
 }
 
 #[test]
-fn derived_unknown_spdx_id_hard_errors() {
-    let err = render_with_derived_license("Foo-1.0")
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("Foo-1.0"), "must name the bad value: {err}");
+fn derived_unknown_spdx_id_falls_back_to_string_literal() {
+    // An unmappable id must NOT emit `lib.licenses.<bogus>` (which fails at
+    // `nix-build`); it degrades to the verbatim string form, always valid in
+    // `meta`. Also confirms the release is no longer aborted by an exotic id.
+    let expr = render_with_derived_license("Foo-1.0").unwrap();
     assert!(
-        err.contains("neither a known SPDX"),
-        "must explain neither SPDX nor nix attr: {err}"
+        expr.contains("license = \"Foo-1.0\";"),
+        "unknown SPDX id must degrade to a quoted string literal; got:\n{expr}"
+    );
+    assert!(
+        !expr.contains("lib.licenses.Foo"),
+        "must NOT emit a bogus lib.licenses attr; got:\n{expr}"
     );
 }
 
 #[test]
-fn derived_compound_spdx_expression_hard_errors() {
-    let err = render_with_derived_license("MIT OR Apache-2.0")
-        .unwrap_err()
-        .to_string();
-    assert!(err.contains("compound"), "must flag compound: {err}");
+fn derived_dual_or_license_emits_lib_licenses_list() {
+    // The canonical Rust dual license becomes a `with lib.licenses; [ … ]`
+    // list, mirroring how nixpkgs renders ripgrep/fd.
+    let expr = render_with_derived_license("MIT OR Apache-2.0").unwrap();
     assert!(
-        err.contains("nix.license"),
-        "must hint setting nix.license explicitly: {err}"
+        expr.contains("license = with lib.licenses; [ mit asl20 ];"),
+        "dual OR license must emit a lib.licenses list; got:\n{expr}"
+    );
+}
+
+#[test]
+fn derived_compound_with_exception_falls_back_to_string_literal() {
+    // A `WITH` exception is one license, not a list, and has no single
+    // `lib.licenses` attr — degrade to the verbatim string, never a bogus attr.
+    let expr = render_with_derived_license("Apache-2.0 WITH LLVM-exception").unwrap();
+    assert!(
+        expr.contains("license = \"Apache-2.0 WITH LLVM-exception\";"),
+        "compound WITH must degrade to a quoted string literal; got:\n{expr}"
+    );
+    assert!(
+        !expr.contains("with lib.licenses"),
+        "must NOT emit a lib.licenses list for a WITH compound; got:\n{expr}"
     );
 }
 
@@ -1593,5 +1655,400 @@ fn lockstep_workspace_each_crate_derives_its_own_nix_license() {
     assert!(
         alpha.contains("version = \"1.2.3\";") && beta.contains("version = \"1.2.3\";"),
         "lockstep: both derivations must carry the shared version 1.2.3"
+    );
+}
+
+// =====================================================================
+// meta.maintainers / meta.changelog / meta.longDescription render path.
+// =====================================================================
+
+/// Render `crate_name`'s nix derivation in-memory from a single-crate config,
+/// applying `customize` to its `NixConfig` and `crate_customize` to its
+/// `CrateConfig`. Cargo `[package].license` is `license`. Sets `Tag` so the
+/// changelog URL derives deterministically.
+fn render_single_crate(
+    license: &str,
+    customize: impl FnOnce(&mut anodizer_core::config::NixConfig),
+    crate_customize: impl FnOnce(&mut anodizer_core::config::CrateConfig),
+) -> anyhow::Result<String> {
+    use anodizer_core::config::{Config, CrateConfig, NixConfig, PublishConfig, RepositoryConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let base = tempfile::tempdir().unwrap();
+    write_crate_cargo(base.path(), "mytool", license);
+
+    let mut nix = NixConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("nixpkgs-overlay".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    customize(&mut nix);
+
+    let mut crate_cfg = CrateConfig {
+        name: "mytool".to_string(),
+        path: "mytool".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        publish: Some(PublishConfig {
+            nix: Some(nix),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    crate_customize(&mut crate_cfg);
+
+    let mut config = Config {
+        crates: vec![crate_cfg],
+        ..Default::default()
+    };
+    config.populate_derived_metadata(base.path());
+
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    add_linux_darwin_archives(&mut ctx, "mytool");
+
+    render_nix_for_validation(&ctx, "mytool", &nix_log()).map(|r| r.expect("render not skip").expr)
+}
+
+fn github_release(owner: &str, repo: &str) -> anodizer_core::config::ReleaseConfig {
+    use anodizer_core::config::{ReleaseConfig, ScmRepoConfig};
+    ReleaseConfig {
+        github: Some(ScmRepoConfig {
+            owner: owner.to_string(),
+            name: repo.to_string(),
+        }),
+        ..Default::default()
+    }
+}
+
+/// The nixpkgs-review HARD blocker: `meta.maintainers` must be PRESENT. With
+/// no config it renders an empty-but-present list `[ ]`.
+#[test]
+fn maintainers_present_as_empty_list_by_default() {
+    let expr = render_single_crate("MIT", |_| {}, |_| {}).unwrap();
+    assert!(
+        expr.contains("maintainers = [ ];"),
+        "absent config must still emit a present-but-empty maintainers list; got:\n{expr}"
+    );
+}
+
+#[test]
+fn maintainers_rendered_as_lib_maintainers_handles() {
+    let expr = render_single_crate(
+        "MIT",
+        |nix| {
+            nix.maintainers = Some(vec!["globin".to_string(), "zowoq".to_string()]);
+        },
+        |_| {},
+    )
+    .unwrap();
+    assert!(
+        expr.contains("maintainers = with lib.maintainers; [ globin zowoq ];"),
+        "handles must render with lib.maintainers; got:\n{expr}"
+    );
+}
+
+#[test]
+fn changelog_derived_into_meta_from_release_repo_and_tag() {
+    let expr = render_single_crate(
+        "MIT",
+        |_| {},
+        |cc| cc.release = Some(github_release("BurntSushi", "ripgrep")),
+    )
+    .unwrap();
+    assert!(
+        expr.contains("changelog = \"https://github.com/BurntSushi/ripgrep/releases/tag/v1.0.0\";"),
+        "changelog must derive from release repo + tag; got:\n{expr}"
+    );
+}
+
+#[test]
+fn changelog_absent_when_no_release_repo() {
+    let expr = render_single_crate("MIT", |_| {}, |_| {}).unwrap();
+    assert!(
+        !expr.contains("changelog ="),
+        "no release repo + no override → meta.changelog omitted; got:\n{expr}"
+    );
+}
+
+#[test]
+fn long_description_emitted_as_indented_string() {
+    let expr = render_single_crate(
+        "MIT",
+        |nix| {
+            nix.long_description = Some(
+                "A simple, fast alternative.\nSensible defaults for 80% of cases.".to_string(),
+            );
+        },
+        |_| {},
+    )
+    .unwrap();
+    assert!(
+        expr.contains("longDescription = ''"),
+        "longDescription must open an indented-string literal; got:\n{expr}"
+    );
+    assert!(
+        expr.contains("A simple, fast alternative."),
+        "longDescription body must render; got:\n{expr}"
+    );
+}
+
+#[test]
+fn long_description_absent_when_unset() {
+    let expr = render_single_crate("MIT", |_| {}, |_| {}).unwrap();
+    assert!(
+        !expr.contains("longDescription"),
+        "unset long_description → attribute omitted; got:\n{expr}"
+    );
+}
+
+/// Dual-license Rust crate: `meta.license` becomes a `lib.licenses` LIST.
+#[test]
+fn dual_license_rust_crate_emits_license_list_in_meta() {
+    let expr = render_single_crate("MIT OR Apache-2.0", |_| {}, |_| {}).unwrap();
+    assert!(
+        expr.contains("license = with lib.licenses; [ mit asl20 ];"),
+        "MIT OR Apache-2.0 must emit a lib.licenses list; got:\n{expr}"
+    );
+}
+
+/// Validate the concrete expected `meta` block for a representative crate
+/// against the nixpkgs ripgrep/fd shape — not just round-trip. Asserts every
+/// new attribute appears with the exact syntax nixpkgs uses.
+#[test]
+fn representative_crate_emits_full_expected_meta_block() {
+    let expr = render_single_crate(
+        "MIT OR Apache-2.0",
+        |nix| {
+            nix.description = Some("ripgrep recursively searches".to_string());
+            nix.homepage = Some("https://github.com/BurntSushi/ripgrep".to_string());
+            nix.main_program = Some("rg".to_string());
+            nix.long_description = Some("ripgrep is a line-oriented search tool.".to_string());
+            nix.maintainers = Some(vec!["globin".to_string(), "zowoq".to_string()]);
+        },
+        |cc| cc.release = Some(github_release("BurntSushi", "ripgrep")),
+    )
+    .unwrap();
+
+    for expected in [
+        "description = \"ripgrep recursively searches\";",
+        "longDescription = ''",
+        "homepage = \"https://github.com/BurntSushi/ripgrep\";",
+        "changelog = \"https://github.com/BurntSushi/ripgrep/releases/tag/v1.0.0\";",
+        "license = with lib.licenses; [ mit asl20 ];",
+        "maintainers = with lib.maintainers; [ globin zowoq ];",
+        "mainProgram = \"rg\";",
+        "sourceProvenance = with lib.sourceTypes; [ binaryNativeCode ];",
+    ] {
+        assert!(
+            expr.contains(expected),
+            "expected meta line `{expected}` not found in:\n{expr}"
+        );
+    }
+
+    // Syntax floor 1 (always-on, tool-free): the new fields must not unbalance
+    // the derivation's `{}`/`[]`/`()`/string delimiters.
+    super::nix_delimiters_balanced(&expr)
+        .expect("rendered derivation must have balanced nix delimiters");
+
+    // Syntax floor 2 (best-effort): if `nix-instantiate` is on PATH, the
+    // derivation must parse. Skip gracefully when the tool is absent so the
+    // suite never hard-fails on a host without nix installed.
+    assert_nix_parses_or_skip(&expr);
+}
+
+/// Parse-check `expr` with `nix-instantiate --parse` when the tool is present;
+/// no-op (skip) when it is not on PATH, per the task's "skip gracefully on a
+/// missing tool" requirement. A non-zero parse exit fails the test.
+fn assert_nix_parses_or_skip(expr: &str) {
+    if !anodizer_core::tool_detect::tool_available("nix-instantiate").unwrap_or(false) {
+        eprintln!("nix-instantiate not on PATH — skipping nix syntax floor check");
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("default.nix");
+    std::fs::write(&file, expr).unwrap();
+    let out = std::process::Command::new("nix-instantiate")
+        .arg("--parse")
+        .arg(&file)
+        .output()
+        .expect("spawn nix-instantiate");
+    assert!(
+        out.status.success(),
+        "nix-instantiate --parse rejected the derivation:\n{}\n---\n{expr}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+// =====================================================================
+// install completions / man pages render path.
+// =====================================================================
+
+fn archive_with_completions_and_man() -> anodizer_core::config::ArchiveConfig {
+    use anodizer_core::config::{ArchiveConfig, CompletionsConfig, ManpagesConfig};
+    ArchiveConfig {
+        completions: Some(CompletionsConfig {
+            generate: Some("{{ ArtifactPath }} completions {{ Shell }}".to_string()),
+            shells: Some(vec![
+                "bash".to_string(),
+                "zsh".to_string(),
+                "fish".to_string(),
+            ]),
+            ..Default::default()
+        }),
+        manpages: Some(ManpagesConfig {
+            generate: Some("{{ ArtifactPath }} --man".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn install_phase_wires_completions_and_man_when_archive_bundles_them() {
+    use anodizer_core::config::ArchivesConfig;
+    let expr = render_single_crate(
+        "MIT",
+        |_| {},
+        |cc| {
+            cc.archives = ArchivesConfig::Configs(vec![archive_with_completions_and_man()]);
+        },
+    )
+    .unwrap();
+    assert!(
+        expr.contains(
+            "installShellCompletion --cmd mytool --bash completions/mytool --zsh completions/_mytool --fish completions/mytool.fish"
+        ),
+        "completions must be wired into the install phase; got:\n{expr}"
+    );
+    assert!(
+        expr.contains("installManPage man/man1/*"),
+        "man page install must be wired in; got:\n{expr}"
+    );
+}
+
+#[test]
+fn install_phase_omits_completions_when_archive_has_none() {
+    let expr = render_single_crate("MIT", |_| {}, |_| {}).unwrap();
+    assert!(
+        !expr.contains("installShellCompletion"),
+        "no completions config → no installShellCompletion; got:\n{expr}"
+    );
+    assert!(
+        !expr.contains("installManPage"),
+        "no manpages config → no installManPage; got:\n{expr}"
+    );
+}
+
+// =====================================================================
+// per-crate workspace: no cross-crate leakage of the new meta fields.
+// =====================================================================
+
+/// Two crates in one workspace, each with its OWN maintainers, description,
+/// license, and completions config. Each derivation must carry only its own
+/// values — no leakage from the sibling crate.
+#[test]
+fn per_crate_workspace_meta_fields_do_not_leak_across_crates() {
+    use anodizer_core::config::{
+        ArchiveConfig, ArchivesConfig, CompletionsConfig, Config, CrateConfig, NixConfig,
+        PublishConfig, RepositoryConfig,
+    };
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let base = tempfile::tempdir().unwrap();
+    write_crate_cargo(base.path(), "alpha", "MIT");
+    write_crate_cargo(base.path(), "beta", "Apache-2.0 OR MIT");
+
+    let make_crate = |name: &str, handle: &str, comp_shell: &str| {
+        let nix = NixConfig {
+            repository: Some(RepositoryConfig {
+                owner: Some("myorg".to_string()),
+                name: Some("nixpkgs-overlay".to_string()),
+                ..Default::default()
+            }),
+            maintainers: Some(vec![handle.to_string()]),
+            ..Default::default()
+        };
+        CrateConfig {
+            name: name.to_string(),
+            path: name.to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                completions: Some(CompletionsConfig {
+                    generate: Some("x".to_string()),
+                    shells: Some(vec![comp_shell.to_string()]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }]),
+            publish: Some(PublishConfig {
+                nix: Some(nix),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    };
+
+    let mut config = Config {
+        crates: vec![
+            make_crate("alpha", "alice", "bash"),
+            make_crate("beta", "bob", "fish"),
+        ],
+        ..Default::default()
+    };
+    config.populate_derived_metadata(base.path());
+
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    add_linux_darwin_archives(&mut ctx, "alpha");
+    add_linux_darwin_archives(&mut ctx, "beta");
+
+    let alpha = render_nix_for_validation(&ctx, "alpha", &nix_log())
+        .unwrap()
+        .expect("alpha render")
+        .expr;
+    let beta = render_nix_for_validation(&ctx, "beta", &nix_log())
+        .unwrap()
+        .expect("beta render")
+        .expr;
+
+    // alpha: MIT single attr, maintainer alice, bash completion only.
+    assert!(
+        alpha.contains("license = lib.licenses.mit;"),
+        "alpha license; got:\n{alpha}"
+    );
+    assert!(
+        alpha.contains("maintainers = with lib.maintainers; [ alice ];"),
+        "alpha maintainer; got:\n{alpha}"
+    );
+    assert!(
+        !alpha.contains("bob"),
+        "alpha must NOT carry beta's maintainer; got:\n{alpha}"
+    );
+    assert!(
+        alpha.contains("--bash completions/alpha") && !alpha.contains("--fish"),
+        "alpha must have only its bash completion; got:\n{alpha}"
+    );
+
+    // beta: dual-license list, maintainer bob, fish completion only.
+    assert!(
+        beta.contains("license = with lib.licenses; [ asl20 mit ];"),
+        "beta dual-license list; got:\n{beta}"
+    );
+    assert!(
+        beta.contains("maintainers = with lib.maintainers; [ bob ];"),
+        "beta maintainer; got:\n{beta}"
+    );
+    assert!(
+        !beta.contains("alice"),
+        "beta must NOT carry alpha's maintainer; got:\n{beta}"
+    );
+    assert!(
+        beta.contains("--fish completions/beta.fish") && !beta.contains("--bash"),
+        "beta must have only its fish completion; got:\n{beta}"
     );
 }

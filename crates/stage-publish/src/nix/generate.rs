@@ -67,9 +67,14 @@ stdenvNoCC.mkDerivation {
 {% endif %}
   meta = {
 {% if description %}    description = "{{ description }}";
+{% endif %}{% if long_description %}    longDescription = ''
+{{ long_description }}
+    '';
 {% endif %}{% if homepage %}    homepage = "{{ homepage }}";
-{% endif %}{% if license %}    license = lib.licenses.{{ license }};
-{% endif %}{% if main_program %}    mainProgram = "{{ main_program }}";
+{% endif %}{% if changelog %}    changelog = "{{ changelog }}";
+{% endif %}{% if license_expr %}    license = {{ license_expr }};
+{% endif %}    maintainers = {% if maintainers %}with lib.maintainers; [ {% for m in maintainers %}{{ m }} {% endfor %}]{% else %}[ ]{% endif %};
+{% if main_program %}    mainProgram = "{{ main_program }}";
 {% endif %}    sourceProvenance = with lib.sourceTypes; [ binaryNativeCode ];
     platforms = [ {% for p in platforms %}"{{ p }}" {% endfor %}];
   };
@@ -93,8 +98,24 @@ pub struct NixParams<'a> {
     pub name: &'a str,
     pub version: &'a str,
     pub description: &'a str,
+    /// Multi-line `meta.longDescription` body (already escaped for a `''…''`
+    /// indented-string literal). Empty string suppresses the attribute.
+    pub long_description: &'a str,
     pub homepage: &'a str,
-    pub license: &'a str,
+    /// URL for `meta.changelog`. Empty string suppresses the attribute.
+    pub changelog: &'a str,
+    /// Pre-rendered right-hand side of `meta.license` (the text after
+    /// `license = `, without the trailing `;`), e.g. `lib.licenses.mit`,
+    /// `with lib.licenses; [ mit asl20 ]`, or a quoted `"MIT OR Apache-2.0"`
+    /// fallback. Empty string suppresses the attribute. Built by
+    /// [`super::license::resolve_nix_license_meta`] so the only-valid-attr
+    /// guard lives in one place.
+    pub license_expr: &'a str,
+    /// nixpkgs maintainer handles for `meta.maintainers`. Always rendered:
+    /// a non-empty list becomes `with lib.maintainers; [ … ];`, an empty list
+    /// becomes `[ ];` (present-but-empty is valid and clears the
+    /// nixpkgs-review "maintainers absent" rejection).
+    pub maintainers: &'a [String],
     /// Value for `meta.mainProgram` in the rendered derivation.
     /// Empty string suppresses the attribute.
     pub main_program: &'a str,
@@ -141,7 +162,23 @@ pub fn generate_nix_expression(params: &NixParams<'_>) -> Result<String> {
     // upstream, so it needs no escaping.
     ctx.insert("description", &nix_escape_string(params.description));
     ctx.insert("homepage", &nix_escape_string(params.homepage));
-    ctx.insert("license", params.license);
+    // `changelog` is interpolated inside `"..."` — same escaping rationale as
+    // `homepage`/`description` above.
+    ctx.insert("changelog", &nix_escape_string(params.changelog));
+    // `license_expr` is pre-rendered Nix syntax (an attr-path, a
+    // `with lib.licenses; [ … ]` list, or an already-quoted string built by
+    // `resolve_nix_license_meta`). It is NOT a free-text user value, so it is
+    // inserted verbatim — escaping it would corrupt the intended syntax.
+    ctx.insert("license_expr", params.license_expr);
+    ctx.insert("maintainers", &params.maintainers);
+    // `long_description` renders inside a `''…''` indented-string literal,
+    // whose escape rules differ from `"…"`: a literal `''` is written `'''`
+    // and a literal `${` is written `''${`. Apply those before insertion so a
+    // description containing either can't break the literal or antiquote.
+    ctx.insert(
+        "long_description",
+        &nix_escape_indented_string(params.long_description),
+    );
     // `main_program` is interpolated directly inside `"..."` in the rendered
     // Nix derivation (`meta.mainProgram = "{{ main_program }}";`). Nix string
     // literals interpret `\`, `"`, and `${...}` specially, so a value
@@ -222,6 +259,21 @@ pub(super) fn nix_escape_string(s: &str) -> String {
     out = out.replace('"', "\\\"");
     out = out.replace("${", "\\${");
     out
+}
+
+/// Escape a value for inclusion inside a Nix indented-string literal
+/// (`''…''`), used for `meta.longDescription`.
+///
+/// Indented strings have their own grammar, distinct from `"…"`:
+/// - a literal `''` is escaped as `'''`;
+/// - a literal `${` (antiquotation start) is escaped as `''${`.
+///
+/// A backslash is NOT special in an indented string, so it is left alone.
+/// Apply the `''` replacement before `${` so the `''` introduced by the
+/// `${` escape is not itself re-escaped.
+pub(super) fn nix_escape_indented_string(s: &str) -> String {
+    let out = s.replace("''", "'''");
+    out.replace("${", "''${")
 }
 
 // ---------------------------------------------------------------------------

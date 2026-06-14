@@ -10345,6 +10345,14 @@
             "null"
           ]
         },
+        "changelog": {
+          "description": "URL for `meta.changelog`. When unset, anodizer derives `<host>/<owner>/<repo>/releases/tag/<tag>` from the crate's `release` repository and the release tag (matching what ripgrep/fd set in nixpkgs). Set this to override (e.g. a `…/blob/<tag>/CHANGELOG.md` URL). Templated. Omitted only when no release repo is configured and no explicit value is given.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "commit_author": {
           "description": "Commit author with optional signing.",
           "default": null,
@@ -10443,6 +10451,14 @@
             "null"
           ]
         },
+        "long_description": {
+          "description": "Long-form description for `meta.longDescription`, rendered as a multi-line `longDescription = '' … '';` block. Optional; omitted when unset. Templated.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "main_program": {
           "description": "Value for `meta.mainProgram` in the generated Nix derivation. When set, the rendered derivation includes `mainProgram = \"<value>\";` inside the `meta` block, telling Nix which binary `nix run` should execute when the derivation contains multiple executables. Templated: supports `{{ Version }}` etc. Omitted when unset.",
           "default": null,
@@ -10450,6 +10466,17 @@
             "string",
             "null"
           ]
+        },
+        "maintainers": {
+          "description": "nixpkgs maintainer handles (from `lib.maintainers`) rendered as `maintainers = with lib.maintainers; [ alice bob ];` in the derivation's `meta`. These are nixpkgs *handles* (e.g. `globin`, `zowoq`), NOT `Name <email>` author strings — a nixpkgs review rejects a derivation whose `meta.maintainers` is absent. When unset the derivation still emits `maintainers = [ ];` (an empty-but-present list is valid and clears the \"field absent\" rejection); a user fills in their handle. Each entry is rendered verbatim as a Nix identifier, so values must be valid `lib.maintainers` attribute names.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
         },
         "name": {
           "description": "Override the derivation name (default: crate name).",

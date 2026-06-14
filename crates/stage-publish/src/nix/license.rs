@@ -19,6 +19,8 @@
 
 use anyhow::Result;
 
+use anodizer_core::license::parse_spdx_expression;
+
 use super::generate::validate_nix_license;
 
 /// Map from SPDX license identifier to the corresponding nix
@@ -348,6 +350,90 @@ pub fn resolve_nix_license(value: &str) -> Result<String> {
     );
 }
 
+/// The resolved shape of a derivation's `meta.license`, ready to render.
+///
+/// A nix `meta.license` may be a single attribute (`lib.licenses.mit`), a
+/// list (`with lib.licenses; [ mit asl20 ]` for an `A OR B` dual license),
+/// or — when an id cannot be mapped to a known `lib.licenses` attribute — a
+/// plain string (`license = "<original SPDX string>";`), which Nix always
+/// accepts in `meta`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NixLicense {
+    /// `license = lib.licenses.<attr>;` — exactly one known attribute.
+    Single(String),
+    /// `license = with lib.licenses; [ <attr> <attr> … ];` — a list of two or
+    /// more known attributes (a dual/multi license expression).
+    List(Vec<String>),
+    /// `license = "<original>";` — the original SPDX/literal string verbatim,
+    /// used whenever ANY id is unknown or the expression is a compound the
+    /// parser kept literal (`WITH`, mixed connectives, parenthesised). A bare
+    /// string is always valid in `meta`, so this never emits an invalid
+    /// `lib.licenses` attr-path.
+    Str(String),
+}
+
+/// Resolve a single license id (an SPDX id OR a direct nix attribute) to its
+/// nix `lib.licenses` attribute name, or `None` when it maps to neither.
+///
+/// Mirrors [`resolve_nix_license`]'s first two precedence rules (direct
+/// nix-attr passthrough, then SPDX→attr mapping) but returns `None` instead of
+/// erroring on a miss, so the list/single resolver can decide to fall back to
+/// the verbatim string form rather than abort the release.
+fn resolve_single_id(id: &str) -> Option<String> {
+    if validate_nix_license(id).is_ok() {
+        return Some(id.to_string());
+    }
+    spdx_to_nix_attr(id).map(|attr| attr.to_string())
+}
+
+/// Resolve a license value into a renderable [`NixLicense`].
+///
+/// Uses the shared SPDX parser so a dual-license expression (`MIT OR
+/// Apache-2.0`) becomes a `lib.licenses` LIST, matching how nixpkgs renders
+/// dual-licensed Rust crates (e.g. ripgrep's `[ unlicense mit ]`). The guard
+/// against the homebrew code review applies: the parser may hand back a
+/// compound/unparseable `Single` (e.g. `Apache-2.0 WITH LLVM-exception`), and
+/// any individual id may not map to a known attribute — in EITHER case the
+/// resolver degrades to the verbatim-string form rather than emit a bogus
+/// `lib.licenses.<id>` attr-path. An empty value yields `None`.
+///
+/// Precedence:
+/// 1. Empty → `None` (suppresses `meta.license`).
+/// 2. Single id that maps to a known attr → [`NixLicense::Single`].
+/// 3. `OR`/`AND` list whose ids ALL map to known attrs →
+///    [`NixLicense::List`] (rendered `with lib.licenses; [ … ]`).
+/// 4. Anything else (a compound `Single` the parser kept literal, an unknown
+///    id, or a list with any unmappable id) → [`NixLicense::Str`] carrying the
+///    original verbatim string.
+pub fn resolve_nix_license_meta(value: &str) -> Option<NixLicense> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let expr = parse_spdx_expression(trimmed);
+    if expr.is_single() {
+        // One literal: map it, or fall back to the verbatim string. A
+        // compound the parser declined to split (a `WITH` exception, a mixed
+        // connective) lands here as a `Single` carrying the whole expression,
+        // which `resolve_single_id` correctly fails to map → string fallback.
+        return Some(match resolve_single_id(expr.ids()[0].as_str()) {
+            Some(attr) => NixLicense::Single(attr),
+            None => NixLicense::Str(trimmed.to_string()),
+        });
+    }
+    // A connective expression (OR / AND): resolve every id. If ANY id is
+    // unknown, the whole expression degrades to the verbatim string rather
+    // than emit a list with a bogus attr.
+    let mut attrs = Vec::with_capacity(expr.ids().len());
+    for id in expr.ids() {
+        match resolve_single_id(id) {
+            Some(attr) => attrs.push(attr),
+            None => return Some(NixLicense::Str(trimmed.to_string())),
+        }
+    }
+    Some(NixLicense::List(attrs))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,5 +561,114 @@ mod tests {
         assert!(resolve_nix_license("GPL-2.0-only AND MIT").is_err());
         assert!(resolve_nix_license("Apache-2.0+").is_err());
         assert!(resolve_nix_license("(MIT OR Apache-2.0)").is_err());
+    }
+
+    // -----------------------------------------------------------------
+    // resolve_nix_license_meta — single attr / list / string fallback.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn meta_single_known_spdx_maps_to_attr() {
+        assert_eq!(
+            resolve_nix_license_meta("MIT"),
+            Some(NixLicense::Single("mit".to_string()))
+        );
+        assert_eq!(
+            resolve_nix_license_meta("Apache-2.0"),
+            Some(NixLicense::Single("asl20".to_string()))
+        );
+    }
+
+    #[test]
+    fn meta_direct_nix_attr_passes_through() {
+        assert_eq!(
+            resolve_nix_license_meta("gpl3Plus"),
+            Some(NixLicense::Single("gpl3Plus".to_string()))
+        );
+    }
+
+    #[test]
+    fn meta_dual_or_becomes_list_of_attrs() {
+        // The canonical Rust dual license — a `lib.licenses` LIST.
+        assert_eq!(
+            resolve_nix_license_meta("MIT OR Apache-2.0"),
+            Some(NixLicense::List(vec![
+                "mit".to_string(),
+                "asl20".to_string()
+            ]))
+        );
+        // Order preserved; the legacy slash form is equivalent.
+        assert_eq!(
+            resolve_nix_license_meta("Apache-2.0/MIT"),
+            Some(NixLicense::List(vec![
+                "asl20".to_string(),
+                "mit".to_string()
+            ]))
+        );
+    }
+
+    #[test]
+    fn meta_and_expression_also_becomes_list() {
+        // Nix `meta.license` has no AND/OR distinction — both render as a list.
+        assert_eq!(
+            resolve_nix_license_meta("Apache-2.0 AND MIT"),
+            Some(NixLicense::List(vec![
+                "asl20".to_string(),
+                "mit".to_string()
+            ]))
+        );
+    }
+
+    #[test]
+    fn meta_unknown_single_id_falls_back_to_string() {
+        assert_eq!(
+            resolve_nix_license_meta("Foo-1.0"),
+            Some(NixLicense::Str("Foo-1.0".to_string()))
+        );
+    }
+
+    #[test]
+    fn meta_compound_with_exception_falls_back_to_string() {
+        // A `WITH` exception is kept literal by the parser → string fallback,
+        // never a bogus `lib.licenses` attr or a half-resolved list.
+        assert_eq!(
+            resolve_nix_license_meta("Apache-2.0 WITH LLVM-exception"),
+            Some(NixLicense::Str(
+                "Apache-2.0 WITH LLVM-exception".to_string()
+            ))
+        );
+    }
+
+    #[test]
+    fn meta_list_with_one_unknown_id_falls_back_to_whole_string() {
+        // If ANY id in an OR list is unmappable, the WHOLE expression degrades
+        // to the verbatim string rather than emit a list with a bogus attr.
+        assert_eq!(
+            resolve_nix_license_meta("MIT OR Bogus-9.9"),
+            Some(NixLicense::Str("MIT OR Bogus-9.9".to_string()))
+        );
+    }
+
+    #[test]
+    fn meta_empty_is_none() {
+        assert_eq!(resolve_nix_license_meta(""), None);
+        assert_eq!(resolve_nix_license_meta("   "), None);
+    }
+
+    #[test]
+    fn meta_never_emits_bogus_attr_for_compound_single() {
+        // The homebrew-review guard: a compound `Single` must never produce a
+        // `List`/`Single` carrying the unparseable literal as an "attr".
+        for expr in [
+            "Apache-2.0 WITH LLVM-exception",
+            "(MIT OR Apache-2.0) AND BSD-3-Clause",
+            "Apache-2.0 AND MIT OR BSD-3-Clause",
+        ] {
+            assert!(
+                matches!(resolve_nix_license_meta(expr), Some(NixLicense::Str(_))),
+                "`{expr}` must degrade to a string literal, got {:?}",
+                resolve_nix_license_meta(expr)
+            );
+        }
     }
 }
