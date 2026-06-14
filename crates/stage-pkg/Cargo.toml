@@ -19,6 +19,9 @@ anyhow.workspace = true
 # Directory-capable mtime setter (utimensat, not open(O_WRONLY)) so flat-pkg
 # payload directories are stamped deterministically before cpio.
 filetime.workspace = true
+# Deterministic in-process gzip of the cpio Payload (no embedded mtime / OS
+# byte), replacing the shell `gzip -9n` so the gzip stream is byte-stable.
+flate2.workspace = true
 glob.workspace = true
 tempfile.workspace = true
 

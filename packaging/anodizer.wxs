@@ -42,6 +42,17 @@
                   Name="{{ ProjectName }}.exe"
                   Source="{{ BinaryPath }}"
                   KeyPath="yes" />
+            <!-- Put the install dir on the system PATH so the CLI is invocable
+                 from any shell after install. Action=set Part=last appends
+                 INSTALLFOLDER to the machine (System=yes) PATH; Windows
+                 Installer removes the same entry on uninstall (Permanent=no). -->
+            <Environment Id="UpdatePath"
+                         Name="PATH"
+                         Value="[INSTALLFOLDER]"
+                         Permanent="no"
+                         Part="last"
+                         Action="set"
+                         System="yes" />
           </Component>
         </Directory>
       </Directory>

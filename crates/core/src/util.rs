@@ -227,6 +227,56 @@ pub fn set_file_mtime_epoch(path: &Path, epoch_secs: i64) -> Result<()> {
     set_file_mtime(path, mtime)
 }
 
+/// Recursively copy the directory tree rooted at `src` into `dst`, recreating
+/// subdirectories, copying regular files (with [`fs::copy`], which preserves
+/// the Unix mode bits — including the executable bit), and recreating symlinks
+/// as symlinks rather than dereferencing them.
+///
+/// Preserving symlinks matters for macOS app bundles, which embed framework
+/// version symlinks (`Versions/Current -> A`); a dereferencing copy would
+/// flatten them and bloat the bundle. `dst` (and any missing parents) is
+/// created if absent. On non-Unix hosts, where creating a symlink needs
+/// elevated rights, the link target's contents are copied instead so the tree
+/// stays complete.
+pub fn copy_dir_tree(src: &Path, dst: &Path) -> Result<()> {
+    fs::create_dir_all(dst).with_context(|| format!("create dir {}", dst.display()))?;
+    for entry in fs::read_dir(src).with_context(|| format!("read dir {}", src.display()))? {
+        let entry = entry.with_context(|| format!("read entry under {}", src.display()))?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        // symlink_metadata (via DirEntry::file_type) so a symlink is recreated
+        // as a link rather than dereferenced.
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("stat {}", from.display()))?;
+        if file_type.is_symlink() {
+            #[cfg(unix)]
+            {
+                let target = fs::read_link(&from)
+                    .with_context(|| format!("read symlink {}", from.display()))?;
+                std::os::unix::fs::symlink(&target, &to).with_context(|| {
+                    format!("recreate symlink {} -> {}", to.display(), target.display())
+                })?;
+            }
+            #[cfg(not(unix))]
+            {
+                if from.is_dir() {
+                    copy_dir_tree(&from, &to)?;
+                } else {
+                    fs::copy(&from, &to)
+                        .with_context(|| format!("copy {} to {}", from.display(), to.display()))?;
+                }
+            }
+        } else if file_type.is_dir() {
+            copy_dir_tree(&from, &to)?;
+        } else {
+            fs::copy(&from, &to)
+                .with_context(|| format!("copy {} to {}", from.display(), to.display()))?;
+        }
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // collect_replace_archives
 // ---------------------------------------------------------------------------

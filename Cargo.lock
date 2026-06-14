@@ -379,6 +379,7 @@ dependencies = [
  "anodizer-core",
  "anyhow",
  "filetime",
+ "flate2",
  "glob",
  "serde_yaml_ng",
  "tempfile",

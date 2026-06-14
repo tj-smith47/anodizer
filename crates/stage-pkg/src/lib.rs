@@ -60,18 +60,21 @@ pub fn pkgbuild_command(
 /// Resolved once per config entry from PATH so the per-binary loop can dispatch
 /// without re-probing. `pkgbuild` (Apple/Xcode, macOS-only) is preferred when
 /// present; otherwise the Linux flat-package toolchain (`xar` + `mkbom` +
-/// `cpio` + `gzip`) assembles the identical XAR layout by hand.
+/// `cpio`, with gzip done in-process) assembles the identical XAR layout by
+/// hand.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PkgBuilder {
     /// Native Apple `pkgbuild` on PATH.
     Pkgbuild,
-    /// Linux-native flat XAR assembly via `xar`/`mkbom`/`cpio`/`gzip`.
+    /// Linux-native flat XAR assembly via `xar`/`mkbom`/`cpio` (gzip in-process).
     Linux,
 }
 
 /// The Linux flat-package toolchain, all of which must be present together for
-/// [`PkgBuilder::Linux`].
-const LINUX_PKG_TOOLS: [&str; 4] = ["xar", "mkbom", "cpio", "gzip"];
+/// [`PkgBuilder::Linux`]. gzip is NOT listed: the Payload is gzipped in-process
+/// (flate2) so the compressed stream is byte-stable, so no `gzip` binary is
+/// spawned or required.
+const LINUX_PKG_TOOLS: [&str; 3] = ["xar", "mkbom", "cpio"];
 
 /// Resolve which `.pkg` build path is available on this host.
 ///
@@ -87,7 +90,7 @@ pub fn resolve_pkg_builder(probe: impl Fn(&str) -> bool) -> Result<PkgBuilder, S
     }
     Err(
         "neither `pkgbuild` (macOS, `xcode-select --install`) nor the Linux \
-         flat-package toolchain (`xar` + `mkbom`/bomutils + `cpio` + `gzip`) is \
+         flat-package toolchain (`xar` + `mkbom`/bomutils + `cpio`) is \
          available; install one to build .pkg installers"
             .to_string(),
     )
@@ -119,6 +122,11 @@ fn apply_mtime_recursive(root: &std::path::Path, mtime: std::time::SystemTime) -
         filetime::set_file_mtime(&path, ft_time)
             .with_context(|| format!("set mtime on {}", path.display()))?;
     }
+    // Stamp `root` itself last: the cpio archive includes the payload root as
+    // its `.` entry, whose mtime must be pinned too or the Payload (and the
+    // .pkg) drifts by the directory's wall-clock creation time every build.
+    filetime::set_file_mtime(root, ft_time)
+        .with_context(|| format!("set mtime on {}", root.display()))?;
     Ok(())
 }
 
@@ -154,37 +162,112 @@ fn xml_escape(s: &str) -> String {
         .replace('"', "&quot;")
 }
 
-/// Build a reproducible `cpio -o --format odc | gzip -9n` archive of
-/// `src_root`'s contents into `dest`.
+/// Build a byte-reproducible gzipped `cpio` (odc) archive of `src_root`'s
+/// contents into `dest`.
 ///
-/// Drives the pipeline from inside `src_root` via a single `sh -c` invocation,
-/// failing if any stage does (`set -o pipefail`). The cwd-relative `find .`
-/// keeps archived paths rooted at `.` exactly as `pkgbuild`/`productbuild`
-/// emit them. Three byte-stability guards make the Payload identical across CI
-/// runners and match native pkgbuild:
-/// - `LC_ALL=C sort` fixes entry order (raw readdir order varies by
-///   filesystem/host).
-/// - `-R 0:0` forces uid/gid to root, matching pkgbuild and removing the
-///   runner's per-user ownership from the encoded headers.
-/// - `gzip -9n` drops the original filename/timestamp from the gzip header.
+/// Drives `find . | LC_ALL=C sort | cpio -o --format odc -R 0:0` from inside
+/// `src_root` via a single `sh -c` invocation, failing if any stage does
+/// (`set -o pipefail`), capturing the raw cpio on stdout. The cwd-relative
+/// `find .` keeps archived paths rooted at `.` exactly as `pkgbuild` emits
+/// them. Byte-stability guards make the Payload identical across CI runners
+/// and match native pkgbuild:
+/// - `LC_ALL=C sort` fixes entry order (raw readdir order varies by host).
+/// - `-R 0:0` forces uid/gid to root, removing the runner's ownership.
+/// - [`normalize_odc_cpio`] zeroes the per-entry `dev`/`ino` header fields,
+///   which the odc format encodes from the live filesystem and which differ
+///   every build — the dominant source of `.pkg` drift before this fix.
+/// - the gzip is produced in-process with flate2 (mtime=0, no embedded OS
+///   byte), not shell `gzip`, so the compressed stream is itself stable.
+///
+/// Payload mtimes are already pinned by [`apply_mtime_recursive`] (including
+/// the `.` root) before this runs, so the cpio header `mtime` fields are fixed.
 fn cpio_gzip_archive(
     src_root: &std::path::Path,
     dest: &std::path::Path,
     log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
-    let dest_str = dest.to_string_lossy().replace('\'', "'\\''");
-    let pipeline = format!(
-        "set -o pipefail; find . | LC_ALL=C sort | \
-         cpio -o --format odc -R 0:0 2>/dev/null | gzip -9n > '{dest_str}'"
-    );
+    let pipeline = "set -o pipefail; find . | LC_ALL=C sort | \
+         cpio -o --format odc -R 0:0 2>/dev/null";
     let output = Command::new("sh")
         .arg("-c")
-        .arg(&pipeline)
+        .arg(pipeline)
         .current_dir(src_root)
         .output()
-        .with_context(|| format!("execute cpio|gzip pipeline for {}", src_root.display()))?;
-    log.check_output(output, "cpio|gzip")?;
+        .with_context(|| format!("execute cpio pipeline for {}", src_root.display()))?;
+    if !output.status.success() {
+        log.check_output(output, "cpio")?;
+        return Ok(());
+    }
+    let normalized = normalize_odc_cpio(&output.stdout);
+
+    use flate2::{Compression, write::GzEncoder};
+    use std::io::Write as _;
+    let file =
+        fs::File::create(dest).with_context(|| format!("create Payload {}", dest.display()))?;
+    let mut enc = GzEncoder::new(file, Compression::best());
+    enc.write_all(&normalized)
+        .with_context(|| format!("gzip Payload {}", dest.display()))?;
+    enc.finish()
+        .with_context(|| format!("finalize Payload {}", dest.display()))?;
     Ok(())
+}
+
+/// Zero the `dev` (bytes 6..12) and `ino` (bytes 12..18) fields of every odc
+/// cpio header in `data`, returning the rewritten archive.
+///
+/// The POSIX portable (`odc`) cpio header is 76 ASCII-octal bytes followed by
+/// the NUL-terminated name and the file body. The layout is fixed-width:
+/// `magic[6] dev[6] ino[6] mode[6] uid[6] gid[6] nlink[6] rdev[6] mtime[11]
+/// namesize[6] filesize[11]`. cpio fills `dev`/`ino` from the staging
+/// filesystem's live inode numbers, which change on every build and are the
+/// primary reason two otherwise-identical Payloads differ byte-for-byte.
+/// pkgbuild's Payloads carry zeroed inode identity, so zeroing here both fixes
+/// reproducibility and matches Apple's output. The walk stops at the
+/// `TRAILER!!!` sentinel; trailing zero-padding after it is preserved verbatim.
+fn normalize_odc_cpio(data: &[u8]) -> Vec<u8> {
+    const HDR: usize = 76;
+    let mut out = Vec::with_capacity(data.len());
+    let mut i = 0usize;
+    while i + HDR <= data.len() {
+        if &data[i..i + 6] != b"070707" {
+            // Not on a header boundary (unexpected) — copy the remainder as-is
+            // rather than corrupt the archive.
+            out.extend_from_slice(&data[i..]);
+            return out;
+        }
+        let parse = |off: usize, len: usize| -> Option<usize> {
+            std::str::from_utf8(&data[off..off + len])
+                .ok()
+                .and_then(|s| usize::from_str_radix(s.trim(), 8).ok())
+        };
+        let (namesize, filesize) = match (parse(i + 59, 6), parse(i + 65, 11)) {
+            (Some(n), Some(f)) => (n, f),
+            _ => {
+                out.extend_from_slice(&data[i..]);
+                return out;
+            }
+        };
+        let mut hdr = data[i..i + HDR].to_vec();
+        hdr[6..12].copy_from_slice(b"000000"); // dev
+        hdr[12..18].copy_from_slice(b"000000"); // ino
+        out.extend_from_slice(&hdr);
+        let name_start = i + HDR;
+        let body_start = name_start + namesize;
+        let next = body_start + filesize;
+        if next > data.len() {
+            out.extend_from_slice(&data[name_start..]);
+            return out;
+        }
+        out.extend_from_slice(&data[name_start..next]);
+        let name = &data[name_start..body_start];
+        if name.trim_ascii_end().ends_with(b"TRAILER!!!") || name.starts_with(b"TRAILER!!!") {
+            out.extend_from_slice(&data[next..]); // preserve block padding
+            return out;
+        }
+        i = next;
+    }
+    out.extend_from_slice(&data[i..]);
+    out
 }
 
 /// Assemble a flat XAR `.pkg` installer without Apple's `pkgbuild`.
@@ -233,7 +316,7 @@ pub fn build_flat_pkg_linux(
         let src = entry.path();
         let dst = payload_dest.join(entry.file_name());
         if entry.file_type()?.is_dir() {
-            copy_dir_recursive(&src, &dst)?;
+            anodizer_core::util::copy_dir_tree(&src, &dst)?;
         } else {
             fs::copy(&src, &dst)
                 .with_context(|| format!("copy payload {} -> {}", src.display(), dst.display()))?;
@@ -243,16 +326,23 @@ pub fn build_flat_pkg_linux(
     let (num_files, total_bytes) = payload_stats(&pkgroot)?;
     let install_kbytes = total_bytes.div_ceil(1024);
 
-    // Determinism: stamp the payload tree BEFORE cpio so Payload mtimes are
-    // fixed, and the final flattened .pkg AFTER xar.
+    // Determinism: stamp the payload tree BEFORE cpio so the cpio header mtimes
+    // are fixed, and the final flattened .pkg AFTER xar. The payload is ALWAYS
+    // stamped — to the configured mod_timestamp when set, otherwise to a fixed
+    // fallback epoch — so the cpio (and thus the .pkg) is byte-reproducible
+    // even with no mod_timestamp; the same epoch is reused below for the xar
+    // TOC so every time field in the archive agrees.
     let parsed_mtime = mod_timestamp
         .map(anodizer_core::util::parse_mod_timestamp)
         .transpose()?;
-    if let Some(mtime) = parsed_mtime {
-        apply_mtime_recursive(&pkgroot, mtime)?;
-    }
+    let stamp_epoch = parsed_mtime
+        .map(system_time_to_epoch)
+        .unwrap_or(PKG_FALLBACK_EPOCH);
+    let stamp_time =
+        std::time::UNIX_EPOCH + std::time::Duration::from_secs(stamp_epoch.max(0) as u64);
+    apply_mtime_recursive(&pkgroot, stamp_time)?;
 
-    // Payload: cpio(odc) | gzip -9n of the pkgroot contents.
+    // Payload: cpio(odc) of the pkgroot, inode/dev-zeroed and gzipped in-process.
     cpio_gzip_archive(&pkgroot, &component.join("Payload"), log)?;
 
     // Bom: mkbom of the pkgroot. `-u 0 -g 0` forces root ownership so the Bom's
@@ -357,28 +447,242 @@ pub fn build_flat_pkg_linux(
         .with_context(|| format!("execute xar for {}", pkg_abs.display()))?;
     log.check_output(output, "xar")?;
 
-    if let Some(mtime) = parsed_mtime {
-        anodizer_core::util::set_file_mtime(&pkg_abs, mtime)?;
-    }
+    // The xar TOC embeds wall-clock per-file ctime/mtime/atime, the live
+    // inode, and an archive-level creation-time that msitools' xar fills from
+    // `now` and does NOT derive from SOURCE_DATE_EPOCH — so two builds a second
+    // apart produce different `.pkg` bytes despite an otherwise-pinned payload.
+    // Rewrite those fields to the same epoch the payload was stamped with and
+    // re-seal the archive so the output is byte-reproducible.
+    normalize_xar_toc(&pkg_abs, stamp_epoch).with_context(|| {
+        format!(
+            "normalize xar TOC for reproducibility: {}",
+            pkg_abs.display()
+        )
+    })?;
+
+    anodizer_core::util::set_file_mtime(&pkg_abs, stamp_time)?;
 
     Ok(())
 }
 
-/// Recursively copy `src` directory into `dst` (creating `dst`).
-fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
-    fs::create_dir_all(dst).with_context(|| format!("create dir {}", dst.display()))?;
-    for entry in fs::read_dir(src).with_context(|| format!("read dir {}", src.display()))? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_dir_recursive(&from, &to)?;
+/// Fixed epoch (1 second past the Unix epoch) stamped into the xar TOC time
+/// fields when no `mod_timestamp` is configured. Non-zero so the rendered
+/// `1970-01-01T00:00:01Z` is unambiguous in a manifest.
+const PKG_FALLBACK_EPOCH: i64 = 1;
+
+/// Convert a [`std::time::SystemTime`] to whole Unix epoch seconds (floored;
+/// pre-epoch times clamp to 0).
+fn system_time_to_epoch(t: std::time::SystemTime) -> i64 {
+    t.duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+/// Rewrite the time and inode fields of a flat `.pkg`'s xar table-of-contents
+/// to `epoch_secs` and re-seal the archive, making the output byte-stable
+/// across builds.
+///
+/// xar layout: a 28-byte big-endian header (`magic="xar!"`, `header_size`,
+/// `version`, `toc_length_compressed`, `toc_length_uncompressed`,
+/// `cksum_alg`), then the zlib-compressed TOC, then the heap. The heap opens
+/// with the TOC checksum (SHA-1, the digest of the *compressed* TOC, length
+/// per the TOC's own `<checksum>` element) followed by the file data blobs,
+/// whose `<data><offset>` values are heap-relative and so unaffected by a
+/// change in compressed-TOC length.
+///
+/// The rewrite: decompress the TOC, replace every `<ctime>/<mtime>/<atime>`,
+/// the archive `<creation-time>`, and every `<inode>` with the fixed values,
+/// recompress deterministically, recompute the SHA-1 over the new compressed
+/// TOC, and reassemble `header' + compressed_toc' + checksum' + heap_body`.
+/// Because both the compressed TOC and its checksum derive from the same
+/// normalized input, repeated builds yield identical bytes. The checksum
+/// algorithm is assumed SHA-1 (`cksum_alg == 1`), which is what msitools' xar
+/// and Apple's xar emit for `--compression none`; an unexpected algorithm is
+/// left untouched and reported so the claim never silently overstates.
+fn normalize_xar_toc(path: &std::path::Path, epoch_secs: i64) -> Result<()> {
+    use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
+    use std::io::{Read as _, Write as _};
+
+    let data = fs::read(path).with_context(|| format!("read pkg {}", path.display()))?;
+    if data.len() < 28 || &data[0..4] != b"xar!" {
+        anyhow::bail!("not a xar archive (bad magic): {}", path.display());
+    }
+    let header_size = u16::from_be_bytes([data[4], data[5]]) as usize;
+    let toc_len_comp = u64::from_be_bytes(data[8..16].try_into().unwrap()) as usize;
+    let cksum_alg = u32::from_be_bytes(data[24..28].try_into().unwrap());
+    // SHA-1 is the only algorithm anodizer's flat-pkg path produces; refuse to
+    // touch anything else rather than reseal with a wrong-width/garbage digest.
+    if cksum_alg != 1 {
+        anyhow::bail!(
+            "unexpected xar checksum algorithm {cksum_alg} (expected 1=SHA-1); \
+             refusing to reseal {}",
+            path.display()
+        );
+    }
+    if header_size + toc_len_comp > data.len() {
+        anyhow::bail!("truncated xar archive: {}", path.display());
+    }
+    let comp_toc = &data[header_size..header_size + toc_len_comp];
+    let heap = &data[header_size + toc_len_comp..];
+
+    // The leading bytes of the heap are the stored TOC checksum (SHA-1 = 20B);
+    // the rest is the file-data body, copied through verbatim.
+    const SHA1_LEN: usize = 20;
+    if heap.len() < SHA1_LEN {
+        anyhow::bail!("xar heap too small for checksum: {}", path.display());
+    }
+    let heap_body = &heap[SHA1_LEN..];
+
+    let mut toc = Vec::new();
+    ZlibDecoder::new(comp_toc)
+        .read_to_end(&mut toc)
+        .with_context(|| "decompress xar TOC".to_string())?;
+
+    let stamp = epoch_to_iso8601(epoch_secs);
+    let toc = rewrite_toc_fields(&toc, &stamp);
+
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::best());
+    encoder
+        .write_all(&toc)
+        .with_context(|| "recompress xar TOC".to_string())?;
+    let new_comp = encoder
+        .finish()
+        .with_context(|| "finalize xar TOC".to_string())?;
+    let new_cksum = sha1_digest(&new_comp);
+
+    let mut out = Vec::with_capacity(header_size + new_comp.len() + SHA1_LEN + heap_body.len());
+    out.extend_from_slice(&data[0..4]); // magic
+    out.extend_from_slice(&data[4..6]); // header_size
+    out.extend_from_slice(&data[6..8]); // version
+    out.extend_from_slice(&(new_comp.len() as u64).to_be_bytes()); // toc_length_compressed
+    out.extend_from_slice(&(toc.len() as u64).to_be_bytes()); // toc_length_uncompressed
+    out.extend_from_slice(&data[24..header_size]); // cksum_alg + any header tail
+    out.extend_from_slice(&new_comp);
+    out.extend_from_slice(&new_cksum);
+    out.extend_from_slice(heap_body);
+
+    fs::write(path, &out).with_context(|| format!("rewrite pkg {}", path.display()))?;
+    Ok(())
+}
+
+/// Replace the per-file `<ctime>/<mtime>/<atime>`, archive `<creation-time>`,
+/// and `<inode>` elements in a decompressed xar TOC with fixed values.
+///
+/// `<ctime>/<mtime>/<atime>` use a `Z`-suffixed RFC-3339 stamp; xar's
+/// archive-level `<creation-time>` is the same instant without the `Z`. Inodes
+/// are pinned to `0` (matching pkgbuild's identity-stripped output).
+fn rewrite_toc_fields(toc: &[u8], stamp: &str) -> Vec<u8> {
+    let toc = String::from_utf8_lossy(toc);
+    let mut s = toc.into_owned();
+    for tag in ["ctime", "mtime", "atime"] {
+        s = replace_element(&s, tag, &format!("{stamp}Z"));
+    }
+    s = replace_element(&s, "creation-time", stamp);
+    s = replace_element(&s, "inode", "0");
+    s.into_bytes()
+}
+
+/// Replace the text content of every `<tag>…</tag>` occurrence with `value`.
+///
+/// A linear scan (not regex) so the function carries no dependency and cannot
+/// backtrack; xar TOC tags are simple non-nested leaf elements.
+fn replace_element(s: &str, tag: &str, value: &str) -> String {
+    let open = format!("<{tag}>");
+    let close = format!("</{tag}>");
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find(&open) {
+        let after_open = start + open.len();
+        if let Some(rel_end) = rest[after_open..].find(&close) {
+            out.push_str(&rest[..after_open]);
+            out.push_str(value);
+            let end = after_open + rel_end;
+            out.push_str(&close);
+            rest = &rest[end + close.len()..];
         } else {
-            fs::copy(&from, &to)
-                .with_context(|| format!("copy {} -> {}", from.display(), to.display()))?;
+            break;
         }
     }
-    Ok(())
+    out.push_str(rest);
+    out
+}
+
+/// Format whole Unix epoch seconds as `YYYY-MM-DDTHH:MM:SS` (UTC, no `Z`).
+fn epoch_to_iso8601(epoch_secs: i64) -> String {
+    // Civil-from-days (Howard Hinnant's algorithm), avoiding a chrono dep.
+    let secs = epoch_secs.rem_euclid(86_400);
+    let days = (epoch_secs - secs) / 86_400;
+    let (hour, min, sec) = (secs / 3600, (secs % 3600) / 60, secs % 60);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{min:02}:{sec:02}")
+}
+
+/// Compute the SHA-1 digest of `data` (the algorithm xar records for its TOC
+/// checksum). Self-contained to avoid pulling a crypto crate for a 20-byte
+/// non-security digest.
+fn sha1_digest(data: &[u8]) -> [u8; 20] {
+    let mut h: [u32; 5] = [
+        0x6745_2301,
+        0xEFCD_AB89,
+        0x98BA_DCFE,
+        0x1032_5476,
+        0xC3D2_E1F0,
+    ];
+    let ml = (data.len() as u64) * 8;
+    let mut msg = data.to_vec();
+    msg.push(0x80);
+    while msg.len() % 64 != 56 {
+        msg.push(0);
+    }
+    msg.extend_from_slice(&ml.to_be_bytes());
+    for chunk in msg.chunks_exact(64) {
+        let mut w = [0u32; 80];
+        for (i, word) in chunk.chunks_exact(4).enumerate() {
+            w[i] = u32::from_be_bytes(word.try_into().unwrap());
+        }
+        for i in 16..80 {
+            w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
+        }
+        let (mut a, mut b, mut c, mut d, mut e) = (h[0], h[1], h[2], h[3], h[4]);
+        for (i, &wi) in w.iter().enumerate() {
+            let (f, k) = match i {
+                0..=19 => ((b & c) | ((!b) & d), 0x5A82_7999),
+                20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                _ => (b ^ c ^ d, 0xCA62_C1D6),
+            };
+            let tmp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(wi);
+            e = d;
+            d = c;
+            c = b.rotate_left(30);
+            b = a;
+            a = tmp;
+        }
+        h[0] = h[0].wrapping_add(a);
+        h[1] = h[1].wrapping_add(b);
+        h[2] = h[2].wrapping_add(c);
+        h[3] = h[3].wrapping_add(d);
+        h[4] = h[4].wrapping_add(e);
+    }
+    let mut out = [0u8; 20];
+    for (i, word) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -783,13 +1087,27 @@ impl Stage for PkgStage {
                             .and_then(|n| n.to_str())
                             .unwrap_or(&krate.name);
                         let staged_binary = staging_dir.join(binary_name);
-                        fs::copy(binary_path, &staged_binary).with_context(|| {
-                            format!(
-                                "pkg: copy binary {} to staging dir {}",
-                                binary_path.display(),
-                                staging_dir.display()
-                            )
-                        })?;
+                        // In appbundle mode `binary_path` is a `.app` directory;
+                        // fs::copy rejects directories, so recurse (symlink-safe,
+                        // preserving the bundle's framework version links).
+                        if binary_path.is_dir() {
+                            anodizer_core::util::copy_dir_tree(binary_path, &staged_binary)
+                                .with_context(|| {
+                                    format!(
+                                        "pkg: copy app bundle {} to staging dir {}",
+                                        binary_path.display(),
+                                        staging_dir.display()
+                                    )
+                                })?;
+                        } else {
+                            fs::copy(binary_path, &staged_binary).with_context(|| {
+                                format!(
+                                    "pkg: copy binary {} to staging dir {}",
+                                    binary_path.display(),
+                                    staging_dir.display()
+                                )
+                            })?;
+                        }
 
                         // Copy extra files into the staging directory
                         if let Some(extra_files) = &pkg_cfg.extra_files {
@@ -988,9 +1306,9 @@ pub fn env_requirements(
         return Vec::new();
     }
     // `xar` is the sentinel for the Linux flat-package path: ToolAnyOf is
-    // any-of and cannot express "all four of xar+mkbom+cpio+gzip together", so
+    // any-of and cannot express "all three of xar+mkbom+cpio together", so
     // preflight surfaces "pkgbuild OR xar"; the build-time resolution in
-    // `resolve_pkg_builder` still enforces the full four-tool group and bails
+    // `resolve_pkg_builder` still enforces the full three-tool group and bails
     // with the precise message when only a partial Linux toolchain is present.
     vec![anodizer_core::EnvRequirement::ToolAnyOf {
         names: vec!["pkgbuild".to_string(), "xar".to_string()],
@@ -1110,8 +1428,8 @@ mod tests {
 
     #[test]
     fn test_resolve_bail_names_both_options() {
-        // Partial Linux toolchain (missing gzip) and no pkgbuild => error.
-        let err = resolve_pkg_builder(|t| t == "xar" || t == "mkbom" || t == "cpio").unwrap_err();
+        // Partial Linux toolchain (missing cpio) and no pkgbuild => error.
+        let err = resolve_pkg_builder(|t| t == "xar" || t == "mkbom").unwrap_err();
         assert!(
             err.contains("pkgbuild"),
             "message must name pkgbuild: {err}"
@@ -1122,15 +1440,147 @@ mod tests {
         );
         assert!(err.contains("mkbom"), "message must name mkbom: {err}");
         assert!(err.contains("cpio"), "message must name cpio: {err}");
-        assert!(err.contains("gzip"), "message must name gzip: {err}");
     }
 
     // -- Linux flat-package builder --
 
+    // -- reproducibility helpers --
+
+    #[test]
+    fn test_sha1_digest_known_vectors() {
+        assert_eq!(
+            sha1_digest(b""),
+            hex_to_bytes("da39a3ee5e6b4b0d3255bfef95601890afd80709")
+        );
+        assert_eq!(
+            sha1_digest(b"abc"),
+            hex_to_bytes("a9993e364706816aba3e25717850c26c9cd0d89d")
+        );
+        assert_eq!(
+            sha1_digest(b"The quick brown fox jumps over the lazy dog"),
+            hex_to_bytes("2fd4e1c67a2d28fced849ee1bb76e7391b93eb12")
+        );
+    }
+
+    fn hex_to_bytes(h: &str) -> [u8; 20] {
+        let mut out = [0u8; 20];
+        for (i, b) in out.iter_mut().enumerate() {
+            *b = u8::from_str_radix(&h[i * 2..i * 2 + 2], 16).unwrap();
+        }
+        out
+    }
+
+    #[test]
+    fn test_epoch_to_iso8601() {
+        assert_eq!(epoch_to_iso8601(0), "1970-01-01T00:00:00");
+        assert_eq!(epoch_to_iso8601(1), "1970-01-01T00:00:01");
+        // 1700000000 = 2023-11-14T22:13:20Z
+        assert_eq!(epoch_to_iso8601(1_700_000_000), "2023-11-14T22:13:20");
+        // Leap day
+        assert_eq!(epoch_to_iso8601(1_582_934_400), "2020-02-29T00:00:00");
+    }
+
+    #[test]
+    fn test_rewrite_toc_fields_normalizes_all_time_and_inode() {
+        let toc = b"<file><ctime>2026-01-01T00:00:00Z</ctime>\
+                    <mtime>2026-01-01T00:00:00Z</mtime>\
+                    <atime>2026-01-01T00:00:00Z</atime>\
+                    <inode>1656875</inode></file>\
+                    <creation-time>2026-01-01T00:00:00</creation-time>";
+        let out = String::from_utf8(rewrite_toc_fields(toc, "1970-01-01T00:00:01")).unwrap();
+        assert!(out.contains("<ctime>1970-01-01T00:00:01Z</ctime>"));
+        assert!(out.contains("<mtime>1970-01-01T00:00:01Z</mtime>"));
+        assert!(out.contains("<atime>1970-01-01T00:00:01Z</atime>"));
+        assert!(out.contains("<inode>0</inode>"));
+        assert!(out.contains("<creation-time>1970-01-01T00:00:01</creation-time>"));
+        assert!(!out.contains("2026"));
+    }
+
+    #[test]
+    fn test_normalize_odc_cpio_zeroes_dev_ino_and_is_idempotent() {
+        if !anodizer_core::util::find_binary("cpio") || !anodizer_core::util::find_binary("sh") {
+            eprintln!("cpio absent; test skipped hermetically");
+            return;
+        }
+        let dir = TempDir::new().unwrap();
+        fs::write(dir.path().join("a.txt"), b"hello").unwrap();
+        fs::write(dir.path().join("b.txt"), b"world").unwrap();
+        let raw = Command::new("sh")
+            .arg("-c")
+            .arg("find . | LC_ALL=C sort | cpio -o --format odc -R 0:0 2>/dev/null")
+            .current_dir(dir.path())
+            .output()
+            .unwrap()
+            .stdout;
+        let n1 = normalize_odc_cpio(&raw);
+        // Every odc header's dev (6..12) and ino (12..18) must be zeroed.
+        let mut i = 0;
+        while i + 76 <= n1.len() && &n1[i..i + 6] == b"070707" {
+            assert_eq!(&n1[i + 6..i + 12], b"000000", "dev not zeroed at {i}");
+            assert_eq!(&n1[i + 12..i + 18], b"000000", "ino not zeroed at {i}");
+            let namesize =
+                usize::from_str_radix(std::str::from_utf8(&n1[i + 59..i + 65]).unwrap(), 8)
+                    .unwrap();
+            let filesize =
+                usize::from_str_radix(std::str::from_utf8(&n1[i + 65..i + 76]).unwrap(), 8)
+                    .unwrap();
+            let name = &n1[i + 76..i + 76 + namesize];
+            if name.starts_with(b"TRAILER!!!") {
+                break;
+            }
+            i += 76 + namesize + filesize;
+        }
+        // Idempotent: re-normalizing yields the identical bytes.
+        assert_eq!(normalize_odc_cpio(&n1), n1);
+    }
+
+    #[test]
+    fn test_flat_pkg_is_byte_reproducible_across_time() {
+        // The whole point of the fix: two builds whose wall-clock differs must
+        // produce byte-identical `.pkg`. Builds the same staging twice with a
+        // simulated time gap (a real 2nd build re-runs xar, which re-stamps the
+        // TOC wall-clock — here we build twice back to back, which already
+        // exercises distinct xar `creation-time`s on most hosts; the normalize
+        // pass collapses them). Hermetic: skip-with-pass without the toolchain.
+        let have_tools = LINUX_PKG_TOOLS
+            .iter()
+            .all(|t| anodizer_core::util::find_binary(t))
+            && anodizer_core::util::find_binary("sh");
+        if !have_tools {
+            eprintln!("Linux pkg toolchain absent; test skipped hermetically");
+            return;
+        }
+        let log =
+            anodizer_core::log::StageLogger::new("pkg", anodizer_core::log::Verbosity::Normal);
+        let build = || -> Vec<u8> {
+            let staging = TempDir::new().unwrap();
+            fs::write(staging.path().join("myapp"), b"#!/bin/sh\necho hi\n").unwrap();
+            let out = TempDir::new().unwrap();
+            let pkg_path = out.path().join("myapp_arm64.pkg");
+            build_flat_pkg_linux(
+                staging.path(),
+                "com.example.myapp",
+                "1.2.3",
+                "/usr/local/bin",
+                None,
+                Some("11.0"),
+                None, // no mod_timestamp => fallback-epoch path
+                &pkg_path,
+                &log,
+            )
+            .unwrap();
+            fs::read(&pkg_path).unwrap()
+        };
+        let a = build();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let b = build();
+        assert_eq!(a, b, "flat .pkg must be byte-identical across builds");
+    }
+
     #[test]
     fn test_build_flat_pkg_linux_emits_xar_layout() {
         // Hermetic: skip-with-pass if the Linux toolchain is absent. This box
-        // has all four, so the assertions below WILL execute here.
+        // has all of xar/mkbom/cpio, so the assertions below WILL execute here.
         let have_tools = LINUX_PKG_TOOLS
             .iter()
             .all(|t| anodizer_core::util::find_binary(t))

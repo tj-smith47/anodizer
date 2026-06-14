@@ -113,60 +113,6 @@ fn os_arch_from_target(target: Option<&str>) -> (String, String) {
 /// is distinct per crate.
 const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Arch }}";
 
-/// Recursively copy the directory tree rooted at `src` to `dst`, recreating
-/// subdirectories, copying file contents (with `fs::copy`, which preserves the
-/// Unix mode bits — including the executable bit), and recreating symlinks as
-/// symlinks. Used to stage an app-bundle directory into the DMG staging area.
-fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
-    fs::create_dir_all(dst)
-        .with_context(|| format!("dmg: create staging dir {}", dst.display()))?;
-    for entry in
-        fs::read_dir(src).with_context(|| format!("dmg: read source dir {}", src.display()))?
-    {
-        let entry = entry.with_context(|| format!("dmg: read entry under {}", src.display()))?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        // Use symlink_metadata so a symlink is recreated as a link rather than
-        // dereferenced — app bundles can embed framework version symlinks.
-        let file_type = entry
-            .file_type()
-            .with_context(|| format!("dmg: stat {}", from.display()))?;
-        if file_type.is_symlink() {
-            #[cfg(unix)]
-            {
-                let target = fs::read_link(&from)
-                    .with_context(|| format!("dmg: read symlink {}", from.display()))?;
-                std::os::unix::fs::symlink(&target, &to).with_context(|| {
-                    format!(
-                        "dmg: recreate symlink {} -> {}",
-                        to.display(),
-                        target.display()
-                    )
-                })?;
-            }
-            #[cfg(not(unix))]
-            {
-                // No portable symlink creation without elevated rights on
-                // Windows; copy the link target's contents instead so the
-                // bundle is at least complete.
-                if from.is_dir() {
-                    copy_tree(&from, &to)?;
-                } else {
-                    fs::copy(&from, &to).with_context(|| {
-                        format!("dmg: copy {} to {}", from.display(), to.display())
-                    })?;
-                }
-            }
-        } else if file_type.is_dir() {
-            copy_tree(&from, &to)?;
-        } else {
-            fs::copy(&from, &to)
-                .with_context(|| format!("dmg: copy {} to {}", from.display(), to.display()))?;
-        }
-    }
-    Ok(())
-}
-
 /// Stage the DMG payload for one source into `staging_dir`, dispatching on
 /// `use_mode`, and return the staged path (`staging_dir.join(binary_name)`).
 ///
@@ -187,7 +133,7 @@ pub(crate) fn stage_binary_into(
 ) -> Result<std::path::PathBuf> {
     let staged_binary = staging_dir.join(binary_name);
     if use_mode == "appbundle" {
-        copy_tree(binary_path, &staged_binary)
+        anodizer_core::util::copy_dir_tree(binary_path, &staged_binary)
             .with_context(|| format!("copy app bundle {} to staging dir", binary_path.display()))?;
         return Ok(staged_binary);
     }

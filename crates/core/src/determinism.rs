@@ -99,10 +99,16 @@ impl DeterminismState {
                 "*.dmg",
                 "hdiutil reproducibility deferred to determinism-installers follow-up",
             ),
-            (
-                "*.pkg",
-                "pkgbuild reproducibility deferred to determinism-installers follow-up",
-            ),
+            // The Linux flat-package path (xar/mkbom/cpio) IS byte-reproducible
+            // — cpio dev/ino zeroed, payload mtime-pinned, xar TOC times/inode
+            // normalized and the archive re-sealed (proven by
+            // stage-pkg::test_flat_pkg_is_byte_reproducible_across_time). This
+            // entry remains because the allowlist matches on artifact name, not
+            // on producing tool, and the macOS-native `pkgbuild` path (used on
+            // the macos determinism shard) is not yet proven reproducible;
+            // narrowing the gate to per-tool is the determinism-installers
+            // follow-up. Removing this outright would gate anodizer's release on
+            // an unproven macOS path.
             (
                 "*.deb",
                 "dpkg-deb reproducibility varies by version; tracked in determinism-installers",

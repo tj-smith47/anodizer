@@ -356,7 +356,7 @@ fn assemble_appdir(appdir: &Path, job: &AppImageJob) -> Result<(PathBuf, PathBuf
 fn copy_entry_into_appdir(appdir: &Path, entry: &AppDirEntry) -> Result<()> {
     let dst = appdir.join(&entry.dst);
     if entry.src.is_dir() {
-        copy_dir_recursive(&entry.src, &dst).with_context(|| {
+        anodizer_core::util::copy_dir_tree(&entry.src, &dst).with_context(|| {
             format!(
                 "appimage: copy dir {} → {}",
                 entry.src.display(),
@@ -374,24 +374,6 @@ fn copy_entry_into_appdir(appdir: &Path, entry: &AppDirEntry) -> Result<()> {
                 dst.display()
             )
         })?;
-    }
-    Ok(())
-}
-
-/// Recursively copy `src` (a directory) to `dst`, creating `dst` and all
-/// intermediate dirs.
-fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let ft = entry.file_type()?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if ft.is_dir() {
-            copy_dir_recursive(&from, &to)?;
-        } else {
-            std::fs::copy(&from, &to)?;
-        }
     }
     Ok(())
 }
