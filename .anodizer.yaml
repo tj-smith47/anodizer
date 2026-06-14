@@ -546,53 +546,6 @@ crates:
         commit_author:
           name: TJ Smith
           email: tj@jarvispro.io
-      # Homebrew Formula publisher (distinct from the top-level
-      # `homebrew_casks:` block, which lands a binary-stub cask under Casks/).
-      # The formula lands under Formula/ in the same tap and exercises the
-      # configurable `livecheck` stanza — casks always emit `livecheck { skip }`,
-      # so the formula is the only surface that can dogfood active version
-      # detection. anodizer tags releases on GitHub, so `github_latest` against
-      # `:stable` is the correct strategy.
-      homebrew:
-        required: true
-        repository:
-          owner: tj-smith47
-          name: homebrew-tap
-        directory: Formula
-        description: "A Rust-native release automation tool"
-        homepage: "https://github.com/tj-smith47/anodizer"
-        license: MIT
-        # Mirrors the URL the release stage auto-derives for each asset
-        # (github.com/<owner>/<repo>/releases/download/<tag>/<asset>). Set
-        # explicitly so the formula's emission-validate resolves a download URL
-        # in the slim `--single-target --dry-run` snapshot (`task lint`), where
-        # the release stage is skipped and never populates per-asset url
-        # metadata. Same string the auto-derive produces, so it cannot drift.
-        url_template: "https://github.com/tj-smith47/anodizer/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
-        # Completions are produced at install time by the installed binary
-        # (`anodizer completion <shell>`), matching modern homebrew-core Rust
-        # formulae (ripgrep/fd/bat). The manpage rides the GitHub Release.
-        generate_completions_from_executable:
-          executable: anodizer
-          args:
-            - completion
-          shells:
-            - bash
-            - zsh
-            - fish
-        manpages:
-          - anodizer.1
-        livecheck:
-          strategy: github_latest
-          url: stable
-        dependencies:
-          - name: git
-        caveats: |
-          Run `anodizer init` to scaffold a config in your repo.
-        commit_msg_template: "anodizer {{ .Tag }}"
-        commit_author:
-          name: TJ Smith
-          email: tj@jarvispro.io
     nfpm:
       # deb + rpm packers — bound to the GNU build (`ids: [anodizer]`). deb
       # (Debian/Ubuntu) and rpm (RHEL/Fedora/SUSE) ship glibc; the hermetic
@@ -795,6 +748,14 @@ homebrew_casks:
       - anodizer.1
     caveats: |
       Run `anodizer init` to scaffold a config in your repo.
+    # Active version detection: anodizer tags releases on GitHub, so
+    # `github_latest` against the cask's own `url` stanza (`url :url`, the
+    # idiomatic cask shorthand) lets `brew livecheck` poll the latest tag.
+    # This dogfoods the cask `livecheck` field — the single Homebrew surface
+    # anodizer publishes is this cask; no Formula is emitted.
+    livecheck:
+      strategy: github_latest
+      url: url
     dependencies:
       - formula: git
     commit_msg_template: "anodizer {{ .Tag }}"

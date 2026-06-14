@@ -29,7 +29,7 @@ pub(crate) use cask::{CaskGenResult, crate_has_macos_cask_artifact};
 pub(crate) use commit_msg::{render_commit_msg, render_commit_msg_with_prev};
 pub use formula::{
     FormulaOptions, build_completion_and_manpage_install_lines, generate_formula,
-    generate_formula_with_opts, render_formula_license, render_formula_livecheck,
+    generate_formula_with_opts, render_formula_license, render_livecheck,
 };
 pub use publish_cask::publish_cask;
 pub(crate) use publish_cask::render_homebrew_cask_for_crate;

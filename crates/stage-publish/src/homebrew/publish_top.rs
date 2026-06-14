@@ -374,6 +374,7 @@ fn render_top_level_cask_inner(
         uninstall_block: &uninstall_block,
         custom_block: cask_cfg.custom_block.as_deref(),
         service: cask_cfg.service.as_deref(),
+        livecheck: super::formula::render_livecheck(cask_cfg.livecheck.as_ref(), log),
         manpages,
         completions_bash,
         completions_zsh,

@@ -292,6 +292,16 @@ pub struct HomebrewCaskConfig {
     /// Homebrew service definition.
     pub service: Option<String>,
 
+    // ----- Livecheck -----
+    /// `livecheck` stanza configuration for the cask. When unset, the cask
+    /// emits `livecheck do\n  skip "Auto-generated on release."\nend` (a
+    /// binary cask's download URL/sha256 are rewritten on every release, so
+    /// `brew livecheck` has nothing stable to poll). Set `strategy:` /
+    /// `url:` / `regex:` (with `skip: false`) to opt into active version
+    /// detection — the same shape a Homebrew cask `livecheck do … end`
+    /// block accepts. Reuses the formula `livecheck` config type.
+    pub livecheck: Option<HomebrewLivecheck>,
+
     // ----- Completions / manpages -----
     /// Manual page references to install.
     pub manpages: Option<Vec<String>>,

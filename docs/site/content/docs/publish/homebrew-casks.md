@@ -65,6 +65,12 @@ homebrew_casks:
     caveats: ""                      # optional; post-install message
     service: ""                      # optional; service definition
     custom_block: ""                 # optional; raw Ruby inserted into cask
+    livecheck:                       # optional; version polling (default: skip)
+      strategy: github_latest        # optional; livecheck strategy symbol
+      url: url                       # optional; :url shorthand or a literal URL
+      regex: ""                      # optional; raw Ruby for page_match strategies
+      skip: false                    # optional; true forces the skip stanza
+      skip_reason: ""                # optional; custom skip message
     alternative_names: []            # optional
     ids: []                          # optional; filter by build IDs
     skip_upload: false               # optional; "auto" skips prereleases
@@ -132,6 +138,7 @@ Cask files are updated in-place on each release; no recovery flag is required fo
 | `caveats` | string | none | Post-install caveats message |
 | `service` | string | none | Service definition |
 | `custom_block` | string | none | Raw Ruby inserted into the cask |
+| `livecheck` | object | skip | `livecheck do … end` stanza for version polling. See [Livecheck](#livecheck). |
 | `alternative_names` | list | none | Alternative cask names |
 | `ids` | list | none | Filter by build IDs |
 | `skip_upload` | string/bool | none | Skip git push (`"auto"` skips for prereleases) |
@@ -209,6 +216,50 @@ Each entry can specify either `cask` or `formula`:
 conflicts:
   - cask: another-app
 ```
+
+### Livecheck (`livecheck`)
+
+By default the cask emits `livecheck do skip "Auto-generated on release." end` —
+a binary cask's `url`/`sha256` are rewritten on every release, so there is
+nothing stable for `brew livecheck` to poll. Set a `strategy` (and optionally
+`url`/`regex`) to opt into active version detection. For a GitHub-released
+project, `github_latest` against the cask's own `url` stanza (`:url`, the
+idiomatic cask shorthand) is the right pairing:
+
+```yaml
+homebrew_casks:
+  - name: myapp
+    repository:
+      owner: myorg
+      name: homebrew-tap
+    livecheck:
+      strategy: github_latest
+      url: url
+```
+
+renders into the cask:
+
+```ruby
+  livecheck do
+    url :url
+    strategy :github_latest
+  end
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `strategy` | string | none | Livecheck strategy symbol (e.g. `github_latest`, `git`, `page_match`) |
+| `url` | string | `url` | `:url` / `:homepage` symbol shorthand, or a literal URL string |
+| `regex` | string | none | Raw Ruby regex (e.g. `%r{v(\d+\.\d+)}i`) for `page_match`-style strategies |
+| `skip` | bool | auto | `true` forces the skip stanza; defaults to skip when no `strategy`/`url`/`regex` is set |
+| `skip_reason` | string | `Auto-generated on release.` | Custom message for the skip stanza |
+
+`url` accepts a Ruby symbol shorthand (`url` / `stable` / `head` / `homepage` →
+`url :url`) or a literal URL string. Setting `skip: false` without any of
+`strategy`/`url`/`regex` falls back to `skip` with a warning — an empty
+`livecheck do … end` is invalid. Unlike GoReleaser (whose cask template
+hard-codes `skip`), anodizer's cask `livecheck` is fully configurable, matching
+how the overwhelming majority of real Homebrew casks declare version detection.
 
 ## Behavior
 

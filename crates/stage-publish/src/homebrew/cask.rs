@@ -16,8 +16,8 @@ cask "{{ name | ruby_escape }}" do
 {% endfor %}{% if description %}  desc "{{ description | ruby_escape }}"
 {% endif %}
   livecheck do
-    skip "Auto-generated on release."
-  end
+{% for line in livecheck_lines %}    {{ line }}
+{% endfor %}  end
 
 {% if has_platforms %}{% for plat in platforms %}  on_{{ plat.os_block }} do
 {% for arch_entry in plat.arches %}    on_{{ arch_entry.arch_block }} do
@@ -134,6 +134,12 @@ pub struct CaskParams<'a> {
     pub custom_block: Option<&'a str>,
     /// Service block content.
     pub service: Option<&'a str>,
+    /// Pre-rendered `livecheck do … end` block body (the lines *between*
+    /// `livecheck do` and `end`, already trimmed — the template indents each).
+    /// `None` ⇒ the default `skip "Auto-generated on release."` line, matching
+    /// today's cask behaviour. Build via
+    /// [`render_livecheck`](super::formula::render_livecheck).
+    pub livecheck: Option<String>,
     /// Manpage file paths.
     pub manpages: &'a [String],
     /// Bash completion file path.
@@ -557,6 +563,18 @@ pub fn generate_cask(params: &CaskParams<'_>) -> Result<String> {
     ctx.insert("has_service", &has_service);
     ctx.insert("service", params.service.unwrap_or(""));
 
+    // Livecheck. `None` falls back to the historical default skip line so an
+    // unconfigured cask renders exactly as before; `Some(body)` emits the
+    // pre-rendered active stanza (or an explicit skip) built via
+    // `formula::render_livecheck`. The `livecheck do … end` wrapper lives in
+    // the template; only the inner lines are supplied here.
+    let livecheck_body = params
+        .livecheck
+        .as_deref()
+        .unwrap_or("skip \"Auto-generated on release.\"");
+    let livecheck_lines: Vec<&str> = livecheck_body.lines().collect();
+    ctx.insert("livecheck_lines", &livecheck_lines);
+
     // Manpages
     ctx.insert("manpages", params.manpages);
 
@@ -641,6 +659,7 @@ pub(super) fn generate_cask_from_context(
     crate_name: &str,
     hb_cfg: &anodizer_core::config::HomebrewConfig,
     cask_cfg: &anodizer_core::config::HomebrewCaskConfig,
+    log: &anodizer_core::log::StageLogger,
 ) -> Result<CaskGenResult> {
     let version = ctx.version();
     let cask_name = cask_cfg.name.as_deref().unwrap_or(crate_name);
@@ -942,6 +961,7 @@ pub(super) fn generate_cask_from_context(
         uninstall_block: &uninstall_block,
         custom_block: cask_cfg.custom_block.as_deref(),
         service: cask_cfg.service.as_deref(),
+        livecheck: super::formula::render_livecheck(cask_cfg.livecheck.as_ref(), log),
         manpages: cask_cfg.manpages.as_deref().unwrap_or(&empty_vec),
         completions_bash: cask_cfg
             .completions
@@ -1037,6 +1057,7 @@ pub(super) fn clone_cask_params<'a>(p: &'a CaskParams<'a>) -> CaskParams<'a> {
         uninstall_block: p.uninstall_block,
         custom_block: p.custom_block,
         service: p.service,
+        livecheck: p.livecheck.clone(),
         manpages: p.manpages,
         completions_bash: p.completions_bash,
         completions_zsh: p.completions_zsh,

@@ -495,7 +495,7 @@ pub(crate) fn render_same_tap_cask_for_crate(
         ));
         return Ok(None);
     }
-    let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg)?;
+    let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg, log)?;
     Ok(Some(cask_result))
 }
 
@@ -809,7 +809,7 @@ fn render_formula_inner(
         custom_block: hb_cfg.custom_block.as_deref(),
         plist: hb_cfg.plist.as_deref(),
         service: hb_cfg.service.as_deref(),
-        livecheck: super::formula::render_formula_livecheck(hb_cfg.livecheck.as_ref(), log),
+        livecheck: super::formula::render_livecheck(hb_cfg.livecheck.as_ref(), log),
         // Render the `license` stanza from the parsed SPDX expression so a dual
         // license (`Apache-2.0 OR MIT`) becomes `license any_of: [...]` rather
         // than an invalid bare string. `None` when no license resolved → the

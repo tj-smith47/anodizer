@@ -194,7 +194,7 @@ pub struct FormulaOptions<'a> {
     pub service: Option<&'a str>,
     /// Pre-rendered `livecheck do … end` block body (the lines *between*
     /// `livecheck do` and `end`, already indented). `None` ⇒ no livecheck
-    /// stanza. Build via [`render_formula_livecheck`].
+    /// stanza. Build via [`render_livecheck`].
     pub livecheck: Option<String>,
     /// License stanza override. When `Some`, this raw Ruby replaces the
     /// `license "<id>"` form so dual-license SPDX expressions can render as
@@ -669,16 +669,20 @@ fn ruby_string_array(ids: &[String]) -> String {
         .join(", ")
 }
 
-/// Render the body of a formula `livecheck do … end` block from config.
+/// Render the body of a Homebrew `livecheck do … end` block from config.
+///
+/// Shared by both the formula and the cask renderers — a Homebrew cask
+/// `livecheck` block has the same `url`/`strategy`/`regex`/`skip` shape as a
+/// formula's, so a single renderer serves both.
 ///
 /// Returns `None` when no livecheck should be emitted. The returned string is
 /// the inner lines (already trimmed of the `do`/`end` wrapper, no leading
 /// indent — the template indents each line). Behavior:
 ///
 /// - config absent OR `skip` truthy OR (no `strategy`/`url`/`regex` set) ⇒
-///   `skip "<reason>"` (default reason `Auto-generated on release.`), matching
-///   the cask. A binary tap's archive URL/sha change every release, so an
-///   active livecheck has nothing stable to poll.
+///   `skip "<reason>"` (default reason `Auto-generated on release.`). A binary
+///   tap's archive URL/sha change every release, so an active livecheck has
+///   nothing stable to poll.
 /// - `skip: false` + a `strategy`/`url`/`regex` ⇒ an active block
 ///   (`url :stable` / `strategy :github_latest` / `regex(...)`).
 ///
@@ -686,7 +690,7 @@ fn ruby_string_array(ids: &[String]) -> String {
 /// `strategy`/`url`/`regex`, an active block would render an empty (invalid)
 /// `livecheck do … end`, so the renderer falls back to `skip` and emits a
 /// `log.warn` so the ignored opt-in is visible rather than silently dropped.
-pub fn render_formula_livecheck(
+pub fn render_livecheck(
     cfg: Option<&anodizer_core::config::HomebrewLivecheck>,
     log: &anodizer_core::log::StageLogger,
 ) -> Option<String> {
@@ -743,11 +747,16 @@ pub fn render_formula_livecheck(
 }
 
 /// Map a livecheck `url` config value to its Ruby symbol when it is one of the
-/// recognised shorthands (`stable`/`head`/`homepage`). Returns `None` for a
-/// literal URL (which the caller renders as a quoted string).
+/// recognised shorthands. Returns `None` for a literal URL (which the caller
+/// renders as a quoted string).
+///
+/// - `stable` / `head` / `homepage` — the formula shorthands (`url :stable`).
+/// - `url` — the cask shorthand: a cask livecheck references the cask's own
+///   `url` stanza via `url :url`, which is the idiomatic form for the
+///   overwhelming majority of real casks (formulae lack a `:url` symbol).
 fn livecheck_url_symbol(url: &str) -> Option<&str> {
     let u = url.trim().trim_start_matches(':');
-    matches!(u, "stable" | "head" | "homepage").then_some(u)
+    matches!(u, "stable" | "head" | "homepage" | "url").then_some(u)
 }
 
 /// Build the extra install-block lines for prebuilt completion files and

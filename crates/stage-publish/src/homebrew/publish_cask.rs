@@ -78,7 +78,7 @@ pub(crate) fn render_homebrew_cask_for_crate(
         return Ok(None);
     }
 
-    let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg)?;
+    let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg, log)?;
     Ok(Some(cask_result))
 }
 
@@ -121,7 +121,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         return Ok(());
     }
 
-    let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg)?;
+    let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg, log)?;
 
     // Clone tap repo, write cask, commit, push.
     let tmp_dir = tempfile::tempdir().context("homebrew cask: create temp dir")?;

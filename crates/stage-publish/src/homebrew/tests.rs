@@ -919,6 +919,7 @@ fn empty_cask_params<'a>(name: &'a str, version: &'a str) -> CaskParams<'a> {
         uninstall_block: "",
         custom_block: None,
         service: None,
+        livecheck: None,
         manpages: &[],
         completions_bash: None,
         completions_zsh: None,
@@ -2360,6 +2361,7 @@ fn generate_cask_multi_platform_emits_per_arch_blocks_without_top_level_url() {
         uninstall_block: "",
         custom_block: None,
         service: None,
+        livecheck: None,
         manpages: &[],
         completions_bash: None,
         completions_zsh: None,
@@ -2469,7 +2471,8 @@ fn generate_cask_from_context_emits_every_os_arch_pair() {
 
     let hb_cfg = HomebrewConfig::default();
     let cask_cfg = HomebrewCaskConfig::default();
-    let result = super::cask::generate_cask_from_context(&ctx, "mytool", &hb_cfg, &cask_cfg)
+    let log = test_log();
+    let result = super::cask::generate_cask_from_context(&ctx, "mytool", &hb_cfg, &cask_cfg, &log)
         .expect("multi-arch cask generation");
     let cask = result.content;
 
@@ -2526,7 +2529,8 @@ fn generate_cask_from_context_single_arch_still_valid() {
     ));
     let hb_cfg = HomebrewConfig::default();
     let cask_cfg = HomebrewCaskConfig::default();
-    let result = super::cask::generate_cask_from_context(&ctx, "mytool", &hb_cfg, &cask_cfg)
+    let log = test_log();
+    let result = super::cask::generate_cask_from_context(&ctx, "mytool", &hb_cfg, &cask_cfg, &log)
         .expect("single-arch cask generation");
     let cask = result.content;
     assert!(cask.contains("sha_darwin_arm64"), "{cask}");
@@ -2559,6 +2563,7 @@ fn generate_cask_emits_alternative_names() {
         uninstall_block: "",
         custom_block: None,
         service: None,
+        livecheck: None,
         manpages: &[],
         completions_bash: None,
         completions_zsh: None,
@@ -2576,6 +2581,127 @@ fn generate_cask_emits_alternative_names() {
     assert!(cask.contains("name \"MyTool\""));
     assert!(cask.contains("name \"alt-1\""));
     assert!(cask.contains("name \"alt-2\""));
+}
+
+/// An unset cask `livecheck` keeps today's behaviour: the cask emits
+/// `livecheck do\n  skip "Auto-generated on release."\nend` — a binary cask's
+/// download URL/sha256 are rewritten every release, so there's nothing stable
+/// to poll. This must not regress when the configurable field is absent.
+#[test]
+fn generate_cask_unset_livecheck_emits_default_skip() {
+    let params = empty_cask_params("mytool", "1.0.0");
+    let cask = super::cask::generate_cask(&params).unwrap();
+    assert!(
+        cask.contains("livecheck do\n    skip \"Auto-generated on release.\"\n  end"),
+        "unset livecheck must default to the skip stanza:\n{cask}"
+    );
+    assert!(
+        !cask.contains("strategy :"),
+        "unset livecheck must not emit an active strategy:\n{cask}"
+    );
+}
+
+/// A configured cask `livecheck` (github_latest strategy) renders a real
+/// active `livecheck do … end` block, mirroring the formula renderer. The
+/// `url :url` symbol shorthand routes through the shared `render_livecheck`.
+#[test]
+fn generate_cask_configured_livecheck_emits_active_block() {
+    use anodizer_core::config::HomebrewLivecheck;
+    let body = super::formula::render_livecheck(
+        Some(&HomebrewLivecheck {
+            skip: Some(false),
+            skip_reason: None,
+            strategy: Some("github_latest".to_string()),
+            url: Some("url".to_string()),
+            regex: None,
+        }),
+        &test_log(),
+    );
+    assert_eq!(
+        body.as_deref(),
+        Some("url :url\nstrategy :github_latest"),
+        "active livecheck body shape"
+    );
+    let mut params = empty_cask_params("mytool", "1.0.0");
+    params.livecheck = body;
+    let cask = super::cask::generate_cask(&params).unwrap();
+    assert!(
+        cask.contains("livecheck do\n    url :url\n    strategy :github_latest\n  end"),
+        "configured livecheck must emit an active block:\n{cask}"
+    );
+    assert!(
+        !cask.contains("skip \"Auto-generated"),
+        "active livecheck must not also skip:\n{cask}"
+    );
+}
+
+/// `skip: false` with no `strategy`/`url`/`regex` is an invalid active
+/// livecheck (empty `livecheck do … end`), so the shared renderer falls back
+/// to `skip` rather than emitting broken Ruby — same discipline the formula
+/// path uses.
+#[test]
+fn generate_cask_livecheck_skip_false_without_strategy_falls_back_to_skip() {
+    use anodizer_core::config::HomebrewLivecheck;
+    let body = super::formula::render_livecheck(
+        Some(&HomebrewLivecheck {
+            skip: Some(false),
+            ..Default::default()
+        }),
+        &test_log(),
+    );
+    let mut params = empty_cask_params("mytool", "1.0.0");
+    params.livecheck = body;
+    let cask = super::cask::generate_cask(&params).unwrap();
+    assert!(
+        cask.contains("skip \"Auto-generated on release.\""),
+        "skip:false without a strategy must fall back to skip:\n{cask}"
+    );
+}
+
+/// End-to-end through `generate_cask_from_context`: a `homebrew_casks`-shaped
+/// `HomebrewCaskConfig` carrying `livecheck` renders the active block in the
+/// final cask file (proves the field is wired from config to output, not just
+/// the param-level renderer).
+#[test]
+fn generate_cask_from_context_renders_configured_livecheck() {
+    use anodizer_core::config::{HomebrewCaskConfig, HomebrewConfig, HomebrewLivecheck};
+    let config = Config {
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-darwin-arm64.tar.gz",
+        "aarch64-apple-darwin",
+        "https://e.com/mytool-1.0.0-darwin-arm64.tar.gz",
+        "sha_darwin_arm64",
+    ));
+    let hb_cfg = HomebrewConfig::default();
+    let cask_cfg = HomebrewCaskConfig {
+        livecheck: Some(HomebrewLivecheck {
+            skip: Some(false),
+            strategy: Some("github_latest".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let result =
+        super::cask::generate_cask_from_context(&ctx, "mytool", &hb_cfg, &cask_cfg, &test_log())
+            .expect("cask generation");
+    assert!(
+        result
+            .content
+            .contains("livecheck do\n    url :stable\n    strategy :github_latest\n  end"),
+        "configured livecheck must reach the rendered cask file:\n{}",
+        result.content
+    );
 }
 
 /// `generate_cask` with manpages emits a `manpage` line per entry.
@@ -2604,6 +2730,7 @@ fn generate_cask_emits_manpages() {
         uninstall_block: "",
         custom_block: None,
         service: None,
+        livecheck: None,
         manpages: &pages,
         completions_bash: None,
         completions_zsh: None,
@@ -2645,6 +2772,7 @@ fn generate_cask_emits_completion_lines_only_for_set_shells() {
         uninstall_block: "",
         custom_block: None,
         service: None,
+        livecheck: None,
         manpages: &[],
         completions_bash: Some("share/bash-completion/mytool"),
         completions_zsh: Some("share/zsh/site-functions/_mytool"),
@@ -2689,6 +2817,7 @@ fn generate_cask_emits_all_hooks() {
         uninstall_block: "",
         custom_block: None,
         service: None,
+        livecheck: None,
         manpages: &[],
         completions_bash: None,
         completions_zsh: None,
@@ -2735,6 +2864,7 @@ fn generate_cask_emits_service_block() {
         uninstall_block: "",
         custom_block: None,
         service: Some("    run [opt_bin/\"mytool\", \"--daemon\"]"),
+        livecheck: None,
         manpages: &[],
         completions_bash: None,
         completions_zsh: None,
@@ -2778,6 +2908,7 @@ fn generate_cask_emits_depends_and_conflicts() {
         uninstall_block: "",
         custom_block: None,
         service: None,
+        livecheck: None,
         manpages: &[],
         completions_bash: None,
         completions_zsh: None,
@@ -2818,6 +2949,7 @@ fn generate_cask_emits_custom_block() {
         uninstall_block: "",
         custom_block: Some("  auto_updates true"),
         service: None,
+        livecheck: None,
         manpages: &[],
         completions_bash: None,
         completions_zsh: None,
@@ -3390,6 +3522,7 @@ fn cask_ruby_escapes_user_values_and_passes_ruby_c() {
         uninstall_block: "",
         custom_block: None,
         service: None,
+        livecheck: None,
         manpages: &[],
         completions_bash: None,
         completions_zsh: None,
