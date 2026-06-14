@@ -322,6 +322,14 @@ crates:
         targets:
           - x86_64-unknown-linux-musl
           - aarch64-unknown-linux-musl
+    universal_binaries:
+      # Merge the two darwin builds of `id: anodizer` (x86_64 + aarch64) into a
+      # single fat macOS binary via lipo. `replace: false` keeps the per-arch
+      # archives alongside the universal one.
+      - id: anodizer
+        ids: [anodizer]
+        replace: false
+        mod_timestamp: "{{ CommitTimestamp }}"
     dockers_v2:
       # Bind to the GNU build. Docker stages binaries into a per-platform dir
       # by Os/Arch match; gnu and musl x86_64 both match linux/amd64 and copy
@@ -334,6 +342,10 @@ crates:
           - ghcr.io/tj-smith47/anodizer
         labels:
           io.modelcontextprotocol.server.name: io.github.tj-smith47/anodizer
+          io.artifacthub.package.readme-url: "https://raw.githubusercontent.com/tj-smith47/anodizer/master/README.md"
+          io.artifacthub.package.logo-url: "https://raw.githubusercontent.com/tj-smith47/anodizer/master/assets/logo.png"
+          io.artifacthub.package.maintainers: '[{"name":"TJ Smith","email":"tj@jarvispro.io"}]'
+          io.artifacthub.package.license: MIT
         tags:
           - "{{ .Version }}"
           - latest
@@ -350,16 +362,29 @@ crates:
         # builds; the musl x86_64 binary maps to the same linux/amd64 name as
         # the gnu one and the two archives collide on the same output filename.
         ids: [anodizer]
+        # Pins archive-member owner/group/mtime so the tar is byte-reproducible
+        # regardless of build wall-clock.
+        builds_info:
+          owner: root
+          group: root
+          mtime: "{{ CommitDate }}"
         files:
           - LICENSE
           - README.md
           - docs/site/content/docs/reference/configuration.md
+          - dist/anodizer.1
       # Second archive entry exercises tar.xz / tar.zst on unix and tgz on
       # windows. Name suffix `-extra` keeps outputs from colliding with the
       # primary entry above.
       - id: extra
         name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}-extra"
         ids: [anodizer]
+        # Pins archive-member owner/group/mtime so the tar is byte-reproducible
+        # regardless of build wall-clock.
+        builds_info:
+          owner: root
+          group: root
+          mtime: "{{ CommitDate }}"
         formats: [tar.xz, tar.zst]
         format_overrides:
           - os: windows
@@ -395,6 +420,7 @@ crates:
         ## What's new in {{ .Tag }}
       footer: |
         ---
+        **Full Changelog**: https://github.com/tj-smith47/anodizer/compare/{{ PreviousTag }}...{{ Tag }}
         Released with [anodizer](https://github.com/tj-smith47/anodizer) 🦀
       include_meta: true
       # Attach the apk-signing public key alongside the signed apk(s).
@@ -579,6 +605,11 @@ crates:
             dst: /usr/share/doc/anodizer/LICENSE
           - src: README.md
             dst: /usr/share/doc/anodizer/README.md
+          - src: dist/anodizer.1
+            dst: /usr/share/man/man1/anodizer.1
+            file_info:
+              mode: 0644
+              mtime: "{{ CommitDate }}"
         # Package signing uses two distinct key materials:
         #   * GPG_KEY_PATH         -> GPG-armored secret key, consumed by deb
         #                             (dpkg-sig) and rpm (rpmsign).
@@ -590,6 +621,12 @@ crates:
         # Same key material as `signs:` (which uses keyring lookup via fingerprint);
         # nfpm-side tools (rpmsign / dpkg-sig) need a file path on disk.
         deb:
+          # A static Rust binary trips lintian's statically-linked-binary tag,
+          # and a native deb without a changelog file trips
+          # changelog-file-missing-in-native-package.
+          lintian_overrides:
+            - statically-linked-binary
+            - changelog-file-missing-in-native-package
           signature:
             key_file: "{{ .Env.GPG_KEY_PATH }}"
             type: origin
@@ -630,6 +667,11 @@ crates:
             dst: /usr/share/doc/anodizer/LICENSE
           - src: README.md
             dst: /usr/share/doc/anodizer/README.md
+          - src: dist/anodizer.1
+            dst: /usr/share/man/man1/anodizer.1
+            file_info:
+              mode: 0644
+              mtime: "{{ CommitDate }}"
         apk:
           signature:
             # apk-tools uses its own RSA-PSS scheme, not OpenPGP. nfpm's apk
@@ -662,7 +704,10 @@ crates:
           GoReleaser. It handles building, packaging, publishing, and announcing
           releases across multiple platforms and package managers.
         grade: stable
-        confinement: strict
+        # classic: anodizer reads hidden paths (.git) and execs external
+        # binaries (cargo/docker/gpg), which strict confinement blocks. Classic
+        # snaps require a one-time Snap Store manual review before upload.
+        confinement: classic
         license: MIT
         publish: true
         channel_templates:
@@ -670,10 +715,6 @@ crates:
         apps:
           anodizer:
             command: anodizer
-            plugs:
-              - home
-              - network
-              - network-bind
     flatpaks:
       - skip: true  # disabled — no Flatpak runtime configured yet
         app_id: io.github.tj_smith47.Anodizer
@@ -748,6 +789,11 @@ homebrew_casks:
       - anodizer.1
     caveats: |
       Run `anodizer init` to scaffold a config in your repo.
+    # `verified:` asserts the download host so Homebrew skips the
+    # interactive "unverified cask" prompt; the download URL itself stays
+    # derived (no `template:` here), so the cask still emits `url :url`.
+    url:
+      verified: "github.com/tj-smith47/anodizer/releases/download"
     # Active version detection: anodizer tags releases on GitHub, so
     # `github_latest` against the cask's own `url` stanza (`url :url`, the
     # idiomatic cask shorthand) lets `brew livecheck` poll the latest tag.
@@ -798,16 +844,27 @@ changelog:
       - "^ci:"
       - "^chore:"
       - "^style:"
+      - "^build"
+      - "^test"
+      - "^revert"
+      - "^chore\\(deps\\)"
+      - "^Merge "
+      - "Merge pull request"
+      - "Merge branch"
+      - "Merge remote-tracking branch"
   groups:
     - title: Features
       regexp: "^feat"
       order: 0
-    - title: Bug Fixes
-      regexp: "^fix"
+    - title: Security
+      regexp: "^sec"
       order: 1
+    - title: Bug Fixes
+      regexp: "^(fix|refactor)"
+      order: 2
     - title: Performance
       regexp: "^perf"
-      order: 2
+      order: 3
     - title: Others
       order: 999
   footer: |
