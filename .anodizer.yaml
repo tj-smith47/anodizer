@@ -139,6 +139,37 @@ after:
   hooks:
     - echo "Release complete for {{ ProjectName }} {{ Tag }}"
 
+# Pre-publish integrity gate — runs after build/sign/checksum, before any
+# one-way-door publisher dispatches. Each entry fires once per matching
+# artifact (the Pro before_publish: per-artifact semantics). A non-zero exit
+# aborts the release before crates.io / GitHub / blobs receive anything.
+before_publish:
+  hooks:
+    # Gate 1: every checksum sidecar (per-archive {{ ArtifactName }}.sha256)
+    # must exist and be non-empty on disk. `test -s` exits non-zero on a
+    # missing or empty file, aborting the release. ArtifactPath reaches the
+    # shell through the env channel (never spliced into the command string)
+    # so a path with shell metacharacters cannot break out of the test.
+    - cmd: 'test -s "$ANODIZER_ARTIFACT" || { echo "FATAL: checksum file missing or empty: $ANODIZER_ARTIFACT" >&2; exit 1; }'
+      artifacts: checksum
+      env:
+        - "ANODIZER_ARTIFACT={{ ArtifactPath }}"
+      output: true
+    # Gate 2: every primary release archive (id=default) must be a non-empty,
+    # readable tarball/zip. The `extra`-id archives are excluded by the id
+    # filter. `dir: dist` runs the check inside the dist tree; ArtifactName is
+    # the bare filename (no `dist/` prefix), so it resolves correctly relative
+    # to dist/ — this exercises the working-directory field for real. (Using
+    # ArtifactPath here would double the prefix to dist/dist/... since the
+    # path is already project-root-relative; ArtifactName is the right join.)
+    - cmd: 'test -s "$ANODIZER_ARTIFACT" || { echo "FATAL: archive missing or empty: $ANODIZER_ARTIFACT" >&2; exit 1; }'
+      artifacts: archive
+      ids: [default]
+      dir: dist
+      env:
+        - "ANODIZER_ARTIFACT={{ ArtifactName }}"
+      output: true
+
 crates:
   # --- Tier 1: core (no workspace deps) ---
   - name: anodizer-core
@@ -1035,6 +1066,75 @@ gemfury:
     account: tj-smith47
     required: true
     formats: [apk, deb, rpm]
+
+# Generic HTTP PUT upload — mirrors the release archives + checksums to a
+# self-hosted artifact host on jarvispro.io. The upload publisher resolves
+# credentials per-entry: rendered `username`/`password` template → the
+# UPLOAD_<NAME>_USERNAME / UPLOAD_<NAME>_SECRET env vars (NAME upper-cased,
+# `-`→`_`). With name=jarvispro the env keys are UPLOAD_JARVISPRO_USERNAME
+# and UPLOAD_JARVISPRO_SECRET; the {{ .Env.* }} templates below point the
+# config-side cascade at exactly those vars so there is one source of truth.
+uploads:
+  - name: jarvispro
+    # Only the CLI archives (build id=anodizer); the `extra`-id archives and
+    # other builds are excluded.
+    ids: [anodizer]
+    # Archives (tar.gz / zip) plus their .sha256 checksum sidecars.
+    exts: [tar.gz, zip, sha256]
+    # Per-version prefix on the host; the artifact name is appended to this
+    # target (custom_artifact_name=false keeps the default append behaviour).
+    target: "https://uploads.jarvispro.io/anodizer/{{ .Version }}/"
+    method: PUT
+    mode: archive
+    username: "{{ .Env.UPLOAD_JARVISPRO_USERNAME }}"
+    password: "{{ .Env.UPLOAD_JARVISPRO_SECRET }}"
+    custom_artifact_name: false
+    # Server-side integrity check: send the artifact's SHA256 in a header the
+    # endpoint can compare against the received body.
+    checksum_header: X-Checksum-Sha256
+    # Include the checksum sidecars and detached signatures in the upload set
+    # so the mirror is self-verifying; metadata JSON stays out.
+    checksum: true
+    signature: true
+    meta: false
+    custom_headers:
+      X-Anodizer-Project: "{{ .ProjectName }}"
+      X-Anodizer-Tag: "{{ .Tag }}"
+    # Mirroring is pointless for throwaway snapshot builds.
+    skip: "{{ .IsSnapshot }}"
+    # Only mirror real tagged releases (defence-in-depth alongside `skip`).
+    if: "{{ not .IsSnapshot }}"
+
+# Generic custom publisher — pushes the release archives + checksums to the
+# user's MinIO bucket via the MinIO client (`mc`). Authentication is the `mc`
+# alias config in ~/.mc/config.json (HOME is on the user-command env
+# whitelist, so `mc` reads its own config); no secret is spliced into argv or
+# the env. Each entry runs the cmd once per matching artifact with
+# ArtifactPath / ArtifactName / Tag bound as template vars.
+publishers:
+  - name: minio-mirror
+    cmd: mc
+    args:
+      - cp
+      - "--quiet"
+      - "{{ .ArtifactPath }}"
+      - "jarvispro/anodizer-releases/{{ .Tag }}/{{ .ArtifactName }}"
+    # Only the CLI archives (build id=anodizer).
+    ids: [anodizer]
+    # Restrict to archive + checksum kinds; archives match the default
+    # curated set, checksums are opted in via `checksum: true` below.
+    artifact_types: [archive, checksum]
+    checksum: true
+    signature: false
+    meta: false
+    # `mc` reads ~/.mc/config.json for the `jarvispro` alias; surface the
+    # config path explicitly so a non-default MC_CONFIG_DIR still resolves.
+    env:
+      - "MC_CONFIG_DIR={{ .Env.HOME }}/.mc"
+    dir: dist
+    # Skip on snapshot builds — no point pushing throwaway artifacts.
+    skip: "{{ .IsSnapshot }}"
+    if: "{{ not .IsSnapshot }}"
 
 # NPM registry publisher — ships a metapackage + per-platform packages so
 # `npm install -g @tj-smith47/anodizer` works for JS toolchain users (the

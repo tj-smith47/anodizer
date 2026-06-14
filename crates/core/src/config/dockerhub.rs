@@ -41,8 +41,9 @@ pub struct DockerHubConfig {
     pub required: Option<bool>,
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the DockerHub publisher is
-    /// skipped. Render failure hard-errors. The
-    /// `dockerhub[].if:`.
+    /// skipped. Render failure hard-errors. Exposes the `dockerhub[].if:`
+    /// conditional gate; distinct from `skip:` (which expresses "always
+    /// skip") and provides config-import parity.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When `true`, a triggered rollback leaves this publisher's work in

@@ -401,7 +401,7 @@ DockerHub description sync configuration. Pushes image descriptions and README c
 |-------|------|---------|-------------|
 | `description` | string | — | Short description for the DockerHub repository (max 100 chars). |
 | `full_description` | DockerHubFullDescription | — | Full description (README) source for the DockerHub repository. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the DockerHub publisher is skipped. Render failure hard-errors. The `dockerhub[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the DockerHub publisher is skipped. Render failure hard-errors. Exposes the `dockerhub[].if:` conditional gate; distinct from `skip:` (which expresses "always skip") and provides config-import parity. |
 | `images` | list of string | — | DockerHub image names to update (e.g. `myorg/myapp`). |
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
@@ -423,7 +423,7 @@ Pushes deb / rpm / apk artifacts to `https://push.fury.io/<account>`. Authentica
 | `formats` | list of string | — | Package format filter: only push artifacts matching these formats. Defaults to `["apk", "deb", "rpm"]`. |
 | `id` | string | — | Unique identifier for selecting this entry from the CLI (`--id=...`). |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose archive `id` is in this list. |
-| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the GemFury publisher entry is skipped. Render failure hard-errors. The `gemfury[].if:`. |
+| `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the GemFury publisher entry is skipped. Render failure hard-errors. Exposes the `gemfury[].if:` conditional gate; distinct from `skip:` (which expresses "always skip") and provides config-import parity. |
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.
 
 Default: `true` — GemFury is a Manager-group publisher (mutable but reversible via the delete API), so a failed publish aborts by default to avoid surprising the operator with a half-released version. Set to `false` to log failures but continue. |

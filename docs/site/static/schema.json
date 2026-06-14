@@ -5179,7 +5179,7 @@
           ]
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the DockerHub publisher is skipped. Render failure hard-errors. The `dockerhub[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the DockerHub publisher is skipped. Render failure hard-errors. Exposes the `dockerhub[].if:` conditional gate; distinct from `skip:` (which expresses \"always skip\") and provides config-import parity.",
           "default": null,
           "type": [
             "string",
@@ -6209,7 +6209,7 @@
           }
         },
         "if": {
-          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the GemFury publisher entry is skipped. Render failure hard-errors. The `gemfury[].if:`.",
+          "description": "Template-conditional gate: when the rendered result is falsy (`\"false\"` / `\"0\"` / `\"no\"` / empty), the GemFury publisher entry is skipped. Render failure hard-errors. Exposes the `gemfury[].if:` conditional gate; distinct from `skip:` (which expresses \"always skip\") and provides config-import parity.",
           "default": null,
           "type": [
             "string",

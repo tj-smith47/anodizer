@@ -80,8 +80,9 @@ pub struct GemFuryConfig {
 
     /// Template-conditional gate: when the rendered result is falsy
     /// (`"false"` / `"0"` / `"no"` / empty), the GemFury publisher entry is
-    /// skipped. Render failure hard-errors. The
-    /// `gemfury[].if:`.
+    /// skipped. Render failure hard-errors. Exposes the `gemfury[].if:`
+    /// conditional gate; distinct from `skip:` (which expresses "always
+    /// skip") and provides config-import parity.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
     /// When `true`, a triggered rollback leaves this publisher's work in
