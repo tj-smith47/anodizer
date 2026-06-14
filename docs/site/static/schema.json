@@ -10517,7 +10517,7 @@
           ]
         },
         "author": {
-          "description": "Templated `author` field for `package.json`. Falls back to `metadata.maintainers[0]` when unset.",
+          "description": "Templated `author` field for `package.json`. Falls back to the project's `metadata.maintainers[0]`, and then to the crate's `Cargo.toml [package].authors[0]`, when unset.",
           "default": null,
           "type": [
             "string",
@@ -10548,8 +10548,19 @@
             "null"
           ]
         },
+        "engines": {
+          "description": "npm `engines` constraint map written verbatim into `package.json` (e.g. `{ node: \">=18\" }`). When unset, anodizer emits a sensible default of `{ node: \">=18\" }` — the floor every leading native-CLI wrapper (esbuild, biome, swc) declares. Set to an empty map to suppress the field entirely.",
+          "default": null,
+          "type": [
+            "object",
+            "null"
+          ],
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
         "extra": {
-          "description": "Free-form root-level `package.json` fields. Shallow-merged into the generated `package.json`. Useful for `engines`, `mcpName`, or other npm metadata fields anodizer does not surface.",
+          "description": "Free-form root-level `package.json` fields. Shallow-merged into the generated `package.json` (config keys win over generated ones). Useful for `mcpName`, `funding`, or other npm metadata fields anodizer does not surface as first-class options.",
           "default": null,
           "type": [
             "object",
@@ -10559,6 +10570,17 @@
         },
         "extra_files": {
           "description": "Additional files to include in the published package alongside the generated metadata. Default `[\"README*\", \"LICENSE*\"]` (applied at the `Default` pass).",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "files": {
+          "description": "Explicit npm `files` allowlist written into `package.json`. When unset, anodizer derives it from what each package actually ships (the per-platform binary, the metapackage `shim.js`, or the postinstall launcher/script) plus any `extra_files` basenames. Set to an empty list to suppress the field (npm then falls back to its implicit inclusion rules).",
           "default": null,
           "type": [
             "array",
@@ -10657,6 +10679,14 @@
           "default": null,
           "type": [
             "string",
+            "null"
+          ]
+        },
+        "provenance": {
+          "description": "npm `publishConfig.provenance` flag. When unset, anodizer emits `true` — the npm supply-chain norm that biome and swc both set, pairing with anodizer's signing story. Set to `false` to disable.",
+          "default": null,
+          "type": [
+            "boolean",
             "null"
           ]
         },

@@ -80,7 +80,7 @@ pub fn assemble_postinstall_tarball(
     fs::create_dir_all(&pkg_dir).context("npm: create package/ in staging dir")?;
 
     let pkg_name = resolve_name(cfg, crate_name).to_string();
-    let pkg_json = render_package_json(ctx, cfg, &pkg_name, version, binaries)?;
+    let pkg_json = render_package_json(ctx, cfg, &pkg_name, crate_name, version, binaries)?;
     write_deterministic(&pkg_dir.join("package.json"), pkg_json.as_bytes())?;
 
     let postinstall = render_postinstall_js(&pkg_name);

@@ -627,12 +627,14 @@ In the default `optional-deps` mode anodizer emits one thin npm package per buil
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `access` | string | — | NPM access level for scoped packages. Accepts `"public"` / `"restricted"`. Scoped packages on npmjs.org default to `restricted` unless this is set to `public`. |
-| `author` | string | — | Templated `author` field for `package.json`. Falls back to `metadata.maintainers[0]` when unset. |
+| `author` | string | — | Templated `author` field for `package.json`. Falls back to the project's `metadata.maintainers[0]`, and then to the crate's `Cargo.toml [package].authors[0]`, when unset. |
 | `bin` | string | — | Command name installed by the metapackage's `bin` map (`optional-deps` mode). Falls back to the metapackage basename when unset. |
 | `bugs` | string | — | Templated bug tracker URL. Emitted as `bugs.url` in `package.json`. |
 | `description` | string | — | Templated package description. Falls back to the project-level `metadata.description` when unset. |
-| `extra` | map | — | Free-form root-level `package.json` fields. Shallow-merged into the generated `package.json`. Useful for `engines`, `mcpName`, or other npm metadata fields anodizer does not surface. |
+| `engines` | map | — | npm `engines` constraint map written verbatim into `package.json` (e.g. `{ node: ">=18" }`). When unset, anodizer emits a sensible default of `{ node: ">=18" }` — the floor every leading native-CLI wrapper (esbuild, biome, swc) declares. Set to an empty map to suppress the field entirely. |
+| `extra` | map | — | Free-form root-level `package.json` fields. Shallow-merged into the generated `package.json` (config keys win over generated ones). Useful for `mcpName`, `funding`, or other npm metadata fields anodizer does not surface as first-class options. |
 | `extra_files` | list of string | — | Additional files to include in the published package alongside the generated metadata. Default `["README*", "LICENSE*"]` (applied at the `Default` pass). |
+| `files` | list of string | — | Explicit npm `files` allowlist written into `package.json`. When unset, anodizer derives it from what each package actually ships (the per-platform binary, the metapackage `shim.js`, or the postinstall launcher/script) plus any `extra_files` basenames. Set to an empty list to suppress the field (npm then falls back to its implicit inclusion rules). |
 | `format` | string | — | Archive format the `postinstall` script downloads (`tgz`, `tar.gz`, `tar`, `zip`, `binary`). Default `tgz`. Only consulted in `postinstall` mode. |
 | `homepage` | string | — | Templated homepage URL. Falls back to `metadata.homepage` when unset. |
 | `id` | string | — | Unique identifier for selecting this entry from the CLI (`--id=...`). |
@@ -644,6 +646,7 @@ In the default `optional-deps` mode anodizer emits one thin npm package per buil
 | `metapackage` | string | — | Metapackage name for `optional-deps` mode (e.g. `biome`). This is the package users `npm install`; it lists every per-platform package under `optionalDependencies` and ships the `bin` shim. Falls back to `name` (or the crate name) when unset. |
 | `mode` | NpmMode | `optional-deps` | Binary-distribution strategy. `optional-deps` (default) emits npm's native per-platform packages; `postinstall` emits a download shim. |
 | `name` | string | — | NPM package name (the metapackage / postinstall package). May be scoped (`@org/foo`) or unscoped (`foo`). Falls back to the crate name when unset. |
+| `provenance` | bool | — | npm `publishConfig.provenance` flag. When unset, anodizer emits `true` — the npm supply-chain norm that biome and swc both set, pairing with anodizer's signing story. Set to `false` to disable. |
 | `registry` | string | — | Override the registry endpoint (default `https://registry.npmjs.org`). |
 | `repository` | string | — | Templated repository URL. Emitted as `repository.url` in `package.json` with `type: git`. |
 | `required` | bool | — | Override whether this publisher failing should fail the overall release.

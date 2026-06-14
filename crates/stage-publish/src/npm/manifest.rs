@@ -295,18 +295,25 @@ fn resolve_artifact_url(
 /// `author`/`keywords`/`repository`/`bugs`) into a `package.json` root map,
 /// honouring the metadata fallbacks. Shared by postinstall + optional-deps
 /// metapackage generation.
+///
+/// `crate_name` selects the owning crate so the per-crate `meta_*_for`
+/// resolvers add a `Cargo.toml [package]` fallback: a plain Rust crate (no
+/// top-level `metadata:` YAML block) still emits real
+/// description/homepage/license/author. In a workspace per-crate config each
+/// crate resolves its OWN metadata, never a shared/global value.
 pub(crate) fn insert_common_metadata(
     root: &mut BTreeMap<String, serde_json::Value>,
     ctx: &Context,
     cfg: &NpmConfig,
+    crate_name: &str,
 ) {
     let render = |s: &str| ctx.render_template(s).unwrap_or_else(|_| s.to_string());
 
-    let description = cfg
-        .description
-        .as_deref()
-        .map(&render)
-        .or_else(|| ctx.config.meta_description().map(|s| s.to_string()));
+    let description = cfg.description.as_deref().map(&render).or_else(|| {
+        ctx.config
+            .meta_description_for(crate_name)
+            .map(str::to_string)
+    });
     if let Some(d) = description {
         root.insert("description".into(), serde_json::Value::String(d));
     }
@@ -315,7 +322,7 @@ pub(crate) fn insert_common_metadata(
         .homepage
         .as_deref()
         .map(&render)
-        .or_else(|| ctx.config.meta_homepage().map(|s| s.to_string()));
+        .or_else(|| ctx.config.meta_homepage_for(crate_name).map(str::to_string));
     if let Some(h) = homepage {
         root.insert("homepage".into(), serde_json::Value::String(h));
     }
@@ -324,13 +331,21 @@ pub(crate) fn insert_common_metadata(
         .license
         .as_deref()
         .map(&render)
-        .or_else(|| ctx.config.meta_license().map(|s| s.to_string()));
+        .or_else(|| ctx.config.meta_license_for(crate_name).map(str::to_string));
     if let Some(l) = license {
         root.insert("license".into(), serde_json::Value::String(l));
     }
 
-    if let Some(author) = cfg.author.as_deref() {
-        root.insert("author".into(), serde_json::Value::String(render(author)));
+    // Honour the documented `author` fallback: explicit config, else the
+    // project's `metadata.maintainers[0]`, else the crate's
+    // `Cargo.toml [package].authors[0]` (both via `meta_first_maintainer_for`).
+    let author = cfg.author.as_deref().map(&render).or_else(|| {
+        ctx.config
+            .meta_first_maintainer_for(crate_name)
+            .map(str::to_string)
+    });
+    if let Some(a) = author {
+        root.insert("author".into(), serde_json::Value::String(a));
     }
 
     if let Some(keywords) = cfg.keywords.as_ref() {
@@ -359,6 +374,85 @@ pub(crate) fn insert_common_metadata(
     }
 }
 
+/// Default npm `engines.node` floor when [`NpmConfig::engines`] is unset —
+/// the constraint every leading native-CLI wrapper (esbuild, biome, swc)
+/// declares as its lower bound.
+pub(crate) const DEFAULT_ENGINES_NODE: &str = ">=18";
+
+/// Insert the `engines` map: explicit `cfg.engines` (verbatim, including an
+/// empty map → field suppressed) else a derived `{ node: ">=18" }`. The
+/// derived default is overridable but never required of the operator.
+pub(crate) fn insert_engines(root: &mut BTreeMap<String, serde_json::Value>, cfg: &NpmConfig) {
+    let engines: BTreeMap<String, String> = match cfg.engines.as_ref() {
+        Some(e) => e.clone(),
+        None => {
+            let mut d = BTreeMap::new();
+            d.insert("node".to_string(), DEFAULT_ENGINES_NODE.to_string());
+            d
+        }
+    };
+    if engines.is_empty() {
+        return;
+    }
+    let mut obj = serde_json::Map::new();
+    for (k, v) in engines {
+        obj.insert(k, serde_json::Value::String(v));
+    }
+    root.insert("engines".into(), serde_json::Value::Object(obj));
+}
+
+/// Insert `publishConfig.provenance`: explicit `cfg.provenance` else `true`
+/// (the npm supply-chain norm biome and swc both set). When an `access`
+/// value is resolvable it is co-located under the same `publishConfig` object
+/// (matching swc's `publishConfig{access,provenance}` shape); `npm publish`
+/// still honours the per-run `.npmrc` `access`, so this is purely declarative.
+pub(crate) fn insert_publish_config(
+    root: &mut BTreeMap<String, serde_json::Value>,
+    cfg: &NpmConfig,
+) {
+    let provenance = cfg.provenance.unwrap_or(true);
+    let mut obj = serde_json::Map::new();
+    if let Some(access) = resolve_access(cfg) {
+        obj.insert("access".into(), serde_json::Value::String(access));
+    }
+    obj.insert("provenance".into(), serde_json::Value::Bool(provenance));
+    root.insert("publishConfig".into(), serde_json::Value::Object(obj));
+}
+
+/// Resolve the `files` allowlist for a package: explicit `cfg.files`
+/// (verbatim, including an empty list → field suppressed) else
+/// `derived_entries` (the binary / shim / launcher this package actually
+/// ships) unioned with the basenames of any `extra_files` globs, sorted +
+/// de-duplicated for deterministic emission.
+pub(crate) fn insert_files(
+    root: &mut BTreeMap<String, serde_json::Value>,
+    cfg: &NpmConfig,
+    derived_entries: &[String],
+) {
+    let files: Vec<String> = match cfg.files.as_ref() {
+        Some(f) => f.clone(),
+        None => {
+            let mut set: std::collections::BTreeSet<String> =
+                derived_entries.iter().cloned().collect();
+            for pattern in resolve_extra_files(cfg) {
+                // The published basename of an `extra_files` glob (e.g.
+                // `README*` / `LICENSE*`) is what lands in the package dir;
+                // emit the trailing path component, dropping any glob dir.
+                let base = pattern.rsplit('/').next().unwrap_or(&pattern);
+                set.insert(base.to_string());
+            }
+            set.into_iter().collect()
+        }
+    };
+    if files.is_empty() {
+        return;
+    }
+    root.insert(
+        "files".into(),
+        serde_json::Value::Array(files.into_iter().map(serde_json::Value::String).collect()),
+    );
+}
+
 /// Serialize a `package.json` root map deterministically (alphabetical key
 /// order via the `BTreeMap`), applying the `extra:` shallow-merge last so
 /// config-author keys win over generated ones.
@@ -380,10 +474,15 @@ pub(crate) fn finalize_package_json(
 }
 
 /// Render the `package.json` content for one `npms[]` entry (postinstall mode).
+///
+/// `crate_name` selects the owning crate for the per-crate metadata resolvers
+/// (`pkg_name` is the published npm name, which may be a scoped alias that
+/// shares nothing with the crate name).
 pub(crate) fn render_package_json(
     ctx: &Context,
     cfg: &NpmConfig,
     pkg_name: &str,
+    crate_name: &str,
     version: &str,
     binaries: &[PlatformBinary],
 ) -> Result<String> {
@@ -398,7 +497,9 @@ pub(crate) fn render_package_json(
         serde_json::Value::String(version.to_string()),
     );
 
-    insert_common_metadata(&mut root, ctx, cfg);
+    insert_common_metadata(&mut root, ctx, cfg, crate_name);
+    insert_engines(&mut root, cfg);
+    insert_publish_config(&mut root, cfg);
 
     // `bin` points at the postinstall-installed launcher inside the package.
     let bin_basename = pkg_name.rsplit('/').next().unwrap_or(pkg_name);
@@ -408,6 +509,17 @@ pub(crate) fn render_package_json(
         serde_json::Value::String(format!("bin/{}.js", bin_basename)),
     );
     root.insert("bin".into(), serde_json::Value::Object(bin));
+
+    // Postinstall packages ship: package.json (implicit), the postinstall
+    // script, and the launcher under bin/. `files` makes that explicit.
+    insert_files(
+        &mut root,
+        cfg,
+        &[
+            "postinstall.js".to_string(),
+            format!("bin/{}.js", bin_basename),
+        ],
+    );
 
     let mut scripts = serde_json::Map::new();
     scripts.insert(
@@ -494,7 +606,7 @@ function download(url, dest) {{
         f.on('error', reject);
       }}).on('error', reject);
     }}
-    follow(url, 5);
+    go(url, 5);
   }});
 }}
 

@@ -148,9 +148,10 @@ npms:
     skip: false
     required: true
     if: "{{ ne .Prerelease \"\" }}"
-    extra:
-      engines:
-        node: ">=14"
+    engines:
+      node: ">=14"
+    files: [shim.js, README.md]
+    provenance: false
 "#;
     let cfg: Config = serde_yaml_ng::from_str(yaml).expect("parse full npms");
     let entry = &cfg.npms.as_ref().unwrap()[0];
@@ -161,7 +162,20 @@ npms:
     assert_eq!(entry.tag.as_deref(), Some("next"));
     assert!(matches!(entry.required, Some(true)));
     assert!(entry.if_condition.is_some());
-    assert!(entry.extra.is_some());
+    // First-class engines / files / provenance round-trip (deny_unknown_fields).
+    assert_eq!(
+        entry
+            .engines
+            .as_ref()
+            .and_then(|e| e.get("node"))
+            .map(String::as_str),
+        Some(">=14")
+    );
+    assert_eq!(
+        entry.files.as_deref(),
+        Some(&["shim.js".to_string(), "README.md".to_string()][..])
+    );
+    assert_eq!(entry.provenance, Some(false));
 }
 
 #[test]
@@ -287,7 +301,8 @@ fn render_package_json_emits_canonical_fields() {
     let ctx = TestContextBuilder::new().project_name("demo").build();
     let cfg = npm_cfg();
     let bins = vec![one_binary("linux", "x64")];
-    let body = render_package_json(&ctx, &cfg, "anodize-demo", "1.2.3", &bins).expect("render");
+    let body =
+        render_package_json(&ctx, &cfg, "anodize-demo", "demo", "1.2.3", &bins).expect("render");
     let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid json");
     assert_eq!(parsed["name"], "anodize-demo");
     assert_eq!(parsed["version"], "1.2.3");
@@ -317,7 +332,7 @@ fn render_package_json_metadata_fallback() {
         name: Some("demo".into()),
         ..Default::default()
     };
-    let body = render_package_json(&ctx, &cfg, "demo", "1.0.0", &[]).expect("render");
+    let body = render_package_json(&ctx, &cfg, "demo", "demo", "1.0.0", &[]).expect("render");
     let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid json");
     assert_eq!(parsed["description"], "From metadata");
     assert_eq!(parsed["homepage"], "https://meta.example.com");
@@ -339,7 +354,7 @@ fn render_package_json_extra_can_override_root_keys() {
         extra: Some(extra),
         ..Default::default()
     };
-    let body = render_package_json(&ctx, &cfg, "demo", "1.0.0", &[]).expect("render");
+    let body = render_package_json(&ctx, &cfg, "demo", "demo", "1.0.0", &[]).expect("render");
     let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid json");
     assert_eq!(parsed["description"], "override");
 }
@@ -1135,5 +1150,421 @@ esac
     assert!(
         matches!(outcome, PublisherOutcome::Failed(_)),
         "outcome must be Failed, got {outcome:?}"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// Per-field completeness: Cargo.toml fallback, author, engines, files,
+// publishConfig.provenance — validated against the esbuild/biome/swc exemplars.
+// -----------------------------------------------------------------------------
+
+/// Build a Context whose `derived_metadata` carries a `Cargo.toml [package]`
+/// fallback for each named crate (no top-level `metadata:` block) — the plain
+/// Rust crate shape the `meta_*_for(crate)` resolvers must satisfy.
+fn ctx_with_derived(crates: &[(&str, MetadataConfig)]) -> anodizer_core::context::Context {
+    let mut config = Config {
+        project_name: "demo".to_string(),
+        crates: crates
+            .iter()
+            .map(|(name, _)| CrateConfig {
+                name: (*name).to_string(),
+                path: (*name).to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    };
+    for (name, meta) in crates {
+        config
+            .derived_metadata
+            .insert((*name).to_string(), meta.clone());
+    }
+    anodizer_core::context::Context::new(config, anodizer_core::context::ContextOptions::default())
+}
+
+fn meta(desc: &str, home: &str, license: &str, author: &str) -> MetadataConfig {
+    MetadataConfig {
+        description: Some(desc.to_string()),
+        homepage: Some(home.to_string()),
+        license: Some(license.to_string()),
+        maintainers: Some(vec![author.to_string()]),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn postinstall_metadata_falls_back_to_cargo_toml_per_crate() {
+    // A plain Rust crate with NO top-level metadata: block — only the
+    // Cargo.toml-derived values are available. All four must resolve.
+    let ctx = ctx_with_derived(&[(
+        "demo",
+        meta(
+            "A demo CLI",
+            "https://demo.example",
+            "MIT",
+            "Demo Dev <dev@demo.example>",
+        ),
+    )]);
+    let cfg = NpmConfig {
+        mode: NpmMode::Postinstall,
+        name: Some("demo".into()),
+        ..Default::default()
+    };
+    let body = render_package_json(&ctx, &cfg, "demo", "demo", "1.0.0", &[]).expect("render");
+    let j: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(j["description"], "A demo CLI");
+    assert_eq!(j["homepage"], "https://demo.example");
+    assert_eq!(j["license"], "MIT");
+    assert_eq!(j["author"], "Demo Dev <dev@demo.example>");
+}
+
+#[test]
+fn optional_deps_metadata_per_crate_isolated_in_per_crate_workspace() {
+    // Workspace per-crate: two crates, each with its OWN Cargo.toml metadata.
+    // Rendering crate `alpha`'s package must emit alpha's metadata, NEVER
+    // beta's — the per-crate `meta_*_for(crate)` resolver guarantees isolation.
+    let tmp = tempfile::tempdir().expect("tmp");
+    let mut ctx = ctx_with_derived(&[
+        (
+            "alpha",
+            meta(
+                "Alpha tool",
+                "https://alpha.example",
+                "MIT",
+                "Alpha A <a@x>",
+            ),
+        ),
+        (
+            "beta",
+            meta(
+                "Beta tool",
+                "https://beta.example",
+                "Apache-2.0",
+                "Beta B <b@x>",
+            ),
+        ),
+    ]);
+    // alpha ships a single linux binary.
+    let path = tmp.path().join("alpha-bin");
+    std::fs::write(&path, b"ELF").expect("write");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::UploadableBinary,
+        path,
+        name: "alpha".to_string(),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "alpha".to_string(),
+        metadata: std::collections::HashMap::new(),
+        size: None,
+    });
+    let cfg = NpmConfig {
+        scope: Some("@acme".into()),
+        metapackage: Some("alpha".into()),
+        bin: Some("alpha".into()),
+        ..Default::default()
+    };
+    let layout =
+        generate_layout(&ctx, &cfg, "alpha", "1.0.0", &ctx.logger("publish")).expect("layout");
+
+    let meta_j: serde_json::Value =
+        serde_json::from_str(&layout.metapackage_json).expect("meta json");
+    assert_eq!(
+        meta_j["description"], "Alpha tool",
+        "alpha metapackage desc"
+    );
+    assert_eq!(meta_j["homepage"], "https://alpha.example");
+    assert_eq!(meta_j["license"], "MIT");
+    assert_eq!(meta_j["author"], "Alpha A <a@x>");
+    // Categorically NOT beta's values.
+    let s = layout.metapackage_json.clone();
+    assert!(!s.contains("Beta tool"), "must not leak beta metadata");
+    assert!(!s.contains("Apache-2.0"), "must not leak beta license");
+
+    // The per-platform package carries alpha's metadata too.
+    let plat_j: serde_json::Value =
+        serde_json::from_str(&layout.platforms[0].package_json).expect("plat json");
+    assert_eq!(plat_j["description"], "Alpha tool");
+    assert_eq!(plat_j["license"], "MIT");
+}
+
+#[test]
+fn engines_default_node_18_and_overridable() {
+    // Default: { node: ">=18" } (esbuild/biome/swc floor).
+    let (_tmp, ctx_b) = optional_deps_ctx();
+    let layout = generate_layout(
+        &ctx_b,
+        &opt_cfg(),
+        "demo",
+        "1.0.0",
+        &ctx_b.logger("publish"),
+    )
+    .expect("layout");
+    let meta_j: serde_json::Value = serde_json::from_str(&layout.metapackage_json).expect("json");
+    assert_eq!(meta_j["engines"]["node"], ">=18");
+    // Per-platform packages also carry engines.
+    let plat_j: serde_json::Value =
+        serde_json::from_str(&layout.platforms[0].package_json).expect("json");
+    assert_eq!(plat_j["engines"]["node"], ">=18");
+
+    // Override via config.
+    let mut engines = std::collections::BTreeMap::new();
+    engines.insert("node".to_string(), ">=20".to_string());
+    let cfg2 = NpmConfig {
+        engines: Some(engines),
+        ..opt_cfg()
+    };
+    let layout2 =
+        generate_layout(&ctx_b, &cfg2, "demo", "1.0.0", &ctx_b.logger("publish")).expect("layout");
+    let j2: serde_json::Value = serde_json::from_str(&layout2.metapackage_json).expect("json");
+    assert_eq!(j2["engines"]["node"], ">=20");
+
+    // Empty map suppresses the field.
+    let cfg3 = NpmConfig {
+        engines: Some(std::collections::BTreeMap::new()),
+        ..opt_cfg()
+    };
+    let layout3 =
+        generate_layout(&ctx_b, &cfg3, "demo", "1.0.0", &ctx_b.logger("publish")).expect("layout");
+    let j3: serde_json::Value = serde_json::from_str(&layout3.metapackage_json).expect("json");
+    assert!(
+        j3.get("engines").is_none(),
+        "empty engines map suppresses field"
+    );
+}
+
+#[test]
+fn publish_config_provenance_default_true_and_disable() {
+    let (_tmp, ctx) = optional_deps_ctx();
+    let layout =
+        generate_layout(&ctx, &opt_cfg(), "demo", "1.0.0", &ctx.logger("publish")).expect("layout");
+    let meta_j: serde_json::Value = serde_json::from_str(&layout.metapackage_json).expect("json");
+    assert_eq!(
+        meta_j["publishConfig"]["provenance"],
+        serde_json::Value::Bool(true),
+        "provenance defaults true (biome/swc norm)"
+    );
+
+    // access is co-located in publishConfig when set.
+    let cfg_access = NpmConfig {
+        access: Some("public".into()),
+        ..opt_cfg()
+    };
+    let l2 = generate_layout(&ctx, &cfg_access, "demo", "1.0.0", &ctx.logger("publish"))
+        .expect("layout");
+    let j2: serde_json::Value = serde_json::from_str(&l2.metapackage_json).expect("json");
+    assert_eq!(j2["publishConfig"]["access"], "public");
+    assert_eq!(
+        j2["publishConfig"]["provenance"],
+        serde_json::Value::Bool(true)
+    );
+
+    // Disable provenance.
+    let cfg_off = NpmConfig {
+        provenance: Some(false),
+        ..opt_cfg()
+    };
+    let l3 =
+        generate_layout(&ctx, &cfg_off, "demo", "1.0.0", &ctx.logger("publish")).expect("layout");
+    let j3: serde_json::Value = serde_json::from_str(&l3.metapackage_json).expect("json");
+    assert_eq!(
+        j3["publishConfig"]["provenance"],
+        serde_json::Value::Bool(false)
+    );
+}
+
+#[test]
+fn files_allowlist_derived_per_package() {
+    let (_tmp, ctx) = optional_deps_ctx();
+    let layout =
+        generate_layout(&ctx, &opt_cfg(), "demo", "1.0.0", &ctx.logger("publish")).expect("layout");
+
+    // Metapackage ships the shim + the default README*/LICENSE* extra_files.
+    let meta_j: serde_json::Value = serde_json::from_str(&layout.metapackage_json).expect("json");
+    let mfiles = meta_j["files"].as_array().expect("files array");
+    let mfiles: Vec<&str> = mfiles.iter().map(|v| v.as_str().unwrap()).collect();
+    assert!(mfiles.contains(&"shim.js"), "{mfiles:?}");
+    assert!(mfiles.contains(&"README*"), "{mfiles:?}");
+    assert!(mfiles.contains(&"LICENSE*"), "{mfiles:?}");
+
+    // Per-platform package ships its binary (basename `demo` or `demo.exe`).
+    let win = layout
+        .platforms
+        .iter()
+        .find(|p| p.name == "@anodize/demo-win32-x64")
+        .expect("win pkg");
+    let j: serde_json::Value = serde_json::from_str(&win.package_json).expect("json");
+    let wfiles: Vec<&str> = j["files"]
+        .as_array()
+        .expect("files")
+        .iter()
+        .map(|v| v.as_str().unwrap())
+        .collect();
+    assert!(wfiles.contains(&"demo.exe"), "{wfiles:?}");
+}
+
+#[test]
+fn files_explicit_override_and_empty_suppresses() {
+    let (_tmp, ctx) = optional_deps_ctx();
+    let cfg = NpmConfig {
+        files: Some(vec!["only-this".to_string()]),
+        ..opt_cfg()
+    };
+    let layout =
+        generate_layout(&ctx, &cfg, "demo", "1.0.0", &ctx.logger("publish")).expect("layout");
+    let j: serde_json::Value = serde_json::from_str(&layout.metapackage_json).expect("json");
+    assert_eq!(j["files"], serde_json::json!(["only-this"]));
+
+    let cfg_empty = NpmConfig {
+        files: Some(vec![]),
+        ..opt_cfg()
+    };
+    let l2 =
+        generate_layout(&ctx, &cfg_empty, "demo", "1.0.0", &ctx.logger("publish")).expect("layout");
+    let j2: serde_json::Value = serde_json::from_str(&l2.metapackage_json).expect("json");
+    assert!(
+        j2.get("files").is_none(),
+        "empty files list suppresses field"
+    );
+}
+
+#[test]
+fn postinstall_js_uses_one_consistent_function_name_no_referenceerror() {
+    let body = render_postinstall_js("@anodize/demo");
+    // The redirect-follow function is `go`; the call site must invoke `go`,
+    // never the historical `follow` (which threw ReferenceError on install).
+    assert!(body.contains("function go("), "defines go()");
+    assert!(body.contains("go(url, 5)"), "invokes go(url, 5)");
+    assert!(
+        !body.contains("follow("),
+        "must not reference the undefined `follow` — that was the install-time ReferenceError"
+    );
+}
+
+/// Run `node --check` on the generated postinstall.js (syntax) AND a tiny
+/// harness that stubs `https`/`fs`/`crypto` and confirms the redirect function
+/// is actually callable end-to-end (no ReferenceError). Skipped only when
+/// `node` is not on PATH.
+#[test]
+fn postinstall_js_executes_redirect_without_referenceerror() {
+    if std::process::Command::new("node")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        eprintln!("node not on PATH; skipping postinstall.js runtime check");
+        return;
+    }
+    let tmp = tempfile::tempdir().expect("tmp");
+    let script = render_postinstall_js("@anodize/demo");
+    let script_path = tmp.path().join("postinstall.js");
+    std::fs::write(&script_path, &script).expect("write script");
+
+    // 1) Syntax check: node --check must accept the file.
+    let check = std::process::Command::new("node")
+        .arg("--check")
+        .arg(&script_path)
+        .output()
+        .expect("spawn node --check");
+    assert!(
+        check.status.success(),
+        "node --check failed: {}",
+        String::from_utf8_lossy(&check.stderr)
+    );
+
+    // 2) Runtime check: a harness that pre-populates the module cache with a
+    //    fake `package.json` (one matching binary for THIS platform), a fake
+    //    `https` that emits a 302 redirect then a 200 body, and stubs `fs`'s
+    //    write path. If the redirect-follow call referenced an undefined
+    //    symbol the async download would reject with a ReferenceError; the
+    //    harness asserts the script completes (exit 0).
+    let harness = format!(
+        r#"
+const Module = require('module');
+const path = require('path');
+const os = require('os');
+const realFs = require('fs');
+const scriptPath = {script_path:?};
+const dir = path.dirname(scriptPath);
+
+// Fake package.json with one binary entry matching this runtime.
+const fakePkg = {{ anodize: {{ binaries: [
+  {{ os: process.platform, cpu: process.arch,
+     url: 'https://example.invalid/a.bin', sha256: '', format: 'binary' }}
+] }} }};
+
+// 302 redirect then 200 — exercises the redirect-follow path that used to
+// throw ReferenceError.
+let hop = 0;
+const fakeHttps = {{
+  get(u, cb) {{
+    const res = {{
+      on() {{ return res; }},
+      pipe(stream) {{ if (stream && stream.__finish) stream.__finish(); }},
+    }};
+    if (hop++ === 0) {{
+      res.statusCode = 302;
+      res.headers = {{ location: 'https://example.invalid/final.bin' }};
+    }} else {{
+      res.statusCode = 200;
+      res.headers = {{}};
+    }}
+    process.nextTick(() => cb(res));
+    return {{ on() {{ return this; }} }};
+  }}
+}};
+
+const fakeFs = Object.assign({{}}, realFs, {{
+  createWriteStream() {{
+    const handlers = {{}};
+    return {{
+      __finish() {{ if (handlers.finish) handlers.finish(); }},
+      on(ev, h) {{ handlers[ev] = h; return this; }},
+      close(cb) {{ if (cb) cb(); }},
+    }};
+  }},
+  mkdirSync() {{}},
+  readFileSync() {{ return Buffer.from(''); }},
+  copyFileSync() {{}},
+  unlinkSync() {{}},
+  chmodSync() {{}},
+}});
+
+const origResolve = Module._resolveFilename;
+Module._resolveFilename = function (request, parent, isMain, opts) {{
+  if (request === 'https') return 'https';
+  if (request === 'fs') return 'fs';
+  if (request === './package.json' || request.endsWith('/package.json'))
+    return path.join(dir, '__fake_pkg.json');
+  return origResolve.call(this, request, parent, isMain, opts);
+}};
+require.cache['https'] = {{ id: 'https', exports: fakeHttps, loaded: true }};
+require.cache['fs'] = {{ id: 'fs', exports: fakeFs, loaded: true }};
+require.cache[path.join(dir, '__fake_pkg.json')] =
+  {{ id: 'pkg', exports: fakePkg, loaded: true }};
+
+process.on('exit', (code) => {{
+  if (code !== 0) {{ console.error('postinstall exited', code); }}
+}});
+
+require(scriptPath);
+"#,
+        script_path = script_path.to_string_lossy(),
+    );
+    let harness_path = tmp.path().join("harness.js");
+    std::fs::write(&harness_path, harness).expect("write harness");
+    let run = std::process::Command::new("node")
+        .arg(&harness_path)
+        .output()
+        .expect("spawn node harness");
+    let stderr = String::from_utf8_lossy(&run.stderr);
+    assert!(
+        !stderr.contains("ReferenceError"),
+        "postinstall.js threw a ReferenceError at runtime:\n{stderr}"
+    );
+    assert!(
+        run.status.success(),
+        "postinstall harness exited non-zero:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&run.stdout),
+        stderr
     );
 }

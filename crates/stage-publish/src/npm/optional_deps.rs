@@ -20,7 +20,8 @@ use anodizer_core::log::StageLogger;
 use anyhow::{Result, bail};
 
 use super::manifest::{
-    NpmTriple, finalize_package_json, insert_common_metadata, npm_triple, warn_excluded_targets,
+    NpmTriple, finalize_package_json, insert_common_metadata, insert_engines, insert_files,
+    insert_publish_config, npm_triple, warn_excluded_targets,
 };
 
 /// One per-platform package emitted in `optional-deps` mode.
@@ -104,10 +105,19 @@ fn platform_suffix(triple: &NpmTriple, libc_aware: bool) -> String {
 
 /// Render a per-platform `package.json`: `name`/`version` plus the npm
 /// `os`/`cpu`/`libc` selectors (libc only when `libc_aware` and present).
+///
+/// `crate_name` drives the per-crate metadata resolvers; `binary_name` is the
+/// embedded binary filename, emitted as the package's `files` allowlist.
+// Each parameter is an independent render input (context, config, the three
+// identity strings, version, the derived triple, the libc toggle); bundling
+// them into a struct would only relocate the arity, not reduce coupling.
+#[allow(clippy::too_many_arguments)]
 fn render_platform_json(
     ctx: &Context,
     cfg: &NpmConfig,
     pkg_name: &str,
+    crate_name: &str,
+    binary_name: &str,
     version: &str,
     triple: &NpmTriple,
     libc_aware: bool,
@@ -121,7 +131,10 @@ fn render_platform_json(
         "version".into(),
         serde_json::Value::String(version.to_string()),
     );
-    insert_common_metadata(&mut root, ctx, cfg);
+    insert_common_metadata(&mut root, ctx, cfg, crate_name);
+    insert_engines(&mut root, cfg);
+    insert_publish_config(&mut root, cfg);
+    insert_files(&mut root, cfg, &[binary_name.to_string()]);
     root.insert(
         "os".into(),
         serde_json::Value::Array(vec![serde_json::Value::String(triple.os.clone())]),
@@ -148,6 +161,7 @@ fn render_metapackage_json(
     ctx: &Context,
     cfg: &NpmConfig,
     metapackage: &str,
+    crate_name: &str,
     bin: &str,
     version: &str,
     platforms: &[PlatformPackage],
@@ -161,7 +175,12 @@ fn render_metapackage_json(
         "version".into(),
         serde_json::Value::String(version.to_string()),
     );
-    insert_common_metadata(&mut root, ctx, cfg);
+    insert_common_metadata(&mut root, ctx, cfg, crate_name);
+    insert_engines(&mut root, cfg);
+    insert_publish_config(&mut root, cfg);
+    // The metapackage ships only the `bin` shim (binaries live in the
+    // per-platform optionalDependencies).
+    insert_files(&mut root, cfg, &["shim.js".to_string()]);
 
     let mut bin_map = serde_json::Map::new();
     bin_map.insert(bin.to_string(), serde_json::Value::String("shim.js".into()));
@@ -346,7 +365,16 @@ pub(crate) fn generate_layout(
         let suffix = platform_suffix(&triple, libc_aware);
         let pkg_name = format!("{}/{}-{}", scope, bin, suffix);
         let binary_name = art.name.clone();
-        let package_json = render_platform_json(ctx, cfg, &pkg_name, version, &triple, libc_aware)?;
+        let package_json = render_platform_json(
+            ctx,
+            cfg,
+            &pkg_name,
+            crate_name,
+            &binary_name,
+            version,
+            &triple,
+            libc_aware,
+        )?;
         platforms.push(PlatformPackage {
             name: pkg_name,
             triple,
@@ -382,8 +410,15 @@ pub(crate) fn generate_layout(
         );
     }
 
-    let metapackage_json =
-        render_metapackage_json(ctx, cfg, &metapackage, &bin, version, &platforms)?;
+    let metapackage_json = render_metapackage_json(
+        ctx,
+        cfg,
+        &metapackage,
+        crate_name,
+        &bin,
+        version,
+        &platforms,
+    )?;
     let shim_js = render_shim_js(&bin, &platforms);
 
     Ok(OptionalDepsLayout {

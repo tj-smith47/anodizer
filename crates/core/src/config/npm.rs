@@ -100,9 +100,30 @@ pub struct NpmConfig {
     /// Falls back to `metadata.license` when unset.
     pub license: Option<String>,
 
-    /// Templated `author` field for `package.json`. Falls back to
-    /// `metadata.maintainers[0]` when unset.
+    /// Templated `author` field for `package.json`. Falls back to the
+    /// project's `metadata.maintainers[0]`, and then to the crate's
+    /// `Cargo.toml [package].authors[0]`, when unset.
     pub author: Option<String>,
+
+    /// npm `engines` constraint map written verbatim into `package.json`
+    /// (e.g. `{ node: ">=18" }`). When unset, anodizer emits a sensible
+    /// default of `{ node: ">=18" }` — the floor every leading native-CLI
+    /// wrapper (esbuild, biome, swc) declares. Set to an empty map to
+    /// suppress the field entirely.
+    pub engines: Option<std::collections::BTreeMap<String, String>>,
+
+    /// Explicit npm `files` allowlist written into `package.json`. When
+    /// unset, anodizer derives it from what each package actually ships
+    /// (the per-platform binary, the metapackage `shim.js`, or the
+    /// postinstall launcher/script) plus any `extra_files` basenames. Set
+    /// to an empty list to suppress the field (npm then falls back to its
+    /// implicit inclusion rules).
+    pub files: Option<Vec<String>>,
+
+    /// npm `publishConfig.provenance` flag. When unset, anodizer emits
+    /// `true` — the npm supply-chain norm that biome and swc both set,
+    /// pairing with anodizer's signing story. Set to `false` to disable.
+    pub provenance: Option<bool>,
 
     /// Templated repository URL. Emitted as `repository.url` in
     /// `package.json` with `type: git`.
@@ -139,8 +160,9 @@ pub struct NpmConfig {
     pub templated_extra_files: Option<Vec<NpmTemplatedExtraFile>>,
 
     /// Free-form root-level `package.json` fields. Shallow-merged into
-    /// the generated `package.json`. Useful for `engines`, `mcpName`,
-    /// or other npm metadata fields anodizer does not surface.
+    /// the generated `package.json` (config keys win over generated ones).
+    /// Useful for `mcpName`, `funding`, or other npm metadata fields
+    /// anodizer does not surface as first-class options.
     pub extra: Option<HashMap<String, serde_json::Value>>,
 
     /// Override the registry endpoint (default `https://registry.npmjs.org`).
@@ -201,6 +223,9 @@ impl Default for NpmConfig {
             keywords: None,
             license: None,
             author: None,
+            engines: None,
+            files: None,
+            provenance: None,
             repository: None,
             bugs: None,
             access: None,
