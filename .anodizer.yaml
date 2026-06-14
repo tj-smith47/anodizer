@@ -338,8 +338,14 @@ crates:
       - id: anodizer
         ids: [anodizer]
         dockerfile: Dockerfile
+        # Same buildx invocation pushes every tag to BOTH registries. The
+        # private k3s registry mirrors the public ghcr image so internal
+        # consumers pull from inside the cluster without egress. The runner
+        # must already be `docker login`-ed to registry.jarvispro.io before
+        # the docker stage runs (anodizer drives buildx but does not log in).
         images:
           - ghcr.io/tj-smith47/anodizer
+          - registry.jarvispro.io/anodizer
         labels:
           io.modelcontextprotocol.server.name: io.github.tj-smith47/anodizer
           io.artifacthub.package.readme-url: "https://raw.githubusercontent.com/tj-smith47/anodizer/master/README.md"
@@ -981,15 +987,23 @@ milestones:
     fail_on_error: true
     name_template: "{{ Tag }}"
 
-# DockerHub description sync — NOT image publishing (images go to ghcr.io via
-# docker_v2:). This syncs the repo description/README to hub.docker.com so
-# users who find the image there see accurate docs. Requires a DockerHub repo
-# at tj-smith47/anodizer and DOCKERHUB_PASSWORD secret. Disabled until the
-# DockerHub repo is created.
+# DockerHub description sync — NOT image publishing (images go to ghcr.io +
+# registry.jarvispro.io via dockers_v2:). This syncs the repo
+# description/README to hub.docker.com so users who find the image there see
+# accurate docs. Requires an EXISTING DockerHub repo at tj-smith47/anodizer
+# and the DOCKER_PASSWORD secret (the default env var the dockerhub publisher
+# reads; username falls back to DOCKER_USERNAME if unset).
 dockerhub:
-  - skip: true
+  # full_description points at the same README.md the archives/release notes
+  # ship, so the hub.docker.com page can never drift from the repo README.
+  - required: false
     username: "{{ Env.DOCKERHUB_USERNAME }}"
-    description: "A Rust-native release automation tool"
+    images:
+      - tj-smith47/anodizer
+    description: "Rust release tooling — drop-in GoReleaser parity + Rust extras."
+    full_description:
+      from_file:
+        path: README.md
 
 # Artifactory upload configurations
 artifactories:
@@ -1009,6 +1023,18 @@ cloudsmiths:
       rpm: any-distro/any-version
       alpine: alpine/any-version
     republish: true  # prevents MD5 conflict when re-cutting a version
+
+# GemFury publisher — pushes the same nfpm deb/rpm/apk artifacts CloudSmith
+# gets to https://push.fury.io/<account>, giving users an `apt`/`yum`/`apk`
+# source hosted on fury.io. Push auth reads FURY_TOKEN (HTTP Basic username,
+# empty password); rollback DELETE reads FURY_API_TOKEN. `required: true` is
+# the publisher default (reversible via the delete API) but stated explicitly
+# so a failed push aborts rather than half-releasing.
+gemfury:
+  - id: fury
+    account: tj-smith47
+    required: true
+    formats: [apk, deb, rpm]
 
 # NPM registry publisher — ships a metapackage + per-platform packages so
 # `npm install -g @tj-smith47/anodizer` works for JS toolchain users (the
