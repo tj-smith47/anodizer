@@ -892,9 +892,16 @@ All rendered template files are uploaded to the release by default. Both `src` a
 | `method` | string | — | HTTP method: PUT or POST (default: PUT). |
 | `mode` | string | — | Upload mode: "archive" (default) or "binary". |
 | `name` | string | — | Human-readable name for this upload config. |
+| `overwrite` | bool | — | Re-upload an artifact even when an identical one already exists at the target path (default: `false`).
+
+With the default, a re-run that finds the same version's artifact already uploaded with a matching SHA-256 records an idempotent SKIP rather than re-PUTting it — so re-running a partially-failed release is safe. A path that already holds a *different* artifact for the same version still hard-errors (immutable-version drift) unless `overwrite` is set. With `overwrite: true`, every artifact is PUT unconditionally. |
 | `password` | string | — | Password for HTTP basic auth.
 
 Strongly prefer `{{ Env.UPLOAD_PASSWORD }}` (or any other env-var template) over an in-config literal — plaintext values here are NOT redacted from dry-run output and will land in `dist/config.yaml` when the pipeline runs with `--dry-run` / `--snapshot`. Resolution order: rendered `password` template → env `UPLOAD_{NAME}_SECRET`. Password-resolution cascade. |
+| `required` | bool | — | Override whether this upload failing should fail the overall release.
+
+Default: `false` — a failure here is logged but does not abort the release. Set to `true` to fail the release on any error. |
+| `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this upload's artifacts in place rather than issuing a server-side DELETE. Default `false`. |
 | `signature` | bool | — | Include signatures in uploaded artifacts. |
 | `skip` | StringOrBool | — | Skip condition template (if rendered to "true", skip this upload). |
 | `target` | string | — | Target URL template (supports template variables like {{ ProjectName }}, {{ Version }}). |

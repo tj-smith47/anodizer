@@ -115,6 +115,20 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
             crate::artifactory::ArtifactoryPublisher::with_overrides(req, retain),
         ));
     }
+    if is_uploads_configured(ctx) {
+        // Escalate-to-true across `uploads:` entries.
+        let req = collapse_required(ctx.config.uploads.iter().flatten().map(|c| c.required));
+        let retain = collapse_required(
+            ctx.config
+                .uploads
+                .iter()
+                .flatten()
+                .map(|c| c.retain_on_rollback),
+        );
+        v.push(Box::new(crate::uploads::UploadsPublisher::with_overrides(
+            req, retain,
+        )));
+    }
     if is_cloudsmith_configured(ctx) {
         // Escalate-to-true across `cloudsmiths:` entries.
         let req = collapse_required(ctx.config.cloudsmiths.iter().flatten().map(|c| c.required));
@@ -375,6 +389,7 @@ pub fn all_publishers() -> Vec<Box<dyn Publisher>> {
         Box::new(crate::cargo::CargoPublisher::new()),
         Box::new(crate::dockerhub::DockerhubPublisher::new()),
         Box::new(crate::artifactory::ArtifactoryPublisher::new()),
+        Box::new(crate::uploads::UploadsPublisher::new()),
         Box::new(crate::cloudsmith::CloudsmithPublisher::new()),
         Box::new(anodizer_stage_release::publisher::GithubReleasePublisher::new()),
         Box::new(crate::homebrew::publisher::HomebrewPublisher::new()),
@@ -522,6 +537,11 @@ fn is_dockerhub_configured(ctx: &Context) -> bool {
 /// True when the top-level `artifactories:` block has at least one entry.
 fn is_artifactory_configured(ctx: &Context) -> bool {
     crate::publisher_helpers::is_top_level_block_configured(ctx.config.artifactories.as_ref())
+}
+
+/// True when the top-level `uploads:` block has at least one entry.
+fn is_uploads_configured(ctx: &Context) -> bool {
+    crate::publisher_helpers::is_top_level_block_configured(ctx.config.uploads.as_ref())
 }
 
 /// True when the top-level `cloudsmiths:` block has at least one entry.

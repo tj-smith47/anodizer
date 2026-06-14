@@ -14,14 +14,23 @@ use std::fs;
 
 /// Validate the upload mode string. Only `"archive"` and `"binary"` are
 /// accepted; matching is case-insensitive so `mode: Archive` works.
-pub fn validate_upload_mode(mode: &str) -> Result<()> {
+///
+/// `publisher` prefixes the error so the same shared validator serves both the
+/// Artifactory and the generic `uploads:` publisher with a correct label.
+pub fn validate_upload_mode_for(publisher: &str, mode: &str) -> Result<()> {
     match mode.to_ascii_lowercase().as_str() {
         "archive" | "binary" => Ok(()),
         _ => bail!(
-            "artifactory: invalid upload mode '{}' (expected 'archive' or 'binary')",
+            "{}: invalid upload mode '{}' (expected 'archive' or 'binary')",
+            publisher,
             mode
         ),
     }
+}
+
+/// Validate the upload mode for the Artifactory publisher (label `artifactory`).
+pub fn validate_upload_mode(mode: &str) -> Result<()> {
+    validate_upload_mode_for("artifactory", mode)
 }
 
 // ---------------------------------------------------------------------------
@@ -959,32 +968,31 @@ pub fn publish_to_artifactory(
 
         let overwrite = entry.overwrite.unwrap_or(false);
 
-        // Upload each artifact
-        for artifact in &artifacts {
-            let url = render_artifact_url(ctx, target_template, artifact, custom_artifact_name)?;
-            let url = append_deb_matrix_params(&url, artifact, entry)?;
-            match upload_single_artifact(
-                &client,
-                &UploadHeaders {
-                    method,
-                    url: &url,
-                    checksum_header,
-                    custom_headers,
-                },
-                &UploadAuth {
-                    username: &username,
-                    password: &password,
-                },
-                artifact,
+        // Upload each artifact through the shared HTTP-upload driver. The
+        // only Artifactory-specific step is the Debian matrix-param append,
+        // threaded in as the per-URL rewrite hook; everything else (render,
+        // idempotency probe, retry, checksum/custom headers) is shared with
+        // the generic `uploads:` publisher.
+        let counts = crate::http_upload::upload_artifact_set(
+            ctx,
+            &client,
+            target_template,
+            &artifacts,
+            &crate::http_upload::UploadEntryRequest {
+                method,
+                checksum_header,
+                custom_headers,
+                username: &username,
+                password: &password,
+                custom_artifact_name,
                 overwrite,
-                ctx,
-                &policy,
-                log,
-            )? {
-                UploadOutcome::Uploaded => summary.uploaded += 1,
-                UploadOutcome::AlreadyPresent => summary.already_present += 1,
-            }
-        }
+            },
+            &policy,
+            log,
+            |url, artifact| append_deb_matrix_params(url, artifact, entry),
+        )?;
+        summary.uploaded += counts.uploaded;
+        summary.already_present += counts.already_present;
 
         log.status(&format!("artifactory upload complete for '{}'", name));
     }

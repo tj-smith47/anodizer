@@ -32,6 +32,7 @@ pub(crate) mod schemastore;
 pub mod scoop;
 pub(crate) mod scope;
 pub(crate) mod snapshot_validation;
+pub mod uploads;
 pub(crate) mod util;
 pub mod winget;
 

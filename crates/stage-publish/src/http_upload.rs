@@ -5,8 +5,13 @@
 //! refusal pattern. The patterns used to be open-coded twice; this module
 //! is the single source of truth so a fix in one place reaches both.
 
+use anodizer_core::artifact::Artifact;
 use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
+use anodizer_core::retry::RetryPolicy;
 use anyhow::{Context as _, Result, bail};
+
+use crate::artifactory::{UploadAuth, UploadHeaders, UploadOutcome, render_artifact_url};
 
 /// Caller spec for `resolve_http_credentials`. Captures the small handful
 /// of per-publisher knobs that distinguish artifactory's refusal of
@@ -115,6 +120,85 @@ pub(crate) fn resolve_http_credentials(
     }
 
     Ok((username, password))
+}
+
+/// Tally of an HTTP upload-entry run, shared by Artifactory + generic uploads.
+///
+/// `uploaded` counts artifacts PUT/POSTed this run (fresh or overwritten);
+/// `already_present` counts those skipped because an identical SHA-256 copy
+/// was already at the target path (idempotent re-run).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UploadEntryCounts {
+    pub uploaded: usize,
+    pub already_present: usize,
+}
+
+/// Per-artifact request parameters shared across an entry's whole upload set.
+///
+/// Bundles the request-shaping inputs that are constant for every artifact in
+/// one upload entry (method, checksum header, custom headers, basic-auth, and
+/// the `custom_artifact_name` URL-append toggle) so the shared driver can
+/// thread them through without a long argument list.
+pub(crate) struct UploadEntryRequest<'a> {
+    pub method: &'a str,
+    pub checksum_header: &'a str,
+    pub custom_headers: &'a std::collections::HashMap<String, String>,
+    pub username: &'a str,
+    pub password: &'a str,
+    pub custom_artifact_name: bool,
+    pub overwrite: bool,
+}
+
+/// Upload one entry's resolved artifact set over the shared HTTP-PUT/POST
+/// machinery, returning the uploaded / already-present tally.
+///
+/// This is the single per-artifact upload loop both the Artifactory and the
+/// generic `uploads:` publisher drive. The per-artifact target URL is rendered
+/// through [`render_artifact_url`] (the same template path dry-run previews
+/// use); `rewrite_url` lets a caller post-process each rendered URL
+/// (Artifactory appends Debian matrix params there) before the bytes move —
+/// an identity closure (`|url, _| Ok(url.to_string())`) opts out. Each upload
+/// goes through
+/// [`crate::artifactory::upload_single_artifact`], which carries the
+/// idempotency probe, retry budget, and checksum/custom-header application.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn upload_artifact_set(
+    ctx: &Context,
+    client: &reqwest::blocking::Client,
+    target_template: &str,
+    artifacts: &[&Artifact],
+    req: &UploadEntryRequest<'_>,
+    policy: &RetryPolicy,
+    log: &StageLogger,
+    mut rewrite_url: impl FnMut(&str, &Artifact) -> Result<String>,
+) -> Result<UploadEntryCounts> {
+    let mut counts = UploadEntryCounts::default();
+    for artifact in artifacts {
+        let url = render_artifact_url(ctx, target_template, artifact, req.custom_artifact_name)?;
+        let url = rewrite_url(&url, artifact)?;
+        match crate::artifactory::upload_single_artifact(
+            client,
+            &UploadHeaders {
+                method: req.method,
+                url: &url,
+                checksum_header: req.checksum_header,
+                custom_headers: req.custom_headers,
+            },
+            &UploadAuth {
+                username: req.username,
+                password: req.password,
+            },
+            artifact,
+            req.overwrite,
+            ctx,
+            policy,
+            log,
+        )? {
+            UploadOutcome::Uploaded => counts.uploaded += 1,
+            UploadOutcome::AlreadyPresent => counts.already_present += 1,
+        }
+    }
+    Ok(counts)
 }
 
 /// Refuse a half-set mTLS pair. Both crates need the same exact check.
