@@ -113,13 +113,72 @@ fn os_arch_from_target(target: Option<&str>) -> (String, String) {
 /// is distinct per crate.
 const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Arch }}";
 
-/// Copy `binary_path` into `staging_dir` and, when `use_mode == "binary"` on
-/// Unix, force the destination to mode `0o755`.
+/// Recursively copy the directory tree rooted at `src` to `dst`, recreating
+/// subdirectories, copying file contents (with `fs::copy`, which preserves the
+/// Unix mode bits — including the executable bit), and recreating symlinks as
+/// symlinks. Used to stage an app-bundle directory into the DMG staging area.
+fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    fs::create_dir_all(dst)
+        .with_context(|| format!("dmg: create staging dir {}", dst.display()))?;
+    for entry in
+        fs::read_dir(src).with_context(|| format!("dmg: read source dir {}", src.display()))?
+    {
+        let entry = entry.with_context(|| format!("dmg: read entry under {}", src.display()))?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        // Use symlink_metadata so a symlink is recreated as a link rather than
+        // dereferenced — app bundles can embed framework version symlinks.
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("dmg: stat {}", from.display()))?;
+        if file_type.is_symlink() {
+            #[cfg(unix)]
+            {
+                let target = fs::read_link(&from)
+                    .with_context(|| format!("dmg: read symlink {}", from.display()))?;
+                std::os::unix::fs::symlink(&target, &to).with_context(|| {
+                    format!(
+                        "dmg: recreate symlink {} -> {}",
+                        to.display(),
+                        target.display()
+                    )
+                })?;
+            }
+            #[cfg(not(unix))]
+            {
+                // No portable symlink creation without elevated rights on
+                // Windows; copy the link target's contents instead so the
+                // bundle is at least complete.
+                if from.is_dir() {
+                    copy_tree(&from, &to)?;
+                } else {
+                    fs::copy(&from, &to).with_context(|| {
+                        format!("dmg: copy {} to {}", from.display(), to.display())
+                    })?;
+                }
+            }
+        } else if file_type.is_dir() {
+            copy_tree(&from, &to)?;
+        } else {
+            fs::copy(&from, &to)
+                .with_context(|| format!("dmg: copy {} to {}", from.display(), to.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Stage the DMG payload for one source into `staging_dir`, dispatching on
+/// `use_mode`, and return the staged path (`staging_dir.join(binary_name)`).
 ///
-/// `fs::copy` preserves source permissions, so a binary unpacked from an
-/// archive that stripped the execute bit would otherwise ship inside the DMG
-/// as non-executable. App bundles already chmod their own binary inside
-/// `Contents/MacOS/`, so this helper is a no-op when `use_mode == "appbundle"`.
+/// - `use_mode == "binary"`: `binary_path` is a regular file; it is copied and
+///   then forced to mode `0o755` on Unix. `fs::copy` preserves source
+///   permissions, so a binary unpacked from an archive that stripped the
+///   execute bit would otherwise ship inside the DMG as non-executable.
+/// - `use_mode == "appbundle"`: `binary_path` is a `.app` bundle directory; it
+///   is copied recursively (preserving the tree, file contents, Unix mode bits,
+///   and embedded symlinks). The top level is a directory, so no chmod is
+///   applied — the bundle already carries the executable bit on its inner
+///   `Contents/MacOS/<binary>`.
 pub(crate) fn stage_binary_into(
     staging_dir: &std::path::Path,
     binary_path: &std::path::Path,
@@ -127,10 +186,15 @@ pub(crate) fn stage_binary_into(
     use_mode: &str,
 ) -> Result<std::path::PathBuf> {
     let staged_binary = staging_dir.join(binary_name);
+    if use_mode == "appbundle" {
+        copy_tree(binary_path, &staged_binary)
+            .with_context(|| format!("copy app bundle {} to staging dir", binary_path.display()))?;
+        return Ok(staged_binary);
+    }
     std::fs::copy(binary_path, &staged_binary)
         .with_context(|| format!("copy binary {} to staging dir", binary_path.display()))?;
     #[cfg(unix)]
-    if use_mode == "binary" {
+    {
         use std::os::unix::fs::PermissionsExt;
         let perms = std::fs::Permissions::from_mode(0o755);
         std::fs::set_permissions(&staged_binary, perms).with_context(|| {
@@ -140,8 +204,6 @@ pub(crate) fn stage_binary_into(
             )
         })?;
     }
-    #[cfg(not(unix))]
-    let _ = use_mode;
     Ok(staged_binary)
 }
 
@@ -1334,24 +1396,25 @@ crates:
         let stage = DmgStage;
         let result = stage.run(&mut ctx);
 
-        // On macOS, hdiutil is available so the stage may succeed (creates a real DMG).
-        // On Linux/Windows, it will fail because no DMG tool is installed.
-        if cfg!(target_os = "macos") {
-            // On macOS, either outcome is acceptable — the extra files were staged either way.
-            if let Err(e) = &result {
-                let err_msg = format!("{e:#}");
-                assert!(
-                    err_msg.contains("hdiutil")
-                        || err_msg.contains("DMG creation tool")
-                        || err_msg.contains("no DMG"),
-                    "unexpected error on macOS: {err_msg}"
-                );
-            }
-        } else {
+        // Outcome depends on whether a DMG-imaging tool is installed on this
+        // host (hdiutil/genisoimage/mkisofs), not on the OS: with a tool present
+        // the stage images the staging dir and succeeds; with none it errors
+        // after staging with a tool-missing message.
+        if dmg_tool().is_some() {
             assert!(
-                result.is_err(),
-                "expected failure due to missing DMG tool in CI"
+                result.is_ok(),
+                "stage should succeed when a DMG tool is available, got: {:#}",
+                result.unwrap_err()
             );
+            assert!(
+                ctx.artifacts
+                    .all()
+                    .iter()
+                    .any(|a| a.kind == ArtifactKind::DiskImage),
+                "a DiskImage artifact should be registered when imaging succeeds"
+            );
+        } else {
+            assert!(result.is_err(), "expected failure due to missing DMG tool");
             let err_msg = format!("{:#}", result.unwrap_err());
             assert!(
                 err_msg.contains("hdiutil")
@@ -2530,23 +2593,78 @@ crates:
 
     #[cfg(unix)]
     #[test]
-    fn test_stage_binary_into_preserves_perms_for_appbundle_use_mode() {
+    fn test_stage_binary_into_copies_app_bundle_directory_tree() {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::tempdir().unwrap();
-        let src = tmp.path().join("payload");
-        std::fs::write(&src, b"appbundle dir contents (synthetic)").unwrap();
-        std::fs::set_permissions(&src, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        // Build a fake `.app` bundle directory tree.
+        let app = tmp.path().join("anodizer.app");
+        let macos = app.join("Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+        let plist = app.join("Contents/Info.plist");
+        std::fs::write(&plist, b"<plist></plist>").unwrap();
+        let inner_bin = macos.join("anodizer");
+        std::fs::write(&inner_bin, b"\x7fELF fake mach-o").unwrap();
+        std::fs::set_permissions(&inner_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
 
         let staging = tmp.path().join("staging");
         std::fs::create_dir_all(&staging).unwrap();
 
-        let staged = stage_binary_into(&staging, &src, "payload", "appbundle").unwrap();
-        let mode = std::fs::metadata(&staged).unwrap().permissions().mode() & 0o777;
-        // appbundle mode must NOT chmod 755 (the .app handles its own perms).
+        let staged = stage_binary_into(&staging, &app, "anodizer.app", "appbundle").unwrap();
+        assert_eq!(staged, staging.join("anodizer.app"));
+        assert!(staged.is_dir(), "staged .app must be a directory");
+
+        // The inner binary must be copied with identical bytes.
+        let staged_bin = staged.join("Contents/MacOS/anodizer");
+        assert!(staged_bin.exists(), "inner binary must be staged");
         assert_eq!(
-            mode, 0o644,
-            "appbundle use_mode must preserve source perms, got 0o{mode:o}"
+            std::fs::read(&staged_bin).unwrap(),
+            std::fs::read(&inner_bin).unwrap(),
+            "inner binary bytes must match source"
+        );
+
+        // The executable bit must survive the recursive copy.
+        let mode = std::fs::metadata(&staged_bin).unwrap().permissions().mode();
+        assert!(
+            mode & 0o100 != 0,
+            "inner binary must retain user-exec bit, got 0o{:o}",
+            mode & 0o777
+        );
+
+        // The plist must be present too.
+        assert!(
+            staged.join("Contents/Info.plist").exists(),
+            "Info.plist must be staged"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_stage_binary_into_recreates_symlinks_in_app_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        let app = tmp.path().join("anodizer.app");
+        let versions = app.join("Contents/Frameworks/Foo.framework/Versions");
+        std::fs::create_dir_all(versions.join("A")).unwrap();
+        std::fs::write(versions.join("A/Foo"), b"framework binary").unwrap();
+        // Embedded framework version symlink: Current -> A.
+        std::os::unix::fs::symlink("A", versions.join("Current")).unwrap();
+
+        let staging = tmp.path().join("staging");
+        std::fs::create_dir_all(&staging).unwrap();
+
+        let staged = stage_binary_into(&staging, &app, "anodizer.app", "appbundle").unwrap();
+        let staged_link = staged.join("Contents/Frameworks/Foo.framework/Versions/Current");
+        let meta = std::fs::symlink_metadata(&staged_link).unwrap();
+        assert!(
+            meta.file_type().is_symlink(),
+            "embedded framework symlink must be recreated as a symlink"
+        );
+        assert_eq!(
+            std::fs::read_link(&staged_link).unwrap(),
+            std::path::Path::new("A"),
+            "symlink target must be preserved"
         );
     }
 }

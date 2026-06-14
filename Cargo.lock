@@ -378,6 +378,7 @@ version = "0.9.1"
 dependencies = [
  "anodizer-core",
  "anyhow",
+ "filetime",
  "glob",
  "serde_yaml_ng",
  "tempfile",

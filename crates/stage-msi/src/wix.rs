@@ -20,6 +20,10 @@ pub enum WixVersion {
     V3,
     /// WiX v4: uses the unified `wix build` command.
     V4,
+    /// Wixl: Linux-native `wixl` (msitools) — consumes a WiX v3-dialect `.wxs`
+    /// and emits the MSI in one step. The only MSI path that runs on Linux CI;
+    /// WiX v3/v4 require Windows.
+    Wixl,
 }
 
 /// Commands to execute for building an MSI.
@@ -48,8 +52,8 @@ impl WixVersion {
 
     /// Detect the WiX version from installed tools on the system.
     ///
-    /// Checks for the `wix` command (V4) first, then `candle` (V3).
-    /// Falls back to V4 if neither is found.
+    /// Probe order: `wix` (V4) first, then `candle` + `light` (V3), then
+    /// `wixl` (Linux-native msitools). Falls back to V4 if none is found.
     pub fn detect_from_tools() -> Self {
         // Check for V4 first (preferred)
         if anodizer_core::util::find_binary("wix") {
@@ -59,13 +63,25 @@ impl WixVersion {
         if anodizer_core::util::find_binary("candle") && anodizer_core::util::find_binary("light") {
             return WixVersion::V3;
         }
+        // Linux-native fallback: WiX is Windows-only, so a Linux box with only
+        // msitools' `wixl` builds MSIs through it.
+        if anodizer_core::util::find_binary("wixl") {
+            return WixVersion::Wixl;
+        }
         // Default to V4
         WixVersion::V4
     }
 
-    /// Parse a version string from config (e.g. "v3", "v4", "V3", "V4", "3", "4").
+    /// Parse a version string from config (e.g. "v3", "v4", "V3", "V4", "3",
+    /// "4", "wixl", "linux").
     pub fn from_config_str(s: &str) -> Option<Self> {
-        let normalized = s.to_lowercase().trim_start_matches('v').to_string();
+        let lowered = s.to_lowercase();
+        // "wixl"/"linux" select the Linux-native path; matched before the
+        // `v`-strip since neither begins with 'v'.
+        if lowered == "wixl" || lowered == "linux" {
+            return Some(WixVersion::Wixl);
+        }
+        let normalized = lowered.trim_start_matches('v').to_string();
         match normalized.as_str() {
             "3" => Some(WixVersion::V3),
             "4" => Some(WixVersion::V4),
@@ -145,6 +161,17 @@ pub fn msi_command(
                 link: Some(link),
             }
         }
+        // wixl emits the MSI in one step. It does not understand WiX's `-ext`
+        // toolset extensions, so `extensions` are intentionally not passed.
+        WixVersion::Wixl => MsiCommands {
+            primary: vec![
+                "wixl".to_string(),
+                "-o".to_string(),
+                output_path.to_string(),
+                wxs_path.to_string(),
+            ],
+            link: None,
+        },
     }
 }
 
@@ -193,16 +220,33 @@ pub fn resolve_wix_version_quiet(
     msi_cfg: &anodizer_core::config::MsiConfig,
     wxs_path: &str,
 ) -> WixVersion {
-    let detect_from_wxs_or_tools = || {
+    let explicit = msi_cfg
+        .version
+        .as_deref()
+        .and_then(WixVersion::from_config_str);
+
+    let candidate = explicit.unwrap_or_else(|| {
         fs::read_to_string(wxs_path)
             .map(|c| WixVersion::detect_from_wxs(&c))
             .unwrap_or_else(|_| WixVersion::detect_from_tools())
-    };
-    msi_cfg
-        .version
-        .as_deref()
-        .and_then(WixVersion::from_config_str)
-        .unwrap_or_else(detect_from_wxs_or_tools)
+    });
+
+    // A v3-dialect wxs whose namespace sniffed to V3 still needs a Windows-only
+    // `candle`/`light` toolchain. On a Linux box that has only `wixl`, build the
+    // same wxs through wixl. An explicit `version:` author who installed the real
+    // v3 toolchain is honored (V3 is kept when candle+light are present); an
+    // explicit `version: wixl` already resolved to Wixl above and is untouched.
+    // Never downgrade V4 — its wxs is incompatible with wixl's v3 dialect, so a
+    // missing v4 toolchain must surface as a real build error, not silent reroute.
+    if candidate == WixVersion::V3
+        && !(anodizer_core::util::find_binary("candle")
+            && anodizer_core::util::find_binary("light"))
+        && anodizer_core::util::find_binary("wixl")
+    {
+        return WixVersion::Wixl;
+    }
+
+    candidate
 }
 
 /// Render each `extensions:` template entry through Tera, dropping empties

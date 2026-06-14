@@ -124,7 +124,7 @@ impl Stage for MsiStage {
 /// entry exists and the configured build targets include Windows, the WiX
 /// toolchain resolved by the same policy the build uses (explicit
 /// `version:` > `.wxs` namespace sniff > installed-tool probe) — `wix` for
-/// v4, `candle` + `light` for v3.
+/// v4, `candle` + `light` for v3, `wixl` for the Linux-native msitools path.
 pub fn env_requirements(
     ctx: &anodizer_core::context::Context,
 ) -> Vec<anodizer_core::EnvRequirement> {
@@ -164,6 +164,9 @@ pub fn env_requirements(
                         name: "light".to_string(),
                     });
                 }
+                WixVersion::Wixl => out.push(anodizer_core::EnvRequirement::Tool {
+                    name: "wixl".to_string(),
+                }),
             }
         }
     }
@@ -247,6 +250,30 @@ mod tests {
             link,
             vec!["light", "-nologo", "/out/app.wixobj", "-o", "/out/app.msi"]
         );
+    }
+
+    #[test]
+    fn test_msi_command_wixl() {
+        let cmds = msi_command(WixVersion::Wixl, "/tmp/app.wxs", "/out/app.msi", &[]);
+        assert_eq!(
+            cmds.primary,
+            vec!["wixl", "-o", "/out/app.msi", "/tmp/app.wxs"]
+        );
+        assert!(cmds.link.is_none());
+    }
+
+    #[test]
+    fn test_msi_command_wixl_ignores_extensions() {
+        let exts = vec!["WixUIExtension".to_string()];
+        let cmds = msi_command(WixVersion::Wixl, "/tmp/app.wxs", "/out/app.msi", &exts);
+        // wixl does not understand WiX `-ext`; extensions must not appear.
+        assert_eq!(
+            cmds.primary,
+            vec!["wixl", "-o", "/out/app.msi", "/tmp/app.wxs"]
+        );
+        assert!(!cmds.primary.iter().any(|a| a == "-ext"));
+        assert!(!cmds.primary.iter().any(|a| a == "WixUIExtension"));
+        assert!(cmds.link.is_none());
     }
 
     // -----------------------------------------------------------------------
@@ -696,6 +723,41 @@ crates:
         assert_eq!(WixVersion::from_config_str("4"), Some(WixVersion::V4));
         assert_eq!(WixVersion::from_config_str("v5"), None);
         assert_eq!(WixVersion::from_config_str("invalid"), None);
+        // Linux-native msitools path
+        assert_eq!(WixVersion::from_config_str("wixl"), Some(WixVersion::Wixl));
+        assert_eq!(WixVersion::from_config_str("WIXL"), Some(WixVersion::Wixl));
+        assert_eq!(WixVersion::from_config_str("linux"), Some(WixVersion::Wixl));
+        assert_eq!(WixVersion::from_config_str("Linux"), Some(WixVersion::Wixl));
+    }
+
+    #[test]
+    fn test_resolve_explicit_wixl_forces_linux_path() {
+        use anodizer_core::config::MsiConfig;
+        // An explicit `version: wixl` selects the Linux path with no tool probe,
+        // so the result is deterministic regardless of the host's toolchain.
+        let cfg = MsiConfig {
+            version: Some("wixl".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            wix::resolve_wix_version_quiet(&cfg, "/nonexistent.wxs"),
+            WixVersion::Wixl
+        );
+    }
+
+    #[test]
+    fn test_resolve_explicit_v4_never_downgrades_to_wixl() {
+        use anodizer_core::config::MsiConfig;
+        // A v4-authored wxs is incompatible with wixl's v3 dialect; the
+        // substitution must never reroute V4 to Wixl even on a wixl-only host.
+        let cfg = MsiConfig {
+            version: Some("v4".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            wix::resolve_wix_version_quiet(&cfg, "/nonexistent.wxs"),
+            WixVersion::V4
+        );
     }
 
     // -----------------------------------------------------------------------

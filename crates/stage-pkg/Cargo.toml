@@ -16,6 +16,9 @@ description = "macOS pkg installer stage for anodizer release automation"
 [dependencies]
 anodizer-core.workspace = true
 anyhow.workspace = true
+# Directory-capable mtime setter (utimensat, not open(O_WRONLY)) so flat-pkg
+# payload directories are stamped deterministically before cpio.
+filetime.workspace = true
 glob.workspace = true
 tempfile.workspace = true
 

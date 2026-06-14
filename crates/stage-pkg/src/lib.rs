@@ -52,6 +52,336 @@ pub fn pkgbuild_command(
 }
 
 // ---------------------------------------------------------------------------
+// Tool resolution
+// ---------------------------------------------------------------------------
+
+/// Which build path produces the flat `.pkg`.
+///
+/// Resolved once per config entry from PATH so the per-binary loop can dispatch
+/// without re-probing. `pkgbuild` (Apple/Xcode, macOS-only) is preferred when
+/// present; otherwise the Linux flat-package toolchain (`xar` + `mkbom` +
+/// `cpio` + `gzip`) assembles the identical XAR layout by hand.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PkgBuilder {
+    /// Native Apple `pkgbuild` on PATH.
+    Pkgbuild,
+    /// Linux-native flat XAR assembly via `xar`/`mkbom`/`cpio`/`gzip`.
+    Linux,
+}
+
+/// The Linux flat-package toolchain, all of which must be present together for
+/// [`PkgBuilder::Linux`].
+const LINUX_PKG_TOOLS: [&str; 4] = ["xar", "mkbom", "cpio", "gzip"];
+
+/// Resolve which `.pkg` build path is available on this host.
+///
+/// `probe` reports whether a tool name resolves on PATH (injectable so the
+/// resolution logic is unit-testable without a real PATH). Returns the actionable
+/// error string naming BOTH options when neither path is satisfiable.
+pub fn resolve_pkg_builder(probe: impl Fn(&str) -> bool) -> Result<PkgBuilder, String> {
+    if probe("pkgbuild") {
+        return Ok(PkgBuilder::Pkgbuild);
+    }
+    if LINUX_PKG_TOOLS.iter().all(|t| probe(t)) {
+        return Ok(PkgBuilder::Linux);
+    }
+    Err(
+        "neither `pkgbuild` (macOS, `xcode-select --install`) nor the Linux \
+         flat-package toolchain (`xar` + `mkbom`/bomutils + `cpio` + `gzip`) is \
+         available; install one to build .pkg installers"
+            .to_string(),
+    )
+}
+
+// ---------------------------------------------------------------------------
+// Linux flat-package builder
+// ---------------------------------------------------------------------------
+
+/// Recursively apply `mtime` to every file and directory under `root`.
+///
+/// [`anodizer_core::util::apply_mod_timestamp`] only touches top-level regular
+/// files; the flat-package `pkgroot` nests the payload under the install
+/// location, so deterministic `Payload` mtimes require a recursive walk over
+/// files AND directories. `filetime::set_file_mtime` uses `utimensat` rather
+/// than `open(O_WRONLY)`, so it stamps directories (which `open(O_WRONLY)`
+/// rejects with EISDIR) — leaving directory mtimes at wall-clock would leak
+/// non-reproducible bytes into the cpio Payload.
+fn apply_mtime_recursive(root: &std::path::Path, mtime: std::time::SystemTime) -> Result<()> {
+    let ft_time = filetime::FileTime::from_system_time(mtime);
+    for entry in
+        fs::read_dir(root).with_context(|| format!("read pkgroot dir {}", root.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            apply_mtime_recursive(&path, mtime)?;
+        }
+        filetime::set_file_mtime(&path, ft_time)
+            .with_context(|| format!("set mtime on {}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// Count regular files and total byte size under `root` (recursive).
+///
+/// Feeds `PackageInfo`'s `installKBytes`/`numberOfFiles`, mirroring what
+/// `pkgbuild` records from the same payload tree.
+fn payload_stats(root: &std::path::Path) -> Result<(u64, u64)> {
+    let mut files = 0u64;
+    let mut bytes = 0u64;
+    for entry in
+        fs::read_dir(root).with_context(|| format!("stat pkgroot dir {}", root.display()))?
+    {
+        let entry = entry?;
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            let (f, b) = payload_stats(&entry.path())?;
+            files += f;
+            bytes += b;
+        } else if ft.is_file() {
+            files += 1;
+            bytes += entry.metadata()?.len();
+        }
+    }
+    Ok((files, bytes))
+}
+
+/// XML-escape a value destined for an attribute or text node.
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+}
+
+/// Build a reproducible `cpio -o --format odc | gzip -9n` archive of
+/// `src_root`'s contents into `dest`.
+///
+/// Drives the pipeline from inside `src_root` via a single `sh -c` invocation,
+/// failing if any stage does (`set -o pipefail`). The cwd-relative `find .`
+/// keeps archived paths rooted at `.` exactly as `pkgbuild`/`productbuild`
+/// emit them. Three byte-stability guards make the Payload identical across CI
+/// runners and match native pkgbuild:
+/// - `LC_ALL=C sort` fixes entry order (raw readdir order varies by
+///   filesystem/host).
+/// - `-R 0:0` forces uid/gid to root, matching pkgbuild and removing the
+///   runner's per-user ownership from the encoded headers.
+/// - `gzip -9n` drops the original filename/timestamp from the gzip header.
+fn cpio_gzip_archive(
+    src_root: &std::path::Path,
+    dest: &std::path::Path,
+    log: &anodizer_core::log::StageLogger,
+) -> Result<()> {
+    let dest_str = dest.to_string_lossy().replace('\'', "'\\''");
+    let pipeline = format!(
+        "set -o pipefail; find . | LC_ALL=C sort | \
+         cpio -o --format odc -R 0:0 2>/dev/null | gzip -9n > '{dest_str}'"
+    );
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(&pipeline)
+        .current_dir(src_root)
+        .output()
+        .with_context(|| format!("execute cpio|gzip pipeline for {}", src_root.display()))?;
+    log.check_output(output, "cpio|gzip")?;
+    Ok(())
+}
+
+/// Assemble a flat XAR `.pkg` installer without Apple's `pkgbuild`.
+///
+/// Replicates the exact layout `pkgbuild`/`productbuild` emit — a XAR archive
+/// containing a top-level `Distribution` and a `base.pkg/` component
+/// (`PackageInfo`, `Bom`, `Payload`, and `Scripts` when present). `staging_dir`
+/// holds the payload flat (as the native path stages it); this routine rebuilds
+/// it under `install_location` so the `Bom` and `Payload` encode the real
+/// install destination, matching `pkgbuild --root <staging> --install-location`.
+#[allow(clippy::too_many_arguments)]
+pub fn build_flat_pkg_linux(
+    staging_dir: &std::path::Path,
+    identifier: &str,
+    version: &str,
+    install_location: &str,
+    scripts: Option<&str>,
+    min_os_version: Option<&str>,
+    mod_timestamp: Option<&str>,
+    pkg_path: &std::path::Path,
+    log: &anodizer_core::log::StageLogger,
+) -> Result<()> {
+    let work = tempfile::tempdir().context("create temp work dir for flat pkg")?;
+    let pkgroot = work.path().join("pkgroot");
+    let flatdir = work.path().join("flat");
+    let component = flatdir.join("base.pkg");
+    fs::create_dir_all(&component)
+        .with_context(|| format!("create flat component dir {}", component.display()))?;
+
+    // Mirror `--root <staging> --install-location <loc>`: the payload must live
+    // UNDER the install location inside pkgroot so Bom/Payload carry the real
+    // destination path, not a flat `./binary`.
+    let rel_install = install_location.trim_start_matches('/');
+    let payload_dest = if rel_install.is_empty() {
+        pkgroot.clone()
+    } else {
+        pkgroot.join(rel_install)
+    };
+    fs::create_dir_all(&payload_dest)
+        .with_context(|| format!("create payload dest {}", payload_dest.display()))?;
+
+    for entry in fs::read_dir(staging_dir)
+        .with_context(|| format!("read staging dir {}", staging_dir.display()))?
+    {
+        let entry = entry?;
+        let src = entry.path();
+        let dst = payload_dest.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&src, &dst)?;
+        } else {
+            fs::copy(&src, &dst)
+                .with_context(|| format!("copy payload {} -> {}", src.display(), dst.display()))?;
+        }
+    }
+
+    let (num_files, total_bytes) = payload_stats(&pkgroot)?;
+    let install_kbytes = total_bytes.div_ceil(1024);
+
+    // Determinism: stamp the payload tree BEFORE cpio so Payload mtimes are
+    // fixed, and the final flattened .pkg AFTER xar.
+    let parsed_mtime = mod_timestamp
+        .map(anodizer_core::util::parse_mod_timestamp)
+        .transpose()?;
+    if let Some(mtime) = parsed_mtime {
+        apply_mtime_recursive(&pkgroot, mtime)?;
+    }
+
+    // Payload: cpio(odc) | gzip -9n of the pkgroot contents.
+    cpio_gzip_archive(&pkgroot, &component.join("Payload"), log)?;
+
+    // Bom: mkbom of the pkgroot. `-u 0 -g 0` forces root ownership so the Bom's
+    // encoded uid/gid match the `-R 0:0` Payload and native pkgbuild, instead of
+    // leaking the runner's per-user ids.
+    let bom_out = component.join("Bom");
+    let output = Command::new("mkbom")
+        .arg("-u")
+        .arg("0")
+        .arg("-g")
+        .arg("0")
+        .arg(&pkgroot)
+        .arg(&bom_out)
+        .output()
+        .with_context(|| format!("execute mkbom for {}", pkgroot.display()))?;
+    log.check_output(output, "mkbom")?;
+
+    // Scripts: cpio.gz of the scripts dir, referenced from PackageInfo. pkgbuild
+    // packages preinstall/postinstall this way for Installer to extract+run.
+    let mut scripts_attr = String::new();
+    if let Some(scripts_dir) = scripts {
+        let sp = std::path::Path::new(scripts_dir);
+        if sp.is_dir() {
+            if let Some(mtime) = parsed_mtime {
+                apply_mtime_recursive(sp, mtime)?;
+            }
+            cpio_gzip_archive(sp, &component.join("Scripts"), log)?;
+            scripts_attr =
+                "    <scripts>\n      <postinstall file=\"./postinstall\"/>\n    </scripts>\n"
+                    .to_string();
+        }
+    }
+
+    // PackageInfo: install-location "/" because pkgroot already encodes the full
+    // path (flat-package default). min_os_version, when set, is recorded on an
+    // os-version element so it is not lost.
+    let min_os_xml = min_os_version
+        .map(|v| format!("    <os-version min=\"{}\"/>\n", xml_escape(v)))
+        .unwrap_or_default();
+    let package_info = format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+         <pkg-info format-version=\"2\" identifier=\"{id}\" version=\"{ver}\" \
+         install-location=\"/\" auth=\"root\">\n\
+         {min_os}\
+         {scripts}\
+         \x20   <payload installKBytes=\"{kb}\" numberOfFiles=\"{nf}\"/>\n\
+         \x20   <bundle-version/>\n\
+         </pkg-info>\n",
+        id = xml_escape(identifier),
+        ver = xml_escape(version),
+        min_os = min_os_xml,
+        scripts = scripts_attr,
+        kb = install_kbytes,
+        nf = num_files,
+    );
+    fs::write(component.join("PackageInfo"), package_info)
+        .with_context(|| "write PackageInfo".to_string())?;
+
+    // Distribution: minimal installer-gui-script referencing base.pkg.
+    let distribution = format!(
+        "<?xml version=\"1.0\" encoding=\"utf-8\"?>\n\
+         <installer-gui-script minSpecVersion=\"1\">\n\
+         \x20   <title>{title}</title>\n\
+         \x20   <choices-outline>\n\
+         \x20       <line choice=\"default\"/>\n\
+         \x20   </choices-outline>\n\
+         \x20   <choice id=\"default\" title=\"{title}\">\n\
+         \x20       <pkg-ref id=\"{id}\"/>\n\
+         \x20   </choice>\n\
+         \x20   <pkg-ref id=\"{id}\" version=\"{ver}\" onConclusion=\"none\">base.pkg</pkg-ref>\n\
+         </installer-gui-script>\n",
+        title = xml_escape(identifier),
+        id = xml_escape(identifier),
+        ver = xml_escape(version),
+    );
+    fs::write(flatdir.join("Distribution"), distribution)
+        .with_context(|| "write Distribution".to_string())?;
+
+    if let Some(parent) = pkg_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("create pkg output dir {}", parent.display()))?;
+    }
+
+    // Flatten: xar --compression none so the only compression is the inner
+    // gzip'd Payload (deterministic; xar's own gzip stream is not).
+    let pkg_abs = if pkg_path.is_absolute() {
+        pkg_path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .context("resolve cwd for pkg output path")?
+            .join(pkg_path)
+    };
+    let output = Command::new("xar")
+        .arg("--compression")
+        .arg("none")
+        .arg("-cf")
+        .arg(&pkg_abs)
+        .arg("Distribution")
+        .arg("base.pkg")
+        .current_dir(&flatdir)
+        .output()
+        .with_context(|| format!("execute xar for {}", pkg_abs.display()))?;
+    log.check_output(output, "xar")?;
+
+    if let Some(mtime) = parsed_mtime {
+        anodizer_core::util::set_file_mtime(&pkg_abs, mtime)?;
+    }
+
+    Ok(())
+}
+
+/// Recursively copy `src` directory into `dst` (creating `dst`).
+fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> Result<()> {
+    fs::create_dir_all(dst).with_context(|| format!("create dir {}", dst.display()))?;
+    for entry in fs::read_dir(src).with_context(|| format!("read dir {}", src.display()))? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            fs::copy(&from, &to)
+                .with_context(|| format!("copy {} -> {}", from.display(), to.display()))?;
+        }
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // PkgStage
 // ---------------------------------------------------------------------------
 
@@ -334,14 +664,17 @@ impl Stage for PkgStage {
                         )
                     })?;
 
-                    // Probe pkgbuild once per config entry before entering the per-binary
-                    // loop so the error surfaces early with an actionable install hint.
-                    if !dry_run && !anodizer_core::util::find_binary("pkgbuild") {
-                        anyhow::bail!(
-                            "pkgbuild not found on PATH; install Xcode Command Line Tools \
-                         with `xcode-select --install`"
-                        );
-                    }
+                    // Resolve the build path once per config entry before the
+                    // per-binary loop so the error surfaces early naming both
+                    // options. `pkgbuild` (macOS) is preferred; otherwise the
+                    // Linux flat-package toolchain assembles the identical XAR
+                    // layout by hand. Dry-run never requires a tool.
+                    let builder = if dry_run {
+                        PkgBuilder::Pkgbuild
+                    } else {
+                        resolve_pkg_builder(anodizer_core::util::find_binary)
+                            .map_err(anyhow::Error::msg)?
+                    };
 
                     // One .pkg is produced per binary — pkg installers are single-binary
                     // by design. Unlike DMG (which groups multiple binaries into one
@@ -516,28 +849,58 @@ impl Stage for PkgStage {
                             format!("create pkg output dir: {}", output_dir.display())
                         })?;
 
-                        let cmd_args = pkgbuild_command(
-                            &staging_dir.to_string_lossy(),
-                            &identifier,
-                            &version,
-                            &install_location,
-                            scripts_rendered.as_deref(),
-                            pkg_cfg.min_os_version.as_deref(),
-                            &pkg_path.to_string_lossy(),
-                        );
+                        match builder {
+                            PkgBuilder::Pkgbuild => {
+                                let cmd_args = pkgbuild_command(
+                                    &staging_dir.to_string_lossy(),
+                                    &identifier,
+                                    &version,
+                                    &install_location,
+                                    scripts_rendered.as_deref(),
+                                    pkg_cfg.min_os_version.as_deref(),
+                                    &pkg_path.to_string_lossy(),
+                                );
 
-                        log.status(&format!("running {}", cmd_args.join(" ")));
+                                log.status(&format!("running {}", cmd_args.join(" ")));
 
-                        let output = Command::new(&cmd_args[0])
-                            .args(&cmd_args[1..])
-                            .output()
-                            .with_context(|| {
-                                format!(
-                                    "execute pkgbuild for crate {} target {:?}",
+                                let output = Command::new(&cmd_args[0])
+                                    .args(&cmd_args[1..])
+                                    .output()
+                                    .with_context(|| {
+                                        format!(
+                                            "execute pkgbuild for crate {} target {:?}",
+                                            krate.name, target
+                                        )
+                                    })?;
+                                log.check_output(output, "pkgbuild")?;
+
+                                // Stamp the output mtime for native-vs-Linux
+                                // parity (the Linux path stamps its .pkg too).
+                                // The mtime is not in the archive bytes, so
+                                // checksums are unaffected.
+                                if let Some(ts) = &mod_timestamp_rendered {
+                                    let mtime = anodizer_core::util::parse_mod_timestamp(ts)?;
+                                    anodizer_core::util::set_file_mtime(&pkg_path, mtime)?;
+                                }
+                            }
+                            PkgBuilder::Linux => {
+                                log.status(&format!(
+                                    "assembling flat .pkg (Linux xar/mkbom/cpio/gzip) for crate {} target {:?}",
                                     krate.name, target
-                                )
-                            })?;
-                        log.check_output(output, "pkgbuild")?;
+                                ));
+                                build_flat_pkg_linux(
+                                    staging_dir,
+                                    &identifier,
+                                    &version,
+                                    &install_location,
+                                    scripts_rendered.as_deref(),
+                                    pkg_cfg.min_os_version.as_deref(),
+                                    mod_timestamp_rendered.as_deref(),
+                                    &pkg_path,
+                                    &log,
+                                )?;
+                            }
+                        }
 
                         new_artifacts.push(Artifact {
                             kind: ArtifactKind::MacOsPackage,
@@ -597,9 +960,10 @@ impl Stage for PkgStage {
 // Tests
 // ---------------------------------------------------------------------------
 
-/// Environment requirements for the pkg stage: `pkgbuild` when any active
-/// `pkgs:` entry exists and the configured build targets include macOS
-/// (the stage only packages darwin binaries).
+/// Environment requirements for the pkg stage: either `pkgbuild` (macOS) or the
+/// Linux flat-package toolchain, when any active `pkgs:` entry exists and the
+/// configured build targets include macOS (the stage only packages darwin
+/// binaries).
 pub fn env_requirements(
     ctx: &anodizer_core::context::Context,
 ) -> Vec<anodizer_core::EnvRequirement> {
@@ -623,8 +987,13 @@ pub fn env_requirements(
     if !configured {
         return Vec::new();
     }
-    vec![anodizer_core::EnvRequirement::Tool {
-        name: "pkgbuild".to_string(),
+    // `xar` is the sentinel for the Linux flat-package path: ToolAnyOf is
+    // any-of and cannot express "all four of xar+mkbom+cpio+gzip together", so
+    // preflight surfaces "pkgbuild OR xar"; the build-time resolution in
+    // `resolve_pkg_builder` still enforces the full four-tool group and bails
+    // with the precise message when only a partial Linux toolchain is present.
+    vec![anodizer_core::EnvRequirement::ToolAnyOf {
+        names: vec!["pkgbuild".to_string(), "xar".to_string()],
     }]
 }
 
@@ -722,6 +1091,100 @@ mod tests {
                 "/opt/myapp/bin",
                 "/tmp/output/myapp.pkg",
             ]
+        );
+    }
+
+    // -- tool resolution tests --
+
+    #[test]
+    fn test_resolve_prefers_pkgbuild() {
+        let r = resolve_pkg_builder(|t| t == "pkgbuild");
+        assert_eq!(r, Ok(PkgBuilder::Pkgbuild));
+    }
+
+    #[test]
+    fn test_resolve_linux_when_full_toolchain() {
+        let r = resolve_pkg_builder(|t| LINUX_PKG_TOOLS.contains(&t));
+        assert_eq!(r, Ok(PkgBuilder::Linux));
+    }
+
+    #[test]
+    fn test_resolve_bail_names_both_options() {
+        // Partial Linux toolchain (missing gzip) and no pkgbuild => error.
+        let err = resolve_pkg_builder(|t| t == "xar" || t == "mkbom" || t == "cpio").unwrap_err();
+        assert!(
+            err.contains("pkgbuild"),
+            "message must name pkgbuild: {err}"
+        );
+        assert!(
+            err.contains("xar"),
+            "message must name the Linux toolchain: {err}"
+        );
+        assert!(err.contains("mkbom"), "message must name mkbom: {err}");
+        assert!(err.contains("cpio"), "message must name cpio: {err}");
+        assert!(err.contains("gzip"), "message must name gzip: {err}");
+    }
+
+    // -- Linux flat-package builder --
+
+    #[test]
+    fn test_build_flat_pkg_linux_emits_xar_layout() {
+        // Hermetic: skip-with-pass if the Linux toolchain is absent. This box
+        // has all four, so the assertions below WILL execute here.
+        let have_tools = LINUX_PKG_TOOLS
+            .iter()
+            .all(|t| anodizer_core::util::find_binary(t))
+            && anodizer_core::util::find_binary("sh");
+        if !have_tools {
+            eprintln!("Linux pkg toolchain absent; test skipped hermetically");
+            return;
+        }
+
+        let staging = TempDir::new().unwrap();
+        fs::write(staging.path().join("myapp"), b"#!/bin/sh\necho hi\n").unwrap();
+
+        let scripts = TempDir::new().unwrap();
+        fs::write(scripts.path().join("postinstall"), b"#!/bin/sh\nexit 0\n").unwrap();
+
+        let out = TempDir::new().unwrap();
+        let pkg_path = out.path().join("myapp_arm64.pkg");
+
+        let log =
+            anodizer_core::log::StageLogger::new("pkg", anodizer_core::log::Verbosity::Normal);
+        build_flat_pkg_linux(
+            staging.path(),
+            "com.example.myapp",
+            "1.2.3",
+            "/usr/local/bin",
+            Some(scripts.path().to_str().unwrap()),
+            Some("11.0"),
+            Some("1704067200"),
+            &pkg_path,
+            &log,
+        )
+        .expect("flat pkg build");
+
+        assert!(pkg_path.exists(), "output .pkg must exist");
+
+        let listing = Command::new("xar")
+            .arg("-tf")
+            .arg(&pkg_path)
+            .output()
+            .expect("xar -tf");
+        assert!(listing.status.success(), "xar -tf must succeed");
+        let toc = String::from_utf8_lossy(&listing.stdout);
+        assert!(
+            toc.contains("Distribution"),
+            "TOC must list Distribution: {toc}"
+        );
+        assert!(
+            toc.contains("base.pkg/Payload"),
+            "TOC must list Payload: {toc}"
+        );
+        assert!(toc.contains("base.pkg/Bom"), "TOC must list Bom: {toc}");
+        assert!(
+            toc.contains("base.pkg/Scripts"),
+            "TOC must list Scripts when scripts dir set: {toc}"
         );
     }
 
@@ -1330,9 +1793,9 @@ crates:
 
     #[test]
     fn test_extra_files_copied_to_staging() {
-        // Run in live mode — pkgbuild won't be available, but we verify that
-        // the stage gets past binary + extra file copying and only fails at
-        // the pkgbuild command execution.
+        // Run in live mode and verify the stage gets past binary + extra file
+        // copying. The outcome depends on which build path is available:
+        // pkgbuild (macOS), the Linux flat-package toolchain, or neither.
         let tmp = TempDir::new().unwrap();
 
         // Create a fake binary
@@ -1385,22 +1848,35 @@ crates:
         });
 
         let result = PkgStage.run(&mut ctx);
-        // On macOS, pkgbuild is available so the stage may succeed.
-        // On Linux/Windows, it will fail because pkgbuild is not installed.
-        if cfg!(target_os = "macos") {
+
+        let pkgbuild = anodizer_core::util::find_binary("pkgbuild");
+        let linux_toolchain = LINUX_PKG_TOOLS
+            .iter()
+            .all(|t| anodizer_core::util::find_binary(t))
+            && anodizer_core::util::find_binary("sh");
+
+        if pkgbuild {
+            // pkgbuild may succeed or fail at exec; either is past the copy step.
             if let Err(e) = &result {
                 let err = e.to_string();
                 assert!(
                     err.contains("pkgbuild") || err.contains("execute"),
-                    "unexpected error on macOS: {err}"
+                    "unexpected pkgbuild-path error: {err}"
                 );
             }
+        } else if linux_toolchain {
+            // The Linux flat-package path assembles a real .pkg with no Apple
+            // tools, so the live run must succeed and emit the artifact.
+            result.expect("Linux flat-package build should succeed");
+            let pkgs = ctx.artifacts.by_kind(ArtifactKind::MacOsPackage);
+            assert_eq!(pkgs.len(), 1, "one .pkg artifact expected");
+            assert!(pkgs[0].path.exists(), "emitted .pkg must exist on disk");
         } else {
-            assert!(result.is_err());
+            // Neither path available => actionable bail naming both options.
             let err = result.unwrap_err().to_string();
             assert!(
-                err.contains("pkgbuild") || err.contains("execute"),
-                "expected pkgbuild execution error, got: {err}"
+                err.contains("pkgbuild") && err.contains("xar"),
+                "expected dual-option error, got: {err}"
             );
         }
     }

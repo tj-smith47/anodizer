@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  WiX v3-dialect source for anodizer's Windows .msi installer. The v3 namespace
+  (schemas.microsoft.com/wix/2006/wi) is the dialect understood by BOTH the
+  Linux-native `wixl` (msitools) builder used on CI and a real WiX v3 toolchain
+  on Windows, so one source file covers every host. anodizer renders this through
+  its template engine first: {{ ProjectName }}, {{ Version }}, {{ MsiArch }}
+  (x64/x86/arm64) and {{ BinaryPath }} (absolute path to the built .exe) are
+  substituted per published crate/target before the MSI is built.
+
+  UpgradeCode is a FIXED GUID: it must stay stable across releases so Windows
+  Installer recognises a new .msi as an upgrade of the prior install. The
+  per-build Product Id is auto-generated (Id="*"), which is the WiX idiom for a
+  product whose package GUID rotates each version while UpgradeCode anchors the
+  upgrade lineage.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="{{ ProjectName }}"
+           Language="1033"
+           Version="{{ Version }}.0"
+           Manufacturer="TJ Smith"
+           UpgradeCode="6f3a2b1c-0d4e-5a6b-7c8d-9e0f1a2b3c4d">
+
+    <Package InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perMachine"
+             Manufacturer="TJ Smith"
+             Description="{{ ProjectName }} {{ Version }} ({{ MsiArch }}) installer"
+             Comments="A Rust-native release automation tool" />
+
+    <MediaTemplate EmbedCab="yes" />
+
+    <!-- Block downgrades and de-duplicate concurrent installs of the same line. -->
+    <MajorUpgrade DowngradeErrorMessage="A newer version of {{ ProjectName }} is already installed." />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLFOLDER" Name="{{ ProjectName }}">
+          <Component Id="MainExecutable" Guid="*">
+            <File Id="anodizerExe"
+                  Name="{{ ProjectName }}.exe"
+                  Source="{{ BinaryPath }}"
+                  KeyPath="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <Feature Id="MainFeature" Title="{{ ProjectName }}" Level="1">
+      <ComponentRef Id="MainExecutable" />
+    </Feature>
+  </Product>
+</Wix>

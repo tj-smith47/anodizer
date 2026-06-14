@@ -37,6 +37,7 @@ fn make_msi_artifact(
             match wix_version {
                 WixVersion::V3 => "v3",
                 WixVersion::V4 => "v4",
+                WixVersion::Wixl => "wixl",
             }
             .to_string(),
         ),
@@ -482,6 +483,13 @@ fn execute_msi_build(
     target: Option<&str>,
     log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
+    if wix_version == WixVersion::Wixl && !rendered_extensions.is_empty() {
+        log.warn(&format!(
+            "wixl (Linux MSI path) does not support WiX `-ext` extensions; ignoring: {}",
+            rendered_extensions.join(", ")
+        ));
+    }
+
     let mut commands = msi_command(
         wix_version,
         &rendered_wxs_path.to_string_lossy(),
@@ -498,6 +506,12 @@ fn execute_msi_build(
             WixVersion::V3 => {
                 log.status(&format!(
                     "mod_timestamp={ts} noted; WiX v3 has limited \
+                     timestamp support (applied to .wxs and output .msi)"
+                ));
+            }
+            WixVersion::Wixl => {
+                log.status(&format!(
+                    "mod_timestamp={ts} noted; wixl has limited \
                      timestamp support (applied to .wxs and output .msi)"
                 ));
             }

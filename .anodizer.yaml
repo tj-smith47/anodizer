@@ -758,22 +758,66 @@ crates:
         finish_args:
           - "--share=network"
           - "--filesystem=host"
+    # macOS .app bundle — pure file assembly (no external tool), so it builds on
+    # Linux CI. Info.plist is auto-generated from bundle/name/version + min_os.
+    # UNSIGNED: a signed bundle additionally needs an Apple Developer ID
+    # Application cert (codesign); that cert is paid and stays unconfigured.
     app_bundles:
-      - skip: true  # disabled — no macOS app bundle identity configured
+      - id: anodizer
+        ids: [anodizer]
+        name: "{{ .ProjectName }}"
         bundle: io.github.tj-smith47.anodizer
-        name: anodizer
+        icon: assets/logo.png
+        min_os_version: "10.13"
+        replace: false
+        mod_timestamp: "{{ CommitTimestamp }}"
+    # macOS .dmg disk image — uses hdiutil on macOS, falls back to genisoimage on
+    # Linux CI (preinstalled in the base image). Images the universal .app so the
+    # DMG carries a drag-to-Applications layout.
     dmgs:
-      - skip: true  # disabled — no macOS DMG configured (needs app_bundle first)
-        name: anodizer
+      - id: anodizer
+        ids: [anodizer]
+        name: "{{ .ProjectName }}_{{ .Arch }}"
+        use: appbundle
+        volume_name: "{{ .ProjectName }} {{ .Version }}"
+        replace: false
+        mod_timestamp: "{{ CommitTimestamp }}"
+    # macOS .pkg installer — uses pkgbuild on macOS, falls back to the Linux flat
+    # XAR toolchain (xar + mkbom + cpio + gzip, preinstalled in the base image)
+    # on CI. UNSIGNED: a signed/notarized pkg needs an Apple Developer ID
+    # Installer cert (productsign) + notarytool credentials; both are paid.
     pkgs:
-      - skip: true  # disabled — no macOS PKG signing identity configured
+      - id: anodizer
+        ids: [anodizer]
         identifier: io.github.tj-smith47.anodizer
+        name: "{{ .ProjectName }}_{{ .Arch }}"
+        install_location: /usr/local/bin
+        min_os_version: "10.13"
+        replace: false
+        mod_timestamp: "{{ CommitTimestamp }}"
+    # Windows .msi installer — WiX is Windows-only/EULA-gated, so CI builds via the
+    # Linux-native wixl (msitools, preinstalled in the base image) which consumes
+    # the v3-dialect .wxs below. UNSIGNED: a signed MSI needs a Windows
+    # Authenticode code-signing cert (signtool); that cert is paid.
     msis:
-      - skip: true  # disabled — no WiX source file (.wxs) created
-        name: anodizer
+      - id: anodizer
+        ids: [anodizer]
+        wxs: packaging/anodizer.wxs
+        name: "{{ .ProjectName }}_{{ .Arch }}"
+        version: wixl
+        replace: false
+        mod_timestamp: "{{ CommitTimestamp }}"
+    # Windows .exe installer (NSIS) — makensis is cross-platform (apt: nsis,
+    # preinstalled in the base image), so this builds on Linux CI. Uses the
+    # authored script below (Start Menu shortcut + Add/Remove Programs entry).
+    # UNSIGNED: a signed installer needs a Windows Authenticode cert (signtool).
     nsis:
-      - skip: true  # disabled — no NSIS script created
-        name: anodizer
+      - id: anodizer
+        ids: [anodizer]
+        script: packaging/anodizer.nsi
+        name: "{{ .ProjectName }}_{{ .Arch }}-setup"
+        replace: false
+        mod_timestamp: "{{ CommitTimestamp }}"
     blobs:
       - required: true
         provider: s3
