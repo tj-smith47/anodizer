@@ -34,7 +34,10 @@ pub(crate) struct PkgbuildParams<'a> {
     pub(crate) pkgrel: u32,
     pub(crate) description: &'a str,
     pub(crate) url: &'a str,
-    pub(crate) license: &'a str,
+    /// Rendered pacman `license=()` array entries (already SPDX-id-split for
+    /// dual-licensed crates). Built by [`aur_license_array`] from the resolved
+    /// license string; empty when no license is configured.
+    pub(crate) license: &'a [String],
     pub(crate) maintainers: &'a [String],
     pub(crate) contributors: &'a [String],
     pub(crate) depends: &'a [String],
@@ -47,9 +50,17 @@ pub(crate) struct PkgbuildParams<'a> {
     pub(crate) sources: &'a [(String, String, String)],
     pub(crate) binary_name: &'a str,
     /// Custom install template for the `package()` function body.
-    /// When `None`, defaults to `install -Dm755 "$srcdir/<binary>" "$pkgdir/usr/bin/<binary>"`.
-    /// Use this when the archive places binaries in a subdirectory.
+    /// When `None`, defaults to `install -Dm755 "$srcdir/<binary>" "$pkgdir/usr/bin/<binary>"`
+    /// followed by any [`Self::extra_install_lines`].
+    /// Use this when the archive places binaries in a subdirectory. A custom
+    /// template fully replaces the body (including the extra-install lines).
     pub(crate) install_template: Option<&'a str>,
+    /// Additional `package()` install lines (LICENSE, man pages, shell
+    /// completions the archive bundles) appended after the default binary
+    /// install. Each is gated on the artifact existing inside `$srcdir` so a
+    /// crate that ships no LICENSE/man/completions emits none. Ignored when
+    /// [`Self::install_template`] overrides the whole body.
+    pub(crate) extra_install_lines: &'a [String],
     /// Filename for a `.install` file (post-install hooks). When `Some`, the
     /// PKGBUILD will include an `install=<filename>` line.
     pub(crate) install_file: Option<&'a str>,
@@ -94,7 +105,7 @@ pkgrel={{ pkgrel }}
 pkgdesc={{ quoted_description }}
 arch=({% for a in arches %}'{{ a }}'{% if not loop.last %} {% endif %}{% endfor %})
 url="{{ url }}"
-license=('{{ license }}')
+license=({% for l in license %}'{{ l }}'{% if not loop.last %} {% endif %}{% endfor %})
 {% if depends | length > 0 %}depends=({% for d in depends %}'{{ d }}'{% if not loop.last %} {% endif %}{% endfor %})
 {% else %}depends=()
 {% endif %}{% if optdepends | length > 0 %}optdepends=({% for d in optdepends %}'{{ d }}'{% if not loop.last %} {% endif %}{% endfor %})
@@ -184,10 +195,16 @@ pub(crate) fn generate_pkgbuild(params: &PkgbuildParams<'_>) -> Result<String> {
     let install_line = if let Some(tmpl) = params.install_template {
         tmpl.to_string()
     } else {
-        format!(
+        // Default body: install the binary, then any LICENSE/man/completion
+        // lines the archive bundles (each already `$srcdir`-existence-gated by
+        // the caller). Joined with the template's 4-space `package()` indent so
+        // `bash -n` and namcap see a well-formed function body.
+        let mut body = vec![format!(
             "install -Dm755 \"$srcdir/{}\" \"$pkgdir/usr/bin/{}\"",
             params.binary_name, params.binary_name
-        )
+        )];
+        body.extend(params.extra_install_lines.iter().cloned());
+        body.join("\n    ")
     };
     ctx.insert("install_line", &install_line);
 
@@ -203,8 +220,8 @@ const SRCINFO_TEMPLATE: &str = r#"pkgbase = {{ name }}
 	pkgver = {{ version }}
 	pkgrel = {{ pkgrel }}
 {% if url %}	url = {{ url }}
-{% endif %}{% if license %}	license = {{ license }}
-{% endif %}
+{% endif %}{% for l in license %}	license = {{ l }}
+{% endfor %}
 {% for d in depends %}	depends = {{ d }}
 {% endfor %}{% for o in optdepends %}	optdepends = {{ o }}
 {% endfor %}{% for c in conflicts %}	conflicts = {{ c }}
@@ -377,7 +394,8 @@ struct AurResolvedFields {
     version: String,
     pkgrel: u32,
     description: String,
-    license: String,
+    /// Rendered pacman `license=()` array entries; see [`aur_license_array`].
+    license: Vec<String>,
     url: String,
     maintainers: Vec<String>,
     contributors: Vec<String>,
@@ -484,6 +502,122 @@ fn aur_check_skip_and_resolve_git_url(
 /// rules are applied via `aur_resolve_defaults` against the rendered
 /// package name (so `aur.name = "{{ .ProjectName }}-bin"` does not
 /// leak unrendered template syntax into the array fields).
+/// Build the extra `package()` install lines (LICENSE, man pages, shell
+/// completions) the AUR -bin package should install beyond the binary, per
+/// Arch packaging guidelines and the zoxide-bin/starship-bin exemplars.
+///
+/// Each line is wrapped in a bash existence guard against `$srcdir`, because
+/// the binary tarball *may* bundle a LICENSE/man/completion (the archive stage
+/// auto-includes `LICENSE*` and installs completions/man under their default
+/// dirs), but a crate that ships none must not produce a failing `install`.
+/// The guard keeps the body `bash -n`-clean and namcap-quiet either way.
+///
+/// Arch destination conventions (mirrored from real -bin packages):
+/// - LICENSE      → `/usr/share/licenses/$pkgname/LICENSE` (REQUIRED)
+/// - man (sec. 1) → `/usr/share/man/man1/`
+/// - bash compl.  → `/usr/share/bash-completion/completions/<bin>`
+/// - zsh  compl.  → `/usr/share/zsh/site-functions/_<bin>`
+/// - fish compl.  → `/usr/share/fish/vendor_completions.d/<bin>.fish`
+fn aur_extra_install_lines(
+    crate_cfg: &anodizer_core::config::CrateConfig,
+    binary_name: &str,
+) -> Vec<String> {
+    use anodizer_core::config::{ArchivesConfig, GenMode, completion_filename};
+
+    let mut lines = Vec::new();
+
+    // LICENSE — REQUIRED for non-common licenses; the archive auto-includes
+    // `LICENSE*` at its root. Match any LICENSE* the tarball carries so the
+    // line works regardless of extension (LICENSE, LICENSE.md, LICENSE-MIT).
+    lines.push(
+        "for _l in \"$srcdir\"/LICENSE*; do [ -e \"$_l\" ] && \
+         install -Dm644 \"$_l\" \"$pkgdir/usr/share/licenses/$pkgname/$(basename \"$_l\")\"; done"
+            .to_string(),
+    );
+
+    if let ArchivesConfig::Configs(cfgs) = &crate_cfg.archives {
+        // man pages — install every file the archive's manpages dir carries.
+        let mut seen_man = std::collections::HashSet::new();
+        for cfg in cfgs {
+            let Some(man) = cfg.manpages.as_ref() else {
+                continue;
+            };
+            if matches!(man.mode(), GenMode::None) {
+                continue;
+            }
+            let dst = man.resolved_dst();
+            let dir = dst.strip_suffix('/').unwrap_or(dst);
+            if seen_man.insert(dir.to_string()) {
+                lines.push(format!(
+                    "for _m in \"$srcdir/{dir}\"/*; do [ -e \"$_m\" ] && \
+                     install -Dm644 \"$_m\" \"$pkgdir/usr/share/man/man1/$(basename \"$_m\")\"; done"
+                ));
+            }
+        }
+
+        // shell completions — bash/zsh/fish into their pacman vendor dirs.
+        for cfg in cfgs {
+            let Some(comp) = cfg.completions.as_ref() else {
+                continue;
+            };
+            if matches!(comp.mode(), GenMode::None) {
+                continue;
+            }
+            let dst = comp.resolved_dst();
+            let dir = dst.strip_suffix('/').unwrap_or(dst);
+            for (shell, dest_dir, dest_name) in [
+                (
+                    "bash",
+                    "/usr/share/bash-completion/completions",
+                    binary_name.to_string(),
+                ),
+                (
+                    "zsh",
+                    "/usr/share/zsh/site-functions",
+                    format!("_{binary_name}"),
+                ),
+                (
+                    "fish",
+                    "/usr/share/fish/vendor_completions.d",
+                    format!("{binary_name}.fish"),
+                ),
+            ] {
+                if comp
+                    .resolved_shells()
+                    .iter()
+                    .any(|s| s.eq_ignore_ascii_case(shell))
+                {
+                    let src_file = completion_filename(binary_name, shell);
+                    lines.push(format!(
+                        "[ -e \"$srcdir/{dir}/{src_file}\" ] && \
+                         install -Dm644 \"$srcdir/{dir}/{src_file}\" \"$pkgdir{dest_dir}/{dest_name}\""
+                    ));
+                }
+            }
+        }
+    }
+
+    lines
+}
+
+/// Render a license string into the pacman `license=()` array entries.
+///
+/// A dual/multi-license SPDX expression (`MIT OR Apache-2.0`,
+/// `MIT/Apache-2.0`) is split into its constituent SPDX ids
+/// (`['MIT', 'Apache-2.0']`) — the convention modern AUR packages use. A
+/// single id (or an expression the shared parser keeps literal, e.g. a `WITH`
+/// exception or a parenthesised compound) renders as a one-element array. An
+/// empty/blank license yields an empty array so the template emits
+/// `license=()` (no spurious `license=('')`, which `namcap` lints).
+fn aur_license_array(license: &str) -> Vec<String> {
+    if license.trim().is_empty() {
+        return Vec::new();
+    }
+    anodizer_core::license::parse_spdx_expression(license)
+        .ids()
+        .to_vec()
+}
+
 fn aur_resolve_fields(
     ctx: &Context,
     crate_cfg: &anodizer_core::config::CrateConfig,
@@ -521,16 +655,17 @@ fn aur_resolve_fields(
     let description = util::render_or_warn(ctx, log, "aur.description", description_raw)?;
 
     // PKGBUILD `license=()` is documented as RECOMMENDED but not required
-    // per the Arch wiki (https://wiki.archlinux.org/title/PKGBUILD#license);
-    // makepkg builds without complaint when the array contains an empty
-    // string. The Tera template emits `license=('{{ license }}')`
-    // unconditionally — empty produces `license=('')` which `namcap` lints
-    // but neither `makepkg` nor AUR uploads reject.
-    let license = aur_cfg
+    // per the Arch wiki (https://wiki.archlinux.org/title/PKGBUILD#license).
+    // A dual-licensed crate (`MIT OR Apache-2.0`) must render as a multi-id
+    // array `license=('MIT' 'Apache-2.0')`, mirroring real AUR -bin packages;
+    // a single value would understate the licensing. The SPDX expression is
+    // split via the shared parser into the modern-AUR SPDX-id convention.
+    let license_raw = aur_cfg
         .license
         .clone()
         .or_else(|| ctx.config.meta_license_for(crate_name).map(str::to_string))
         .unwrap_or_default();
+    let license = aur_license_array(&license_raw);
 
     // PKGBUILD `url=` resolves through `homepage:` → crate metadata
     // homepage → the derived github release URL.
@@ -661,42 +796,52 @@ fn aur_build_sources(
     // architecture. When multiple artifacts share the same arch (e.g.
     // multiple linux-amd64 archives), keep only the first match.
     let mut seen_arches = std::collections::HashSet::new();
-    let sources: Vec<(String, String, String)> = linux_artifacts
-        .iter()
-        .filter_map(|a| {
-            let pkgbuild_arch = match a.arch.as_str() {
-                "arm64" | "aarch64" => "aarch64".to_string(),
-                "386" | "i686" | "i386" | "x86" => "i686".to_string(),
-                "armv7" | "arm" | "armhf" | "armv6" => "armv7h".to_string(),
-                _ => "x86_64".to_string(),
-            };
-            if seen_arches.insert(pkgbuild_arch.clone()) {
-                let download_url = if let Some(tmpl) = url_template {
-                    // Extract the archive filename from the artifact URL (or
-                    // path fallback) so {{ .ArtifactName }} resolves to the
-                    // actual archive filename, not the crate name (which has
-                    // no extension and would leave ArtifactName unset).
-                    let artifact_filename = std::path::Path::new(&a.url)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned());
-                    util::render_url_template_with_ctx_and_artifact(
-                        ctx,
-                        tmpl,
-                        crate_name,
-                        artifact_filename.as_deref(),
-                        version,
-                        &pkgbuild_arch,
-                        "linux",
-                    )
-                } else {
-                    a.url.clone()
-                };
-                Some((pkgbuild_arch, download_url, a.sha256.clone()))
+    let mut sources: Vec<(String, String, String)> = Vec::new();
+    for a in &linux_artifacts {
+        // Map the artifact GOARCH to its pacman name. An unknown architecture
+        // must HARD-FAIL: silently relabeling it (the historical
+        // `_ => "x86_64"` fallthrough) would map a non-x86 tarball under
+        // `source_x86_64=`/`sha256sums_x86_64=`, so a user on that arch
+        // downloads the right PKGBUILD but installs a binary that cannot run.
+        let pkgbuild_arch = crate::aur_arch::goarch_to_pacman_arch(&a.arch).map_err(|e| {
+            anyhow::anyhow!(
+                "aur: {} for crate '{}' (artifact url '{}', os={}). The AUR -bin \
+                 PKGBUILD cannot name this architecture for pacman; emitting it \
+                 would mislabel the tarball under the wrong `arch=()` entry and \
+                 ship a binary that will not run on the target host. Restrict \
+                 the AUR archive set (e.g. `publish.aur.ids`) to architectures \
+                 Arch Linux supports (x86_64, aarch64, armv7h, i686), or extend \
+                 the arch mapping.",
+                e,
+                crate_name,
+                a.url,
+                a.os,
+            )
+        })?;
+        if seen_arches.insert(pkgbuild_arch.to_string()) {
+            let download_url = if let Some(tmpl) = url_template {
+                // Extract the archive filename from the artifact URL (or
+                // path fallback) so {{ .ArtifactName }} resolves to the
+                // actual archive filename, not the crate name (which has
+                // no extension and would leave ArtifactName unset).
+                let artifact_filename = std::path::Path::new(&a.url)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned());
+                util::render_url_template_with_ctx_and_artifact(
+                    ctx,
+                    tmpl,
+                    crate_name,
+                    artifact_filename.as_deref(),
+                    version,
+                    pkgbuild_arch,
+                    "linux",
+                )
             } else {
-                None
-            }
-        })
-        .collect();
+                a.url.clone()
+            };
+            sources.push((pkgbuild_arch.to_string(), download_url, a.sha256.clone()));
+        }
+    }
 
     Ok(sources)
 }
@@ -932,6 +1077,11 @@ fn render_aur_inner(
         None
     };
 
+    // LICENSE/man/completion install lines appended to the default `package()`
+    // body (ignored when `aur.package` overrides the whole body). The AUR -bin
+    // binary name is the crate name.
+    let extra_install_lines = aur_extra_install_lines(crate_cfg, crate_name);
+
     let pkgbuild_params = PkgbuildParams {
         name: &fields.package_name,
         version: &fields.version,
@@ -950,6 +1100,7 @@ fn render_aur_inner(
         sources: &sources,
         binary_name: crate_name,
         install_template: aur_cfg.package.as_deref(),
+        extra_install_lines: &extra_install_lines,
         install_file: install_file_ref,
     };
     let pkgbuild = generate_pkgbuild(&pkgbuild_params)?;
@@ -2020,7 +2171,7 @@ mod tests {
             pkgrel: 1,
             description: "A great tool",
             url: "https://github.com/org/mytool",
-            license: "MIT",
+            license: &["MIT".to_string()],
             maintainers: &["Jane Doe <jane@example.com>".to_string()],
             contributors: &[],
             depends: &[],
@@ -2036,6 +2187,7 @@ mod tests {
             )],
             binary_name: "mytool",
             install_template: None,
+            extra_install_lines: &[],
             install_file: None,
         })
         .unwrap();
@@ -2065,7 +2217,7 @@ mod tests {
             pkgrel: 1,
             description: "Multi-arch tool",
             url: "https://github.com/org/mytool",
-            license: "Apache-2.0",
+            license: &["Apache-2.0".to_string()],
             maintainers: &[],
             contributors: &[],
             depends: &[],
@@ -2088,6 +2240,7 @@ mod tests {
             ],
             binary_name: "mytool",
             install_template: None,
+            extra_install_lines: &[],
             install_file: None,
         })
         .unwrap();
@@ -2107,7 +2260,7 @@ mod tests {
             pkgrel: 1,
             description: "A tool",
             url: "https://example.com",
-            license: "MIT",
+            license: &["MIT".to_string()],
             maintainers: &[],
             contributors: &[],
             depends: &["glibc".to_string(), "openssl".to_string()],
@@ -2123,6 +2276,7 @@ mod tests {
             )],
             binary_name: "mytool",
             install_template: None,
+            extra_install_lines: &[],
             install_file: None,
         })
         .unwrap();
@@ -2143,7 +2297,7 @@ mod tests {
             pkgrel: 1,
             description: "A tool",
             url: "https://example.com",
-            license: "MIT",
+            license: &["MIT".to_string()],
             maintainers: &[],
             contributors: &[],
             depends: &[],
@@ -2159,6 +2313,7 @@ mod tests {
             )],
             binary_name: "tool",
             install_template: None,
+            extra_install_lines: &[],
             install_file: None,
         })
         .unwrap();
@@ -2175,7 +2330,7 @@ mod tests {
             pkgrel: 1,
             description: "Release automation for Rust projects",
             url: "https://github.com/tj-smith47/anodizer",
-            license: "Apache-2.0",
+            license: &["Apache-2.0".to_string()],
             maintainers: &["TJ Smith <tj@example.com>".to_string()],
             contributors: &[],
             depends: &[],
@@ -2198,6 +2353,7 @@ mod tests {
             ],
             binary_name: "anodizer",
             install_template: None,
+            extra_install_lines: &[],
             install_file: None,
         }).unwrap();
 
@@ -2225,7 +2381,7 @@ mod tests {
             pkgrel: 1,
             description: "A tool with subdirectory archive",
             url: "https://example.com",
-            license: "MIT",
+            license: &["MIT".to_string()],
             maintainers: &[],
             contributors: &[],
             depends: &[],
@@ -2243,6 +2399,7 @@ mod tests {
             install_template: Some(
                 r#"install -Dm755 "$srcdir/mytool-${pkgver}/mytool" "$pkgdir/usr/bin/mytool""#,
             ),
+            extra_install_lines: &[],
             install_file: None,
         })
         .unwrap();
@@ -2294,7 +2451,7 @@ mod tests {
             pkgrel: 3,
             description: "A fantastic CLI tool",
             url: "https://github.com/org/mytool",
-            license: "Apache-2.0",
+            license: &["Apache-2.0".to_string()],
             maintainers: &["Alice <alice@example.com>".to_string()],
             contributors: &[],
             depends: &["glibc".to_string(), "openssl".to_string()],
@@ -2320,6 +2477,7 @@ mod tests {
             ],
             binary_name: "mytool",
             install_template: None,
+            extra_install_lines: &[],
             install_file: None,
         }).unwrap();
 
@@ -2420,7 +2578,7 @@ mod tests {
             pkgrel: 1,
             description: "Simple tool",
             url: "https://example.com",
-            license: "MIT",
+            license: &["MIT".to_string()],
             maintainers: &[],
             contributors: &[],
             depends: &[],
@@ -2436,6 +2594,7 @@ mod tests {
             )],
             binary_name: "simple",
             install_template: None,
+            extra_install_lines: &[],
             install_file: None,
         })
         .unwrap();
@@ -2935,7 +3094,7 @@ mod tests {
             pkgrel: 1,
             description: "A tool",
             url: "https://example.com",
-            license: "MIT",
+            license: &["MIT".to_string()],
             maintainers: &[],
             contributors: &[],
             depends: &[],
@@ -2952,6 +3111,7 @@ mod tests {
             )],
             binary_name: "mytool",
             install_template: None,
+            extra_install_lines: &[],
             install_file: None,
         })
         .unwrap();
@@ -2978,7 +3138,7 @@ mod tests {
             pkgrel: 1,
             description: "A tool",
             url: "https://example.com",
-            license: "MIT",
+            license: &["MIT".to_string()],
             maintainers: &[],
             contributors: &[],
             depends: &[],
@@ -2994,6 +3154,7 @@ mod tests {
             )],
             binary_name: "mytool",
             install_template: None,
+            extra_install_lines: &[],
             install_file: None,
         })
         .unwrap();
@@ -3073,6 +3234,319 @@ mod tests {
             "abc123",
         ));
         ctx
+    }
+
+    /// Build a linux archive for `crate_name` carrying an explicit target
+    /// triple (so `aur_build_sources` infers the goarch from it) plus a
+    /// non-empty sha256.
+    fn linux_archive_for_target(crate_name: &str, target: &str, url: &str, sha: &str) -> Artifact {
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("url".to_string(), url.to_string());
+        metadata.insert("sha256".to_string(), sha.to_string());
+        Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("/tmp/{crate_name}.tar.gz")),
+            name: format!("{crate_name}.tar.gz"),
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata,
+            size: None,
+        }
+    }
+
+    /// Single-crate: an aarch64 archive must map to the pacman `aarch64`
+    /// architecture — NOT silently relabeled `x86_64` (the historical
+    /// `_ => "x86_64"` fallthrough). This is the regression guard for the
+    /// arch-corruption bug.
+    #[test]
+    fn aarch64_archive_maps_to_aarch64_not_x86_64() {
+        let aur = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                aur: Some(aur),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.artifacts.add(linux_archive_for_target(
+            "mytool",
+            "aarch64-unknown-linux-gnu",
+            "https://example.com/mytool-linux-arm64.tar.gz",
+            "deadbeef",
+        ));
+        let rendered =
+            render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "mytool", &render_quiet_log())
+                .expect("render ok")
+                .expect("not skipped");
+        assert!(
+            rendered.pkgbuild.contains("arch=('aarch64')"),
+            "aarch64 archive must land under arch=('aarch64'):\n{}",
+            rendered.pkgbuild
+        );
+        assert!(
+            rendered.pkgbuild.contains("source_aarch64="),
+            "aarch64 archive must emit source_aarch64=:\n{}",
+            rendered.pkgbuild
+        );
+        assert!(
+            !rendered.pkgbuild.contains("source_x86_64="),
+            "aarch64 archive must NOT be relabeled under x86_64:\n{}",
+            rendered.pkgbuild
+        );
+    }
+
+    /// An artifact whose architecture has no pacman name (e.g. riscv64) must
+    /// HARD-FAIL rather than be silently relabeled `x86_64`. The error must
+    /// name the offending architecture and be actionable.
+    #[test]
+    fn unknown_arch_hard_fails_not_relabeled() {
+        let aur = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                aur: Some(aur),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.artifacts.add(linux_archive_for_target(
+            "mytool",
+            "riscv64gc-unknown-linux-gnu",
+            "https://example.com/mytool-linux-riscv64.tar.gz",
+            "deadbeef",
+        ));
+        let err = render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "mytool", &render_quiet_log())
+            .expect_err("unknown arch must hard-fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("riscv64"),
+            "error must name the offending arch:\n{msg}"
+        );
+        assert!(
+            msg.contains("pacman") || msg.contains("Arch Linux"),
+            "error must explain the pacman arch-naming failure:\n{msg}"
+        );
+    }
+
+    /// Dual-licensed crate (`MIT OR Apache-2.0`) renders the pacman
+    /// `license=()` array with both SPDX ids — matching the zoxide-bin /
+    /// starship-bin convention — not a single understated id.
+    #[test]
+    fn dual_license_renders_license_array() {
+        let aur = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT OR Apache-2.0".to_string()),
+            ..Default::default()
+        };
+        let ctx = render_ctx("mytool", aur, false);
+        let rendered =
+            render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "mytool", &render_quiet_log())
+                .expect("render ok")
+                .expect("not skipped");
+        assert!(
+            rendered.pkgbuild.contains("license=('MIT' 'Apache-2.0')"),
+            "dual license must render both SPDX ids:\n{}",
+            rendered.pkgbuild
+        );
+        assert!(
+            rendered.srcinfo.contains("\tlicense = MIT")
+                && rendered.srcinfo.contains("\tlicense = Apache-2.0"),
+            ".SRCINFO must emit one license line per id:\n{}",
+            rendered.srcinfo
+        );
+    }
+
+    /// The default `package()` body installs the LICENSE (REQUIRED), plus man
+    /// pages and shell completions the archive bundles, gated on existence.
+    #[test]
+    fn package_installs_license_man_and_completions() {
+        use anodizer_core::config::{
+            ArchiveConfig, ArchivesConfig, CompletionsConfig, ManpagesConfig,
+        };
+        let aur = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            homepage: Some("https://example.com".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                completions: Some(CompletionsConfig {
+                    generate: Some("{{ ArtifactPath }} completions {{ Shell }}".to_string()),
+                    shells: Some(vec![
+                        "bash".to_string(),
+                        "zsh".to_string(),
+                        "fish".to_string(),
+                    ]),
+                    ..Default::default()
+                }),
+                manpages: Some(ManpagesConfig {
+                    generate: Some("{{ ArtifactPath }} man".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }]),
+            publish: Some(PublishConfig {
+                aur: Some(aur),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.artifacts.add(linux_amd64_archive(
+            "mytool",
+            "https://example.com/mytool-linux-amd64.tar.gz",
+            "abc123",
+        ));
+        let rendered =
+            render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "mytool", &render_quiet_log())
+                .expect("render ok")
+                .expect("not skipped");
+        let pkgbuild = &rendered.pkgbuild;
+        assert!(
+            pkgbuild.contains("usr/share/licenses/$pkgname/"),
+            "package() must install LICENSE to /usr/share/licenses/$pkgname/:\n{pkgbuild}"
+        );
+        assert!(
+            pkgbuild.contains("usr/share/man/man1/"),
+            "package() must install man pages to /usr/share/man/man1/:\n{pkgbuild}"
+        );
+        assert!(
+            pkgbuild.contains("usr/share/bash-completion/completions/mytool"),
+            "package() must install bash completion:\n{pkgbuild}"
+        );
+        assert!(
+            pkgbuild.contains("usr/share/zsh/site-functions/_mytool"),
+            "package() must install zsh completion:\n{pkgbuild}"
+        );
+        assert!(
+            pkgbuild.contains("usr/share/fish/vendor_completions.d/mytool.fish"),
+            "package() must install fish completion:\n{pkgbuild}"
+        );
+        // Binary install is still present.
+        assert!(
+            pkgbuild.contains("install -Dm755 \"$srcdir/mytool\" \"$pkgdir/usr/bin/mytool\""),
+            "binary install must remain:\n{pkgbuild}"
+        );
+    }
+
+    /// Workspace per-crate: each crate resolves its OWN license/arch with no
+    /// cross-crate leakage. crate A is dual-licensed amd64-only; crate B is
+    /// single-license aarch64-only.
+    #[test]
+    fn workspace_per_crate_no_license_or_arch_leakage() {
+        let aur_a = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/aa-bin.git".to_string()),
+            homepage: Some("https://example.com/aa".to_string()),
+            license: Some("MIT OR Apache-2.0".to_string()),
+            ..Default::default()
+        };
+        let aur_b = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/bb-bin.git".to_string()),
+            homepage: Some("https://example.com/bb".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.crates = vec![
+            CrateConfig {
+                name: "aa".to_string(),
+                path: "aa".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig {
+                    aur: Some(aur_a),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            CrateConfig {
+                name: "bb".to_string(),
+                path: "bb".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig {
+                    aur: Some(aur_b),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.artifacts.add(linux_archive_for_target(
+            "aa",
+            "x86_64-unknown-linux-gnu",
+            "https://example.com/aa-linux-amd64.tar.gz",
+            "aaaa",
+        ));
+        ctx.artifacts.add(linux_archive_for_target(
+            "bb",
+            "aarch64-unknown-linux-gnu",
+            "https://example.com/bb-linux-arm64.tar.gz",
+            "bbbb",
+        ));
+
+        let ra = render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "aa", &render_quiet_log())
+            .expect("render aa")
+            .expect("aa not skipped");
+        let rb = render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "bb", &render_quiet_log())
+            .expect("render bb")
+            .expect("bb not skipped");
+
+        // aa: dual license, x86_64 only.
+        assert!(
+            ra.pkgbuild.contains("license=('MIT' 'Apache-2.0')"),
+            "aa must carry its own dual license:\n{}",
+            ra.pkgbuild
+        );
+        assert!(
+            ra.pkgbuild.contains("arch=('x86_64')"),
+            "aa must be x86_64 only:\n{}",
+            ra.pkgbuild
+        );
+        assert!(
+            !ra.pkgbuild.contains("aarch64"),
+            "aa must not leak bb's aarch64:\n{}",
+            ra.pkgbuild
+        );
+        // bb: single license, aarch64 only.
+        assert!(
+            rb.pkgbuild.contains("license=('MIT')"),
+            "bb must carry its own single license:\n{}",
+            rb.pkgbuild
+        );
+        assert!(
+            rb.pkgbuild.contains("arch=('aarch64')"),
+            "bb must be aarch64 only:\n{}",
+            rb.pkgbuild
+        );
+        assert!(
+            !rb.pkgbuild.contains("Apache-2.0"),
+            "bb must not leak aa's Apache-2.0:\n{}",
+            rb.pkgbuild
+        );
     }
 
     /// With no `homepage`/`metadata.homepage` but a `release.github`

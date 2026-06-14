@@ -24,6 +24,82 @@ pub(crate) struct AurSourceRender {
     pub(crate) scoped_vars: anodizer_core::template::TemplateVars,
 }
 
+/// Derive the pacman `arch=()` list for a source-AUR package from the linux
+/// build targets it supports, rather than a hardcoded constant.
+///
+/// `crate_name` selects per-crate `builds[].targets` when it names a configured
+/// crate carrying explicit builds (per-crate config mode); otherwise the
+/// workspace-wide configured targets are used (top-level `aur_sources:` and
+/// crates that inherit `defaults.targets`). Only linux targets are kept (a
+/// source build's `arch=()` advertises the host architectures pacman builds
+/// for — darwin/windows triples are not pacman arches), each mapped to its
+/// pacman name via [`crate::aur_arch::triple_to_pacman_arch`]. A linux target
+/// whose architecture has no pacman name hard-fails rather than being dropped
+/// or mislabeled.
+///
+/// Falls back to `["x86_64"]` only when no linux target is configured at all
+/// (a source package must advertise at least one architecture); a degenerate
+/// config that builds for no linux target would otherwise emit `arch=()`.
+fn aur_source_arches(ctx: &Context, crate_name: &str) -> Result<Vec<String>> {
+    let default_targets: Vec<String> = ctx
+        .config
+        .defaults
+        .as_ref()
+        .and_then(|d| d.targets.clone())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| {
+            anodizer_core::target::DEFAULT_TARGETS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect()
+        });
+
+    // Per-crate builds take precedence so per-crate config mode resolves its
+    // own target set (no cross-crate leakage); otherwise inherit the defaults.
+    let crate_cfg = ctx.config.crates.iter().find(|c| c.name == crate_name);
+    let triples: Vec<String> = match crate_cfg.and_then(|c| c.builds.as_deref()) {
+        Some(builds) if !builds.is_empty() => {
+            let mut seen = std::collections::BTreeSet::new();
+            for b in builds {
+                let ts = b.targets.as_deref().unwrap_or(&default_targets);
+                for t in ts {
+                    seen.insert(t.clone());
+                }
+            }
+            seen.into_iter().collect()
+        }
+        _ => default_targets.clone(),
+    };
+
+    let mut arches: Vec<String> = Vec::new();
+    for triple in &triples {
+        if !anodizer_core::target::is_linux(triple) {
+            continue;
+        }
+        let arch = crate::aur_arch::triple_to_pacman_arch(triple).map_err(|e| {
+            anyhow::anyhow!(
+                "aur_source: {} (target '{}'). The source PKGBUILD `arch=()` \
+                 cannot name this architecture for pacman; emitting it would \
+                 advertise an architecture Arch Linux does not build for. \
+                 Restrict the build targets to Arch-supported architectures \
+                 (x86_64, aarch64, armv7h, i686) or extend the arch mapping.",
+                e,
+                triple,
+            )
+        })?;
+        if !arches.iter().any(|a| a == arch) {
+            arches.push(arch.to_string());
+        }
+    }
+
+    if arches.is_empty() {
+        // No linux target configured — a source package must advertise at
+        // least one arch. Default to x86_64 (the universal Arch baseline).
+        arches.push("x86_64".to_string());
+    }
+    Ok(arches)
+}
+
 /// Skip-unaware render of a single source-AUR entry's `PKGBUILD` + `.SRCINFO`.
 ///
 /// Resolves every field default, derives the source tarball URL (honoring
@@ -58,7 +134,18 @@ fn render_aur_source_inner(
 
     let description = cfg.description.as_deref().unwrap_or(default_name);
     let homepage = cfg.homepage.as_deref().unwrap_or("");
-    let license = cfg.license.as_deref().unwrap_or("MIT");
+    // Render the license into the pacman `license=()` array via the shared SPDX
+    // parser so a dual-licensed crate (`MIT OR Apache-2.0`) emits
+    // `license=('MIT' 'Apache-2.0')` rather than understating to one id.
+    let license: Vec<String> =
+        anodizer_core::license::parse_spdx_expression(cfg.license.as_deref().unwrap_or("MIT"))
+            .ids()
+            .to_vec();
+
+    // Derive the pacman `arch=()` set from the linux build targets this source
+    // package supports (per-crate when `default_name` names a configured crate
+    // with explicit builds; workspace-wide otherwise).
+    let arches = aur_source_arches(ctx, default_name)?;
 
     let pkgrel: u32 = cfg.rel.as_deref().and_then(|r| r.parse().ok()).unwrap_or(1);
 
@@ -149,7 +236,8 @@ fn render_aur_source_inner(
         pkgrel,
         description,
         homepage,
-        license,
+        license: &license,
+        arches: &arches,
     };
     let deps = AurDeps {
         depends: &depends,
@@ -552,7 +640,12 @@ struct AurMeta<'a> {
     pkgrel: u32,
     description: &'a str,
     homepage: &'a str,
-    license: &'a str,
+    /// Rendered pacman `license=()` entries (SPDX-id-split for dual-licensed
+    /// crates). Empty when no license configured.
+    license: &'a [String],
+    /// Pacman `arch=()` entries derived from the linux build targets the
+    /// source package supports (not a hardcoded constant).
+    arches: &'a [String],
 }
 
 /// Dependency lists — the five `depends`/`makedepends`/`optdepends`/
@@ -630,6 +723,7 @@ fn generate_source_srcinfo(meta: &AurMeta<'_>, deps: &AurDeps<'_>, source_url: &
         description,
         homepage,
         license,
+        arches,
     } = *meta;
     let AurDeps {
         depends,
@@ -647,9 +741,12 @@ fn generate_source_srcinfo(meta: &AurMeta<'_>, deps: &AurDeps<'_>, source_url: &
     if !homepage.is_empty() {
         lines.push(format!("\turl = {}", homepage));
     }
-    lines.push("\tarch = x86_64".to_string());
-    lines.push("\tarch = aarch64".to_string());
-    lines.push(format!("\tlicense = {}", license));
+    for a in arches {
+        lines.push(format!("\tarch = {}", a));
+    }
+    for l in license {
+        lines.push(format!("\tlicense = {}", l));
+    }
     for d in makedepends {
         lines.push(format!("\tmakedepends = {}", d));
     }
@@ -686,6 +783,7 @@ fn generate_source_pkgbuild(
         description,
         homepage,
         license,
+        arches,
     } = *meta;
     let AurDeps {
         depends,
@@ -726,11 +824,13 @@ fn generate_source_pkgbuild(
     lines.push(format!("pkgver='{}'", version));
     lines.push(format!("pkgrel={}", pkgrel));
     lines.push(format!("pkgdesc=\"{}\"", description));
-    lines.push("arch=('x86_64' 'aarch64')".to_string());
+    let arch_entries: Vec<String> = arches.iter().map(|a| format!("'{}'", a)).collect();
+    lines.push(format!("arch=({})", arch_entries.join(" ")));
     if !homepage.is_empty() {
         lines.push(format!("url='{}'", homepage));
     }
-    lines.push(format!("license=('{}')", license));
+    let license_entries: Vec<String> = license.iter().map(|l| format!("'{}'", l)).collect();
+    lines.push(format!("license=({})", license_entries.join(" ")));
 
     if !depends.is_empty() {
         let d: Vec<String> = depends.iter().map(|s| format!("'{}'", s)).collect();
@@ -801,6 +901,14 @@ fn generate_source_pkgbuild(
             "  install -Dm755 \"target/release/{}\" \"$pkgdir/usr/bin/{}\"",
             binary_name, binary_name
         ));
+        // LICENSE — REQUIRED for non-common licenses; install any LICENSE* the
+        // upstream source tree carries. Existence-gated so a tree without one
+        // does not fail the build.
+        lines.push(
+            "  for _l in LICENSE*; do [ -e \"$_l\" ] && \
+             install -Dm644 \"$_l\" \"$pkgdir/usr/share/licenses/$pkgname/$_l\"; done"
+                .to_string(),
+        );
     }
     lines.push("}".to_string());
 
@@ -1354,7 +1462,8 @@ mod tests {
             pkgrel: 1,
             description: "A test application",
             homepage: "https://example.com",
-            license: "MIT",
+            license: &["MIT".to_string()],
+            arches: &["x86_64".to_string(), "aarch64".to_string()],
         };
         let deps = AurDeps {
             depends: &depends,
@@ -1403,7 +1512,8 @@ mod tests {
             pkgrel: 1,
             description: "Test",
             homepage: "",
-            license: "MIT",
+            license: &["MIT".to_string()],
+            arches: &["x86_64".to_string(), "aarch64".to_string()],
         };
         let deps = AurDeps {
             depends: &[],
@@ -1443,7 +1553,8 @@ mod tests {
             pkgrel: 1,
             description: "Test",
             homepage: "",
-            license: "MIT",
+            license: &["MIT".to_string()],
+            arches: &["x86_64".to_string(), "aarch64".to_string()],
         };
         let deps = AurDeps {
             depends: &[],
@@ -1540,7 +1651,8 @@ mod tests {
             pkgrel: 1,
             description: "A test application",
             homepage: "https://example.com",
-            license: "MIT",
+            license: &["MIT".to_string()],
+            arches: &["x86_64".to_string(), "aarch64".to_string()],
         };
         let deps = AurDeps {
             depends: &depends,
@@ -1735,7 +1847,8 @@ crates:
             pkgrel: 2,
             description: "No homepage tool",
             homepage: "",
-            license: "Apache-2.0",
+            license: &["Apache-2.0".to_string()],
+            arches: &["x86_64".to_string(), "aarch64".to_string()],
         };
         let optdepends = vec!["bash-completion: shell completions".to_string()];
         let deps = AurDeps {

@@ -6,6 +6,7 @@ pub(crate) mod publisher_helpers;
 
 pub mod artifactory;
 pub mod aur;
+pub(crate) mod aur_arch;
 pub mod aur_source;
 pub mod cargo;
 pub mod chocolatey;

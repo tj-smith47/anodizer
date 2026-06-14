@@ -364,8 +364,8 @@ mod tests {
 
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use anodizer_core::config::{
-        Amd64Variant, AurConfig, AurSourceConfig, CrateConfig, PublishConfig, ReleaseConfig,
-        ScmRepoConfig, StringOrBool,
+        Amd64Variant, AurConfig, AurSourceConfig, BuildConfig, CrateConfig, PublishConfig,
+        ReleaseConfig, ScmRepoConfig, StringOrBool,
     };
     use anodizer_core::context::Context;
     use anodizer_core::test_helpers::TestContextBuilder;
@@ -632,6 +632,73 @@ mod tests {
                 .any(|l| l.trim_start().starts_with("pkgbase = widget")),
             "source SRCINFO stamps pkgbase, got: {}",
             rendered.srcinfo
+        );
+    }
+
+    /// Source AUR: the `arch=()` array is DERIVED from the crate's configured
+    /// linux build targets (aarch64-only here), not the old hardcoded
+    /// `('x86_64' 'aarch64')`. The dual license also renders as a multi-id
+    /// array. Per-crate resolution: no cross-crate leakage.
+    #[test]
+    fn source_arch_derived_from_build_targets_and_dual_license() {
+        let mut cfg = AurSourceConfig {
+            license: Some("MIT OR Apache-2.0".to_string()),
+            ..Default::default()
+        };
+        // Strip a `directory` / url_template that would require extra vars.
+        cfg.git_url = Some("ssh://aur@aur.archlinux.org/widget.git".to_string());
+
+        let mut krate = aur_source_crate("widget", "v{{ .Version }}", cfg);
+        // aarch64-only linux build → arch=() must be exactly ('aarch64').
+        krate.builds = Some(vec![BuildConfig {
+            targets: Some(vec!["aarch64-unknown-linux-gnu".to_string()]),
+            ..Default::default()
+        }]);
+
+        let mut ctx = TestContextBuilder::new().crates(vec![krate]).build();
+        scope_version(&mut ctx, "1.0.0");
+
+        let rendered = render_aur_source_pkgbuild_and_srcinfo_for_crate(
+            &ctx,
+            "widget",
+            &ctx.logger("publish"),
+        )
+        .expect("render ok")
+        .expect("not skipped");
+        let pkgbuild = &rendered.pkgbuild;
+        assert!(
+            pkgbuild
+                .lines()
+                .any(|l| l.trim_start() == "arch=('aarch64')"),
+            "source arch must derive aarch64-only from build targets, got:\n{pkgbuild}"
+        );
+        assert!(
+            !pkgbuild.contains("'x86_64'"),
+            "source arch must not include the old hardcoded x86_64, got:\n{pkgbuild}"
+        );
+        assert!(
+            pkgbuild
+                .lines()
+                .any(|l| l.trim_start() == "license=('MIT' 'Apache-2.0')"),
+            "source dual license must render both ids, got:\n{pkgbuild}"
+        );
+        // .SRCINFO mirrors the derived arch + multi-id license.
+        assert!(
+            rendered.srcinfo.contains("\tarch = aarch64")
+                && !rendered.srcinfo.contains("\tarch = x86_64"),
+            "SRCINFO arch must match the derived set, got:\n{}",
+            rendered.srcinfo
+        );
+        assert!(
+            rendered.srcinfo.contains("\tlicense = MIT")
+                && rendered.srcinfo.contains("\tlicense = Apache-2.0"),
+            "SRCINFO must emit one license line per id, got:\n{}",
+            rendered.srcinfo
+        );
+        // Default package() installs LICENSE.
+        assert!(
+            pkgbuild.contains("usr/share/licenses/$pkgname/"),
+            "source package() must install LICENSE, got:\n{pkgbuild}"
         );
     }
 
