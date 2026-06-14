@@ -9,7 +9,7 @@ use super::{Config, ERR_DEFAULTS_AXIS_MISMATCH, IncludeFilePath, IncludeSpec, In
 use super::{
     validate_changelog_groups_depth, validate_changelog_paths, validate_defaults_axis,
     validate_format_overrides, validate_homebrew_cask_url_template, validate_on_failure_root_only,
-    validate_tag_sort, validate_version,
+    validate_tag_sort, validate_version, validate_winget_upgrade_behavior,
 };
 
 // Items re-exported from config submodules (all reachable as super::ItemName
@@ -4698,6 +4698,126 @@ workspaces:
     assert!(
         err.contains("workspaces[ws1].crates[myapp].publish.homebrew_cask"),
         "error should identify the workspace axis location: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// validate_winget_upgrade_behavior tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_winget_upgrade_behavior_rejects_unknown_value() {
+    // A value outside winget's UpgradeBehavior enum must be rejected at
+    // config-validate time (not silently emitted into a manifest the winget
+    // validator later rejects at PR time).
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      winget:
+        publisher: AcmeCo
+        upgrade_behavior: reinstall
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_winget_upgrade_behavior(&config).unwrap_err();
+    assert!(
+        err.contains("crates[myapp].publish.winget") && err.contains("reinstall"),
+        "error should identify the location + bad value: {err}"
+    );
+    assert!(
+        err.contains("install") && err.contains("uninstallPrevious") && err.contains("deny"),
+        "error should list the allowed values: {err}"
+    );
+}
+
+#[test]
+fn test_validate_winget_upgrade_behavior_accepts_each_valid_value() {
+    for value in ["install", "uninstallPrevious", "deny"] {
+        let yaml = format!(
+            r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{{{ .Version }}}}"
+    publish:
+      winget:
+        publisher: AcmeCo
+        upgrade_behavior: {value}
+"#
+        );
+        let config: Config = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert!(
+            validate_winget_upgrade_behavior(&config).is_ok(),
+            "`{value}` is a valid winget upgrade_behavior and must pass"
+        );
+    }
+}
+
+#[test]
+fn test_validate_winget_upgrade_behavior_unset_is_ok() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      winget:
+        publisher: AcmeCo
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(validate_winget_upgrade_behavior(&config).is_ok());
+}
+
+#[test]
+fn test_validate_winget_upgrade_behavior_defaults_axis() {
+    // defaults.publish.winget axis must be covered — config-mode parity.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+defaults:
+  publish:
+    winget:
+      publisher: AcmeCo
+      upgrade_behavior: bogus
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_winget_upgrade_behavior(&config).unwrap_err();
+    assert!(
+        err.contains("defaults.publish.winget") && err.contains("bogus"),
+        "error should identify the defaults axis + bad value: {err}"
+    );
+}
+
+#[test]
+fn test_validate_winget_upgrade_behavior_workspace_axis() {
+    // workspaces[].crates[].publish.winget axis — workspace per-crate parity.
+    let yaml = r#"
+project_name: test
+crates: []
+workspaces:
+  - name: ws1
+    crates:
+      - name: myapp
+        path: "."
+        tag_template: "v{{ .Version }}"
+        publish:
+          winget:
+            publisher: AcmeCo
+            upgrade_behavior: nope
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_winget_upgrade_behavior(&config).unwrap_err();
+    assert!(
+        err.contains("workspaces[ws1].crates[myapp].publish.winget") && err.contains("nope"),
+        "error should identify the workspace axis + bad value: {err}"
     );
 }
 

@@ -47,8 +47,12 @@ pub(crate) struct ManifestOptions<'a> {
 ///   the asset via a regex over `<sha>␠<basename>`.
 #[derive(Clone)]
 pub(crate) enum AutoupdateHash {
-    /// Per-asset sidecar: `hash: { "url": "$url.sha256" }`.
-    UrlSidecar,
+    /// Per-asset sidecar: `hash: { "url": "$url.<suffix>" }`. `suffix` is the
+    /// checksum-stage sidecar extension — the effective `checksum.algorithm`
+    /// (`sha256`, `sha512`, `blake3`, …) — NOT a hardcoded `sha256`. Scoop's
+    /// `$url` resolves to the per-arch asset URL, so this is only valid when
+    /// the real sidecar is named `<asset>.<suffix>`.
+    UrlSidecar { suffix: String },
     /// Combined checksums file. `url_template` carries the file URL with the
     /// version already substituted by `$version`.
     ChecksumsRegex { url_template: String },
@@ -58,6 +62,14 @@ pub(crate) enum AutoupdateHash {
 /// `$version` placeholder, producing an autoupdate-ready template. The version
 /// appears in both the release tag path and the asset filename, so all
 /// occurrences are substituted (the standard scoop autoupdate convention).
+///
+/// Naive global replace: only the tag-path and asset-filename occurrences of
+/// the version are intended. A version string that coincidentally appears
+/// elsewhere in the URL (e.g. a host or query segment equal to the version)
+/// would over-substitute. In practice GitHub release URLs carry the version
+/// only in the `/download/<tag>/` and asset-name segments, so the naive
+/// replace matches scoop's own `$version` convention; anchoring is not worth
+/// the false-negative risk of a stricter matcher.
 ///
 /// When `version` is empty the input is returned unchanged — an empty needle
 /// would otherwise splice `$version` between every byte.
@@ -109,19 +121,62 @@ pub(crate) fn generate_manifest(
     )
 }
 
+/// The effective checksum settings that drive scoop's autoupdate.hash, merged
+/// once (per-crate override → `defaults.checksum` → built-in default) so the
+/// split / algorithm / name_template trio cannot disagree across the two
+/// branches of [`resolve_autoupdate_hash`].
+struct EffectiveChecksumConfig {
+    split: bool,
+    algorithm: String,
+    name_template: Option<String>,
+}
+
+impl EffectiveChecksumConfig {
+    fn resolve(ctx: &Context, crate_cfg: &anodizer_core::config::CrateConfig) -> Self {
+        use anodizer_core::config::ChecksumConfig;
+
+        let crate_cksum = crate_cfg.checksum.as_ref();
+        let global_cksum = ctx
+            .config
+            .defaults
+            .as_ref()
+            .and_then(|d| d.checksum.as_ref());
+        let pick = |f: &dyn Fn(&ChecksumConfig) -> Option<String>| -> Option<String> {
+            crate_cksum.and_then(f).or_else(|| global_cksum.and_then(f))
+        };
+
+        EffectiveChecksumConfig {
+            split: crate_cksum
+                .and_then(|c| c.split)
+                .or_else(|| global_cksum.and_then(|c| c.split))
+                .unwrap_or(false),
+            algorithm: pick(&|c| c.algorithm.clone())
+                .unwrap_or_else(|| ChecksumConfig::DEFAULT_ALGORITHM.to_string()),
+            name_template: pick(&|c| c.name_template.clone()),
+        }
+    }
+}
+
 /// Resolve how scoop's `autoupdate.hash` should be derived for this crate,
 /// reading the crate's effective checksum config (per-crate override falling
 /// back to `defaults.checksum`).
 ///
 /// - **split mode** (`checksum.split: true`): anodizer emits a per-asset
-///   `<asset>.sha256` sidecar, so scoop fetches `$url.sha256`.
+///   `<asset>.<algorithm>` sidecar, so scoop fetches `$url.<algorithm>` — the
+///   suffix is the EFFECTIVE checksum algorithm (`sha256`/`sha512`/`blake3`/…),
+///   never a hardcoded `.sha256`. A custom split `name_template` is honored
+///   only when it renders to exactly `<asset>.<suffix>` (so `$url.<suffix>`
+///   resolves); any other shape hard-fails rather than emit a 404-ing URL.
 /// - **combined mode** (default): the only hash source is the single
 ///   `checksums.txt`, so scoop fetches that file (URL templated with
 ///   `$version`) and extracts the per-asset line via a regex.
 ///
-/// Hard-fails when combined mode is in effect but no release asset URL is
-/// available to anchor the checksums-file URL — emitting an autoupdate block
-/// pointing at a URL that 404s would silently break every future auto-bump.
+/// Hard-fails when:
+/// - split mode uses a custom `name_template` whose sidecar URL is not the
+///   `<asset>.<suffix>` shape scoop's `$url.<suffix>` requires, or
+/// - combined mode has no release asset URL to anchor the checksums-file URL.
+///   Emitting an autoupdate URL that 404s would silently break every future
+///   auto-bump — the spec forbids the hand-derived value that drifts.
 fn resolve_autoupdate_hash(
     ctx: &Context,
     crate_cfg: &anodizer_core::config::CrateConfig,
@@ -131,22 +186,16 @@ fn resolve_autoupdate_hash(
 ) -> Result<AutoupdateHash> {
     use anodizer_core::config::ChecksumConfig;
 
-    // Effective split mode: crate override → defaults.checksum.split → false.
-    let split = crate_cfg
-        .checksum
-        .as_ref()
-        .and_then(|c| c.split)
-        .or_else(|| {
-            ctx.config
-                .defaults
-                .as_ref()
-                .and_then(|d| d.checksum.as_ref())
-                .and_then(|c| c.split)
-        })
-        .unwrap_or(false);
+    let effective = EffectiveChecksumConfig::resolve(ctx, crate_cfg);
 
-    if split {
-        return Ok(AutoupdateHash::UrlSidecar);
+    if effective.split {
+        let suffix = resolve_sidecar_suffix(
+            ctx,
+            crate_name,
+            &effective.algorithm,
+            effective.name_template.as_deref(),
+        )?;
+        return Ok(AutoupdateHash::UrlSidecar { suffix });
     }
 
     // Combined mode: build the checksums-file URL by replacing the asset
@@ -167,17 +216,9 @@ fn resolve_autoupdate_hash(
 
     // Resolve the combined checksums filename via the same template the
     // checksum stage uses, then map the concrete version to `$version`.
-    let name_template = crate_cfg
-        .checksum
-        .as_ref()
-        .and_then(|c| c.name_template.clone())
-        .or_else(|| {
-            ctx.config
-                .defaults
-                .as_ref()
-                .and_then(|d| d.checksum.as_ref())
-                .and_then(|c| c.name_template.clone())
-        })
+    let name_template = effective
+        .name_template
+        .clone()
         .unwrap_or_else(|| ChecksumConfig::DEFAULT_NAME_TEMPLATE.to_string());
     let checksums_name = ctx.render_template(&name_template).with_context(|| {
         format!("scoop: render checksums name template for autoupdate ('{crate_name}')")
@@ -193,6 +234,62 @@ fn resolve_autoupdate_hash(
     let url_template = substitute_version(&checksums_url, version);
 
     Ok(AutoupdateHash::ChecksumsRegex { url_template })
+}
+
+/// Derive the per-asset sidecar suffix scoop appends as `$url.<suffix>`.
+///
+/// Mirrors the checksum stage's split-mode naming (`resolve_sidecar_path`):
+/// the default sidecar is `<asset>.<algorithm>`, so the suffix is the
+/// algorithm. With a custom split `name_template`, the sidecar name is only an
+/// `$url.<suffix>` form when the template renders to `<asset>.<suffix>` for an
+/// arbitrary asset; this probes that by rendering with a sentinel
+/// `ArtifactName` and confirming the result is `<sentinel>.<suffix>`. Anything
+/// else (the asset name embedded mid-string, a different prefix, …) cannot be
+/// expressed as `$url.<suffix>` and hard-fails — never a guessed, 404-ing URL.
+fn resolve_sidecar_suffix(
+    ctx: &Context,
+    crate_name: &str,
+    algorithm: &str,
+    name_template: Option<&str>,
+) -> Result<String> {
+    let Some(tmpl) = name_template else {
+        // No template → checksum stage writes `<asset>.<algorithm>`.
+        return Ok(algorithm.to_string());
+    };
+
+    // Probe the template with a sentinel asset name. The checksum stage exposes
+    // ArtifactName / ArtifactExt / Algorithm to the split name_template.
+    const SENTINEL: &str = "\u{1}ANODIZER_ASSET\u{1}";
+    const SENTINEL_EXT: &str = "zip";
+    let mut vars = ctx.template_vars().clone();
+    vars.set("ArtifactName", SENTINEL);
+    vars.set("ArtifactExt", SENTINEL_EXT);
+    vars.set("Algorithm", algorithm);
+    let rendered = anodizer_core::template::render(tmpl, &vars).with_context(|| {
+        format!("scoop: render split checksum name_template for autoupdate ('{crate_name}')")
+    })?;
+
+    // For `$url.<suffix>` to resolve, the sidecar must be exactly
+    // `<asset>.<suffix>` — i.e. the rendered name starts with `<sentinel>.`.
+    if let Some(suffix) = rendered.strip_prefix(&format!("{SENTINEL}."))
+        && !suffix.is_empty()
+        && !suffix.contains(SENTINEL)
+    {
+        return Ok(suffix.to_string());
+    }
+
+    anyhow::bail!(
+        "scoop: cannot build autoupdate.hash for crate '{}': the split checksum \
+         `name_template` ({:?}) does not produce a per-asset sidecar named \
+         `<asset>.<suffix>`, so scoop's `$url.<suffix>` cannot locate it (it \
+         would 404 on every auto-bump). Use the default split naming (omit \
+         `name_template`, which writes `<asset>.{}`), set a `name_template` of \
+         the form `{{{{ ArtifactName }}}}.<ext>`, or switch to combined-checksums \
+         mode (`checksum.split: false`).",
+        crate_name,
+        tmpl,
+        algorithm,
+    )
 }
 
 /// Generate a Scoop JSON manifest string with extended options.
@@ -305,7 +402,9 @@ pub(crate) fn generate_manifest_with_opts(
             obj.insert("checkver".to_string(), serde_json::json!(checkver));
         }
         let hash_value = match hash_mode {
-            AutoupdateHash::UrlSidecar => serde_json::json!({ "url": "$url.sha256" }),
+            AutoupdateHash::UrlSidecar { suffix } => {
+                serde_json::json!({ "url": format!("$url.{suffix}") })
+            }
             AutoupdateHash::ChecksumsRegex { url_template } => serde_json::json!({
                 "url": url_template,
                 // scoop substitutes $basename with the per-arch asset filename;
@@ -2179,7 +2278,7 @@ mod tests {
         )
         .unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
-        // S5: a wrapping archive keeps `bin` as a flat array of plain exe
+        // A wrapping archive keeps `bin` as a flat array of plain exe
         // names and expresses the wrap dir once via per-arch `extract_dir`
         // (matching real ripgrep/fd). The old baked `["dir/bin.exe", alias]`
         // pair broke `scoop which` / shortcut resolution.
@@ -2212,7 +2311,7 @@ mod tests {
             generate_manifest_with_opts("suite", "1.0.0", &entries, "A suite", "MIT", &opts)
                 .unwrap();
         let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
-        // S5: multiple binaries stay flat; extract_dir is shared once.
+        // Multiple binaries stay flat; extract_dir is shared once.
         let arch = &json["architecture"]["64bit"];
         assert_eq!(
             arch["bin"],
@@ -2248,7 +2347,7 @@ mod tests {
             serde_json::json!(["app.exe"]),
             "single-binary `bin` must still be a JSON array"
         );
-        // S5: a FLAT archive must NOT carry extract_dir (scoop would look for
+        // A FLAT archive must NOT carry extract_dir (scoop would look for
         // a non-existent subdir).
         assert!(
             arch.get("extract_dir").is_none(),
@@ -2257,10 +2356,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // checkver + autoupdate (S6, S7)
+    // checkver + autoupdate
     // -----------------------------------------------------------------------
 
-    /// S6/S7: with `checkver` + sidecar hash mode, the manifest carries
+    /// With `checkver` + sidecar hash mode, the manifest carries
     /// `checkver: github` and an `autoupdate` block whose per-arch url has the
     /// version templated to `$version` and whose hash points at `$url.sha256`
     /// — the exact shape real ripgrep/fd scoop manifests use for sidecars.
@@ -2275,7 +2374,9 @@ mod tests {
         let opts = ManifestOptions {
             github_slug: Some("owner/repo".to_string()),
             checkver: Some("github".to_string()),
-            autoupdate_hash: Some(AutoupdateHash::UrlSidecar),
+            autoupdate_hash: Some(AutoupdateHash::UrlSidecar {
+                suffix: "sha256".to_string(),
+            }),
             ..Default::default()
         };
         let manifest =
@@ -2299,7 +2400,7 @@ mod tests {
         );
     }
 
-    /// S7: combined-checksums mode points the autoupdate hash at the
+    /// Combined-checksums mode points the autoupdate hash at the
     /// version-templated checksums file URL plus a per-asset extraction regex.
     #[test]
     fn test_scoop_autoupdate_combined_checksums() {
@@ -2327,7 +2428,7 @@ mod tests {
         assert_eq!(json["autoupdate"]["hash"]["regex"], "$sha256\\s+$basename");
     }
 
-    /// S6/S7: with no autoupdate hash mode resolvable, NEITHER checkver nor
+    /// With no autoupdate hash mode resolvable, NEITHER checkver nor
     /// autoupdate is emitted (a checkver without autoupdate is a dead
     /// half-manifest).
     #[test]
@@ -3050,7 +3151,8 @@ mod publish_flow_tests {
     }
 
     /// Register a wrapping Windows archive whose URL + wrap directory both
-    /// embed the version (the real ripgrep/fd shape), for the S5/S7 e2e tests.
+    /// embed the version (the real ripgrep/fd shape), for the extract_dir +
+    /// autoupdate e2e tests.
     fn add_wrapping_windows_archive(
         ctx: &mut Context,
         crate_name: &str,
@@ -3079,7 +3181,7 @@ mod publish_flow_tests {
         });
     }
 
-    /// S5/S6/S7 single-crate: a wrapping archive yields a FLAT bin +
+    /// Single-crate: a wrapping archive yields a FLAT bin +
     /// `extract_dir`, a derived `checkver: github`, and an `autoupdate` block
     /// whose url/extract_dir are version-templated — matching real ripgrep/fd.
     #[test]
@@ -3092,15 +3194,15 @@ mod publish_flow_tests {
             .expect("not skipped");
         let json: serde_json::Value = serde_json::from_str(&manifest).expect("valid JSON");
 
-        // S5: flat bin + extract_dir.
+        // Flat bin + extract_dir.
         let arch = &json["architecture"]["64bit"];
         assert_eq!(arch["bin"], serde_json::json!(["rg.exe"]));
         assert_eq!(arch["extract_dir"], "rg-1.2.3-x86_64-pc-windows-msvc");
 
-        // S6: derived checkver.
+        // Derived checkver.
         assert_eq!(json["checkver"], "github");
 
-        // S7: autoupdate with version-templated url + extract_dir, and a
+        // Autoupdate with version-templated url + extract_dir, and a
         // combined-checksums hash (default mode emits checksums.txt).
         let au = &json["autoupdate"];
         assert_eq!(
@@ -3118,7 +3220,7 @@ mod publish_flow_tests {
         );
     }
 
-    /// S5/S7 per-crate, NO leakage: two crates in one workspace must each get
+    /// Per-crate, NO leakage: two crates in one workspace must each get
     /// their OWN extract_dir + autoupdate asset url; crate A's wrap dir / asset
     /// name must never appear in crate B's manifest (the recurring anodizer
     /// cross-crate leakage bug family).
@@ -3163,7 +3265,52 @@ mod publish_flow_tests {
         );
     }
 
-    /// S7 split mode: when the crate enables per-asset `.sha256` sidecars, the
+    /// Workspace LOCKSTEP: every crate ships under one shared Version (the
+    /// global `Version` template var, no per-crate scoping). Each crate's
+    /// manifest must independently emit `checkver` + a version-templated
+    /// `autoupdate` block — lockstep mode must reach the same automated-update
+    /// readiness as single-crate / per-crate modes.
+    #[test]
+    fn render_scoop_lockstep_emits_checkver_and_autoupdate() {
+        let alpha = scoop_crate_for_bucket("alpha", "/unused");
+        let beta = scoop_crate_for_bucket("beta", "/unused");
+        // Both crates render against the SAME global Version (1.5.0) — the
+        // defining trait of workspace-lockstep mode.
+        let mut ctx = build_ctx(vec![alpha, beta], "1.5.0");
+        add_wrapping_windows_archive(&mut ctx, "alpha", "alpha", "1.5.0", &"a".repeat(64));
+        add_wrapping_windows_archive(&mut ctx, "beta", "beta", "1.5.0", &"b".repeat(64));
+
+        for crate_name in ["alpha", "beta"] {
+            let manifest = render_scoop_manifest_for_crate(&ctx, crate_name, &quiet())
+                .expect("render ok")
+                .unwrap_or_else(|| panic!("{crate_name} not skipped"));
+            let json: serde_json::Value = serde_json::from_str(&manifest).expect("valid JSON");
+
+            assert_eq!(
+                json["checkver"], "github",
+                "lockstep {crate_name} must derive checkver:\n{manifest}"
+            );
+            let au = &json["autoupdate"];
+            assert!(
+                !au.is_null(),
+                "lockstep {crate_name} must emit an autoupdate block:\n{manifest}"
+            );
+            assert_eq!(
+                au["architecture"]["64bit"]["extract_dir"],
+                format!("{crate_name}-$version-x86_64-pc-windows-msvc"),
+                "lockstep {crate_name} autoupdate must template the version:\n{manifest}"
+            );
+            assert!(
+                au["architecture"]["64bit"]["url"]
+                    .as_str()
+                    .unwrap()
+                    .contains("$version"),
+                "lockstep {crate_name} autoupdate url must template the version:\n{manifest}"
+            );
+        }
+    }
+
+    /// Split mode: when the crate enables per-asset `.sha256` sidecars, the
     /// autoupdate hash points at `$url.sha256` instead of a checksums file.
     #[test]
     fn render_scoop_autoupdate_sidecar_when_split() {
@@ -3183,6 +3330,98 @@ mod publish_flow_tests {
         assert!(
             json["autoupdate"]["hash"].get("regex").is_none(),
             "sidecar mode must not carry a checksums regex"
+        );
+    }
+
+    /// Split mode with a non-default algorithm: the sidecar URL suffix must be
+    /// the EFFECTIVE algorithm (`blake3`), never a hardcoded `.sha256` — a
+    /// `$url.sha256` would 404 against the real `<asset>.blake3` sidecar.
+    #[test]
+    fn render_scoop_autoupdate_sidecar_uses_configured_algorithm() {
+        use anodizer_core::config::ChecksumConfig;
+        let mut c = scoop_crate_for_bucket("widget", "/unused");
+        c.checksum = Some(ChecksumConfig {
+            split: Some(true),
+            algorithm: Some("blake3".to_string()),
+            ..Default::default()
+        });
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        add_wrapping_windows_archive(&mut ctx, "widget", "widget", "1.0.0", &"d".repeat(64));
+        let manifest = render_scoop_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect("render ok")
+            .expect("not skipped");
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert_eq!(json["autoupdate"]["hash"]["url"], "$url.blake3");
+    }
+
+    /// Split mode where `algorithm` falls back from `defaults.checksum`: the
+    /// suffix still tracks the effective algorithm (`sha512`).
+    #[test]
+    fn render_scoop_autoupdate_sidecar_algorithm_from_defaults() {
+        use anodizer_core::config::{ChecksumConfig, Defaults};
+        let mut c = scoop_crate_for_bucket("widget", "/unused");
+        c.checksum = Some(ChecksumConfig {
+            split: Some(true),
+            ..Default::default()
+        });
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        ctx.config.defaults = Some(Defaults {
+            checksum: Some(ChecksumConfig {
+                algorithm: Some("sha512".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        add_wrapping_windows_archive(&mut ctx, "widget", "widget", "1.0.0", &"d".repeat(64));
+        let manifest = render_scoop_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect("render ok")
+            .expect("not skipped");
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert_eq!(json["autoupdate"]["hash"]["url"], "$url.sha512");
+    }
+
+    /// Split mode with a custom `name_template` of the canonical
+    /// `{{ ArtifactName }}.<ext>` shape: the suffix is derivable, so the
+    /// sidecar URL resolves.
+    #[test]
+    fn render_scoop_autoupdate_sidecar_custom_template_derivable() {
+        use anodizer_core::config::ChecksumConfig;
+        let mut c = scoop_crate_for_bucket("widget", "/unused");
+        c.checksum = Some(ChecksumConfig {
+            split: Some(true),
+            name_template: Some("{{ ArtifactName }}.checksum".to_string()),
+            ..Default::default()
+        });
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        add_wrapping_windows_archive(&mut ctx, "widget", "widget", "1.0.0", &"d".repeat(64));
+        let manifest = render_scoop_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect("render ok")
+            .expect("not skipped");
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert_eq!(json["autoupdate"]["hash"]["url"], "$url.checksum");
+    }
+
+    /// Split mode with an UNDERIVABLE custom `name_template` (the asset name is
+    /// not the leading segment): no `$url.<suffix>` form exists, so the render
+    /// HARD-FAILS rather than emit a 404-ing autoupdate URL.
+    #[test]
+    fn render_scoop_autoupdate_sidecar_underivable_template_errors() {
+        use anodizer_core::config::ChecksumConfig;
+        let mut c = scoop_crate_for_bucket("widget", "/unused");
+        c.checksum = Some(ChecksumConfig {
+            split: Some(true),
+            // Asset name embedded mid-string → not `<asset>.<suffix>`.
+            name_template: Some("checksums-{{ ArtifactName }}.txt".to_string()),
+            ..Default::default()
+        });
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        add_wrapping_windows_archive(&mut ctx, "widget", "widget", "1.0.0", &"d".repeat(64));
+        let err = render_scoop_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect_err("underivable split name_template must hard-fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("widget") && msg.contains("name_template"),
+            "error must name the crate + the offending field, got: {msg}"
         );
     }
 

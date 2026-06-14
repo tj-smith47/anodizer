@@ -717,17 +717,13 @@ fn resolve_winget_moniker(
         return Some(m.to_string());
     }
     // Collect the distinct binary names across all windows Build artifacts.
+    // A BTreeSet dedups in O(n log n) and yields a deterministic ordering
+    // (the source HashMap's value iteration order is not stable), so the
+    // single-binary derivation is reproducible across runs.
     let by_target = collect_windows_binary_names_by_target(ctx, crate_name);
-    let mut distinct: Vec<String> = Vec::new();
-    for names in by_target.values() {
-        for n in names {
-            if !distinct.contains(n) {
-                distinct.push(n.clone());
-            }
-        }
-    }
-    match distinct.as_slice() {
-        [single] => Some(single.clone()),
+    let distinct: std::collections::BTreeSet<&String> = by_target.values().flatten().collect();
+    match distinct.into_iter().collect::<Vec<_>>().as_slice() {
+        [single] => Some((*single).clone()),
         _ => None,
     }
 }
@@ -925,6 +921,7 @@ fn collect_winget_installers(
     winget_cfg: &anodizer_core::config::WingetConfig,
     name: &str,
     version: &str,
+    log: &StageLogger,
 ) -> Result<Vec<WingetInstallerItem>> {
     let url_template = winget_cfg.url_template.as_deref();
     let artifact_kind = util::resolve_artifact_kind(winget_cfg.use_artifact.as_deref());
@@ -1006,7 +1003,26 @@ fn collect_winget_installers(
         );
     }
 
+    if silent_switch.is_some()
+        && !installers
+            .iter()
+            .any(|i| is_executable_installer_type(&i.installer_type))
+    {
+        log.warn(&format!(
+            "winget.silent_switch ignored for '{crate_name}': no installer-type artifact \
+             (msi/wix/exe/nsis); portable/zip artifacts are unpacked, not run, so there is \
+             no installer to pass switches to"
+        ));
+    }
+
     Ok(installers)
+}
+
+/// True for winget `InstallerType` values that name an actual installer
+/// program (one that `InstallerSwitches.Silent` is passed to), as opposed to
+/// `zip`/`portable`, which winget unpacks itself without running an installer.
+fn is_executable_installer_type(installer_type: &str) -> bool {
+    matches!(installer_type, "msi" | "wix" | "exe" | "nsis")
 }
 
 /// True when `crate_name` has at least one Windows installer artifact this run
@@ -1393,7 +1409,7 @@ fn render_winget_manifests_with_identity(
     let short_desc = resolve_winget_short_description(ctx, winget_cfg, crate_name)?;
     let license = resolve_winget_license(ctx, winget_cfg, crate_name)?;
 
-    let installers = collect_winget_installers(ctx, crate_name, winget_cfg, name, &version)?;
+    let installers = collect_winget_installers(ctx, crate_name, winget_cfg, name, &version, log)?;
 
     let deps = winget_cfg.dependencies.as_deref().unwrap_or(&[]);
     let release_date = resolve_winget_release_date(ctx);
@@ -2054,6 +2070,70 @@ mod publisher_tests {
         });
     }
 
+    /// A `silent_switch` is only meaningful for an actual installer
+    /// (msi/wix/exe/nsis) winget runs. When the only Windows artifacts are
+    /// zip/portable (which winget unpacks, never runs), the switch is dead
+    /// config and the render must warn once so the author isn't misled into
+    /// thinking silencing is in effect.
+    #[test]
+    fn silent_switch_warns_when_only_zip_artifacts() {
+        let mut crate_cfg = winget_crate_with("widget", "v{{ .Version }}", "AcmeCo.Widget");
+        crate_cfg
+            .publish
+            .as_mut()
+            .unwrap()
+            .winget
+            .as_mut()
+            .unwrap()
+            .silent_switch = Some("/qn".to_string());
+
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+        ctx.with_log_capture(capture.clone());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("RawVersion", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        add_windows_zip(&mut ctx, "widget");
+
+        render_winget_manifests_for_crate(&ctx, "widget", &ctx.logger("publish"))
+            .expect("render ok")
+            .expect("widget not skipped");
+
+        let warns = capture.warn_messages();
+        assert!(
+            warns.iter().any(|m| m.contains("widget")
+                && m.contains("silent_switch")
+                && m.contains("no installer-type artifact")),
+            "expected one WARN that silent_switch is ignored with no installer artifact; \
+             got: {warns:?}"
+        );
+    }
+
+    /// Mirror: with no `silent_switch` configured, the zip-only render must
+    /// stay silent — the diagnostic is gated on the switch actually being set.
+    #[test]
+    fn no_silent_switch_warning_when_unset() {
+        let crate_cfg = winget_crate_with("widget", "v{{ .Version }}", "AcmeCo.Widget");
+
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+        ctx.with_log_capture(capture.clone());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("RawVersion", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        add_windows_zip(&mut ctx, "widget");
+
+        render_winget_manifests_for_crate(&ctx, "widget", &ctx.logger("publish"))
+            .expect("render ok")
+            .expect("widget not skipped");
+
+        let warns = capture.warn_messages();
+        assert!(
+            !warns.iter().any(|m| m.contains("silent_switch")),
+            "no silent_switch configured → no silent_switch warning; got: {warns:?}"
+        );
+    }
+
     /// LIVE PATH, workspace per-crate INDEPENDENT-version mode: the publisher's
     /// per-crate render must stamp EACH crate's OWN version, not the first
     /// crate's. The live `run` loop wraps each `publish_to_winget` in
@@ -2126,7 +2206,7 @@ mod publisher_tests {
         );
     }
 
-    /// W1 per-crate, no leakage: each crate's Moniker derives from its OWN
+    /// Per-crate, no leakage: each crate's Moniker derives from its OWN
     /// single binary name (`add_windows_zip` stamps `binary = crate_name`).
     /// alpha's manifest must carry `Moniker: alpha` and never `beta`, and
     /// vice-versa — the recurring cross-crate-leakage bug family.
@@ -2172,7 +2252,7 @@ mod publisher_tests {
         );
     }
 
-    /// W1/W3 single-crate live path: the default install behavior and a
+    /// Single-crate live path: the default install behavior and a
     /// derived moniker both surface through the real per-crate render.
     #[test]
     fn live_single_crate_default_moniker_and_upgrade_behavior() {
@@ -2983,10 +3063,10 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // Moniker / UpgradeBehavior / Documentations / InstallerSwitches (W1-W4)
+    // Moniker / UpgradeBehavior / Documentations / InstallerSwitches
     // -----------------------------------------------------------------------
 
-    /// W1: a configured Moniker is emitted as the short invoke alias, matching
+    /// A configured Moniker is emitted as the short invoke alias, matching
     /// real ripgrep's `Moniker: rg` (NOT the package name `ripgrep`).
     #[test]
     fn test_winget_moniker_emitted_as_alias() {
@@ -2999,7 +3079,7 @@ mod tests {
         );
     }
 
-    /// W1: with no Moniker resolvable (multi-binary, no override) the key is
+    /// With no Moniker resolvable (multi-binary, no override) the key is
     /// omitted entirely — never defaulted to the crate name.
     #[test]
     fn test_winget_moniker_omitted_when_none() {
@@ -3012,7 +3092,7 @@ mod tests {
         );
     }
 
-    /// W3: default UpgradeBehavior is `install`; the override is honored.
+    /// Default UpgradeBehavior is `install`; the override is honored.
     #[test]
     fn test_winget_upgrade_behavior_override() {
         let mut params = default_params();
@@ -3021,7 +3101,7 @@ mod tests {
         assert!(inst.contains("UpgradeBehavior: uninstallPrevious"));
     }
 
-    /// W2: Documentations[] renders `DocumentLabel`/`DocumentUrl` pairs, the
+    /// Documentations[] renders `DocumentLabel`/`DocumentUrl` pairs, the
     /// exact shape real ripgrep's locale manifest carries (`FAQ`, `User Guide`).
     #[test]
     fn test_winget_documentations_emitted() {
@@ -3045,7 +3125,7 @@ mod tests {
         assert!(locale.contains("DocumentUrl: https://github.com/owner/repo/blob/master/GUIDE.md"));
     }
 
-    /// W2: an empty documentations list omits the key entirely.
+    /// An empty documentations list omits the key entirely.
     #[test]
     fn test_winget_documentations_omitted_when_empty() {
         let params = default_params();
@@ -3053,7 +3133,7 @@ mod tests {
         assert!(!locale.contains("Documentations:"));
     }
 
-    /// W4: zip/portable installers carry NO InstallerSwitches.
+    /// Zip/portable installers carry NO InstallerSwitches.
     #[test]
     fn test_winget_installer_switches_absent_for_zip() {
         let params = default_params();
@@ -3062,7 +3142,7 @@ mod tests {
         assert!(!inst.contains("Silent:"));
     }
 
-    /// W4: an actual installer (msi) derives `/quiet`; exe/nsis derive `/S`;
+    /// An actual installer (msi) derives `/quiet`; exe/nsis derive `/S`;
     /// the config override wins. zip/portable always omit the switch.
     #[test]
     fn test_resolve_installer_switches_per_type() {
@@ -3083,7 +3163,7 @@ mod tests {
         assert!(resolve_installer_switches("zip", Some("/qn")).is_none());
     }
 
-    /// W4: an msi installer entry renders `InstallerSwitches.Silent: /quiet`.
+    /// An msi installer entry renders `InstallerSwitches.Silent: /quiet`.
     #[test]
     fn test_winget_installer_switches_emitted_for_msi() {
         let mut params = default_params();

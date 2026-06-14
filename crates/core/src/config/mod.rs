@@ -960,6 +960,37 @@ pub fn validate_homebrew_cask_url_template(config: &Config) -> Result<(), String
     })
 }
 
+/// Allowed `winget.upgrade_behavior` values, mirroring the winget installer
+/// manifest schema (1.12.0) `UpgradeBehavior` enum. A value outside this set
+/// renders an installer manifest the winget validator rejects at PR time —
+/// catch it at config-validate instead.
+pub const WINGET_UPGRADE_BEHAVIORS: [&str; 3] = ["install", "uninstallPrevious", "deny"];
+
+/// Validate that every configured `winget.upgrade_behavior` is one of the
+/// winget-recognized values ([`WINGET_UPGRADE_BEHAVIORS`]). Walks the per-crate,
+/// per-workspace, and `defaults.publish` axes.
+pub fn validate_winget_upgrade_behavior(config: &Config) -> Result<(), String> {
+    let check = |location: &str, winget: &WingetConfig| -> Result<(), String> {
+        if let Some(ref behavior) = winget.upgrade_behavior
+            && !WINGET_UPGRADE_BEHAVIORS.contains(&behavior.as_str())
+        {
+            return Err(format!(
+                "{location}: upgrade_behavior `{behavior}` is not a valid winget value. \
+                 Use one of: {}.",
+                WINGET_UPGRADE_BEHAVIORS.join(", ")
+            ));
+        }
+        Ok(())
+    };
+
+    try_for_each_crate_publish(config, |axis, publish| {
+        if let Some(winget) = publish.winget() {
+            check(&axis.winget_location(), winget)?;
+        }
+        Ok(())
+    })
+}
+
 /// Validate that `archives[].id` and `universal_binaries[].id` are unique
 /// within their respective lists.
 ///
@@ -1358,6 +1389,21 @@ impl PublishAxis<'_> {
                 crate_name,
             } => format!("workspaces[{workspace}].crates[{crate_name}].publish.homebrew_cask"),
             PublishAxis::Defaults => "defaults.publish.homebrew_cask".to_string(),
+        }
+    }
+
+    /// Location string in the winget-block wording:
+    /// `crates[{name}].publish.winget`,
+    /// `workspaces[{ws}].crates[{krate}].publish.winget`, or
+    /// `defaults.publish.winget`.
+    pub(crate) fn winget_location(&self) -> String {
+        match self {
+            PublishAxis::Crate { name } => format!("crates[{name}].publish.winget"),
+            PublishAxis::Workspace {
+                workspace,
+                crate_name,
+            } => format!("workspaces[{workspace}].crates[{crate_name}].publish.winget"),
+            PublishAxis::Defaults => "defaults.publish.winget".to_string(),
         }
     }
 }
