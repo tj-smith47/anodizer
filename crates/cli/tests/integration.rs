@@ -839,6 +839,67 @@ fn test_e2e_snapshot_release_produces_artifacts() {
     );
 }
 
+/// E2E: a real archive build records the bundled non-binary in-archive paths
+/// (LICENSE / README) under `metadata.archive_files`, so the krew publisher can
+/// emit a `files:` extraction list gated on the archive's actual contents. This
+/// proves the stage-archive → artifacts.json wiring end-to-end, not just the
+/// publisher's consumption of the metadata.
+#[test]
+fn test_e2e_archive_records_bundled_license_readme_in_metadata() {
+    let tmp = TempDir::new().unwrap();
+    let host = detect_host_target();
+
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    // The default extra-files glob bundles LICENSE / README; write both so the
+    // archive carries them and the metadata names them.
+    fs::write(tmp.path().join("LICENSE"), "MIT\n").unwrap();
+    fs::write(tmp.path().join("README.md"), "# test-project\n").unwrap();
+
+    let config = create_single_crate_snapshot_config(&host);
+    create_config(tmp.path(), &config);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--snapshot",
+            "--skip=release,publish,docker,sign,announce,changelog,nfpm",
+            "--timeout",
+            "5m",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "snapshot release should succeed.\nstderr:\n{}",
+        stderr
+    );
+
+    let artifacts: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(tmp.path().join("dist/artifacts.json")).unwrap())
+            .unwrap();
+    let archive = artifacts
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["kind"] == "archive")
+        .expect("an archive artifact must exist");
+    let files = archive["metadata"]["archive_files"]
+        .as_str()
+        .expect("archive metadata must carry archive_files");
+    assert!(
+        files.contains("LICENSE"),
+        "archive_files must name the bundled LICENSE, got: {files}"
+    );
+    assert!(
+        files.contains("README.md"),
+        "archive_files must name the bundled README, got: {files}"
+    );
+}
+
 /// E2E: `anodizer release --prepare` produces the same skip-stage behaviour
 /// as an explicit `--skip=release,publish,announce`.
 ///

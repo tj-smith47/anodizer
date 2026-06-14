@@ -22,12 +22,31 @@ pub(crate) struct KrewManifestParams<'a> {
 }
 
 /// A single platform entry in the Krew manifest.
+#[derive(Default)]
 pub(crate) struct KrewPlatform {
     pub(crate) os: String,
     pub(crate) arch: String,
     pub(crate) url: String,
     pub(crate) sha256: String,
     pub(crate) bin: String,
+    /// Per-platform `files:` extraction list (`from`/`to` pairs) selecting
+    /// the binary plus any bundled LICENSE / README from the archive. Empty
+    /// only when the artifact carried no layout/file metadata (legacy
+    /// snapshots); the live path always populates at least the binary entry.
+    pub(crate) files: Vec<KrewFileEntry>,
+}
+
+/// A single `files:` extraction entry in a krew platform.
+///
+/// `from` is the path *inside the downloaded archive* (carrying the
+/// `wrap_in_directory` prefix for nested layouts); `to` is the destination
+/// relative to the plugin's install dir. Real krew plugins (ctx/ns/tree/
+/// access-matrix) emit `to: "."` to flatten the binary + LICENSE to the
+/// install root, which is why `bin:` references the flat binary name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct KrewFileEntry {
+    pub(crate) from: String,
+    pub(crate) to: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -69,6 +88,14 @@ struct KrewPlatformYaml {
     uri: String,
     sha256: String,
     bin: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    files: Vec<KrewFileYaml>,
+}
+
+#[derive(Serialize)]
+struct KrewFileYaml {
+    from: String,
+    to: String,
 }
 
 #[derive(Serialize)]
@@ -106,6 +133,14 @@ pub(crate) fn generate_manifest(params: &KrewManifestParams<'_>) -> Result<Strin
             uri: p.url.clone(),
             sha256: p.sha256.clone(),
             bin: p.bin.clone(),
+            files: p
+                .files
+                .iter()
+                .map(|f| KrewFileYaml {
+                    from: f.from.clone(),
+                    to: f.to.clone(),
+                })
+                .collect(),
         })
         .collect();
 
@@ -177,6 +212,33 @@ fn krew_arch(arch: &str) -> &str {
         "amd64" | "x86_64" => "amd64",
         "arm64" | "aarch64" => "arm64",
         other => other,
+    }
+}
+
+/// The krew-index review convention for `shortDescription` length. The
+/// krew-index CI hints at taglines no longer than ~50 characters (exemplars:
+/// ctx=35, ns=33); longer ones get flagged in human review. anodizer warns
+/// rather than truncating — silently dropping the tail of a tagline risks
+/// losing meaning, and the maintainer is best placed to shorten it.
+const KREW_SHORT_DESCRIPTION_MAX: usize = 50;
+
+/// Warn (loudly, naming the field + the actual length) when a rendered
+/// `shortDescription` exceeds the krew-index norm, so the user can shorten it
+/// before krew-index review flags the submission. Counts Unicode scalar values,
+/// not bytes, to match how a human reads the tagline.
+fn warn_if_short_description_too_long(
+    short_description: &str,
+    crate_name: &str,
+    log: &StageLogger,
+) {
+    let len = short_description.chars().count();
+    if len > KREW_SHORT_DESCRIPTION_MAX {
+        log.warn(&format!(
+            "krew: shortDescription for '{}' is {} characters (krew-index review \
+             flags taglines longer than ~{}). Shorten `krew.short_description` to \
+             keep the submission within the norm: \"{}\"",
+            crate_name, len, KREW_SHORT_DESCRIPTION_MAX, short_description
+        ));
     }
 }
 
@@ -536,6 +598,8 @@ fn artifacts_to_platforms(
     let mut platforms = Vec::new();
     for a in artifacts {
         let os = krew_os(&a.os).to_string();
+        let bin = resolve_bin(a, default_binary_name, &os);
+        let files = derive_krew_files(a, &bin);
         if a.arch == "all" {
             // Expand "all" into amd64 + arm64 entries
             for expanded_arch in &["amd64", "arm64"] {
@@ -544,7 +608,8 @@ fn artifacts_to_platforms(
                     arch: expanded_arch.to_string(),
                     url: a.url.clone(),
                     sha256: a.sha256.clone(),
-                    bin: resolve_bin(a, default_binary_name, &os),
+                    bin: bin.clone(),
+                    files: files.clone(),
                 });
             }
         } else {
@@ -552,12 +617,85 @@ fn artifacts_to_platforms(
                 arch: krew_arch(&a.arch).to_string(),
                 url: a.url.clone(),
                 sha256: a.sha256.clone(),
-                bin: resolve_bin(a, default_binary_name, &os),
+                bin: bin.clone(),
+                files: files.clone(),
                 os,
             });
         }
     }
     platforms
+}
+
+/// Derive the per-platform `files:` extraction list for a krew platform entry.
+///
+/// Mirrors how every real krew-index plugin (ctx / ns / tree / access-matrix)
+/// shapes `files:` — a `from`/`to` pair per file to lift out of the downloaded
+/// archive, with `to: "."` flattening everything to the plugin install root
+/// (which is why `bin:` references the flat binary name):
+///
+/// 1. **Binary** — always emitted. `from` is the binary's path *inside the
+///    archive*: `<wrap_in_directory>/<bin>` for a nested archive, else `<bin>`.
+///    Without this entry krew's default extractor can fail to find a nested
+///    binary ("source binary cannot be found in extracted archive").
+/// 2. **LICENSE** — emitted once when the archive bundles a `LICENSE*` file
+///    (gated on `OsArtifact.archive_files`, the actual archive contents), with
+///    `from` carrying its real in-archive path (wrap prefix included).
+/// 3. **README** (`*.md`) — emitted for each bundled markdown doc, same gating.
+///
+/// `bin` is the already-resolved install-dir binary name (`.exe`-suffixed on
+/// Windows). The `from` path re-derives the suffix-aware in-archive name from
+/// it so the Windows `.exe` handling carries into the extraction list.
+fn derive_krew_files(a: &OsArtifact, bin: &str) -> Vec<KrewFileEntry> {
+    /// Join the `wrap_in_directory` prefix onto an in-archive file name,
+    /// normalising to forward slashes (archive paths are always `/`-separated).
+    fn in_archive_path(wrap: Option<&str>, name: &str) -> String {
+        match wrap {
+            Some(prefix) if !prefix.is_empty() => {
+                format!("{}/{}", prefix.trim_end_matches('/'), name)
+            }
+            _ => name.to_string(),
+        }
+    }
+
+    let wrap = a.wrap_in_directory.as_deref();
+    let mut files = vec![KrewFileEntry {
+        from: in_archive_path(wrap, bin),
+        to: ".".to_string(),
+    }];
+
+    // LICENSE: include the first bundled LICENSE* file (krew flattens it to the
+    // install root). Real plugins emit exactly one LICENSE entry; `archive_files`
+    // is deterministically ordered (lowercase glob before uppercase) so the pick
+    // is stable.
+    if let Some(license) = a
+        .archive_files
+        .iter()
+        .find(|p| basename(p).to_ascii_lowercase().starts_with("license"))
+    {
+        files.push(KrewFileEntry {
+            from: license.clone(),
+            to: ".".to_string(),
+        });
+    }
+
+    // README / markdown docs: include each bundled `*.md` (typically README.md).
+    for md in a
+        .archive_files
+        .iter()
+        .filter(|p| basename(p).to_ascii_lowercase().ends_with(".md"))
+    {
+        files.push(KrewFileEntry {
+            from: md.clone(),
+            to: ".".to_string(),
+        });
+    }
+
+    files
+}
+
+/// The final path component of a `/`-separated in-archive path.
+fn basename(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
 }
 
 // ---------------------------------------------------------------------------
@@ -700,6 +838,7 @@ pub(crate) fn render_krew_manifest_for_crate(
         .unwrap_or(crate_name);
     let short_description =
         util::render_or_warn(ctx, log, "krew.short_description", short_description_raw)?;
+    warn_if_short_description_too_long(&short_description, crate_name, log);
     // Derive GitHub slug (owner/repo) for the homepage fallback, consistent with
     // the homebrew publisher.
     let plugin_github = crate_cfg
@@ -1391,6 +1530,7 @@ mod tests {
                     url: "https://example.com/mytool-linux-amd64.tar.gz".to_string(),
                     sha256: "deadbeef".to_string(),
                     bin: "kubectl-mytool".to_string(),
+                    files: vec![],
                 },
                 KrewPlatform {
                     os: "darwin".to_string(),
@@ -1398,6 +1538,7 @@ mod tests {
                     url: "https://example.com/mytool-darwin-amd64.tar.gz".to_string(),
                     sha256: "cafebabe".to_string(),
                     bin: "kubectl-mytool".to_string(),
+                    files: vec![],
                 },
             ],
         })
@@ -1448,6 +1589,7 @@ mod tests {
                 url: "https://example.com/mytool.tar.gz".to_string(),
                 sha256: "deadbeef".to_string(),
                 bin: "kubectl-mytool".to_string(),
+                files: vec![],
             }],
         })
         .unwrap();
@@ -1499,6 +1641,7 @@ mod tests {
                 url: "https://example.com/plugin.tar.gz".to_string(),
                 sha256: "hash".to_string(),
                 bin: "kubectl-my-plugin".to_string(),
+                files: vec![],
             }],
         })
         .unwrap();
@@ -1522,6 +1665,7 @@ mod tests {
                 url: "https://example.com/tool.tar.gz".to_string(),
                 sha256: "hash".to_string(),
                 bin: "kubectl-tool".to_string(),
+                files: vec![],
             }],
         })
         .unwrap();
@@ -1545,6 +1689,7 @@ mod tests {
                     url: "https://example.com/multi-linux-amd64.tar.gz".to_string(),
                     sha256: "hash_linux_amd64".to_string(),
                     bin: "kubectl-multi".to_string(),
+                    files: vec![],
                 },
                 KrewPlatform {
                     os: "linux".to_string(),
@@ -1552,6 +1697,7 @@ mod tests {
                     url: "https://example.com/multi-linux-arm64.tar.gz".to_string(),
                     sha256: "hash_linux_arm64".to_string(),
                     bin: "kubectl-multi".to_string(),
+                    files: vec![],
                 },
                 KrewPlatform {
                     os: "darwin".to_string(),
@@ -1559,6 +1705,7 @@ mod tests {
                     url: "https://example.com/multi-darwin-amd64.tar.gz".to_string(),
                     sha256: "hash_darwin_amd64".to_string(),
                     bin: "kubectl-multi".to_string(),
+                    files: vec![],
                 },
                 KrewPlatform {
                     os: "darwin".to_string(),
@@ -1566,6 +1713,7 @@ mod tests {
                     url: "https://example.com/multi-darwin-arm64.tar.gz".to_string(),
                     sha256: "hash_darwin_arm64".to_string(),
                     bin: "kubectl-multi".to_string(),
+                    files: vec![],
                 },
                 KrewPlatform {
                     os: "windows".to_string(),
@@ -1573,6 +1721,7 @@ mod tests {
                     url: "https://example.com/multi-windows-amd64.zip".to_string(),
                     sha256: "hash_windows_amd64".to_string(),
                     bin: "kubectl-multi".to_string(),
+                    files: vec![],
                 },
             ],
         })
@@ -1605,6 +1754,7 @@ mod tests {
                 url: "https://github.com/tj-smith47/anodizer/releases/download/v3.2.1/anodizer-3.2.1-linux-amd64.tar.gz".to_string(),
                 sha256: "aabbccdd".to_string(),
                 bin: "kubectl-anodizer".to_string(),
+                files: vec![],
             }],
         }).unwrap();
 
@@ -1731,10 +1881,8 @@ mod tests {
             sha256: "deadbeef".into(),
             os: os.into(),
             arch: arch.into(),
-            id: None,
-            amd64_variant: None,
-            arm_variant: None,
             binary: binary.map(|s| s.to_string()),
+            ..Default::default()
         }
     }
 
@@ -1773,6 +1921,183 @@ mod tests {
         let arts = vec![make_os_artifact("linux", "amd64", None)];
         let plats = artifacts_to_platforms(&arts, "cfgd");
         assert_eq!(plats[0].bin, "cfgd");
+    }
+
+    /// Build an `OsArtifact` with explicit wrap-prefix + bundled file list so
+    /// the `files:` derivation can be exercised across flat / nested layouts.
+    fn make_os_artifact_full(
+        os: &str,
+        arch: &str,
+        binary: Option<&str>,
+        wrap: Option<&str>,
+        archive_files: &[&str],
+    ) -> OsArtifact {
+        OsArtifact {
+            binary: binary.map(str::to_string),
+            wrap_in_directory: wrap.map(str::to_string),
+            archive_files: archive_files.iter().map(|s| s.to_string()).collect(),
+            ..make_os_artifact(os, arch, binary)
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // `files:` extraction-list derivation (binary + LICENSE + README)
+    // -----------------------------------------------------------------------
+
+    /// Flat archive (no wrap dir): the binary `from` is just the binary name,
+    /// LICENSE + README are picked up from the bundled file set, all `to: "."`.
+    #[test]
+    fn derive_krew_files_flat_archive_binary_license_readme() {
+        let a = make_os_artifact_full(
+            "linux",
+            "amd64",
+            Some("cfgd"),
+            None,
+            &["LICENSE", "README.md"],
+        );
+        let files = derive_krew_files(&a, "cfgd");
+        assert_eq!(
+            files,
+            vec![
+                KrewFileEntry {
+                    from: "cfgd".into(),
+                    to: ".".into()
+                },
+                KrewFileEntry {
+                    from: "LICENSE".into(),
+                    to: ".".into()
+                },
+                KrewFileEntry {
+                    from: "README.md".into(),
+                    to: ".".into()
+                },
+            ]
+        );
+    }
+
+    /// Nested archive (`wrap_in_directory`): both the binary AND the bundled
+    /// LICENSE/README `from` paths must carry the wrap prefix, or krew's
+    /// extractor cannot find them ("source binary cannot be found").
+    #[test]
+    fn derive_krew_files_nested_archive_prefixes_from_paths() {
+        let a = make_os_artifact_full(
+            "linux",
+            "amd64",
+            Some("cfgd"),
+            Some("cfgd-1.0.0-linux-amd64"),
+            &["cfgd-1.0.0-linux-amd64/LICENSE"],
+        );
+        let files = derive_krew_files(&a, "cfgd");
+        assert_eq!(
+            files,
+            vec![
+                KrewFileEntry {
+                    from: "cfgd-1.0.0-linux-amd64/cfgd".into(),
+                    to: ".".into()
+                },
+                KrewFileEntry {
+                    from: "cfgd-1.0.0-linux-amd64/LICENSE".into(),
+                    to: ".".into()
+                },
+            ]
+        );
+    }
+
+    /// Windows `.exe` handling carries into the `files[].from` binary entry.
+    #[test]
+    fn derive_krew_files_windows_exe_in_from() {
+        let a = make_os_artifact_full("windows", "amd64", Some("cfgd"), None, &["LICENSE"]);
+        // The resolved bin (with `.exe`) is what artifacts_to_platforms passes in.
+        let plats = artifacts_to_platforms(&[a], "cfgd");
+        let win = &plats[0];
+        assert_eq!(win.bin, "cfgd.exe");
+        assert_eq!(win.files[0].from, "cfgd.exe");
+        assert_eq!(win.files[0].to, ".");
+        assert_eq!(win.files[1].from, "LICENSE");
+    }
+
+    /// LICENSE/README entries are GATED on actual archive presence: an archive
+    /// bundling no extra files yields a `files:` list with only the binary.
+    #[test]
+    fn derive_krew_files_absent_license_not_emitted() {
+        let a = make_os_artifact_full("linux", "amd64", Some("cfgd"), None, &[]);
+        let files = derive_krew_files(&a, "cfgd");
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].from, "cfgd");
+    }
+
+    /// CHANGELOG / non-license non-markdown bundled files are NOT pulled into
+    /// the krew `files:` list — only the binary, LICENSE, and `*.md` docs.
+    #[test]
+    fn derive_krew_files_ignores_changelog_and_completions() {
+        let a = make_os_artifact_full(
+            "linux",
+            "amd64",
+            Some("cfgd"),
+            None,
+            &[
+                "LICENSE",
+                "CHANGELOG.txt",
+                "completions/cfgd.bash",
+                "README.md",
+            ],
+        );
+        let froms: Vec<String> = derive_krew_files(&a, "cfgd")
+            .iter()
+            .map(|f| f.from.clone())
+            .collect();
+        assert_eq!(froms, vec!["cfgd", "LICENSE", "README.md"]);
+    }
+
+    /// LICENSE matching is case-insensitive (`license`, `LICENSE.txt`, …).
+    #[test]
+    fn derive_krew_files_license_case_insensitive() {
+        let a = make_os_artifact_full("linux", "amd64", Some("cfgd"), None, &["license.txt"]);
+        let files = derive_krew_files(&a, "cfgd");
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[1].from, "license.txt");
+    }
+
+    // -----------------------------------------------------------------------
+    // shortDescription length validation
+    // -----------------------------------------------------------------------
+
+    /// A tagline within the krew-index norm produces no warning.
+    #[test]
+    fn short_description_within_norm_no_warning() {
+        let (log, cap) = StageLogger::with_capture("publish", anodizer_core::log::Verbosity::Quiet);
+        warn_if_short_description_too_long("Switch between contexts", "ctx", &log);
+        assert_eq!(cap.warn_count(), 0);
+    }
+
+    /// A tagline exceeding ~50 chars warns loudly, naming the field, the crate,
+    /// and the actual length so the user can shorten it before krew-index review.
+    #[test]
+    fn short_description_too_long_warns_with_field_and_length() {
+        let (log, cap) = StageLogger::with_capture("publish", anodizer_core::log::Verbosity::Quiet);
+        let long = "This is an excessively long krew plugin tagline that will surely be flagged";
+        assert!(long.chars().count() > KREW_SHORT_DESCRIPTION_MAX);
+        warn_if_short_description_too_long(long, "mytool", &log);
+        assert_eq!(cap.warn_count(), 1);
+        let msg = cap.warn_messages().join("\n");
+        assert!(msg.contains("shortDescription"), "names the field: {msg}");
+        assert!(msg.contains("mytool"), "names the crate: {msg}");
+        assert!(
+            msg.contains(&long.chars().count().to_string()),
+            "states the actual length: {msg}"
+        );
+    }
+
+    /// Boundary: exactly the max length does NOT warn; one over does.
+    #[test]
+    fn short_description_boundary_is_inclusive() {
+        let at = "x".repeat(KREW_SHORT_DESCRIPTION_MAX);
+        let over = "x".repeat(KREW_SHORT_DESCRIPTION_MAX + 1);
+        let (log, cap) = StageLogger::with_capture("publish", anodizer_core::log::Verbosity::Quiet);
+        warn_if_short_description_too_long(&at, "c", &log);
+        assert_eq!(cap.warn_count(), 0, "exactly max must not warn");
+        warn_if_short_description_too_long(&over, "c", &log);
+        assert_eq!(cap.warn_count(), 1, "one over max must warn");
     }
 
     #[test]
@@ -2202,6 +2527,227 @@ mod tests {
             "metadata.name carries the krew.name override; got:\n{manifest}"
         );
         assert!(manifest.contains("version: v1.0.0"), "got:\n{manifest}");
+    }
+
+    /// Register an archive carrying the full layout metadata the krew `files:`
+    /// derivation reads: `wrap_in_directory` (nesting prefix) and `archive_files`
+    /// (bundled non-binary in-archive paths). Mirrors what stage-archive writes.
+    #[allow(clippy::too_many_arguments)]
+    fn add_archive_full(
+        ctx: &mut Context,
+        crate_name: &str,
+        target: &str,
+        os: &str,
+        arch: &str,
+        binary: &str,
+        sha: &str,
+        wrap: Option<&str>,
+        archive_files: &[&str],
+    ) {
+        let mut meta = HashMap::new();
+        meta.insert(
+            "url".to_string(),
+            format!("https://github.com/acme/widget/releases/download/v1.0.0/{binary}-{os}-{arch}.tar.gz"),
+        );
+        meta.insert("sha256".to_string(), sha.to_string());
+        meta.insert("format".to_string(), "tar.gz".to_string());
+        meta.insert("extra_binaries".to_string(), binary.to_string());
+        if let Some(w) = wrap {
+            meta.insert("wrap_in_directory".to_string(), w.to_string());
+        }
+        if !archive_files.is_empty() {
+            meta.insert("archive_files".to_string(), archive_files.join(","));
+        }
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("/dist/{binary}-{os}-{arch}.tar.gz")),
+            name: format!("{binary}-{os}-{arch}.tar.gz"),
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: meta,
+            size: None,
+        });
+    }
+
+    /// SINGLE-CRATE: a flat-layout linux archive + a windows archive must each
+    /// emit a concrete per-platform `files:` block — the binary (`.exe` on
+    /// windows) plus the bundled LICENSE — matching the krew-index exemplar shape
+    /// (`from`/`to: "."`). Asserts the exact rendered YAML, not a round-trip.
+    #[test]
+    fn render_manifest_emits_files_block_single_crate_linux_and_windows() {
+        let c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        let sha = "c".repeat(64);
+        add_archive_full(
+            &mut ctx,
+            "widget",
+            "x86_64-unknown-linux-gnu",
+            "linux",
+            "amd64",
+            "kubectl-widget",
+            &sha,
+            None,
+            &["LICENSE"],
+        );
+        add_archive_full(
+            &mut ctx,
+            "widget",
+            "x86_64-pc-windows-msvc",
+            "windows",
+            "amd64",
+            "kubectl-widget",
+            &sha,
+            None,
+            &["LICENSE"],
+        );
+        let manifest = render_krew_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect("render ok")
+            .expect("not skipped");
+
+        // Linux platform: binary `from` is the flat binary name (no `.exe`),
+        // followed by the LICENSE entry, both `to: "."`.
+        let linux_block = "\
+    bin: kubectl-widget
+    files:
+    - from: kubectl-widget
+      to: .
+    - from: LICENSE
+      to: .";
+        assert!(
+            manifest.contains(linux_block),
+            "linux files block must select binary + LICENSE; got:\n{manifest}"
+        );
+
+        // Windows platform: binary `from` carries the `.exe` suffix.
+        let windows_block = "\
+    bin: kubectl-widget.exe
+    files:
+    - from: kubectl-widget.exe
+      to: .
+    - from: LICENSE
+      to: .";
+        assert!(
+            manifest.contains(windows_block),
+            "windows files block must use the `.exe` binary name; got:\n{manifest}"
+        );
+    }
+
+    /// SINGLE-CRATE nested layout: when the archive wraps its contents in a
+    /// top-level dir (`wrap_in_directory`), BOTH the binary and the LICENSE
+    /// `from` paths must carry that prefix, or krew's extractor fails to find
+    /// the binary on install.
+    #[test]
+    fn render_manifest_files_block_respects_nested_archive_layout() {
+        let c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        let sha = "d".repeat(64);
+        add_archive_full(
+            &mut ctx,
+            "widget",
+            "x86_64-unknown-linux-gnu",
+            "linux",
+            "amd64",
+            "kubectl-widget",
+            &sha,
+            Some("kubectl-widget-1.0.0"),
+            &[
+                "kubectl-widget-1.0.0/LICENSE",
+                "kubectl-widget-1.0.0/README.md",
+            ],
+        );
+        let manifest = render_krew_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect("render ok")
+            .expect("not skipped");
+        let nested_block = "\
+    files:
+    - from: kubectl-widget-1.0.0/kubectl-widget
+      to: .
+    - from: kubectl-widget-1.0.0/LICENSE
+      to: .
+    - from: kubectl-widget-1.0.0/README.md
+      to: .";
+        assert!(
+            manifest.contains(nested_block),
+            "nested-layout files must carry the wrap prefix on every `from`; got:\n{manifest}"
+        );
+    }
+
+    /// WORKSPACE PER-CRATE: two crates published in one run resolve their own
+    /// binary name AND their own `files:` list independently — no cross-crate
+    /// leakage. Each crate ships a distinct binary and a distinct bundled file.
+    #[test]
+    fn render_manifest_files_block_per_crate_no_cross_leakage() {
+        let alpha = pr_direct_crate("alpha", "kubectl-alpha", "/unused");
+        let beta = pr_direct_crate("beta", "kubectl-beta", "/unused");
+        let mut ctx = build_ctx(vec![alpha, beta], "1.0.0");
+        let sha = "e".repeat(64);
+        // alpha ships binary `alpha-bin` and bundles only a LICENSE.
+        add_archive_full(
+            &mut ctx,
+            "alpha",
+            "x86_64-unknown-linux-gnu",
+            "linux",
+            "amd64",
+            "alpha-bin",
+            &sha,
+            None,
+            &["LICENSE"],
+        );
+        // beta ships binary `beta-bin` and bundles a LICENSE + README.
+        add_archive_full(
+            &mut ctx,
+            "beta",
+            "x86_64-unknown-linux-gnu",
+            "linux",
+            "amd64",
+            "beta-bin",
+            &sha,
+            None,
+            &["LICENSE", "README.md"],
+        );
+
+        let alpha_manifest = render_krew_manifest_for_crate(&ctx, "alpha", &quiet())
+            .expect("alpha render ok")
+            .expect("alpha not skipped");
+        let beta_manifest = render_krew_manifest_for_crate(&ctx, "beta", &quiet())
+            .expect("beta render ok")
+            .expect("beta not skipped");
+
+        // alpha: its OWN binary, its OWN (LICENSE-only) files list.
+        assert!(
+            alpha_manifest.contains(
+                "\
+    files:
+    - from: alpha-bin
+      to: .
+    - from: LICENSE
+      to: ."
+            ),
+            "alpha files must select alpha-bin + LICENSE; got:\n{alpha_manifest}"
+        );
+        assert!(
+            !alpha_manifest.contains("beta-bin") && !alpha_manifest.contains("README.md"),
+            "alpha manifest must not leak beta's binary or README; got:\n{alpha_manifest}"
+        );
+
+        // beta: its OWN binary, with the extra README entry alpha does not have.
+        assert!(
+            beta_manifest.contains(
+                "\
+    files:
+    - from: beta-bin
+      to: .
+    - from: LICENSE
+      to: .
+    - from: README.md
+      to: ."
+            ),
+            "beta files must select beta-bin + LICENSE + README; got:\n{beta_manifest}"
+        );
+        assert!(
+            !beta_manifest.contains("alpha-bin"),
+            "beta manifest must not leak alpha's binary; got:\n{beta_manifest}"
+        );
     }
 
     // -----------------------------------------------------------------
@@ -2863,6 +3409,7 @@ mod tests {
                 url: "https://example.com/tool.tar.gz".to_string(),
                 sha256: "hash".to_string(),
                 bin: "kubectl-tool".to_string(),
+                files: vec![],
             }],
         })
         .unwrap();

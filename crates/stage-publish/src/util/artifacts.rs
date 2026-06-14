@@ -53,7 +53,7 @@ pub(crate) fn infer_arch(target: &str) -> String {
 }
 
 /// Describes the OS + architecture of an artifact match.
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub(crate) struct OsArtifact {
     pub url: String,
     pub sha256: String,
@@ -76,6 +76,18 @@ pub(crate) struct OsArtifact {
     /// which can differ from the crate name (e.g. crate `my-tool` ships
     /// binary `mytool`) and ends in `.exe` on Windows.
     pub binary: Option<String>,
+    /// In-archive `wrap_in_directory` prefix, when the archive wraps its
+    /// contents in a top-level directory (`metadata["wrap_in_directory"]`).
+    /// `None` for a flat archive. Krew's `files[].from` must reference the
+    /// nested path (`<prefix>/<bin>`) for `bin:` to resolve, so the krew
+    /// publisher reads this to shape its extraction list correctly.
+    pub wrap_in_directory: Option<String>,
+    /// Bundled non-binary in-archive paths (LICENSE / README / completions /
+    /// man), from `metadata["archive_files"]`. Already carries the
+    /// `wrap_in_directory` prefix. Empty when the archive bundles no extra
+    /// files. The krew publisher selects LICENSE/README entries from this so
+    /// its `files:` list is gated on actual presence rather than guessed.
+    pub archive_files: Vec<String>,
 }
 
 /// Convert a single `Artifact` reference into an `OsArtifact`, using the
@@ -131,6 +143,22 @@ fn artifact_to_os_artifact(
         .into_iter()
         .next()
         .or_else(|| a.metadata.get("binary").cloned());
+    let wrap_in_directory = a
+        .metadata
+        .get("wrap_in_directory")
+        .cloned()
+        .filter(|s| !s.is_empty());
+    let archive_files = a
+        .metadata
+        .get("archive_files")
+        .map(|s| {
+            s.split(',')
+                .map(str::trim)
+                .filter(|p| !p.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     Ok(OsArtifact {
         url,
         sha256,
@@ -140,6 +168,8 @@ fn artifact_to_os_artifact(
         amd64_variant,
         arm_variant,
         binary,
+        wrap_in_directory,
+        archive_files,
     })
 }
 

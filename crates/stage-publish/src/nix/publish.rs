@@ -1294,10 +1294,7 @@ mod tests {
             sha256: sha256.to_string(),
             os: os.to_string(),
             arch: arch.to_string(),
-            id: None,
-            amd64_variant: None,
-            arm_variant: None,
-            binary: None,
+            ..Default::default()
         }
     }
 

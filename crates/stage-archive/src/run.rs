@@ -760,6 +760,19 @@ fn archive_one_config(
                 })
                 .collect::<Result<Vec<_>>>()?;
 
+            // Record the in-archive paths of the bundled non-binary files
+            // (LICENSE / README / CHANGELOG / completions / man) so the krew
+            // publisher can emit a per-platform `files:` extraction list that
+            // names exactly what the archive ships — and so the LICENSE/README
+            // entries are gated on their actual presence rather than guessed.
+            // These archive_names already carry the `wrap_in_directory` prefix,
+            // which is precisely the `from:` shape krew's extractor needs for a
+            // nested-archive layout.
+            let archive_extra_files: Vec<String> = extra_entries
+                .iter()
+                .map(|e| e.archive_name.to_string_lossy().replace('\\', "/"))
+                .collect();
+
             // Combine binary + extra entries and deduplicate by archive_name.
             // Deduplicate — first occurrence wins,
             // duplicates are warned and skipped.
@@ -963,6 +976,15 @@ fn archive_one_config(
                 bin_names.sort();
                 if !bin_names.is_empty() {
                     metadata.insert("extra_binaries".to_string(), bin_names.join(","));
+                }
+                // Record the bundled non-binary in-archive paths (LICENSE /
+                // README / completions / man) so the krew publisher can emit a
+                // `files:` extraction list gated on each file's actual presence.
+                // The order is stable because `sort_entries` already ordered the
+                // archive; `archive_extra_files` preserves the `extra_entries`
+                // order (which `resolve_default_extra_files` fixes deterministically).
+                if !archive_extra_files.is_empty() {
+                    metadata.insert("archive_files".to_string(), archive_extra_files.join(","));
                 }
 
                 // propagate

@@ -446,6 +446,7 @@ fn test_filter_by_variant_no_filter_passes_all() {
             amd64_variant: Some("v1".into()),
             arm_variant: None,
             binary: None,
+            ..Default::default()
         },
         OsArtifact {
             url: "u2".into(),
@@ -456,6 +457,7 @@ fn test_filter_by_variant_no_filter_passes_all() {
             amd64_variant: Some("v3".into()),
             arm_variant: None,
             binary: None,
+            ..Default::default()
         },
     ];
     let result = filter_by_variant(artifacts, None, None);
@@ -474,6 +476,7 @@ fn test_filter_by_variant_amd64_v1() {
             amd64_variant: Some("v1".into()),
             arm_variant: None,
             binary: None,
+            ..Default::default()
         },
         OsArtifact {
             url: "v3".into(),
@@ -484,6 +487,7 @@ fn test_filter_by_variant_amd64_v1() {
             amd64_variant: Some("v3".into()),
             arm_variant: None,
             binary: None,
+            ..Default::default()
         },
         OsArtifact {
             url: "arm64".into(),
@@ -494,6 +498,7 @@ fn test_filter_by_variant_amd64_v1() {
             amd64_variant: None,
             arm_variant: None,
             binary: None,
+            ..Default::default()
         },
     ];
     let result = filter_by_variant(artifacts, Some("v1"), None);
@@ -514,6 +519,7 @@ fn test_filter_by_variant_amd64_no_metadata_passes() {
         amd64_variant: None,
         arm_variant: None,
         binary: None,
+        ..Default::default()
     }];
     let result = filter_by_variant(artifacts, Some("v1"), None);
     assert_eq!(result.len(), 1);
@@ -531,6 +537,7 @@ fn test_filter_by_variant_arm_filter() {
             amd64_variant: None,
             arm_variant: Some("6".into()),
             binary: None,
+            ..Default::default()
         },
         OsArtifact {
             url: "arm7".into(),
@@ -541,6 +548,7 @@ fn test_filter_by_variant_arm_filter() {
             amd64_variant: None,
             arm_variant: Some("7".into()),
             binary: None,
+            ..Default::default()
         },
     ];
     let result = filter_by_variant(artifacts, None, Some("7"));
@@ -560,6 +568,7 @@ fn test_filter_by_variant_combined() {
             amd64_variant: Some("v1".into()),
             arm_variant: None,
             binary: None,
+            ..Default::default()
         },
         OsArtifact {
             url: "amd64-v3".into(),
@@ -570,6 +579,7 @@ fn test_filter_by_variant_combined() {
             amd64_variant: Some("v3".into()),
             arm_variant: None,
             binary: None,
+            ..Default::default()
         },
         OsArtifact {
             url: "arm6".into(),
@@ -580,6 +590,7 @@ fn test_filter_by_variant_combined() {
             amd64_variant: None,
             arm_variant: Some("6".into()),
             binary: None,
+            ..Default::default()
         },
         OsArtifact {
             url: "arm7".into(),
@@ -590,6 +601,7 @@ fn test_filter_by_variant_combined() {
             amd64_variant: None,
             arm_variant: Some("7".into()),
             binary: None,
+            ..Default::default()
         },
     ];
     let result = filter_by_variant(artifacts, Some("v1"), Some("7"));
