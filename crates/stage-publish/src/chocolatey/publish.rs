@@ -423,7 +423,21 @@ fn select_windows_artifacts<'a>(
     let artifact_kind = util::resolve_artifact_kind(choco_cfg.use_artifact.as_deref());
     let all_artifacts = ctx.artifacts.by_kind_and_crate(artifact_kind, crate_name);
 
-    let win_artifacts: Vec<_> = all_artifacts
+    // The format the rendered install script is built for, implied by `use:`.
+    // `msi` and `nsis` both resolve to `ArtifactKind::Installer`, so a crate
+    // that builds BOTH an MSI and an NSIS exe for the same arch carries two
+    // indistinguishable-by-kind artifacts. Without this discriminator the
+    // first-Installer-wins partition below could route the NSIS exe into a
+    // slot the install script then wraps with `-FileType 'msi'` (or vice
+    // versa) — an installer run with the wrong silent switches, a broken
+    // install, and a moderation rejection. `archive` has no format gate.
+    let required_format = match choco_cfg.use_artifact.as_deref() {
+        Some("msi") => Some("msi"),
+        Some("nsis") => Some("nsis"),
+        _ => None,
+    };
+
+    let mut win_artifacts: Vec<_> = all_artifacts
         .into_iter()
         .filter(|a| {
             (a.target
@@ -454,7 +468,26 @@ fn select_windows_artifacts<'a>(
             }
             true
         })
+        // Filter by installer format implied by `use:`. An artifact whose
+        // `format` is present and does NOT match is excluded; one missing the
+        // key is kept (tolerant — an older build stage may not stamp it). The
+        // sort below then prefers a present-and-matching artifact over a
+        // format-less one for the same arch.
+        .filter(|a| match (required_format, a.metadata.get("format")) {
+            (Some(want), Some(have)) => have == want,
+            _ => true,
+        })
         .collect();
+
+    // When a format is required, order present-and-matching artifacts ahead of
+    // format-less ones so the first-wins partition below prefers a definite
+    // match. Stable so same-format artifacts keep their discovery order.
+    if let Some(want) = required_format {
+        win_artifacts.sort_by_key(|a| match a.metadata.get("format") {
+            Some(have) if have == want => 0u8,
+            _ => 1u8,
+        });
+    }
 
     // Chocolatey only ships amd64 + 386 install scripts; arm64 (and any
     // other architecture) MUST be filtered out before the per-architecture
@@ -1272,6 +1305,107 @@ mod tests {
         let log = StageLogger::new("publish", Verbosity::Quiet);
         let (_a32, a64) = select_windows_artifacts(&ctx, &cfg, "mytool", &log);
         assert_eq!(a64.unwrap().name, "amd64-v3.zip");
+    }
+
+    /// Build a Windows `Installer`-kind artifact stamped with the given
+    /// `format` (`msi` / `nsis`), matching what stage-msi / stage-nsis emit.
+    fn installer_artifact(target: &str, name: &str, format: &str) -> Artifact {
+        let mut m = std::collections::HashMap::new();
+        m.insert("sha256".to_string(), "deadbeef".to_string());
+        m.insert("url".to_string(), format!("https://example.com/{}", name));
+        m.insert("format".to_string(), format.to_string());
+        Artifact {
+            kind: ArtifactKind::Installer,
+            path: std::path::PathBuf::from(format!("/tmp/{}", name)),
+            name: name.to_string(),
+            target: Some(target.to_string()),
+            crate_name: "mytool".to_string(),
+            metadata: m,
+            size: None,
+        }
+    }
+
+    /// Cross-wire guard: with BOTH an MSI and an NSIS exe for the same arch and
+    /// `use: msi`, selection MUST pick the MSI. Before the format filter the
+    /// first-Installer-wins partition could route the NSIS exe into the 64-bit
+    /// slot, which the install script then wrapped with `-FileType 'msi'` — an
+    /// exe run with MSI switches (broken install, moderation reject).
+    #[test]
+    fn select_windows_artifacts_use_msi_picks_msi_over_nsis() {
+        let mut ctx = ctx_with_choco(ChocolateyConfig::default());
+        // NSIS added FIRST so first-wins would pick it without the format gate.
+        ctx.artifacts.add(installer_artifact(
+            "x86_64-pc-windows-msvc",
+            "app-setup.exe",
+            "nsis",
+        ));
+        ctx.artifacts.add(installer_artifact(
+            "x86_64-pc-windows-msvc",
+            "app-x64.msi",
+            "msi",
+        ));
+        let cfg = ChocolateyConfig {
+            use_artifact: Some("msi".to_string()),
+            ..Default::default()
+        };
+        let log = StageLogger::new("publish", Verbosity::Quiet);
+        let (_a32, a64) = select_windows_artifacts(&ctx, &cfg, "mytool", &log);
+        assert_eq!(
+            a64.expect("an amd64 installer must be selected").name,
+            "app-x64.msi",
+            "use: msi must select the MSI, not the NSIS exe"
+        );
+    }
+
+    /// The converse: `use: nsis` with both formats present must pick the NSIS
+    /// exe, not the MSI.
+    #[test]
+    fn select_windows_artifacts_use_nsis_picks_nsis_over_msi() {
+        let mut ctx = ctx_with_choco(ChocolateyConfig::default());
+        // MSI added FIRST so first-wins would pick it without the format gate.
+        ctx.artifacts.add(installer_artifact(
+            "x86_64-pc-windows-msvc",
+            "app-x64.msi",
+            "msi",
+        ));
+        ctx.artifacts.add(installer_artifact(
+            "x86_64-pc-windows-msvc",
+            "app-setup.exe",
+            "nsis",
+        ));
+        let cfg = ChocolateyConfig {
+            use_artifact: Some("nsis".to_string()),
+            ..Default::default()
+        };
+        let log = StageLogger::new("publish", Verbosity::Quiet);
+        let (_a32, a64) = select_windows_artifacts(&ctx, &cfg, "mytool", &log);
+        assert_eq!(
+            a64.expect("an amd64 installer must be selected").name,
+            "app-setup.exe",
+            "use: nsis must select the NSIS exe, not the MSI"
+        );
+    }
+
+    /// Tolerance: an installer missing the `format` key is NOT dropped (older
+    /// build stages may not stamp it) — it is still selectable under `use:
+    /// msi` when it is the only candidate.
+    #[test]
+    fn select_windows_artifacts_keeps_format_less_installer() {
+        let mut ctx = ctx_with_choco(ChocolateyConfig::default());
+        let mut art = installer_artifact("x86_64-pc-windows-msvc", "app.msi", "msi");
+        art.metadata.remove("format");
+        ctx.artifacts.add(art);
+        let cfg = ChocolateyConfig {
+            use_artifact: Some("msi".to_string()),
+            ..Default::default()
+        };
+        let log = StageLogger::new("publish", Verbosity::Quiet);
+        let (_a32, a64) = select_windows_artifacts(&ctx, &cfg, "mytool", &log);
+        assert_eq!(
+            a64.expect("a format-less installer must still be selectable")
+                .name,
+            "app.msi"
+        );
     }
 
     #[test]

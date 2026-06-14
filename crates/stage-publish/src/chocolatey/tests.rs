@@ -312,6 +312,21 @@ fn test_generate_install_script_msi_64bit() {
     assert!(script.contains("silentArgs     = '/qn /norestart'"));
     assert!(script.contains("validExitCodes = @(0, 1641, 3010)"));
     assert!(!script.contains("unzipLocation"));
+    // The `{% if valid_exit_codes %}` line must sit INSIDE the @{ } block:
+    // the validExitCodes line is followed by the closing brace, then the
+    // cmdlet. Guards a brace-placement regression in the conditional.
+    assert!(
+        script.contains(
+            "validExitCodes = @(0, 1641, 3010)\n}\n\nInstall-ChocolateyPackage @packageArgs"
+        ),
+        "validExitCodes must close the @packageArgs block before the cmdlet; got: {script}"
+    );
+    assert!(
+        script
+            .trim_end()
+            .ends_with("}\n\nInstall-ChocolateyPackage @packageArgs"),
+        "script must end with the closing brace then the cmdlet; got: {script}"
+    );
 }
 
 /// A dual-arch MSI routes both URLs through `Install-ChocolateyPackage`.
@@ -360,6 +375,19 @@ fn test_generate_install_script_nsis_64bit() {
     assert!(
         !script.contains("validExitCodes"),
         "validExitCodes is MSI-only; NSIS exe must omit it. got: {script}"
+    );
+    // With the `{% if valid_exit_codes %}` branch dropped, the silentArgs line
+    // must be immediately followed by the closing brace, then the cmdlet — no
+    // dangling/missing brace from the omitted conditional.
+    assert!(
+        script.contains("silentArgs     = '/S'\n}\n\nInstall-ChocolateyPackage @packageArgs"),
+        "dropped validExitCodes must leave the @packageArgs brace intact; got: {script}"
+    );
+    assert!(
+        script
+            .trim_end()
+            .ends_with("}\n\nInstall-ChocolateyPackage @packageArgs"),
+        "script must end with the closing brace then the cmdlet; got: {script}"
     );
 }
 
