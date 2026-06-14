@@ -277,6 +277,50 @@ pub(super) fn nix_escape_indented_string(s: &str) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Maintainer handle validation
+// ---------------------------------------------------------------------------
+
+/// Validate a `meta.maintainers` handle as a bare Nix identifier.
+///
+/// Each handle is rendered VERBATIM (no quoting, no escaping) inside
+/// `maintainers = with lib.maintainers; [ <handle> … ];`, so it must be a
+/// legal Nix identifier — otherwise a handle containing `]`, whitespace,
+/// `"`, or `${` would break the list syntax or trigger antiquotation,
+/// producing a derivation that fails at `nix-build`. nixpkgs
+/// `lib.maintainers` attribute names are themselves Nix identifiers, so a
+/// legitimate handle always passes; a value that fails is a config mistake
+/// (e.g. a `Name <email>` author string pasted in by accident).
+///
+/// The accepted grammar mirrors the Nix identifier production: an initial
+/// letter or `_`, then any of letter / digit / `_` / `'` / `-`. Returns a
+/// clear, actionable error naming the offending handle when it does not match.
+pub(super) fn validate_maintainer_handle(handle: &str) -> Result<()> {
+    fn is_valid(handle: &str) -> bool {
+        let mut chars = handle.chars();
+        let Some(first) = chars.next() else {
+            return false; // empty
+        };
+        if !(first.is_ascii_alphabetic() || first == '_') {
+            return false;
+        }
+        chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '\'' | '-'))
+    }
+
+    if is_valid(handle) {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "nix: maintainer handle '{}' is not a valid nixpkgs `lib.maintainers` \
+             identifier. Handles are rendered verbatim into `maintainers = with \
+             lib.maintainers; [ … ];`, so each must match `^[A-Za-z_][A-Za-z0-9_'-]*$` \
+             (e.g. `globin`, `ma27`). Use the maintainer's nixpkgs handle, not a \
+             `Name <email>` string.",
+            handle
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
 // License validation
 // ---------------------------------------------------------------------------
 

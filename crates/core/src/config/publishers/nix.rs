@@ -47,7 +47,14 @@ pub struct NixConfig {
     pub description: Option<String>,
     /// Project homepage URL.
     pub homepage: Option<String>,
-    /// Nix license identifier (e.g. "mit", "asl20"). Validated against known licenses.
+    /// License for the derivation's `meta.license`. Accepts a nix
+    /// `lib.licenses` attribute (e.g. `mit`, `asl20`) or an SPDX expression
+    /// (e.g. `MIT`, `Apache-2.0`, `MIT OR Apache-2.0`). A known single id maps
+    /// to `lib.licenses.<attr>`; an `OR`/`AND` list of known ids maps to
+    /// `with lib.licenses; [ … ]`. An unknown id or an unparseable compound
+    /// (e.g. a `WITH` exception) degrades to a quoted-string `license` in
+    /// `meta` — never rejected, never an invalid attr-path. When unset, the
+    /// license is derived from the crate's `Cargo.toml [package].license`.
     pub license: Option<String>,
     /// nixpkgs maintainer handles (from `lib.maintainers`) rendered as
     /// `maintainers = with lib.maintainers; [ alice bob ];` in the

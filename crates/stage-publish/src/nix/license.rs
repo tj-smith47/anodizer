@@ -13,11 +13,12 @@
 //!   derivation's `lib.licenses.<attr>` lookup would reference a
 //!   nonexistent attribute and fail at evaluation.
 //!
-//! [`resolve_nix_license`] reconciles both: a value already valid as a
-//! nix attribute is preserved verbatim; otherwise a known SPDX id is
-//! mapped to its nix attribute; anything else is a hard error.
-
-use anyhow::Result;
+//! [`resolve_nix_license_meta`] reconciles both: a value already valid as a
+//! nix attribute is preserved verbatim; a known SPDX id (or `OR`/`AND` list of
+//! known ids) is mapped to its nix attribute(s); anything unmappable — an
+//! unknown id or an unparseable compound expression — degrades to a verbatim
+//! quoted-string `meta.license` (always valid in Nix `meta`) rather than emit
+//! a bogus `lib.licenses.<id>` attr-path or abort the release.
 
 use anodizer_core::license::parse_spdx_expression;
 
@@ -297,59 +298,6 @@ fn spdx_to_nix_attr(spdx: &str) -> Option<&'static str> {
         .map(|(_, attr)| *attr)
 }
 
-/// True when a value looks like a compound SPDX expression — a license
-/// expression joined by an operator (`OR` / `AND` / `WITH`), a deprecated
-/// `+` suffix (`Apache-2.0+`), or a parenthesised group. nixpkgs
-/// `lib.licenses` has no single attribute for a compound expression, so
-/// these cannot be auto-mapped and require an explicit `nix.license`.
-fn is_compound_spdx(value: &str) -> bool {
-    let upper = format!(" {} ", value.to_ascii_uppercase());
-    upper.contains(" OR ")
-        || upper.contains(" AND ")
-        || upper.contains(" WITH ")
-        || value.contains('(')
-        || value.ends_with('+')
-}
-
-/// Resolve a license value to a nix `lib.licenses` attribute name.
-///
-/// Precedence:
-/// 1. A value already valid as a nix `lib.licenses` attribute (e.g.
-///    `mit`, `asl20`) is returned verbatim — a direct
-///    nix-attr config keeps working unchanged.
-/// 2. A known single SPDX id (e.g. `MIT`, `Apache-2.0`, case-insensitive)
-///    is mapped to its nix attribute.
-/// 3. A compound SPDX expression (`MIT OR Apache-2.0`,
-///    `Apache-2.0 WITH LLVM-exception`, `Apache-2.0+`) is rejected with a
-///    message pointing the user at an explicit `nix.license`, because
-///    nixpkgs has no single attribute for a compound expression.
-/// 4. Anything else is rejected as neither a known SPDX id nor a nix
-///    attribute.
-pub fn resolve_nix_license(value: &str) -> Result<String> {
-    if validate_nix_license(value).is_ok() {
-        return Ok(value.to_string());
-    }
-    if let Some(attr) = spdx_to_nix_attr(value) {
-        return Ok(attr.to_string());
-    }
-    if is_compound_spdx(value) {
-        anyhow::bail!(
-            "nix: license '{}' is a compound SPDX expression, which has no \
-             single `lib.licenses` attribute. Set `nix.license` explicitly to \
-             the nix attribute name (e.g. `asl20`) for the license you want in \
-             the derivation's `meta.license`.",
-            value
-        );
-    }
-    anyhow::bail!(
-        "nix: license '{}' is neither a known SPDX identifier nor a nix \
-         `lib.licenses` attribute name. Set `nix.license` to a valid nix \
-         attribute (e.g. `mit`, `asl20`, `bsd3`) — see `lib.licenses` in \
-         nixpkgs for the full set.",
-        value
-    );
-}
-
 /// The resolved shape of a derivation's `meta.license`, ready to render.
 ///
 /// A nix `meta.license` may be a single attribute (`lib.licenses.mit`), a
@@ -375,10 +323,9 @@ pub enum NixLicense {
 /// Resolve a single license id (an SPDX id OR a direct nix attribute) to its
 /// nix `lib.licenses` attribute name, or `None` when it maps to neither.
 ///
-/// Mirrors [`resolve_nix_license`]'s first two precedence rules (direct
-/// nix-attr passthrough, then SPDX→attr mapping) but returns `None` instead of
-/// erroring on a miss, so the list/single resolver can decide to fall back to
-/// the verbatim string form rather than abort the release.
+/// Applies two precedence rules — direct nix-attr passthrough, then SPDX→attr
+/// mapping — and returns `None` on a miss, so the list/single resolver can fall
+/// back to the verbatim string form rather than abort the release.
 fn resolve_single_id(id: &str) -> Option<String> {
     if validate_nix_license(id).is_ok() {
         return Some(id.to_string());
@@ -438,30 +385,41 @@ pub fn resolve_nix_license_meta(value: &str) -> Option<NixLicense> {
 mod tests {
     use super::*;
 
+    /// Assert that `value` resolves to exactly the single nix attr `attr`
+    /// through the production resolver. Covers the SPDX→attr map + direct
+    /// nix-attr passthrough that `resolve_nix_license_meta` shares.
+    fn assert_single_attr(value: &str, attr: &str) {
+        assert_eq!(
+            resolve_nix_license_meta(value),
+            Some(NixLicense::Single(attr.to_string())),
+            "`{value}` must resolve to lib.licenses.{attr}"
+        );
+    }
+
     #[test]
     fn passthrough_valid_nix_attr_unchanged() {
         // Direct nix attrs (cfgd writes `mit`) must not break.
-        assert_eq!(resolve_nix_license("mit").unwrap(), "mit");
-        assert_eq!(resolve_nix_license("asl20").unwrap(), "asl20");
-        assert_eq!(resolve_nix_license("gpl3Plus").unwrap(), "gpl3Plus");
+        assert_single_attr("mit", "mit");
+        assert_single_attr("asl20", "asl20");
+        assert_single_attr("gpl3Plus", "gpl3Plus");
     }
 
     #[test]
     fn maps_common_spdx_ids() {
-        assert_eq!(resolve_nix_license("MIT").unwrap(), "mit");
-        assert_eq!(resolve_nix_license("Apache-2.0").unwrap(), "asl20");
-        assert_eq!(resolve_nix_license("BSD-3-Clause").unwrap(), "bsd3");
-        assert_eq!(resolve_nix_license("GPL-3.0-or-later").unwrap(), "gpl3Plus");
-        assert_eq!(resolve_nix_license("MPL-2.0").unwrap(), "mpl20");
-        assert_eq!(resolve_nix_license("ISC").unwrap(), "isc");
+        assert_single_attr("MIT", "mit");
+        assert_single_attr("Apache-2.0", "asl20");
+        assert_single_attr("BSD-3-Clause", "bsd3");
+        assert_single_attr("GPL-3.0-or-later", "gpl3Plus");
+        assert_single_attr("MPL-2.0", "mpl20");
+        assert_single_attr("ISC", "isc");
     }
 
     #[test]
     fn spdx_lookup_is_case_insensitive() {
         // SPDX treats identifiers as case-insensitive.
-        assert_eq!(resolve_nix_license("apache-2.0").unwrap(), "asl20");
-        assert_eq!(resolve_nix_license("mit").unwrap(), "mit");
-        assert_eq!(resolve_nix_license("Bsd-3-Clause").unwrap(), "bsd3");
+        assert_single_attr("apache-2.0", "asl20");
+        assert_single_attr("mit", "mit");
+        assert_single_attr("Bsd-3-Clause", "bsd3");
     }
 
     #[test]
@@ -499,68 +457,44 @@ mod tests {
         // `license` field carries must each resolve to nixpkgs' attribute.
         // `0BSD` and the SPDX-deprecated-but-still-used bare `GPL-*`/`LGPL-*`
         // legacy ids appear in real crates.
-        assert_eq!(resolve_nix_license("0BSD").unwrap(), "bsd0");
-        assert_eq!(resolve_nix_license("GPL-2.0").unwrap(), "gpl2");
-        assert_eq!(resolve_nix_license("GPL-3.0").unwrap(), "gpl3");
-        assert_eq!(resolve_nix_license("LGPL-2.1").unwrap(), "lgpl21");
-        assert_eq!(resolve_nix_license("Apache-1.1").unwrap(), "asl11");
-        assert_eq!(resolve_nix_license("Unicode-3.0").unwrap(), "unicode-30");
+        assert_single_attr("0BSD", "bsd0");
+        assert_single_attr("GPL-2.0", "gpl2");
+        assert_single_attr("GPL-3.0", "gpl3");
+        assert_single_attr("LGPL-2.1", "lgpl21");
+        assert_single_attr("Apache-1.1", "asl11");
+        assert_single_attr("Unicode-3.0", "unicode-30");
     }
 
     #[test]
     fn distinct_licenses_are_not_aliased_onto_a_neighbor_attr() {
         // These SPDX ids name licenses that are NOT the nixpkgs attr a naive
-        // recall-built table reached for, which silently mislabeled them:
+        // recall-built table reached for, which would silently mislabel them:
         //   MITNFA       != MIT-advertising (mitAdvertising)
         //   Linux-OpenIB != BSD-3-Clause    (bsd3)
         //   XFree86-1.1  != X11             (x11)
         //   Intel        != intel-eula      (the unrelated unfree Intel EULA)
-        // nixpkgs has no attr for them, so they must hard-error rather than
-        // silently mislabel the release as a different license.
+        // nixpkgs has no attr for them, so they must degrade to a verbatim
+        // string literal rather than silently alias onto a wrong attr.
         for id in ["MITNFA", "Linux-OpenIB", "XFree86-1.1", "Intel"] {
-            let err = resolve_nix_license(id).unwrap_err().to_string();
-            assert!(
-                err.contains(id) && err.contains("neither a known SPDX"),
-                "`{id}` must hard-error, not alias onto a wrong attr; got: {err}"
+            assert_eq!(
+                resolve_nix_license_meta(id),
+                Some(NixLicense::Str(id.to_string())),
+                "`{id}` must degrade to a string literal, not alias onto a wrong attr"
             );
         }
-        // The legitimately-mapped neighbors still resolve.
+        // The legitimately-mapped neighbors still resolve to their attr.
+        assert_single_attr("MIT-advertising", "mitAdvertising");
+        assert_single_attr("BSD-3-Clause", "bsd3");
+        assert_single_attr("X11", "x11");
+    }
+
+    #[test]
+    fn unknown_id_degrades_to_string_literal() {
         assert_eq!(
-            resolve_nix_license("MIT-advertising").unwrap(),
-            "mitAdvertising"
+            resolve_nix_license_meta("Foo-1.0"),
+            Some(NixLicense::Str("Foo-1.0".to_string())),
+            "an unknown id must degrade to a verbatim string, never a bogus attr"
         );
-        assert_eq!(resolve_nix_license("BSD-3-Clause").unwrap(), "bsd3");
-        assert_eq!(resolve_nix_license("X11").unwrap(), "x11");
-    }
-
-    #[test]
-    fn unknown_id_is_clear_error() {
-        let err = resolve_nix_license("Foo-1.0").unwrap_err().to_string();
-        assert!(err.contains("Foo-1.0"), "must name the value: {err}");
-        assert!(
-            err.contains("neither a known SPDX") && err.contains("nix"),
-            "must say neither SPDX nor nix attr: {err}"
-        );
-    }
-
-    #[test]
-    fn compound_or_expression_is_rejected_with_hint() {
-        let err = resolve_nix_license("MIT OR Apache-2.0")
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("compound"), "must flag compound: {err}");
-        assert!(
-            err.contains("nix.license"),
-            "must hint explicit nix.license: {err}"
-        );
-    }
-
-    #[test]
-    fn compound_with_and_plus_rejected() {
-        assert!(resolve_nix_license("Apache-2.0 WITH LLVM-exception").is_err());
-        assert!(resolve_nix_license("GPL-2.0-only AND MIT").is_err());
-        assert!(resolve_nix_license("Apache-2.0+").is_err());
-        assert!(resolve_nix_license("(MIT OR Apache-2.0)").is_err());
     }
 
     // -----------------------------------------------------------------

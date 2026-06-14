@@ -421,8 +421,14 @@ fn resolve_nix_metadata(
     // `Name <email>` author strings `meta_maintainers_for` derives from
     // Cargo.toml — so this reads ONLY the explicit `nix.maintainers` config.
     // Absent/empty still renders `maintainers = [ ];` (present-but-empty),
-    // which clears the nixpkgs-review "maintainers absent" rejection.
+    // which clears the nixpkgs-review "maintainers absent" rejection. Each
+    // handle is rendered verbatim into the derivation, so validate it is a
+    // bare Nix identifier here — a bad handle would break the list syntax.
     let maintainers = nix_cfg.maintainers.clone().unwrap_or_default();
+    for handle in &maintainers {
+        super::generate::validate_maintainer_handle(handle)
+            .with_context(|| format!("nix: invalid maintainer handle for '{}'", crate_name))?;
+    }
 
     let main_program_raw = nix_cfg.main_program.as_deref().unwrap_or("");
     let main_program = ctx
@@ -1722,8 +1728,7 @@ mod tests {
     fn resolve_nix_metadata_empty_license_suppressed_not_resolved() {
         let ctx = meta_ctx();
         // No license configured and no project metadata fallback — the empty
-        // sentinel must short-circuit BEFORE resolve_nix_license (which would
-        // bail on an empty string).
+        // value resolves to no `meta.license` attribute at all.
         let cfg = NixConfig::default();
         let meta = resolve_nix_metadata(&ctx, &meta_crate_cfg(), &cfg, "mytool", &quiet_log())
             .expect("resolve");

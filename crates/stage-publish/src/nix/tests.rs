@@ -1752,6 +1752,103 @@ fn maintainers_rendered_as_lib_maintainers_handles() {
 }
 
 #[test]
+fn valid_maintainer_handles_accepted() {
+    use super::generate::validate_maintainer_handle;
+    for handle in [
+        "globin",
+        "ma27",
+        "zowoq",
+        "_internal",
+        "o'brien",
+        "jean-luc",
+        "a",
+    ] {
+        assert!(
+            validate_maintainer_handle(handle).is_ok(),
+            "`{handle}` is a valid nix identifier and must be accepted"
+        );
+    }
+}
+
+#[test]
+fn invalid_maintainer_handle_errors_naming_the_handle() {
+    use super::generate::validate_maintainer_handle;
+    // Each of these would break the `[ … ]` list syntax or antiquote if
+    // rendered verbatim: a closer, whitespace, a quote, antiquotation, a
+    // leading digit, an empty handle, an email-like author string.
+    for bad in [
+        "globin]",
+        "two words",
+        "has\"quote",
+        "anti${X}",
+        "9lives",
+        "",
+        "Jane Doe <jane@example.com>",
+    ] {
+        let err = validate_maintainer_handle(bad)
+            .expect_err(&format!("`{bad}` must be rejected"))
+            .to_string();
+        if !bad.is_empty() {
+            assert!(
+                err.contains(bad),
+                "error must name the bad handle `{bad}`; got: {err}"
+            );
+        }
+        assert!(
+            err.contains("lib.maintainers"),
+            "error must point at lib.maintainers; got: {err}"
+        );
+    }
+}
+
+/// An invalid maintainer handle in config must hard-error at resolve time,
+/// before any derivation is rendered — never silently emit broken syntax.
+#[test]
+fn render_rejects_invalid_maintainer_handle() {
+    let err = render_single_crate(
+        "MIT",
+        |nix| {
+            nix.maintainers = Some(vec!["globin".to_string(), "bad handle]".to_string()]);
+        },
+        |_| {},
+    )
+    .expect_err("invalid handle must abort the render");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("bad handle]") && msg.contains("maintainer handle"),
+        "error must name the bad handle and the field; got: {msg}"
+    );
+}
+
+/// Syntax floor for a POPULATED maintainers list (real handles): the rendered
+/// derivation must keep balanced delimiters and parse under `nix-instantiate`
+/// when present. The empty `[ ]` case is covered elsewhere; this exercises the
+/// `with lib.maintainers; [ … ]` shape end-to-end.
+#[test]
+fn populated_maintainers_list_passes_syntax_floor() {
+    let expr = render_single_crate(
+        "MIT OR Apache-2.0",
+        |nix| {
+            nix.maintainers = Some(vec![
+                "globin".to_string(),
+                "ma27".to_string(),
+                "zowoq".to_string(),
+            ]);
+            nix.main_program = Some("rg".to_string());
+        },
+        |_| {},
+    )
+    .unwrap();
+    assert!(
+        expr.contains("maintainers = with lib.maintainers; [ globin ma27 zowoq ];"),
+        "populated handles must render; got:\n{expr}"
+    );
+    super::nix_delimiters_balanced(&expr)
+        .expect("populated maintainers list must keep nix delimiters balanced");
+    assert_nix_parses_or_skip(&expr);
+}
+
+#[test]
 fn changelog_derived_into_meta_from_release_repo_and_tag() {
     let expr = render_single_crate(
         "MIT",
