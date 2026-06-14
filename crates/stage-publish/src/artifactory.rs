@@ -262,9 +262,23 @@ fn is_deb_artifact(artifact: &Artifact) -> bool {
 /// exists to prevent). Allow only the conservative Debian
 /// distribution/component slug charset (ASCII alphanumerics plus `-`, `.`,
 /// `_`); `/` is rejected too because an Artifactory deb matrix distribution is
-/// a flat codename (`bookworm`), not a path. Empty values are skipped by the
-/// caller before this runs.
+/// a flat codename (`bookworm`), not a path.
+///
+/// An empty or whitespace-only value is rejected here as well: the list values
+/// are joined with `,` into `deb.distribution=a,b`, so a `""` element produces
+/// a trailing-comma `bookworm,` that mis-indexes the `.deb` into an
+/// empty-named distribution. The charset check alone passes a `""` vacuously,
+/// so this explicit emptiness guard runs first.
 fn validate_deb_matrix_slug(field: &str, value: &str) -> Result<()> {
+    if value.trim().is_empty() {
+        bail!(
+            "artifactory: empty {field} value '{value}' — a Debian repository \
+             distribution/component slug must be a non-empty flat codename like \
+             'bookworm' or 'stable'. An empty or whitespace-only entry joins into \
+             a trailing-comma matrix param (e.g. 'bookworm,') that mis-indexes the \
+             .deb into an empty-named slice. Remove the empty entry from the list.",
+        );
+    }
     let ok = value
         .chars()
         .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'));
@@ -284,8 +298,11 @@ fn validate_deb_matrix_slug(field: &str, value: &str) -> Result<()> {
 /// `deb_architecture` slug on an Artifactory entry up front, so a slug that
 /// would corrupt the upload matrix params hard-errors at config-validation
 /// time (before any bytes are PUT) rather than silently shipping an
-/// unindexable `.deb`. The derived architecture (`amd64`/`arm64`/…) is always
-/// safe, so only an explicit `deb_architecture` override is checked here.
+/// unindexable `.deb`. Only the user-supplied overrides are checked here; the
+/// *derived* architecture (from each `.deb` artifact's build target) is
+/// validated per-artifact at URL-composition time in
+/// [`append_deb_matrix_params`], which hard-fails on a triple that has no known
+/// Debian arch and re-runs the derived value through [`validate_deb_matrix_slug`].
 fn validate_artifactory_deb_slugs(entry: &anodizer_core::config::ArtifactoryConfig) -> Result<()> {
     for d in entry.deb_distributions.iter().flatten() {
         validate_deb_matrix_slug("deb_distributions", d)?;
@@ -317,14 +334,21 @@ fn validate_artifactory_deb_slugs(entry: &anodizer_core::config::ArtifactoryConf
 ///   `deb.architecture` param is omitted (Artifactory then reads it from the
 ///   package's own control file).
 ///
+/// Fallible: a build target whose architecture has no known Debian spelling
+/// (an exotic or user-supplied `prebuilt` triple) hard-errors rather than
+/// injecting a raw triple fragment as `deb.architecture=` — a silent wrong
+/// value would land the `.deb` in the wrong (or an empty-named) repository
+/// slice. The derived value is also re-checked against the matrix-param slug
+/// charset as defense-in-depth.
+///
 /// A no-op for non-`.deb` artifacts: the URL is returned unchanged.
 fn append_deb_matrix_params(
     url: &str,
     artifact: &Artifact,
     entry: &anodizer_core::config::ArtifactoryConfig,
-) -> String {
+) -> Result<String> {
     if !is_deb_artifact(artifact) {
-        return url.to_string();
+        return Ok(url.to_string());
     }
 
     let distributions = entry
@@ -342,16 +366,24 @@ fn append_deb_matrix_params(
 
     let mut out = format!("{url};deb.distribution={distributions};deb.component={components}");
 
-    let architecture = entry.deb_architecture.clone().or_else(|| {
-        artifact
-            .target
-            .as_deref()
-            .map(anodizer_core::target::debian_arch_from_target)
-    });
+    let architecture = match entry.deb_architecture.clone() {
+        Some(explicit) => Some(explicit),
+        None => match artifact.target.as_deref() {
+            Some(triple) => Some(
+                anodizer_core::target::debian_arch_from_target(triple)
+                    .map_err(|e| anyhow::anyhow!("artifactory: {e}"))?,
+            ),
+            None => None,
+        },
+    };
     if let Some(arch) = architecture.filter(|a| !a.is_empty()) {
+        // Defense-in-depth: the explicit override was already validated up
+        // front, and the derived value comes from a fixed table, but re-check
+        // so neither path can ever inject a matrix-param-breaking char.
+        validate_deb_matrix_slug("deb.architecture", &arch)?;
         out.push_str(&format!(";deb.architecture={arch}"));
     }
-    out
+    Ok(out)
 }
 
 // ---------------------------------------------------------------------------
@@ -872,7 +904,7 @@ pub fn publish_to_artifactory(
             // so dry-run reflects template behaviour exactly.
             for a in &artifacts {
                 let url = render_artifact_url(ctx, target_template, a, custom_artifact_name)?;
-                let url = append_deb_matrix_params(&url, a, entry);
+                let url = append_deb_matrix_params(&url, a, entry)?;
                 log.status(&format!("(dry-run)   {} ({}) → {}", a.name(), a.kind, url));
             }
             continue;
@@ -930,7 +962,7 @@ pub fn publish_to_artifactory(
         // Upload each artifact
         for artifact in &artifacts {
             let url = render_artifact_url(ctx, target_template, artifact, custom_artifact_name)?;
-            let url = append_deb_matrix_params(&url, artifact, entry);
+            let url = append_deb_matrix_params(&url, artifact, entry)?;
             match upload_single_artifact(
                 &client,
                 &UploadHeaders {
@@ -1024,8 +1056,13 @@ pub(crate) fn collect_artifactory_targets(ctx: &Context) -> Vec<ArtifactoryTarge
             },
         );
         for a in &artifacts {
-            if let Ok(url) = render_artifact_url(ctx, target_template, a, custom_artifact_name) {
-                let url = append_deb_matrix_params(&url, a, entry);
+            // Best-effort (see fn doc): a render failure or an underivable deb
+            // arch only narrows the rollback checklist — the publish path's own
+            // `append_deb_matrix_params` call hard-fails on the same input, so
+            // any real blocker is surfaced there, not silently swallowed here.
+            if let Ok(url) = render_artifact_url(ctx, target_template, a, custom_artifact_name)
+                && let Ok(url) = append_deb_matrix_params(&url, a, entry)
+            {
                 out.push(ArtifactoryTarget {
                     entry: entry_name.clone(),
                     url,
@@ -1985,7 +2022,8 @@ mod tests {
         let entry = ArtifactoryConfig::default();
         let art = deb_artifact("myapp_1.0.0_amd64.deb", Some("x86_64-unknown-linux-gnu"));
         let url =
-            append_deb_matrix_params("https://art.example.com/deb-repo/myapp.deb", &art, &entry);
+            append_deb_matrix_params("https://art.example.com/deb-repo/myapp.deb", &art, &entry)
+                .unwrap();
         assert_eq!(
             url,
             "https://art.example.com/deb-repo/myapp.deb;deb.distribution=stable;deb.component=main;deb.architecture=amd64"
@@ -2002,7 +2040,7 @@ mod tests {
             ("i686-unknown-linux-gnu", "i386"),
         ] {
             let art = deb_artifact("p.deb", Some(target));
-            let url = append_deb_matrix_params("https://a/p.deb", &art, &entry);
+            let url = append_deb_matrix_params("https://a/p.deb", &art, &entry).unwrap();
             assert!(
                 url.ends_with(&format!(";deb.architecture={want}")),
                 "target {target} → {want}, got: {url}"
@@ -2022,7 +2060,7 @@ mod tests {
             ..Default::default()
         };
         let art = deb_artifact("p.deb", Some("x86_64-unknown-linux-gnu"));
-        let url = append_deb_matrix_params("https://a/p.deb", &art, &entry);
+        let url = append_deb_matrix_params("https://a/p.deb", &art, &entry).unwrap();
         assert_eq!(
             url,
             "https://a/p.deb;deb.distribution=bookworm,bullseye;deb.component=main,contrib;deb.architecture=all"
@@ -2036,7 +2074,7 @@ mod tests {
     fn deb_matrix_params_no_target_omits_arch() {
         let entry = ArtifactoryConfig::default();
         let art = deb_artifact("p.deb", None);
-        let url = append_deb_matrix_params("https://a/p.deb", &art, &entry);
+        let url = append_deb_matrix_params("https://a/p.deb", &art, &entry).unwrap();
         assert_eq!(
             url,
             "https://a/p.deb;deb.distribution=stable;deb.component=main"
@@ -2050,7 +2088,7 @@ mod tests {
         let entry = ArtifactoryConfig::default();
         for name in ["myapp-1.0.0.tar.gz", "myapp-1.0.0.x86_64.rpm", "myapp.apk"] {
             let art = deb_artifact(name, Some("x86_64-unknown-linux-gnu"));
-            let url = append_deb_matrix_params("https://a/repo/file", &art, &entry);
+            let url = append_deb_matrix_params("https://a/repo/file", &art, &entry).unwrap();
             assert_eq!(url, "https://a/repo/file", "{name} must be untouched");
         }
     }
@@ -2122,6 +2160,63 @@ mod tests {
             ..Default::default()
         };
         assert!(validate_artifactory_deb_slugs(&good).is_ok());
+    }
+
+    /// An empty or whitespace-only slug must be rejected: it joins into a
+    /// trailing-comma matrix param (e.g. `deb.distribution=bookworm,`) that
+    /// mis-indexes the .deb into an empty-named distribution. The charset check
+    /// alone would pass `""` vacuously, so the emptiness guard must run first.
+    #[test]
+    fn deb_matrix_slug_validation_rejects_empty_and_whitespace() {
+        for bad in ["", "  ", "\t"] {
+            let err = validate_deb_matrix_slug("deb_distributions", bad)
+                .expect_err(&format!("{bad:?} must be rejected"));
+            let msg = err.to_string();
+            assert!(msg.contains("deb_distributions"), "names the field: {msg}");
+            assert!(msg.contains("empty"), "explains it is empty: {msg}");
+            assert!(
+                msg.contains("trailing-comma") || msg.contains("codename"),
+                "explains the fix: {msg}"
+            );
+        }
+    }
+
+    /// Entry-level validation propagates the emptiness rejection: a list with
+    /// `["bookworm", ""]` (or a whitespace-only element) must hard-error.
+    #[test]
+    fn artifactory_deb_slug_entry_rejects_empty_list_element() {
+        let empty_in_dist = ArtifactoryConfig {
+            deb_distributions: Some(vec!["bookworm".to_string(), "".to_string()]),
+            ..Default::default()
+        };
+        assert!(validate_artifactory_deb_slugs(&empty_in_dist).is_err());
+
+        let ws_in_comp = ArtifactoryConfig {
+            deb_components: Some(vec!["main".to_string(), "  ".to_string()]),
+            ..Default::default()
+        };
+        assert!(validate_artifactory_deb_slugs(&ws_in_comp).is_err());
+    }
+
+    /// An unmapped / exotic build target (e.g. a user-supplied `prebuilt`
+    /// triple) must HARD-ERROR when its Debian arch is derived for the matrix
+    /// param, never silently inject a raw triple fragment as
+    /// `deb.architecture=` (which would mis-index the .deb into a wrong slice).
+    #[test]
+    fn deb_matrix_params_unmapped_target_hard_errors() {
+        let entry = ArtifactoryConfig::default();
+        let art = deb_artifact("p.deb", Some("frob-unknown-linux-gnu"));
+        let err = append_deb_matrix_params("https://a/p.deb", &art, &entry)
+            .expect_err("unmapped target must hard-fail, not inject a raw fragment");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("frob-unknown-linux-gnu"),
+            "names the offending triple: {msg}"
+        );
+        assert!(
+            msg.contains("deb_architecture"),
+            "names the override field as the fix: {msg}"
+        );
     }
 
     #[test]

@@ -2369,6 +2369,9 @@ fn test_ipk_format_produces_artifact() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("myapp".to_string()),
         formats: vec!["ipk".to_string()],
+        // ipk's opkg control file carries a Maintainer, so the guard requires
+        // one — set it explicitly so this format-coverage test stays focused.
+        maintainer: Some("Jane Doe <jane@example.com>".to_string()),
         ..Default::default()
     };
 
@@ -4466,6 +4469,9 @@ fn test_ipk_format_dry_run_produces_artifact() {
     let nfpm_cfg = NfpmConfig {
         package_name: Some("openwrt-pkg".to_string()),
         formats: vec!["ipk".to_string()],
+        // ipk requires a Maintainer (opkg control field); set it so this
+        // format-coverage test exercises emission, not the guard.
+        maintainer: Some("Jane Doe <jane@example.com>".to_string()),
         ..Default::default()
     };
 
@@ -6022,4 +6028,187 @@ fn test_deb_buildable_target_empty_maintainer_still_fails() {
         .run(&mut ctx)
         .expect_err("buildable deb with no maintainer must still hard-fail");
     assert!(err.to_string().contains("Maintainer"), "names the field");
+}
+
+/// `ipk` (OpenWrt/Entware) is deb-derived and its opkg control file carries a
+/// `Maintainer` line, so an ipk with no resolvable maintainer ships incomplete
+/// metadata exactly like its deb siblings — it must hard-fail, not warn.
+#[test]
+fn test_ipk_buildable_empty_maintainer_hard_fails() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        nfpms: Some(vec![NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["ipk".to_string()],
+            ..Default::default()
+        }]),
+        ..Default::default()
+    }];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    // x86_64 has broad ipk arch support → a package will be produced.
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: std::path::PathBuf::from("dist/myapp_x86_64"),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+
+    let err = NfpmStage
+        .run(&mut ctx)
+        .expect_err("buildable ipk with no maintainer must hard-fail");
+    assert!(err.to_string().contains("Maintainer"), "names the field");
+}
+
+/// Per-crate workspace mode for ipk: a crate whose ipk has neither an explicit
+/// nor a derivable maintainer hard-fails even when a sibling is fully
+/// configured — the guard resolves per-crate, not globally.
+#[test]
+fn test_ipk_per_crate_mode_empty_maintainer_fails() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{Config, CrateConfig, MetadataConfig, NfpmConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let mut config = Config::default();
+    config.project_name = "ws".to_string();
+    config.dist = tmp.path().join("dist");
+
+    let crate_a = CrateConfig {
+        name: "alpha".to_string(),
+        path: "crates/alpha".to_string(),
+        tag_template: "alpha-v{{ .Version }}".to_string(),
+        nfpms: Some(vec![NfpmConfig {
+            id: Some("alpha".to_string()),
+            package_name: Some("alpha".to_string()),
+            formats: vec!["ipk".to_string()],
+            maintainer: Some("Alpha Owner <a@example.com>".to_string()),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let crate_b = CrateConfig {
+        name: "beta".to_string(),
+        path: "crates/beta".to_string(),
+        tag_template: "beta-v{{ .Version }}".to_string(),
+        nfpms: Some(vec![NfpmConfig {
+            id: Some("beta".to_string()),
+            package_name: Some("beta".to_string()),
+            formats: vec!["ipk".to_string()],
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    config.crates = vec![crate_a, crate_b];
+    config.derived_metadata.insert(
+        "alpha".to_string(),
+        MetadataConfig {
+            maintainers: Some(vec!["Alpha Owner <a@example.com>".to_string()]),
+            ..Default::default()
+        },
+    );
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    for c in ["alpha", "beta"] {
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: std::path::PathBuf::from(format!("dist/{c}_x86_64")),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: c.to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+    }
+    let err = NfpmStage
+        .run(&mut ctx)
+        .expect_err("per-crate: beta's ipk has no maintainer and must fail");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("beta"),
+        "fails specifically on crate beta: {msg}"
+    );
+}
+
+/// Negative scope of [`format_requires_maintainer`]: `rpm` and `archlinux` do
+/// NOT require a maintainer (rpm's `Packager` tag is optional, an Arch
+/// `.PKGINFO` has no required maintainer). An rpm-only / archlinux-only config
+/// with an EMPTY maintainer must SUCCEED and still produce its package — a
+/// regression guard against a future edit widening the deb-family match.
+#[test]
+fn test_rpm_and_archlinux_only_empty_maintainer_succeeds() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    for format in ["rpm", "archlinux"] {
+        let tmp = TempDir::new().unwrap();
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpms: Some(vec![NfpmConfig {
+                package_name: Some("myapp".to_string()),
+                // No maintainer set anywhere, and none derivable.
+                formats: vec![format.to_string()],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        // x86_64 is supported for both rpm and archlinux.
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: std::path::PathBuf::from("dist/myapp_x86_64"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        NfpmStage.run(&mut ctx).unwrap_or_else(|e| {
+            panic!("{format}-only with empty maintainer must succeed, got: {e}")
+        });
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1, "{format}-only produces exactly one package");
+    }
 }

@@ -481,13 +481,21 @@ fn should_skip_nfpm_config(
 }
 
 /// Returns `true` when a packaging format requires a non-empty `Maintainer`
-/// to be installable: `deb` (Debian Policy 5.3 makes `Maintainer` mandatory —
-/// lintian rejects an empty field and apt renders the package as "unknown")
-/// and `apk` (Alpine's `APKINDEX` carries the maintainer the same way). `rpm`
-/// and the other formats tolerate a missing packager differently, so they are
-/// not gated.
+/// to be installable. The deb family carries a mandatory `Maintainer` control
+/// field:
+///
+/// - `deb` / `termux.deb` — Debian Policy 5.3 makes `Maintainer` mandatory;
+///   lintian rejects an empty field and apt renders the package as "unknown".
+/// - `apk` — Alpine's `APKINDEX` carries the maintainer the same way.
+/// - `ipk` — the opkg control file is deb-derived and carries a `Maintainer`
+///   line; nfpm warns and substitutes a placeholder when it is unset, so an
+///   ipk with no maintainer ships incomplete metadata just like its deb sibling.
+///
+/// `rpm` and `archlinux` tolerate a missing packager differently (rpm's
+/// `Packager` tag is optional; an Arch `.PKGINFO` has no required maintainer),
+/// so they are not gated.
 fn format_requires_maintainer(format: &str) -> bool {
-    matches!(format, "deb" | "termux.deb" | "apk")
+    matches!(format, "deb" | "termux.deb" | "apk" | "ipk")
 }
 
 /// Resolve the effective maintainer for a crate's nfpm config: the explicit
@@ -510,12 +518,13 @@ fn resolve_effective_maintainer<'a>(
         .filter(|s| !s.is_empty())
 }
 
-/// Hard-fail when a `deb`/`apk` package is being built but no maintainer can
-/// be resolved — neither from `nfpm.maintainer` nor a derivable Cargo
-/// `authors` entry. A deb/apk with an empty `Maintainer` is not apt/apk
-/// installable (the index marks it "unknown" and lintian rejects it), so
-/// shipping one is a release defect, not a warning. Scoped to deb/apk via
-/// [`format_requires_maintainer`]: an rpm-only build still succeeds.
+/// Hard-fail when a deb-family package (`deb`/`termux.deb`/`apk`/`ipk`) is
+/// being built but no maintainer can be resolved — neither from
+/// `nfpm.maintainer` nor a derivable Cargo `authors` entry. These formats all
+/// carry a mandatory `Maintainer` control field; an empty one ships incomplete
+/// metadata the repository index marks "unknown", so shipping it is a release
+/// defect, not a warning. Scoped via [`format_requires_maintainer`]: an
+/// rpm-only or archlinux-only build still succeeds.
 ///
 /// This is a Rust-additive correctness improvement beyond GoReleaser (which
 /// only warns), per the repo rule against advisory/continue-on-error on a
@@ -535,11 +544,11 @@ fn require_deb_apk_maintainer(
     let id = nfpm_cfg.id.as_deref().unwrap_or("default");
     bail!(
         "nfpm config '{id}' builds a '{format}' package for crate '{crate_name}' but its \
-         Maintainer field is empty and could not be derived. A {format} package with no \
-         Maintainer is not installable (the repository index marks it \"unknown\" and \
-         lintian rejects it). Set it via the `maintainer:` field on this nfpm config \
-         (e.g. `maintainer: \"Jane Doe <jane@example.com>\"`) or add an `authors` entry \
-         to the crate's Cargo.toml so anodizer can derive it."
+         Maintainer field is empty and could not be derived. A '{format}' package with no \
+         Maintainer ships incomplete metadata — the repository index marks it \"unknown\" \
+         (and for deb, lintian rejects it). Set it via the `maintainer:` field on this nfpm \
+         config (e.g. `maintainer: \"Jane Doe <jane@example.com>\"`) or add an `authors` \
+         entry to the crate's Cargo.toml so anodizer can derive it."
     );
 }
 
