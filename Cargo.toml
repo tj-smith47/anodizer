@@ -80,11 +80,17 @@ debug = "line-tables-only"
 [workspace.package]
 version = "0.9.1"
 edition = "2024"
+# edition 2024 needs ≥1.85, but the code uses `Option::is_none_or` and
+# `{integer}::is_multiple_of`, both stabilized in 1.87 — clippy's
+# incompatible_msrv lint is the authoritative gate for this floor.
+rust-version = "1.87"
 license = "MIT"
 repository = "https://github.com/tj-smith47/anodizer"
+homepage = "https://tj-smith47.github.io/anodizer"
+documentation = "https://tj-smith47.github.io/anodizer"
 authors = ["TJ Smith <tj@jarvispro.io>"]
 keywords = ["release", "automation", "cargo", "ci-cd", "packaging"]
-categories = ["command-line-utilities", "development-tools"]
+categories = ["command-line-utilities", "development-tools", "development-tools::build-utils"]
 
 [workspace.dependencies]
 anodizer-core = { path = "crates/core", version = "0.9.1" }
