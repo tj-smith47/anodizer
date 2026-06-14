@@ -85,8 +85,9 @@ crates:
           - "{{ Version }}"
           - "v{{ Version }}"
           - latest
-        labels:                         # optional; --label key=value
+        labels:                         # optional; --label key=value (merged over auto OCI labels)
           org.opencontainers.image.source: "https://github.com/myorg/myapp"
+        oci_labels: true                # optional; auto-inject org.opencontainers.image.* (default true)
         annotations:                    # optional; --annotation key=value
           org.opencontainers.image.licenses: "MIT"
         extra_files:                    # optional; copied into build context
@@ -158,7 +159,8 @@ image. There is no `replace_existing_*` flag — registry semantics handle it.
 | `dockerfile` | string | — | Path to Dockerfile (required) |
 | `images` | list | `ghcr.io/<owner>/<crate>` | Base image names. Defaults to the per-crate ghcr.io image — owner from `release.github` or the `origin` remote. Empty (no tags emitted) when the owner can't be resolved. Set to override. |
 | `tags` | list | — | Tag suffixes — one full image ref per (image × tag) |
-| `labels` | map | none | OCI labels via `--label key=value` |
+| `labels` | map | none | OCI labels via `--label key=value`. Merged over the auto-injected `org.opencontainers.image.*` set; user keys win. |
+| `oci_labels` | bool/template | `true` | Auto-inject the predefined `org.opencontainers.image.*` labels. Set `false` to opt out. See [Auto-injected OCI labels](#auto-injected-oci-labels). |
 | `annotations` | map | none | OCI annotations via `--annotation key=value` |
 | `extra_files` | list | none | Extra files copied into the build context |
 | `platforms` | list | host | Target platforms (`linux/amd64`, `linux/arm64`, ...) |
@@ -169,6 +171,55 @@ image. There is no `replace_existing_*` flag — registry semantics handle it.
 | `sbom` | bool/template | `false` | Add `--sbom=true` to buildx |
 | `hooks` | object | none | `pre:` / `post:` hooks; see Hooks below |
 | `use` | string | `buildx` | Backend: `buildx` or `podman` (Linux-only) |
+
+## Auto-injected OCI labels
+
+anodizer auto-injects the standard predefined `org.opencontainers.image.*`
+labels on every `dockers_v2` build — you do not declare them by hand. Each
+label is emitted only when its source value resolves:
+
+| Label | Source |
+|-------|--------|
+| `org.opencontainers.image.created` | RFC-3339 date from the resolved `SOURCE_DATE_EPOCH` — **never** wall-clock, so the image stays byte-reproducible |
+| `org.opencontainers.image.source` | release repo URL (SSH remotes normalized to their `https://` web base) |
+| `org.opencontainers.image.revision` | released commit SHA |
+| `org.opencontainers.image.version` | released version (matches the image tag) |
+| `org.opencontainers.image.title` | the crate's name |
+| `org.opencontainers.image.description` | `meta.description` (Cargo-derived) |
+| `org.opencontainers.image.licenses` | `meta.license` |
+| `org.opencontainers.image.url` | `meta.homepage` |
+| `org.opencontainers.image.documentation` | `metadata.documentation` |
+| `org.opencontainers.image.vendor` | the crate's first author, with any `<email>` suffix stripped |
+
+The `documentation` label is driven by the top-level `metadata.documentation`
+field:
+
+```yaml
+metadata:
+  documentation: "https://tj-smith47.github.io/anodizer"
+```
+
+→ `--label org.opencontainers.image.documentation=https://tj-smith47.github.io/anodizer`.
+
+**User labels always win.** Any key you set under `labels:` overrides the
+auto-derived value for that key (the auto value never clobbers an explicit
+user label). To suppress the whole auto-label set, set `oci_labels: false`:
+
+```yaml
+crates:
+  - name: myapp
+    dockers_v2:
+      - dockerfile: Dockerfile
+        tags: ["{{ Version }}"]
+        oci_labels: false          # opt out of the predefined org.opencontainers.image.* labels
+        labels:
+          org.opencontainers.image.source: "https://github.com/myorg/myapp"  # set your own
+```
+
+`created` deriving from `SOURCE_DATE_EPOCH` (seeded by the build stage) is what
+keeps two builds of the same commit byte-identical — a wall-clock `created`
+would defeat reproducibility, so anodizer omits the label entirely when no
+source date is resolvable rather than stamping the current time.
 
 ## Multi-arch builds
 

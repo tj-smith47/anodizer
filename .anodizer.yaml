@@ -55,6 +55,9 @@ tag:
 metadata:
   description: "A Rust-native release automation tool"
   homepage: "https://github.com/tj-smith47/anodizer"
+  # Drives the OCI `org.opencontainers.image.documentation` label and the
+  # `{{ Metadata.Documentation }}` template var.
+  documentation: "https://tj-smith47.github.io/anodizer"
   license: MIT
   maintainers:
     - "TJ Smith"
@@ -471,6 +474,14 @@ crates:
         release_notes: "See release-notes URL for the full changelog."
         release_notes_url: "https://github.com/tj-smith47/anodizer/releases/tag/{{ .Tag }}"
         installation_notes: "Run `anodizer --help` after installation."
+        documentations:
+          - label: "Documentation"
+            url: "https://tj-smith47.github.io/anodizer"
+          - label: "Source"
+            url: "https://github.com/tj-smith47/anodizer"
+        # Portable-zip tool: `install` (overlay the new version) is correct;
+        # there is no installer-managed prior version to uninstall first.
+        upgrade_behavior: install
         tags:
           - release
           - automation
@@ -492,6 +503,9 @@ crates:
         name: anodizer-bin
         description: "A Rust-native release automation tool"
         license: MIT
+        # Rendered as the PKGBUILD `# Maintainer:` header line(s).
+        maintainers:
+          - "TJ Smith <tj@jarvispro.io>"
         depends:
           - glibc
         # Binary-only package(): anodizer's archive bundles LICENSE/README only
@@ -510,12 +524,71 @@ crates:
         homepage: "https://github.com/tj-smith47/anodizer"
         description: "A Rust-native release automation tool"
         license: mit
+        # meta.changelog — links the GitHub Releases history into the derivation.
+        changelog: "https://github.com/tj-smith47/anodizer/releases"
+        # meta.longDescription — the expanded blurb nixpkgs shows on search.
+        long_description: |
+          Anodizer is a Rust-native release-automation tool: it builds, archives,
+          packages, signs, and publishes Rust binaries in one deterministic
+          pipeline. It mirrors GoReleaser's behavior (OSS and Pro) while adding
+          Rust-first conveniences, and produces signed releases across crates.io,
+          Homebrew, Scoop, winget, AUR, Nix, and OCI registries.
+        # meta.maintainers — nixpkgs maintainer handle(s).
+        maintainers:
+          - tj-smith47
         skip_upload: false
         formatter: alejandra
         extra_install: |
           installManPage share/man/man1/anodizer.1
         post_install: |
           echo "Installed anodizer. Run 'anodizer init' to scaffold a config."
+        commit_msg_template: "anodizer {{ .Tag }}"
+        commit_author:
+          name: TJ Smith
+          email: tj@jarvispro.io
+      # Homebrew Formula publisher (distinct from the top-level
+      # `homebrew_casks:` block, which lands a binary-stub cask under Casks/).
+      # The formula lands under Formula/ in the same tap and exercises the
+      # configurable `livecheck` stanza — casks always emit `livecheck { skip }`,
+      # so the formula is the only surface that can dogfood active version
+      # detection. anodizer tags releases on GitHub, so `github_latest` against
+      # `:stable` is the correct strategy.
+      homebrew:
+        required: true
+        repository:
+          owner: tj-smith47
+          name: homebrew-tap
+        directory: Formula
+        description: "A Rust-native release automation tool"
+        homepage: "https://github.com/tj-smith47/anodizer"
+        license: MIT
+        # Mirrors the URL the release stage auto-derives for each asset
+        # (github.com/<owner>/<repo>/releases/download/<tag>/<asset>). Set
+        # explicitly so the formula's emission-validate resolves a download URL
+        # in the slim `--single-target --dry-run` snapshot (`task lint`), where
+        # the release stage is skipped and never populates per-asset url
+        # metadata. Same string the auto-derive produces, so it cannot drift.
+        url_template: "https://github.com/tj-smith47/anodizer/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+        # Completions are produced at install time by the installed binary
+        # (`anodizer completion <shell>`), matching modern homebrew-core Rust
+        # formulae (ripgrep/fd/bat). The manpage rides the GitHub Release.
+        generate_completions_from_executable:
+          executable: anodizer
+          args:
+            - completion
+          shells:
+            - bash
+            - zsh
+            - fish
+        manpages:
+          - anodizer.1
+        livecheck:
+          strategy: github_latest
+          url: stable
+        dependencies:
+          - name: git
+        caveats: |
+          Run `anodizer init` to scaffold a config in your repo.
         commit_msg_template: "anodizer {{ .Tag }}"
         commit_author:
           name: TJ Smith

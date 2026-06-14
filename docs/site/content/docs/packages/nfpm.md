@@ -71,7 +71,7 @@ Not applicable — this is a local packaging stage, not a publisher.
 |-------|------|---------|-------------|
 | `package_name` | string | — | Package name |
 | `formats` | list | — | Package formats: `deb`, `rpm`, `apk`, `archlinux`, `ipk` |
-| `vendor` | string | none | Package vendor |
+| `vendor` | string | Cargo first author | Distributing entity recorded in the rpm/deb `Vendor` field. Auto-derives from the crate's first `Cargo.toml` author (with any `<email>` suffix stripped); set to override. See [Vendor](#vendor). |
 | `homepage` | string | none | Homepage URL |
 | `maintainer` | string | none | Maintainer email |
 | `description` | string | none | Package description |
@@ -82,6 +82,28 @@ Not applicable — this is a local packaging stage, not a publisher.
 | `dependencies` | map | none | Package dependencies keyed by format (e.g., `deb: [git]`) |
 | `scripts` | object | none | Pre/post install/remove scripts |
 | `overrides` | map | none | Per-format field overrides |
+
+## Vendor
+
+The `Vendor` field of a deb/rpm package names the distributing entity. anodizer
+auto-derives it from the crate's first `Cargo.toml` author, stripping any
+`<email>` suffix — so a crate authored by `TJ Smith <tj@jarvispro.io>` produces
+`Vendor: TJ Smith` without any nfpm config. Set `vendor:` only to override:
+
+```toml
+# Cargo.toml
+[package]
+authors = ["TJ Smith <tj@jarvispro.io>"]
+```
+
+```yaml
+nfpm:
+  - package_name: myapp
+    formats: [deb, rpm]
+    # vendor omitted -> derived as "TJ Smith"
+```
+
+`vendor: "Some Other Org"` overrides the derived value.
 
 ## File contents
 

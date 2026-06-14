@@ -66,7 +66,11 @@ crates:
         name: myapp                          # optional; derivation pname (default: crate name)
         path: pkgs/myapp/default.nix         # optional; output path in the repo
         description: ""                      # optional; meta.description (derived from Cargo.toml)
+        long_description: |                  # optional; meta.longDescription (multi-line blurb)
+          A longer, multi-sentence description shown by nixpkgs search.
         homepage: ""                         # optional; meta.homepage (derived from Cargo.toml)
+        changelog: ""                        # optional; meta.changelog URL (e.g. .../releases)
+        maintainers: []                      # optional; nixpkgs handles -> meta.maintainers
         license: mit                         # optional; lib.licenses attr OR SPDX id; derived from Cargo SPDX if omitted
         ids: []                              # optional; filter by build IDs
         url_template: ""                     # optional; override download URL
@@ -124,7 +128,10 @@ The token can also be set via `repository.token` in the config.
 | `extra_install` | string | | Additional install commands appended after the main install. |
 | `post_install` | string | | Commands for the `postInstall` phase. |
 | `description` | string | | Short description for the derivation's `meta.description`. |
+| `long_description` | string | | Expanded blurb for `meta.longDescription` — the multi-sentence text nixpkgs search and `nix-env -qa --description` show. Use a YAML block scalar for multi-line text. |
 | `homepage` | string | | Project homepage URL for `meta.homepage`. |
+| `changelog` | string | | URL for `meta.changelog` — links the release history into the derivation (e.g. the GitHub Releases page or a per-tag URL). |
+| `maintainers` | list of strings | | nixpkgs maintainer handles rendered as `meta.maintainers = with lib.maintainers; [ ... ];`. Use your registered nixpkgs handle(s), not full names. |
 | `license` | string | Cargo SPDX | `lib.licenses` attribute (`mit`, `asl20`) or an SPDX id (`MIT`, `Apache-2.0`); SPDX is mapped to the nix attribute. Derived from `Cargo.toml [package].license` when omitted. Compound SPDX requires an explicit single attribute. |
 | `dependencies` | list | | Runtime dependencies as Nix package names. |
 | `formatter` | string | | Nix formatter to run on the generated file: `alejandra` or `nixfmt`. |
@@ -159,6 +166,55 @@ dependencies:
   - name: pkg-config
     os: linux
 ```
+
+## `meta` fields: changelog, longDescription, maintainers
+
+`changelog`, `long_description`, and `maintainers` populate the derivation's
+`meta` attribute set — the metadata nixpkgs tooling reads:
+
+```yaml
+crates:
+  - name: myapp
+    publish:
+      nix:
+        changelog: "https://github.com/my-org/myapp/releases"
+        long_description: |
+          A Rust-native CLI for doing things. It builds, packages, and ships
+          binaries across many platforms in one deterministic pipeline.
+        maintainers:
+          - my-nixpkgs-handle
+```
+
+renders into the derivation's `meta` block:
+
+```nix
+  meta = {
+    description = "A fast CLI tool";
+    longDescription = ''
+      A Rust-native CLI for doing things. It builds, packages, and ships
+      binaries across many platforms in one deterministic pipeline.
+    '';
+    homepage = "https://github.com/my-org/myapp";
+    changelog = "https://github.com/my-org/myapp/releases";
+    license = lib.licenses.mit;
+    maintainers = with lib.maintainers; [ my-nixpkgs-handle ];
+    sourceProvenance = with lib.sourceTypes; [ binaryNativeCode ];
+    platforms = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+  };
+```
+
+`maintainers` entries are nixpkgs **handles** (the keys under
+`lib.maintainers`), not free-form names — they render verbatim inside
+`with lib.maintainers; [ ... ]`.
+
+## Auto-installed completions and man pages
+
+When the archive bundles shell completions (under `completions/`) or man pages
+(under `manpages/`), the nix publisher adds `installShellFiles` to
+`nativeBuildInputs` and emits `installShellCompletion` / `installManPage` lines
+in the install phase automatically — no extra config. Use `extra_install:` to
+add install lines the archive doesn't cover (e.g. `installManPage` for a man
+page that rides the GitHub Release rather than the archive).
 
 ## Generated derivation format
 

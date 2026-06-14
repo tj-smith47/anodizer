@@ -21,6 +21,7 @@ metadata:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `description` | string | none | Project description |
+| `documentation` | string | Cargo `[package].documentation` | Project documentation URL. Drives the OCI `org.opencontainers.image.documentation` label and `{{ Metadata.Documentation }}`. Derived from `Cargo.toml` when unset. |
 | `homepage` | string | none | Project homepage URL |
 | `license` | string | none | SPDX license identifier (e.g., `MIT`, `Apache-2.0`) |
 | `maintainers` | list | none | List of maintainer names/emails |
@@ -33,6 +34,7 @@ All metadata fields are available as template variables:
 | Variable | Description |
 |----------|-------------|
 | `{{ Metadata.Description }}` | Project description |
+| `{{ Metadata.Documentation }}` | Documentation URL |
 | `{{ Metadata.Homepage }}` | Homepage URL |
 | `{{ Metadata.License }}` | SPDX license identifier |
 | `{{ Metadata.Maintainers }}` | Maintainer list |

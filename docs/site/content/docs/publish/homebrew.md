@@ -67,11 +67,15 @@ crates:
 |-------|------|---------|-------------|
 | `repository.owner` | string | — | GitHub owner of the tap repo |
 | `repository.name` | string | — | Tap repository name |
-| `folder` | string | `Formula` | Folder within the tap repo |
+| `directory` | string | `Formula` | Subdirectory within the tap repo for the `.rb` file |
 | `description` | string | Cargo `[package].description` | Formula description. Derived from `Cargo.toml`; set to override. |
 | `license` | string | Cargo `[package].license` | License identifier. Derived from `Cargo.toml`; set to override. |
 | `install` | string | auto | Custom install block (Ruby) |
 | `test` | string | none | Custom test block (Ruby) |
+| `livecheck` | object | skip | `livecheck do … end` stanza — version polling. See [Livecheck](#livecheck). |
+| `manpages` | list | none | Man-page file paths to install via `manN.install`. See [Auto completions and man pages](#auto-completions-and-man-pages). |
+| `completions` | object | none | Pre-built completion file paths (`bash`/`zsh`/`fish`). |
+| `generate_completions_from_executable` | object | none | Generate completions by running the installed binary at install time. |
 
 ## Full config reference
 
@@ -92,11 +96,20 @@ crates:
               owner: ""
               name: ""
               branch: ""
-        folder: Formula         # subdirectory in the tap
+        directory: Formula      # subdirectory in the tap
         description: ""
         license: ""
         install: ""             # custom Ruby install block
         test: ""                # custom Ruby test block
+        livecheck:              # version polling; default skips (see Livecheck)
+          strategy: github_latest
+          url: stable
+        generate_completions_from_executable:
+          executable: myapp
+          args: [completion]
+          shells: [bash, zsh, fish]
+        manpages:
+          - myapp.1
         skip_upload: false      # bool or "auto" (skip prereleases)
         cask:                   # per-crate cask config (same shape as homebrew_casks[])
           update_existing_pr: false
@@ -165,6 +178,83 @@ homebrew_casks:
     update_existing_pr: true
 ```
 
+## Livecheck
+
+By default the formula emits `livecheck do skip "Auto-generated on release." end`
+— a binary tap's archive URL and SHA are rewritten on every release, so there is
+nothing stable for `brew livecheck` to poll. Set a `strategy` (and optionally
+`url`/`regex`) to opt into active version detection instead. anodizer tags
+releases on GitHub, so `github_latest` against `:stable` is the right pairing:
+
+```yaml
+crates:
+  - name: myapp
+    publish:
+      homebrew:
+        livecheck:
+          strategy: github_latest
+          url: stable
+```
+
+renders into the formula:
+
+```ruby
+  livecheck do
+    url :stable
+    strategy :github_latest
+  end
+```
+
+`url` accepts a Ruby symbol shorthand (`stable` / `head` / `homepage` →
+`url :stable`) or a literal URL string. `regex` is raw Ruby (e.g.
+`%r{v(\d+\.\d+)}i`) for `page_match`-style strategies. Setting `skip: false`
+without any of `strategy`/`url`/`regex` falls back to `skip` with a warning —
+an empty `livecheck do … end` is invalid.
+
+## Auto completions and man pages
+
+The formula installs shell completions and man pages without raw Ruby in the
+install block:
+
+- **`generate_completions_from_executable`** renders the modern homebrew-core
+  idiom `generate_completions_from_executable(bin/"<exe>", ...)`, calling the
+  installed binary at install time to emit its own completions. Preferred for a
+  CLI that can print its completions (ripgrep/fd/bat all use this form).
+- **`manpages`** renders one `man1.install "<path>"` line per entry (a path
+  ending in `.N` for N in 1–8 routes to the matching `manN` section).
+- **`completions`** installs pre-built completion files when the archive ships
+  ready-made ones (`bash_completion.install` / `zsh_completion.install` /
+  `fish_completion.install`).
+
+```yaml
+homebrew:
+  generate_completions_from_executable:
+    executable: myapp
+    args: [completion]
+    shells: [bash, zsh, fish]
+  manpages:
+    - myapp.1
+```
+
+## The `test do` block
+
+Every generated formula carries a `test do` block (`brew test` runs it). When
+`test:` is unset, anodizer emits a sensible default that invokes the installed
+binary; set `test:` to supply your own Ruby assertions:
+
+```yaml
+homebrew:
+  test: |
+    assert_match "myapp #{version}", shell_output("#{bin}/myapp --version")
+```
+
+## Dual-license rendering
+
+When the resolved license is a compound SPDX expression (`MIT OR Apache-2.0`),
+anodizer renders Homebrew's `any_of` license form rather than a single
+`license "MIT"` — so the formula declares both licenses the way Homebrew audits
+expect. A single-license crate renders the plain `license "<spdx>"` line.
+
 ## Generated formula
 
 Anodizer generates a formula with:
@@ -181,11 +271,14 @@ publish:
     repository:
       owner: myorg
       name: homebrew-tap
-    folder: Formula
+    directory: Formula
     description: "A fast CLI tool"
     license: MIT
     install: |
       bin.install "myapp"
     test: |
       system "#{bin}/myapp", "--version"
+    livecheck:
+      strategy: github_latest
+      url: stable
 ```

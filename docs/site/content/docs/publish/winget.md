@@ -111,6 +111,10 @@ If `package_identifier` is not set, Anodizer auto-generates it as `Publisher.Nam
 | `release_notes` | string | none | Release notes for this version |
 | `release_notes_url` | string | none | URL to full release notes |
 | `installation_notes` | string | none | Post-install notes shown to the user |
+| `documentations` | list of objects | none | Documentation links shown in the WinGet gallery — each entry is `{ label, url }`. See [Documentation links](#documentation-links). |
+| `moniker` | string | binary name | Short invoke alias surfaced as `Moniker` in the locale manifest, e.g. `winget install --id <id>` users can later run `winget show <moniker>`. Auto-derives from the binary name; set to override. |
+| `upgrade_behavior` | string | `install` | Installer upgrade behavior written to the installer manifest: `install` (overlay the new version), `uninstallPrevious`, or `deny`. Portable-zip tools want `install`. |
+| `silent_switch` | string | none | Silent-install switch string for `msi`/`exe` installers (e.g. `/S`, `/quiet`). Only meaningful when `use: msi`/`use: nsis`; portable-zip packages need no switch. |
 | `tags` | list of strings | none | Tags for package discovery (lowercased, spaces replaced with hyphens) |
 | `dependencies` | list of objects | none | Package dependencies (see below) |
 | `product_code` | string | none | Product code for Add/Remove Programs |
@@ -177,6 +181,12 @@ crates:
         release_notes: ""
         release_notes_url: ""
         installation_notes: ""
+        documentations:                  # gallery links: { label, url } pairs
+          - label: "Documentation"
+            url: "https://example.com/docs"
+        moniker: ""                      # short alias; derives from binary name
+        upgrade_behavior: install        # install | uninstallPrevious | deny
+        silent_switch: ""                # msi/exe installers only (InstallerSwitches.Silent)
         tags: []
         dependencies: []
         product_code: ""
@@ -229,6 +239,57 @@ Each entry in the `dependencies` list has:
 |-------|------|-------------|
 | `package_identifier` | string | WinGet package identifier of the dependency |
 | `minimum_version` | string | Minimum required version (optional) |
+
+## Documentation links
+
+`documentations` adds a `Documentations` block to the locale manifest — the
+WinGet gallery renders these as labeled links (docs, source, support). Each
+entry is a `{ label, url }` pair; `label` becomes `DocumentLabel` and `url`
+becomes `DocumentUrl`:
+
+```yaml
+crates:
+  - name: myapp
+    publish:
+      winget:
+        documentations:
+          - label: "Documentation"
+            url: "https://tj-smith47.github.io/anodizer"
+          - label: "Source"
+            url: "https://github.com/tj-smith47/anodizer"
+```
+
+renders into `PackageId.locale.en-US.yaml`:
+
+```yaml
+Documentations:
+- DocumentLabel: Documentation
+  DocumentUrl: https://tj-smith47.github.io/anodizer
+- DocumentLabel: Source
+  DocumentUrl: https://github.com/tj-smith47/anodizer
+```
+
+## Upgrade behavior, moniker, and silent switch
+
+- **`upgrade_behavior`** is written to every installer entry as
+  `UpgradeBehavior`. The default `install` overlays the new version, which is
+  correct for a portable-zip tool (there is no installer-managed prior version
+  to remove first). Use `uninstallPrevious` for MSI/EXE installers that manage
+  their own uninstall, or `deny` to forbid in-place upgrades.
+
+  ```yaml
+  winget:
+    upgrade_behavior: install   # default; portable-zip packages
+  ```
+
+- **`moniker`** auto-derives from the binary name and is emitted as `Moniker`
+  in the locale manifest — the short alias users type with `winget show`. Set
+  it only to override (e.g. a binary named `myapp-cli` published under the
+  alias `myapp`).
+
+- **`silent_switch`** is only meaningful for `use: msi` / `use: nsis` installer
+  artifacts; it sets `InstallerSwitches.Silent`. For a portable-zip package it
+  is ignored with a warning, since a zip has no installer to pass a switch to.
 
 ## Generated manifests
 
