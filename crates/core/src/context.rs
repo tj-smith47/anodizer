@@ -1293,8 +1293,9 @@ impl Context {
     ///
     /// Exposes the project metadata block as a nested map with PascalCase keys
     /// the `.Metadata.*` namespace:
-    /// `Description`, `Homepage`, `License`, `Maintainers`, `ModTimestamp`,
-    /// `FullDescription` (resolved), `CommitAuthor.{Name,Email}`.
+    /// `Description`, `Homepage`, `Documentation`, `License`, `Maintainers`,
+    /// `ModTimestamp`, `FullDescription` (resolved),
+    /// `CommitAuthor.{Name,Email}`.
     /// Missing fields default to empty strings / empty arrays.
     ///
     /// `full_description` supports `Inline`, `FromFile` (template-rendered
@@ -1307,6 +1308,7 @@ impl Context {
         let (
             description,
             homepage,
+            documentation,
             license,
             maintainers,
             mod_timestamp,
@@ -1320,6 +1322,10 @@ impl Context {
                 .to_string();
             let homepage = meta
                 .and_then(|m| m.homepage.as_deref())
+                .unwrap_or("")
+                .to_string();
+            let documentation = meta
+                .and_then(|m| m.documentation.as_deref())
                 .unwrap_or("")
                 .to_string();
             let license = meta
@@ -1339,6 +1345,7 @@ impl Context {
             (
                 description,
                 homepage,
+                documentation,
                 license,
                 maintainers,
                 mod_timestamp,
@@ -1365,6 +1372,7 @@ impl Context {
         let meta_map = serde_json::json!({
             "Description": description,
             "Homepage": homepage,
+            "Documentation": documentation,
             "License": license,
             "Maintainers": maintainers,
             "ModTimestamp": mod_timestamp,
@@ -2402,6 +2410,7 @@ mod tests {
         config.metadata = Some(crate::config::MetadataConfig {
             description: Some("A test project".to_string()),
             homepage: Some("https://example.com".to_string()),
+            documentation: Some("https://docs.example.com".to_string()),
             license: Some("MIT".to_string()),
             maintainers: Some(vec!["Alice".to_string(), "Bob".to_string()]),
             mod_timestamp: Some("1234567890".to_string()),
@@ -2416,11 +2425,37 @@ mod tests {
         let home = ctx.render_template("{{ Metadata.Homepage }}").unwrap();
         assert_eq!(home, "https://example.com");
 
+        let docs = ctx.render_template("{{ Metadata.Documentation }}").unwrap();
+        assert_eq!(docs, "https://docs.example.com");
+
         let lic = ctx.render_template("{{ Metadata.License }}").unwrap();
         assert_eq!(lic, "MIT");
 
         let ts = ctx.render_template("{{ Metadata.ModTimestamp }}").unwrap();
         assert_eq!(ts, "1234567890");
+    }
+
+    #[test]
+    fn test_populate_metadata_var_documentation_renders() {
+        let mut config = Config::default();
+        config.metadata = Some(crate::config::MetadataConfig {
+            documentation: Some("https://docs.rs/anodizer".to_string()),
+            ..Default::default()
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.populate_metadata_var().unwrap();
+
+        let docs = ctx.render_template("{{ Metadata.Documentation }}").unwrap();
+        assert_eq!(docs, "https://docs.rs/anodizer");
+    }
+
+    #[test]
+    fn test_populate_metadata_var_documentation_empty_when_unset() {
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        ctx.populate_metadata_var().unwrap();
+
+        let docs = ctx.render_template("{{ Metadata.Documentation }}").unwrap();
+        assert_eq!(docs, "");
     }
 
     #[test]

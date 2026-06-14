@@ -6724,5 +6724,22 @@ mod oci_labels {
             b.get("org.opencontainers.image.vendor").map(String::as_str),
             Some("Beta Team")
         );
+
+        // Explicit no-leakage: none of crate alpha's per-crate-derived values
+        // may appear anywhere in crate beta's label set, and vice versa. This
+        // guards against a future append-instead-of-replace refactor that
+        // exact-equality alone could miss.
+        for leaked in ["alpha", "Alpha service", "MIT", "Alpha Team"] {
+            assert!(
+                !b.values().any(|v| v == leaked),
+                "beta's labels must not carry alpha's value {leaked:?}: {b:?}"
+            );
+        }
+        for leaked in ["beta", "Beta service", "Apache-2.0", "Beta Team"] {
+            assert!(
+                !a.values().any(|v| v == leaked),
+                "alpha's labels must not carry beta's value {leaked:?}: {a:?}"
+            );
+        }
     }
 }
