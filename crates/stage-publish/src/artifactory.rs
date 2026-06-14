@@ -253,6 +253,52 @@ fn is_deb_artifact(artifact: &Artifact) -> bool {
     artifact.name().to_ascii_lowercase().ends_with(".deb")
 }
 
+/// Reject a configured Debian matrix-param slug that would break the
+/// semicolon-delimited Artifactory upload matrix.
+///
+/// The value lands raw in `;deb.<key>=<value>`, so any `;` injects a rogue
+/// matrix param and any whitespace malforms the URL — either way the `.deb`
+/// lands at the wrong path and never indexes (the exact failure this feature
+/// exists to prevent). Allow only the conservative Debian
+/// distribution/component slug charset (ASCII alphanumerics plus `-`, `.`,
+/// `_`); `/` is rejected too because an Artifactory deb matrix distribution is
+/// a flat codename (`bookworm`), not a path. Empty values are skipped by the
+/// caller before this runs.
+fn validate_deb_matrix_slug(field: &str, value: &str) -> Result<()> {
+    let ok = value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '_'));
+    if !ok {
+        bail!(
+            "artifactory: invalid {field} value '{value}' — Debian repository \
+             distribution/component slugs may contain only ASCII letters, digits, \
+             '-', '.', and '_' (a ';', '/', or whitespace would corrupt the upload \
+             matrix params and leave the .deb unindexed). Use a flat codename like \
+             'bookworm' or 'stable', or a comma-separated list of them.",
+        );
+    }
+    Ok(())
+}
+
+/// Validate every user-supplied `deb_distributions` / `deb_components` /
+/// `deb_architecture` slug on an Artifactory entry up front, so a slug that
+/// would corrupt the upload matrix params hard-errors at config-validation
+/// time (before any bytes are PUT) rather than silently shipping an
+/// unindexable `.deb`. The derived architecture (`amd64`/`arm64`/…) is always
+/// safe, so only an explicit `deb_architecture` override is checked here.
+fn validate_artifactory_deb_slugs(entry: &anodizer_core::config::ArtifactoryConfig) -> Result<()> {
+    for d in entry.deb_distributions.iter().flatten() {
+        validate_deb_matrix_slug("deb_distributions", d)?;
+    }
+    for c in entry.deb_components.iter().flatten() {
+        validate_deb_matrix_slug("deb_components", c)?;
+    }
+    if let Some(arch) = entry.deb_architecture.as_deref() {
+        validate_deb_matrix_slug("deb_architecture", arch)?;
+    }
+    Ok(())
+}
+
 /// Append Artifactory's Debian repository matrix params to a `.deb` upload
 /// URL so the package is indexed (without them the uploaded `.deb` is a
 /// dangling file apt never sees). Per JFrog's Debian-repo upload docs, the
@@ -741,6 +787,10 @@ pub fn publish_to_artifactory(
         let include_meta = entry.meta.unwrap_or(false);
         let custom_artifact_name = entry.custom_artifact_name.unwrap_or(false);
         let extra_files_only = entry.extra_files_only.unwrap_or(false);
+
+        // Fail fast on a corrupt deb matrix-param slug before any bytes move
+        // (and before dry-run, so a snapshot catches it too).
+        validate_artifactory_deb_slugs(entry)?;
 
         // --- Dry-run logging ---
         if ctx.is_dry_run() {
@@ -2003,6 +2053,75 @@ mod tests {
             let url = append_deb_matrix_params("https://a/repo/file", &art, &entry);
             assert_eq!(url, "https://a/repo/file", "{name} must be untouched");
         }
+    }
+
+    /// A distribution/component slug containing matrix-param-breaking
+    /// characters (`;`, whitespace, `/`) hard-errors with an actionable
+    /// message, before any upload — so a corrupt slug can't silently land the
+    /// .deb at the wrong path.
+    #[test]
+    fn deb_matrix_slug_validation_rejects_breaking_chars() {
+        for bad in ["stable;evil=1", "two words", "deb/bookworm", "with\ttab"] {
+            let err = validate_deb_matrix_slug("deb_distributions", bad)
+                .expect_err(&format!("'{bad}' must be rejected"));
+            let msg = err.to_string();
+            assert!(msg.contains("deb_distributions"), "names the field: {msg}");
+            assert!(msg.contains(bad), "quotes the bad value: {msg}");
+            assert!(
+                msg.contains("matrix") || msg.contains("codename"),
+                "explains the fix: {msg}"
+            );
+        }
+    }
+
+    /// The normal Debian distribution/component charset (alnum + `-`/`.`/`_`)
+    /// passes.
+    #[test]
+    fn deb_matrix_slug_validation_accepts_valid_slugs() {
+        for ok in [
+            "bookworm",
+            "stable",
+            "bullseye-backports",
+            "1.0",
+            "main",
+            "non_free",
+        ] {
+            assert!(
+                validate_deb_matrix_slug("deb_components", ok).is_ok(),
+                "'{ok}' should be accepted"
+            );
+        }
+    }
+
+    /// Entry-level validation rejects a bad slug anywhere in the
+    /// distribution/component lists or the architecture override.
+    #[test]
+    fn artifactory_deb_slug_entry_validation() {
+        let bad_dist = ArtifactoryConfig {
+            deb_distributions: Some(vec!["stable".to_string(), "bad;x=1".to_string()]),
+            ..Default::default()
+        };
+        assert!(validate_artifactory_deb_slugs(&bad_dist).is_err());
+
+        let bad_comp = ArtifactoryConfig {
+            deb_components: Some(vec!["main with space".to_string()]),
+            ..Default::default()
+        };
+        assert!(validate_artifactory_deb_slugs(&bad_comp).is_err());
+
+        let bad_arch = ArtifactoryConfig {
+            deb_architecture: Some("amd64;rm".to_string()),
+            ..Default::default()
+        };
+        assert!(validate_artifactory_deb_slugs(&bad_arch).is_err());
+
+        let good = ArtifactoryConfig {
+            deb_distributions: Some(vec!["bookworm".to_string(), "bullseye".to_string()]),
+            deb_components: Some(vec!["main".to_string(), "contrib".to_string()]),
+            deb_architecture: Some("arm64".to_string()),
+            ..Default::default()
+        };
+        assert!(validate_artifactory_deb_slugs(&good).is_ok());
     }
 
     #[test]

@@ -5918,3 +5918,108 @@ fn test_per_crate_mode_all_maintainers_resolve_succeeds() {
     let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
     assert_eq!(pkgs.len(), 2, "one deb per crate");
 }
+
+/// Maintainer guard ordering: a deb/apk config whose ONLY target's arch is
+/// skipped (no package actually produced) must NOT false-fail on an empty
+/// maintainer. termux.deb does not support s390x, so the arch-support guard
+/// skips it before the maintainer requirement is evaluated.
+#[test]
+fn test_deb_arch_skipped_target_empty_maintainer_no_false_fail() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        nfpms: Some(vec![NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            // termux.deb requires a maintainer AND does not support s390x.
+            formats: vec!["termux.deb".to_string()],
+            ..Default::default()
+        }]),
+        ..Default::default()
+    }];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    // The ONLY target is s390x — unsupported for termux.deb, so the arch-skip
+    // fires and no package is produced.
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: std::path::PathBuf::from("dist/myapp_s390x"),
+        target: Some("s390x-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+
+    // No maintainer, but no deb is built → must NOT error.
+    NfpmStage
+        .run(&mut ctx)
+        .expect("arch-skipped deb target must not false-fail on missing maintainer");
+    let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+    assert_eq!(pkgs.len(), 0, "no termux.deb produced for the skipped arch");
+}
+
+/// The contrapositive of the ordering fix: a termux.deb that WILL build (a
+/// supported arch) with an empty/underivable maintainer still hard-fails —
+/// moving the check after the arch-skip must not weaken the real case.
+#[test]
+fn test_deb_buildable_target_empty_maintainer_still_fails() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        nfpms: Some(vec![NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["termux.deb".to_string()],
+            ..Default::default()
+        }]),
+        ..Default::default()
+    }];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    // x86_64 IS supported for termux.deb → a package will be produced.
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: std::path::PathBuf::from("dist/myapp_x86_64"),
+        target: Some("x86_64-unknown-linux-android".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+
+    let err = NfpmStage
+        .run(&mut ctx)
+        .expect_err("buildable deb with no maintainer must still hard-fail");
+    assert!(err.to_string().contains("Maintainer"), "names the field");
+}

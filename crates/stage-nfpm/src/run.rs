@@ -219,8 +219,6 @@ fn process_nfpm_format(
 ) -> Result<()> {
     validate_format(format).with_context(|| format!("nfpm config for crate {}", crate_name))?;
 
-    require_deb_apk_maintainer(&ctx.config, nfpm_cfg, crate_name, format)?;
-
     let Some((os, arch)) = resolve_format_os_arch(base_os, base_arch, format, log) else {
         return Ok(());
     };
@@ -237,6 +235,13 @@ fn process_nfpm_format(
         )?;
         return Ok(());
     }
+
+    // Require the maintainer only once we know a deb/apk WILL be built for
+    // this (format × target): the two early returns above mean no package is
+    // produced for an unsupported/skipped arch, so a missing maintainer must
+    // not false-fail a config whose only target is skipped. A deb/apk that
+    // genuinely builds still hard-fails when no maintainer can be resolved.
+    require_deb_apk_maintainer(&ctx.config, nfpm_cfg, crate_name, format)?;
 
     let pkg_name_owned = resolve_pkg_name(nfpm_cfg, &ctx.config.project_name, crate_name);
     let pkg_name: &str = pkg_name_owned.as_str();
