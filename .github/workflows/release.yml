@@ -178,10 +178,17 @@ jobs:
           CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
           COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
           COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          FURY_API_TOKEN: ${{ secrets.FURY_API_TOKEN }}
+          FURY_TOKEN: ${{ secrets.FURY_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+          UPLOAD_JARVISPRO_SECRET: ${{ secrets.UPLOAD_JARVISPRO_SECRET }}
+          UPLOAD_JARVISPRO_USERNAME: ${{ secrets.UPLOAD_JARVISPRO_USERNAME }}
 
       # No workflow-side rollback step: the binary executes the
       # `release.on_failure` policy in-process (rollback by default,
