@@ -1145,9 +1145,12 @@ uploads:
     ids: [anodizer]
     # Archives (tar.gz / zip) plus their .sha256 checksum sidecars.
     exts: [tar.gz, zip, sha256]
-    # Per-version prefix on the host; the artifact name is appended to this
-    # target (custom_artifact_name=false keeps the default append behaviour).
-    target: "https://uploads.jarvispro.io/anodizer/{{ .Version }}/"
+    # Per-version prefix; the artifact name is appended to this target
+    # (custom_artifact_name=false keeps the default append behaviour). The
+    # endpoint is the api-server ClusterIP Service, reached in-cluster from the
+    # release runner (same as MinIO) — plain http is fine because the traffic
+    # never leaves the pod network and is never exposed via Traefik/Cloudflare.
+    target: "http://api-server.jarvispro.svc.cluster.local:8478/anodizer/{{ .Version }}/"
     method: PUT
     mode: archive
     username: "{{ .Env.UPLOAD_JARVISPRO_USERNAME }}"
@@ -1177,12 +1180,20 @@ uploads:
 # ArtifactPath / ArtifactName / Tag bound as template vars.
 publishers:
   - name: minio-mirror
-    cmd: mc
+    # Self-provision the `jarvispro` mc alias from the S3 credentials the
+    # blobs stage already consumes (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY,
+    # injected into the in-cluster runner alongside the blob publisher), then
+    # copy. `mc alias set` is used instead of an MC_HOST_<alias> URL so secret
+    # keys with URL-reserved characters are handled correctly. The endpoint is
+    # the in-cluster MinIO Service (same one the blobs publisher targets).
+    cmd: sh
     args:
-      - cp
-      - "--quiet"
-      - "{{ .ArtifactPath }}"
-      - "jarvispro/anodizer-releases/{{ .Tag }}/{{ .ArtifactName }}"
+      - -ec
+      - |
+        mc alias set jarvispro "http://minio.jarvispro.svc.cluster.local:9003" \
+          "$AWS_ACCESS_KEY_ID" "$AWS_SECRET_ACCESS_KEY" >/dev/null
+        mc cp --quiet "{{ .ArtifactPath }}" \
+          "jarvispro/anodizer-releases/{{ .Tag }}/{{ .ArtifactName }}"
     # Only the CLI archives (build id=anodizer).
     ids: [anodizer]
     # Restrict to archive + checksum kinds; archives match the default
@@ -1191,8 +1202,7 @@ publishers:
     checksum: true
     signature: false
     meta: false
-    # `mc` reads ~/.mc/config.json for the `jarvispro` alias; surface the
-    # config path explicitly so a non-default MC_CONFIG_DIR still resolves.
+    # Keep mc's config (the alias written above) in a writable per-run dir.
     env:
       - "MC_CONFIG_DIR={{ .Env.HOME }}/.mc"
     dir: dist
