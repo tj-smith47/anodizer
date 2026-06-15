@@ -10687,6 +10687,32 @@
       },
       "additionalProperties": false
     },
+    "NpmAuthMode": {
+      "description": "Credential-selection strategy for an [`NpmConfig`] entry.\n\nControls whether the publisher authenticates with a long-lived registry token (`NPM_TOKEN` / `cfg.token`) or with GitHub Actions OIDC (npm Trusted Publishing), evaluated **per published package** — in `optional-deps` mode that means the metapackage and every per-platform sub-package are decided independently, so a metapackage with a configured Trusted Publisher can use OIDC while brand-new sub-packages (which Trusted Publishing cannot create) fall back to the token.",
+      "oneOf": [
+        {
+          "description": "Decide per package at publish time (default). The registry is probed for each package's existence: a package that already exists prefers OIDC (Trusted Publishing) when an OIDC context is present, otherwise the token; a brand-new package always uses the token (Trusted Publishing cannot create a package that does not yet exist) and hard-errors if no token is set. When OIDC is chosen for an existing package and the publish fails, `auto` retries that package with the token (if available) and emits a loud warning that Trusted Publishing was not exercised.",
+          "type": "string",
+          "enum": [
+            "auto"
+          ]
+        },
+        {
+          "description": "Always authenticate with the token (`NPM_TOKEN` / `cfg.token`); never attempt OIDC. Errors if no token is available. This is anodizer's historical behaviour.",
+          "type": "string",
+          "enum": [
+            "token"
+          ]
+        },
+        {
+          "description": "Always authenticate with OIDC (Trusted Publishing); never fall back to the token. Errors if the OIDC request env is absent. Use when every package in this entry has a configured Trusted Publisher and you want a failed exchange to fail the release loudly rather than silently fall back to a token.",
+          "type": "string",
+          "enum": [
+            "oidc"
+          ]
+        }
+      ]
+    },
     "NpmConfig": {
       "description": "NPM package registry publisher configuration.\n\nIn the default `optional-deps` mode anodizer emits one thin npm package per built platform (with `os`/`cpu`/`libc` selectors derived from the target triple) plus a metapackage whose `optionalDependencies` lists every platform package; npm's native resolution installs only the one matching the host. In `postinstall` mode a single package carries a `postinstall` script that downloads the matching release archive at `npm install` time. Each `npms[]` entry produces one publish.",
       "type": "object",
@@ -10697,6 +10723,15 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "auth": {
+          "description": "Credential-selection strategy: `auto` (default) decides per package by probing the registry for the package's existence; `token` always uses the token; `oidc` always uses Trusted Publishing with no token fallback. See [`NpmAuthMode`]. Absent in existing configs resolves to `auto`.",
+          "default": "auto",
+          "allOf": [
+            {
+              "$ref": "#/definitions/NpmAuthMode"
+            }
           ]
         },
         "author": {

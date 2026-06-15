@@ -1223,6 +1223,13 @@ publishers:
 # package exists and the Trusted Publisher is configured, drop the token.
 # description/homepage/license/author are derived from Cargo.toml — never set
 # here so they cannot drift from the crate metadata.
+# auth: per-package credential selection (auto | token | oidc), default auto.
+# In optional-deps mode the metapackage + each per-platform sub-package are
+# decided independently: auto probes each package's existence and uses OIDC
+# (Trusted Publishing) for existing packages where an OIDC context is present,
+# the token for brand-new packages (TP cannot create them). On a failed OIDC
+# publish, auto retries with the token and warns loudly that TP was not
+# exercised. token = always token; oidc = strict TP, no token fallback.
 npms:
   - scope: "@tj-smith47"
     metapackage: anodizer
@@ -1230,6 +1237,7 @@ npms:
     mode: optional-deps
     access: public
     provenance: true
+    auth: auto
 
 # MCP (Model Context Protocol) server registry publisher.
 #

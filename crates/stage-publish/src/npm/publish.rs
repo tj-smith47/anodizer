@@ -20,6 +20,23 @@
 //!     and threads the `ACTIONS_ID_TOKEN_REQUEST_*` env into the `npm publish`
 //!     subprocess so the CLI performs the exchange itself.
 //!   * Neither present → hard error (never publish anonymously, never skip).
+//!
+//! The credential is chosen **per published package** under
+//! [`anodizer_core::config::NpmAuthMode`] (`cfg.auth`):
+//!   * `auto` (default): the registry is probed for each package's existence
+//!     ([`probe_package_existence`]). An EXISTING package prefers OIDC when an
+//!     OIDC context is present (else the token); a BRAND-NEW package always uses
+//!     the token (Trusted Publishing cannot create a non-existent package) and
+//!     errors specifically if only OIDC is available. In `optional-deps` mode
+//!     this lets a metapackage with a configured Trusted Publisher use OIDC
+//!     while its brand-new per-platform sub-packages use the token, in one run.
+//!     When OIDC is chosen for an existing package and the publish FAILS, `auto`
+//!     retries with the token (if available) and warns loudly that Trusted
+//!     Publishing was not exercised — the release succeeds via the token but the
+//!     operator sees the TP gap ([`publish_with_oidc_fallback`]).
+//!   * `token`: always the token (errors if none) — the historical behaviour.
+//!   * `oidc`: always OIDC (errors if no OIDC context) — strict Trusted
+//!     Publishing, NO token fallback (a failed exchange fails the release loud).
 
 use std::fs;
 use std::io::Write;
@@ -27,7 +44,9 @@ use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anodizer_core::config::{ArchivesConfig, NpmConfig, NpmMode, NpmTemplatedExtraFile};
+use anodizer_core::config::{
+    ArchivesConfig, NpmAuthMode, NpmConfig, NpmMode, NpmTemplatedExtraFile,
+};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::retry::{RetryPolicy, retry_sync};
@@ -523,31 +542,6 @@ pub(crate) enum NpmAuth {
     Oidc(Vec<(String, String)>),
 }
 
-/// Resolve the publish credential, preferring an explicit token over OIDC.
-///
-/// Order matters: a present token reproduces today's behaviour exactly (the
-/// initial publish that *creates* the package needs `NPM_TOKEN`, since a
-/// trusted publisher cannot be configured for a package that does not yet
-/// exist). Once the package exists and a trusted publisher is configured the
-/// operator drops the token, and the OIDC branch takes over. With neither this
-/// hard-errors rather than publish anonymously — an `npm publish` is
-/// irreversible after the 72h unpublish window, so a credential-less publish
-/// must never silently proceed or be skipped.
-pub(crate) fn resolve_auth(ctx: &Context, cfg: &NpmConfig) -> Result<NpmAuth> {
-    let token = resolve_token(ctx, cfg)?;
-    if !token.is_empty() {
-        return Ok(NpmAuth::Token(token));
-    }
-    if let Some(oidc) = resolve_oidc_env(ctx) {
-        return Ok(NpmAuth::Oidc(oidc));
-    }
-    bail!(
-        "npm: cannot authenticate — set NPM_TOKEN (or cfg.token), or run under \
-         GitHub Actions OIDC (id-token: write) with a Trusted Publisher \
-         configured on the registry. Refusing to publish anonymously."
-    )
-}
-
 /// Snapshot the GitHub Actions OIDC request env when BOTH variables are present
 /// and non-empty, returning every entry to thread into the publish subprocess.
 /// Returns `None` (no OIDC context) when either variable is missing/empty.
@@ -559,6 +553,242 @@ fn resolve_oidc_env(ctx: &Context) -> Option<Vec<(String, String)>> {
         out.push((name.to_string(), val));
     }
     Some(out)
+}
+
+/// Whether a package already exists on the registry, used to drive per-package
+/// auth selection in [`NpmAuthMode::Auto`]. `Unknown` is returned when the
+/// existence probe could not reach a verdict (network error) — the decision
+/// then prefers the safe path rather than guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PackageExistence {
+    /// Registry returned 200 — the package name is already published.
+    Exists,
+    /// Registry returned 404 — the package name is brand new.
+    New,
+    /// The probe failed (network/registry error) — existence is undetermined.
+    Unknown,
+}
+
+/// The credential a per-package auth decision selects, as a pure outcome that
+/// carries no secret material (the caller materializes the actual
+/// [`NpmAuth`] from it). `FailNewNeedsToken` and `ErrorNoAuth` are terminal —
+/// the package cannot be published with the inputs given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AuthDecision {
+    /// Authenticate with the token.
+    Token,
+    /// Authenticate with OIDC (Trusted Publishing).
+    Oidc,
+    /// New package + OIDC-only context + no token: Trusted Publishing cannot
+    /// create a non-existent package, so the initial publish needs a token.
+    FailNewNeedsToken,
+    /// No credential is available at all.
+    ErrorNoAuth,
+}
+
+/// Decide a single package's publish credential from the four facts that govern
+/// it: the configured [`NpmAuthMode`], whether the package already exists, and
+/// whether an OIDC context / a token are available. Pure — no I/O, no secrets —
+/// so the full decision matrix is unit-testable in isolation.
+///
+/// `auto` semantics (per package):
+///
+/// | exists?  | OIDC? | token? | decision           |
+/// |----------|-------|--------|--------------------|
+/// | new      | any   | yes    | `Token`            |
+/// | new      | yes   | no     | `FailNewNeedsToken`|
+/// | new      | no    | no     | `ErrorNoAuth`      |
+/// | exists   | yes   | any    | `Oidc`             |
+/// | exists   | no    | yes    | `Token`            |
+/// | exists   | no    | no     | `ErrorNoAuth`      |
+/// | unknown  | any   | yes    | `Token` (safe)     |
+/// | unknown  | yes   | no     | `Oidc` (best effort)|
+/// | unknown  | no    | no     | `ErrorNoAuth`      |
+///
+/// `token` mode forces [`AuthDecision::Token`] (or `ErrorNoAuth` if no token);
+/// `oidc` mode forces [`AuthDecision::Oidc`] (or `ErrorNoAuth` if no OIDC
+/// context) — strict Trusted-Publishing-only, no token fallback.
+pub(crate) fn decide_auth(
+    mode: NpmAuthMode,
+    existence: PackageExistence,
+    oidc_available: bool,
+    token_available: bool,
+) -> AuthDecision {
+    match mode {
+        NpmAuthMode::Token => {
+            if token_available {
+                AuthDecision::Token
+            } else {
+                AuthDecision::ErrorNoAuth
+            }
+        }
+        NpmAuthMode::Oidc => {
+            if oidc_available {
+                AuthDecision::Oidc
+            } else {
+                AuthDecision::ErrorNoAuth
+            }
+        }
+        NpmAuthMode::Auto => match existence {
+            PackageExistence::New => {
+                if token_available {
+                    AuthDecision::Token
+                } else if oidc_available {
+                    // Trusted Publishing cannot create a package that does not
+                    // yet exist — surface a specific, fixable error.
+                    AuthDecision::FailNewNeedsToken
+                } else {
+                    AuthDecision::ErrorNoAuth
+                }
+            }
+            PackageExistence::Exists => {
+                if oidc_available {
+                    AuthDecision::Oidc
+                } else if token_available {
+                    AuthDecision::Token
+                } else {
+                    AuthDecision::ErrorNoAuth
+                }
+            }
+            PackageExistence::Unknown => {
+                if token_available {
+                    // Safe path on an inconclusive probe: a token can publish
+                    // whether the package exists or not.
+                    AuthDecision::Token
+                } else if oidc_available {
+                    AuthDecision::Oidc
+                } else {
+                    AuthDecision::ErrorNoAuth
+                }
+            }
+        },
+    }
+}
+
+/// URL-encode an npm package name for a registry metadata GET: a scoped name's
+/// single `/` becomes `%2F` (`@a/b` → `@a%2Fb`); all other characters in valid
+/// npm names (lowercase, digits, `-._@`) are already URL-safe.
+fn encode_package_path(name: &str) -> String {
+    name.replace('/', "%2F")
+}
+
+/// Probe the registry for a package's *existence* (any version) via a metadata
+/// GET to `<registry>/<url-encoded name>`. 200 → [`PackageExistence::Exists`],
+/// 404 → [`PackageExistence::New`]; any transport error or other status →
+/// [`PackageExistence::Unknown`] (the caller's `auto` decision then prefers the
+/// safe path). This is distinct from [`version_already_published`], which
+/// probes for one specific *version* to drive idempotent re-runs.
+fn probe_package_existence(registry: &str, name: &str, log: &StageLogger) -> PackageExistence {
+    let base = registry.trim_end_matches('/');
+    let url = format!("{}/{}", base, encode_package_path(name));
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            log.warn(&format!(
+                "npm: could not build HTTP client to probe '{}' existence ({}); \
+                 treating existence as unknown",
+                name, e
+            ));
+            return PackageExistence::Unknown;
+        }
+    };
+    match client.get(&url).send() {
+        Ok(resp) => {
+            let status = resp.status();
+            if status.as_u16() == 404 {
+                PackageExistence::New
+            } else if status.is_success() {
+                PackageExistence::Exists
+            } else {
+                log.warn(&format!(
+                    "npm: existence probe for '{}' returned HTTP {} (inconclusive); \
+                     treating existence as unknown",
+                    name, status
+                ));
+                PackageExistence::Unknown
+            }
+        }
+        Err(e) => {
+            log.warn(&format!(
+                "npm: existence probe for '{}' failed ({}); treating existence as unknown",
+                name, e
+            ));
+            PackageExistence::Unknown
+        }
+    }
+}
+
+/// Resolve the per-package publish credential for one package under the
+/// configured [`NpmAuthMode`]: probe existence (only when `auto` needs it),
+/// detect OIDC + token availability, run [`decide_auth`], then materialize the
+/// actual [`NpmAuth`] (reading the token / OIDC env). Terminal decisions
+/// hard-error with a specific, fixable message.
+///
+/// Returns the chosen [`NpmAuth`] alongside the resolved token string (empty
+/// when no token is set) so the caller's OIDC→token fallback need not re-render
+/// the token template.
+pub(crate) fn resolve_auth_for_package(
+    ctx: &Context,
+    cfg: &NpmConfig,
+    registry: &str,
+    package: &str,
+    log: &StageLogger,
+) -> Result<(NpmAuth, String)> {
+    let token = resolve_token(ctx, cfg)?;
+    let token_available = !token.is_empty();
+    let oidc = resolve_oidc_env(ctx);
+    let oidc_available = oidc.is_some();
+
+    // The existence probe only changes the `auto` verdict, and only when at
+    // least one credential exists (with neither, the verdict is `ErrorNoAuth`
+    // regardless of existence). Skip the network round-trip in the forced
+    // `token` / `oidc` modes and when no credential is available.
+    let existence = if cfg.auth == NpmAuthMode::Auto && (token_available || oidc_available) {
+        probe_package_existence(registry, package, log)
+    } else {
+        PackageExistence::Unknown
+    };
+
+    match decide_auth(cfg.auth, existence, oidc_available, token_available) {
+        AuthDecision::Token => Ok((NpmAuth::Token(token.clone()), token)),
+        AuthDecision::Oidc => {
+            let oidc = oidc.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "npm: internal — OIDC chosen for '{}' without an OIDC env",
+                    package
+                )
+            })?;
+            Ok((NpmAuth::Oidc(oidc), token))
+        }
+        AuthDecision::FailNewNeedsToken => bail!(
+            "npm: package '{}' does not exist and Trusted Publishing cannot create it — \
+             set NPM_TOKEN (or cfg.token) for the initial publish, then switch the package \
+             to Trusted Publishing once it exists",
+            package
+        ),
+        AuthDecision::ErrorNoAuth => match cfg.auth {
+            NpmAuthMode::Token => bail!(
+                "npm: auth mode is `token` but no token is set for '{}' — set NPM_TOKEN \
+                 (or cfg.token). Refusing to publish anonymously.",
+                package
+            ),
+            NpmAuthMode::Oidc => bail!(
+                "npm: auth mode is `oidc` but no OIDC context is present for '{}' — run under \
+                 GitHub Actions with `id-token: write` (both ACTIONS_ID_TOKEN_REQUEST_URL and \
+                 ACTIONS_ID_TOKEN_REQUEST_TOKEN must be set). Refusing to fall back to a token.",
+                package
+            ),
+            NpmAuthMode::Auto => bail!(
+                "npm: cannot authenticate '{}' — set NPM_TOKEN (or cfg.token), or run under \
+                 GitHub Actions OIDC (id-token: write) with a Trusted Publisher configured on \
+                 the registry. Refusing to publish anonymously.",
+                package
+            ),
+        },
+    }
 }
 
 /// Write a per-run `.npmrc` under `cfg_dir` (0600). For [`NpmAuth::Token`] the
@@ -671,10 +901,6 @@ fn publish_optional_deps(
         return Ok(());
     }
 
-    let auth = resolve_auth(ctx, cfg)?;
-    let cfg_dir = TempDir::new().context("npm: create .npmrc temp dir")?;
-    write_npmrc(cfg_dir.path(), &registry, &auth, access.as_deref())?;
-
     let policy = ctx.retry_policy();
 
     // Stage EVERY tarball (per-platform + metapackage) up front, BEFORE the
@@ -714,20 +940,13 @@ fn publish_optional_deps(
     )?);
 
     // All artifacts validated and staged — now publish in order (per-platform
-    // packages first, metapackage last). Each success is recorded immediately
-    // for rollback before the next attempt.
+    // packages first, metapackage last). Auth is resolved PER package (the
+    // metapackage may exist with a Trusted Publisher while the sub-packages are
+    // brand new), and each success is recorded immediately for rollback before
+    // the next attempt.
     for staged in &staged_all {
         if let Some(t) = publish_one_tarball(
-            staged,
-            &version,
-            &registry,
-            &dist_tag,
-            &access,
-            cfg_dir.path(),
-            &auth,
-            &policy,
-            cfg,
-            log,
+            ctx, staged, &version, &registry, &dist_tag, &access, &policy, cfg, log,
         )? {
             targets.push(t);
         }
@@ -772,45 +991,37 @@ fn publish_postinstall(
         return Ok(());
     }
 
-    let auth = resolve_auth(ctx, cfg)?;
-    let cfg_dir = TempDir::new().context("npm: create .npmrc temp dir")?;
-    write_npmrc(cfg_dir.path(), &registry, &auth, access.as_deref())?;
-
     let policy = ctx.retry_policy();
     if let Some(t) = publish_one_tarball(
-        &staged,
-        &version,
-        &registry,
-        &dist_tag,
-        &access,
-        cfg_dir.path(),
-        &auth,
-        &policy,
-        cfg,
-        log,
+        ctx, &staged, &version, &registry, &dist_tag, &access, &policy, cfg, log,
     )? {
         targets.push(t);
     }
     Ok(())
 }
 
-/// Idempotently publish one staged tarball: short-circuit when the exact
+/// Idempotently publish one staged tarball: resolve this package's credential
+/// (per-package under [`NpmAuthMode`]), short-circuit when the exact
 /// `<name>@<version>` already exists on the registry, else `npm publish` with
-/// retry. Returns the recorded [`NpmTarget`].
+/// retry and the `auto`-mode OIDC→token fallback. Returns the recorded
+/// [`NpmTarget`].
 #[allow(clippy::too_many_arguments)]
 fn publish_one_tarball(
+    ctx: &Context,
     staged: &StagedTarball,
     version: &str,
     registry: &str,
     dist_tag: &str,
     access: &Option<String>,
-    cfg_dir: &Path,
-    auth: &NpmAuth,
     policy: &RetryPolicy,
     cfg: &NpmConfig,
     log: &StageLogger,
 ) -> Result<Option<NpmTarget>> {
-    if version_already_published(&staged.package, version, cfg_dir, registry, log)? {
+    let (auth, token) = resolve_auth_for_package(ctx, cfg, registry, &staged.package, log)?;
+    let cfg_dir = TempDir::new().context("npm: create .npmrc temp dir")?;
+    write_npmrc(cfg_dir.path(), registry, &auth, access.as_deref())?;
+
+    if version_already_published(&staged.package, version, cfg_dir.path(), registry, log)? {
         log.status(&format!(
             "skipped '{}@{}' — already published to {} (idempotent re-run)",
             staged.package, version, registry
@@ -824,15 +1035,27 @@ fn publish_one_tarball(
         }));
     }
 
-    run_npm_publish(
-        &staged.tarball_path,
-        cfg_dir,
+    publish_with_oidc_fallback(
+        &staged.package,
+        cfg.auth,
+        &auth,
+        Some(token),
+        cfg_dir.path(),
         registry,
-        dist_tag,
         access.as_deref(),
-        auth,
-        policy,
         log,
+        &mut |npmrc_dir, npm_auth| {
+            run_npm_publish(
+                &staged.tarball_path,
+                npmrc_dir,
+                registry,
+                dist_tag,
+                access.as_deref(),
+                npm_auth,
+                policy,
+                log,
+            )
+        },
     )?;
 
     Ok(Some(NpmTarget {
@@ -842,6 +1065,58 @@ fn publish_one_tarball(
         dist_tag: dist_tag.to_string(),
         token_env_var: token_env_var(cfg).to_string(),
     }))
+}
+
+/// Run a package's publish, applying the `auto`-mode OIDC→token fallback.
+///
+/// When the chosen credential is OIDC (Trusted Publishing) and the publish
+/// FAILS, `auto` mode retries once with the token — if a token is available —
+/// rewriting the `.npmrc` to carry `_authToken`, and emits a LOUD warning
+/// naming the package so the operator knows Trusted Publishing was not actually
+/// exercised. The release then succeeds via the token. In `oidc` mode there is
+/// NO fallback: the failure propagates (fail loud). In `token` mode OIDC is
+/// never the chosen credential, so the fallback never triggers.
+///
+/// `do_publish` is injected so the actual `npm publish` can be stubbed in unit
+/// tests; production passes [`run_npm_publish`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn publish_with_oidc_fallback(
+    package: &str,
+    mode: NpmAuthMode,
+    auth: &NpmAuth,
+    token: Option<String>,
+    cfg_dir: &Path,
+    registry: &str,
+    access: Option<&str>,
+    log: &StageLogger,
+    do_publish: &mut dyn FnMut(&Path, &NpmAuth) -> Result<()>,
+) -> Result<()> {
+    let first = do_publish(cfg_dir, auth);
+    if first.is_ok() {
+        return Ok(());
+    }
+
+    // Fallback applies ONLY when: the chosen credential was OIDC, the mode is
+    // `auto` (not strict `oidc`), and a token is available to retry with.
+    let token = token.filter(|t| !t.is_empty());
+    let oidc_chosen = matches!(auth, NpmAuth::Oidc(_));
+    if mode == NpmAuthMode::Auto
+        && oidc_chosen
+        && let Some(token) = token
+    {
+        log.warn(&format!(
+            "OIDC / Trusted Publishing publish FAILED for '{}'; falling back to NPM_TOKEN — \
+             Trusted Publishing was NOT exercised for this package. Verify the package's \
+             Trusted Publisher config (registry, repository, workflow).",
+            package
+        ));
+        let token_auth = NpmAuth::Token(token);
+        // Rewrite the .npmrc to carry the token line for the retry.
+        write_npmrc(cfg_dir, registry, &token_auth, access)?;
+        return do_publish(cfg_dir, &token_auth);
+    }
+
+    first
 }
 
 /// Build the `npm publish` command for one tarball. Under [`NpmAuth::Oidc`] the

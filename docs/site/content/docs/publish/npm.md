@@ -110,6 +110,7 @@ package/
 | `url_template` | string | derived | Download URL template override (`postinstall` only) |
 | `registry` | string | `https://registry.npmjs.org` | Registry endpoint |
 | `token` | string | `NPM_TOKEN` env var | Auth token (templated; prefer env var). Optional under Trusted Publishing — omit it to authenticate via GitHub Actions OIDC. |
+| `auth` | `auto` \| `token` \| `oidc` | `auto` | Credential-selection strategy, evaluated **per published package**. See [Authentication](#authentication). |
 | `extra_files` | list | `[README*, LICENSE*]` | Glob set of files to include |
 | `templated_extra_files` | list | none | Template-rendered file mappings (`{src, dst}`) |
 | `extra` | map | none | Free-form root-level `package.json` fields (shallow-merged) |
@@ -119,7 +120,40 @@ package/
 
 ## Authentication
 
-Anodizer authenticates to npm in one of two ways, resolved per publish. It never publishes anonymously: with neither credential present it hard-errors.
+Anodizer authenticates to npm in one of two ways — a long-lived **token** (`NPM_TOKEN` / `cfg.token`) or **Trusted Publishing (OIDC)** — and chooses between them **per published package**. It never publishes anonymously: with neither credential available it hard-errors.
+
+The `auth` field selects the strategy:
+
+| `auth` | Behaviour |
+|--------|-----------|
+| `auto` (default) | Decide per package by probing the registry for the package's existence. An **existing** package prefers OIDC when an OIDC context is present (else the token); a **brand-new** package always uses the token (Trusted Publishing cannot create a non-existent package). On a failed OIDC publish, `auto` falls back to the token — see [OIDC failure fallback](#oidc-failure-fallback). |
+| `token` | Always use the token; never attempt OIDC. Errors if no token is set. The historical behaviour. |
+| `oidc` | Always use OIDC; never fall back to a token. Errors if no OIDC context is present. A failed exchange fails the release loudly. |
+
+### Why per-package selection matters
+
+In `optional-deps` mode a single `npms[]` entry publishes a **metapackage plus one package per platform**. The metapackage often already exists (with a Trusted Publisher configured) while the per-platform sub-packages are brand new on a given release. With `auth: auto` and `NPM_TOKEN` set, anodizer publishes the **new sub-packages via the token** (Trusted Publishing cannot create them) and the **existing metapackage via OIDC** — in one run, no per-package config:
+
+```yaml
+npms:
+  - scope: "@anodize"
+    metapackage: demo
+    auth: auto      # default — per-package selection
+```
+
+Keep `NPM_TOKEN` set in the workflow; `auto` exercises Trusted Publishing wherever a package already exists and a Trusted Publisher is configured, and uses the token only where it must.
+
+### OIDC failure fallback
+
+In `auto` mode only, when OIDC is chosen for an existing package and the `npm publish` **fails**, and a token is available, anodizer **retries that package with the token** and emits a loud warning naming the package:
+
+```
+WARN  OIDC / Trusted Publishing publish FAILED for '@anodize/demo'; falling back to
+      NPM_TOKEN — Trusted Publishing was NOT exercised for this package. Verify the
+      package's Trusted Publisher config (registry, repository, workflow).
+```
+
+The release succeeds via the token, but the operator clearly sees that Trusted Publishing did not work for that package and can fix its Trusted Publisher config. In `oidc` mode there is **no fallback** — a failed exchange fails the release. In `token` mode OIDC is never attempted.
 
 ### Trusted Publishing (tokenless OIDC) — recommended
 
@@ -144,7 +178,9 @@ Once configured, anodizer detects the OIDC context (the GitHub-injected `ACTIONS
 
 ### `NPM_TOKEN` fallback
 
-A Trusted Publisher cannot be attached to a package that does not yet exist, so the **first** publish that creates the package needs a token. Set the `NPM_TOKEN` env var (an [automation token](https://docs.npmjs.com/creating-and-viewing-access-tokens)); anodizer writes a process-private `.npmrc` carrying `//registry.npmjs.org/:_authToken=$NPM_TOKEN` and passes `--userconfig <that .npmrc>` to `npm publish`. The token is never placed on the argv and the `.npmrc` is deleted after publish completes. A present token always takes precedence over OIDC — drop the secret once the package exists and the Trusted Publisher is configured, and subsequent releases run tokenless.
+A Trusted Publisher cannot be attached to a package that does not yet exist, so the **first** publish that creates the package needs a token. Set the `NPM_TOKEN` env var (an [automation token](https://docs.npmjs.com/creating-and-viewing-access-tokens)); anodizer writes a process-private `.npmrc` carrying `//registry.npmjs.org/:_authToken=$NPM_TOKEN` and passes `--userconfig <that .npmrc>` to `npm publish`. The token is never placed on the argv and the `.npmrc` is deleted after publish completes.
+
+Under the default `auth: auto`, a token is used for **brand-new** packages and as the credential when no OIDC context is present; **existing** packages prefer OIDC when one is. So you can keep `NPM_TOKEN` set permanently and still exercise Trusted Publishing wherever a package already exists — there is no need to drop the secret. To force token-only auth regardless of existence, set `auth: token`.
 
 For a private registry (e.g. GitHub Packages):
 

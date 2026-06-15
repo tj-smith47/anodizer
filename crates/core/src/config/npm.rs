@@ -35,6 +35,40 @@ pub enum NpmMode {
     Postinstall,
 }
 
+/// Credential-selection strategy for an [`NpmConfig`] entry.
+///
+/// Controls whether the publisher authenticates with a long-lived registry
+/// token (`NPM_TOKEN` / `cfg.token`) or with GitHub Actions OIDC (npm Trusted
+/// Publishing), evaluated **per published package** — in `optional-deps` mode
+/// that means the metapackage and every per-platform sub-package are decided
+/// independently, so a metapackage with a configured Trusted Publisher can use
+/// OIDC while brand-new sub-packages (which Trusted Publishing cannot create)
+/// fall back to the token.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum NpmAuthMode {
+    /// Decide per package at publish time (default). The registry is probed for
+    /// each package's existence: a package that already exists prefers OIDC
+    /// (Trusted Publishing) when an OIDC context is present, otherwise the
+    /// token; a brand-new package always uses the token (Trusted Publishing
+    /// cannot create a package that does not yet exist) and hard-errors if no
+    /// token is set. When OIDC is chosen for an existing package and the
+    /// publish fails, `auto` retries that package with the token (if available)
+    /// and emits a loud warning that Trusted Publishing was not exercised.
+    #[default]
+    Auto,
+    /// Always authenticate with the token (`NPM_TOKEN` / `cfg.token`); never
+    /// attempt OIDC. Errors if no token is available. This is anodizer's
+    /// historical behaviour.
+    Token,
+    /// Always authenticate with OIDC (Trusted Publishing); never fall back to
+    /// the token. Errors if the OIDC request env is absent. Use when every
+    /// package in this entry has a configured Trusted Publisher and you want a
+    /// failed exchange to fail the release loudly rather than silently fall
+    /// back to a token.
+    Oidc,
+}
+
 /// NPM package registry publisher configuration.
 ///
 /// In the default `optional-deps` mode anodizer emits one thin npm package
@@ -173,6 +207,13 @@ pub struct NpmConfig {
     /// at publish time and never passed via argv.
     pub token: Option<String>,
 
+    /// Credential-selection strategy: `auto` (default) decides per package by
+    /// probing the registry for the package's existence; `token` always uses
+    /// the token; `oidc` always uses Trusted Publishing with no token fallback.
+    /// See [`NpmAuthMode`]. Absent in existing configs resolves to `auto`.
+    #[serde(default)]
+    pub auth: NpmAuthMode,
+
     /// Skip this publisher. Accepts bool or template string.
     /// Accepts the legacy `disable:` spelling via serde alias for back-compat.
     #[serde(
@@ -237,6 +278,7 @@ impl Default for NpmConfig {
             extra: None,
             registry: None,
             token: None,
+            auth: NpmAuthMode::default(),
             skip: None,
             required: None,
             if_condition: None,

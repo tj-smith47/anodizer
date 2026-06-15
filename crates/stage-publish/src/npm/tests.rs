@@ -2,7 +2,7 @@
 
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::{
-    Config, CrateConfig, MetadataConfig, NpmConfig, NpmMode, StringOrBool,
+    Config, CrateConfig, MetadataConfig, NpmAuthMode, NpmConfig, NpmMode, StringOrBool,
 };
 use anodizer_core::test_helpers::TestContextBuilder;
 use anodizer_core::{PreflightCheck, Publisher, PublisherGroup};
@@ -18,8 +18,9 @@ use super::manifest::{
 };
 use super::optional_deps::generate_layout;
 use super::publish::{
-    NpmAuth, assemble_optional_deps_tarball, assemble_postinstall_tarball,
-    build_npm_publish_command, publish_to_npm, resolve_auth, write_npmrc,
+    AuthDecision, NpmAuth, PackageExistence, assemble_optional_deps_tarball,
+    assemble_postinstall_tarball, build_npm_publish_command, decide_auth, publish_to_npm,
+    publish_with_oidc_fallback, resolve_auth_for_package, write_npmrc,
 };
 use super::publisher::NpmPublisher;
 
@@ -825,15 +826,32 @@ fn npmrc_body(auth: &NpmAuth) -> String {
     std::fs::read_to_string(path).expect("read npmrc")
 }
 
+/// An `opt_cfg` with a forced auth mode (avoids the `auto`-mode network probe
+/// in resolution unit tests).
+fn opt_cfg_auth(mode: NpmAuthMode) -> NpmConfig {
+    NpmConfig {
+        auth: mode,
+        ..opt_cfg()
+    }
+}
+
 #[test]
-fn auth_token_present_writes_authtoken_line() {
-    // NPM_TOKEN set → today's behaviour: `_authToken` in the .npmrc, no OIDC.
+fn auth_token_mode_writes_authtoken_line() {
+    // `auth: token` + NPM_TOKEN set → `_authToken` in the .npmrc, no OIDC, no
+    // network probe.
     let ctx = TestContextBuilder::new()
         .project_name("demo")
         .env("NPM_TOKEN", "npm_secretvalue")
         .build();
-    let cfg = opt_cfg();
-    let auth = resolve_auth(&ctx, &cfg).expect("auth resolves to token");
+    let cfg = opt_cfg_auth(NpmAuthMode::Token);
+    let (auth, _token) = resolve_auth_for_package(
+        &ctx,
+        &cfg,
+        "https://registry.npmjs.org",
+        "demo",
+        &ctx.logger("p"),
+    )
+    .expect("auth resolves to token");
     assert_eq!(auth, NpmAuth::Token("npm_secretvalue".to_string()));
 
     let body = npmrc_body(&auth);
@@ -844,17 +862,24 @@ fn auth_token_present_writes_authtoken_line() {
 }
 
 #[test]
-fn auth_oidc_present_writes_no_token_and_threads_env() {
-    // No NPM_TOKEN but both OIDC request vars set → tokenless Trusted Publishing:
+fn auth_oidc_mode_writes_no_token_and_threads_env() {
+    // `auth: oidc` + both OIDC request vars set → tokenless Trusted Publishing:
     // the .npmrc carries NO _authToken, and the publish command's env carries
-    // the OIDC request vars so the npm CLI performs the exchange.
+    // the OIDC request vars so the npm CLI performs the exchange. No probe.
     let ctx = TestContextBuilder::new()
         .project_name("demo")
         .env(OIDC_URL_VAR, "https://token.actions.example/req")
         .env(OIDC_TOKEN_VAR, "oidc-request-jwt")
         .build();
-    let cfg = opt_cfg();
-    let auth = resolve_auth(&ctx, &cfg).expect("auth resolves to oidc");
+    let cfg = opt_cfg_auth(NpmAuthMode::Oidc);
+    let (auth, _token) = resolve_auth_for_package(
+        &ctx,
+        &cfg,
+        "https://registry.npmjs.org",
+        "demo",
+        &ctx.logger("p"),
+    )
+    .expect("auth resolves to oidc");
     match &auth {
         NpmAuth::Oidc(pairs) => {
             assert!(
@@ -910,15 +935,24 @@ fn auth_oidc_present_writes_no_token_and_threads_env() {
 
 #[test]
 fn auth_no_token_no_oidc_is_clear_error_not_panic_or_skip() {
-    // Neither credential present → hard error, never anonymous publish, never
-    // silent skip. Seeding one unrelated override forces a CLOSED MapEnvSource
-    // so the dev/CI host's real NPM_TOKEN / OIDC vars cannot leak in.
+    // Neither credential present (auto mode) → hard error, never anonymous
+    // publish, never silent skip, and no network probe (the verdict is
+    // ErrorNoAuth regardless of existence). Seeding one unrelated override
+    // forces a CLOSED MapEnvSource so the dev/CI host's real NPM_TOKEN / OIDC
+    // vars cannot leak in.
     let ctx = TestContextBuilder::new()
         .project_name("demo")
         .env("UNRELATED", "x")
         .build();
     let cfg = opt_cfg();
-    let err = resolve_auth(&ctx, &cfg).expect_err("must error with no credential");
+    let err = resolve_auth_for_package(
+        &ctx,
+        &cfg,
+        "https://registry.npmjs.org",
+        "demo",
+        &ctx.logger("p"),
+    )
+    .expect_err("must error with no credential");
     let msg = err.to_string();
     assert!(
         msg.contains("cannot authenticate"),
@@ -931,18 +965,318 @@ fn auth_no_token_no_oidc_is_clear_error_not_panic_or_skip() {
 }
 
 #[test]
-fn auth_oidc_requires_both_vars_present() {
-    // Only the URL var set (no request token) is NOT an OIDC context — must fall
-    // through to the no-credential error, not a partial/anonymous publish.
+fn auth_oidc_mode_requires_both_vars_present() {
+    // Only the URL var set (no request token) is NOT an OIDC context — `oidc`
+    // mode must error, not authorize a partial/anonymous publish.
     let ctx = TestContextBuilder::new()
         .project_name("demo")
         .env(OIDC_URL_VAR, "https://token.actions.example/req")
         .build();
-    let cfg = opt_cfg();
+    let cfg = opt_cfg_auth(NpmAuthMode::Oidc);
     assert!(
-        resolve_auth(&ctx, &cfg).is_err(),
+        resolve_auth_for_package(
+            &ctx,
+            &cfg,
+            "https://registry.npmjs.org",
+            "demo",
+            &ctx.logger("p")
+        )
+        .is_err(),
         "a single OIDC var must not authorize a publish"
     );
+}
+
+// -----------------------------------------------------------------------------
+// Per-package auth decision matrix (pure function — no I/O, no secrets)
+// -----------------------------------------------------------------------------
+
+#[test]
+fn decide_auth_matrix_auto() {
+    use AuthDecision::*;
+    use PackageExistence::*;
+    let m = NpmAuthMode::Auto;
+
+    // new package
+    assert_eq!(decide_auth(m, New, false, true), Token); // new, no oidc, token
+    assert_eq!(decide_auth(m, New, true, true), Token); // new, oidc, token → token (TP can't create)
+    assert_eq!(decide_auth(m, New, true, false), FailNewNeedsToken); // new, oidc-only
+    assert_eq!(decide_auth(m, New, false, false), ErrorNoAuth);
+
+    // existing package
+    assert_eq!(decide_auth(m, Exists, true, true), Oidc); // exists, oidc preferred over token
+    assert_eq!(decide_auth(m, Exists, true, false), Oidc);
+    assert_eq!(decide_auth(m, Exists, false, true), Token);
+    assert_eq!(decide_auth(m, Exists, false, false), ErrorNoAuth);
+
+    // unknown (probe failed)
+    assert_eq!(decide_auth(m, Unknown, true, true), Token); // safe path
+    assert_eq!(decide_auth(m, Unknown, false, true), Token);
+    assert_eq!(decide_auth(m, Unknown, true, false), Oidc); // best effort
+    assert_eq!(decide_auth(m, Unknown, false, false), ErrorNoAuth);
+}
+
+#[test]
+fn decide_auth_matrix_forced_token() {
+    use AuthDecision::*;
+    use PackageExistence::*;
+    let m = NpmAuthMode::Token;
+    // Token mode forces token regardless of existence / oidc; errors if no token.
+    for ex in [New, Exists, Unknown] {
+        assert_eq!(decide_auth(m, ex, true, true), Token);
+        assert_eq!(decide_auth(m, ex, false, true), Token);
+        assert_eq!(decide_auth(m, ex, true, false), ErrorNoAuth);
+        assert_eq!(decide_auth(m, ex, false, false), ErrorNoAuth);
+    }
+}
+
+#[test]
+fn decide_auth_matrix_forced_oidc() {
+    use AuthDecision::*;
+    use PackageExistence::*;
+    let m = NpmAuthMode::Oidc;
+    // Oidc mode forces oidc regardless of existence / token; errors if no oidc.
+    // Strict: never falls back to a token.
+    for ex in [New, Exists, Unknown] {
+        assert_eq!(decide_auth(m, ex, true, true), Oidc);
+        assert_eq!(decide_auth(m, ex, true, false), Oidc);
+        assert_eq!(decide_auth(m, ex, false, true), ErrorNoAuth);
+        assert_eq!(decide_auth(m, ex, false, false), ErrorNoAuth);
+    }
+}
+
+#[test]
+fn auth_auto_new_package_oidc_only_fails_with_specific_error() {
+    // auto + OIDC context but NO token + the registry says the package is new:
+    // Trusted Publishing cannot create it. The decision is FailNewNeedsToken;
+    // the materialized error must name the package and tell the operator to set
+    // NPM_TOKEN for the initial publish.
+    let d = decide_auth(
+        NpmAuthMode::Auto,
+        PackageExistence::New,
+        /* oidc */ true,
+        /* token */ false,
+    );
+    assert_eq!(d, AuthDecision::FailNewNeedsToken);
+}
+
+#[test]
+fn auth_token_mode_no_token_errors_naming_mode() {
+    // `auth: token` with no token → specific error naming the mode, no probe.
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .env("UNRELATED", "x")
+        .build();
+    let cfg = opt_cfg_auth(NpmAuthMode::Token);
+    let err = resolve_auth_for_package(
+        &ctx,
+        &cfg,
+        "https://registry.npmjs.org",
+        "demo",
+        &ctx.logger("p"),
+    )
+    .expect_err("token mode with no token must error");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("token") && msg.contains("NPM_TOKEN"),
+        "error must name the token mode + NPM_TOKEN: {msg}"
+    );
+}
+
+#[test]
+fn auth_oidc_mode_no_fallback_to_token_present() {
+    // `auth: oidc` but only a token is present (no OIDC) → strict: must error,
+    // never silently use the token.
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .env("NPM_TOKEN", "npm_secretvalue")
+        .build();
+    let cfg = opt_cfg_auth(NpmAuthMode::Oidc);
+    let err = resolve_auth_for_package(
+        &ctx,
+        &cfg,
+        "https://registry.npmjs.org",
+        "demo",
+        &ctx.logger("p"),
+    )
+    .expect_err("oidc mode with no OIDC must error even with a token present");
+    assert!(
+        err.to_string().contains("oidc"),
+        "error must name the oidc mode: {err}"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// OIDC → token fallback (auto mode only): a failed Trusted Publishing publish
+// retries with the token and warns loudly that TP was not exercised.
+// -----------------------------------------------------------------------------
+
+#[test]
+fn oidc_failure_falls_back_to_token_with_loud_warning_in_auto() {
+    let dir = tempfile::TempDir::new().expect("tmp");
+    let oidc = NpmAuth::Oidc(vec![(OIDC_URL_VAR.to_string(), "u".to_string())]);
+    let (log, cap) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Normal,
+    );
+
+    // Record every (attempt, auth) pair; the OIDC attempt fails, the token
+    // retry succeeds.
+    let mut attempts: Vec<NpmAuth> = Vec::new();
+    let res = publish_with_oidc_fallback(
+        "demo-linux-x64",
+        NpmAuthMode::Auto,
+        &oidc,
+        Some("npm_secretvalue".to_string()),
+        dir.path(),
+        "https://registry.npmjs.org",
+        Some("public"),
+        &log,
+        &mut |npmrc_dir, auth| {
+            attempts.push(auth.clone());
+            if matches!(auth, NpmAuth::Oidc(_)) {
+                Err(anyhow::anyhow!("npm publish failed: 401 trusted publisher"))
+            } else {
+                // The retry must see a token-bearing .npmrc.
+                let body = std::fs::read_to_string(npmrc_dir.join(".npmrc")).expect("npmrc");
+                assert!(
+                    body.contains("_authToken=npm_secretvalue"),
+                    "token retry must rewrite .npmrc with _authToken: {body:?}"
+                );
+                Ok(())
+            }
+        },
+    );
+
+    assert!(res.is_ok(), "fallback retry should succeed: {res:?}");
+    assert_eq!(
+        attempts.len(),
+        2,
+        "exactly one OIDC attempt + one token retry"
+    );
+    assert!(matches!(attempts[0], NpmAuth::Oidc(_)));
+    assert_eq!(attempts[1], NpmAuth::Token("npm_secretvalue".to_string()));
+
+    let warns = cap.warn_messages().join("\n");
+    assert!(
+        warns.contains("demo-linux-x64")
+            && warns.contains("NOT exercised")
+            && warns.contains("NPM_TOKEN"),
+        "must warn loudly, naming the package + the TP gap: {warns}"
+    );
+}
+
+#[test]
+fn oidc_failure_in_oidc_mode_does_not_fall_back() {
+    // `auth: oidc` (strict): a failed OIDC publish must NOT retry with a token,
+    // even if a token is available — fail loud.
+    let dir = tempfile::TempDir::new().expect("tmp");
+    let oidc = NpmAuth::Oidc(vec![(OIDC_URL_VAR.to_string(), "u".to_string())]);
+    let (log, _cap) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Normal,
+    );
+
+    let mut attempts = 0usize;
+    let res = publish_with_oidc_fallback(
+        "demo",
+        NpmAuthMode::Oidc,
+        &oidc,
+        Some("npm_secretvalue".to_string()),
+        dir.path(),
+        "https://registry.npmjs.org",
+        Some("public"),
+        &log,
+        &mut |_dir, _auth| {
+            attempts += 1;
+            Err(anyhow::anyhow!("npm publish failed"))
+        },
+    );
+    assert!(res.is_err(), "strict oidc must propagate the failure");
+    assert_eq!(attempts, 1, "no token retry in oidc mode");
+}
+
+#[test]
+fn oidc_failure_no_token_available_does_not_fall_back() {
+    // auto mode, OIDC chosen, publish fails, but NO token → no retry possible;
+    // the failure propagates.
+    let dir = tempfile::TempDir::new().expect("tmp");
+    let oidc = NpmAuth::Oidc(vec![(OIDC_URL_VAR.to_string(), "u".to_string())]);
+    let (log, _cap) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Normal,
+    );
+
+    let mut attempts = 0usize;
+    let res = publish_with_oidc_fallback(
+        "demo",
+        NpmAuthMode::Auto,
+        &oidc,
+        None,
+        dir.path(),
+        "https://registry.npmjs.org",
+        Some("public"),
+        &log,
+        &mut |_dir, _auth| {
+            attempts += 1;
+            Err(anyhow::anyhow!("npm publish failed"))
+        },
+    );
+    assert!(res.is_err(), "no token → failure propagates");
+    assert_eq!(attempts, 1, "no retry without a token");
+}
+
+#[test]
+fn token_publish_success_does_not_trigger_fallback() {
+    // A successful first publish (token auth) returns Ok with a single attempt;
+    // the fallback branch is never reached.
+    let dir = tempfile::TempDir::new().expect("tmp");
+    let token = NpmAuth::Token("npm_secretvalue".to_string());
+    let (log, _cap) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Normal,
+    );
+
+    let mut attempts = 0usize;
+    let res = publish_with_oidc_fallback(
+        "demo",
+        NpmAuthMode::Auto,
+        &token,
+        Some("npm_secretvalue".to_string()),
+        dir.path(),
+        "https://registry.npmjs.org",
+        Some("public"),
+        &log,
+        &mut |_dir, _auth| {
+            attempts += 1;
+            Ok(())
+        },
+    );
+    assert!(res.is_ok());
+    assert_eq!(attempts, 1);
+}
+
+// -----------------------------------------------------------------------------
+// Config parse: `auth:` round-trips; absent → auto.
+// -----------------------------------------------------------------------------
+
+#[test]
+fn config_auth_field_parses_and_defaults_to_auto() {
+    let absent: NpmConfig = serde_yaml_ng::from_str("name: demo\n").expect("parse");
+    assert_eq!(absent.auth, NpmAuthMode::Auto, "absent auth → auto");
+
+    let auto: NpmConfig = serde_yaml_ng::from_str("name: demo\nauth: auto\n").expect("parse");
+    assert_eq!(auto.auth, NpmAuthMode::Auto);
+
+    let token: NpmConfig = serde_yaml_ng::from_str("name: demo\nauth: token\n").expect("parse");
+    assert_eq!(token.auth, NpmAuthMode::Token);
+
+    let oidc: NpmConfig = serde_yaml_ng::from_str("name: demo\nauth: oidc\n").expect("parse");
+    assert_eq!(oidc.auth, NpmAuthMode::Oidc);
+
+    // Round-trip: serialize then re-parse.
+    let yaml = serde_yaml_ng::to_string(&token).expect("serialize");
+    let back: NpmConfig = serde_yaml_ng::from_str(&yaml).expect("reparse");
+    assert_eq!(back.auth, NpmAuthMode::Token);
 }
 
 // -----------------------------------------------------------------------------

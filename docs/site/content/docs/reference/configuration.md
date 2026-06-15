@@ -632,6 +632,7 @@ In the default `optional-deps` mode anodizer emits one thin npm package per buil
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `access` | string | — | NPM access level for scoped packages. Accepts `"public"` / `"restricted"`. Scoped packages on npmjs.org default to `restricted` unless this is set to `public`. |
+| `auth` | NpmAuthMode | `auto` | Credential-selection strategy: `auto` (default) decides per package by probing the registry for the package's existence; `token` always uses the token; `oidc` always uses Trusted Publishing with no token fallback. See [`NpmAuthMode`]. Absent in existing configs resolves to `auto`. |
 | `author` | string | — | Templated `author` field for `package.json`. Falls back to the project's `metadata.maintainers[0]`, and then to the crate's `Cargo.toml [package].authors[0]`, when unset. |
 | `bin` | string | — | Command name installed by the metapackage's `bin` map (`optional-deps` mode). Falls back to the metapackage basename when unset. |
 | `bugs` | string | — | Templated bug tracker URL. Emitted as `bugs.url` in `package.json`. |
