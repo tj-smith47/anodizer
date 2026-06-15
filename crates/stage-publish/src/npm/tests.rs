@@ -20,9 +20,12 @@ use super::optional_deps::generate_layout;
 use super::publish::{
     AuthDecision, NpmAuth, PackageExistence, assemble_optional_deps_tarball,
     assemble_postinstall_tarball, build_npm_publish_command, decide_auth, encode_package_path,
-    publish_to_npm, publish_with_oidc_fallback, resolve_auth_for_package, write_npmrc,
+    probe_package_existence, publish_to_npm, publish_with_oidc_fallback, resolve_auth_for_package,
+    write_npmrc,
 };
 use super::publisher::NpmPublisher;
+use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+use std::sync::atomic::Ordering;
 
 fn demo_crate() -> CrateConfig {
     CrateConfig {
@@ -1080,6 +1083,262 @@ fn encode_package_path_scoped_and_unscoped() {
     );
     // An unscoped name has no `/` and is returned unchanged.
     assert_eq!(encode_package_path("anodizer"), "anodizer");
+}
+
+// -----------------------------------------------------------------------------
+// Existence probe — real GET + HTTP-status → PackageExistence mapping
+// (in-process responder; no real network beyond loopback)
+// -----------------------------------------------------------------------------
+
+#[test]
+fn probe_existence_maps_200_to_exists() {
+    let (addr, calls) =
+        spawn_oneshot_http_responder(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"]);
+    let registry = format!("http://{addr}");
+    let ctx = TestContextBuilder::new().project_name("demo").build();
+    let got = probe_package_existence(&registry, "demo", &ctx.logger("p"));
+    assert_eq!(got, PackageExistence::Exists, "200 → Exists");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "probe must hit the registry"
+    );
+}
+
+#[test]
+fn probe_existence_maps_404_to_new() {
+    let (addr, calls) =
+        spawn_oneshot_http_responder(vec!["HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"]);
+    let registry = format!("http://{addr}");
+    let ctx = TestContextBuilder::new().project_name("demo").build();
+    let got = probe_package_existence(&registry, "demo", &ctx.logger("p"));
+    assert_eq!(got, PackageExistence::New, "404 → New");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "probe must hit the registry"
+    );
+}
+
+#[test]
+fn probe_existence_maps_5xx_to_unknown() {
+    let (addr, calls) = spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\n\r\n",
+    ]);
+    let registry = format!("http://{addr}");
+    let ctx = TestContextBuilder::new().project_name("demo").build();
+    let got = probe_package_existence(&registry, "demo", &ctx.logger("p"));
+    assert_eq!(
+        got,
+        PackageExistence::Unknown,
+        "non-200/404 status is inconclusive → Unknown"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "probe must hit the registry"
+    );
+}
+
+#[test]
+fn probe_existence_transport_error_is_unknown() {
+    // Bind an ephemeral port, capture its address, then drop the listener so
+    // the port is closed: the probe's GET hits connection-refused (a transport
+    // error, not an HTTP status) and must degrade to Unknown rather than panic.
+    let addr = {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        l.local_addr().expect("addr")
+        // listener dropped here → port closed
+    };
+    let registry = format!("http://{addr}");
+    let ctx = TestContextBuilder::new().project_name("demo").build();
+    let got = probe_package_existence(&registry, "demo", &ctx.logger("p"));
+    assert_eq!(
+        got,
+        PackageExistence::Unknown,
+        "a transport error must map to Unknown, never a false Exists/New"
+    );
+}
+
+#[test]
+fn probe_existence_url_encodes_scoped_name_on_the_wire() {
+    // A scoped name's `/` must be `%2F` in the live URL path. The capturing
+    // responder records the request line so we can assert `encode_package_path`
+    // is wired into the GET, not just unit-tested in isolation.
+    let (addr, captured) =
+        anodizer_core::test_helpers::responder::spawn_request_capturing_responder(
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+        );
+    let registry = format!("http://{addr}");
+    let ctx = TestContextBuilder::new().project_name("demo").build();
+    let got = probe_package_existence(&registry, "@scope/name", &ctx.logger("p"));
+    assert_eq!(got, PackageExistence::Exists);
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    let request = loop {
+        let s = captured.lock().unwrap().clone();
+        if !s.is_empty() || std::time::Instant::now() >= deadline {
+            break s;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert!(
+        request.contains("/@scope%2Fname "),
+        "scoped name must be percent-encoded in the live URL path, got request line:\n{request}"
+    );
+}
+
+// -----------------------------------------------------------------------------
+// resolve_auth_for_package end-to-end — probe drives the auto-mode decision
+// -----------------------------------------------------------------------------
+
+#[test]
+fn resolve_auth_auto_exists_prefers_oidc_over_token() {
+    // auto mode, package Exists (200 from the mock), BOTH a token and an OIDC
+    // context available → the existence-aware decision prefers OIDC (Trusted
+    // Publishing) for an already-published package.
+    let (addr, calls) =
+        spawn_oneshot_http_responder(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"]);
+    let registry = format!("http://{addr}");
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .env("NPM_TOKEN", "npm_secretvalue")
+        .env(OIDC_URL_VAR, "https://token.actions.example/req")
+        .env(OIDC_TOKEN_VAR, "oidc-request-jwt")
+        .build();
+    let cfg = opt_cfg_auth(NpmAuthMode::Auto);
+    let (auth, token) = resolve_auth_for_package(&ctx, &cfg, &registry, "demo", &ctx.logger("p"))
+        .expect("auto+exists+oidc resolves");
+    assert!(
+        matches!(auth, NpmAuth::Oidc(_)),
+        "existing package with an OIDC context must resolve to OIDC, got {auth:?}"
+    );
+    // The token is still returned alongside (for the OIDC→token fallback).
+    assert_eq!(token, "npm_secretvalue");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "auto mode with a credential must probe the registry"
+    );
+}
+
+#[test]
+fn resolve_auth_auto_exists_token_only_resolves_token() {
+    // auto mode, package Exists (200), only a token (no OIDC context) → Token.
+    let (addr, calls) =
+        spawn_oneshot_http_responder(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"]);
+    let registry = format!("http://{addr}");
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .env("NPM_TOKEN", "npm_secretvalue")
+        .build();
+    let cfg = opt_cfg_auth(NpmAuthMode::Auto);
+    let (auth, _token) = resolve_auth_for_package(&ctx, &cfg, &registry, "demo", &ctx.logger("p"))
+        .expect("auto+exists+token resolves");
+    assert_eq!(
+        auth,
+        NpmAuth::Token("npm_secretvalue".to_string()),
+        "existing package with only a token must resolve to Token"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "auto mode with a credential must probe the registry"
+    );
+}
+
+#[test]
+fn resolve_auth_auto_new_token_only_resolves_token() {
+    // auto mode, package New (404), only a token → Token (the initial publish
+    // that Trusted Publishing cannot perform). Drives the probe → decide → New
+    // branch live.
+    let (addr, calls) =
+        spawn_oneshot_http_responder(vec!["HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"]);
+    let registry = format!("http://{addr}");
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .env("NPM_TOKEN", "npm_secretvalue")
+        .build();
+    let cfg = opt_cfg_auth(NpmAuthMode::Auto);
+    let (auth, _token) = resolve_auth_for_package(&ctx, &cfg, &registry, "demo", &ctx.logger("p"))
+        .expect("auto+new+token resolves");
+    assert_eq!(
+        auth,
+        NpmAuth::Token("npm_secretvalue".to_string()),
+        "new package with a token must resolve to Token for the initial publish"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "auto mode must probe the registry"
+    );
+}
+
+#[test]
+fn resolve_auth_auto_renders_cfg_token_template() {
+    // auto mode, package Exists (200), the token comes from a templated
+    // `cfg.token` (not NPM_TOKEN) → the template is rendered and the resolved
+    // auth carries the rendered value. Covers the `cfg.token` template branch
+    // of `resolve_token` end-to-end through the probe→decide→Token path.
+    let (addr, calls) =
+        spawn_oneshot_http_responder(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}"]);
+    let registry = format!("http://{addr}");
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.0.0")
+        .build();
+    let cfg = NpmConfig {
+        // A `{{ .Version }}` token proves the template render fires rather than
+        // the raw string passing through.
+        token: Some("tok-{{ .Version }}".into()),
+        ..opt_cfg_auth(NpmAuthMode::Auto)
+    };
+    let (auth, token) = resolve_auth_for_package(&ctx, &cfg, &registry, "demo", &ctx.logger("p"))
+        .expect("templated cfg.token resolves");
+    assert_eq!(
+        auth,
+        NpmAuth::Token("tok-1.0.0".to_string()),
+        "cfg.token template must be rendered into the resolved auth"
+    );
+    assert_eq!(token, "tok-1.0.0");
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "auto mode must probe the registry"
+    );
+}
+
+#[test]
+fn resolve_auth_auto_new_oidc_only_fails_needs_token_live_probe() {
+    // auto mode, package New (404 from the mock), an OIDC context but NO token:
+    // Trusted Publishing cannot create a non-existent package. The live probe →
+    // decide → FailNewNeedsToken bail must fire with the package-naming, fixable
+    // error — covering the probe-driven terminal branch end-to-end.
+    let (addr, calls) =
+        spawn_oneshot_http_responder(vec!["HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n"]);
+    let registry = format!("http://{addr}");
+    let ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .env(OIDC_URL_VAR, "https://token.actions.example/req")
+        .env(OIDC_TOKEN_VAR, "oidc-request-jwt")
+        .build();
+    let cfg = opt_cfg_auth(NpmAuthMode::Auto);
+    let err = resolve_auth_for_package(&ctx, &cfg, &registry, "demo", &ctx.logger("p"))
+        .expect_err("new package + oidc-only must fail needing a token");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("does not exist") && msg.contains("Trusted Publishing"),
+        "error must explain TP cannot create a new package: {msg}"
+    );
+    assert!(
+        msg.contains("demo"),
+        "error must name the offending package: {msg}"
+    );
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "auto mode must probe the registry"
+    );
 }
 
 #[test]

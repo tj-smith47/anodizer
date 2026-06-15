@@ -678,7 +678,11 @@ pub(crate) fn encode_package_path(name: &str) -> String {
 /// [`PackageExistence::Unknown`] (the caller's `auto` decision then prefers the
 /// safe path). This is distinct from [`version_already_published`], which
 /// probes for one specific *version* to drive idempotent re-runs.
-fn probe_package_existence(registry: &str, name: &str, log: &StageLogger) -> PackageExistence {
+pub(crate) fn probe_package_existence(
+    registry: &str,
+    name: &str,
+    log: &StageLogger,
+) -> PackageExistence {
     let base = registry.trim_end_matches('/');
     let url = format!("{}/{}", base, encode_package_path(name));
     let client = match anodizer_core::http::blocking_client(std::time::Duration::from_secs(15)) {
