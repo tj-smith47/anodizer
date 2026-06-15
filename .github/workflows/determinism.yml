@@ -24,11 +24,28 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # det_stages: the harness `--stages=` list is ALSO the build filter —
+        # any produce-stage not named lands in the child release's `--skip=`
+        # complement and never builds. The ubuntu shard cross-builds every
+        # target and owns the Linux-native installer fallback toolchain
+        # (wixl/makensis/xar+mkbom/genisoimage), so it is the only shard that
+        # byte-verifies the macOS+Windows installer formats; it requests the
+        # full set explicitly (empty default omits installers). appbundle is
+        # listed before dmg/pkg so their `use: appbundle` finds a source
+        # artifact. The macOS/Windows shards build only their native binaries
+        # + archives, so they keep the empty (OS-default) stage list.
+        # auto_install installs the installer fallback tools from .anodizer.yaml
+        # on the ubuntu shard (auto-detect is OS-guarded, so enabling it on the
+        # native shards would not pull the Linux-only installer toolchain).
         include:
-          - { os: ubuntu-latest,  shard: ubuntu-latest,   targets: '' }
-          - { os: macos-latest,   shard: macos-latest,     targets: '' }
-          - { os: windows-latest, shard: windows-x86_64,   targets: 'x86_64-pc-windows-msvc' }
-          - { os: windows-latest, shard: windows-aarch64,  targets: 'aarch64-pc-windows-msvc' }
+          - os: ubuntu-latest
+            shard: ubuntu-latest
+            targets: ''
+            det_stages: 'build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum,appbundle,dmg,pkg,msi,nsis'
+            auto_install: 'true'
+          - { os: macos-latest,   shard: macos-latest,     targets: '', det_stages: '', auto_install: 'false' }
+          - { os: windows-latest, shard: windows-x86_64,   targets: 'x86_64-pc-windows-msvc',  det_stages: '', auto_install: 'false' }
+          - { os: windows-latest, shard: windows-aarch64,  targets: 'aarch64-pc-windows-msvc', det_stages: '', auto_install: 'false' }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -40,6 +57,8 @@ jobs:
         with:
           determinism: 'true'
           determinism-targets: ${{ matrix.targets }}
+          determinism-stages: ${{ matrix.det_stages }}
+          auto-install: ${{ matrix.auto_install }}
           preserve-dist: 'true'
           shard-label: ${{ matrix.shard }}
         env:

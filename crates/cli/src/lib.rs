@@ -779,7 +779,7 @@ pub struct CheckDeterminismArgs {
     #[arg(
         long,
         value_name = "stages",
-        help = "Optional stage subset (build,archive,sbom,sign,checksum,cargo-package,docker). `cargo-package` is harness-only — drives `cargo package --no-verify --allow-dirty` per workspace member to probe `.crate` byte-stability without hitting a registry. `docker` is harness-only — drives `docker buildx build --output=type=oci,rewrite-timestamp=true,dest=…` against `<repo>/Dockerfile` to probe OCI image byte-stability without pushing to a registry; skipped when `docker buildx` is unavailable or no Dockerfile exists."
+        help = "Optional stage subset (build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum,cargo-package,docker,msi,nsis,dmg,pkg,srpm,appbundle, plus the `installers` family selector expanding to nfpm,makeself,srpm,msi,nsis,dmg,pkg). The list is also the build filter: stages NOT named here are added to the child release's `--skip=` set, so a stage must be requested to be byte-verified. `cargo-package` is harness-only — drives `cargo package --no-verify --allow-dirty` per workspace member to probe `.crate` byte-stability without hitting a registry. `docker` is harness-only — drives `docker buildx build --output=type=oci,rewrite-timestamp=true,dest=…` against `<repo>/Dockerfile` to probe OCI image byte-stability without pushing to a registry; skipped when `docker buildx` is unavailable or no Dockerfile exists. Installer stages (msi/nsis/dmg/pkg/srpm) are skipped at the gate when their backing tool is absent; `appbundle` is pure file assembly and always runs when requested."
     )]
     pub stages: Option<String>,
     #[arg(

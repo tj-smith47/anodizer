@@ -110,6 +110,10 @@ impl DeterminismState {
             // follow-up. Removing this outright would gate anodizer's release on
             // an unproven macOS path.
             (
+                "*.pkg",
+                "Linux flat-pkg path (xar/mkbom/cpio) is byte-reproducible (test_flat_pkg_is_byte_reproducible_across_time), but the allowlist matches on artifact name not producing tool, and the macOS-native pkgbuild path on the macos shard is not yet proven reproducible; per-tool narrowing is the determinism-installers follow-up",
+            ),
+            (
                 "*.deb",
                 "dpkg-deb reproducibility varies by version; tracked in determinism-installers",
             ),
@@ -243,6 +247,14 @@ mod tests {
     fn compile_time_allowlist_resolves_for_rpm() {
         let s = DeterminismState::seed_from_commit(0).expect("non-negative");
         assert!(s.resolve_reason("foo-1.0.rpm").is_some());
+    }
+
+    #[test]
+    fn compile_time_allowlist_resolves_for_pkg() {
+        let s = DeterminismState::seed_from_commit(0).expect("non-negative");
+        // The macOS-native pkgbuild path on the macos shard is not yet proven
+        // reproducible; the harness must not count its `.pkg` as drift.
+        assert!(s.resolve_reason("anodizer-0.2.1.pkg").is_some());
     }
 
     #[test]

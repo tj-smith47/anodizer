@@ -197,6 +197,16 @@ pub enum StageId {
     /// skipped when missing so the harness stays usable on macOS /
     /// Windows hosts that lack RPM tooling.
     Srpm,
+    /// macOS `.app` bundle reproducibility probe.
+    ///
+    /// Drives the `stage-appbundle` crate, which is pure file assembly
+    /// (Info.plist + binary copy) with no external tool, so it builds on
+    /// any host. No gating tool — always available. Present in the stage
+    /// vocabulary so a `--stages=` list can keep it out of the harness's
+    /// child `--skip=` complement; without it, a `dmg`/`pkg` stage with
+    /// `use: appbundle` would find no appbundle artifact and silently
+    /// produce nothing during a determinism run.
+    Appbundle,
 }
 
 impl StageId {
@@ -221,6 +231,7 @@ impl StageId {
             StageId::Dmg => "dmg",
             StageId::Pkg => "pkg",
             StageId::Srpm => "srpm",
+            StageId::Appbundle => "appbundle",
         }
     }
 }

@@ -299,6 +299,7 @@ fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
                     "dmg" => parsed.push(StageId::Dmg),
                     "pkg" => parsed.push(StageId::Pkg),
                     "srpm" => parsed.push(StageId::Srpm),
+                    "appbundle" => parsed.push(StageId::Appbundle),
                     "installers" => parsed.extend(installer_stages()),
                     other => unknown.push(other.to_string()),
                 }
@@ -306,7 +307,7 @@ fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
             if !unknown.is_empty() {
                 return Err(format!(
                     "--stages contained unknown stage(s): {}. \
-                     Known stages: build, source, upx, archive, nfpm, makeself, snapcraft, sbom, sign, checksum, cargo-package, docker, msi, nsis, dmg, pkg, srpm, installers.",
+                     Known stages: build, source, upx, archive, nfpm, makeself, snapcraft, sbom, sign, checksum, cargo-package, docker, msi, nsis, dmg, pkg, srpm, appbundle, installers.",
                     unknown.join(", ")
                 ));
             }
@@ -693,6 +694,20 @@ mod tests {
                 vec![token]
             );
         }
+    }
+
+    #[test]
+    fn parse_stages_accepts_appbundle_token() {
+        // `appbundle` is pure file assembly (no tool) but must be a
+        // first-class stage token: a `dmg`/`pkg` stage with `use:
+        // appbundle` finds no source artifact unless `appbundle` is kept
+        // out of the harness's child `--skip=` complement, which requires
+        // it to be requestable here.
+        let stages = parse_stages(Some("appbundle,dmg")).expect("appbundle token must parse");
+        assert_eq!(
+            stages.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+            vec!["appbundle", "dmg"]
+        );
     }
 
     #[test]

@@ -58,7 +58,11 @@ fn stage_primary_tool(stage: StageId) -> Option<&'static str> {
         StageId::Dmg => Some(if cfg!(target_os = "macos") {
             "hdiutil"
         } else {
-            "mkisofs"
+            // stage-dmg's non-macOS preference order is genisoimage > mkisofs
+            // (see anodizer_stage_dmg::dmg_tool). The gate probes the
+            // preferred binary; if only mkisofs is present the stage still
+            // falls back to it at spawn time (gate is best-effort).
+            "genisoimage"
         }),
         StageId::Pkg => Some("pkgbuild"),
         _ => None,
@@ -206,7 +210,7 @@ mod tests {
         let dmg_tool = if cfg!(target_os = "macos") {
             "hdiutil"
         } else {
-            "mkisofs"
+            "genisoimage"
         };
         assert_eq!(
             gate.skipped.iter().map(|(_, t)| *t).collect::<Vec<_>>(),
