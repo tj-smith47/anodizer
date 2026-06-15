@@ -668,7 +668,7 @@ pub(crate) fn decide_auth(
 /// URL-encode an npm package name for a registry metadata GET: a scoped name's
 /// single `/` becomes `%2F` (`@a/b` → `@a%2Fb`); all other characters in valid
 /// npm names (lowercase, digits, `-._@`) are already URL-safe.
-fn encode_package_path(name: &str) -> String {
+pub(crate) fn encode_package_path(name: &str) -> String {
     name.replace('/', "%2F")
 }
 
@@ -681,10 +681,7 @@ fn encode_package_path(name: &str) -> String {
 fn probe_package_existence(registry: &str, name: &str, log: &StageLogger) -> PackageExistence {
     let base = registry.trim_end_matches('/');
     let url = format!("{}/{}", base, encode_package_path(name));
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-    {
+    let client = match anodizer_core::http::blocking_client(std::time::Duration::from_secs(15)) {
         Ok(c) => c,
         Err(e) => {
             log.warn(&format!(

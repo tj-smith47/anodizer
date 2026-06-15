@@ -19,8 +19,8 @@ use super::manifest::{
 use super::optional_deps::generate_layout;
 use super::publish::{
     AuthDecision, NpmAuth, PackageExistence, assemble_optional_deps_tarball,
-    assemble_postinstall_tarball, build_npm_publish_command, decide_auth, publish_to_npm,
-    publish_with_oidc_fallback, resolve_auth_for_package, write_npmrc,
+    assemble_postinstall_tarball, build_npm_publish_command, decide_auth, encode_package_path,
+    publish_to_npm, publish_with_oidc_fallback, resolve_auth_for_package, write_npmrc,
 };
 use super::publisher::NpmPublisher;
 
@@ -1042,6 +1042,17 @@ fn decide_auth_matrix_forced_oidc() {
         assert_eq!(decide_auth(m, ex, false, true), ErrorNoAuth);
         assert_eq!(decide_auth(m, ex, false, false), ErrorNoAuth);
     }
+}
+
+#[test]
+fn encode_package_path_scoped_and_unscoped() {
+    // A scoped name's single `/` is percent-encoded for the registry metadata GET.
+    assert_eq!(
+        encode_package_path("@anodizer/cli-linux-x64"),
+        "@anodizer%2Fcli-linux-x64"
+    );
+    // An unscoped name has no `/` and is returned unchanged.
+    assert_eq!(encode_package_path("anodizer"), "anodizer");
 }
 
 #[test]
