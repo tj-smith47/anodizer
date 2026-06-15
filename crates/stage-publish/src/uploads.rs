@@ -1162,13 +1162,15 @@ mod live_http_tests {
     /// Build a live (non-dry-run) single-archive upload context whose only
     /// `uploads:` entry targets `http://{addr}/repo/` (so the artifact PUTs
     /// to `/repo/<name>`). `mutate` customizes the entry (method, auth,
-    /// custom headers, …). Returns the context, the file's hex sha256 (for
-    /// scripting a matching HEAD probe), and the artifact name.
+    /// custom headers, …). Returns the backing `TempDir` (bind it for the
+    /// duration of the test so its `Drop` cleans up the artifact), the
+    /// context, the file's hex sha256 (for scripting a matching HEAD probe),
+    /// and the artifact name.
     fn live_ctx(
         addr: SocketAddr,
         env: MapEnvSource,
         mutate: impl FnOnce(&mut UploadConfig),
-    ) -> (Context, String, &'static str) {
+    ) -> (tempfile::TempDir, Context, String, &'static str) {
         let art_name = "app-1.0.0.tar.gz";
         let dir = tempfile::tempdir().unwrap();
         let art_path = dir.path().join(art_name);
@@ -1206,9 +1208,7 @@ mod live_http_tests {
             metadata: std::collections::HashMap::new(),
             size: None,
         });
-        // The artifact file must outlive the upload read; tests are short.
-        std::mem::forget(dir);
-        (ctx, checksum, art_name)
+        (dir, ctx, checksum, art_name)
     }
 
     fn count_calls(log: &[RequestLog], method: &str, path: &str) -> usize {
@@ -1246,7 +1246,7 @@ mod live_http_tests {
         let env = MapEnvSource::new()
             .with("UPLOAD_JARVISPRO_USERNAME", "ci-bot")
             .with("UPLOAD_JARVISPRO_SECRET", "s3cr3t-pat");
-        let (ctx, checksum, _name) = live_ctx(addr, env, |_| {});
+        let (_dir, ctx, checksum, _name) = live_ctx(addr, env, |_| {});
         let log_handle = ctx.logger("uploads");
         let summary = publish_uploads(&ctx, &log_handle).expect("live PUT upload succeeds");
         assert_eq!(summary.uploaded, 1);
@@ -1310,7 +1310,7 @@ mod live_http_tests {
             ]
         });
 
-        let (ctx, _checksum, _name) = live_ctx(addr, MapEnvSource::new(), |e| {
+        let (_dir, ctx, _checksum, _name) = live_ctx(addr, MapEnvSource::new(), |e| {
             e.method = Some("POST".to_string());
             e.checksum_header = Some("X-My-Digest".to_string());
             let mut h = std::collections::HashMap::new();
@@ -1373,7 +1373,7 @@ mod live_http_tests {
         let env = MapEnvSource::new()
             .with("UPLOAD_JARVISPRO_USERNAME", "u")
             .with("UPLOAD_JARVISPRO_SECRET", "p");
-        let (ctx, _checksum, _name) = live_ctx(addr, env, |_| {});
+        let (_dir, ctx, _checksum, _name) = live_ctx(addr, env, |_| {});
         let log_handle = ctx.logger("uploads");
         let err = publish_uploads(&ctx, &log_handle).expect_err("5xx PUT must error");
         let chain = format!("{err:#}");
@@ -1407,7 +1407,7 @@ mod live_http_tests {
             ]
         });
 
-        let (ctx, _checksum, _name) = live_ctx(addr, MapEnvSource::new(), |e| {
+        let (_dir, ctx, _checksum, _name) = live_ctx(addr, MapEnvSource::new(), |e| {
             e.target = format!("http://{addr}/repo/{{{{ .Version }}}}/");
         });
         let log_handle = ctx.logger("uploads");
