@@ -932,6 +932,37 @@ pub(super) fn generate_cask_from_context(
     )?;
     let (alias_alts, versioned_alts) = split_alternative_names(&rendered_alts, cask_name);
 
+    // Template-render the user-supplied free-text fields here — the scope with
+    // the real `Context`+`log` — so a value like `caveats: "see {{ .Tag }}"`
+    // resolves before reaching `generate_cask` (which holds only a bare
+    // `tera::Context`). Mirrors the formula publisher's `resolve_homebrew_metadata`.
+    // Fallback chain (per-cask → per-formula → project metadata) is resolved
+    // first, then the chosen value rendered.
+    let homepage = cask_cfg
+        .homepage
+        .as_deref()
+        .or(hb_cfg.homepage.as_deref())
+        .or_else(|| ctx.config.meta_homepage_for(crate_name))
+        .map(|s| crate::util::render_or_warn(ctx, log, "cask.homepage", s))
+        .transpose()?;
+    let description = cask_cfg
+        .description
+        .as_deref()
+        .or(hb_cfg.description.as_deref())
+        .or_else(|| ctx.config.meta_description_for(crate_name))
+        .map(|s| crate::util::render_or_warn(ctx, log, "cask.description", s))
+        .transpose()?;
+    let caveats = cask_cfg
+        .caveats
+        .as_deref()
+        .map(|s| crate::util::render_or_warn(ctx, log, "cask.caveats", s))
+        .transpose()?;
+    let custom_block = cask_cfg
+        .custom_block
+        .as_deref()
+        .map(|s| crate::util::render_or_warn(ctx, log, "cask.custom_block", s))
+        .transpose()?;
+
     let params = CaskParams {
         name: cask_name,
         display_name,
@@ -941,25 +972,14 @@ pub(super) fn generate_cask_from_context(
         url: &url,
         url_extras: &url_extras_top,
         url_extras_indented: &url_extras_arch,
-        // Fallback chain: per-cask homepage → per-formula homepage →
-        // project metadata.homepage. Lets a monorepo declare project
-        // metadata once and have every cask inherit it.
-        homepage: cask_cfg
-            .homepage
-            .as_deref()
-            .or(hb_cfg.homepage.as_deref())
-            .or_else(|| ctx.config.meta_homepage_for(crate_name)),
-        description: cask_cfg
-            .description
-            .as_deref()
-            .or(hb_cfg.description.as_deref())
-            .or_else(|| ctx.config.meta_description_for(crate_name)),
+        homepage: homepage.as_deref(),
+        description: description.as_deref(),
         app: cask_cfg.app.as_deref(),
         binaries: &cask_binaries,
-        caveats: cask_cfg.caveats.as_deref(),
+        caveats: caveats.as_deref(),
         zap_block: &zap_block,
         uninstall_block: &uninstall_block,
-        custom_block: cask_cfg.custom_block.as_deref(),
+        custom_block: custom_block.as_deref(),
         service: cask_cfg.service.as_deref(),
         livecheck: super::formula::render_livecheck(cask_cfg.livecheck.as_ref(), log),
         manpages: cask_cfg.manpages.as_deref().unwrap_or(&empty_vec),
@@ -1006,6 +1026,10 @@ pub(super) fn generate_cask_from_context(
     };
 
     let content = generate_cask(&params)?;
+    // Final-text chokepoint: a residual `{{ … }}` means a config field escaped
+    // rendering — fail strict, warn lenient — before the cask is written or
+    // pushed. Ruby `#{}` interpolation is not scanned, so `#{version}` is safe.
+    crate::util::guard_no_unrendered(ctx, log, "homebrew cask", &content)?;
 
     // For each versioned alt-name, emit a second .rb whose body re-keys
     // the `cask "<name>" do` header to the alt-name and drops the
@@ -1024,6 +1048,7 @@ pub(super) fn generate_cask_from_context(
             ..clone_cask_params(&params)
         };
         let body = generate_cask(&alt_params)?;
+        crate::util::guard_no_unrendered(ctx, log, "homebrew cask", &body)?;
         versioned_files.push((alt.clone(), body));
     }
 

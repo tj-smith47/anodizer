@@ -3642,3 +3642,280 @@ fn test_binary_copy_missing_source_errors_with_path_context() {
         "expected binary-copy error with source path context, got: {msg}"
     );
 }
+
+// -----------------------------------------------------------------------
+// Templated string fields render before emission (no literal `{{ }}` leak)
+// -----------------------------------------------------------------------
+
+/// Render one crate's snap.yaml through the offline renderer with `Tag` set,
+/// returning the single emitted document. Asserts exactly one was produced so
+/// the field-leak tests below read the resolved manifest directly.
+fn render_single_snap_yaml(snap_cfg: SnapcraftConfig) -> String {
+    let tmp = TempDir::new().unwrap();
+    let mut ctx = stage_ctx_with_binaries(
+        tmp.path().join("dist"),
+        snap_cfg,
+        vec![linux_bin("myapp", "x86_64-unknown-linux-gnu")],
+        true,
+    );
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
+    let yamls = crate::snapcraft_snap_yamls_for_crate(&ctx, "myapp").unwrap();
+    assert_eq!(
+        yamls.len(),
+        1,
+        "expected exactly one snap.yaml, got: {yamls:?}"
+    );
+    yamls.into_iter().next().unwrap()
+}
+
+#[test]
+fn test_name_field_is_template_rendered() {
+    let snap_cfg = SnapcraftConfig {
+        name: Some("app-{{ .Tag }}".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let yaml = render_single_snap_yaml(snap_cfg);
+    assert!(
+        yaml.contains("name: app-v1.2.3"),
+        "name not rendered, got: {yaml}"
+    );
+    assert!(
+        !yaml.contains("{{"),
+        "literal template delimiter leaked: {yaml}"
+    );
+}
+
+#[test]
+fn test_base_field_is_template_rendered() {
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        base: Some("core{{ .Tag }}".to_string()),
+        ..Default::default()
+    };
+    let yaml = render_single_snap_yaml(snap_cfg);
+    assert!(
+        yaml.contains("base: corev1.2.3"),
+        "base not rendered, got: {yaml}"
+    );
+    assert!(
+        !yaml.contains("{{"),
+        "literal template delimiter leaked: {yaml}"
+    );
+}
+
+#[test]
+fn test_confinement_field_is_template_rendered() {
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        confinement: Some("{{ .Tag }}".to_string()),
+        ..Default::default()
+    };
+    let yaml = render_single_snap_yaml(snap_cfg);
+    assert!(
+        yaml.contains("confinement: v1.2.3"),
+        "confinement not rendered, got: {yaml}"
+    );
+    assert!(
+        !yaml.contains("{{"),
+        "literal template delimiter leaked: {yaml}"
+    );
+}
+
+#[test]
+fn test_license_field_is_template_rendered() {
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        license: Some("MIT-{{ .Tag }}".to_string()),
+        ..Default::default()
+    };
+    let yaml = render_single_snap_yaml(snap_cfg);
+    assert!(
+        yaml.contains("license: MIT-v1.2.3"),
+        "license not rendered, got: {yaml}"
+    );
+    assert!(
+        !yaml.contains("{{"),
+        "literal template delimiter leaked: {yaml}"
+    );
+}
+
+#[test]
+fn test_title_field_is_template_rendered() {
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        title: Some("{{ .Tag }} build".to_string()),
+        ..Default::default()
+    };
+    let yaml = render_single_snap_yaml(snap_cfg);
+    assert!(
+        yaml.contains("title: v1.2.3 build"),
+        "title not rendered, got: {yaml}"
+    );
+    assert!(
+        !yaml.contains("{{"),
+        "literal template delimiter leaked: {yaml}"
+    );
+}
+
+/// Stage-level assertion that the residual-delimiter guard is wired into the
+/// snap.yaml chokepoint. Every config STRING field is rendered before
+/// emission, but app `passthrough:` is arbitrary YAML copied verbatim into
+/// snap.yaml (the user's documented escape hatch — never template-rendered).
+/// A literal `{{ … }}` smuggled through it therefore reaches the finished
+/// manifest, and the chokepoint guard must turn that into a hard error under
+/// strict mode — proving the net is wired regardless of which field leaks.
+#[test]
+fn test_guard_fires_in_strict_mode_on_unrendered_field() {
+    let mut apps = BTreeMap::new();
+    let mut passthrough = BTreeMap::new();
+    passthrough.insert(
+        "x-custom".to_string(),
+        serde_json::Value::String("{{ .Tag }}".to_string()),
+    );
+    apps.insert(
+        "myapp".to_string(),
+        SnapcraftApp {
+            command: Some("myapp".to_string()),
+            passthrough: Some(passthrough),
+            ..Default::default()
+        },
+    );
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        apps: Some(apps),
+        ..Default::default()
+    };
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        snapcrafts: Some(vec![snap_cfg]),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    let tmp = TempDir::new().unwrap();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            strict: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts
+        .add(linux_bin("myapp", "x86_64-unknown-linux-gnu"));
+
+    let err = crate::snapcraft_snap_yamls_for_crate(&ctx, "myapp").unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("snapcraft.yaml") && msg.contains("unrendered template delimiter"),
+        "guard error should name the manifest + residual, got: {msg}"
+    );
+}
+
+/// App `command` / `args` are user-templatable (GoReleaser renders them); a
+/// `{{ .Version }}` in either must resolve in the emitted snap.yaml, never
+/// ship the literal delimiters.
+#[test]
+fn test_app_command_and_args_are_template_rendered() {
+    let mut apps = BTreeMap::new();
+    apps.insert(
+        "myapp".to_string(),
+        SnapcraftApp {
+            command: Some("myapp-{{ .Version }}".to_string()),
+            args: Some("--tag {{ .Version }}".to_string()),
+            ..Default::default()
+        },
+    );
+    let snap_cfg = SnapcraftConfig {
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        apps: Some(apps),
+        ..Default::default()
+    };
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        snapcrafts: Some(vec![snap_cfg]),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    let tmp = TempDir::new().unwrap();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts
+        .add(linux_bin("myapp", "x86_64-unknown-linux-gnu"));
+
+    let yamls = crate::snapcraft_snap_yamls_for_crate(&ctx, "myapp").unwrap();
+    let yaml = &yamls[0];
+    assert!(
+        yaml.contains("myapp-1.0.0") && yaml.contains("--tag 1.0.0"),
+        "command/args should be rendered, got: {yaml}"
+    );
+    assert!(!yaml.contains("{{"), "no residual delimiters, got: {yaml}");
+}
+
+/// A clean manifest (every templated field resolves) passes the chokepoint
+/// guard even under strict mode — the guard must not false-positive on the
+/// emitted YAML or `$SNAP` shell vars.
+#[test]
+fn test_guard_passes_clean_manifest_in_strict_mode() {
+    let snap_cfg = SnapcraftConfig {
+        name: Some("app-{{ .Tag }}".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        snapcrafts: Some(vec![snap_cfg]),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    let tmp = TempDir::new().unwrap();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            strict: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
+    ctx.artifacts
+        .add(linux_bin("myapp", "x86_64-unknown-linux-gnu"));
+
+    let yamls = crate::snapcraft_snap_yamls_for_crate(&ctx, "myapp").unwrap();
+    assert_eq!(yamls.len(), 1);
+    assert!(yamls[0].contains("name: app-v1.2.3"));
+}

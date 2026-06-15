@@ -872,14 +872,36 @@ pub(crate) fn render_scoop_manifest_for_crate(
         ),
         None => None,
     };
+    // Template-render every user-supplied string field, same warn-vs-strict
+    // path the neighbouring `description` / `name` / `homepage` fields use, so a
+    // value like `persist: "{{ .Tag }}"` resolves instead of shipping the literal
+    // delimiter. Per-crate Tag/Version scoping is inherited because each render
+    // goes through the same `ctx` the homepage render does — correct under
+    // single-crate, workspace-lockstep, and workspace per-crate modes alike.
+    let persist = render_string_list(ctx, log, "scoop.persist", scoop_cfg.persist.as_deref())?;
+    let depends = render_string_list(ctx, log, "scoop.depends", scoop_cfg.depends.as_deref())?;
+    let pre_install = render_string_list(
+        ctx,
+        log,
+        "scoop.pre_install",
+        scoop_cfg.pre_install.as_deref(),
+    )?;
+    let post_install = render_string_list(
+        ctx,
+        log,
+        "scoop.post_install",
+        scoop_cfg.post_install.as_deref(),
+    )?;
+    let shortcuts = render_shortcuts(ctx, log, scoop_cfg.shortcuts.as_deref())?;
+
     let opts = ManifestOptions {
         homepage: homepage_rendered.as_deref(),
         github_slug,
-        persist: scoop_cfg.persist.as_deref(),
-        depends: scoop_cfg.depends.as_deref(),
-        pre_install: scoop_cfg.pre_install.as_deref(),
-        post_install: scoop_cfg.post_install.as_deref(),
-        shortcuts: scoop_cfg.shortcuts.as_deref(),
+        persist: persist.as_deref(),
+        depends: depends.as_deref(),
+        pre_install: pre_install.as_deref(),
+        post_install: post_install.as_deref(),
+        shortcuts: shortcuts.as_deref(),
         bin: bin_names_ref,
         checkver,
         autoupdate_hash,
@@ -894,7 +916,58 @@ pub(crate) fn render_scoop_manifest_for_crate(
         &opts,
     )?;
 
+    // Final-text chokepoint shared by the live publish path and the offline
+    // prepublish guard (both reach the manifest string only through here): a
+    // residual `{{ … }}` means a config field escaped rendering — fail strict,
+    // warn lenient, before the manifest is written or pushed.
+    crate::util::guard_no_unrendered(ctx, log, "scoop manifest", &manifest)?;
+
     Ok(Some(manifest))
+}
+
+/// Template-render each element of an optional scoop string-list field
+/// (`persist` / `depends` / `pre_install` / `post_install`), preserving order
+/// and length, via the same warn-vs-strict path the scalar scoop fields use.
+fn render_string_list(
+    ctx: &Context,
+    log: &StageLogger,
+    field: &str,
+    list: Option<&[String]>,
+) -> Result<Option<Vec<String>>> {
+    match list {
+        None => Ok(None),
+        Some(items) => {
+            let rendered = items
+                .iter()
+                .map(|item| util::render_or_warn(ctx, log, field, item))
+                .collect::<Result<Vec<String>>>()?;
+            Ok(Some(rendered))
+        }
+    }
+}
+
+/// Template-render scoop `shortcuts` — a list of `[exe, name, args?, icon?]`
+/// tuples — rendering every element of every tuple so a templated executable
+/// path, name, or argument resolves before it reaches the manifest.
+fn render_shortcuts(
+    ctx: &Context,
+    log: &StageLogger,
+    shortcuts: Option<&[Vec<String>]>,
+) -> Result<Option<Vec<Vec<String>>>> {
+    match shortcuts {
+        None => Ok(None),
+        Some(rows) => {
+            let rendered = rows
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|field| util::render_or_warn(ctx, log, "scoop.shortcuts", field))
+                        .collect::<Result<Vec<String>>>()
+                })
+                .collect::<Result<Vec<Vec<String>>>>()?;
+            Ok(Some(rendered))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -4136,5 +4209,116 @@ mod publish_flow_tests {
             clear_api_base();
             drop(bare);
         }
+    }
+
+    // -----------------------------------------------------------------------
+    // Template-rendering of user-supplied string fields.
+    //
+    // A value like `persist: "{{ .Tag }}"` must resolve to the concrete tag,
+    // never ship the literal `{{ .Tag }}`. Each helper below mutates one scoop
+    // field, renders the manifest through `render_scoop_manifest_for_crate`
+    // (the same path the live publish + offline guard use), and asserts the
+    // emitted JSON carries the resolved value and no residual `{{` delimiter.
+    // -----------------------------------------------------------------------
+
+    /// A widget crate whose scoop block is mutated by `f` (to set a field under
+    /// test), with a single x86_64 windows archive so the manifest renders.
+    fn render_scoop_with_field(f: impl FnOnce(&mut ScoopConfig)) -> serde_json::Value {
+        let mut c = scoop_crate_for_bucket("widget", "/unused");
+        f(c.publish.as_mut().unwrap().scoop.as_mut().unwrap());
+        // build_ctx sets Tag = v1.2.3 for "1.2.3"; the field templates resolve
+        // against that, proving per-crate Tag scoping flows through.
+        let mut ctx = build_ctx(vec![c], "1.2.3");
+        add_windows_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-pc-windows-msvc",
+            "amd64",
+            "widget",
+            &"a".repeat(64),
+        );
+        let manifest = render_scoop_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect("render ok")
+            .expect("not skipped");
+        assert!(
+            !manifest.contains("{{"),
+            "no residual template delimiter may survive:\n{manifest}"
+        );
+        serde_json::from_str(&manifest).expect("valid JSON")
+    }
+
+    #[test]
+    fn render_scoop_persist_field_is_template_rendered() {
+        let json = render_scoop_with_field(|s| {
+            s.persist = Some(vec!["data-{{ .Tag }}".to_string()]);
+        });
+        assert_eq!(json["persist"][0], "data-v1.2.3");
+    }
+
+    #[test]
+    fn render_scoop_depends_field_is_template_rendered() {
+        let json = render_scoop_with_field(|s| {
+            s.depends = Some(vec!["git".to_string(), "tool-{{ .Tag }}".to_string()]);
+        });
+        assert_eq!(json["depends"][0], "git");
+        assert_eq!(json["depends"][1], "tool-v1.2.3");
+    }
+
+    #[test]
+    fn render_scoop_pre_install_field_is_template_rendered() {
+        let json = render_scoop_with_field(|s| {
+            s.pre_install = Some(vec![
+                "Write-Host 'setup'".to_string(),
+                "Write-Host '{{ .Tag }}'".to_string(),
+            ]);
+        });
+        assert_eq!(json["pre_install"][1], "Write-Host 'v1.2.3'");
+    }
+
+    #[test]
+    fn render_scoop_post_install_field_is_template_rendered() {
+        let json = render_scoop_with_field(|s| {
+            s.post_install = Some(vec!["Write-Host 'done {{ .Tag }}'".to_string()]);
+        });
+        assert_eq!(json["post_install"][0], "Write-Host 'done v1.2.3'");
+    }
+
+    #[test]
+    fn render_scoop_shortcuts_field_is_template_rendered() {
+        let json = render_scoop_with_field(|s| {
+            s.shortcuts = Some(vec![vec![
+                "widget.exe".to_string(),
+                "Widget {{ .Tag }}".to_string(),
+            ]]);
+        });
+        assert_eq!(json["shortcuts"][0][0], "widget.exe");
+        assert_eq!(json["shortcuts"][0][1], "Widget v1.2.3");
+    }
+
+    /// The final-text guard is strict under the prepublish render pass: a field
+    /// carrying an unresolvable template (no such variable) must error there
+    /// rather than emit a manifest with a residual `{{ … }}` delimiter.
+    #[test]
+    fn render_scoop_strict_unresolvable_field_errors() {
+        let mut c = scoop_crate_for_bucket("widget", "/unused");
+        c.publish.as_mut().unwrap().scoop.as_mut().unwrap().persist =
+            Some(vec!["{{ .NoSuchVariable }}".to_string()]);
+        let mut ctx = build_ctx(vec![c], "1.2.3");
+        ctx.set_render_strict(true);
+        add_windows_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-pc-windows-msvc",
+            "amd64",
+            "widget",
+            &"a".repeat(64),
+        );
+        let err = render_scoop_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect_err("strict render of an unresolvable field must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("scoop.persist"),
+            "error must name the offending field, got: {msg}"
+        );
     }
 }

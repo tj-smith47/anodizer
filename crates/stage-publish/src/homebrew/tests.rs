@@ -4103,3 +4103,157 @@ fn test_formula_empty_license_omits_stanza() {
     .unwrap();
     assert!(!no_license.contains("license \""));
 }
+
+// ===========================================================================
+// Template-rendering of user-supplied config string fields: a value carrying
+// `{{ .Tag }}` must reach the rendered manifest resolved, never literal. These
+// drive the CALLER-level entry points (the ones that hold a real Context +
+// StageLogger), matching how `resolve_homebrew_metadata` renders description /
+// homepage / license. Each asserts the resolved token IS present and the raw
+// `{{` delimiter is NOT.
+// ===========================================================================
+
+/// Build a `Context` with a single `mytool` crate whose `publish.homebrew` is
+/// `hb_cfg`, a darwin+linux archive pair so the formula/cask have artifacts to
+/// point at, and `Tag` set to a resolvable value.
+fn rendered_field_ctx(hb_cfg: HomebrewConfig) -> Context {
+    let config = Config {
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                homebrew: Some(hb_cfg),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
+    ctx.template_vars_mut().set("Version", "1.2.3");
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-darwin-amd64.tar.gz",
+        "x86_64-apple-darwin",
+        "https://e.com/mytool-1.2.3-darwin-amd64.tar.gz",
+        "sha_darwin_amd64",
+    ));
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-linux-amd64.tar.gz",
+        "x86_64-unknown-linux-gnu",
+        "https://e.com/mytool-1.2.3-linux-amd64.tar.gz",
+        "sha_linux_amd64",
+    ));
+    ctx
+}
+
+/// Formula `caveats` / `custom_require` / `custom_block` / `plist` / `service`
+/// carrying `{{ .Tag }}` are rendered through the template engine before they
+/// reach the formula body.
+#[test]
+fn formula_string_fields_are_template_rendered() {
+    let hb_cfg = HomebrewConfig {
+        caveats: Some("Installed {{ .Tag }} — run `mytool init`.".to_string()),
+        custom_require: Some("lib_{{ .Tag }}".to_string()),
+        custom_block: Some("# build {{ .Tag }}".to_string()),
+        plist: Some("<string>{{ .Tag }}</string>".to_string()),
+        service: Some("run [opt_bin/\"mytool\", \"--tag={{ .Tag }}\"]".to_string()),
+        ..Default::default()
+    };
+    let ctx = rendered_field_ctx(hb_cfg);
+    let rendered =
+        super::publish_formula::render_homebrew_formula_for_crate(&ctx, "mytool", &test_log())
+            .expect("formula render")
+            .expect("formula not skipped");
+    let f = rendered.formula;
+    assert!(
+        f.contains("v1.2.3"),
+        "a formula string field did not resolve `{{{{ .Tag }}}}`:\n{f}"
+    );
+    assert!(
+        !f.contains("{{"),
+        "formula carries an unrendered template delimiter:\n{f}"
+    );
+}
+
+/// Per-crate cask `homepage` / `description` / `caveats` / `custom_block`
+/// carrying `{{ .Tag }}` are rendered before reaching the cask body. Drives
+/// `generate_cask_from_context` (shared by the per-crate publish + standalone
+/// cask paths).
+#[test]
+fn per_crate_cask_string_fields_are_template_rendered() {
+    use anodizer_core::config::HomebrewCaskConfig;
+    let cask_cfg = HomebrewCaskConfig {
+        homepage: Some("https://example.com/{{ .Tag }}".to_string()),
+        description: Some("mytool {{ .Tag }}".to_string()),
+        caveats: Some("see {{ .Tag }}".to_string()),
+        custom_block: Some("# {{ .Tag }}".to_string()),
+        ..Default::default()
+    };
+    let ctx = rendered_field_ctx(HomebrewConfig::default());
+    let hb_cfg = HomebrewConfig::default();
+    let result =
+        super::cask::generate_cask_from_context(&ctx, "mytool", &hb_cfg, &cask_cfg, &test_log())
+            .expect("cask render");
+    let c = result.content;
+    assert!(
+        c.contains("v1.2.3"),
+        "a per-crate cask string field did not resolve `{{{{ .Tag }}}}`:\n{c}"
+    );
+    assert!(
+        !c.contains("{{"),
+        "per-crate cask carries an unrendered template delimiter:\n{c}"
+    );
+}
+
+/// Top-level `homebrew_casks:` `homepage` / `description` / `caveats` /
+/// `custom_block` carrying `{{ .Tag }}` are rendered before reaching the cask
+/// body. This is a DISTINCT path (`render_top_level_cask_inner` calls
+/// `generate_cask` directly, not via `generate_cask_from_context`).
+#[test]
+fn top_level_cask_string_fields_are_template_rendered() {
+    use anodizer_core::config::HomebrewCaskConfig;
+    let cask_cfg = HomebrewCaskConfig {
+        name: Some("mytool".to_string()),
+        homepage: Some("https://example.com/{{ .Tag }}".to_string()),
+        description: Some("mytool {{ .Tag }}".to_string()),
+        caveats: Some("see {{ .Tag }}".to_string()),
+        custom_block: Some("# {{ .Tag }}".to_string()),
+        ..Default::default()
+    };
+    let config = Config {
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }],
+        homebrew_casks: Some(vec![cask_cfg.clone()]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
+    ctx.template_vars_mut().set("Version", "1.2.3");
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-darwin-amd64.tar.gz",
+        "x86_64-apple-darwin",
+        "https://e.com/mytool-1.2.3-darwin-amd64.tar.gz",
+        "sha_darwin_amd64",
+    ));
+    let rendered = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+        .expect("top-level cask render")
+        .expect("top-level cask applicable");
+    let c = rendered.content;
+    assert!(
+        c.contains("v1.2.3"),
+        "a top-level cask string field did not resolve `{{{{ .Tag }}}}`:\n{c}"
+    );
+    assert!(
+        !c.contains("{{"),
+        "top-level cask carries an unrendered template delimiter:\n{c}"
+    );
+}

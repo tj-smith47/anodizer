@@ -674,7 +674,7 @@ fn aur_resolve_fields(
         .as_deref()
         .or_else(|| ctx.config.meta_homepage_for(crate_name))
         .map(|s| s.to_string());
-    let url = if let Some(u) = url_override {
+    let url_raw = if let Some(u) = url_override {
         u
     } else if let Some(gh) = crate_cfg.release.as_ref().and_then(|r| r.github.as_ref()) {
         format!("https://github.com/{}/{}", gh.owner, gh.name)
@@ -685,6 +685,11 @@ fn aur_resolve_fields(
             crate_name
         );
     };
+    // A user-supplied `aur.homepage` / `metadata.homepage` may carry template
+    // syntax (`{{ .Tag }}`); render it so the PKGBUILD `url=` line ships the
+    // resolved value, not the literal delimiters. The derived github URL has no
+    // delimiters but rendering it is a no-op, keeping the path uniform.
+    let url = util::render_or_warn(ctx, log, "aur.url", &url_raw)?;
 
     let maintainers = aur_cfg
         .maintainers
@@ -1105,6 +1110,8 @@ fn render_aur_inner(
     };
     let pkgbuild = generate_pkgbuild(&pkgbuild_params)?;
     let srcinfo = generate_srcinfo(&pkgbuild_params)?;
+    util::guard_no_unrendered(ctx, log, "aur PKGBUILD", &pkgbuild)?;
+    util::guard_no_unrendered(ctx, log, "aur .SRCINFO", &srcinfo)?;
     Ok(AurRendered {
         pkgbuild,
         srcinfo,
@@ -3743,6 +3750,49 @@ mod tests {
         let out = render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "mytool", &render_quiet_log())
             .expect("render ok");
         assert!(out.is_none(), "skip_upload=true must render None");
+    }
+
+    /// A templated `aur.homepage` (`{{ .Tag }}`) is template-rendered into the
+    /// PKGBUILD `url=` line and the .SRCINFO `url =` line — the literal
+    /// delimiters must NOT leak. Regression for the raw-emit url bug.
+    #[test]
+    fn render_homepage_template_is_rendered_into_url() {
+        let aur = AurConfig {
+            git_url: Some("ssh://aur@aur.archlinux.org/mytool-bin.git".to_string()),
+            homepage: Some("https://example.com/releases/{{ .Tag }}".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        };
+        let mut ctx = render_ctx("mytool", aur, false);
+        ctx.template_vars_mut().set("Tag", "v1.2.3");
+        let rendered =
+            render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "mytool", &render_quiet_log())
+                .expect("render ok")
+                .expect("not skipped");
+        assert!(
+            rendered
+                .pkgbuild
+                .contains("url=\"https://example.com/releases/v1.2.3\""),
+            "templated homepage must render into PKGBUILD url=:\n{}",
+            rendered.pkgbuild
+        );
+        assert!(
+            !rendered.pkgbuild.contains("{{"),
+            "PKGBUILD must carry no unrendered `{{{{`:\n{}",
+            rendered.pkgbuild
+        );
+        assert!(
+            rendered
+                .srcinfo
+                .contains("url = https://example.com/releases/v1.2.3"),
+            ".SRCINFO url must carry the resolved value:\n{}",
+            rendered.srcinfo
+        );
+        assert!(
+            !rendered.srcinfo.contains("{{"),
+            ".SRCINFO must carry no unrendered `{{{{`:\n{}",
+            rendered.srcinfo
+        );
     }
 
     /// `render_aur_pkgbuild_and_srcinfo_for_crate` errors when the crate has

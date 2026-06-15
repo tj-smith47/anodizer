@@ -795,20 +795,52 @@ fn render_formula_inner(
     let meta = resolve_homebrew_metadata(ctx, hb_cfg, crate_name, log)?;
     let code = render_install_and_test_blocks(ctx, hb_cfg, crate_name, &version, log)?;
 
+    // User-supplied free-text stanzas are template-rendered here — the only
+    // scope with the real `Context`+`log` — so a value like
+    // `caveats: "see {{ .Tag }}"` resolves before reaching the generator (which
+    // holds only a bare `tera::Context`). Mirrors `resolve_homebrew_metadata`'s
+    // handling of description/homepage/license. Per-crate Tag/Version scoping is
+    // inherited via the same `ctx`.
+    let caveats = hb_cfg
+        .caveats
+        .as_deref()
+        .map(|s| crate::util::render_or_warn(ctx, log, "brew.caveats", s))
+        .transpose()?;
+    let custom_require = hb_cfg
+        .custom_require
+        .as_deref()
+        .map(|s| crate::util::render_or_warn(ctx, log, "brew.custom_require", s))
+        .transpose()?;
+    let custom_block = hb_cfg
+        .custom_block
+        .as_deref()
+        .map(|s| crate::util::render_or_warn(ctx, log, "brew.custom_block", s))
+        .transpose()?;
+    let plist = hb_cfg
+        .plist
+        .as_deref()
+        .map(|s| crate::util::render_or_warn(ctx, log, "brew.plist", s))
+        .transpose()?;
+    let service = hb_cfg
+        .service
+        .as_deref()
+        .map(|s| crate::util::render_or_warn(ctx, log, "brew.service", s))
+        .transpose()?;
+
     let opts = FormulaOptions {
         homepage: meta.homepage.as_deref(),
         github_slug,
         dependencies: hb_cfg.dependencies.as_deref(),
         conflicts: hb_cfg.conflicts.as_deref(),
-        caveats: hb_cfg.caveats.as_deref(),
+        caveats: caveats.as_deref(),
         extra_install: code.extra_install.as_deref(),
         post_install: code.post_install.as_deref(),
         download_strategy: hb_cfg.download_strategy.as_deref(),
         url_headers: hb_cfg.url_headers.as_deref(),
-        custom_require: hb_cfg.custom_require.as_deref(),
-        custom_block: hb_cfg.custom_block.as_deref(),
-        plist: hb_cfg.plist.as_deref(),
-        service: hb_cfg.service.as_deref(),
+        custom_require: custom_require.as_deref(),
+        custom_block: custom_block.as_deref(),
+        plist: plist.as_deref(),
+        service: service.as_deref(),
         livecheck: super::formula::render_livecheck(hb_cfg.livecheck.as_ref(), log),
         // Render the `license` stanza from the parsed SPDX expression so a dual
         // license (`Apache-2.0 OR MIT`) becomes `license any_of: [...]` rather
@@ -845,6 +877,14 @@ fn render_formula_inner(
         },
         &opts,
     )?;
+
+    // Final-text chokepoint shared by the live publish path and the offline
+    // prepublish guard (both reach the formula string only through here): a
+    // residual `{{ … }}` means a config field escaped rendering — fail strict,
+    // warn lenient, before the formula is written or pushed. Ruby `#{}`
+    // interpolation is not scanned, so completion/version interpolation is safe.
+    crate::util::guard_no_unrendered(ctx, log, "homebrew formula", &formula)?;
+
     Ok(RenderedFormula {
         formula,
         formula_name: meta.formula_name,

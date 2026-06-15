@@ -76,6 +76,6 @@ pub(crate) use parallelism::{
 };
 pub(crate) use pr::{PrOrigin, SubmitPrOpts, maybe_submit_pr, submit_pr_via_gh_with_opts};
 pub(crate) use template::{
-    render_or_warn, render_or_warn_with_vars, render_url_template, render_url_template_with_ctx,
-    render_url_template_with_ctx_and_artifact,
+    guard_no_unrendered, render_or_warn, render_or_warn_with_vars, render_url_template,
+    render_url_template_with_ctx, render_url_template_with_ctx_and_artifact,
 };

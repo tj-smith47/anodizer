@@ -28,6 +28,7 @@
 // forbids `.unwrap()` in lib code, catching most drift automatically).
 
 mod base_tera;
+mod guard;
 mod render;
 mod static_render;
 mod vars;
@@ -36,6 +37,7 @@ mod vars;
 mod tests;
 
 pub use base_tera::ruby_escape_str;
+pub use guard::{Residual, assert_no_unrendered};
 pub use render::{extract_artifact_ext, render};
 pub use static_render::{parse_static, render_static};
 pub use vars::{

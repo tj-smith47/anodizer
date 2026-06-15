@@ -140,16 +140,18 @@ fn render_aur_source_inner(
     // description / homepage / license / maintainers rather than a hardcoded
     // default (which would ship the crate name as description, an empty url, and
     // `MIT` regardless of the crate's true license).
-    let description = cfg
+    let description_raw = cfg
         .description
         .as_deref()
         .or_else(|| ctx.config.meta_description_for(default_name))
-        .unwrap_or(default_name);
-    let homepage = cfg
+        .unwrap_or(default_name)
+        .to_string();
+    let homepage_raw = cfg
         .homepage
         .as_deref()
         .or_else(|| ctx.config.meta_homepage_for(default_name))
-        .unwrap_or("");
+        .unwrap_or("")
+        .to_string();
     // Render the license into the pacman `license=()` array via the shared SPDX
     // parser so a dual-licensed crate (`MIT OR Apache-2.0`) emits
     // `license=('MIT' 'Apache-2.0')` rather than understating to one id. The
@@ -196,6 +198,27 @@ fn render_aur_source_inner(
         .unwrap_or("v1");
     let mut scoped_vars = ctx.template_vars().clone();
     scoped_vars.set("Amd64", amd64_variant);
+
+    // A user-supplied `description` / `homepage` may carry template syntax
+    // (`{{ .Tag }}`); render against the same `Amd64`-scoped vars the
+    // `url_template` / `directory` renders use, so the PKGBUILD/.SRCINFO ship
+    // the resolved values rather than the literal `{{ … }}` delimiters and the
+    // per-config micro-arch variable resolves consistently.
+    let is_strict = ctx.render_is_strict();
+    let description = util::render_or_warn_with_vars(
+        &scoped_vars,
+        log,
+        "aur_source.description",
+        &description_raw,
+        is_strict,
+    )?;
+    let homepage = util::render_or_warn_with_vars(
+        &scoped_vars,
+        log,
+        "aur_source.homepage",
+        &homepage_raw,
+        is_strict,
+    )?;
 
     // Source URL — use url_template or default release URL
     let tag = ctx.template_vars().get("Tag").cloned().unwrap_or_default();
@@ -267,8 +290,8 @@ fn render_aur_source_inner(
         name: &pkg_name,
         version: &version,
         pkgrel,
-        description,
-        homepage,
+        description: &description,
+        homepage: &homepage,
         license: &license,
         arches: &arches,
     };
@@ -302,6 +325,8 @@ fn render_aur_source_inner(
     };
     let pkgbuild = generate_source_pkgbuild(&meta, &deps, &extras, &source_url);
     let srcinfo = generate_source_srcinfo(&meta, &deps, &source_url);
+    util::guard_no_unrendered(ctx, log, "aur-source PKGBUILD", &pkgbuild)?;
+    util::guard_no_unrendered(ctx, log, "aur-source .SRCINFO", &srcinfo)?;
 
     Ok(AurSourceRender {
         rendered: AurRendered {
@@ -2003,6 +2028,71 @@ crates:
         // conflicts/provides default to the bare package name.
         assert!(render.rendered.pkgbuild.contains("conflicts=('mytool')"));
         assert!(render.rendered.pkgbuild.contains("provides=('mytool')"));
+    }
+
+    /// Templated `description` / `homepage` (`{{ .Tag }}`) are
+    /// template-rendered into the source PKGBUILD `pkgdesc=` / `url=` lines
+    /// (and the .SRCINFO `pkgdesc =` / `url =` lines) — the literal delimiters
+    /// must NOT leak. Regression for the raw-emit description/homepage bug.
+    #[test]
+    fn render_inner_description_and_homepage_templates_are_rendered() {
+        let ctx = source_ctx(
+            "https://github.com/myorg/mytool.git",
+            "mytool",
+            "1.2.3",
+            "v1.2.3",
+        );
+        let cfg = AurSourceConfig {
+            description: Some("mytool {{ .Tag }} source build".to_string()),
+            homepage: Some("https://example.com/releases/{{ .Tag }}".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        };
+        let render =
+            render_aur_source_inner(&ctx, &cfg, "mytool", false, "aur_source", &quiet_log())
+                .expect("render ok");
+        assert!(
+            render
+                .rendered
+                .pkgbuild
+                .contains("pkgdesc=\"mytool v1.2.3 source build\""),
+            "templated description must render into PKGBUILD pkgdesc=:\n{}",
+            render.rendered.pkgbuild
+        );
+        assert!(
+            render
+                .rendered
+                .pkgbuild
+                .contains("url='https://example.com/releases/v1.2.3'"),
+            "templated homepage must render into PKGBUILD url=:\n{}",
+            render.rendered.pkgbuild
+        );
+        assert!(
+            !render.rendered.pkgbuild.contains("{{"),
+            "PKGBUILD must carry no unrendered `{{{{`:\n{}",
+            render.rendered.pkgbuild
+        );
+        assert!(
+            render
+                .rendered
+                .srcinfo
+                .contains("pkgdesc = mytool v1.2.3 source build"),
+            ".SRCINFO pkgdesc must carry the resolved value:\n{}",
+            render.rendered.srcinfo
+        );
+        assert!(
+            render
+                .rendered
+                .srcinfo
+                .contains("url = https://example.com/releases/v1.2.3"),
+            ".SRCINFO url must carry the resolved value:\n{}",
+            render.rendered.srcinfo
+        );
+        assert!(
+            !render.rendered.srcinfo.contains("{{"),
+            ".SRCINFO must carry no unrendered `{{{{`:\n{}",
+            render.rendered.srcinfo
+        );
     }
 
     /// Default source URL owner extraction for an SCP-style `git@host:owner/repo`

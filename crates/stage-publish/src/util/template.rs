@@ -4,7 +4,7 @@
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anodizer_core::template::{self, TemplateVars};
+use anodizer_core::template::{self, TemplateVars, assert_no_unrendered};
 use anyhow::{Result, bail};
 
 /// Render a `url_template` string with Tera, providing only the four
@@ -159,4 +159,37 @@ pub(crate) fn render_or_warn_with_vars(
             Ok(raw.to_string())
         }
     }
+}
+
+/// Final-text guard: after a publisher renders its manifest to the finished
+/// `text`, assert it carries no residual Go/Tera `{{ … }}` delimiters — a
+/// residual means a user-supplied config string field was emitted without
+/// being template-rendered (the bug class this guard makes unrepresentable).
+///
+/// `label` names the publisher + manifest (e.g. `"chocolatey nuspec"`). The
+/// offending snippet is redacted via [`Context::redact`] before it reaches any
+/// log line or error, so a secret-flagged value never leaks.
+///
+/// - **strict** ([`Context::render_is_strict`]): returns `Err`, failing the
+///   publish before any irreversible step.
+/// - **non-strict**: `log.warn`s the redacted snippet and returns `Ok(())`.
+///
+/// Intended for manifest formats that never legitimately contain `{{ }}`
+/// (nuspec/JSON/YAML/Ruby/nix/PKGBUILD); do NOT apply to verbatim/raw paths
+/// (e.g. announce `--raw`) where unrendered delimiters are by design.
+pub(crate) fn guard_no_unrendered(
+    ctx: &Context,
+    log: &StageLogger,
+    label: &str,
+    text: &str,
+) -> Result<()> {
+    let residual = assert_no_unrendered(text, label, ctx.render_is_strict(), |s| ctx.redact(s))?;
+    if let Some(r) = residual {
+        log.warn(&format!(
+            "{label}: unrendered template delimiter in generated manifest: {:?} \
+             (a user-supplied config field was emitted without template rendering)",
+            r.snippet
+        ));
+    }
+    Ok(())
 }

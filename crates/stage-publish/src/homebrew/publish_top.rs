@@ -352,6 +352,29 @@ fn render_top_level_cask_inner(
     let (alias_alts, versioned_alts) =
         super::cask::split_alternative_names(&rendered_alts, cask_name);
 
+    // Template-render the user-supplied free-text fields here — the scope with
+    // the real `Context`+`log` — so a value like `caveats: "see {{ .Tag }}"`
+    // resolves before reaching `generate_cask` (which holds only a bare
+    // `tera::Context`). This is the top-level `homebrew_casks:` path, distinct
+    // from the per-crate `generate_cask_from_context`. Homepage / description
+    // fall back to project metadata first, then the chosen value is rendered.
+    let homepage = resolve_top_cask_homepage(cask_cfg, ctx)
+        .map(|s| crate::util::render_or_warn(ctx, log, "cask.homepage", s))
+        .transpose()?;
+    let description = resolve_top_cask_description(cask_cfg, ctx)
+        .map(|s| crate::util::render_or_warn(ctx, log, "cask.description", s))
+        .transpose()?;
+    let caveats = cask_cfg
+        .caveats
+        .as_deref()
+        .map(|s| crate::util::render_or_warn(ctx, log, "cask.caveats", s))
+        .transpose()?;
+    let custom_block = cask_cfg
+        .custom_block
+        .as_deref()
+        .map(|s| crate::util::render_or_warn(ctx, log, "cask.custom_block", s))
+        .transpose()?;
+
     let params = CaskParams {
         name: cask_name,
         display_name: cask_name,
@@ -361,18 +384,14 @@ fn render_top_level_cask_inner(
         url: &url,
         url_extras: &url_extras_top,
         url_extras_indented: &url_extras_arch,
-        // Per-cask homepage / description fall back to the project's
-        // global `metadata.homepage` / `metadata.description` so a
-        // monorepo only needs to declare those once. Same pattern the
-        // formula publisher uses (`publish_formula::resolve_homebrew_metadata`).
-        homepage: resolve_top_cask_homepage(cask_cfg, ctx),
-        description: resolve_top_cask_description(cask_cfg, ctx),
+        homepage: homepage.as_deref(),
+        description: description.as_deref(),
         app: cask_cfg.app.as_deref(),
         binaries,
-        caveats: cask_cfg.caveats.as_deref(),
+        caveats: caveats.as_deref(),
         zap_block: &zap_block,
         uninstall_block: &uninstall_block,
-        custom_block: cask_cfg.custom_block.as_deref(),
+        custom_block: custom_block.as_deref(),
         service: cask_cfg.service.as_deref(),
         livecheck: super::formula::render_livecheck(cask_cfg.livecheck.as_ref(), log),
         manpages,
@@ -393,6 +412,10 @@ fn render_top_level_cask_inner(
     };
 
     let content = generate_cask(&params)?;
+    // Final-text chokepoint: a residual `{{ … }}` means a config field escaped
+    // rendering — fail strict, warn lenient — before the cask is written or
+    // pushed. Ruby `#{}` interpolation is not scanned, so `#{version}` is safe.
+    crate::util::guard_no_unrendered(ctx, log, "homebrew cask", &content)?;
 
     // Emit one extra `.rb` per versioned alt-name (e.g. `myapp@1.2.3.rb`)
     // so users can `brew install myapp@1.2.3` to pin / downgrade.
@@ -405,6 +428,7 @@ fn render_top_level_cask_inner(
             ..super::cask::clone_cask_params(&params)
         };
         let alt_body = generate_cask(&alt_params)?;
+        crate::util::guard_no_unrendered(ctx, log, "homebrew cask", &alt_body)?;
         versioned_files.push((alt.clone(), alt_body));
     }
 

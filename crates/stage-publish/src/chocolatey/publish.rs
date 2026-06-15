@@ -46,6 +46,10 @@ struct ChocoTextFields {
     copyright: Option<String>,
     summary: Option<String>,
     release_notes: Option<String>,
+    name: Option<String>,
+    package_source_url: Option<String>,
+    docs_url: Option<String>,
+    owners: Option<String>,
 }
 
 /// Install-script shape. `Dual` carries 32- and 64-bit URL/hash pairs;
@@ -281,7 +285,9 @@ fn render_nuspec_inner(
     let version = ctx.version();
     let metadata = resolve_metadata(ctx, choco_cfg, crate_name, repo_owner, repo_name, log)?;
     let text_fields = render_text_fields(ctx, choco_cfg, crate_name, log)?;
-    build_nuspec(choco_cfg, crate_name, &version, &metadata, &text_fields)
+    let nuspec = build_nuspec(choco_cfg, crate_name, &version, &metadata, &text_fields)?;
+    crate::util::guard_no_unrendered(ctx, log, "chocolatey nuspec", &nuspec)?;
+    Ok(nuspec)
 }
 
 /// Resolves the required nuspec metadata (description, license, authors,
@@ -334,44 +340,59 @@ fn resolve_metadata(
     let repo_url = (!repo_owner.is_empty() && !repo_name.is_empty())
         .then(|| format!("https://github.com/{}/{}", repo_owner, repo_name));
 
-    let project_url = choco_cfg
-        .project_url
-        .clone()
-        .or_else(|| repo_url.clone())
+    // Explicit-config URL values are user-templated and must be rendered;
+    // derived defaults (repo_url / derive_license_blob_url) already resolved
+    // the release Tag, so they are NOT routed through here (double-render).
+    let render_cfg = |field: &str, raw: &str| -> Result<String> {
+        crate::util::render_or_warn(ctx, log, field, raw)
+    };
+
+    let project_url = match choco_cfg.project_url.as_deref() {
+        Some(raw) => render_cfg("chocolatey.project_url", raw)?,
         // <projectUrl> is optional per nuspec.xsd (`xs:element minOccurs="0"`);
         // empty value is suppressed by the Tera `{% if project_url %}` guard
         // in nuspec.rs so no broken tag ships.
-        .unwrap_or_default();
+        None => repo_url.clone().unwrap_or_default(),
+    };
 
     // <projectSourceUrl> defaults to the repo URL — real packages always set
     // it and moderators expect it; explicit config wins.
-    let project_source_url = choco_cfg
-        .project_source_url
-        .clone()
-        .or_else(|| repo_url.clone());
+    let project_source_url = match choco_cfg.project_source_url.as_deref() {
+        Some(raw) => Some(render_cfg("chocolatey.project_source_url", raw)?),
+        None => repo_url.clone(),
+    };
 
     // <bugTrackerUrl> defaults to `{repo}/issues`; explicit config wins.
-    let bug_tracker_url = choco_cfg
-        .bug_tracker_url
-        .clone()
-        .or_else(|| repo_url.as_ref().map(|u| format!("{u}/issues")));
+    let bug_tracker_url = match choco_cfg.bug_tracker_url.as_deref() {
+        Some(raw) => Some(render_cfg("chocolatey.bug_tracker_url", raw)?),
+        None => repo_url.as_ref().map(|u| format!("{u}/issues")),
+    };
 
     // <licenseUrl>: explicit config wins; else derive a real GitHub LICENSE
     // blob URL (`{repo}/blob/{ref}/LICENSE`) at the release tag — what every
     // real exemplar (ripgrep/fd/gh) ships. NEVER synthesize an
     // opensource.org URL: it 404s for compound SPDX and gets the package
     // moderation-rejected. None when the repo is unknown → no <licenseUrl>.
-    let license_url = choco_cfg
-        .license_url
-        .clone()
-        .or_else(|| repo_url.as_ref().map(|u| derive_license_blob_url(ctx, u)));
+    let license_url = match choco_cfg.license_url.as_deref() {
+        Some(raw) => Some(render_cfg("chocolatey.license_url", raw)?),
+        None => repo_url.as_ref().map(|u| derive_license_blob_url(ctx, u)),
+    };
 
     // <iconUrl> is optional per nuspec.xsd; nuspec.rs only emits the tag when
     // the value is non-empty (gated on `icon_url` truthy in the Tera template).
-    let icon_url = choco_cfg.icon_url.clone().unwrap_or_default();
+    let icon_url = match choco_cfg.icon_url.as_deref() {
+        Some(raw) => render_cfg("chocolatey.icon_url", raw)?,
+        None => String::new(),
+    };
     // <tags> is optional per nuspec.xsd; when no tags are configured the
     // generator falls back to the package name (nuspec.rs line ~93).
-    let tags = choco_cfg.tags.clone().unwrap_or_default();
+    let tags = choco_cfg
+        .tags
+        .clone()
+        .unwrap_or_default()
+        .iter()
+        .map(|t| render_cfg("chocolatey.tags", t))
+        .collect::<Result<Vec<String>>>()?;
     Ok(ChocoMetadata {
         description,
         license,
@@ -699,11 +720,38 @@ fn render_text_fields(
                 .filter(|s| !s.is_empty())
         }
     };
+    // <id>, <packageSourceUrl>, <docsUrl>, <owners> are user-supplied config
+    // string fields; render them so a value like `…/blob/{{ .Tag }}/…` resolves
+    // instead of shipping the literal delimiters into the nuspec.
+    let name = choco_cfg
+        .name
+        .as_deref()
+        .map(|n| util::render_or_warn(ctx, log, "chocolatey.name", n))
+        .transpose()?;
+    let package_source_url = choco_cfg
+        .package_source_url
+        .as_deref()
+        .map(|u| util::render_or_warn(ctx, log, "chocolatey.package_source_url", u))
+        .transpose()?;
+    let docs_url = choco_cfg
+        .docs_url
+        .as_deref()
+        .map(|u| util::render_or_warn(ctx, log, "chocolatey.docs_url", u))
+        .transpose()?;
+    let owners = choco_cfg
+        .owners
+        .as_deref()
+        .map(|o| util::render_or_warn(ctx, log, "chocolatey.owners", o))
+        .transpose()?;
     Ok(ChocoTextFields {
         title,
         copyright,
         summary,
         release_notes,
+        name,
+        package_source_url,
+        docs_url,
+        owners,
     })
 }
 
@@ -716,7 +764,7 @@ fn build_nuspec(
     text: &ChocoTextFields,
 ) -> Result<String> {
     generate_nuspec(&NuspecParams {
-        name: choco_cfg.name.as_deref().unwrap_or(crate_name),
+        name: text.name.as_deref().unwrap_or(crate_name),
         version,
         description: &metadata.description,
         license: &metadata.license,
@@ -725,13 +773,13 @@ fn build_nuspec(
         project_url: &metadata.project_url,
         icon_url: &metadata.icon_url,
         tags: &metadata.tags,
-        package_source_url: choco_cfg.package_source_url.as_deref(),
-        owners: choco_cfg.owners.as_deref(),
+        package_source_url: text.package_source_url.as_deref(),
+        owners: text.owners.as_deref(),
         title: text.title.as_deref(),
         copyright: text.copyright.as_deref(),
         require_license_acceptance: choco_cfg.require_license_acceptance.unwrap_or(false),
         project_source_url: metadata.project_source_url.as_deref(),
-        docs_url: choco_cfg.docs_url.as_deref(),
+        docs_url: text.docs_url.as_deref(),
         bug_tracker_url: metadata.bug_tracker_url.as_deref(),
         summary: text.summary.as_deref(),
         release_notes: text.release_notes.as_deref(),
@@ -1578,6 +1626,69 @@ mod tests {
     }
 
     #[test]
+    fn render_text_fields_renders_docs_url_package_source_url_owners_name_through_tera() {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v1.2.3");
+        ctx.template_vars_mut().set("ProjectName", "mytool");
+        let cfg = ChocolateyConfig {
+            name: Some("{{ ProjectName }}-cli".to_string()),
+            docs_url: Some(
+                "https://github.com/x/y/blob/{{ .Tag }}/docs/configuration.md".to_string(),
+            ),
+            package_source_url: Some("https://github.com/x/y/tree/{{ .Tag }}".to_string()),
+            owners: Some("owner-{{ .Tag }}".to_string()),
+            ..Default::default()
+        };
+        let tf = render_text_fields(&ctx, &cfg, "mytool", &ctx.logger("publish")).unwrap();
+        assert_eq!(tf.name.as_deref(), Some("mytool-cli"));
+        assert_eq!(
+            tf.docs_url.as_deref(),
+            Some("https://github.com/x/y/blob/v1.2.3/docs/configuration.md")
+        );
+        assert!(!tf.docs_url.as_deref().unwrap().contains("{{"));
+        assert_eq!(
+            tf.package_source_url.as_deref(),
+            Some("https://github.com/x/y/tree/v1.2.3")
+        );
+        assert_eq!(tf.owners.as_deref(), Some("owner-v1.2.3"));
+    }
+
+    #[test]
+    fn resolve_metadata_renders_explicit_url_fields_and_tags_through_tera() {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v1.2.3");
+        let cfg = ChocolateyConfig {
+            license: Some("MIT".to_string()),
+            project_url: Some("https://github.com/x/y/tree/{{ .Tag }}".to_string()),
+            license_url: Some("https://github.com/x/y/blob/{{ .Tag }}/LICENSE".to_string()),
+            tags: Some(vec!["cli-{{ .Tag }}".to_string()]),
+            ..Default::default()
+        };
+        let meta = resolve_metadata(&ctx, &cfg, "mytool", "", "", &ctx.logger("publish")).unwrap();
+        assert_eq!(meta.project_url, "https://github.com/x/y/tree/v1.2.3");
+        assert_eq!(
+            meta.license_url.as_deref(),
+            Some("https://github.com/x/y/blob/v1.2.3/LICENSE")
+        );
+        assert_eq!(meta.tags, vec!["cli-v1.2.3".to_string()]);
+        assert!(!meta.project_url.contains("{{"));
+    }
+
+    #[test]
     fn render_text_fields_summary_falls_back_to_metadata_description() {
         let mut config = Config::default();
         config.metadata = Some(MetadataConfig {
@@ -1668,6 +1779,10 @@ mod tests {
             copyright: None,
             summary: None,
             release_notes: None,
+            name: Some("renamed".to_string()),
+            package_source_url: None,
+            docs_url: None,
+            owners: None,
         };
         let xml = build_nuspec(&cfg, "ignored", "2.3.4", &metadata, &text).unwrap();
         assert!(xml.contains("<id>renamed</id>"));

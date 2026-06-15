@@ -11,6 +11,7 @@ use anodizer_core::config::SnapcraftConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::stage::Stage;
+use anodizer_core::template::assert_no_unrendered;
 
 use crate::arch::{is_valid_snap_arch, triple_to_snap_arch};
 use crate::command::snapcraft_command;
@@ -340,7 +341,22 @@ pub(crate) fn render_snap_yaml(
     project_name: Option<&str>,
 ) -> Result<String> {
     let rendered_cfg = render_snap_cfg(ctx, snap_cfg, crate_name)?;
-    generate_snap_yaml(&rendered_cfg, version, binary_names, target, project_name)
+    let yaml = generate_snap_yaml(&rendered_cfg, version, binary_names, target, project_name)?;
+    // Final chokepoint: catch any user-supplied field that reached the manifest
+    // without template rendering. Strict fails the build before publish; lenient
+    // warns with the residual already redacted.
+    if let Some(residual) =
+        assert_no_unrendered(&yaml, "snapcraft.yaml", ctx.render_is_strict(), |s| {
+            ctx.redact(s)
+        })?
+    {
+        ctx.logger("snapcraft").warn(&format!(
+            "snapcraft.yaml: unrendered template delimiter in generated manifest: {:?} \
+             (a user-supplied config field was emitted without template rendering)",
+            residual.snippet
+        ));
+    }
+    Ok(yaml)
 }
 
 /// Render every snap.yaml a build would emit for one crate, mirroring the
@@ -857,6 +873,58 @@ fn render_snap_cfg(
             ctx.render_template(g)
                 .with_context(|| format!("snapcraft: render grade for crate {}", krate_name))?,
         );
+    }
+    // The remaining user-supplied string fields are templatable too (GoReleaser
+    // templates these); without rendering, a value like `title: "{{ .Tag }}"`
+    // would ship the literal delimiters into snap.yaml.
+    if let Some(ref n) = rendered_cfg.name {
+        rendered_cfg.name = Some(
+            ctx.render_template(n)
+                .with_context(|| format!("snapcraft: render name for crate {}", krate_name))?,
+        );
+    }
+    if let Some(ref b) = rendered_cfg.base {
+        rendered_cfg.base = Some(
+            ctx.render_template(b)
+                .with_context(|| format!("snapcraft: render base for crate {}", krate_name))?,
+        );
+    }
+    if let Some(ref c) = rendered_cfg.confinement {
+        rendered_cfg.confinement =
+            Some(ctx.render_template(c).with_context(|| {
+                format!("snapcraft: render confinement for crate {}", krate_name)
+            })?);
+    }
+    if let Some(ref l) = rendered_cfg.license {
+        rendered_cfg.license = Some(
+            ctx.render_template(l)
+                .with_context(|| format!("snapcraft: render license for crate {}", krate_name))?,
+        );
+    }
+    if let Some(ref t) = rendered_cfg.title {
+        rendered_cfg.title = Some(
+            ctx.render_template(t)
+                .with_context(|| format!("snapcraft: render title for crate {}", krate_name))?,
+        );
+    }
+    // App `command`/`args` are user-templatable (GoReleaser renders them, e.g.
+    // `command: myapp-{{ .Version }}`); without rendering, the literal
+    // delimiters would ship into snap.yaml — caught by the residual-delimiter
+    // guard at the YAML chokepoint, so failing to render here is a hard error
+    // under strict mode.
+    if let Some(apps) = rendered_cfg.apps.as_mut() {
+        for (app_name, app) in apps.iter_mut() {
+            if let Some(ref c) = app.command {
+                app.command = Some(ctx.render_template(c).with_context(|| {
+                    format!("snapcraft: render app '{app_name}' command for crate {krate_name}")
+                })?);
+            }
+            if let Some(ref a) = app.args {
+                app.args = Some(ctx.render_template(a).with_context(|| {
+                    format!("snapcraft: render app '{app_name}' args for crate {krate_name}")
+                })?);
+            }
+        }
     }
     Ok(rendered_cfg)
 }
