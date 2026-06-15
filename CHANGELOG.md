@@ -7,6 +7,81 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-06-15
+
+### Features
+
+* e590ff1923b7 complete published-crate metadata for crates.io parity ([@tj-smith47](https://github.com/tj-smith47))
+* 700abc99eb1e warn when an announce template references a secret-named env var ([@tj-smith47](https://github.com/tj-smith47))
+* c34dce89f356 add keep_versions retention pruning ([@tj-smith47](https://github.com/tj-smith47))
+* 3b570db91705 auto-inject OCI image labels (deterministic created) + derive nfpm vendor ([@tj-smith47](https://github.com/tj-smith47))
+* 552b6bb121c6 build app_bundle/dmg/pkg/msi/nsis on Linux CI (unsigned); base-image tooling ([@tj-smith47](https://github.com/tj-smith47))
+* aa38db2368c6 genuine before_publish gate, uploads, custom publisher; fix if_condition rustdoc ([@tj-smith47](https://github.com/tj-smith47))
+* 24630a7abc54 cask livecheck support; dogfood via cask, drop dual-publish formula ([@tj-smith47](https://github.com/tj-smith47))
+* 09fbb5d898dc add --raw to send messages without Tera rendering (gate the provider-side render too) ([@tj-smith47](https://github.com/tj-smith47))
+* 9bea42ce2d66 redact secrets in outbound body by default; --allow-secrets opt-out ([@tj-smith47](https://github.com/tj-smith47))
+* 23ac370305a3 per-package auth mode (auto/token/oidc) with OIDC fallback ([@tj-smith47](https://github.com/tj-smith47))
+* 491930a2dbd8 tokenless Trusted Publishing via GitHub OIDC; enable npms dogfood ([@tj-smith47](https://github.com/tj-smith47))
+* 0298ae3e4e1a refuse to publish snapshot/dev/0.0.0 versions ([@tj-smith47](https://github.com/tj-smith47))
+* 2b55ecf3d976 wire generic HTTP upload stage (config.uploads was dead config) ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* 3abd9c0121e1 map arch correctly (no x86_64 relabel); install LICENSE/man/completions; license array; derive source arch ([@tj-smith47](https://github.com/tj-smith47))
+* c6cbd5e7cf95 per-crate metadata in source PKGBUILD; warn-skip unrepresentable scoop arch; document nfpm vendor ([@tj-smith47](https://github.com/tj-smith47))
+* 1e68db37ae06 emit metadata on the publish-only path so cargo binstall fetches prebuilt ([@tj-smith47](https://github.com/tj-smith47))
+* 3bb1ef270621 scope command-line-utilities to the cli; per-crate keywords for platform stages ([@tj-smith47](https://github.com/tj-smith47))
+* 28d72e01548c mailmap-driven login back-fill across author aliases ([@tj-smith47](https://github.com/tj-smith47))
+* efb370f60166 license expression + real LICENSE url; route install by artifact type (msi/nsis/zip); add projectSourceUrl/bugTrackerUrl ([@tj-smith47](https://github.com/tj-smith47))
+* a421129999be select installer artifact by format so use:msi/nsis can't cross-wire ([@tj-smith47](https://github.com/tj-smith47))
+* ec4645f85622 unblock v0.10.0 — coverage floor 92.5, macOS pkg test gate, doc anchors ([@tj-smith47](https://github.com/tj-smith47))
+* 8e9beb04d68f hard-fail empty maintainer for deb/apk; emit Artifactory deb matrix params + Cloudsmith distribution so debs index ([@tj-smith47](https://github.com/tj-smith47))
+* ec6c81f31efe reject empty/unknown deb matrix slugs; require maintainer for ipk ([@tj-smith47](https://github.com/tj-smith47))
+* 9a1480d499a6 validate deb matrix-param slugs; require maintainer only when a deb/apk is actually built ([@tj-smith47](https://github.com/tj-smith47))
+* 1ff12c19d8fa platform-aware msi/pkg tool gates; add srpm to ubuntu shard ([@tj-smith47](https://github.com/tj-smith47))
+* aee518b2f885 restore *.pkg allowlist tuple; honest reproducibility comment ([@tj-smith47](https://github.com/tj-smith47))
+* 8d4ba7f6dc5b wire Metadata.Documentation template var; explicit per-crate no-leakage assertion ([@tj-smith47](https://github.com/tj-smith47))
+* c44627d79968 un-skip dogfood bundle; dedup collapsing arches; absolutize bundle path ([@tj-smith47](https://github.com/tj-smith47))
+* 0fee01001ca4 emit every os/arch in cask, count casks, retire stale formula ([@tj-smith47](https://github.com/tj-smith47))
+* 9b9920a113e9 install completions/manpages + livecheck + test block in formula; render dual-license via any_of ([@tj-smith47](https://github.com/tj-smith47))
+* 9c837c669655 unleak completions doc link; warn on ignored livecheck opt-in ([@tj-smith47](https://github.com/tj-smith47))
+* a6e4b6e19beb emit per-platform files: (binary + LICENSE/README) so nothing is dropped; validate shortDescription length ([@tj-smith47](https://github.com/tj-smith47))
+* fb6e6c1d74de exclude CHANGELOG.md and dedup LICENSE.md from files: list ([@tj-smith47](https://github.com/tj-smith47))
+* 1ed53cf49a57 collapse blob/cloudsmith per-file upload firehose to a summary ([@tj-smith47](https://github.com/tj-smith47))
+* 44a3b812b928 finish skip-wording and arrow-glyph uniformity sweep ([@tj-smith47](https://github.com/tj-smith47))
+* 21d6622c360b polish six user-facing log-quality issues ([@tj-smith47](https://github.com/tj-smith47))
+* 67cd8d72af34 uniform stage-header indent; coherent retry warn + closing line ([@tj-smith47](https://github.com/tj-smith47))
+* 62cd6f484415 drop dead strict-license resolver; validate maintainer handles; correct license doc ([@tj-smith47](https://github.com/tj-smith47))
+* 7d1aa2f33492 emit each meta.platforms entry once; dedup archives by nix system ([@tj-smith47](https://github.com/tj-smith47))
+* bbea7e1a6246 emit meta.maintainers/changelog/longDescription, license list with lib.licenses mapping, install completions+man ([@tj-smith47](https://github.com/tj-smith47))
+* d2c2fd4f666e repair postinstall ReferenceError; derive description/homepage/license/author from Cargo.toml; add files/engines/provenance ([@tj-smith47](https://github.com/tj-smith47))
+* 3ae18fbae378 byte-reproducible xar TOC; appbundle copy; shared symlink-safe dir-copy; installer PATH ([@tj-smith47](https://github.com/tj-smith47))
+* 0019f0063906 blob workspace targets, announcer doc, guard test/doc ([@tj-smith47](https://github.com/tj-smith47))
+* 2784bc5b0c79 enforce non-release guard in blob + announce stages ([@tj-smith47](https://github.com/tj-smith47))
+* d193c6c9ac15 harden residual-delimiter guard; render cask service/app; gate snapcraft pre-publish ([@tj-smith47](https://github.com/tj-smith47))
+* 39eac0b5a9bd render user-templated config fields in all manifest generators ([@tj-smith47](https://github.com/tj-smith47))
+* 640ea67fa873 stop blocking -dev pre-releases; pin guard wiring ([@tj-smith47](https://github.com/tj-smith47))
+* fc797e138bf6 match docs lint sample to real output; dedupe gh-stderr redaction onto with_env ([@tj-smith47](https://github.com/tj-smith47))
+* 4ff4ac08952e key catalog identity on fileMatch, not name ([@tj-smith47](https://github.com/tj-smith47))
+* 1e77fd8b938a label NoOp refresh as Update; key versions carry-forward on fileMatch ([@tj-smith47](https://github.com/tj-smith47))
+* 579acb917c0d emit extract_dir, checkver, and autoupdate for bucket-ready manifests ([@tj-smith47](https://github.com/tj-smith47))
+* ee76499f2f10 harden sidecar-suffix derivation; truthful checksum-algorithm doc; drop dead legacy path ([@tj-smith47](https://github.com/tj-smith47))
+* eeabec7b7fa6 derive license like every other publisher; tidy license follow-ups ([@tj-smith47](https://github.com/tj-smith47))
+* 4893e15fee0b resolve extra_files specs (GR parity); correct error label; doc/comment cleanups ([@tj-smith47](https://github.com/tj-smith47))
+* efe38e3e2df1 correct Moniker, default UpgradeBehavior, add Documentations + InstallerSwitches ([@tj-smith47](https://github.com/tj-smith47))
+* 0922ad71be13 address review findings ([@tj-smith47](https://github.com/tj-smith47))
+* 581d52f8622a use house SPDX parser for licenseUrl suppression ([@tj-smith47](https://github.com/tj-smith47))
+* 5382501fa528 rename default push-token env var FURY_TOKEN to FURY_PUSH_TOKEN ([@tj-smith47](https://github.com/tj-smith47))
+* 1c9c7095047d use shared http::blocking_client for existence probe; test encode_package_path ([@tj-smith47](https://github.com/tj-smith47))
+* aa9746571ab5 share rollback-target collection between artifactory + uploads ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Others
+
+* b7381c77ecbf dual-license MIT OR Apache-2.0; single-source derivable metadata ([@tj-smith47](https://github.com/tj-smith47))
+* fa39bc6fd78d document outbound secret redaction, --allow-secrets, and the check-config lint ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.9.1] - 2026-06-13
 
 ### Features
@@ -242,7 +317,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/tj-smith47/anodizer/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/tj-smith47/anodizer/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/tj-smith47/anodizer/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/tj-smith47/anodizer/compare/v0.6.0...v0.8.0
