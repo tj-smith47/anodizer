@@ -41,7 +41,7 @@ jobs:
           - os: ubuntu-latest
             shard: ubuntu-latest
             targets: ''
-            det_stages: 'build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum,appbundle,dmg,pkg,msi,nsis'
+            det_stages: 'build,source,upx,archive,nfpm,makeself,snapcraft,srpm,sbom,sign,checksum,appbundle,dmg,pkg,msi,nsis'
             auto_install: 'true'
           - { os: macos-latest,   shard: macos-latest,     targets: '', det_stages: '', auto_install: 'false' }
           - { os: windows-latest, shard: windows-x86_64,   targets: 'x86_64-pc-windows-msvc',  det_stages: '', auto_install: 'false' }

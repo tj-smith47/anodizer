@@ -41,19 +41,35 @@ pub(super) struct InstallerToolGate {
 ///
 /// `nfpm` / `makeself` / `rpmbuild` / `makensis` are single-binary
 /// stages, so the list has one entry each. `msi` / `dmg` / `pkg` have
-/// platform-conditional fallbacks (e.g. `hdiutil` on macOS, `mkisofs`
-/// or `genisoimage` on Linux for the DMG stage), and the
-/// [`stage_primary_tool`] mapping picks the *primary* binary the
-/// stage's spawn surface invokes in practice. The harness's missing-
-/// tool detection is best-effort: when a secondary path is the only
-/// one installed on a host, the stage will still attempt to run and
-/// either succeed or surface the failure at `Command::new` time.
+/// platform-conditional primaries, picked to match the binary the
+/// stage's spawn surface actually invokes on the current host:
+///
+/// - `msi`: `wix` on Windows, `wixl` (msitools) elsewhere — WiX is
+///   Windows-only/EULA-gated and the Linux MSI path is wixl.
+/// - `dmg`: `hdiutil` on macOS, `genisoimage` elsewhere (stage-dmg's
+///   non-macOS preference is genisoimage > mkisofs).
+/// - `pkg`: `pkgbuild` on macOS, `xar` elsewhere (the flat-XAR
+///   toolchain's sentinel; pkgbuild is macOS-only).
+///
+/// The harness's missing-tool detection is best-effort: when a
+/// secondary path is the only one installed on a host, the stage will
+/// still attempt to run and either succeed or surface the failure at
+/// `Command::new` time.
 fn stage_primary_tool(stage: StageId) -> Option<&'static str> {
     match stage {
         StageId::Nfpm => Some("nfpm"),
         StageId::Makeself => Some("makeself"),
         StageId::Srpm => Some("rpmbuild"),
-        StageId::Msi => Some("wix"),
+        StageId::Msi => Some(if cfg!(target_os = "windows") {
+            "wix"
+        } else {
+            // WiX itself is Windows-only and EULA-gated; stage-msi's
+            // non-Windows path is `wixl` (msitools), which anodizer's config
+            // forces via `version: wixl` and the action's auto-install
+            // provides. Probing `wix` here would wrongly skip the stage on
+            // the Linux shard that actually builds the MSI.
+            "wixl"
+        }),
         StageId::Nsis => Some("makensis"),
         StageId::Dmg => Some(if cfg!(target_os = "macos") {
             "hdiutil"
@@ -64,7 +80,16 @@ fn stage_primary_tool(stage: StageId) -> Option<&'static str> {
             // falls back to it at spawn time (gate is best-effort).
             "genisoimage"
         }),
-        StageId::Pkg => Some("pkgbuild"),
+        StageId::Pkg => Some(if cfg!(target_os = "macos") {
+            "pkgbuild"
+        } else {
+            // stage-pkg's non-macOS path is the flat-XAR toolchain
+            // (xar+mkbom+cpio); `xar` is its sentinel (resolve_pkg_builder /
+            // the ToolAnyOf{pkgbuild,xar} env requirement). pkgbuild is
+            // macOS-only, so probing it would wrongly skip the stage on the
+            // Linux shard that actually builds the .pkg.
+            "xar"
+        }),
         _ => None,
     }
 }
@@ -193,6 +218,7 @@ mod tests {
             StageId::Makeself,
             StageId::Msi,
             StageId::Dmg,
+            StageId::Pkg,
             StageId::Archive, // pass-through
         ];
         let gate = filter_available_with_probe(&req, |_| false);
@@ -204,19 +230,56 @@ mod tests {
         let skipped_stages: Vec<StageId> = gate.skipped.iter().map(|(s, _)| *s).collect();
         assert_eq!(
             skipped_stages,
-            vec![StageId::Nfpm, StageId::Makeself, StageId::Msi, StageId::Dmg],
+            vec![
+                StageId::Nfpm,
+                StageId::Makeself,
+                StageId::Msi,
+                StageId::Dmg,
+                StageId::Pkg
+            ],
             "installer stages must land in `skipped` when their tool is missing"
         );
+        // msi/dmg/pkg resolve their primary tool per host so the Linux
+        // determinism shard (which actually builds these installers via the
+        // wixl/genisoimage/xar fallbacks) probes the binary it installs, not
+        // the macOS/Windows-native one.
+        let msi_tool = if cfg!(target_os = "windows") {
+            "wix"
+        } else {
+            "wixl"
+        };
         let dmg_tool = if cfg!(target_os = "macos") {
             "hdiutil"
         } else {
             "genisoimage"
         };
+        let pkg_tool = if cfg!(target_os = "macos") {
+            "pkgbuild"
+        } else {
+            "xar"
+        };
         assert_eq!(
             gate.skipped.iter().map(|(_, t)| *t).collect::<Vec<_>>(),
-            vec!["nfpm", "makeself", "wix", dmg_tool],
+            vec!["nfpm", "makeself", msi_tool, dmg_tool, pkg_tool],
             "each skipped entry must carry its primary-tool name"
         );
+    }
+
+    #[test]
+    fn linux_installer_gate_probes_the_linux_fallback_tools() {
+        // The determinism installer shard runs on Linux. The gate must probe
+        // the Linux-native fallback binaries (wixl/genisoimage/xar), never the
+        // macOS/Windows-native ones (wix/hdiutil/pkgbuild) that the shard does
+        // not install — otherwise these stages silently route to `skipped` and
+        // never get byte-verified. This pins that mapping on the Linux build.
+        #[cfg(target_os = "linux")]
+        {
+            assert_eq!(stage_primary_tool(StageId::Msi), Some("wixl"));
+            assert_eq!(stage_primary_tool(StageId::Dmg), Some("genisoimage"));
+            assert_eq!(stage_primary_tool(StageId::Pkg), Some("xar"));
+            assert_eq!(stage_primary_tool(StageId::Srpm), Some("rpmbuild"));
+            assert_eq!(stage_primary_tool(StageId::Nsis), Some("makensis"));
+        }
     }
 
     #[test]
