@@ -41,7 +41,7 @@ args: release --verbose --debug --strict --split --clean --crate ${{ needs.resol
 |---|---|---|
 | `release` | ✅ Verified | [anodizer `release.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/release.yml) (`args: release --publish-only`) |
 | `build` | ✅ Verified | [`crates/cli/src/commands/build.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/src/commands/build.rs) (subcommand handler) |
-| `check` | ✅ Verified | [`crates/cli/src/commands/check.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/src/commands/check.rs) |
+| `check` | ✅ Verified | [`crates/cli/src/commands/check/mod.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/src/commands/check/mod.rs) |
 | `init` | ✅ Verified | [`crates/cli/src/commands/init.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/src/commands/init.rs) |
 | `completion` | ✅ Verified | [`crates/cli/src/commands/completion.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/cli/src/commands/completion.rs) |
 | `jsonschema` | ✅ Verified | [`docs.yml`](https://github.com/tj-smith47/anodizer/blob/master/.github/workflows/docs.yml) regenerates [`schema.json`](https://github.com/tj-smith47/anodizer/blob/master/docs/site/static/schema.json) via `anodizer jsonschema` |

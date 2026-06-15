@@ -18,12 +18,14 @@ don't ask you to read source code to verify our claims.
 | Status | Means |
 |---|---|
 | ✅ **Verified** | anodize or cfgd ships with it. Click the link to see the public artifact. |
+| ✅ **Verified (tests)** | Implemented and covered by tests; the production codepath awaits a live release that exercises it. The link points at the test or source path. |
+| 🟡 **In progress** | Config is wired and the artifact is built in CI; a public release asset lands on the next release. |
 | 🤝 **Help wanted** | Tests pass. We can't validate the production path ourselves: paid account, missing runtime, or a target that doesn't fit our projects. Open an issue if you want to validate it on yours. |
 
 Two public projects use anodizer to ship themselves:
 
-- **anodizer**, releases at [github.com/tj-smith47/anodizer/releases](https://github.com/tj-smith47/anodizer/releases). Latest: [v0.1.1](https://github.com/tj-smith47/anodizer/releases/tag/v0.1.1).
-- **cfgd**, a 4-crate workspace (CLI + lib + operator + CSI driver) at [github.com/tj-smith47/cfgd/releases](https://github.com/tj-smith47/cfgd/releases). Latest: [v0.3.5](https://github.com/tj-smith47/cfgd/releases/tag/v0.3.5).
+- **anodizer**, releases at [github.com/tj-smith47/anodizer/releases](https://github.com/tj-smith47/anodizer/releases). Latest: [v0.9.1](https://github.com/tj-smith47/anodizer/releases/tag/v0.9.1).
+- **cfgd**, a 4-crate workspace (CLI + lib + operator + CSI driver) at [github.com/tj-smith47/cfgd/releases](https://github.com/tj-smith47/cfgd/releases). Latest: [v0.4.0](https://github.com/tj-smith47/cfgd/releases/tag/v0.4.0).
 
 When a row says "lives on `<package manager>`", click through and you'll
 land on the live page. Where two examples exist (one per project), we link

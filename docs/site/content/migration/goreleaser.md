@@ -199,7 +199,7 @@ homebrew_casks:
 | `url_headers` | `url.headers` | Cask uses the structured form |
 | `download_strategy` | `url.using` | Cask uses the structured form |
 | `dependencies[].name` | `dependencies[].cask` or `dependencies[].formula` | Cask requires the dependency kind |
-| `dependencies[].os`, `dependencies[].type`, `dependencies[].version` | not yet on Cask | Upstream HomebrewCask omits these — see [Homebrew Cask Cookbook depends_on](https://github.com/Homebrew/brew/blob/master/docs/Cask-Cookbook.md#stanza-depends_on) |
+| `dependencies[].os`, `dependencies[].type`, `dependencies[].version` | not yet on Cask | Upstream HomebrewCask omits these — see [Homebrew Cask Cookbook depends_on](https://docs.brew.sh/Cask-Cookbook#stanza-depends_on) |
 | `conflicts[]` (string or `{name, because}`) | `conflicts[].cask` / `conflicts[].formula` | Cask conflicts use the structured form |
 | `install`, `extra_install`, `post_install`, `test` | `hooks.pre.install`, `hooks.post.install` (preflight / postflight) + `generate_completions_from_executable` | Cask uses Ruby DSL hooks instead of formula install/test blocks |
 | `plist`, `service` | `service` | Cask has no `plist` directive; use `service` |

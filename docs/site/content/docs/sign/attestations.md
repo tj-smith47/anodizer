@@ -74,7 +74,7 @@ artifacts, the stage emits a warning (it does not silently produce nothing).
 ## Mode `subjects` (default) — the OIDC path
 
 anodizer writes a **subjects manifest** that
-[`anodizer-action`](https://github.com/toss45/anodizer-action) feeds to
+[`anodizer-action`](https://github.com/tj-smith47/anodizer-action) feeds to
 `actions/attest-build-provenance`. anodizer does NOT attest itself in this mode;
 the Action's OIDC identity does. This is the path used by fd, biome, and gping.
 

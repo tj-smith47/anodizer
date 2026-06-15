@@ -9,6 +9,10 @@ The pipeline stages — build, archive, sign, release, publish, announce — are
 What follows is what anodizer does *because* it's Rust-first: it understands Cargo workspaces,
 lockfiles, and crates.io, and it proves its own output is reproducible.
 
+Every capability on this page is dogfooded — anodizer releases itself with it, and the proof
+is a clickable artifact, not a test name. See
+[What works (with proof)](@/dogfooding/_index.md) for the live matrix.
+
 ## Workspace-native releases
 
 Single crates and multi-crate workspaces use the same config. Each crate can release on its own
@@ -50,6 +54,73 @@ publish:
     wait_for_workspace_deps: true
     required: true          # fail the release if cargo publish fails
 ```
+
+## npm packages with automatic auth selection
+
+The `npms[]` publisher ships your CLI to npm as platform-specific packages and picks the right
+authentication mode *per package, at publish time*. With `auth: auto`, anodizer probes whether
+the package already exists: established packages publish via OIDC Trusted Publishing (no token in
+CI), and first-time packages fall back to a token automatically — because Trusted Publishing
+cannot create a package that doesn't exist yet. You never hand-wire which packages use which
+credential.
+
+```yaml
+npms:
+  - scope: "@my-org"
+    metapackage: my-cli
+    bin: my-cli
+    mode: optional-deps      # one metapackage, per-platform optionalDependencies
+    access: public
+    provenance: true         # npm provenance attestation
+    auth: auto               # OIDC where possible, token where required
+```
+
+## Dual-license aware, per publisher
+
+Rust crates are conventionally dual-licensed `MIT OR Apache-2.0`. anodizer parses the SPDX
+expression once from `Cargo.toml` and renders it in each publisher's native shape — no per-channel
+license strings to maintain.
+
+```text
+Cargo.toml:  license = "MIT OR Apache-2.0"
+
+Homebrew cask →  license any_of: ["MIT", "Apache-2.0"]
+AUR PKGBUILD  →  license=('MIT' 'Apache-2.0')
+Nix package   →  license = with lib.licenses; [ mit asl20 ];
+Chocolatey    →  SPDX-aware licenseUrl handling
+```
+
+A conjunctive expression (`A AND B`) renders as Homebrew `all_of:` and the matching list form for
+each other channel. Single-license projects render the plain string. Nothing about your license is
+duplicated by hand, so nothing drifts.
+
+## macOS and Windows installers, built on Linux CI
+
+anodizer assembles native installer formats reproducibly on an ordinary Linux runner — no macOS or
+Windows host in the matrix. Code-signing and notarization still need the platform's own credentials,
+but the *bundles themselves* are produced from Linux:
+
+| Format | Built on Linux via |
+|---|---|
+| `.app` bundle | in-process directory + `Info.plist` assembly (no external tool) |
+| `.dmg` | `genisoimage` / `mkisofs` |
+| `.pkg` | flat XAR toolchain (`xar` + `mkbom`) |
+| `.msi` | `wixl` (msitools) |
+| `.exe` (NSIS) | `makensis` |
+
+```yaml
+app_bundles:
+  - { name: My App, bundle_id: com.example.myapp }
+dmgs:
+  - { name_template: "{{ .ProjectName }}-{{ .Version }}" }
+msis:
+  - { version: wixl }        # Linux-native WiX backend
+nsis:
+  - { name_template: "{{ .ProjectName }}-installer" }
+```
+
+The installer bytes are covered by the [determinism harness](@/docs/advanced/determinism.md) like
+every other artifact.
 
 ## Publisher resilience
 
@@ -177,12 +248,32 @@ metadata:
   mod_timestamp: "{{ CommitTimestamp }}"
 ```
 
+## Private and managed package registries
+
+Beyond the public channels, anodizer uploads your Linux packages to managed registries in the same
+run — `gemfury:` for Gem Fury accounts and `cloudsmiths:` for Cloudsmith repositories — with real
+rollback support if a later required publisher fails.
+
+```yaml
+gemfury:
+  - { account: my-org }                       # token from FURY_PUSH_TOKEN
+cloudsmiths:
+  - id: my-cli
+    organization: my-org
+    repository: stable
+    distributions:
+      deb: [ubuntu/jammy, debian/bookworm]
+```
+
 ## Rust-ecosystem niceties
 
+- **`cargo-binstall` metadata** derived from your build config automatically — `pkg-url` and
+  per-target overrides come from your archive `name_template`, never hand-written.
 - **Generated crate READMEs** kept in sync with a template.
-- **`cargo-binstall` metadata** derived from your build config automatically.
-- **AppImage packaging** for Linux — produces self-contained `.AppImage` bundles.
-- **MCP publisher** — publishes your tool's JSON schema to the Model Context Protocol registry.
+- **AppImage packaging** for Linux — produces self-contained `.AppImage` bundles with optional
+  zsync update metadata.
+- **MCP publisher** — publishes a Model Context Protocol server manifest (pointing at your OCI
+  image) to the [MCP registry](https://registry.modelcontextprotocol.io), with GitHub OIDC auth.
 - **SchemaStore publisher** — submits your config schema to
-  [SchemaStore.org](https://www.schemastore.org/json/) for IDE autocompletion.
+  [SchemaStore.org](https://www.schemastore.org/) for IDE autocompletion.
 - **Build from a branch** in CI via the GitHub Action — dogfood a release pipeline before tagging.

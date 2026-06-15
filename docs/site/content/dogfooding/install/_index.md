@@ -30,7 +30,7 @@ homebrew_casks:
       name: homebrew-tap
     directory: Formula
     description: "Declarative, GitOps-style machine configuration management"
-    homepage: "https://github.com/tj-james47/cfgd"
+    homepage: "https://github.com/tj-smith47/cfgd"
     license: MIT
     binaries:
       - cfgd
@@ -52,14 +52,15 @@ homebrew_casks:
 
 | Channel | Status | Verify |
 |---|---|---|
-| **GitHub Releases** | ✅ Verified | [anodizer v0.1.1](https://github.com/tj-james47/anodizer/releases/tag/v0.1.1) · [cfgd v0.3.5](https://github.com/tj-james47/cfgd/releases/tag/v0.3.5) |
+| **GitHub Releases** | ✅ Verified | [anodizer v0.9.1](https://github.com/tj-smith47/anodizer/releases/tag/v0.9.1) · [cfgd v0.4.0](https://github.com/tj-smith47/cfgd/releases/tag/v0.4.0) |
 | **crates.io** | ✅ Verified | [crates.io/crates/anodizer](https://crates.io/crates/anodizer) · [crates.io/crates/cfgd](https://crates.io/crates/cfgd) |
+| **npm** | ✅ Verified | [npmjs.com/package/@tj-smith47/anodizer](https://www.npmjs.com/package/@tj-smith47/anodizer) — the package is live on npm. The per-platform `optionalDependencies` metapackage shape lands with v0.10.0 (the live v0.9.1 package has no `optionalDependencies` yet). See [`npms:` docs](../../../docs/publish/npm/) |
 | **Snap Store** | ✅ Verified | [snapcraft.io/anodizer](https://snapcraft.io/anodizer) · [snapcraft.io/cfgd](https://snapcraft.io/cfgd) |
 | **Chocolatey** | ✅ Verified | [community.chocolatey.org/packages/cfgd](https://community.chocolatey.org/packages/cfgd) |
 | **winget** | ✅ Verified | [microsoft/winget-pkgs · TJSmith/cfgd/0.3.5](https://github.com/microsoft/winget-pkgs/tree/master/manifests/t/TJSmith/cfgd/0.3.5) |
-| **GHCR container images** | ✅ Verified | [github.com/tj-james47/cfgd/pkgs](https://github.com/tj-james47?tab=packages&repo_name=cfgd) (`cfgd`, `cfgd-operator`, `cfgd-csi`) |
+| **GHCR container images** | ✅ Verified | [github.com/tj-smith47/cfgd/pkgs](https://github.com/tj-smith47?tab=packages&repo_name=cfgd) (`cfgd`, `cfgd-operator`, `cfgd-csi`) |
 | **Nix flake** | ✅ Verified | [tj-smith47/nix-pkgs](https://github.com/tj-smith47/nix-pkgs) |
-| **Scoop bucket** | ✅ Verified | [`anodizer.json`](https://github.com/tj-james47/scoop-bucket/blob/master/anodizer.json), [`cfgd.json`](https://github.com/tj-smith47/scoop-bucket/blob/master/cfgd.json) |
+| **Scoop bucket** | ✅ Verified | [`anodizer.json`](https://github.com/tj-smith47/scoop-bucket/blob/master/anodizer.json), [`cfgd.json`](https://github.com/tj-smith47/scoop-bucket/blob/master/cfgd.json) |
 | **Homebrew cask** | 🟡 In progress | `homebrew_casks:` block added 2026-05-26 (GR v2.16 supported path for plain CLI binaries); pending next release to validate the tap-write end-to-end. See [`homebrew_casks:` docs](../../../docs/publish/homebrew-casks/) and [GoReleaser v2.16](https://goreleaser.com/blog/goreleaser-v2.16/). |
 | **Krew** | 🤝 Help wanted | PR flow runs in CI; cfgd plugin not yet merged into [kubernetes-sigs/krew-index](https://github.com/kubernetes-sigs/krew-index/tree/master/plugins) |
 | **AUR** | 🟡 In progress | AUR account created + `AUR_SSH_KEY` wired into release CI 2026-06-02. anodizer ships `anodizer-bin` via the `aur` (binary) publisher; cfgd ships `cfgd` via the `aur_source` (build-from-source) publisher. Pending next release to validate the push end-to-end. See [`aur:` docs](../../../docs/publish/aur/). |

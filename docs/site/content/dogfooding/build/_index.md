@@ -131,18 +131,25 @@ sboms:
 | `nfpms[].contents` | ✅ Verified | [cfgd `.anodizer.yaml`](https://github.com/tj-smith47/cfgd/blob/master/.anodizer.yaml) (`contents:` ships `LICENSE` + `README.md` to `/usr/share/doc/cfgd/`) |
 | `NFPM_PASSPHRASE` env chain | ✅ Verified | [`crates/stage-nfpm/src/builders.rs`](https://github.com/tj-smith47/anodizer/blob/master/crates/stage-nfpm/src/builders.rs) (three-level lookup chain) |
 
-## macOS and Windows installers
+## macOS and Windows installers (built on Linux CI)
 
-Code-signing material and a real macOS or Windows runner are required
-before these can ship live. Implementation is complete and unit-tested.
+These formats are assembled **on an ordinary Linux runner** — no macOS or
+Windows host in the build matrix. Anodizer's own dogfood config wires all five
+([`anodizer .anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml),
+`app_bundles:` / `dmgs:` / `pkgs:` / `msis:` / `nsis:` blocks), built unsigned
+in CI. Code-signing and notarization still require the platform's own
+credentials; the bundles themselves do not. Live release assets land with
+v0.10.0 — until then these are `🟡 In progress` (config wired + CI-built,
+no public release asset yet).
 
-| Format | Status | Notes |
+| Format | Status | Built on Linux via |
 |---|---|---|
-| `.dmg` | 🤝 Help wanted | Needs `dmgs[]` configured |
-| `.pkg` | 🤝 Help wanted | Needs `pkgs[]` configured |
-| `.app` bundle | 🤝 Help wanted | Needs `app_bundles[]` configured |
-| `.msi` | 🤝 Help wanted | Needs `wixl`/`candle`/`light` on the runner |
-| `.exe` (NSIS) | 🤝 Help wanted | Needs `makensis` on the runner |
+| `.app` bundle | 🟡 In progress | in-process directory + `Info.plist` assembly (no external tool); [`app_bundles:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml). See [app-bundle docs](../../../docs/packages/app-bundles/) |
+| `.dmg` | 🟡 In progress | `genisoimage` / `mkisofs`; [`dmgs:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml). See [dmg docs](../../../docs/packages/dmg/) |
+| `.pkg` | 🟡 In progress | flat XAR toolchain (`xar` + `mkbom`), byte-reproducible TOC; [`pkgs:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml). See [pkg docs](../../../docs/packages/pkg/) |
+| `.msi` | 🟡 In progress | `wixl` (msitools); [`msis:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml). See [msi docs](../../../docs/packages/msi/) |
+| `.exe` (NSIS) | 🟡 In progress | `makensis`; [`nsis:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml). See [nsis docs](../../../docs/packages/nsis/) |
+| `.AppImage` | 🟡 In progress | `linuxdeploy` with optional zsync update metadata; [`appimages:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml). See [appimage docs](../../../docs/packages/appimage/) |
 
 | Key | Status | Notes |
 |---|---|---|
