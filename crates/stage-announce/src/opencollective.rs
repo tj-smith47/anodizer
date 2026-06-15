@@ -4,7 +4,15 @@ use anodizer_core::retry::{HttpError, RetryPolicy, is_retriable, retry_sync};
 use anyhow::{Context as _, Result};
 use serde_json::json;
 
+/// Default OpenCollective GraphQL v2 endpoint.
 const GRAPHQL_URL: &str = "https://api.opencollective.com/graphql/v2";
+
+/// Resolve the GraphQL endpoint. Read at call time so tests can set
+/// `ANODIZE_OPENCOLLECTIVE_API_BASE` to redirect the two-step mutation flow at
+/// a local mock; production never sets the variable.
+fn opencollective_graphql_base() -> String {
+    std::env::var("ANODIZE_OPENCOLLECTIVE_API_BASE").unwrap_or_else(|_| GRAPHQL_URL.to_string())
+}
 
 pub const DEFAULT_TITLE_TEMPLATE: &str = "{{ Tag }}";
 pub const DEFAULT_MESSAGE_TEMPLATE: &str = r#"{{ ProjectName }} {{ Tag }} is out!<br/>Check it out at <a href="{{ ReleaseURL }}">{{ ReleaseURL }}</a>"#;
@@ -161,7 +169,7 @@ fn do_mutation(
 ) -> Result<String> {
     retry_sync(policy, |_attempt| {
         match client
-            .post(GRAPHQL_URL)
+            .post(opencollective_graphql_base())
             .header("Personal-Token", token)
             .header("Content-Type", "application/json")
             .body(body_payload.clone())
@@ -430,6 +438,183 @@ mod tests {
             "expected 5xx framing in: {msg}"
         );
         assert!(msg.contains("boom"), "body must be included: {msg}");
+    }
+
+    // ---- live send over a mock HTTP server -----------------------------
+    //
+    // Drive `send_opencollective` (the real two-step createUpdate →
+    // publishUpdate GraphQL POST path) against a scripted responder via the
+    // `ANODIZE_OPENCOLLECTIVE_API_BASE` seam. Mutating process env requires
+    // `#[serial]` + the shared env_mutex.
+
+    use anodizer_core::test_helpers::env::env_mutex;
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+
+    const ONE_SHOT: RetryPolicy = RetryPolicy {
+        max_attempts: 1,
+        base_delay: std::time::Duration::from_millis(0),
+        max_delay: std::time::Duration::from_millis(0),
+    };
+
+    struct EnvGuard;
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe { std::env::remove_var("ANODIZE_OPENCOLLECTIVE_API_BASE") };
+        }
+    }
+    fn set_base(addr: std::net::SocketAddr) -> EnvGuard {
+        unsafe {
+            std::env::set_var(
+                "ANODIZE_OPENCOLLECTIVE_API_BASE",
+                format!("http://{addr}/graphql/v2"),
+            )
+        };
+        EnvGuard
+    }
+    fn http_response(status_line: &str, body: &str) -> &'static str {
+        let resp = format!(
+            "{status_line}\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        Box::leak(resp.into_boxed_str())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn send_opencollective_two_step_flow_posts_create_then_publish() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        // Both mutations POST to the same path; `times: Some(1)` on the first
+        // route serves createUpdate then exhausts, so the second request
+        // falls through to the publishUpdate route.
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/graphql/v2",
+                response: http_response(
+                    "HTTP/1.1 200 OK",
+                    "{\"data\":{\"createUpdate\":{\"id\":\"UPD-9\"}}}",
+                ),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/graphql/v2",
+                response: http_response(
+                    "HTTP/1.1 200 OK",
+                    "{\"data\":{\"publishUpdate\":{\"id\":\"UPD-9\"}}}",
+                ),
+                times: None,
+            },
+        ]);
+        let _base = set_base(addr);
+
+        send_opencollective(
+            "tok-aaaaaaaaaaaaaaaa",
+            "my-project",
+            "MyApp v1.2.3",
+            "MyApp v1.2.3 is out! see https://example.com/r",
+            &ONE_SHOT,
+        )
+        .expect("two-step flow should succeed");
+
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 2, "createUpdate + publishUpdate expected");
+
+        // Leg 1: createUpdate — auth header + templated title/html on the wire.
+        let create = &entries[0];
+        assert_eq!(create.method, "POST");
+        assert_eq!(create.path, "/graphql/v2");
+        assert_eq!(
+            create.header("personal-token"),
+            Some("tok-aaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(create.header("content-type"), Some("application/json"));
+        let cbody: serde_json::Value = serde_json::from_str(&create.body).expect("json body");
+        assert!(
+            cbody["query"].as_str().unwrap().contains("createUpdate"),
+            "create query: {}",
+            create.body
+        );
+        let update = &cbody["variables"]["update"];
+        assert_eq!(update["title"], "MyApp v1.2.3");
+        assert_eq!(
+            update["html"],
+            "MyApp v1.2.3 is out! see https://example.com/r"
+        );
+        assert_eq!(update["account"]["slug"], "my-project");
+
+        // Leg 2: publishUpdate — carries the id returned by leg 1.
+        let publish = &entries[1];
+        let pbody: serde_json::Value = serde_json::from_str(&publish.body).expect("json body");
+        assert!(
+            pbody["query"].as_str().unwrap().contains("publishUpdate"),
+            "publish query: {}",
+            publish.body
+        );
+        assert_eq!(pbody["variables"]["id"], "UPD-9");
+        assert_eq!(pbody["variables"]["audience"], "ALL");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn send_opencollective_create_401_aborts_before_publish() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/graphql/v2",
+            response: http_response("HTTP/1.1 401 Unauthorized", "Unauthorized"),
+            times: None,
+        }]);
+        let _base = set_base(addr);
+
+        let err = format!(
+            "{:#}",
+            send_opencollective("tok-aaaaaaaaaaaaaaaa", "my-project", "t", "h", &ONE_SHOT)
+                .unwrap_err()
+        );
+        assert!(err.contains("401"), "status must surface: {err}");
+        assert!(
+            err.contains("OPENCOLLECTIVE_TOKEN"),
+            "401 must name the token env var: {err}"
+        );
+        // A failed createUpdate must NOT fire publishUpdate.
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 1, "publish must not fire after create 401");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn send_opencollective_create_graphql_errors_aborts_before_publish() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        // HTTP 200 + a non-empty `errors` array on createUpdate must abort.
+        let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/graphql/v2",
+            response: http_response(
+                "HTTP/1.1 200 OK",
+                "{\"errors\":[{\"message\":\"need admin\"}],\"data\":{\"createUpdate\":null}}",
+            ),
+            times: None,
+        }]);
+        let _base = set_base(addr);
+
+        let err = format!(
+            "{:#}",
+            send_opencollective("tok-aaaaaaaaaaaaaaaa", "my-project", "t", "h", &ONE_SHOT)
+                .unwrap_err()
+        );
+        assert!(
+            err.contains("need admin"),
+            "graphql error must surface: {err}"
+        );
+        let entries = log.lock().unwrap();
+        assert_eq!(
+            entries.len(),
+            1,
+            "publish must not fire after create graphql error"
+        );
     }
 
     #[test]

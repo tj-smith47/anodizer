@@ -10,6 +10,17 @@ use serde_json::json;
 /// failure — without redaction the token would leak via every error log.
 const REDACTED_BOT_TOKEN_MARKER: &str = "<REDACTED_BOT_TOKEN>";
 
+/// Default Telegram Bot API base. The `sendMessage` URL is built as
+/// `{base}/bot{token}/sendMessage`.
+const TELEGRAM_API_BASE: &str = "https://api.telegram.org";
+
+/// Resolve the Telegram Bot API base URL. Read at call time so tests can set
+/// `ANODIZE_TELEGRAM_API_BASE` to redirect the POST to a local mock; production
+/// never sets the variable and so hits the real endpoint.
+fn telegram_api_base() -> String {
+    std::env::var("ANODIZE_TELEGRAM_API_BASE").unwrap_or_else(|_| TELEGRAM_API_BASE.to_string())
+}
+
 /// Strip occurrences of `bot_token` from any error string before it is
 /// surfaced upstream. Returns the message unchanged when the token is
 /// empty (an empty `String::replace` needle would inject the marker
@@ -68,7 +79,7 @@ pub fn send_telegram(
     message_thread_id: Option<i64>,
     policy: &RetryPolicy,
 ) -> Result<()> {
-    let url = format!("https://api.telegram.org/bot{bot_token}/sendMessage");
+    let url = format!("{}/bot{bot_token}/sendMessage", telegram_api_base());
     let payload = telegram_payload(chat_id, message, parse_mode, message_thread_id);
 
     let client = reqwest::blocking::Client::new();
@@ -242,6 +253,138 @@ mod tests {
         assert!(
             out.contains("<redacted>@proxy"),
             "expected url redaction: {out}"
+        );
+    }
+
+    // ---- live send over a mock HTTP server -----------------------------
+    //
+    // These drive `send_telegram` (the real production POST path) against a
+    // scripted responder via the `ANODIZE_TELEGRAM_API_BASE` seam. Mutating
+    // process env requires `#[serial]` + the shared env_mutex so concurrent
+    // tests don't observe each other's override.
+
+    use anodizer_core::retry::RetryPolicy;
+    use anodizer_core::test_helpers::env::env_mutex;
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+
+    /// One-attempt policy so an error-path test fails fast instead of
+    /// retrying a 5xx ten times against the mock.
+    const ONE_SHOT: RetryPolicy = RetryPolicy {
+        max_attempts: 1,
+        base_delay: std::time::Duration::from_millis(0),
+        max_delay: std::time::Duration::from_millis(0),
+    };
+
+    struct EnvGuard {
+        key: &'static str,
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe { std::env::remove_var(self.key) };
+        }
+    }
+    fn set_base(addr: std::net::SocketAddr) -> EnvGuard {
+        unsafe { std::env::set_var("ANODIZE_TELEGRAM_API_BASE", format!("http://{addr}")) };
+        EnvGuard {
+            key: "ANODIZE_TELEGRAM_API_BASE",
+        }
+    }
+
+    /// Build a `&'static` HTTP response with a correct `Content-Length`.
+    /// `ScriptedRoute::response` is `&'static str`, so the assembled string is
+    /// leaked — acceptable in a short-lived test process and the only way to
+    /// hand a computed-length body to the responder.
+    fn http_response(status_line: &str, body: &str) -> &'static str {
+        let resp = format!(
+            "{status_line}\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        Box::leak(resp.into_boxed_str())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn send_telegram_happy_path_posts_templated_payload() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/bot123:ABC/sendMessage",
+            response: http_response("HTTP/1.1 200 OK", "{\"ok\":true}"),
+            times: None,
+        }]);
+        let _base = set_base(addr);
+
+        send_telegram(
+            "123:ABC",
+            "-100999",
+            "MyApp v1.2.3 is out!",
+            Some("HTML"),
+            Some(42),
+            &ONE_SHOT,
+        )
+        .expect("happy path should succeed");
+
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 1, "exactly one POST expected");
+        let req = &entries[0];
+        assert_eq!(req.method, "POST");
+        // The bot token must appear in the path, never the body.
+        assert_eq!(req.path, "/bot123:ABC/sendMessage");
+        assert_eq!(req.header("content-type"), Some("application/json"));
+        let body: serde_json::Value = serde_json::from_str(&req.body).expect("json body");
+        assert_eq!(body["chat_id"], "-100999");
+        assert_eq!(body["text"], "MyApp v1.2.3 is out!");
+        assert_eq!(body["parse_mode"], "HTML");
+        assert_eq!(body["message_thread_id"], 42);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn send_telegram_non_2xx_maps_to_error_with_context() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/bot123:ABC/sendMessage",
+            response: http_response("HTTP/1.1 401 Unauthorized", "{\"description\":\"bad tok\"}"),
+            times: None,
+        }]);
+        let _base = set_base(addr);
+
+        let err = format!(
+            "{:#}",
+            send_telegram("123:ABC", "-1", "hi", None, None, &ONE_SHOT).unwrap_err()
+        );
+        assert!(err.contains("401"), "status must surface: {err}");
+        assert!(err.contains("bad tok"), "response body must surface: {err}");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn send_telegram_http_200_ok_false_surfaces_api_error() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        // Telegram returns HTTP 200 with `ok:false` for logical rejections;
+        // these must NOT be reported as success.
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/botT/sendMessage",
+            response: http_response(
+                "HTTP/1.1 200 OK",
+                "{\"ok\":false,\"error_code\":400,\"description\":\"chat not found\"}",
+            ),
+            times: None,
+        }]);
+        let _base = set_base(addr);
+
+        let err = format!(
+            "{:#}",
+            send_telegram("T", "-1", "hi", None, None, &ONE_SHOT).unwrap_err()
+        );
+        assert!(err.contains("400"), "error_code must surface: {err}");
+        assert!(
+            err.contains("chat not found"),
+            "description must surface: {err}"
         );
     }
 }

@@ -28,6 +28,26 @@ fn validate_subreddit(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Default Reddit OAuth2 token endpoint host.
+const REDDIT_TOKEN_BASE: &str = "https://www.reddit.com";
+
+/// Default Reddit authenticated API host.
+const REDDIT_OAUTH_BASE: &str = "https://oauth.reddit.com";
+
+/// Resolve the OAuth2 token endpoint base. Read at call time so tests can set
+/// `ANODIZE_REDDIT_TOKEN_BASE` to redirect the `access_token` POST at a local
+/// mock; production never sets the variable.
+fn reddit_token_base() -> String {
+    std::env::var("ANODIZE_REDDIT_TOKEN_BASE").unwrap_or_else(|_| REDDIT_TOKEN_BASE.to_string())
+}
+
+/// Resolve the authenticated-API base. Read at call time so tests can set
+/// `ANODIZE_REDDIT_OAUTH_BASE` to redirect the `/api/submit` POST at a local
+/// mock; production never sets the variable.
+fn reddit_oauth_base() -> String {
+    std::env::var("ANODIZE_REDDIT_OAUTH_BASE").unwrap_or_else(|_| REDDIT_OAUTH_BASE.to_string())
+}
+
 /// Bundled credentials + post payload for a Reddit submission. Grouped into a
 /// single struct so `send_reddit` stays under clippy's argument-count limit
 /// and the call-site reads as one record per submission.
@@ -66,7 +86,7 @@ pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger, policy: &RetryPolic
 
     let token_body = retry_sync(policy, |_attempt| {
         match client
-            .post("https://www.reddit.com/api/v1/access_token")
+            .post(format!("{}/api/v1/access_token", reddit_token_base()))
             .basic_auth(application_id, Some(secret))
             .form(&[
                 ("grant_type", "password"),
@@ -125,7 +145,7 @@ pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger, policy: &RetryPolic
 
     let submit_body = retry_sync(policy, |_attempt| {
         match client
-            .post("https://oauth.reddit.com/api/submit")
+            .post(format!("{}/api/submit", reddit_oauth_base()))
             .bearer_auth(access_token)
             .form(&form)
             .send()
@@ -212,6 +232,179 @@ fn header_str(headers: &reqwest::header::HeaderMap, name: &str) -> Option<String
 #[cfg(test)]
 mod tests {
     use super::validate_subreddit;
+    use super::{RedditPost, send_reddit};
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::retry::RetryPolicy;
+    use anodizer_core::test_helpers::env::env_mutex;
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+
+    const ONE_SHOT: RetryPolicy = RetryPolicy {
+        max_attempts: 1,
+        base_delay: std::time::Duration::from_millis(0),
+        max_delay: std::time::Duration::from_millis(0),
+    };
+
+    /// Point BOTH reddit seams (token + oauth host) at one mock; the two POSTs
+    /// distinguish themselves by path. Removes the vars on drop.
+    struct EnvGuard;
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe {
+                std::env::remove_var("ANODIZE_REDDIT_TOKEN_BASE");
+                std::env::remove_var("ANODIZE_REDDIT_OAUTH_BASE");
+            }
+        }
+    }
+    fn set_bases(addr: std::net::SocketAddr) -> EnvGuard {
+        let base = format!("http://{addr}");
+        unsafe {
+            std::env::set_var("ANODIZE_REDDIT_TOKEN_BASE", &base);
+            std::env::set_var("ANODIZE_REDDIT_OAUTH_BASE", &base);
+        }
+        EnvGuard
+    }
+    fn http_response(status_line: &str, body: &str) -> &'static str {
+        let resp = format!(
+            "{status_line}\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        Box::leak(resp.into_boxed_str())
+    }
+    fn post(subreddit: &str) -> RedditPost<'static> {
+        // Owned-then-leaked so the borrow outlives the call without lifetime
+        // gymnastics in each test.
+        RedditPost {
+            application_id: "appid",
+            secret: "sekret",
+            username: "user",
+            password: "pw",
+            subreddit: Box::leak(subreddit.to_string().into_boxed_str()),
+            title: "MyApp v1.2.3 released",
+            url: "https://example.com/releases/v1.2.3",
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn send_reddit_two_step_flow_token_then_submit() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/v1/access_token",
+                response: http_response("HTTP/1.1 200 OK", "{\"access_token\":\"BEARER-XYZ\"}"),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/submit",
+                response: http_response("HTTP/1.1 200 OK", "{\"json\":{\"errors\":[]}}"),
+                times: None,
+            },
+        ]);
+        let _base = set_bases(addr);
+        let log_s = StageLogger::new("reddit-test", Verbosity::Quiet);
+
+        send_reddit(&post("rust"), &log_s, &ONE_SHOT).expect("two-step flow should succeed");
+
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 2, "token POST then submit POST");
+
+        // Leg 1: token request — Basic auth + grant_type=password form.
+        let token = &entries[0];
+        assert_eq!(token.method, "POST");
+        assert_eq!(token.path, "/api/v1/access_token");
+        // basic_auth("appid", "sekret") == base64("appid:sekret").
+        let expect_basic = format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("appid:sekret")
+        );
+        assert_eq!(token.header("authorization"), Some(expect_basic.as_str()));
+        assert!(token.body.contains("grant_type=password"), "{}", token.body);
+        assert!(token.body.contains("username=user"), "{}", token.body);
+
+        // Leg 2: submit — Bearer of the token from leg 1 + link payload.
+        let submit = &entries[1];
+        assert_eq!(submit.path, "/api/submit");
+        assert_eq!(submit.header("authorization"), Some("Bearer BEARER-XYZ"));
+        assert!(submit.body.contains("kind=link"), "{}", submit.body);
+        assert!(submit.body.contains("sr=rust"), "{}", submit.body);
+        // The release title + URL are templated into the wire payload
+        // (percent-encoded as form fields).
+        assert!(
+            submit.body.contains("title=MyApp+v1.2.3+released"),
+            "title must be in body: {}",
+            submit.body
+        );
+        assert!(
+            submit.body.contains("example.com"),
+            "url must be in body: {}",
+            submit.body
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn send_reddit_token_fetch_failure_aborts_before_submit() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        // A 401 on the token leg must surface and NOT fire the submit POST.
+        let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/api/v1/access_token",
+            response: http_response("HTTP/1.1 401 Unauthorized", "{\"error\":\"invalid_grant\"}"),
+            times: None,
+        }]);
+        let _base = set_bases(addr);
+        let log_s = StageLogger::new("reddit-test", Verbosity::Quiet);
+
+        let err = format!(
+            "{:#}",
+            send_reddit(&post("rust"), &log_s, &ONE_SHOT).unwrap_err()
+        );
+        assert!(err.contains("401"), "status must surface: {err}");
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 1, "submit must not fire after token 401");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn send_reddit_submit_json_errors_surface() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        // Reddit returns HTTP 200 even on a logical submit rejection; a
+        // non-empty `json.errors` array must be surfaced as an error.
+        let (addr, _log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/v1/access_token",
+                response: http_response("HTTP/1.1 200 OK", "{\"access_token\":\"T\"}"),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/api/submit",
+                response: http_response(
+                    "HTTP/1.1 200 OK",
+                    "{\"json\":{\"errors\":[[\"SUBREDDIT_NOEXIST\",\"that subreddit doesn't exist\"]]}}",
+                ),
+                times: None,
+            },
+        ]);
+        let _base = set_bases(addr);
+        let log_s = StageLogger::new("reddit-test", Verbosity::Quiet);
+
+        let err = format!(
+            "{:#}",
+            send_reddit(&post("rust"), &log_s, &ONE_SHOT).unwrap_err()
+        );
+        assert!(
+            err.contains("SUBREDDIT_NOEXIST"),
+            "submit errors must surface: {err}"
+        );
+    }
+
+    use base64::Engine as _;
 
     #[test]
     fn accepts_valid_names() {

@@ -6,9 +6,19 @@ use anodizer_core::retry::{HttpError, RetryPolicy, is_retriable, retry_sync};
 use anyhow::{Context as _, Result};
 use base64::Engine;
 
+/// Default Twitter API v2 tweet-creation endpoint.
+const TWITTER_TWEETS_URL: &str = "https://api.x.com/2/tweets";
+
+/// Resolve the tweet-creation URL. Read at call time so tests can set
+/// `ANODIZE_TWITTER_API_BASE` to redirect the POST (and the OAuth signature
+/// base string) at a local mock; production never sets the variable.
+fn twitter_tweets_url() -> String {
+    std::env::var("ANODIZE_TWITTER_API_BASE").unwrap_or_else(|_| TWITTER_TWEETS_URL.to_string())
+}
+
 /// Post a tweet via Twitter API v2 with OAuth 1.0a user-context authentication.
 ///
-/// `policy` enables retry on 5xx / 429 / network failures (P1.3). The OAuth
+/// `policy` enables retry on 5xx / 429 / network failures. The OAuth
 /// header is rebuilt on every attempt so the `oauth_timestamp` and
 /// `oauth_nonce` are fresh — Twitter rejects replays.
 ///
@@ -26,7 +36,8 @@ pub fn send_twitter(
     message: &str,
     policy: &RetryPolicy,
 ) -> Result<()> {
-    let url = "https://api.x.com/2/tweets";
+    let url = twitter_tweets_url();
+    let url = url.as_str();
     let body = serde_json::json!({ "text": message }).to_string();
     let client = reqwest::blocking::Client::new();
 
@@ -251,6 +262,105 @@ mod tests {
         let sig2 = hmac_sha1_base64(key.as_bytes(), base.as_bytes()).unwrap();
         assert_eq!(sig1, sig2);
         assert!(!sig1.is_empty());
+    }
+
+    // ---- live send over a mock HTTP server -----------------------------
+    //
+    // Drive `send_twitter` (the real OAuth-signing POST path) against a
+    // scripted responder via the `ANODIZE_TWITTER_API_BASE` seam. Mutating
+    // process env requires `#[serial]` + the shared env_mutex.
+
+    use anodizer_core::test_helpers::env::env_mutex;
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+
+    const ONE_SHOT: RetryPolicy = RetryPolicy {
+        max_attempts: 1,
+        base_delay: std::time::Duration::from_millis(0),
+        max_delay: std::time::Duration::from_millis(0),
+    };
+
+    struct EnvGuard;
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            unsafe { std::env::remove_var("ANODIZE_TWITTER_API_BASE") };
+        }
+    }
+    fn set_base(addr: std::net::SocketAddr) -> EnvGuard {
+        unsafe {
+            std::env::set_var(
+                "ANODIZE_TWITTER_API_BASE",
+                format!("http://{addr}/2/tweets"),
+            )
+        };
+        EnvGuard
+    }
+    fn http_response(status_line: &str, body: &str) -> &'static str {
+        let resp = format!(
+            "{status_line}\r\nContent-Length: {}\r\n\r\n{body}",
+            body.len()
+        );
+        Box::leak(resp.into_boxed_str())
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn send_twitter_happy_path_posts_text_with_oauth_header() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/2/tweets",
+            response: http_response("HTTP/1.1 201 Created", "{\"data\":{\"id\":\"1\"}}"),
+            times: None,
+        }]);
+        let _base = set_base(addr);
+
+        send_twitter("ck", "cs", "at", "ats", "MyApp v1.2.3 is out!", &ONE_SHOT)
+            .expect("happy path should succeed");
+
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 1, "exactly one POST expected");
+        let req = &entries[0];
+        assert_eq!(req.method, "POST");
+        assert_eq!(req.path, "/2/tweets");
+        assert_eq!(req.header("content-type"), Some("application/json"));
+        // The template body is rendered into the wire payload.
+        let body: serde_json::Value = serde_json::from_str(&req.body).expect("json body");
+        assert_eq!(body["text"], "MyApp v1.2.3 is out!");
+        // OAuth 1.0a user-context header must be present and well-formed.
+        let auth = req.header("authorization").expect("authorization header");
+        assert!(auth.starts_with("OAuth "), "oauth scheme: {auth}");
+        assert!(auth.contains("oauth_consumer_key=\"ck\""), "{auth}");
+        assert!(auth.contains("oauth_token=\"at\""), "{auth}");
+        assert!(auth.contains("oauth_signature="), "{auth}");
+        assert!(
+            auth.contains("oauth_signature_method=\"HMAC-SHA1\""),
+            "{auth}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn send_twitter_non_2xx_maps_to_error_with_status_and_body() {
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/2/tweets",
+            response: http_response("HTTP/1.1 403 Forbidden", "{\"detail\":\"duplicate\"}"),
+            times: None,
+        }]);
+        let _base = set_base(addr);
+
+        let err = format!(
+            "{:#}",
+            send_twitter("ck", "cs", "at", "ats", "hi", &ONE_SHOT).unwrap_err()
+        );
+        assert!(err.contains("403"), "status must surface: {err}");
+        assert!(
+            err.contains("duplicate"),
+            "response body must surface: {err}"
+        );
     }
 
     #[test]
