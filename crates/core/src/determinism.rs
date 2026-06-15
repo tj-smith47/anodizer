@@ -121,6 +121,10 @@ impl DeterminismState {
                 "*.snap",
                 "snapcraft pack runs deterministically when SOURCE_DATE_EPOCH propagates (harness env exports it; mksquashfs respects it via craft-parts); allowlisted as defense-in-depth in case snapcraft introduces non-mtime variance",
             ),
+            (
+                "*.flatpak",
+                "flatpak build-bundle wraps an OSTree commit whose metadata (commit object timestamp + per-object headers) is not byte-stable across runs even at a fixed SOURCE_DATE_EPOCH; empirically confirmed non-reproducible via two-build cmp",
+            ),
         ];
         // SBOMs embed identifiers that are non-reproducible by nature:
         // CycloneDX carries a random `serialNumber` UUID plus a generation
@@ -247,6 +251,23 @@ mod tests {
     fn compile_time_allowlist_resolves_for_rpm() {
         let s = DeterminismState::seed_from_commit(0).expect("non-negative");
         assert!(s.resolve_reason("foo-1.0.rpm").is_some());
+    }
+
+    #[test]
+    fn compile_time_allowlist_resolves_for_flatpak() {
+        let s = DeterminismState::seed_from_commit(0).expect("non-negative");
+        // flatpak build-bundle wraps a non-byte-stable OSTree commit; the
+        // harness must not count a `.flatpak` as drift.
+        let reason = s
+            .resolve_reason("anodizer_0.9.1_linux_amd64.flatpak")
+            .expect("matches *.flatpak");
+        assert!(reason.contains("OSTree"));
+        // The `.sha256` sidecar over a non-deterministic bundle is itself
+        // non-deterministic — allow-listed as a derivative.
+        assert!(
+            s.resolve_reason("anodizer_0.9.1_linux_amd64.flatpak.sha256")
+                .is_some()
+        );
     }
 
     #[test]

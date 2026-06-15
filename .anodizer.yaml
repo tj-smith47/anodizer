@@ -749,7 +749,27 @@ crates:
           anodizer:
             command: anodizer
     flatpaks:
-      - skip: true  # disabled — no Flatpak runtime configured yet
+      # The Flatpak analog of the classic-confinement snap above: anodizer is a
+      # release CLI that, once installed, execs the host's cargo/git/docker/
+      # cosign/gpg against the user's project. Strict Flatpak sandboxing blocks
+      # all of that, so these finish_args open the same broad host surface the
+      # classic snap relies on — each is load-bearing, not a toy bundle:
+      #   --share=network            registry/git/notary I/O (cargo publish, gh)
+      #   --share=ipc                X11/dbus shared-memory many host tools use
+      #   --filesystem=host          read .git + write dist/ in the user's repo
+      #   --device=all               host devices (e.g. /dev/fuse for AppImage,
+      #                              tty for interactive gpg pinentry)
+      #   --talk-name=org.freedesktop.Flatpak  lets the sandboxed binary call
+      #                              `flatpak-spawn --host cargo/docker/...` to
+      #                              reach the host toolchains it orchestrates
+      #   --allow=devel              ptrace/perf needed by some build toolchains
+      #
+      # Bind to the GNU build (`ids: [anodizer]`), exactly like snapcrafts
+      # above: the gnu and musl builds both collapse to the `x86_64`/`aarch64`
+      # Flatpak arch, so without this filter two builds render the same bundle
+      # and clobber each other's work dir. The runtime is glibc-based
+      # (org.freedesktop.Platform), so the gnu binary is the correct one to ship.
+      - ids: [anodizer]
         app_id: io.github.tj_smith47.Anodizer
         runtime: org.freedesktop.Platform
         runtime_version: "24.08"
@@ -757,7 +777,11 @@ crates:
         command: anodizer
         finish_args:
           - "--share=network"
+          - "--share=ipc"
           - "--filesystem=host"
+          - "--device=all"
+          - "--talk-name=org.freedesktop.Flatpak"
+          - "--allow=devel"
     # macOS .app bundle — pure file assembly (no external tool), so it builds on
     # Linux CI. Info.plist is auto-generated from bundle/name/version + min_os.
     # UNSIGNED: a signed bundle additionally needs an Apple Developer ID

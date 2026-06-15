@@ -129,6 +129,12 @@ fn resolve_extra_file_specs(
 struct FlatpakJob {
     work_dir: PathBuf,
     output_name: String,
+    /// Process-cwd-relative bundle path, by design: the parallel phase's
+    /// `set_file_mtime` runs inside the Rust process whose cwd is the dist
+    /// root, so a dist-relative path resolves correctly here. `bundle_args`
+    /// carries the *absolutized* variant instead, because the `build-bundle`
+    /// subprocess runs with cwd set to `work_dir` (where a relative path
+    /// would resolve under the work dir and fail).
     output_path: PathBuf,
     builder_args: Vec<String>,
     bundle_args: Vec<String>,
@@ -281,15 +287,37 @@ fn filter_binaries_by_ids(binaries: &mut Vec<Artifact>, filter_ids: Option<&Vec<
 
 /// Map filtered binaries onto `(target, path, flatpak_arch)` tuples,
 /// dropping any architecture Flatpak doesn't support.
+///
+/// Deduplicates by `flatpak_arch` so at most one binary survives per Flatpak
+/// arch. Multiple build IDs can collapse onto the same Flatpak arch — e.g. an
+/// x86_64 gnu build and an x86_64 musl build both map to `x86_64` — and the
+/// per-job work dir and bundle filename are keyed only by
+/// `(crate, flatpak_arch)`, so two such binaries would target the identical
+/// `dist/flatpak/<crate>/<arch>/build` dir and identical
+/// `..._linux_amd64.flatpak` output. Run in parallel that races
+/// (`Build directory already initialized`); run serially the second clobbers
+/// the first.
+///
+/// The dedup is a last-resort guard: which binary wins is order-dependent
+/// (first in the artifact list), so it must not be relied on to select the
+/// "right" build. The intended selector when gnu and musl collapse to one
+/// Flatpak arch is the config's `ids:` filter (applied upstream in
+/// [`process_flatpak_cfg`]) — binding the `flatpaks:` block to a single build,
+/// exactly as `snapcrafts:` does to avoid the same map_target collapse.
 fn map_to_supported_arches(binaries: &[Artifact]) -> Vec<(Option<String>, PathBuf, String)> {
-    binaries
-        .iter()
-        .filter_map(|b| {
-            let (_, arch) = os_arch_from_target(b.target.as_deref());
-            arch_to_flatpak(&arch)
-                .map(|flatpak_arch| (b.target.clone(), b.path.clone(), flatpak_arch.to_string()))
-        })
-        .collect()
+    let mut seen: Vec<String> = Vec::new();
+    let mut out: Vec<(Option<String>, PathBuf, String)> = Vec::new();
+    for b in binaries {
+        let (_, arch) = os_arch_from_target(b.target.as_deref());
+        if let Some(flatpak_arch) = arch_to_flatpak(&arch) {
+            if seen.iter().any(|a| a == flatpak_arch) {
+                continue;
+            }
+            seen.push(flatpak_arch.to_string());
+            out.push((b.target.clone(), b.path.clone(), flatpak_arch.to_string()));
+        }
+    }
+    out
 }
 
 /// Render the bundle output filename via `name_template`, defaulting to
@@ -674,8 +702,17 @@ fn process_binary_iteration(
         identity.app_id,
     )?;
 
+    // `flatpak build-bundle` runs with cwd set to `work_dir` (so its sibling
+    // `repo` / manifest are found), so a dist-relative output path would
+    // resolve *under* work_dir (`<work_dir>/dist/flatpak/...`) and the bundle
+    // write fails with `opendir(...): No such file or directory`. Absolutize
+    // against the process cwd — `std::path::absolute` is purely lexical and
+    // needs no filesystem access — so the bundle lands at the real dist path.
+    let bundle_output_path =
+        std::path::absolute(&output_path).unwrap_or_else(|_| output_path.clone());
+
     let (builder_args, bundle_args) =
-        build_subprocess_args(identity.app_id, version, flatpak_arch, &output_path);
+        build_subprocess_args(identity.app_id, version, flatpak_arch, &bundle_output_path);
 
     archives_to_remove.extend(anodizer_core::util::collect_if_replace(
         flatpak_cfg.replace,
@@ -2729,6 +2766,44 @@ finish_args:
         let arches: Vec<&str> = result.iter().map(|(_, _, a)| a.as_str()).collect();
         assert!(arches.contains(&"x86_64"));
         assert!(arches.contains(&"aarch64"));
+    }
+
+    /// Two builds that collapse onto the same Flatpak arch (x86_64 gnu +
+    /// x86_64 musl) must yield ONE job — the per-arch work dir and bundle name
+    /// are identical, so a second job would race / clobber the first. First
+    /// binary seen wins (the gnu build, which matches the glibc runtime).
+    #[test]
+    fn test_map_to_supported_arches_dedups_collapsing_arches() {
+        let binaries = vec![
+            Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from("dist/app-gnu"),
+                target: Some("x86_64-unknown-linux-gnu".to_string()),
+                crate_name: "app".to_string(),
+                metadata: Default::default(),
+                size: None,
+            },
+            Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from("dist/app-musl"),
+                target: Some("x86_64-unknown-linux-musl".to_string()),
+                crate_name: "app".to_string(),
+                metadata: Default::default(),
+                size: None,
+            },
+        ];
+
+        let result = map_to_supported_arches(&binaries);
+        assert_eq!(
+            result.len(),
+            1,
+            "gnu + musl both map to x86_64 — exactly one job must survive"
+        );
+        // First-seen-wins keeps the gnu binary.
+        assert_eq!(result[0].1, PathBuf::from("dist/app-gnu"));
+        assert_eq!(result[0].2, "x86_64");
     }
 
     // -----------------------------------------------------------------------
