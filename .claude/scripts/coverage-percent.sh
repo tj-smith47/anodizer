@@ -6,7 +6,7 @@
 #
 # --raw prints the full-precision percent (line-rate*100, no rounding, no %
 # sign). Threshold checks must use it: the badge form rounds to one decimal,
-# so 92.99 displays as 93.0 and would mask a 93.0 floor breach.
+# so 92.49 displays as 92.5 and would mask a 92.5 floor breach.
 set -euo pipefail
 
 RAW=0

@@ -217,7 +217,7 @@ conflicts:
   - cask: another-app
 ```
 
-### Livecheck (`livecheck`)
+### Livecheck (`livecheck`) {#livecheck}
 
 By default the cask emits `livecheck do skip "Auto-generated on release." end` —
 a binary cask's `url`/`sha256` are rewritten on every release, so there is

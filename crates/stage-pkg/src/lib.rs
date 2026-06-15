@@ -1542,9 +1542,14 @@ mod tests {
         // TOC wall-clock — here we build twice back to back, which already
         // exercises distinct xar `creation-time`s on most hosts; the normalize
         // pass collapses them). Hermetic: skip-with-pass without the toolchain.
-        let have_tools = LINUX_PKG_TOOLS
-            .iter()
-            .all(|t| anodizer_core::util::find_binary(t))
+        // Linux-only: bomutils `mkbom -u` is rejected by Apple's homonym `mkbom`,
+        // so a macOS host (which ships xar/mkbom/cpio under the same names) would
+        // falsely satisfy the tool probe and then crash on the bomutils syntax —
+        // this fallback path is never taken on macOS in production anyway.
+        let have_tools = cfg!(target_os = "linux")
+            && LINUX_PKG_TOOLS
+                .iter()
+                .all(|t| anodizer_core::util::find_binary(t))
             && anodizer_core::util::find_binary("sh");
         if !have_tools {
             eprintln!("Linux pkg toolchain absent; test skipped hermetically");
@@ -1581,9 +1586,12 @@ mod tests {
     fn test_build_flat_pkg_linux_emits_xar_layout() {
         // Hermetic: skip-with-pass if the Linux toolchain is absent. This box
         // has all of xar/mkbom/cpio, so the assertions below WILL execute here.
-        let have_tools = LINUX_PKG_TOOLS
-            .iter()
-            .all(|t| anodizer_core::util::find_binary(t))
+        // Linux-only: Apple's `mkbom` rejects the bomutils `-u` flag, so a macOS
+        // host would falsely pass the probe and crash; the path is Linux-only.
+        let have_tools = cfg!(target_os = "linux")
+            && LINUX_PKG_TOOLS
+                .iter()
+                .all(|t| anodizer_core::util::find_binary(t))
             && anodizer_core::util::find_binary("sh");
         if !have_tools {
             eprintln!("Linux pkg toolchain absent; test skipped hermetically");

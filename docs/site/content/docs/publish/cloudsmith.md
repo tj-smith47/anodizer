@@ -75,7 +75,7 @@ cloudsmiths:
 
 When `republish: true`, anodizer opts into the Cloudsmith API's explicit replace-prior-version path, preventing MD5 conflicts when re-cutting a version. See [Recovery flags: cloudsmith.republish](../advanced/recovery-flags.md#cloudsmith-republish) for the full mechanism.
 
-## Retention: `keep_versions`
+## Retention: `keep_versions` {#retention-keep_versions}
 
 `keep_versions: N` retains only the `N` most-recent **release** versions of each published package, pruning older ones from the repository after a successful upload. It is the durable remedy for storage-capped repositories — notably the Cloudsmith free plan's 500&nbsp;MB limit, which offers no server-side retention policy.
 
