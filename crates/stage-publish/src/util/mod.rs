@@ -70,7 +70,10 @@ pub(crate) use git_revert::RevertTarget;
 // rollback formats `{e}` directly without naming variants. Keeping it
 // out of the re-export surface honours the "only living surface" rule
 // in the module rustdoc above.
-pub(crate) use github_pr::{CloseOutcome, close_pr_via_api, find_open_pr_numbers_for_head};
+pub(crate) use github_pr::{
+    CloseOutcome, close_pr_via_api, close_pr_via_api_with_env, find_open_pr_numbers_for_head,
+    find_open_pr_numbers_for_head_with_env,
+};
 pub(crate) use parallelism::{
     ROLLBACK_PARALLELISM, join_or_warn, lock_recover, run_revert_targets_parallel,
 };

@@ -102,13 +102,14 @@ pub(crate) fn rollback_publish(
             continue;
         };
 
-        let pr_numbers = match crate::util::find_open_pr_numbers_for_head(
+        let pr_numbers = match crate::util::find_open_pr_numbers_for_head_with_env(
             &t.upstream_owner,
             &t.upstream_repo,
             &t.fork_owner,
             &t.branch,
             Some(&token),
             env_hint,
+            env,
         ) {
             Ok(v) => v,
             Err(e) => {
@@ -138,7 +139,13 @@ pub(crate) fn rollback_publish(
         for n in pr_numbers {
             let pr_url = format!("https://github.com/{label}/pull/{n}");
             log.status(&format!("closing schemastore PR {label} ({pr_url})"));
-            match crate::util::close_pr_via_api(&t.upstream_owner, &t.upstream_repo, n, &token) {
+            match crate::util::close_pr_via_api_with_env(
+                &t.upstream_owner,
+                &t.upstream_repo,
+                n,
+                &token,
+                env,
+            ) {
                 crate::util::CloseOutcome::Closed => closed += 1,
                 crate::util::CloseOutcome::AlreadyClosed => {
                     already_closed += 1;
@@ -219,5 +226,275 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].branch, "schemastore-v1.0.0");
         assert_eq!(out[1].branch, "schemastore-v2.0.0");
+    }
+
+    // -------------------------------------------------------------------------
+    // Rollback HTTP path — driven through the scripted responder.
+    //
+    // The find-open-PR (GET …/pulls) and close-PR (PATCH …/pulls/<n>) calls
+    // resolve their GitHub API base through the injected env source's
+    // `ANODIZER_GITHUB_API_BASE` override, so these tests redirect the whole
+    // flow at an in-process responder WITHOUT mutating the process env — no
+    // `#[serial]` / env_mutex needed (the seam is per-`Context`, not global).
+    // Credentials come from the same injected `MapEnvSource`.
+    // -------------------------------------------------------------------------
+
+    use anodizer_core::log::LogCapture;
+    use anodizer_core::test_helpers::TestContextBuilder;
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+
+    /// Build a single-target evidence whose head is `acme:<branch>` against
+    /// `SchemaStore/schemastore`, the coordinates the wire routes key on.
+    fn evidence_with_target(branch: &str) -> PublishEvidence {
+        let mut ev = PublishEvidence::new("schemastore");
+        ev.extra = PublishEvidenceExtra::Schemastore(SchemastoreExtra {
+            schemastore_targets: vec![target(branch)],
+        });
+        ev
+    }
+
+    /// A `Context` whose env source carries the API-base override (pointing at
+    /// `addr`) plus a resolvable `SCHEMASTORE_TOKEN`, and a log capture so the
+    /// per-target summary/warn lines can be asserted.
+    fn ctx_pointing_at(
+        addr: std::net::SocketAddr,
+        capture: &LogCapture,
+    ) -> anodizer_core::context::Context {
+        let mut ctx = TestContextBuilder::new()
+            .env("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"))
+            .env("SCHEMASTORE_TOKEN", "sekret-token")
+            .build();
+        ctx.with_log_capture(capture.clone());
+        ctx
+    }
+
+    /// Happy path: a single open PR is found for the head, then closed via a
+    /// `PATCH …/pulls/<n>` carrying `{"state":"closed"}` and bearer auth. The
+    /// summary reports exactly one close.
+    #[test]
+    fn rollback_finds_then_closes_open_pr() {
+        let capture = LogCapture::new();
+        let (addr, log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/SchemaStore/schemastore/pulls?state=open&head=acme:schemastore-v1.0.0&per_page=100",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 14\r\n\r\n[{\"number\":7}]",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/repos/SchemaStore/schemastore/pulls/7",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+        ]);
+        let mut ctx = ctx_pointing_at(addr, &capture);
+
+        rollback_publish(&mut ctx, &evidence_with_target("schemastore-v1.0.0"))
+            .expect("rollback returns Ok even on success");
+
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 2, "one list GET then one close PATCH");
+
+        let list = &entries[0];
+        assert_eq!(list.method, "GET");
+        assert!(
+            list.path.contains("head=acme:schemastore-v1.0.0"),
+            "{}",
+            list.path
+        );
+        assert_eq!(list.header("authorization"), Some("Bearer sekret-token"));
+
+        let close = &entries[1];
+        assert_eq!(close.method, "PATCH");
+        assert_eq!(close.path, "/repos/SchemaStore/schemastore/pulls/7");
+        assert_eq!(close.header("authorization"), Some("Bearer sekret-token"));
+        assert!(
+            close.body.contains("\"state\":\"closed\""),
+            "close payload must set state=closed: {}",
+            close.body
+        );
+
+        let all = capture.all_messages();
+        assert!(
+            all.iter().any(|(_, m)| m.contains("closed 1")
+                && m.contains("already-closed 0")
+                && m.contains("failed 0")),
+            "summary must report exactly one close; got: {all:?}"
+        );
+    }
+
+    /// An empty open-PR list means the PR was already closed OR merged. A
+    /// merged PR cannot be undone by a close, so the operator must be told a
+    /// manual revert is needed — and NO PATCH is fired.
+    #[test]
+    fn rollback_warns_no_open_pr_and_skips_close() {
+        let capture = LogCapture::new();
+        let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/SchemaStore/schemastore/pulls?state=open&head=acme:schemastore-v2.0.0&per_page=100",
+            response: "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]",
+            times: None,
+        }]);
+        let mut ctx = ctx_pointing_at(addr, &capture);
+
+        rollback_publish(&mut ctx, &evidence_with_target("schemastore-v2.0.0"))
+            .expect("rollback Ok");
+
+        let entries = log.lock().unwrap();
+        assert_eq!(
+            entries.len(),
+            1,
+            "only the list GET fires — no PATCH on an empty set"
+        );
+
+        let warns = capture.warn_messages();
+        assert!(
+            warns.iter().any(|m| m.contains("no open schemastore PR")
+                && m.contains("merged")
+                && m.contains("manual revert PR")),
+            "merged/closed PR must warn about a manual revert; got: {warns:?}"
+        );
+    }
+
+    /// A non-2xx on the list query (here a 500) is a per-target failure: it
+    /// warns with the upstream label and `continue`s, and the function still
+    /// returns Ok so a sibling publisher's rollback is not masked.
+    #[test]
+    fn rollback_warns_on_list_query_error_and_returns_ok() {
+        let capture = LogCapture::new();
+        let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "GET",
+            path_pattern: "/repos/SchemaStore/schemastore/pulls?state=open&head=acme:schemastore-v3.0.0&per_page=100",
+            response: "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\n\r\noops!",
+            times: None,
+        }]);
+        let mut ctx = ctx_pointing_at(addr, &capture);
+
+        rollback_publish(&mut ctx, &evidence_with_target("schemastore-v3.0.0"))
+            .expect("rollback must not bubble Err on a query failure");
+
+        let warns = capture.warn_messages();
+        assert!(
+            warns
+                .iter()
+                .any(|m| m.contains("failed to query schemastore upstream")
+                    && m.contains("SchemaStore/schemastore")),
+            "a list-query failure must warn naming the upstream; got: {warns:?}"
+        );
+    }
+
+    /// A `404` on the close PATCH is the "desired end-state already true"
+    /// signal (the PR is gone): it buckets as already-closed, not failed.
+    #[test]
+    fn rollback_close_404_buckets_as_already_closed() {
+        let capture = LogCapture::new();
+        let (addr, _log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/SchemaStore/schemastore/pulls?state=open&head=acme:schemastore-v4.0.0&per_page=100",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n[{\"number\":42}]",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/repos/SchemaStore/schemastore/pulls/42",
+                response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+                times: None,
+            },
+        ]);
+        let mut ctx = ctx_pointing_at(addr, &capture);
+
+        rollback_publish(&mut ctx, &evidence_with_target("schemastore-v4.0.0"))
+            .expect("rollback Ok");
+
+        let all = capture.all_messages();
+        assert!(
+            all.iter().any(|(_, m)| m.contains("closed 0")
+                && m.contains("already-closed 1")
+                && m.contains("failed 0")),
+            "a 404 close must count as already-closed; got: {all:?}"
+        );
+    }
+
+    /// A `500` on the close PATCH is a genuine failure: it buckets as failed
+    /// (with a per-failure warn) but the function still returns Ok.
+    #[test]
+    fn rollback_close_500_buckets_as_failed_but_returns_ok() {
+        let capture = LogCapture::new();
+        let (addr, _log) = spawn_scripted_responder(vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/SchemaStore/schemastore/pulls?state=open&head=acme:schemastore-v5.0.0&per_page=100",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 14\r\n\r\n[{\"number\":9}]",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/repos/SchemaStore/schemastore/pulls/9",
+                response: "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 6\r\n\r\nboom!!",
+                times: None,
+            },
+        ]);
+        let mut ctx = ctx_pointing_at(addr, &capture);
+
+        rollback_publish(&mut ctx, &evidence_with_target("schemastore-v5.0.0"))
+            .expect("rollback Ok despite a close failure");
+
+        let all = capture.all_messages();
+        assert!(
+            all.iter().any(|(_, m)| m.contains("closed 0")
+                && m.contains("already-closed 0")
+                && m.contains("failed 1")),
+            "a 500 close must count as failed; got: {all:?}"
+        );
+        let warns = capture.warn_messages();
+        assert!(
+            warns.iter().any(|m| m.contains("schemastore")),
+            "a close failure must surface a per-failure warn; got: {warns:?}"
+        );
+    }
+
+    /// With a recorded target but NO token resolvable from the injected env,
+    /// the per-target loop warns (naming the env var) and skips WITHOUT firing
+    /// any network call — guarding against a credential-less GitHub request.
+    #[test]
+    fn rollback_skips_target_when_no_token_resolvable() {
+        let capture = LogCapture::new();
+        // Bind then drop a listener to obtain an address that refuses
+        // connections — proving the skip arm makes no request (a connect would
+        // surface as a query-failure warn instead of the no-token warn).
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let dead_addr = listener.local_addr().expect("addr");
+        drop(listener);
+
+        // env carries the API base but NONE of SCHEMASTORE_TOKEN /
+        // ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN.
+        let mut ctx = TestContextBuilder::new()
+            .env("ANODIZER_GITHUB_API_BASE", format!("http://{dead_addr}"))
+            .env("UNRELATED", "x")
+            .build();
+        ctx.with_log_capture(capture.clone());
+
+        rollback_publish(&mut ctx, &evidence_with_target("schemastore-v6.0.0"))
+            .expect("rollback Ok");
+
+        let warns = capture.warn_messages();
+        assert!(
+            warns
+                .iter()
+                .any(|m| m.contains("no schemastore token resolvable")
+                    && m.contains("SCHEMASTORE_TOKEN")),
+            "no-token skip must warn naming the env var; got: {warns:?}"
+        );
+        let all = capture.all_messages();
+        assert!(
+            all.iter().any(|(_, m)| m.contains("closed 0")
+                && m.contains("already-closed 0")
+                && m.contains("failed 0")),
+            "no-token skip must leave every counter at zero; got: {all:?}"
+        );
     }
 }

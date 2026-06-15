@@ -33,7 +33,10 @@
 
 use std::time::Duration;
 
+use anodizer_core::{EnvSource, ProcessEnvSource};
 use anyhow::Context as _;
+
+use super::branch::github_api_base_from;
 
 // ---------------------------------------------------------------------------
 // CloseOutcome — bucket the close-PR PATCH response
@@ -241,11 +244,38 @@ pub(crate) fn find_open_pr_numbers_for_head(
     token: Option<&str>,
     env_hint: &str,
 ) -> Result<Vec<u64>, FindPrError> {
+    find_open_pr_numbers_for_head_with_env(
+        upstream_owner,
+        upstream_repo,
+        fork_owner,
+        branch,
+        token,
+        env_hint,
+        &ProcessEnvSource,
+    )
+}
+
+/// Env-injectable form of [`find_open_pr_numbers_for_head`] — resolves the
+/// GitHub API base through `env` (honoring `ANODIZER_GITHUB_API_BASE`) so a
+/// rollback driven by an injected [`MapEnvSource`](anodizer_core::MapEnvSource)
+/// can be pointed at an in-process responder without touching the process env.
+/// Production passes [`ProcessEnvSource`], where the override is unset and the
+/// base resolves to the canonical `https://api.github.com`.
+pub(crate) fn find_open_pr_numbers_for_head_with_env<E: EnvSource + ?Sized>(
+    upstream_owner: &str,
+    upstream_repo: &str,
+    fork_owner: &str,
+    branch: &str,
+    token: Option<&str>,
+    env_hint: &str,
+    env: &E,
+) -> Result<Vec<u64>, FindPrError> {
     const PAGE_CAP: usize = 10;
+    let base = github_api_base_from(env);
     let head = format!("{}:{}", fork_owner, branch);
     let first_url = format!(
-        "https://api.github.com/repos/{}/{}/pulls?state=open&head={}&per_page=100",
-        upstream_owner, upstream_repo, head
+        "{}/repos/{}/{}/pulls?state=open&head={}&per_page=100",
+        base, upstream_owner, upstream_repo, head
     );
 
     let client = anodizer_core::http::blocking_client(Duration::from_secs(15)).map_err(|e| {
@@ -362,9 +392,30 @@ pub(crate) fn close_pr_via_api(
     pr_number: u64,
     token: &str,
 ) -> CloseOutcome {
+    close_pr_via_api_with_env(
+        upstream_owner,
+        upstream_repo,
+        pr_number,
+        token,
+        &ProcessEnvSource,
+    )
+}
+
+/// Env-injectable form of [`close_pr_via_api`] — resolves the GitHub API base
+/// through `env` (honoring `ANODIZER_GITHUB_API_BASE`) so a rollback can be
+/// driven against an in-process responder without mutating the process env.
+/// Production passes [`ProcessEnvSource`] and reaches `https://api.github.com`.
+pub(crate) fn close_pr_via_api_with_env<E: EnvSource + ?Sized>(
+    upstream_owner: &str,
+    upstream_repo: &str,
+    pr_number: u64,
+    token: &str,
+    env: &E,
+) -> CloseOutcome {
+    let base = github_api_base_from(env);
     let url = format!(
-        "https://api.github.com/repos/{}/{}/pulls/{}",
-        upstream_owner, upstream_repo, pr_number
+        "{}/repos/{}/{}/pulls/{}",
+        base, upstream_owner, upstream_repo, pr_number
     );
     let client = match anodizer_core::http::blocking_client(Duration::from_secs(30))
         .context("github_pr: build blocking HTTP client")

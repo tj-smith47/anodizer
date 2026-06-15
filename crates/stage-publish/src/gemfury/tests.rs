@@ -975,3 +975,318 @@ fn gemfury_partial_push_records_landed_target_on_later_failure() {
         "the recorded partial must be the artifact that actually pushed"
     );
 }
+
+// -----------------------------------------------------------------------------
+// Push wire shape — assert the POST hits `push_base/<account>` with HTTP Basic
+// auth (push token as username, empty password) and a multipart `package` part.
+// Existing push tests only asserted the OUTCOME; these pin the on-the-wire
+// request so an auth/path regression is caught. Driven via the scripted
+// responder so (method, path, headers, body) are recorded.
+// -----------------------------------------------------------------------------
+
+/// Build a one-deb context wired to the given probe + push responder
+/// addresses, with a resolvable push token from the injected env source.
+fn ctx_one_deb(art_path: std::path::PathBuf) -> anodizer_core::context::Context {
+    let config = Config {
+        project_name: "demo".to_string(),
+        gemfury: Some(vec![GemFuryConfig {
+            account: Some("acme".into()),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .build();
+    ctx.config = config;
+    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_PUSH_TOKEN", "push-secret"));
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::LinuxPackage,
+        path: art_path,
+        name: "demo_1.2.3_amd64.deb".to_string(),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "demo".to_string(),
+        metadata: std::collections::HashMap::new(),
+        size: None,
+    });
+    ctx
+}
+
+#[test]
+#[serial_test::serial]
+fn gemfury_push_wire_uses_basic_auth_and_account_path() {
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+    use base64::Engine as _;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let art_path = tmp.path().join("demo_1.2.3_amd64.deb");
+    std::fs::write(&art_path, b"fake-deb").unwrap();
+
+    // Probe keys on the derived package name `demo`; a 404 lets the push run.
+    let (api_addr, _api_log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "GET",
+        path_pattern: "/acme/packages/demo/versions/1.2.3",
+        response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+        times: None,
+    }]);
+    let (push_addr, push_log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "POST",
+        path_pattern: "/acme",
+        response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        times: None,
+    }]);
+
+    let ctx = ctx_one_deb(art_path);
+
+    unsafe {
+        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
+        std::env::set_var("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}"));
+    }
+    let log = StageLogger::new("gemfury", Verbosity::Quiet);
+    let result = run_publish(&ctx, &log);
+    unsafe {
+        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
+        std::env::remove_var("ANODIZE_GEMFURY_PUSH_BASE");
+    }
+
+    let pushed = result.expect("push should succeed");
+    assert_eq!(pushed.len(), 1);
+
+    let entries = push_log.lock().unwrap();
+    assert_eq!(entries.len(), 1, "exactly one push POST");
+    let push = &entries[0];
+    assert_eq!(push.method, "POST");
+    assert_eq!(push.path, "/acme", "push hits push_base/<account>");
+    // basic_auth("push-secret", Some("")) == base64("push-secret:").
+    let expect_basic = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("push-secret:")
+    );
+    assert_eq!(
+        push.header("authorization"),
+        Some(expect_basic.as_str()),
+        "push must carry HTTP Basic auth with the push token as username"
+    );
+    assert!(
+        push.header("content-type")
+            .is_some_and(|v| v.contains("multipart/form-data")),
+        "push body must be multipart/form-data; headers: {:?}",
+        push.headers
+    );
+    assert!(
+        push.body.contains("name=\"package\""),
+        "multipart must carry the `package` field: {}",
+        push.body
+    );
+}
+
+// -----------------------------------------------------------------------------
+// Rollback DELETE wire path — `GemFuryPublisher::rollback` decodes evidence and
+// issues `DELETE api_base/<account>/packages/<name>/versions/<version>` with
+// HTTP Basic auth (API token as username). These cover the previously
+// unmeasured `delete_recorded_targets` / `delete_version` branches. The API
+// base reads `ANODIZE_GEMFURY_API_BASE` from the PROCESS env, so each test is
+// `#[serial]` and removes the var even on panic.
+// -----------------------------------------------------------------------------
+
+/// A 1-attempt, zero-delay retry policy so a rollback DELETE that 500s gives up
+/// immediately instead of sleeping through the default 10-attempt backoff.
+fn fast_retry() -> anodizer_core::config::RetryConfig {
+    anodizer_core::config::RetryConfig {
+        attempts: 1,
+        delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(0)),
+        max_delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(0)),
+    }
+}
+
+/// Build single-target gemfury evidence for `acme/demo@1.2.3`.
+fn gemfury_evidence_for(account: &str, package: &str, version: &str) -> PublishEvidence {
+    let mut ev = PublishEvidence::new("gemfury");
+    ev.extra = anodizer_core::PublishEvidenceExtra::GemFury(
+        anodizer_core::publish_evidence::GemFuryExtra {
+            gemfury_targets: vec![anodizer_core::publish_evidence::GemFuryTargetSnapshot {
+                target: format!("{account}/{package}"),
+                account: account.into(),
+                package: package.into(),
+                version: version.into(),
+                format: "deb".into(),
+                push_token_env_var: "FURY_PUSH_TOKEN".into(),
+                api_token_env_var: "FURY_API_TOKEN".into(),
+            }],
+        },
+    );
+    ev
+}
+
+#[test]
+#[serial_test::serial]
+fn gemfury_rollback_deletes_recorded_version_with_basic_auth() {
+    use anodizer_core::log::LogCapture;
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+    use base64::Engine as _;
+
+    let (api_addr, del_log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "DELETE",
+        path_pattern: "/acme/packages/demo/versions/1.2.3",
+        response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        times: None,
+    }]);
+
+    let capture = LogCapture::new();
+    let mut ctx = TestContextBuilder::new().build();
+    // API (delete) token resolved from the injected env source — never process env.
+    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_API_TOKEN", "api-secret"));
+    ctx.with_log_capture(capture.clone());
+    ctx.config.retry = Some(fast_retry());
+
+    unsafe {
+        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
+    }
+    let p = GemFuryPublisher::new();
+    let result = p.rollback(&mut ctx, &gemfury_evidence_for("acme", "demo", "1.2.3"));
+    unsafe {
+        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
+    }
+    result.expect("rollback returns Ok on a clean delete");
+
+    let entries = del_log.lock().unwrap();
+    assert_eq!(entries.len(), 1, "exactly one DELETE");
+    let del = &entries[0];
+    assert_eq!(del.method, "DELETE");
+    assert_eq!(del.path, "/acme/packages/demo/versions/1.2.3");
+    // basic_auth("api-secret", Some("")) == base64("api-secret:").
+    let expect_basic = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("api-secret:")
+    );
+    assert_eq!(
+        del.header("authorization"),
+        Some(expect_basic.as_str()),
+        "delete must carry HTTP Basic auth with the API token as username"
+    );
+
+    let all = capture.all_messages();
+    assert!(
+        all.iter()
+            .any(|(_, m)| m.contains("deleted gemfury package 'acme/demo@1.2.3'")),
+        "a successful delete must log the deleted target; got: {all:?}"
+    );
+    assert!(
+        all.iter()
+            .any(|(_, m)| m.contains("1 deleted") && m.contains("0 failure(s)")),
+        "summary must report one delete and zero failures; got: {all:?}"
+    );
+}
+
+#[test]
+#[serial_test::serial]
+fn gemfury_rollback_delete_http_error_is_warned_not_raised() {
+    use anodizer_core::log::LogCapture;
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+
+    // A 500 on every DELETE attempt: rollback is best-effort, so the failure
+    // must warn + count, NOT bubble an Err that would mask the original
+    // failure being rolled back. `times: None` so the retry policy's repeats
+    // all hit the same 500.
+    let (api_addr, _del_log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "DELETE",
+        path_pattern: "/acme/packages/demo/versions/1.2.3",
+        response: "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 4\r\n\r\nboom",
+        times: None,
+    }]);
+
+    let capture = LogCapture::new();
+    let mut ctx = TestContextBuilder::new().build();
+    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_API_TOKEN", "api-secret"));
+    ctx.with_log_capture(capture.clone());
+    ctx.config.retry = Some(fast_retry());
+
+    unsafe {
+        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
+    }
+    let p = GemFuryPublisher::new();
+    let result = p.rollback(&mut ctx, &gemfury_evidence_for("acme", "demo", "1.2.3"));
+    unsafe {
+        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
+    }
+    result.expect("rollback must stay Ok despite a delete failure");
+
+    let warns = capture.warn_messages();
+    assert!(
+        warns.iter().any(
+            |m| m.contains("failed to delete gemfury package 'acme/demo@1.2.3'")
+                && m.contains("manual cleanup required")
+        ),
+        "a delete failure must warn naming the target + manual-cleanup hint; got: {warns:?}"
+    );
+    let all = capture.all_messages();
+    assert!(
+        all.iter()
+            .any(|(_, m)| m.contains("0 deleted") && m.contains("1 failure(s)")),
+        "summary must report zero deletes and one failure; got: {all:?}"
+    );
+}
+
+/// Rollback resolves the API token from the per-entry `cfg.api_token`
+/// (templated) when the env var is absent — the config-override branch of
+/// `delete_recorded_targets`. The DELETE must still fire (token resolved from
+/// cfg), proving the override path reaches the wire.
+#[test]
+#[serial_test::serial]
+fn gemfury_rollback_resolves_api_token_from_cfg_override() {
+    use anodizer_core::log::LogCapture;
+    use anodizer_core::test_helpers::scripted_responder::{
+        ScriptedRoute, spawn_scripted_responder,
+    };
+
+    let (api_addr, del_log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "DELETE",
+        path_pattern: "/acme/packages/demo/versions/1.2.3",
+        response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+        times: None,
+    }]);
+
+    let capture = LogCapture::new();
+    let mut ctx = TestContextBuilder::new().build();
+    // No FURY_API_TOKEN in the env source — the token must come from cfg.
+    ctx.set_env_source(anodizer_core::MapEnvSource::new());
+    // The config still declares the entry with an inline `api_token`, which
+    // rollback re-reads to resolve the token the env no longer carries.
+    ctx.config.gemfury = Some(vec![GemFuryConfig {
+        account: Some("acme".into()),
+        api_token: Some("cfg-api-secret".into()),
+        ..Default::default()
+    }]);
+    ctx.with_log_capture(capture.clone());
+    ctx.config.retry = Some(fast_retry());
+
+    unsafe {
+        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
+    }
+    let p = GemFuryPublisher::new();
+    let result = p.rollback(&mut ctx, &gemfury_evidence_for("acme", "demo", "1.2.3"));
+    unsafe {
+        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
+    }
+    result.expect("rollback Ok via cfg token");
+
+    let entries = del_log.lock().unwrap();
+    assert_eq!(
+        entries.len(),
+        1,
+        "the cfg-resolved token must let the DELETE fire"
+    );
+    let all = capture.all_messages();
+    assert!(
+        all.iter().any(|(_, m)| m.contains("1 deleted")),
+        "cfg-token rollback must delete the recorded target; got: {all:?}"
+    );
+}
