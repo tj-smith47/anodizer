@@ -469,6 +469,16 @@ mod tests {
         assert!(!StringOrBool::String("false".into()).as_bool());
     }
 
+    // --- Default -----------------------------------------------------------
+
+    #[test]
+    fn default_is_bool_false() {
+        // `skip`/`output`/`sbom` fields default to "off" — a missing key must
+        // not silently behave as `true`.
+        assert_eq!(StringOrBool::default(), StringOrBool::Bool(false));
+        assert!(!StringOrBool::default().as_bool());
+    }
+
     // --- as_str ------------------------------------------------------------
 
     #[test]

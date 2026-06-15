@@ -1086,6 +1086,82 @@ fn test_index_or_default_key_missing() {
     assert_eq!(result, Value::String("fallback".to_string()));
 }
 
+#[test]
+fn test_index_or_default_function_via_render_key_present() {
+    // Drive the *registered* `indexOrDefault` closure end-to-end through the
+    // template engine (the sibling tests above reimplement the logic inline and
+    // never execute the wired-up function). A structured map var is the only way
+    // to hand Tera an object argument.
+    let mut vars = test_vars();
+    vars.set_structured(
+        "Labels",
+        serde_json::json!({ "env": "prod", "tier": "web" }),
+    );
+    let out = render(
+        "{{ indexOrDefault(map=Labels, key=\"env\", default=\"unknown\") }}",
+        &vars,
+    )
+    .unwrap();
+    assert_eq!(out, "prod");
+}
+
+#[test]
+fn test_index_or_default_function_via_render_key_missing_uses_default() {
+    let mut vars = test_vars();
+    vars.set_structured("Labels", serde_json::json!({ "env": "prod" }));
+    let out = render(
+        "{{ indexOrDefault(map=Labels, key=\"absent\", default=\"unknown\") }}",
+        &vars,
+    )
+    .unwrap();
+    assert_eq!(out, "unknown");
+}
+
+#[test]
+fn test_index_or_default_function_missing_map_arg_errors() {
+    // The `map`-argument guard inside the registered closure.
+    let vars = test_vars();
+    let result = render("{{ indexOrDefault(key=\"x\", default=\"d\") }}", &vars);
+    assert!(
+        result.is_err(),
+        "indexOrDefault without a `map` argument must error"
+    );
+}
+
+// ---- filter / reverseFilter pipe-form line filtering ----
+
+#[test]
+fn test_filter_pipe_keeps_matching_lines() {
+    // The successful filtering branch of the `filter` pipe closure (a multiline
+    // string split into lines, kept when the regex matches, rejoined). The
+    // existing pipe tests only exercise the invalid-regex error path.
+    let mut vars = test_vars();
+    vars.set("Notes", "feat: a\nfix: b\nfeat: c\nchore: d");
+    let out = render("{{ Notes | filter(regexp=\"^feat\") }}", &vars).unwrap();
+    assert_eq!(out, "feat: a\nfeat: c");
+}
+
+#[test]
+fn test_reverse_filter_pipe_drops_matching_lines() {
+    // The successful filtering branch of the `reverseFilter` pipe closure:
+    // keep the lines that do NOT match the regex.
+    let mut vars = test_vars();
+    vars.set("Notes", "feat: a\nfix: b\nfeat: c\nchore: d");
+    let out = render("{{ Notes | reverseFilter(regexp=\"^feat\") }}", &vars).unwrap();
+    assert_eq!(out, "fix: b\nchore: d");
+}
+
+#[test]
+fn test_now_format_filter_missing_format_arg_errors() {
+    // The `format`-argument guard inside the registered `now_format` filter.
+    let vars = test_vars();
+    let result = render("{{ Now | now_format() }}", &vars);
+    assert!(
+        result.is_err(),
+        "now_format without a `format` argument must error"
+    );
+}
+
 // ---- Runtime vars test ----
 
 #[test]
@@ -2227,6 +2303,28 @@ fn test_render_ppc64_and_riscv64_empty_after_clear() {
     // Empty string render must not raise a Tera "missing key" error.
     let out = render("[{{ .Ppc64 }}|{{ .Riscv64 }}]", &vars).unwrap();
     assert_eq!(out, "[|]");
+}
+
+#[test]
+fn test_clear_per_artifact_vars_clears_both_target_and_artifact_keys() {
+    // `clear_per_artifact_vars` must clear the per-target keys (via the inner
+    // `clear_per_target_vars` call) AND the per-artifact keys, so a stale
+    // ArtifactName/Os from one loop iteration cannot leak into a later stage.
+    use super::vars::{PER_ARTIFACT_VARS, PER_TARGET_VARS, TemplateVars, clear_per_artifact_vars};
+    let mut tv = TemplateVars::new();
+    tv.set("Os", "linux");
+    tv.set("Arch", "amd64");
+    tv.set("ArtifactName", "myapp-1.0.0.tar.gz");
+    tv.set("ArtifactExt", ".tar.gz");
+    tv.set("ArtifactID", "myapp-archive");
+    clear_per_artifact_vars(&mut tv);
+    for key in PER_TARGET_VARS.iter().chain(PER_ARTIFACT_VARS.iter()) {
+        assert_eq!(
+            tv.get(key).map(String::as_str),
+            Some(""),
+            "per-artifact clear must blank `{key}`"
+        );
+    }
 }
 
 // --- Go `slice` / `printf` / `print` / `println` builtins ---

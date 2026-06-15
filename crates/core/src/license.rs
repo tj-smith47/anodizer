@@ -314,6 +314,38 @@ mod tests {
     }
 
     #[test]
+    fn dangling_or_keyword_falls_through_to_literal() {
+        // `has_top_level_keyword` sees the bare `OR` token, but `split_keyword`
+        // yields a single non-empty operand (`MIT`), so `ids.len() >= 2` is
+        // false and the parser falls through past the `AnyOf` return to the
+        // `Single` fallback carrying the verbatim source.
+        assert_eq!(
+            parse_spdx_expression("MIT OR"),
+            SpdxExpr::Single("MIT OR".to_string())
+        );
+        // A lone connective with no operands also degrades to a literal.
+        assert_eq!(
+            parse_spdx_expression("OR"),
+            SpdxExpr::Single("OR".to_string())
+        );
+    }
+
+    #[test]
+    fn dangling_and_keyword_falls_through_to_literal() {
+        // Mirror of the `OR` case for the `AND`/`AllOf` branch: `has_and` is
+        // true but the split produces fewer than two operands, so the
+        // `AllOf` return is skipped and the whole expression is kept literal.
+        assert_eq!(
+            parse_spdx_expression("MIT AND"),
+            SpdxExpr::Single("MIT AND".to_string())
+        );
+        assert_eq!(
+            parse_spdx_expression("AND BSD-3-Clause"),
+            SpdxExpr::Single("AND BSD-3-Clause".to_string())
+        );
+    }
+
+    #[test]
     fn ids_accessor_covers_all_variants() {
         assert_eq!(
             parse_spdx_expression("A OR B").ids(),

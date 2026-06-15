@@ -1356,4 +1356,114 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
             "no release repo should mean no auto-derived overrides, got:\n{updated}"
         );
     }
+
+    // --- normalize_binstall_to_table --------------------------------------
+
+    #[test]
+    fn normalize_inserts_empty_table_when_binstall_absent() {
+        let mut metadata = toml_edit::Table::new();
+        normalize_binstall_to_table(&mut metadata).unwrap();
+        let binstall = metadata.get("binstall").expect("binstall inserted");
+        assert!(binstall.is_table(), "must be a header table");
+        assert!(
+            binstall.as_table().unwrap().is_empty(),
+            "freshly-inserted binstall table must be empty"
+        );
+    }
+
+    #[test]
+    fn normalize_leaves_existing_header_table_untouched() {
+        let mut metadata = toml_edit::Table::new();
+        let mut existing = toml_edit::Table::new();
+        existing.insert("pkg-url", toml_edit::value("https://example/x"));
+        metadata.insert("binstall", toml_edit::Item::Table(existing));
+        normalize_binstall_to_table(&mut metadata).unwrap();
+        assert_eq!(
+            metadata["binstall"]["pkg-url"].as_str(),
+            Some("https://example/x"),
+            "an existing header table must be preserved verbatim"
+        );
+    }
+
+    #[test]
+    fn normalize_converts_inline_table_preserving_keys() {
+        // `binstall = { pkg-url = "…", custom = "keep" }` → header table with
+        // every key carried over (including the user-authored `custom`).
+        let doc: toml_edit::DocumentMut = r#"[package.metadata]
+binstall = { pkg-url = "https://example/x", custom = "keep" }
+"#
+        .parse()
+        .unwrap();
+        let mut metadata = doc["package"]["metadata"].as_table().unwrap().clone();
+        normalize_binstall_to_table(&mut metadata).unwrap();
+        let binstall = metadata["binstall"].as_table().expect("now a header table");
+        assert_eq!(binstall["pkg-url"].as_str(), Some("https://example/x"));
+        assert_eq!(
+            binstall["custom"].as_str(),
+            Some("keep"),
+            "user-authored inline keys must survive the conversion"
+        );
+    }
+
+    #[test]
+    fn normalize_errors_on_non_table_binstall() {
+        // A scalar `binstall = "oops"` is neither a table nor an inline table.
+        let mut metadata = toml_edit::Table::new();
+        metadata.insert("binstall", toml_edit::value("oops"));
+        assert!(
+            normalize_binstall_to_table(&mut metadata).is_err(),
+            "a malformed scalar binstall must error, not silently pass"
+        );
+    }
+
+    // --- set_or_remove_str ------------------------------------------------
+
+    #[test]
+    fn set_or_remove_str_sets_and_removes() {
+        let mut table = toml_edit::Table::new();
+        set_or_remove_str(&mut table, "k", Some("v"));
+        assert_eq!(table["k"].as_str(), Some("v"));
+        // A `None` value removes a now-unset key while leaving siblings intact.
+        table.insert("sibling", toml_edit::value("keep"));
+        set_or_remove_str(&mut table, "k", None);
+        assert!(table.get("k").is_none(), "None must remove the key");
+        assert_eq!(
+            table["sibling"].as_str(),
+            Some("keep"),
+            "removing one key must not disturb siblings"
+        );
+    }
+
+    // --- render_overrides / render_overrides_map --------------------------
+
+    #[test]
+    fn render_overrides_none_when_unset_or_empty() {
+        let ctx = make_ctx();
+        let cfg = BinstallConfig {
+            overrides: None,
+            ..Default::default()
+        };
+        assert!(
+            render_overrides(&cfg, &ctx).unwrap().is_none(),
+            "no overrides configured → None"
+        );
+        let cfg_empty = BinstallConfig {
+            overrides: Some(BTreeMap::new()),
+            ..Default::default()
+        };
+        assert!(
+            render_overrides(&cfg_empty, &ctx).unwrap().is_none(),
+            "an empty overrides map → None"
+        );
+    }
+
+    #[test]
+    fn render_overrides_map_empty_is_none() {
+        let ctx = make_ctx();
+        let empty: BTreeMap<String, BinstallOverride> = BTreeMap::new();
+        assert!(
+            render_overrides_map(&empty, &ctx).unwrap().is_none(),
+            "an empty map renders to None, never an empty table"
+        );
+    }
 }

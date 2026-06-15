@@ -693,3 +693,106 @@ impl PartialEq for ContentSource {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The `archives`/`signs`/`binary_signs` fields use hand-written
+    // deserializers (untagged shapes serde can't derive). Each visitor arm —
+    // bool, sequence, single-map, null — is driven here through a wrapper
+    // struct that mirrors the real field attributes.
+
+    #[derive(Deserialize)]
+    struct ArchivesWrapper {
+        #[serde(default, deserialize_with = "deserialize_archives_config")]
+        archives: ArchivesConfig,
+    }
+
+    #[test]
+    fn archives_false_is_disabled() {
+        let w: ArchivesWrapper = serde_yaml_ng::from_str("archives: false").unwrap();
+        assert!(matches!(w.archives, ArchivesConfig::Disabled));
+    }
+
+    #[test]
+    fn archives_true_is_rejected() {
+        // `true` is meaningless for archives — only `false` (disable) or a list.
+        let r: Result<ArchivesWrapper, _> = serde_yaml_ng::from_str("archives: true");
+        assert!(r.is_err(), "archives: true must be rejected");
+    }
+
+    #[test]
+    fn archives_list_becomes_configs() {
+        let w: ArchivesWrapper =
+            serde_yaml_ng::from_str("archives:\n  - id: a\n  - id: b\n").unwrap();
+        match w.archives {
+            ArchivesConfig::Configs(c) => assert_eq!(c.len(), 2),
+            other => panic!("expected Configs, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn archives_null_defaults_to_empty_configs() {
+        let w: ArchivesWrapper = serde_yaml_ng::from_str("archives: null").unwrap();
+        match w.archives {
+            ArchivesConfig::Configs(c) => assert!(c.is_empty()),
+            other => panic!("expected empty Configs, got {other:?}"),
+        }
+    }
+
+    #[derive(Deserialize)]
+    struct SignsWrapper {
+        #[serde(default, deserialize_with = "deserialize_signs")]
+        signs: Vec<SignConfig>,
+    }
+
+    #[test]
+    fn signs_single_object_becomes_one_element_vec() {
+        // A single sign-config map (not wrapped in a list) is accepted.
+        let w: SignsWrapper = serde_yaml_ng::from_str("signs:\n  artifacts: all\n").unwrap();
+        assert_eq!(w.signs.len(), 1);
+        assert_eq!(w.signs[0].artifacts.as_deref(), Some("all"));
+    }
+
+    #[test]
+    fn signs_sequence_collects_all() {
+        let w: SignsWrapper =
+            serde_yaml_ng::from_str("signs:\n  - artifacts: all\n  - artifacts: checksum\n")
+                .unwrap();
+        assert_eq!(w.signs.len(), 2);
+    }
+
+    #[test]
+    fn signs_null_is_empty_vec() {
+        let w: SignsWrapper = serde_yaml_ng::from_str("signs: null").unwrap();
+        assert!(w.signs.is_empty());
+    }
+
+    #[derive(Deserialize)]
+    struct BinarySignsWrapper {
+        #[serde(default, deserialize_with = "deserialize_binary_signs")]
+        binary_signs: Vec<SignConfig>,
+    }
+
+    #[test]
+    fn binary_signs_accepts_binary_and_none() {
+        let w: BinarySignsWrapper =
+            serde_yaml_ng::from_str("binary_signs:\n  - artifacts: binary\n").unwrap();
+        assert_eq!(w.binary_signs.len(), 1);
+        let w2: BinarySignsWrapper =
+            serde_yaml_ng::from_str("binary_signs:\n  - artifacts: none\n").unwrap();
+        assert_eq!(w2.binary_signs.len(), 1);
+    }
+
+    #[test]
+    fn binary_signs_rejects_broad_artifact_filter() {
+        // `all` is valid for top-level `signs:` but not the binary-only field.
+        let r: Result<BinarySignsWrapper, _> =
+            serde_yaml_ng::from_str("binary_signs:\n  - artifacts: all\n");
+        assert!(
+            r.is_err(),
+            "binary_signs must reject a non-binary artifact filter"
+        );
+    }
+}

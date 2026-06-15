@@ -600,3 +600,122 @@ impl<'de> Deserialize<'de> for SkipPushConfig {
         deserializer.deserialize_any(Visitor)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The three `"auto" | bool | [template]` config enums share a hand-written
+    // serde `Visitor` per type; each arm (string-auto, bool, template fallback,
+    // and the bad-string error) is exercised here through a YAML round-trip.
+
+    #[test]
+    fn prerelease_config_parses_auto_and_bools() {
+        assert_eq!(
+            serde_yaml_ng::from_str::<PrereleaseConfig>("auto").unwrap(),
+            PrereleaseConfig::Auto
+        );
+        assert_eq!(
+            serde_yaml_ng::from_str::<PrereleaseConfig>("true").unwrap(),
+            PrereleaseConfig::Bool(true)
+        );
+        assert_eq!(
+            serde_yaml_ng::from_str::<PrereleaseConfig>("false").unwrap(),
+            PrereleaseConfig::Bool(false)
+        );
+    }
+
+    #[test]
+    fn prerelease_config_rejects_other_strings() {
+        // Unlike the templated siblings, `prerelease` only accepts "auto".
+        assert!(serde_yaml_ng::from_str::<PrereleaseConfig>("maybe").is_err());
+    }
+
+    #[test]
+    fn prerelease_config_round_trips_through_serialize() {
+        for v in [
+            PrereleaseConfig::Auto,
+            PrereleaseConfig::Bool(true),
+            PrereleaseConfig::Bool(false),
+        ] {
+            let yaml = serde_yaml_ng::to_string(&v).unwrap();
+            assert_eq!(
+                serde_yaml_ng::from_str::<PrereleaseConfig>(&yaml).unwrap(),
+                v
+            );
+        }
+    }
+
+    #[test]
+    fn make_latest_config_parses_all_arms() {
+        assert_eq!(
+            serde_yaml_ng::from_str::<MakeLatestConfig>("auto").unwrap(),
+            MakeLatestConfig::Auto
+        );
+        assert_eq!(
+            serde_yaml_ng::from_str::<MakeLatestConfig>("true").unwrap(),
+            MakeLatestConfig::Bool(true)
+        );
+        assert_eq!(
+            serde_yaml_ng::from_str::<MakeLatestConfig>("false").unwrap(),
+            MakeLatestConfig::Bool(false)
+        );
+        // A non-keyword string falls through to a deferred template.
+        assert_eq!(
+            serde_yaml_ng::from_str::<MakeLatestConfig>(
+                "\"{{ if .IsSnapshot }}false{{ else }}true{{ end }}\""
+            )
+            .unwrap(),
+            MakeLatestConfig::String(
+                "{{ if .IsSnapshot }}false{{ else }}true{{ end }}".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn make_latest_config_round_trips_through_serialize() {
+        for v in [
+            MakeLatestConfig::Auto,
+            MakeLatestConfig::Bool(false),
+            MakeLatestConfig::String("{{ .Env.LATEST }}".to_string()),
+        ] {
+            let yaml = serde_yaml_ng::to_string(&v).unwrap();
+            assert_eq!(
+                serde_yaml_ng::from_str::<MakeLatestConfig>(&yaml).unwrap(),
+                v
+            );
+        }
+    }
+
+    #[test]
+    fn skip_push_config_parses_all_arms() {
+        assert_eq!(
+            serde_yaml_ng::from_str::<SkipPushConfig>("auto").unwrap(),
+            SkipPushConfig::Auto
+        );
+        assert_eq!(
+            serde_yaml_ng::from_str::<SkipPushConfig>("true").unwrap(),
+            SkipPushConfig::Bool(true)
+        );
+        assert_eq!(
+            serde_yaml_ng::from_str::<SkipPushConfig>("false").unwrap(),
+            SkipPushConfig::Bool(false)
+        );
+        assert_eq!(
+            serde_yaml_ng::from_str::<SkipPushConfig>("\"{{ .IsSnapshot }}\"").unwrap(),
+            SkipPushConfig::Template("{{ .IsSnapshot }}".to_string())
+        );
+    }
+
+    #[test]
+    fn skip_push_config_round_trips_through_serialize() {
+        for v in [
+            SkipPushConfig::Auto,
+            SkipPushConfig::Bool(true),
+            SkipPushConfig::Template("{{ .IsSnapshot }}".to_string()),
+        ] {
+            let yaml = serde_yaml_ng::to_string(&v).unwrap();
+            assert_eq!(serde_yaml_ng::from_str::<SkipPushConfig>(&yaml).unwrap(), v);
+        }
+    }
+}

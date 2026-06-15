@@ -634,6 +634,35 @@ mod tests {
     }
 
     #[test]
+    fn jitter_returns_base_when_window_rounds_to_zero() {
+        // For any duration under 5ns the ±20 % window (`nanos / 5`) floors to
+        // 0, so jitter is a no-op and the base is returned unchanged — the
+        // early-return guard that avoids a `% 0` panic on tiny delays.
+        for n in 0..5u64 {
+            let base = Duration::from_nanos(n);
+            assert_eq!(
+                jitter_duration(base),
+                base,
+                "sub-5ns base {n} must pass through unjittered"
+            );
+        }
+    }
+
+    #[test]
+    fn jitter_stays_within_plus_minus_twenty_percent() {
+        // The jittered value never leaves [base*0.8, base*1.2) — the documented
+        // window. Uses a duration large enough that `nanos / 5 > 0`.
+        let base = Duration::from_millis(100);
+        let jittered = jitter_duration(base);
+        let lo = base.mul_f64(0.8);
+        let hi = base.mul_f64(1.2);
+        assert!(
+            jittered >= lo && jittered < hi,
+            "jittered {jittered:?} outside [{lo:?}, {hi:?})"
+        );
+    }
+
+    #[test]
     fn delay_progression_caps_at_max() {
         let p = RetryPolicy {
             max_attempts: 10,
