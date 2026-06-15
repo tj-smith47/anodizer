@@ -74,8 +74,10 @@ jobs:
             # bubblewrap ships with flatpak-builder; install it standalone so
             # the userns probe can run even before the publisher's toolchain.
             if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=; fi
-            $SUDO apt-get update
-            $SUDO apt-get install -y --no-install-recommends bubblewrap
+            if ! { $SUDO apt-get update && $SUDO apt-get install -y --no-install-recommends bubblewrap; }; then
+              echo "::error::failed to install bubblewrap on arc-anodizer (apt mirror unreachable?) — required for the flatpaks userns probe"
+              exit 1
+            fi
           fi
           echo "bwrap: $(bwrap --version)"
           if bwrap --unshare-user --unshare-ipc --unshare-pid --unshare-net --unshare-uts --unshare-cgroup --uid 0 --gid 0 --ro-bind / / -- /bin/true; then
