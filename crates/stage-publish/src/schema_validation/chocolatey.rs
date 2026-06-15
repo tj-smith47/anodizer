@@ -758,6 +758,53 @@ mod tests {
         assert!(!nuspec.contains("opensource.org"));
     }
 
+    /// Compound SPDX expression WITH a repo present: the rendered nuspec must
+    /// carry the full expression in `<license type="expression">` and must NOT
+    /// emit a `<licenseUrl>` element. The repo is set so a single-identifier
+    /// license WOULD derive a `<licenseUrl>` — proving the suppression is
+    /// driven by the compound expression, not by an absent repo. Locks the
+    /// emitted manifest XML, not just the intermediate struct.
+    #[test]
+    fn compound_spdx_rendered_nuspec_has_expression_and_no_license_url() {
+        let cfg = ChocolateyConfig {
+            name: Some("widget".to_string()),
+            repository: Some(RepositoryConfig {
+                owner: Some("acme".to_string()),
+                name: Some("widget".to_string()),
+                ..Default::default()
+            }),
+            authors: Some("Acme Corp".to_string()),
+            description: Some("A widget management tool".to_string()),
+            license: Some("MIT OR Apache-2.0".to_string()),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![choco_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        let nuspec = render_nuspec_for_crate(&ctx, "widget", &ctx.logger("publish"))
+            .expect("render ok")
+            .expect("not skipped");
+        assert!(
+            nuspec.contains("<license type=\"expression\">MIT OR Apache-2.0</license>"),
+            "compound SPDX must land as a license expression: {nuspec}"
+        );
+        assert!(
+            !nuspec.contains("<licenseUrl>"),
+            "compound SPDX must NOT emit a <licenseUrl> even with a repo present: {nuspec}"
+        );
+        assert!(
+            !nuspec.contains("opensource.org"),
+            "must never synthesize an opensource.org licenseUrl: {nuspec}"
+        );
+        // The repo-derived sibling URLs still emit — only <licenseUrl> is gated.
+        assert!(
+            nuspec.contains("<projectSourceUrl>https://github.com/acme/widget</projectSourceUrl>"),
+            "projectSourceUrl must still derive from the repo: {nuspec}"
+        );
+    }
+
     /// The structural floor must BITE: an empty `<authors>` (a required,
     /// non-empty element per nuspec.xsd) is rejected with a finding naming the
     /// field. The corrected document produces zero findings, proving the test

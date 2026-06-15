@@ -558,9 +558,10 @@ crates:
           - "TJ Smith <tj@jarvispro.io>"
         depends:
           - glibc
-        # Binary-only package(): anodizer's archive bundles LICENSE/README only
-        # (no completions/man), so there is nothing extra to install here. To
-        # ship completions+man on AUR, bundle them into the archive stage first.
+        # Binary-only package(): anodizer's archive bundles LICENSE-MIT,
+        # LICENSE-APACHE, and README only (no completions/man), so there is
+        # nothing extra to install here. To ship completions+man on AUR, bundle
+        # them into the archive stage first.
         private_key: "{{ .Env.AUR_SSH_KEY }}"
         commit_author:
           name: TJ Smith
@@ -727,9 +728,6 @@ crates:
         # binaries (cargo/docker/gpg), which strict confinement blocks. Classic
         # snaps require a one-time Snap Store manual review before upload.
         confinement: classic
-        # snapcraft's `license` has no Cargo.toml/meta fallback in the resolver
-        # (unlike description), so it is set explicitly rather than derived.
-        license: "MIT OR Apache-2.0"
         publish: true
         channel_templates:
           - "latest/stable"

@@ -892,6 +892,12 @@ fn render_snap_cfg(
                 format!("snapcraft: render confinement for crate {}", krate_name)
             })?);
     }
+    // Derive the SPDX license from the crate's Cargo.toml when the config
+    // omits it, mirroring every other publisher's `meta_license_for` fallback
+    // so a dual-licensed project does not have to hardcode it.
+    if rendered_cfg.license.is_none() {
+        rendered_cfg.license = ctx.config.meta_license_for(krate_name).map(str::to_string);
+    }
     if let Some(ref l) = rendered_cfg.license {
         rendered_cfg.license = Some(
             ctx.render_template(l)
@@ -1188,6 +1194,78 @@ mod summary_tests {
         }];
         ctx.config.populate_derived_metadata(tmp.path());
         (ctx, tmp)
+    }
+
+    fn ctx_with_cargo_license(license: &str) -> (Context, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let crate_dir = tmp.path().join("demo");
+        std::fs::create_dir_all(&crate_dir).unwrap();
+        std::fs::write(
+            crate_dir.join("Cargo.toml"),
+            format!("[package]\nname = \"demo\"\nlicense = \"{license}\"\n"),
+        )
+        .unwrap();
+        let mut ctx = TestContextBuilder::new().build();
+        assert!(ctx.config.metadata.is_none(), "no metadata: block present");
+        ctx.config.crates = vec![CrateConfig {
+            name: "demo".to_string(),
+            path: "demo".to_string(),
+            ..Default::default()
+        }];
+        ctx.config.populate_derived_metadata(tmp.path());
+        (ctx, tmp)
+    }
+
+    #[test]
+    fn license_resolves_from_cargo_toml_when_config_omits_it() {
+        // snapcraft's `license` must derive from the crate's Cargo.toml SPDX
+        // license (like every other publisher) when the config omits it, so a
+        // dual-licensed project does not need to hardcode it.
+        let (ctx, _tmp) = ctx_with_cargo_license("MIT OR Apache-2.0");
+        let snap_cfg = SnapcraftConfig::default();
+        assert!(snap_cfg.license.is_none());
+
+        let rendered = render_snap_cfg(&ctx, &snap_cfg, "demo").expect("render snap cfg");
+        assert_eq!(rendered.license.as_deref(), Some("MIT OR Apache-2.0"));
+    }
+
+    #[test]
+    fn emitted_snap_yaml_carries_derived_license() {
+        // End-to-end: resolve the config (derive license from Cargo.toml) then
+        // generate the snap.yaml, proving the emitted manifest — not just the
+        // intermediate struct — carries `license: MIT OR Apache-2.0`.
+        let (ctx, _tmp) = ctx_with_cargo_license("MIT OR Apache-2.0");
+        let snap_cfg = SnapcraftConfig {
+            summary: Some("a demo".to_string()),
+            description: Some("a demo description".to_string()),
+            ..Default::default()
+        };
+        assert!(snap_cfg.license.is_none());
+        let resolved = render_snap_cfg(&ctx, &snap_cfg, "demo").expect("render snap cfg");
+        let yaml = generate_snap_yaml(
+            &resolved,
+            "0.9.1",
+            &["demo"],
+            Some("x86_64-unknown-linux-gnu"),
+            Some("demo"),
+        )
+        .expect("generate snap.yaml");
+        assert!(
+            yaml.contains("license: MIT OR Apache-2.0"),
+            "emitted snap.yaml must carry the derived license: {yaml}"
+        );
+    }
+
+    #[test]
+    fn explicit_license_wins_over_derived() {
+        // An explicit config license overrides the Cargo.toml-derived value.
+        let (ctx, _tmp) = ctx_with_cargo_license("MIT OR Apache-2.0");
+        let snap_cfg = SnapcraftConfig {
+            license: Some("GPL-3.0".to_string()),
+            ..Default::default()
+        };
+        let rendered = render_snap_cfg(&ctx, &snap_cfg, "demo").expect("render snap cfg");
+        assert_eq!(rendered.license.as_deref(), Some("GPL-3.0"));
     }
 
     #[test]
