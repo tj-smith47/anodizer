@@ -112,6 +112,24 @@ pub struct RequestLog {
     pub method: String,
     pub path: String,
     pub body: String,
+    /// Every request header, in arrival order, as `(name, value)`. Header
+    /// names are recorded verbatim (HTTP header names are case-insensitive
+    /// on the wire, so use [`RequestLog::header`] for case-folded lookups).
+    pub headers: Vec<(String, String)>,
+}
+
+impl RequestLog {
+    /// Case-insensitive lookup of the first header value matching `name`.
+    ///
+    /// HTTP header names are case-insensitive, so a test asserting on an
+    /// `Authorization` / `X-Checksum-Sha256` header should not depend on
+    /// the exact casing reqwest happened to emit.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
 }
 
 /// Internal route entry, paired with a hit counter to enforce `times`
@@ -201,17 +219,15 @@ const NOT_FOUND_RESPONSE: &str = "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\
 fn serve_one(mut stream: TcpStream, entries: &[RouteEntry], log: &Mutex<Vec<RequestLog>>) {
     let _ = stream.set_read_timeout(Some(READ_TIMEOUT));
 
-    let (method, path, body) = match consume_request(&mut stream) {
+    let request = match consume_request(&mut stream) {
         Some(parsed) => parsed,
         None => return,
     };
+    let method = request.method.clone();
+    let path = request.path.clone();
 
     if let Ok(mut g) = log.lock() {
-        g.push(RequestLog {
-            method: method.clone(),
-            path: path.clone(),
-            body,
-        });
+        g.push(request);
     }
 
     let response: &str = entries
@@ -263,10 +279,12 @@ fn write_response_with_connection_close(
     }
 }
 
-/// Read one HTTP request and return `(method, path, body)`. Returns
-/// `None` if the request line never arrived or was malformed —
-/// callers treat that as "drop the connection without logging."
-fn consume_request(stream: &mut TcpStream) -> Option<(String, String, String)> {
+/// Read one HTTP request and return it as a [`RequestLog`]. Returns `None`
+/// if the request line never arrived or was malformed — callers treat that
+/// as "drop the connection without logging." `headers` preserves wire
+/// order; values are trimmed of the leading space after the `:` but
+/// otherwise verbatim.
+fn consume_request(stream: &mut TcpStream) -> Option<RequestLog> {
     let deadline = Instant::now() + REQUEST_READ_DEADLINE;
     let mut accum: Vec<u8> = Vec::with_capacity(8 * 1024);
     let mut chunk = [0u8; 8 * 1024];
@@ -296,6 +314,16 @@ fn consume_request(stream: &mut TcpStream) -> Option<(String, String, String)> {
     let mut parts = request_line.split_whitespace();
     let method = parts.next()?.to_string();
     let path = parts.next()?.to_string();
+
+    // Remaining header lines, in wire order. The split over the full header
+    // block ends with the empty segment(s) the terminating `\r\n\r\n`
+    // produces; `split_once(':')` skips those (no colon → filtered).
+    let headers: Vec<(String, String)> = lines
+        .filter_map(|line| {
+            line.split_once(':')
+                .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
+        })
+        .collect();
 
     let content_length = parse_content_length(&accum[..header_end]);
     let body_start = header_end;
@@ -329,7 +357,12 @@ fn consume_request(stream: &mut TcpStream) -> Option<(String, String, String)> {
     };
 
     let body = String::from_utf8_lossy(&body_bytes).to_string();
-    Some((method, path, body))
+    Some(RequestLog {
+        method,
+        path,
+        body,
+        headers,
+    })
 }
 
 fn find_double_crlf(buf: &[u8]) -> Option<usize> {
@@ -408,6 +441,39 @@ mod self_tests {
         assert_eq!(entries[1].method, "POST");
         assert_eq!(entries[1].path, "/create");
         assert_eq!(entries[1].body, "hello");
+    }
+
+    #[test]
+    fn records_request_headers_case_insensitively() {
+        let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "PUT",
+            path_pattern: "/blob",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+
+        let _ = send_raw(
+            addr,
+            "PUT /blob HTTP/1.1\r\nHost: x\r\nAuthorization: token sekret\r\n\
+             X-Checksum-Sha256: abc123\r\nContent-Length: 4\r\n\r\nbody",
+        );
+
+        let entries = log.lock().unwrap();
+        assert_eq!(entries.len(), 1);
+        let req = &entries[0];
+        // Verbatim capture preserves the header.
+        assert!(
+            req.headers
+                .iter()
+                .any(|(k, v)| k == "Authorization" && v == "token sekret"),
+            "headers: {:?}",
+            req.headers
+        );
+        // Case-folded accessor matches regardless of the casing on the wire.
+        assert_eq!(req.header("authorization"), Some("token sekret"));
+        assert_eq!(req.header("X-CHECKSUM-SHA256"), Some("abc123"));
+        assert_eq!(req.header("Nonexistent"), None);
+        assert_eq!(req.body, "body");
     }
 
     #[test]

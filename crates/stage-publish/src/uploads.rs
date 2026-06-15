@@ -1120,3 +1120,305 @@ mod tests {
         assert!(!s2.is_fully_idempotent_skip());
     }
 }
+
+/// Live-mode (`dry_run: false`) HTTP coverage for `publish_uploads`. Every
+/// test points the per-entry `target:` URL at an in-process scripted
+/// responder (an ephemeral `127.0.0.1:0` port) and asserts on the recorded
+/// traffic — method, path, request body, and the credential / checksum
+/// headers (now observable via the responder's header capture). The
+/// generic-upload PUT/POST, basic-auth header construction, checksum header,
+/// success, and non-2xx → contextful-error mapping run through the real
+/// `upload_artifact_set` → `artifactory::upload_single_artifact` core that
+/// `publish_uploads` drives.
+///
+/// Credentials are injected through a per-context [`MapEnvSource`] (NOT the
+/// process env), so no test mutates `std::env` and none needs a serial
+/// guard — they bind distinct ephemeral ports and run fully in parallel.
+#[cfg(test)]
+#[allow(clippy::field_reassign_with_default)]
+mod live_http_tests {
+    use super::*;
+    use anodizer_core::MapEnvSource;
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{Config, HumanDuration, RetryConfig, UploadConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::hashing::sha256_file;
+    use anodizer_core::test_helpers::scripted_responder::{
+        RequestLog, ScriptedRoute, spawn_scripted_responder_on,
+    };
+    use std::net::SocketAddr;
+    use std::time::Duration;
+
+    /// 2-attempt, 1ms-backoff retry so a 5xx-path test doesn't inherit the
+    /// 10-attempt / 10s production default and stall the suite.
+    fn fast_retry() -> RetryConfig {
+        RetryConfig {
+            attempts: 2,
+            delay: HumanDuration(Duration::from_millis(1)),
+            max_delay: HumanDuration(Duration::from_millis(2)),
+        }
+    }
+
+    /// Build a live (non-dry-run) single-archive upload context whose only
+    /// `uploads:` entry targets `http://{addr}/repo/` (so the artifact PUTs
+    /// to `/repo/<name>`). `mutate` customizes the entry (method, auth,
+    /// custom headers, …). Returns the context, the file's hex sha256 (for
+    /// scripting a matching HEAD probe), and the artifact name.
+    fn live_ctx(
+        addr: SocketAddr,
+        env: MapEnvSource,
+        mutate: impl FnOnce(&mut UploadConfig),
+    ) -> (Context, String, &'static str) {
+        let art_name = "app-1.0.0.tar.gz";
+        let dir = tempfile::tempdir().unwrap();
+        let art_path = dir.path().join(art_name);
+        std::fs::write(&art_path, b"upload-bytes").unwrap();
+        let checksum = sha256_file(&art_path).unwrap();
+
+        let mut entry = UploadConfig {
+            name: Some("jarvispro".to_string()),
+            target: format!("http://{addr}/repo/"),
+            ..Default::default()
+        };
+        mutate(&mut entry);
+
+        let mut config = Config::default();
+        config.project_name = "app".to_string();
+        config.retry = Some(fast_retry());
+        config.uploads = Some(vec![entry]);
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: false,
+                ..Default::default()
+            },
+        );
+        ctx.set_env_source(env);
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: art_name.to_string(),
+            path: art_path,
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: std::collections::HashMap::new(),
+            size: None,
+        });
+        // The artifact file must outlive the upload read; tests are short.
+        std::mem::forget(dir);
+        (ctx, checksum, art_name)
+    }
+
+    fn count_calls(log: &[RequestLog], method: &str, path: &str) -> usize {
+        log.iter()
+            .filter(|e| e.method == method && e.path == path)
+            .count()
+    }
+
+    /// Default method (PUT) with basic-auth from `UPLOAD_<NAME>_SECRET`:
+    /// the absence probe (HEAD) returns 404, then the PUT lands the bytes
+    /// carrying the `Authorization: Basic …` header and the default
+    /// `X-Checksum-Sha256` header. Proves the request construction +
+    /// success path end to end.
+    #[test]
+    fn live_put_with_basic_auth_and_checksum_header() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (_addr, log) = spawn_scripted_responder_on(listener, |_| {
+            vec![
+                ScriptedRoute {
+                    method: "HEAD",
+                    path_pattern: "/repo/app-1.0.0.tar.gz",
+                    response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "PUT",
+                    path_pattern: "/repo/app-1.0.0.tar.gz",
+                    response: "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+                    times: None,
+                },
+            ]
+        });
+
+        let env = MapEnvSource::new()
+            .with("UPLOAD_JARVISPRO_USERNAME", "ci-bot")
+            .with("UPLOAD_JARVISPRO_SECRET", "s3cr3t-pat");
+        let (ctx, checksum, _name) = live_ctx(addr, env, |_| {});
+        let log_handle = ctx.logger("uploads");
+        let summary = publish_uploads(&ctx, &log_handle).expect("live PUT upload succeeds");
+        assert_eq!(summary.uploaded, 1);
+        assert_eq!(summary.already_present, 0);
+
+        let entries = log.lock().unwrap();
+        assert_eq!(
+            count_calls(&entries, "HEAD", "/repo/app-1.0.0.tar.gz"),
+            1,
+            "absence probe runs first (overwrite unset): {entries:?}"
+        );
+        let put = entries
+            .iter()
+            .find(|e| e.method == "PUT")
+            .expect("PUT recorded");
+        assert_eq!(put.path, "/repo/app-1.0.0.tar.gz");
+        assert_eq!(put.body, "upload-bytes", "the file bytes are the PUT body");
+        // Basic auth: base64("ci-bot:s3cr3t-pat").
+        let expected = {
+            use base64::Engine as _;
+            format!(
+                "Basic {}",
+                base64::engine::general_purpose::STANDARD.encode("ci-bot:s3cr3t-pat")
+            )
+        };
+        assert_eq!(
+            put.header("Authorization"),
+            Some(expected.as_str()),
+            "PUT carries the resolved basic-auth header: {:?}",
+            put.headers
+        );
+        assert_eq!(
+            put.header("X-Checksum-Sha256"),
+            Some(checksum.as_str()),
+            "PUT carries the default checksum header: {:?}",
+            put.headers
+        );
+    }
+
+    /// `method: POST` + a custom checksum header name + a custom header are
+    /// all honored: the artifact is POSTed (not PUT) and the configured
+    /// header names reach the wire.
+    #[test]
+    fn live_post_method_and_custom_headers() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (_addr, log) = spawn_scripted_responder_on(listener, |_| {
+            vec![
+                ScriptedRoute {
+                    method: "HEAD",
+                    path_pattern: "/repo/app-1.0.0.tar.gz",
+                    response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "POST",
+                    path_pattern: "/repo/app-1.0.0.tar.gz",
+                    response: "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n",
+                    times: None,
+                },
+            ]
+        });
+
+        let (ctx, _checksum, _name) = live_ctx(addr, MapEnvSource::new(), |e| {
+            e.method = Some("POST".to_string());
+            e.checksum_header = Some("X-My-Digest".to_string());
+            let mut h = std::collections::HashMap::new();
+            h.insert("X-Trace-Id".to_string(), "abc-123".to_string());
+            e.custom_headers = Some(h);
+        });
+        let log_handle = ctx.logger("uploads");
+        let summary = publish_uploads(&ctx, &log_handle).expect("live POST upload succeeds");
+        assert_eq!(summary.uploaded, 1);
+
+        let entries = log.lock().unwrap();
+        let post = entries
+            .iter()
+            .find(|e| e.method == "POST")
+            .expect("POST recorded");
+        assert!(
+            post.header("X-My-Digest").is_some(),
+            "custom checksum header name honored: {:?}",
+            post.headers
+        );
+        assert_eq!(
+            post.header("X-Trace-Id"),
+            Some("abc-123"),
+            "custom header reaches the wire: {:?}",
+            post.headers
+        );
+        // No basic-auth header: anonymous endpoint (no creds configured).
+        assert!(
+            post.header("Authorization").is_none(),
+            "anonymous endpoint sends no auth: {:?}",
+            post.headers
+        );
+    }
+
+    /// A non-2xx PUT response maps to a contextful error naming the failing
+    /// artifact / status; the publish fails rather than silently succeeding.
+    #[test]
+    fn live_put_5xx_maps_to_error() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (_addr, _log) = spawn_scripted_responder_on(listener, |_| {
+            vec![
+                ScriptedRoute {
+                    method: "HEAD",
+                    path_pattern: "/repo/app-1.0.0.tar.gz",
+                    response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "PUT",
+                    path_pattern: "/repo/app-1.0.0.tar.gz",
+                    // Always 500: the fast retry exhausts, then the error
+                    // surfaces.
+                    response: "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 5\r\n\r\nboom!",
+                    times: None,
+                },
+            ]
+        });
+
+        let env = MapEnvSource::new()
+            .with("UPLOAD_JARVISPRO_USERNAME", "u")
+            .with("UPLOAD_JARVISPRO_SECRET", "p");
+        let (ctx, _checksum, _name) = live_ctx(addr, env, |_| {});
+        let log_handle = ctx.logger("uploads");
+        let err = publish_uploads(&ctx, &log_handle).expect_err("5xx PUT must error");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("app-1.0.0.tar.gz") || chain.contains("500") || chain.contains("upload"),
+            "error names the failing upload / status: {chain}"
+        );
+    }
+
+    /// A templated `target:` URL (`{{ .Version }}` — the workspace / per-crate
+    /// path where each crate's rendered Version threads into the upload URL)
+    /// resolves before the request: the PUT routes to `/repo/1.0.0/app-…`.
+    #[test]
+    fn live_templated_target_renders_version_into_path() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (_addr, log) = spawn_scripted_responder_on(listener, |_| {
+            vec![
+                ScriptedRoute {
+                    method: "HEAD",
+                    path_pattern: "/repo/1.0.0/app-1.0.0.tar.gz",
+                    response: "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "PUT",
+                    path_pattern: "/repo/1.0.0/app-1.0.0.tar.gz",
+                    response: "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+                    times: None,
+                },
+            ]
+        });
+
+        let (ctx, _checksum, _name) = live_ctx(addr, MapEnvSource::new(), |e| {
+            e.target = format!("http://{addr}/repo/{{{{ .Version }}}}/");
+        });
+        let log_handle = ctx.logger("uploads");
+        let summary = publish_uploads(&ctx, &log_handle).expect("templated target upload succeeds");
+        assert_eq!(summary.uploaded, 1);
+
+        let entries = log.lock().unwrap();
+        assert_eq!(
+            count_calls(&entries, "PUT", "/repo/1.0.0/app-1.0.0.tar.gz"),
+            1,
+            "PUT routed to the rendered (Version-substituted) target: {entries:?}"
+        );
+    }
+}

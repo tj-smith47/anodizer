@@ -3447,6 +3447,454 @@ mod tests {
         let err = format!("{:#}", result.expect_err("409 + still-absent must error"));
         assert!(err.contains("409"), "original 409 status propagates: {err}");
     }
+
+    // ---- live keep_versions retention pruning (list + DELETE) ------------
+    //
+    // The prune path (`prune_cloudsmith_versions` → `list_cloudsmith_package_versions`
+    // → DELETE) was previously only exercised through the pure selector
+    // (`select_versions_to_prune`); these drive the real HTTP list+delete
+    // against the scripted responder. The package name pruning scopes to is
+    // captured from the step-3 response `name` field, so the upload routes
+    // must return a `name` for the prune to fire.
+
+    /// The exact list path reqwest produces for the prune `name:` query of
+    /// package `app` on page 1. `name:` → `name%3A`; `page`/`page_size` are
+    /// appended in builder order.
+    const PRUNE_LIST_PATH: &str = "/packages/myorg/myrepo/?query=name%3Aapp&page=1&page_size=100";
+
+    /// The three upload routes for a single `.deb` whose step-3 response
+    /// carries `slug_perm` + `name:"app"` so `keep_versions` pruning can scope
+    /// to that package. `republish=true` keeps the pre-check off the route
+    /// table.
+    fn upload_routes_with_name(base: &str, slug: &str, name: &str) -> Vec<ScriptedRoute> {
+        let body: &'static str = Box::leak(
+            http_json(&format!(r#"{{"slug_perm":"{slug}","name":"{name}"}}"#)).into_boxed_str(),
+        );
+        vec![
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/files/myorg/myrepo/",
+                response: Box::leak(files_create_ok(base, "id-u").into_boxed_str()),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/s3-presigned/",
+                response: PRESIGNED_204,
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/packages/myorg/myrepo/upload/deb/",
+                response: body,
+                times: None,
+            },
+        ]
+    }
+
+    /// A 204 No Content for a prune DELETE.
+    const DELETE_204: &str = "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n";
+
+    /// Run a `.deb` publish with `keep_versions: keep`, a current `Version`,
+    /// and a caller-supplied route table (list + DELETE routes layered on the
+    /// upload routes). Returns the request log.
+    fn run_prune(
+        keep: u32,
+        version: &str,
+        extra_routes: impl FnOnce(&str) -> Vec<ScriptedRoute> + Send + 'static,
+    ) -> Vec<RequestLog> {
+        let tmp = tempfile::tempdir().unwrap();
+        let art = tmp.path().join("app_1.0.0_amd64.deb");
+        std::fs::write(&art, b"deb-bytes").unwrap();
+
+        let (addr, log) = spawn_scripted_responder_with(move |addr| {
+            let base = format!("http://{addr}");
+            let mut routes = upload_routes_with_name(&base, "current-slug", "app");
+            routes.extend(extra_routes(&base));
+            routes
+        });
+        let base = format!("http://{addr}");
+
+        let cfg = CloudSmithConfig {
+            organization: Some("myorg".to_string()),
+            repository: Some("myrepo".to_string()),
+            formats: Some(vec!["deb".to_string()]),
+            republish: Some(StringOrBool::Bool(true)),
+            keep_versions: Some(keep),
+            ..Default::default()
+        };
+        let mut ctx = ctx_with_one_artifact(
+            cfg,
+            &base,
+            ArtifactKind::LinuxPackage,
+            "app_1.0.0_amd64.deb",
+            art.clone(),
+            Some(fast_retry_config()),
+        );
+        // The prune is gated on a known current version (an empty version
+        // disables it to protect the just-uploaded release).
+        ctx.template_vars_mut().set("Version", version);
+
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("ANODIZE_CLOUDSMITH_API_BASE", &base) };
+        let result = publish_to_cloudsmith(&ctx, &StageLogger::new("cloudsmith", Verbosity::Quiet));
+        unsafe { std::env::remove_var("ANODIZE_CLOUDSMITH_API_BASE") };
+        drop(_g);
+        result.expect("upload + prune should succeed");
+        let entries = log.lock().unwrap();
+        entries.clone()
+    }
+
+    /// keep_versions=2 over a list of 3 distinct versions ⇒ the single oldest
+    /// version's slug is DELETEd; the list query + delete are real HTTP, and
+    /// the upload's own version is always retained.
+    #[test]
+    #[serial_test::serial]
+    fn live_prune_lists_and_deletes_oldest_version() {
+        let list_body: &'static str = Box::leak(
+            http_json(
+                r#"[
+                    {"name":"app","slug_perm":"current-slug","version":"0.9.1","uploaded_at":"2026-06-14T00:00:00Z"},
+                    {"name":"app","slug_perm":"s-090","version":"0.9.0","uploaded_at":"2026-06-01T00:00:00Z"},
+                    {"name":"app","slug_perm":"s-080","version":"0.8.0","uploaded_at":"2026-05-01T00:00:00Z"}
+                ]"#,
+            )
+            .into_boxed_str(),
+        );
+        let log = run_prune(2, "0.9.1", move |_base| {
+            vec![
+                ScriptedRoute {
+                    method: "GET",
+                    path_pattern: PRUNE_LIST_PATH,
+                    response: list_body,
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "DELETE",
+                    path_pattern: "/packages/myorg/myrepo/s-080/",
+                    response: DELETE_204,
+                    times: None,
+                },
+            ]
+        });
+        // The list query fired exactly once (single short page).
+        assert_eq!(
+            count_calls(&log, "GET", PRUNE_LIST_PATH),
+            1,
+            "prune lists the package's versions: {log:?}"
+        );
+        // Only the oldest (0.8.0) is deleted; 0.9.1 (current) + 0.9.0 kept.
+        assert_eq!(
+            count_calls(&log, "DELETE", "/packages/myorg/myrepo/s-080/"),
+            1,
+            "oldest version's slug is DELETEd: {log:?}"
+        );
+        assert_eq!(
+            count_calls(&log, "DELETE", "/packages/myorg/myrepo/s-090/"),
+            0,
+            "second-newest is retained (within keep=2)"
+        );
+        assert_eq!(
+            count_calls(&log, "DELETE", "/packages/myorg/myrepo/current-slug/"),
+            0,
+            "the just-uploaded current version is never pruned"
+        );
+        // The DELETE carries the `Authorization: token <secret>` header that
+        // only header capture can observe.
+        let del = log
+            .iter()
+            .find(|e| e.method == "DELETE")
+            .expect("delete request recorded");
+        assert_eq!(
+            del.header("Authorization"),
+            Some("token fake-token"),
+            "prune DELETE carries the token auth header: {:?}",
+            del.headers
+        );
+    }
+
+    /// keep_versions pages through a >100-entry list: a full first page
+    /// (100 entries, all the current version) then a short second page
+    /// carrying the prunable old version. Two GETs prove pagination fired.
+    #[test]
+    #[serial_test::serial]
+    fn live_prune_paginates_until_short_page() {
+        // Page 1: exactly PAGE_SIZE (100) entries, all version 0.9.1
+        // (current), each a distinct slug. A full page forces a page-2 fetch.
+        let mut page1 = String::from("[");
+        for i in 0..100 {
+            if i > 0 {
+                page1.push(',');
+            }
+            page1.push_str(&format!(
+                r#"{{"name":"app","slug_perm":"cur-{i}","version":"0.9.1","uploaded_at":"2026-06-14T00:00:00Z"}}"#
+            ));
+        }
+        page1.push(']');
+        let page1_resp: &'static str = Box::leak(http_json(&page1).into_boxed_str());
+        let page2_resp: &'static str = Box::leak(
+            http_json(
+                r#"[{"name":"app","slug_perm":"old-1","version":"0.5.0","uploaded_at":"2026-01-01T00:00:00Z"}]"#,
+            )
+            .into_boxed_str(),
+        );
+
+        let log = run_prune(1, "0.9.1", move |_base| {
+            vec![
+                ScriptedRoute {
+                    method: "GET",
+                    path_pattern: "/packages/myorg/myrepo/?query=name%3Aapp&page=1&page_size=100",
+                    response: page1_resp,
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "GET",
+                    path_pattern: "/packages/myorg/myrepo/?query=name%3Aapp&page=2&page_size=100",
+                    response: page2_resp,
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "DELETE",
+                    path_pattern: "/packages/myorg/myrepo/old-1/",
+                    response: DELETE_204,
+                    times: None,
+                },
+            ]
+        });
+        assert_eq!(
+            count_calls(
+                &log,
+                "GET",
+                "/packages/myorg/myrepo/?query=name%3Aapp&page=1&page_size=100"
+            ),
+            1,
+            "page 1 fetched"
+        );
+        assert_eq!(
+            count_calls(
+                &log,
+                "GET",
+                "/packages/myorg/myrepo/?query=name%3Aapp&page=2&page_size=100"
+            ),
+            1,
+            "full first page forces a page-2 fetch (pagination): {log:?}"
+        );
+        assert_eq!(
+            count_calls(&log, "DELETE", "/packages/myorg/myrepo/old-1/"),
+            1,
+            "the old version found on page 2 is pruned"
+        );
+    }
+
+    /// A prune-list 4xx is non-fatal by contract: the upload already
+    /// succeeded, so the publish still returns Ok and NO DELETE is issued
+    /// (the warn-and-continue branch).
+    #[test]
+    #[serial_test::serial]
+    fn live_prune_list_4xx_is_nonfatal_and_deletes_nothing() {
+        let log = run_prune(2, "0.9.1", move |_base| {
+            vec![ScriptedRoute {
+                method: "GET",
+                path_pattern: PRUNE_LIST_PATH,
+                response: "HTTP/1.1 403 Forbidden\r\nContent-Length: 11\r\n\r\nno read acl",
+                times: None,
+            }]
+        });
+        // The upload itself still landed (run_prune asserts Ok); the prune
+        // list failed → nothing deleted.
+        assert_eq!(count_calls(&log, "GET", PRUNE_LIST_PATH), 1);
+        assert_eq!(
+            log.iter().filter(|e| e.method == "DELETE").count(),
+            0,
+            "a failed list must not delete anything: {log:?}"
+        );
+    }
+
+    /// A prune DELETE 4xx is counted as a failure but is STILL non-fatal:
+    /// the publish returns Ok (the upload succeeded) while the delete failure
+    /// only warns. Proves the destructive follow-up can never fail the stage.
+    #[test]
+    #[serial_test::serial]
+    fn live_prune_delete_4xx_is_nonfatal() {
+        let list_body: &'static str = Box::leak(
+            http_json(
+                r#"[
+                    {"name":"app","slug_perm":"current-slug","version":"0.9.1","uploaded_at":"2026-06-14T00:00:00Z"},
+                    {"name":"app","slug_perm":"s-070","version":"0.7.0","uploaded_at":"2026-04-01T00:00:00Z"}
+                ]"#,
+            )
+            .into_boxed_str(),
+        );
+        let log = run_prune(1, "0.9.1", move |_base| {
+            vec![
+                ScriptedRoute {
+                    method: "GET",
+                    path_pattern: PRUNE_LIST_PATH,
+                    response: list_body,
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "DELETE",
+                    path_pattern: "/packages/myorg/myrepo/s-070/",
+                    response: "HTTP/1.1 403 Forbidden\r\nContent-Length: 6\r\n\r\ndenied",
+                    times: None,
+                },
+            ]
+        });
+        // run_prune already asserted the publish returned Ok despite the 403.
+        assert_eq!(
+            count_calls(&log, "DELETE", "/packages/myorg/myrepo/s-070/"),
+            1,
+            "the delete was attempted (and failed non-fatally): {log:?}"
+        );
+    }
+
+    /// Templated `organization` / `repository` (the workspace-style path
+    /// where org/repo come from context vars rather than literals) render
+    /// before any URL is built: `{{ .ProjectName }}` resolves to the
+    /// project name so the upload routes to `/files/app-org/app-repo/`.
+    /// Top-level publishers like cloudsmith don't resolve per-crate config,
+    /// but they DO render their config values against the active context —
+    /// this pins that the rendered values reach the wire.
+    #[test]
+    #[serial_test::serial]
+    fn live_templated_org_repo_render_into_request_paths() {
+        let tmp = tempfile::tempdir().unwrap();
+        let art = tmp.path().join("app_1.0.0_amd64.deb");
+        std::fs::write(&art, b"deb-bytes").unwrap();
+
+        let (addr, log) = spawn_scripted_responder_with(move |addr| {
+            let base = format!("http://{addr}");
+            vec![
+                ScriptedRoute {
+                    method: "POST",
+                    path_pattern: "/files/app-org/app-repo/",
+                    response: Box::leak(files_create_ok(&base, "id-t").into_boxed_str()),
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "POST",
+                    path_pattern: "/s3-presigned/",
+                    response: PRESIGNED_204,
+                    times: None,
+                },
+                ScriptedRoute {
+                    method: "POST",
+                    path_pattern: "/packages/app-org/app-repo/upload/deb/",
+                    response: Box::leak(http_json(r#"{"slug_perm":"s"}"#).into_boxed_str()),
+                    times: None,
+                },
+            ]
+        });
+        let base = format!("http://{addr}");
+
+        let cfg = CloudSmithConfig {
+            // `app` is the project name seeded by ctx_with_one_artifact.
+            organization: Some("{{ .ProjectName }}-org".to_string()),
+            repository: Some("{{ .ProjectName }}-repo".to_string()),
+            formats: Some(vec!["deb".to_string()]),
+            republish: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        };
+        let ctx = ctx_with_one_artifact(
+            cfg,
+            &base,
+            ArtifactKind::LinuxPackage,
+            "app_1.0.0_amd64.deb",
+            art.clone(),
+            None,
+        );
+
+        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
+        unsafe { std::env::set_var("ANODIZE_CLOUDSMITH_API_BASE", &base) };
+        let result = publish_to_cloudsmith(&ctx, &StageLogger::new("cloudsmith", Verbosity::Quiet));
+        unsafe { std::env::remove_var("ANODIZE_CLOUDSMITH_API_BASE") };
+        drop(_g);
+
+        let uploaded = result.expect("templated org/repo upload ok");
+        assert_eq!(uploaded.len(), 1);
+        assert_eq!(uploaded[0].org, "app-org", "org rendered from template");
+        assert_eq!(uploaded[0].repo, "app-repo", "repo rendered from template");
+
+        let entries = log.lock().unwrap();
+        assert_eq!(
+            count_calls(&entries, "POST", "/files/app-org/app-repo/"),
+            1,
+            "files/create routed to the rendered org/repo: {entries:?}"
+        );
+        assert_eq!(
+            count_calls(&entries, "POST", "/packages/app-org/app-repo/upload/deb/"),
+            1,
+            "step-3 routed to the rendered org/repo"
+        );
+    }
+
+    /// The step-1 files/create, the step-3 packages/upload, and the pre-check
+    /// list all carry the `Authorization: token <secret>` header — asserted
+    /// on the wire via the responder's header capture (previously
+    /// unobservable). Drives republish=false so the pre-check GET is on the
+    /// route table too.
+    #[test]
+    #[serial_test::serial]
+    fn live_auth_header_present_on_every_cloudsmith_call() {
+        let (result, log) = run_deb_with_routes(
+            move |base| {
+                let base = base.to_string();
+                vec![
+                    precheck_route("[]"),
+                    ScriptedRoute {
+                        method: "POST",
+                        path_pattern: "/files/myorg/myrepo/",
+                        response: Box::leak(files_create_ok(&base, "id-a").into_boxed_str()),
+                        times: None,
+                    },
+                    ScriptedRoute {
+                        method: "POST",
+                        path_pattern: "/s3-presigned/",
+                        response: PRESIGNED_204,
+                        times: None,
+                    },
+                    ScriptedRoute {
+                        method: "POST",
+                        path_pattern: "/packages/myorg/myrepo/upload/deb/",
+                        response: Box::leak(http_json(r#"{"slug_perm":"s"}"#).into_boxed_str()),
+                        times: None,
+                    },
+                ]
+            },
+            |_| {},
+            None,
+        );
+        result.expect("upload ok");
+        // The pre-check, files/create, and step-3 each go to the Cloudsmith
+        // API and must carry the token auth header. The S3 presigned POST
+        // must NOT (it's an unauthenticated AWS form post).
+        for path in [
+            PRECHECK_PATH,
+            "/files/myorg/myrepo/",
+            "/packages/myorg/myrepo/upload/deb/",
+        ] {
+            let req = log
+                .iter()
+                .find(|e| e.path == path)
+                .unwrap_or_else(|| panic!("request to {path} recorded: {log:?}"));
+            assert_eq!(
+                req.header("Authorization"),
+                Some("token fake-token"),
+                "{path} must carry the cloudsmith token: {:?}",
+                req.headers
+            );
+        }
+        let s3 = log
+            .iter()
+            .find(|e| e.path == "/s3-presigned/")
+            .expect("presigned post recorded");
+        assert!(
+            s3.header("Authorization").is_none(),
+            "S3 presigned upload must NOT carry a cloudsmith auth header: {:?}",
+            s3.headers
+        );
+    }
 }
 
 #[cfg(test)]
