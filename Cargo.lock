@@ -392,7 +392,9 @@ dependencies = [
  "anodizer-core",
  "anodizer-stage-announce",
  "anodizer-stage-publish",
+ "anodizer-stage-snapcraft",
  "anyhow",
+ "serde_json",
 ]
 
 [[package]]

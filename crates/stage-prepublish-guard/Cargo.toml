@@ -17,8 +17,10 @@ readme = "README.md"
 anodizer-core.workspace = true
 anodizer-stage-publish.workspace = true
 anodizer-stage-announce.workspace = true
+anodizer-stage-snapcraft.workspace = true
 anyhow.workspace = true
 
 [dev-dependencies]
 anodizer-core = { workspace = true, features = ["test-helpers"] }
 anodizer-stage-publish = { workspace = true, features = ["test-support"] }
+serde_json.workspace = true

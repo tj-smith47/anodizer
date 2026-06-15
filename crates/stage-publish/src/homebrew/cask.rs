@@ -962,6 +962,16 @@ pub(super) fn generate_cask_from_context(
         .as_deref()
         .map(|s| crate::util::render_or_warn(ctx, log, "cask.custom_block", s))
         .transpose()?;
+    let app = cask_cfg
+        .app
+        .as_deref()
+        .map(|s| crate::util::render_or_warn(ctx, log, "cask.app", s))
+        .transpose()?;
+    let service = cask_cfg
+        .service
+        .as_deref()
+        .map(|s| crate::util::render_or_warn(ctx, log, "cask.service", s))
+        .transpose()?;
 
     let params = CaskParams {
         name: cask_name,
@@ -974,13 +984,13 @@ pub(super) fn generate_cask_from_context(
         url_extras_indented: &url_extras_arch,
         homepage: homepage.as_deref(),
         description: description.as_deref(),
-        app: cask_cfg.app.as_deref(),
+        app: app.as_deref(),
         binaries: &cask_binaries,
         caveats: caveats.as_deref(),
         zap_block: &zap_block,
         uninstall_block: &uninstall_block,
         custom_block: custom_block.as_deref(),
-        service: cask_cfg.service.as_deref(),
+        service: service.as_deref(),
         livecheck: super::formula::render_livecheck(cask_cfg.livecheck.as_ref(), log),
         manpages: cask_cfg.manpages.as_deref().unwrap_or(&empty_vec),
         completions_bash: cask_cfg

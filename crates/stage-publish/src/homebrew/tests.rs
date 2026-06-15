@@ -4179,10 +4179,10 @@ fn formula_string_fields_are_template_rendered() {
     );
 }
 
-/// Per-crate cask `homepage` / `description` / `caveats` / `custom_block`
-/// carrying `{{ .Tag }}` are rendered before reaching the cask body. Drives
-/// `generate_cask_from_context` (shared by the per-crate publish + standalone
-/// cask paths).
+/// Per-crate cask `homepage` / `description` / `caveats` / `custom_block` /
+/// `app` / `service` carrying `{{ .Tag }}` are rendered before reaching the
+/// cask body. Drives `generate_cask_from_context` (shared by the per-crate
+/// publish + standalone cask paths).
 #[test]
 fn per_crate_cask_string_fields_are_template_rendered() {
     use anodizer_core::config::HomebrewCaskConfig;
@@ -4191,6 +4191,8 @@ fn per_crate_cask_string_fields_are_template_rendered() {
         description: Some("mytool {{ .Tag }}".to_string()),
         caveats: Some("see {{ .Tag }}".to_string()),
         custom_block: Some("# {{ .Tag }}".to_string()),
+        app: Some("MyTool {{ .Tag }}.app".to_string()),
+        service: Some("run [opt_bin/\"mytool\", \"--tag={{ .Tag }}\"]".to_string()),
         ..Default::default()
     };
     let ctx = rendered_field_ctx(HomebrewConfig::default());
@@ -4202,6 +4204,11 @@ fn per_crate_cask_string_fields_are_template_rendered() {
     assert!(
         c.contains("v1.2.3"),
         "a per-crate cask string field did not resolve `{{{{ .Tag }}}}`:\n{c}"
+    );
+    // `service` specifically must carry its resolved value.
+    assert!(
+        c.contains("--tag=v1.2.3"),
+        "per-crate cask `service` did not resolve `{{{{ .Tag }}}}`:\n{c}"
     );
     assert!(
         !c.contains("{{"),
@@ -4222,6 +4229,8 @@ fn top_level_cask_string_fields_are_template_rendered() {
         description: Some("mytool {{ .Tag }}".to_string()),
         caveats: Some("see {{ .Tag }}".to_string()),
         custom_block: Some("# {{ .Tag }}".to_string()),
+        app: Some("MyTool {{ .Tag }}.app".to_string()),
+        service: Some("run [opt_bin/\"mytool\", \"--tag={{ .Tag }}\"]".to_string()),
         ..Default::default()
     };
     let config = Config {
@@ -4251,6 +4260,11 @@ fn top_level_cask_string_fields_are_template_rendered() {
     assert!(
         c.contains("v1.2.3"),
         "a top-level cask string field did not resolve `{{{{ .Tag }}}}`:\n{c}"
+    );
+    // `service` specifically must carry its resolved value in this distinct path.
+    assert!(
+        c.contains("--tag=v1.2.3"),
+        "top-level cask `service` did not resolve `{{{{ .Tag }}}}`:\n{c}"
     );
     assert!(
         !c.contains("{{"),

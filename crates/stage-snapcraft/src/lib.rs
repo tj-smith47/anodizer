@@ -14,6 +14,7 @@ mod command;
 mod generate;
 mod publish_stage;
 mod targets;
+mod validate;
 mod yaml;
 
 #[cfg(test)]
@@ -25,6 +26,7 @@ pub use command::{
 };
 pub use generate::generate_snap_yaml;
 pub use publish_stage::SnapcraftPublishStage;
+pub use validate::{TagResolver, validate_snapcraft_templates};
 
 /// Environment requirements for the snapcraft build stage: the `snapcraft`
 /// CLI (plus `unsquashfs`, which snapcraft's pack path depends on) whenever

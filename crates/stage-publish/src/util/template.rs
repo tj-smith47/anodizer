@@ -4,7 +4,7 @@
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anodizer_core::template::{self, TemplateVars, assert_no_unrendered};
+use anodizer_core::template::{self, TemplateVars, assert_no_unrendered_logged};
 use anyhow::{Result, bail};
 
 /// Render a `url_template` string with Tera, providing only the four
@@ -183,13 +183,11 @@ pub(crate) fn guard_no_unrendered(
     label: &str,
     text: &str,
 ) -> Result<()> {
-    let residual = assert_no_unrendered(text, label, ctx.render_is_strict(), |s| ctx.redact(s))?;
-    if let Some(r) = residual {
-        log.warn(&format!(
-            "{label}: unrendered template delimiter in generated manifest: {:?} \
-             (a user-supplied config field was emitted without template rendering)",
-            r.snippet
-        ));
-    }
-    Ok(())
+    assert_no_unrendered_logged(
+        text,
+        label,
+        ctx.render_is_strict(),
+        |s| ctx.redact(s),
+        |msg| log.warn(msg),
+    )
 }

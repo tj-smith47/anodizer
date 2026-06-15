@@ -109,6 +109,19 @@ fn guard_checks(
         errors.push(format!("{e:#}"));
     }
 
+    // Snapcraft is a build stage, not a generic publisher, so it is absent from
+    // `validate_publisher_schemas`. Render its snap.yaml strictly here so a
+    // residual unrendered template delimiter fails the release before the
+    // snapcraft build emits it (and before `snapcraft-publish` pushes to the
+    // store). Gated on the build stage that produces the manifest: a skipped
+    // build emits nothing to guard.
+    if !ctx.should_skip("snapcraft")
+        && let Err(e) =
+            anodizer_stage_snapcraft::validate_snapcraft_templates(ctx, log, resolve_tag)
+    {
+        errors.push(format!("{e:#}"));
+    }
+
     ctx.set_render_strict(prior_strict);
 
     if !errors.is_empty() {
@@ -118,7 +131,7 @@ fn guard_checks(
         );
     }
 
-    log.status("all publisher + announce templates render");
+    log.status("all publisher + announce + snapcraft templates render");
     Ok(())
 }
 
@@ -344,6 +357,75 @@ mod tests {
             metadata: bin_meta,
             size: None,
         });
+    }
+
+    fn add_linux_binary(ctx: &mut Context, crate_name: &str, binary: &str) {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use std::collections::HashMap;
+        let target = "x86_64-unknown-linux-gnu";
+        let mut bin_meta = HashMap::new();
+        bin_meta.insert("binary".to_string(), binary.to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            path: std::path::PathBuf::from(format!("/dist/{binary}")),
+            name: binary.to_string(),
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: bin_meta,
+            size: None,
+        });
+    }
+
+    /// (3c) A snapcraft.yaml that leaks an unrendered delimiter aborts the
+    /// guard in a NORMAL (non-`--strict`) release. Snapcraft is a build stage,
+    /// absent from the publisher validators; without this guard wiring the leak
+    /// would only WARN and still ship. The leak is smuggled through an app
+    /// `passthrough:` map (arbitrary YAML copied verbatim into snap.yaml — never
+    /// template-rendered), so it survives every rendered field and reaches the
+    /// chokepoint guard, which fails under the guard's strict pass.
+    #[test]
+    fn broken_snapcraft_manifest_template_aborts() {
+        use anodizer_core::config::{SnapcraftApp, SnapcraftConfig};
+        use std::collections::BTreeMap;
+
+        let mut passthrough = BTreeMap::new();
+        passthrough.insert(
+            "x-custom".to_string(),
+            serde_json::Value::String("{{ .Tag }}".to_string()),
+        );
+        let mut apps = BTreeMap::new();
+        apps.insert(
+            "widget".to_string(),
+            SnapcraftApp {
+                command: Some("widget".to_string()),
+                passthrough: Some(passthrough),
+                ..Default::default()
+            },
+        );
+        let snap_cfg = SnapcraftConfig {
+            name: Some("widget".to_string()),
+            summary: Some("a widget".to_string()),
+            description: Some("a test widget".to_string()),
+            apps: Some(apps),
+            ..Default::default()
+        };
+        let mut krate = crate_with("widget", "v{{ .Version }}", PublishConfig::default());
+        krate.snapcrafts = Some(vec![snap_cfg]);
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("widget")
+            .crates(vec![krate])
+            .build();
+        scope(&mut ctx, "1.0.0");
+        add_linux_binary(&mut ctx, "widget", "widget");
+
+        let err = run_guard(&mut ctx, &test_version_resolver())
+            .expect_err("a leaking snapcraft.yaml must abort before publish");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("snapcraft.yaml") && msg.contains("unrendered template delimiter"),
+            "names the manifest + residual: {msg}"
+        );
     }
 
     /// (3) A broken publisher manifest template (scoop) aborts the guard

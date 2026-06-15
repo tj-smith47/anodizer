@@ -41,10 +41,16 @@ fn find_unrendered_raw(text: &str) -> Option<String> {
     // Bound the captured region: prefer the matching `}}`, but never exceed
     // MAX_SNIPPET so a missing close delimiter can't dump the whole manifest.
     let rest = &text[open..];
-    let end = match rest.find("}}") {
+    let mut end = match rest.find("}}") {
         Some(close) => (close + 2).min(MAX_SNIPPET),
         None => rest.len().min(MAX_SNIPPET),
     };
+    // `end` is a raw byte index that the MAX_SNIPPET clamp can land mid-codepoint
+    // when an unbalanced `{{` is followed by multibyte content (emoji/CJK/accent)
+    // — slicing there would panic. Walk back to the nearest char boundary first.
+    while end > 0 && !rest.is_char_boundary(end) {
+        end -= 1;
+    }
     Some(rest[..end].to_string())
 }
 
@@ -75,14 +81,43 @@ pub fn assert_no_unrendered(
         Some(raw) => {
             let snippet = redact(&raw);
             if is_strict {
-                bail!(
-                    "{label}: unrendered template delimiter in generated manifest: {snippet:?} \
-                     (a user-supplied config field was emitted without template rendering)"
-                );
+                bail!("{}", unrendered_message(label, &snippet));
             }
             Ok(Some(Residual { snippet }))
         }
     }
+}
+
+/// [`assert_no_unrendered`] plus the lenient-mode warn emission, so the
+/// warn-message wording lives in exactly one place across every caller.
+///
+/// Strict mode bails (via [`assert_no_unrendered`]). Lenient mode invokes
+/// `warn` with the fully-formatted line — same text as the strict error body —
+/// describing the redacted residual snippet. The `warn` closure lets callers
+/// route through their own `StageLogger` (which `anodizer-core` cannot depend
+/// on at this layer without a cycle) while keeping the message canonical.
+///
+/// `label` and `redact` carry the same meaning as in [`assert_no_unrendered`].
+pub fn assert_no_unrendered_logged(
+    text: &str,
+    label: &str,
+    is_strict: bool,
+    redact: impl Fn(&str) -> String,
+    warn: impl FnOnce(&str),
+) -> Result<()> {
+    if let Some(residual) = assert_no_unrendered(text, label, is_strict, redact)? {
+        warn(&unrendered_message(label, &residual.snippet));
+    }
+    Ok(())
+}
+
+/// The single canonical phrasing for a residual-delimiter diagnostic, shared by
+/// the strict-bail path and the lenient-warn path so the two never drift.
+fn unrendered_message(label: &str, snippet: &str) -> String {
+    format!(
+        "{label}: unrendered template delimiter in generated manifest: {snippet:?} \
+         (a user-supplied config field was emitted without template rendering)"
+    )
 }
 
 #[cfg(test)]
@@ -162,5 +197,60 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(residual.snippet.len() <= MAX_SNIPPET, "snippet not bounded");
+    }
+
+    #[test]
+    fn unbalanced_open_delimiter_with_multibyte_does_not_panic() {
+        // An unbalanced `{{` followed by multibyte content straddling the
+        // MAX_SNIPPET byte clamp must not panic on a non-char-boundary slice.
+        // Each "日本語" is 9 bytes; ~30 copies overruns the 120-byte clamp so the
+        // cut lands mid-codepoint unless the boundary walk-back applies.
+        let runaway = format!("{{{{ {}", "日本語".repeat(40));
+        let residual = assert_no_unrendered(&runaway, "x", false, identity)
+            .unwrap()
+            .unwrap();
+        assert!(residual.snippet.len() <= MAX_SNIPPET, "snippet not bounded");
+        // Round-trips as valid UTF-8 (it is already a String, but assert the
+        // boundary walk-back left no partial codepoint by re-validating bytes).
+        assert!(std::str::from_utf8(residual.snippet.as_bytes()).is_ok());
+
+        // Also exercise the no-close-delimiter emoji case at the boundary.
+        let emoji = format!("{{{{ {}", "🦀".repeat(40));
+        let r2 = assert_no_unrendered(&emoji, "x", false, identity)
+            .unwrap()
+            .unwrap();
+        assert!(r2.snippet.len() <= MAX_SNIPPET);
+        assert!(std::str::from_utf8(r2.snippet.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn logged_helper_warns_once_in_lenient_and_bails_in_strict() {
+        let leaked = "url=\"https://x/{{ .Version }}/t\"";
+        // Lenient: warn fires exactly once with the canonical message.
+        let mut warns: Vec<String> = Vec::new();
+        assert_no_unrendered_logged(leaked, "scoop manifest", false, identity, |m| {
+            warns.push(m.to_string())
+        })
+        .unwrap();
+        assert_eq!(warns.len(), 1, "warn must fire exactly once");
+        assert!(warns[0].contains("scoop manifest"));
+        assert!(warns[0].contains("{{ .Version }}"));
+        assert!(warns[0].contains("unrendered template delimiter"));
+
+        // Strict: bails, warn never fires.
+        let mut strict_warns = 0usize;
+        let err = assert_no_unrendered_logged(leaked, "scoop manifest", true, identity, |_| {
+            strict_warns += 1
+        })
+        .unwrap_err();
+        assert_eq!(strict_warns, 0, "strict path must not warn");
+        // Strict error body and lenient warn body share the same wording.
+        assert!(err.to_string().contains("unrendered template delimiter"));
+        assert!(err.to_string().contains("scoop manifest"));
+
+        // Clean text: no warn, Ok.
+        let mut clean_warns = 0usize;
+        assert_no_unrendered_logged("clean", "x", false, identity, |_| clean_warns += 1).unwrap();
+        assert_eq!(clean_warns, 0);
     }
 }

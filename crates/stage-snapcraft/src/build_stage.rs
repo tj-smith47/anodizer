@@ -11,7 +11,7 @@ use anodizer_core::config::SnapcraftConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::stage::Stage;
-use anodizer_core::template::assert_no_unrendered;
+use anodizer_core::template::assert_no_unrendered_logged;
 
 use crate::arch::{is_valid_snap_arch, triple_to_snap_arch};
 use crate::command::snapcraft_command;
@@ -345,17 +345,14 @@ pub(crate) fn render_snap_yaml(
     // Final chokepoint: catch any user-supplied field that reached the manifest
     // without template rendering. Strict fails the build before publish; lenient
     // warns with the residual already redacted.
-    if let Some(residual) =
-        assert_no_unrendered(&yaml, "snapcraft.yaml", ctx.render_is_strict(), |s| {
-            ctx.redact(s)
-        })?
-    {
-        ctx.logger("snapcraft").warn(&format!(
-            "snapcraft.yaml: unrendered template delimiter in generated manifest: {:?} \
-             (a user-supplied config field was emitted without template rendering)",
-            residual.snippet
-        ));
-    }
+    let log = ctx.logger("snapcraft");
+    assert_no_unrendered_logged(
+        &yaml,
+        "snapcraft.yaml",
+        ctx.render_is_strict(),
+        |s| ctx.redact(s),
+        |msg| log.warn(msg),
+    )?;
     Ok(yaml)
 }
 
