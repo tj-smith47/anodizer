@@ -1068,9 +1068,9 @@ dockerhub:
   # full_description points at the same README.md the archives/release notes
   # ship, so the hub.docker.com page can never drift from the repo README.
   - required: false
-    username: "{{ Env.DOCKERHUB_USERNAME }}"
+    username: tsmthtj
     images:
-      - tj-smith47/anodizer
+      - tsmthtj/anodizer
     description: "Rust release tooling — drop-in GoReleaser parity + Rust extras."
     full_description:
       from_file:
