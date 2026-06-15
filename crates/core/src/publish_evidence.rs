@@ -360,7 +360,7 @@ pub struct NpmExtra {
 ///
 /// **CREDENTIAL CONTRACT**: no token fields — push and delete tokens are
 /// resolved at publish/rollback time from the env vars named by
-/// `push_token_env_var` (default `FURY_TOKEN`) and `api_token_env_var`
+/// `push_token_env_var` (default `FURY_PUSH_TOKEN`) and `api_token_env_var`
 /// (default `FURY_API_TOKEN`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]

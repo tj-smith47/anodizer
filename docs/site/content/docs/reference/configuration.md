@@ -428,9 +428,9 @@ Pushes deb / rpm / apk artifacts to `https://push.fury.io/<account>`. Authentica
 
 Default: `true` — GemFury is a Manager-group publisher (mutable but reversible via the delete API), so a failed publish aborts by default to avoid surprising the operator with a half-released version. Set to `false` to log failures but continue. |
 | `retain_on_rollback` | bool | — | When `true`, a triggered rollback leaves this publisher's work in place rather than attempting to undo it. Default `false`. |
-| `secret_name` | string | — | Environment variable name carrying the push token. Default `FURY_TOKEN`. The actual token VALUE is read from this env var at publish/rollback time. |
+| `secret_name` | string | — | Environment variable name carrying the push token. Default `FURY_PUSH_TOKEN`. The actual token VALUE is read from this env var at publish/rollback time. |
 | `skip` | StringOrBool | — | Template-conditional skip: if rendered result is `"true"`, skip this publisher entry. Accepts bool or template string. Accepts the legacy `disable:` spelling via serde alias for back-compat with imported `gemfury[].disable:` configs. |
-| `token` | string | — | Push token used as the HTTP Basic auth username (empty password). When unset, the env var named by `secret_name` (default `FURY_TOKEN`) is consulted at publish time. NEVER logged. |
+| `token` | string | — | Push token used as the HTTP Basic auth username (empty password). When unset, the env var named by `secret_name` (default `FURY_PUSH_TOKEN`) is consulted at publish time. NEVER logged. |
 
 ## `git`
 Git-level tag discovery and sorting settings.

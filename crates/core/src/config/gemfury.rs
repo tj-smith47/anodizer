@@ -34,12 +34,12 @@ pub struct GemFuryConfig {
     pub account: Option<String>,
 
     /// Push token used as the HTTP Basic auth username (empty password).
-    /// When unset, the env var named by `secret_name` (default `FURY_TOKEN`)
+    /// When unset, the env var named by `secret_name` (default `FURY_PUSH_TOKEN`)
     /// is consulted at publish time. NEVER logged.
     pub token: Option<String>,
 
     /// Environment variable name carrying the push token. Default
-    /// `FURY_TOKEN`. The actual token VALUE is read from this env var at
+    /// `FURY_PUSH_TOKEN`. The actual token VALUE is read from this env var at
     /// publish/rollback time.
     pub secret_name: Option<String>,
 

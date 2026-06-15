@@ -188,7 +188,7 @@ fn detect_gemfury_format_is_case_insensitive() {
 #[test]
 fn push_and_api_token_env_var_defaults() {
     let cfg = GemFuryConfig::default();
-    assert_eq!(push_token_env_var(&cfg), "FURY_TOKEN");
+    assert_eq!(push_token_env_var(&cfg), "FURY_PUSH_TOKEN");
     assert_eq!(api_token_env_var(&cfg), "FURY_API_TOKEN");
 }
 
@@ -210,7 +210,7 @@ fn push_and_api_token_env_var_overrides() {
 #[test]
 fn resolve_push_token_falls_back_to_env_var() {
     let mut ctx = ctx_with_packages();
-    let env = anodizer_core::MapEnvSource::new().with("FURY_TOKEN", "from-env");
+    let env = anodizer_core::MapEnvSource::new().with("FURY_PUSH_TOKEN", "from-env");
     ctx.set_env_source(env);
     let cfg = basic_cfg();
     assert_eq!(resolve_push_token(&ctx, &cfg).expect("token"), "from-env");
@@ -219,7 +219,7 @@ fn resolve_push_token_falls_back_to_env_var() {
 #[test]
 fn resolve_push_token_prefers_cfg_token() {
     let mut ctx = ctx_with_packages();
-    let env = anodizer_core::MapEnvSource::new().with("FURY_TOKEN", "from-env");
+    let env = anodizer_core::MapEnvSource::new().with("FURY_PUSH_TOKEN", "from-env");
     ctx.set_env_source(env);
     let cfg = GemFuryConfig {
         account: Some("acme".into()),
@@ -233,7 +233,7 @@ fn resolve_push_token_prefers_cfg_token() {
 fn resolve_api_token_independent_from_push_token() {
     let mut ctx = ctx_with_packages();
     let env = anodizer_core::MapEnvSource::new()
-        .with("FURY_TOKEN", "push-only")
+        .with("FURY_PUSH_TOKEN", "push-only")
         .with("FURY_API_TOKEN", "api-only");
     ctx.set_env_source(env);
     let cfg = basic_cfg();
@@ -246,14 +246,14 @@ fn resolve_api_token_independent_from_push_token() {
 #[test]
 fn publish_errors_when_token_missing_and_not_dry_run() {
     let mut ctx = ctx_with_packages();
-    // Isolates from process FURY_TOKEN in case a future sibling sets it globally.
+    // Isolates from process FURY_PUSH_TOKEN in case a future sibling sets it globally.
     ctx.set_env_source(anodizer_core::MapEnvSource::new());
     ctx.config.gemfury = Some(vec![basic_cfg()]);
     let log = ctx.logger("publish");
     let err = run_publish(&ctx, &log).expect_err("missing token must err");
     let msg = format!("{err:#}");
     assert!(
-        msg.contains("push token is required") && msg.contains("FURY_TOKEN"),
+        msg.contains("push token is required") && msg.contains("FURY_PUSH_TOKEN"),
         "expected token diagnostic, got: {msg}"
     );
 }
@@ -427,7 +427,7 @@ fn gemfury_evidence_carries_no_token_value() {
                 package: "demo_1.2.3_amd64.deb".into(),
                 version: "1.2.3".into(),
                 format: "deb".into(),
-                push_token_env_var: "FURY_TOKEN".into(),
+                push_token_env_var: "FURY_PUSH_TOKEN".into(),
                 api_token_env_var: "FURY_API_TOKEN".into(),
             }],
         },
@@ -441,7 +441,10 @@ fn gemfury_evidence_carries_no_token_value() {
     // Positive shape: operator coordinates present.
     assert!(s.contains("\"account\":\"acme\""), "{s}");
     assert!(s.contains("\"version\":\"1.2.3\""), "{s}");
-    assert!(s.contains("\"push_token_env_var\":\"FURY_TOKEN\""), "{s}");
+    assert!(
+        s.contains("\"push_token_env_var\":\"FURY_PUSH_TOKEN\""),
+        "{s}"
+    );
     assert!(
         s.contains("\"api_token_env_var\":\"FURY_API_TOKEN\""),
         "{s}"
@@ -471,7 +474,7 @@ fn gemfury_rollback_without_api_token_falls_back_to_warn() {
                 package: "demo.deb".into(),
                 version: "1.2.3".into(),
                 format: "deb".into(),
-                push_token_env_var: "FURY_TOKEN".into(),
+                push_token_env_var: "FURY_PUSH_TOKEN".into(),
                 api_token_env_var: "FURY_API_TOKEN".into(),
             }],
         },
@@ -730,7 +733,7 @@ fn gemfury_push_conflict_is_idempotent_success() {
         .tag("v1.2.3")
         .build();
     ctx.config = config;
-    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_TOKEN", "fake-token"));
+    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_PUSH_TOKEN", "fake-token"));
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::LinuxPackage,
         path: art_path.clone(),
@@ -794,7 +797,7 @@ fn gemfury_push_genuine_failure_still_errors() {
         .tag("v1.2.3")
         .build();
     ctx.config = config;
-    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_TOKEN", "fake-token"));
+    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_PUSH_TOKEN", "fake-token"));
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::LinuxPackage,
         path: art_path.clone(),
@@ -855,7 +858,7 @@ fn gemfury_recorded_rollback_target_uses_derived_package_name() {
         .tag("v1.2.3")
         .build();
     ctx.config = config;
-    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_TOKEN", "fake-token"));
+    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_PUSH_TOKEN", "fake-token"));
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::LinuxPackage,
         path: art_path.clone(),
@@ -929,7 +932,7 @@ fn gemfury_partial_push_records_landed_target_on_later_failure() {
         .tag("v1.2.3")
         .build();
     ctx.config = config;
-    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_TOKEN", "fake-token"));
+    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_PUSH_TOKEN", "fake-token"));
     for (path, name, krate) in [
         (&art1, "alpha_1.2.3_amd64.deb", "alpha"),
         (&art2, "beta_1.2.3_amd64.deb", "beta"),

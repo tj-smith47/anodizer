@@ -181,7 +181,7 @@ jobs:
           DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
           DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
           FURY_API_TOKEN: ${{ secrets.FURY_API_TOKEN }}
-          FURY_TOKEN: ${{ secrets.FURY_TOKEN }}
+          FURY_PUSH_TOKEN: ${{ secrets.FURY_PUSH_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -4,7 +4,7 @@
 //!
 //! Token handling:
 //!   * Push token resolved from `cfg.token` (templated) or the env var
-//!     named by `secret_name` (default `FURY_TOKEN`). NEVER logged.
+//!     named by `secret_name` (default `FURY_PUSH_TOKEN`). NEVER logged.
 //!   * API (delete) token resolved from `cfg.api_token` or the env var
 //!     named by `api_secret_name` (default `FURY_API_TOKEN`). Used only
 //!     by rollback.
@@ -44,7 +44,7 @@ pub struct GemFuryTarget {
 }
 
 /// Default env var name carrying the push token.
-const DEFAULT_PUSH_TOKEN_ENV: &str = "FURY_TOKEN";
+const DEFAULT_PUSH_TOKEN_ENV: &str = "FURY_PUSH_TOKEN";
 /// Default env var name carrying the API (delete) token.
 const DEFAULT_API_TOKEN_ENV: &str = "FURY_API_TOKEN";
 /// Base URL for the push endpoint. The account name is appended per call.

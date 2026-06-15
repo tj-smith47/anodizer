@@ -1121,7 +1121,7 @@ cloudsmiths:
 
 # GemFury publisher — pushes the same nfpm deb/rpm/apk artifacts CloudSmith
 # gets to https://push.fury.io/<account>, giving users an `apt`/`yum`/`apk`
-# source hosted on fury.io. Push auth reads FURY_TOKEN (HTTP Basic username,
+# source hosted on fury.io. Push auth reads FURY_PUSH_TOKEN (HTTP Basic username,
 # empty password); rollback DELETE reads FURY_API_TOKEN. `required: true` is
 # the publisher default (reversible via the delete API) but stated explicitly
 # so a failed push aborts rather than half-releasing.

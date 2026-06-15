@@ -22,7 +22,7 @@ gemfury:
   - account: myorg
 ```
 
-`FURY_TOKEN` must be exported in the publish environment (or set
+`FURY_PUSH_TOKEN` must be exported in the publish environment (or set
 `gemfury[].token` to a templated value). The token is sent as the HTTP
 Basic auth username (empty password) — the conventional Fury push
 surface.
@@ -47,7 +47,7 @@ gemfury:
     account: myorg                    # required; Gemfury account (templated)
     ids: [demo]                       # optional; filter by build IDs
     formats: [deb, rpm, apk]          # optional; default ["apk","deb","rpm"]
-    secret_name: FURY_TOKEN           # optional; env var for the push token
+    secret_name: FURY_PUSH_TOKEN      # optional; env var for the push token
     api_secret_name: FURY_API_TOKEN   # optional; env var for the delete token
     token: "{{ Env.MY_FURY_PUSH }}"  # optional; cfg-level templated push token
     api_token: "{{ Env.MY_FURY_API }}" # optional; cfg-level templated API token
@@ -60,7 +60,7 @@ gemfury:
 
 | Variable | Description |
 |----------|-------------|
-| `FURY_TOKEN` | Push token, sent as HTTP Basic auth username. Override the env-var name via `secret_name`. |
+| `FURY_PUSH_TOKEN` | Push token, sent as HTTP Basic auth username. Override the env-var name via `secret_name`. |
 | `FURY_API_TOKEN` | API token for the rollback `DELETE` endpoint. Override the env-var name via `api_secret_name`. |
 
 The push and API tokens are usually different on Fury (push tokens are
@@ -96,7 +96,7 @@ and only require the wider API token in the rollback flow.
 | `account` | string | **required** | Gemfury account name (templated) |
 | `ids` | list | none | Build-ID filter |
 | `formats` | list | `["apk", "deb", "rpm"]` | Package format filter |
-| `secret_name` | string | `FURY_TOKEN` | Env var name for the push token |
+| `secret_name` | string | `FURY_PUSH_TOKEN` | Env var name for the push token |
 | `api_secret_name` | string | `FURY_API_TOKEN` | Env var name for the delete token |
 | `token` | string | none | Cfg-supplied push token (templated) |
 | `api_token` | string | none | Cfg-supplied API/delete token (templated) |

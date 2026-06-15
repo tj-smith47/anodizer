@@ -6232,7 +6232,7 @@
           ]
         },
         "secret_name": {
-          "description": "Environment variable name carrying the push token. Default `FURY_TOKEN`. The actual token VALUE is read from this env var at publish/rollback time.",
+          "description": "Environment variable name carrying the push token. Default `FURY_PUSH_TOKEN`. The actual token VALUE is read from this env var at publish/rollback time.",
           "default": null,
           "type": [
             "string",
@@ -6252,7 +6252,7 @@
           ]
         },
         "token": {
-          "description": "Push token used as the HTTP Basic auth username (empty password). When unset, the env var named by `secret_name` (default `FURY_TOKEN`) is consulted at publish time. NEVER logged.",
+          "description": "Push token used as the HTTP Basic auth username (empty password). When unset, the env var named by `secret_name` (default `FURY_PUSH_TOKEN`) is consulted at publish time. NEVER logged.",
           "default": null,
           "type": [
             "string",
