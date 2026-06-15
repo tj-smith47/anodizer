@@ -88,6 +88,37 @@ fn verdict_update_when_filematch_overlaps_but_name_and_fields_differ() {
     assert_eq!(verdict(CATALOG, &want).unwrap(), Verdict::Update);
 }
 
+/// An empty/absent `fileMatch` can never overlap any catalog entry (the
+/// intersection is vacuously empty), so the verdict is always `Add` — never a
+/// false `Update`/`NoOp` against an unrelated entry. Exercises the
+/// `filematch_overlaps` vacuous-false branch via the public `verdict` surface.
+#[test]
+fn verdict_add_when_desired_filematch_is_empty_or_absent() {
+    // Desired entry carries an empty `fileMatch` array.
+    let empty_fm = serde_json::json!({
+        "name": "Anodizer", "description": "d", "fileMatch": [],
+        "url": "https://tj-smith47.github.io/anodizer/schema.json"
+    });
+    assert_eq!(verdict(CATALOG, &empty_fm).unwrap(), Verdict::Add);
+
+    // Desired entry omits `fileMatch` entirely (treated as empty).
+    let no_fm = serde_json::json!({
+        "name": "Anodizer", "description": "d",
+        "url": "https://tj-smith47.github.io/anodizer/schema.json"
+    });
+    assert_eq!(verdict(CATALOG, &no_fm).unwrap(), Verdict::Add);
+
+    // A catalog entry whose own `fileMatch` is empty is likewise never matched
+    // by a real desired glob.
+    let cat = r#"{ "schemas": [
+        { "name": "NoGlobs", "description": "x", "fileMatch": [], "url": "https://x/n.json" }
+    ] }"#;
+    let want = serde_json::json!({
+        "name": "Other", "description": "y", "fileMatch": ["only.yaml"], "url": "https://x/o.json"
+    });
+    assert_eq!(verdict(cat, &want).unwrap(), Verdict::Add);
+}
+
 #[test]
 fn slugify_lowercases_and_hyphenates() {
     assert_eq!(slugify("Anodizer"), "anodizer");

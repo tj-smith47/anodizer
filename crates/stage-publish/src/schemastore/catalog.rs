@@ -80,6 +80,33 @@ pub(crate) fn verdict(catalog_json: &str, want: &Value) -> anyhow::Result<Verdic
     }
 }
 
+/// Extract the existing `versions` map of the catalog entry that overlaps
+/// `desired_file_match` on `fileMatch`, if present. Returns `None` when no
+/// entry overlaps or the matched entry has no `versions`; `Some(Err)` only on
+/// malformed catalog JSON.
+///
+/// Identity is by `fileMatch`-overlap, not `name`, so a versioned-vendor entry
+/// whose upstream `name` drifted in case still has its prior versions carried
+/// forward — a name-keyed lookup would miss it, drop the map, and rebuild from
+/// scratch, silently losing older versioned URLs (which SchemaStore CI then
+/// rejects as unresolvable listed files).
+pub(crate) fn upstream_versions_by_file_match(
+    catalog_json: &str,
+    desired_file_match: &[String],
+) -> Option<anyhow::Result<Map<String, Value>>> {
+    let cat: Value = match serde_json::from_str(catalog_json) {
+        Ok(v) => v,
+        Err(e) => return Some(Err(e.into())),
+    };
+    let entry = cat
+        .get("schemas")
+        .and_then(Value::as_array)?
+        .iter()
+        .find(|e| filematch_overlaps(e, desired_file_match))?;
+    let versions = entry.get("versions").and_then(Value::as_object)?;
+    Some(Ok(versions.clone()))
+}
+
 /// Build a catalog entry object with keys in SchemaStore's prettier order
 /// (`name`, `description`, `fileMatch`, `url`, then optional `versions`).
 ///

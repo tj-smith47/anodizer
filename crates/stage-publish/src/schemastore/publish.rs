@@ -136,7 +136,7 @@ pub(crate) fn plan_schema(
             // their catalog references (SchemaStore CI requires every listed
             // `versions` URL to resolve to a present file).
             let prior = catalog_json
-                .and_then(|c| upstream_versions(c, &entry.name))
+                .and_then(|c| catalog::upstream_versions_by_file_match(c, &entry.file_match))
                 .transpose()?;
             let versions = catalog::merge_versions(prior.as_ref(), ver, &url);
             (
@@ -261,26 +261,6 @@ pub(crate) fn schema_change_needed(
     }
 
     false
-}
-
-/// Extract a catalog entry's existing `versions` map by `name`, if present.
-/// Returns `None` when the entry is absent or has no `versions`; `Some(Err)`
-/// only on malformed catalog JSON.
-fn upstream_versions(
-    catalog_json: &str,
-    name: &str,
-) -> Option<anyhow::Result<serde_json::Map<String, Value>>> {
-    let cat: Value = match serde_json::from_str(catalog_json) {
-        Ok(v) => v,
-        Err(e) => return Some(Err(e.into())),
-    };
-    let entry = cat
-        .get("schemas")
-        .and_then(Value::as_array)?
-        .iter()
-        .find(|e| e.get("name").and_then(Value::as_str) == Some(name))?;
-    let versions = entry.get("versions").and_then(Value::as_object)?;
-    Some(Ok(versions.clone()))
 }
 
 /// Effective schemas after the per-entry `skip` and `if:` gates, paired with
@@ -944,14 +924,21 @@ fn schemastore_evidence(fork_owner: &str, branch: &str) -> PublishEvidence {
 /// The verb is the per-plan [`catalog::Verdict`] (`Add` vs `Update`), so the
 /// message states truthfully what the PR does — "Add if it doesn't exist,
 /// update if it does." A plan whose verdict is `None` (no upstream catalog was
-/// available, e.g. a forced run) is treated as an add; `NoOp` plans never reach
-/// here (they are filtered before `applied` is built).
+/// available, e.g. a forced run) is treated as an add.
+///
+/// `NoOp` routes to "Update", not "Add": the `applied` set is gated on
+/// `schema_change_needed`, not the catalog verdict, so a vendor plan whose
+/// catalog entry is unchanged (`NoOp`) but whose vendored FILE drifted still
+/// reaches here — that is a file-content refresh of an existing registration,
+/// not a new add.
 fn schemastore_summary(applied: &[SchemaPlan]) -> String {
     let mut adds: Vec<&str> = Vec::new();
     let mut updates: Vec<&str> = Vec::new();
     for p in applied {
         match p.verdict {
-            Some(catalog::Verdict::Update) => updates.push(p.name.as_str()),
+            Some(catalog::Verdict::Update) | Some(catalog::Verdict::NoOp) => {
+                updates.push(p.name.as_str())
+            }
             _ => adds.push(p.name.as_str()),
         }
     }
@@ -1109,6 +1096,42 @@ mod tests {
         assert!(
             versions.contains_key("0.4.1"),
             "prior version carried forward"
+        );
+        assert!(versions.contains_key("0.4.2"), "new version added");
+    }
+
+    /// Prior versions must carry forward even when the upstream entry's `name`
+    /// drifts in case: the lookup matches on `fileMatch`-overlap, not `name`,
+    /// so a name-keyed lookup (which would miss this entry, reset the map, and
+    /// drop older versioned URLs SchemaStore CI then rejects) is regressed
+    /// against here.
+    #[test]
+    fn plan_versioned_vendor_carries_prior_versions_despite_name_case_drift() {
+        let e = vendor_entry(); // desired name "cfgd-config", fileMatch ["cfgd.yaml"]
+        let prior = serde_json::json!({
+            "name": "Cfgd-Config", // upstream drifted in case
+            "description": "cfgd machine configuration",
+            "fileMatch": ["cfgd.yaml"],
+            "url": "https://www.schemastore.org/cfgd-config-0.4.1.json",
+            "versions": { "0.4.1": "https://www.schemastore.org/cfgd-config-0.4.1.json" },
+        });
+        let cat = catalog_with(&[prior]);
+        let plan = plan_schema(
+            &e,
+            "cfgd machine configuration",
+            true,
+            Some("0.4.2"),
+            Some(&cat),
+        )
+        .unwrap();
+        let versions = plan
+            .desired_entry
+            .get("versions")
+            .and_then(Value::as_object)
+            .unwrap();
+        assert!(
+            versions.contains_key("0.4.1"),
+            "prior version must carry forward across a name-case drift"
         );
         assert!(versions.contains_key("0.4.2"), "new version added");
     }
@@ -2185,6 +2208,8 @@ mod tests {
     /// The PR title/commit verb is derived per-plan from its [`catalog::Verdict`]:
     /// all-Add ⇒ "Add", all-Update ⇒ "Update", mixed ⇒ "Add a; update b". This
     /// is the user's contract — "Add if it doesn't exist, update if it does."
+    /// A `NoOp` plan (catalog entry unchanged but vendored file refreshed; it
+    /// still reaches `applied` via the file-diff gate) groups under "Update".
     #[test]
     fn summary_derives_verb_from_each_plans_verdict() {
         let plan = |name: &str, verdict| SchemaPlan {
@@ -2204,12 +2229,18 @@ mod tests {
             schemastore_summary(&[plan("Bbb", catalog::Verdict::Update)]),
             "Update Bbb"
         );
+        // A NoOp plan that reached `applied` is a vendor file refresh ⇒ "Update".
+        assert_eq!(
+            schemastore_summary(&[plan("Ccc", catalog::Verdict::NoOp)]),
+            "Update Ccc"
+        );
         assert_eq!(
             schemastore_summary(&[
                 plan("Aaa", catalog::Verdict::Add),
                 plan("Bbb", catalog::Verdict::Update),
+                plan("Ccc", catalog::Verdict::NoOp),
             ]),
-            "Add Aaa; update Bbb"
+            "Add Aaa; update Bbb, Ccc"
         );
     }
 
@@ -2333,7 +2364,8 @@ mod tests {
         // catalog; a malformed catalog must surface as `Some(Err)` (which
         // `plan_schema` `?`-propagates) rather than silently dropping the
         // carry-forward and orphaning older versioned files.
-        let got = upstream_versions("{ not json", "cfgd-config");
+        let got =
+            catalog::upstream_versions_by_file_match("{ not json", &["cfgd.yaml".to_string()]);
         match got {
             Some(Err(_)) => {}
             other => panic!("malformed catalog must yield Some(Err); got {other:?}"),
@@ -2342,10 +2374,11 @@ mod tests {
 
     #[test]
     fn upstream_versions_none_when_entry_absent_or_unversioned() {
+        let fm = ["cfgd.yaml".to_string()];
         // Entry absent ⇒ None (no prior versions to carry).
         let empty = catalog_with(&[]);
         assert!(
-            upstream_versions(&empty, "cfgd-config").is_none(),
+            catalog::upstream_versions_by_file_match(&empty, &fm).is_none(),
             "absent entry must yield None, not an error"
         );
         // Entry present but with no `versions` map ⇒ None.
@@ -2356,7 +2389,7 @@ mod tests {
             "url": "https://www.schemastore.org/cfgd-config.json",
         })]);
         assert!(
-            upstream_versions(&no_versions, "cfgd-config").is_none(),
+            catalog::upstream_versions_by_file_match(&no_versions, &fm).is_none(),
             "an entry without a versions map must yield None"
         );
     }
