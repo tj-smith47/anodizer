@@ -84,7 +84,7 @@ edition = "2024"
 # `{integer}::is_multiple_of`, both stabilized in 1.87 — clippy's
 # incompatible_msrv lint is the authoritative gate for this floor.
 rust-version = "1.87"
-license = "MIT"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/tj-smith47/anodizer"
 homepage = "https://tj-smith47.github.io/anodizer"
 documentation = "https://tj-smith47.github.io/anodizer"

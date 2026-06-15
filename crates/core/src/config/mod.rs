@@ -452,6 +452,21 @@ impl Config {
             .or_else(|| self.meta_description_for(self.primary_crate_name()?))
     }
 
+    /// Project license: top-level `metadata.license` wins, else the primary
+    /// crate's `Cargo.toml`-derived license. For the `{{ Metadata.License }}`
+    /// template var and project-level publishers with no owning crate.
+    pub fn meta_license_project(&self) -> Option<&str> {
+        self.meta_license()
+            .or_else(|| self.meta_license_for(self.primary_crate_name()?))
+    }
+
+    /// Project documentation URL: top-level `metadata.documentation` wins, else
+    /// the primary crate's `Cargo.toml`-derived documentation URL.
+    pub fn meta_documentation_project(&self) -> Option<&str> {
+        self.meta_documentation()
+            .or_else(|| self.meta_documentation_for(self.primary_crate_name()?))
+    }
+
     /// Project homepage from `metadata.homepage` (top-level YAML only).
     pub fn meta_homepage(&self) -> Option<&str> {
         self.metadata.as_ref().and_then(|m| m.homepage.as_deref())

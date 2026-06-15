@@ -1316,22 +1316,28 @@ impl Context {
             commit_author,
         ) = {
             let meta = self.config.metadata.as_ref();
-            let description = meta
-                .and_then(|m| m.description.as_deref())
+            // Description / homepage / documentation / license resolve through
+            // the project-level fallback: top-level `metadata.*` wins, else the
+            // primary crate's `Cargo.toml`-derived value. This keeps
+            // `{{ Metadata.* }}` single-sourced with the per-publisher
+            // `meta_*_for` resolvers, so dropping a redundant `metadata.license`
+            // (derivable from Cargo.toml) does not silently empty the var.
+            let description = self
+                .config
+                .meta_description_project()
                 .unwrap_or("")
                 .to_string();
-            let homepage = meta
-                .and_then(|m| m.homepage.as_deref())
+            let homepage = self
+                .config
+                .meta_homepage_project()
                 .unwrap_or("")
                 .to_string();
-            let documentation = meta
-                .and_then(|m| m.documentation.as_deref())
+            let documentation = self
+                .config
+                .meta_documentation_project()
                 .unwrap_or("")
                 .to_string();
-            let license = meta
-                .and_then(|m| m.license.as_deref())
-                .unwrap_or("")
-                .to_string();
+            let license = self.config.meta_license_project().unwrap_or("").to_string();
             let maintainers: Vec<String> = meta
                 .and_then(|m| m.maintainers.as_ref())
                 .cloned()
@@ -2433,6 +2439,76 @@ mod tests {
 
         let ts = ctx.render_template("{{ Metadata.ModTimestamp }}").unwrap();
         assert_eq!(ts, "1234567890");
+    }
+
+    #[test]
+    fn test_populate_metadata_var_license_falls_back_to_derived() {
+        // No top-level `metadata.license`: the var must derive from the
+        // primary crate's Cargo.toml-derived license (here, a dual SPDX
+        // expression), not render empty.
+        let mut config = Config::default();
+        config.crates = vec![crate::config::CrateConfig {
+            name: "anodizer".to_string(),
+            ..Default::default()
+        }];
+        config.derived_metadata.insert(
+            "anodizer".to_string(),
+            crate::config::MetadataConfig {
+                description: Some("Derived desc".to_string()),
+                homepage: Some("https://derived.example".to_string()),
+                documentation: Some("https://derived.docs".to_string()),
+                license: Some("MIT OR Apache-2.0".to_string()),
+                ..Default::default()
+            },
+        );
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.populate_metadata_var().unwrap();
+
+        assert_eq!(
+            ctx.render_template("{{ Metadata.License }}").unwrap(),
+            "MIT OR Apache-2.0"
+        );
+        assert_eq!(
+            ctx.render_template("{{ Metadata.Description }}").unwrap(),
+            "Derived desc"
+        );
+        assert_eq!(
+            ctx.render_template("{{ Metadata.Homepage }}").unwrap(),
+            "https://derived.example"
+        );
+        assert_eq!(
+            ctx.render_template("{{ Metadata.Documentation }}").unwrap(),
+            "https://derived.docs"
+        );
+    }
+
+    #[test]
+    fn test_populate_metadata_var_top_level_license_wins_over_derived() {
+        // Explicit top-level `metadata.license` still wins over the derived
+        // Cargo.toml value.
+        let mut config = Config::default();
+        config.crates = vec![crate::config::CrateConfig {
+            name: "anodizer".to_string(),
+            ..Default::default()
+        }];
+        config.derived_metadata.insert(
+            "anodizer".to_string(),
+            crate::config::MetadataConfig {
+                license: Some("MIT OR Apache-2.0".to_string()),
+                ..Default::default()
+            },
+        );
+        config.metadata = Some(crate::config::MetadataConfig {
+            license: Some("GPL-3.0".to_string()),
+            ..Default::default()
+        });
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.populate_metadata_var().unwrap();
+
+        assert_eq!(
+            ctx.render_template("{{ Metadata.License }}").unwrap(),
+            "GPL-3.0"
+        );
     }
 
     #[test]

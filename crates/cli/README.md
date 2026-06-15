@@ -13,7 +13,7 @@ The release pipeline built for Rust — workspace-aware, reproducible, and signe
 [![Docs](https://github.com/tj-smith47/anodizer/actions/workflows/docs.yml/badge.svg)](https://github.com/tj-smith47/anodizer/actions/workflows/docs.yml)
 [![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/tj-smith47/anodizer/badges/coverage.json)](https://github.com/tj-smith47/anodizer/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/anodizer.svg)](https://crates.io/crates/anodizer)
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 </div>
 
@@ -291,4 +291,13 @@ Operator guides:
 
 ## License
 
-MIT
+Licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or https://www.apache.org/licenses/LICENSE-2.0)
+- MIT license ([LICENSE-MIT](LICENSE-MIT) or https://opensource.org/licenses/MIT)
+
+at your option.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in the work by you, as defined in the Apache-2.0 license, shall be
+dual licensed as above, without any additional terms or conditions.

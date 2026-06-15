@@ -558,9 +558,11 @@ mod tests {
 
     /// A choco config that sets `repository` but leaves `license_url`,
     /// `project_source_url`, and `bug_tracker_url` UNSET — exercising the
-    /// derived-default path. `license` is the canonical Rust compound SPDX,
-    /// proving the licenseUrl is derived (a GitHub blob URL) rather than the
-    /// 404ing `opensource.org` synthesis the audit flagged.
+    /// derived-default path. `license` is a single SPDX identifier so the
+    /// derived `<licenseUrl>` (a GitHub LICENSE blob URL) is emitted, proving
+    /// it is derived rather than the 404ing `opensource.org` synthesis the
+    /// audit flagged. (A compound SPDX expression suppresses `<licenseUrl>`
+    /// entirely — covered by the `publish::tests` unit tests.)
     fn derive_defaults_choco_cfg(pkg: &str) -> ChocolateyConfig {
         ChocolateyConfig {
             name: Some(pkg.to_string()),
@@ -571,7 +573,7 @@ mod tests {
             }),
             authors: Some("Acme Corp".to_string()),
             description: Some("A widget management tool".to_string()),
-            license: Some("MIT OR Apache-2.0".to_string()),
+            license: Some("MIT".to_string()),
             ..Default::default()
         }
     }
@@ -609,8 +611,8 @@ mod tests {
             "must never synthesize an opensource.org licenseUrl: {nuspec}"
         );
         assert!(
-            nuspec.contains("<license type=\"expression\">MIT OR Apache-2.0</license>"),
-            "compound SPDX must land as a license expression: {nuspec}"
+            nuspec.contains("<license type=\"expression\">MIT</license>"),
+            "SPDX license must land as a license expression: {nuspec}"
         );
         assert!(
             nuspec.contains(

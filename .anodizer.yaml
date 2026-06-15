@@ -58,7 +58,6 @@ metadata:
   # Drives the OCI `org.opencontainers.image.documentation` label and the
   # `{{ Metadata.Documentation }}` template var.
   documentation: "https://tj-smith47.github.io/anodizer"
-  license: MIT
   maintainers:
     - "TJ Smith"
   mod_timestamp: "{{ CommitTimestamp }}"
@@ -378,7 +377,7 @@ crates:
           io.artifacthub.package.readme-url: "https://raw.githubusercontent.com/tj-smith47/anodizer/master/README.md"
           io.artifacthub.package.logo-url: "https://raw.githubusercontent.com/tj-smith47/anodizer/master/assets/logo.png"
           io.artifacthub.package.maintainers: '[{"name":"TJ Smith","email":"tj@jarvispro.io"}]'
-          io.artifacthub.package.license: MIT
+          io.artifacthub.package.license: "{{ Metadata.License }}"
         tags:
           - "{{ .Version }}"
           - latest
@@ -402,7 +401,8 @@ crates:
           group: root
           mtime: "{{ CommitDate }}"
         files:
-          - LICENSE
+          - LICENSE-MIT
+          - LICENSE-APACHE
           - README.md
           - docs/site/content/docs/reference/configuration.md
           - dist/anodizer.1
@@ -423,7 +423,8 @@ crates:
           - os: windows
             formats: [tgz]
         files:
-          - LICENSE
+          - LICENSE-MIT
+          - LICENSE-APACHE
           - README.md
     checksum:
       name_template: "{{ ArtifactName }}.sha256"
@@ -480,9 +481,6 @@ crates:
           name: scoop-bucket
         ids:
           - default
-        description: "A Rust-native release automation tool"
-        homepage: "https://github.com/tj-smith47/anodizer"
-        license: MIT
         depends:
           - git
         shortcuts:
@@ -498,11 +496,9 @@ crates:
           name: anodizer
         title: "anodizer"
         summary: "A Rust-native release automation tool"
-        description: "A Rust-native release automation tool"
         authors: "TJ Smith"
         owners: "tj-smith47"
         copyright: "Copyright © 2026 TJ Smith"
-        license: MIT
         require_license_acceptance: false
         project_url: "https://github.com/tj-smith47/anodizer"
         package_source_url: "https://github.com/tj-smith47/anodizer/tree/{{ .Tag }}/crates/cli"
@@ -521,9 +517,6 @@ crates:
           owner: tj-smith47
           name: winget-pkgs
         short_description: "Rust-native release automation"
-        description: "A Rust-native release automation tool"
-        homepage: "https://github.com/tj-smith47/anodizer"
-        license: MIT
         author: "TJ Smith"
         copyright: "Copyright © 2026 TJ Smith"
         package_identifier: "TJSmith.Anodizer"
@@ -560,8 +553,6 @@ crates:
         required: true
         git_url: "ssh://aur@aur.archlinux.org/anodizer-bin.git"
         name: anodizer-bin
-        description: "A Rust-native release automation tool"
-        license: MIT
         # Rendered as the PKGBUILD `# Maintainer:` header line(s).
         maintainers:
           - "TJ Smith <tj@jarvispro.io>"
@@ -580,9 +571,6 @@ crates:
         repository:
           owner: tj-smith47
           name: nix-pkgs
-        homepage: "https://github.com/tj-smith47/anodizer"
-        description: "A Rust-native release automation tool"
-        license: mit
         # meta.changelog — links the GitHub Releases history into the derivation.
         changelog: "https://github.com/tj-smith47/anodizer/releases"
         # meta.longDescription — the expanded blurb nixpkgs shows on search.
@@ -617,10 +605,7 @@ crates:
           - deb
           - rpm
         vendor: "TJ Smith"
-        homepage: "https://github.com/tj-smith47/anodizer"
         maintainer: "TJ Smith <tj@jarvispro.io>"
-        description: "A Rust-native release automation tool"
-        license: MIT
         bindir: /usr/bin
         section: utils
         priority: optional
@@ -634,8 +619,10 @@ crates:
           - upx
         file_name_template: "{{ ProjectName }}_{{ RawVersion }}_{{ Os }}_{{ Arch }}"
         contents:
-          - src: LICENSE
-            dst: /usr/share/doc/anodizer/LICENSE
+          - src: LICENSE-MIT
+            dst: /usr/share/doc/anodizer/LICENSE-MIT
+          - src: LICENSE-APACHE
+            dst: /usr/share/doc/anodizer/LICENSE-APACHE
           - src: README.md
             dst: /usr/share/doc/anodizer/README.md
           - src: dist/anodizer.1
@@ -679,10 +666,7 @@ crates:
         formats:
           - apk
         vendor: "TJ Smith"
-        homepage: "https://github.com/tj-smith47/anodizer"
         maintainer: "TJ Smith <tj@jarvispro.io>"
-        description: "A Rust-native release automation tool"
-        license: MIT
         bindir: /usr/bin
         section: utils
         priority: optional
@@ -696,8 +680,10 @@ crates:
           - upx
         file_name_template: "{{ ProjectName }}_{{ RawVersion }}_{{ Os }}_{{ Arch }}"
         contents:
-          - src: LICENSE
-            dst: /usr/share/doc/anodizer/LICENSE
+          - src: LICENSE-MIT
+            dst: /usr/share/doc/anodizer/LICENSE-MIT
+          - src: LICENSE-APACHE
+            dst: /usr/share/doc/anodizer/LICENSE-APACHE
           - src: README.md
             dst: /usr/share/doc/anodizer/README.md
           - src: dist/anodizer.1
@@ -741,7 +727,9 @@ crates:
         # binaries (cargo/docker/gpg), which strict confinement blocks. Classic
         # snaps require a one-time Snap Store manual review before upload.
         confinement: classic
-        license: MIT
+        # snapcraft's `license` has no Cargo.toml/meta fallback in the resolver
+        # (unlike description), so it is set explicitly rather than derived.
+        license: "MIT OR Apache-2.0"
         publish: true
         channel_templates:
           - "latest/stable"
@@ -865,9 +853,6 @@ homebrew_casks:
     directory: Casks
     ids:
       - default
-    description: "A Rust-native release automation tool"
-    homepage: "https://github.com/tj-smith47/anodizer"
-    license: MIT
     # Installs the CLI binary as a Homebrew Cask binary stub.
     binaries:
       - anodizer
@@ -996,7 +981,8 @@ source:
     - "crates/**/*.rs"
     - "Cargo.toml"
     - "Cargo.lock"
-    - "LICENSE"
+    - "LICENSE-MIT"
+    - "LICENSE-APACHE"
     - "README.md"
 
 sboms:
@@ -1252,7 +1238,6 @@ mcp:
   name: io.github.tj-smith47/anodizer
   title: anodizer
   description: "Rust release tooling — drop-in GoReleaser parity + Rust extras."
-  homepage: https://github.com/tj-smith47/anodizer
   repository:
     url: https://github.com/tj-smith47/anodizer
     source: github

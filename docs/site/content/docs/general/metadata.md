@@ -23,7 +23,7 @@ metadata:
 | `description` | string | none | Project description |
 | `documentation` | string | Cargo `[package].documentation` | Project documentation URL. Drives the OCI `org.opencontainers.image.documentation` label and `{{ Metadata.Documentation }}`. Derived from `Cargo.toml` when unset. |
 | `homepage` | string | none | Project homepage URL |
-| `license` | string | none | SPDX license identifier (e.g., `MIT`, `Apache-2.0`) |
+| `license` | string | Cargo `[package].license` | SPDX license identifier or expression (e.g., `MIT`, `Apache-2.0`, `MIT OR Apache-2.0`). Drives `{{ Metadata.License }}`. Derived from `Cargo.toml` when unset. |
 | `maintainers` | list | none | List of maintainer names/emails |
 | `mod_timestamp` | string | none | Template or Unix timestamp applied as mtime to metadata.json and artifacts.json |
 
