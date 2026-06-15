@@ -5074,6 +5074,35 @@ fn test_nfpm_falls_back_to_project_metadata() {
     assert!(yaml.contains("Alice <alice@project.example>"));
 }
 
+#[test]
+fn compound_spdx_license_emitted_verbatim() {
+    // nfpm passes the SPDX license through unchanged: a dual `MIT OR Apache-2.0`
+    // expression must land in the generated nfpm YAML's `license:` field as the
+    // exact string, not split or reshaped.
+    use anodizer_core::config::NfpmConfig;
+
+    let tmp = TempDir::new().unwrap();
+    std::fs::write(tmp.path().join("myapp"), b"binary").unwrap();
+    let yaml = generate_nfpm_yaml(
+        &NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            license: Some("MIT OR Apache-2.0".to_string()),
+            ..Default::default()
+        },
+        "1.0.0",
+        &[tmp.path().join("myapp").to_string_lossy().into_owned()],
+        Some("deb"),
+        true,
+        &NfpmLibraryPaths::default(),
+    )
+    .unwrap();
+    assert!(
+        yaml.contains("license: MIT OR Apache-2.0"),
+        "compound license must pass through verbatim, got:\n{yaml}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // setup_lintian_overrides
 // ---------------------------------------------------------------------------

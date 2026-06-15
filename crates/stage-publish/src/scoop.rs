@@ -1870,6 +1870,24 @@ mod tests {
         );
     }
 
+    #[test]
+    fn compound_spdx_license_emitted_verbatim() {
+        // Scoop passes the SPDX license through unchanged: a dual
+        // `MIT OR Apache-2.0` expression must land in the manifest's `license`
+        // field as the exact string, not split or reshaped.
+        let manifest = generate_manifest(
+            "my-tool",
+            "2.1.0",
+            "https://example.com/my-tool-2.1.0-windows-amd64.zip",
+            "deadbeef",
+            "A helpful tool",
+            "MIT OR Apache-2.0",
+        )
+        .unwrap();
+        let json: serde_json::Value = serde_json::from_str(&manifest).unwrap();
+        assert_eq!(json["license"], "MIT OR Apache-2.0");
+    }
+
     // -----------------------------------------------------------------------
     // Deep integration tests: verify manifest JSON structure
     // -----------------------------------------------------------------------

@@ -2970,6 +2970,20 @@ mod tests {
         assert!(locale.contains("devops"));
     }
 
+    /// winget's `License` is a freeform display string; a dual
+    /// `MIT OR Apache-2.0` SPDX expression passes through verbatim into the
+    /// locale manifest's `License:` field, never split or rejected.
+    #[test]
+    fn compound_spdx_license_emitted_verbatim() {
+        let mut params = default_params();
+        params.license = "MIT OR Apache-2.0";
+        let (_, _, locale) = generate_manifests(&params).unwrap();
+        assert!(
+            locale.contains("License: MIT OR Apache-2.0"),
+            "compound license must pass through verbatim, got:\n{locale}"
+        );
+    }
+
     // -----------------------------------------------------------------------
     // Moniker / UpgradeBehavior / Documentations / InstallerSwitches
     // -----------------------------------------------------------------------

@@ -342,6 +342,33 @@ fn render_package_json_metadata_fallback() {
 }
 
 #[test]
+fn compound_spdx_license_emitted_verbatim() {
+    // npm passes the SPDX license through unchanged: a dual `MIT OR Apache-2.0`
+    // expression derived from project metadata must land in package.json's
+    // `license` field as the exact string, not split or reshaped.
+    let cfg_top = Config {
+        project_name: "demo".to_string(),
+        metadata: Some(MetadataConfig {
+            license: Some("MIT OR Apache-2.0".to_string()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let ctx = anodizer_core::context::Context::new(
+        cfg_top,
+        anodizer_core::context::ContextOptions::default(),
+    );
+    let cfg = NpmConfig {
+        mode: NpmMode::Postinstall,
+        name: Some("demo".into()),
+        ..Default::default()
+    };
+    let body = render_package_json(&ctx, &cfg, "demo", "demo", "1.0.0", &[]).expect("render");
+    let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid json");
+    assert_eq!(parsed["license"], "MIT OR Apache-2.0");
+}
+
+#[test]
 fn render_package_json_extra_can_override_root_keys() {
     let ctx = TestContextBuilder::new().project_name("demo").build();
     let mut extra = std::collections::HashMap::new();
