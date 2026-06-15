@@ -383,7 +383,7 @@ fn resolve_metadata(
     // explicit `license_url` still wins.
     let license_url = match choco_cfg.license_url.as_deref() {
         Some(raw) => Some(render_cfg("chocolatey.license_url", raw)?),
-        None if is_compound_spdx(&license) => None,
+        None if !anodizer_core::license::parse_spdx_expression(&license).is_single() => None,
         None => repo_url.as_ref().map(|u| derive_license_blob_url(ctx, u)),
     };
 
@@ -412,20 +412,6 @@ fn resolve_metadata(
         tags,
         project_source_url,
         bug_tracker_url,
-    })
-}
-
-/// `true` when an SPDX license string is a compound expression (joined by the
-/// SPDX operators `OR` / `AND` / `WITH`), e.g. `MIT OR Apache-2.0`. Such a
-/// license has no single canonical license-file URL, so the legacy nuspec
-/// `<licenseUrl>` is suppressed in favour of `<license type="expression">`.
-/// The match is case-insensitive and operator-boundary-aware (a bare
-/// identifier like `MIT` or `Apache-2.0` is never misclassified).
-fn is_compound_spdx(license: &str) -> bool {
-    license.split_whitespace().any(|tok| {
-        tok.eq_ignore_ascii_case("OR")
-            || tok.eq_ignore_ascii_case("AND")
-            || tok.eq_ignore_ascii_case("WITH")
     })
 }
 
@@ -1712,18 +1698,6 @@ mod tests {
     }
 
     #[test]
-    fn is_compound_spdx_detects_operators_case_insensitively() {
-        assert!(is_compound_spdx("MIT OR Apache-2.0"));
-        assert!(is_compound_spdx("Apache-2.0 AND MIT"));
-        assert!(is_compound_spdx("Apache-2.0 WITH LLVM-exception"));
-        assert!(is_compound_spdx("MIT or Apache-2.0"));
-        // Bare identifiers are NOT compound (must not strip the licenseUrl).
-        assert!(!is_compound_spdx("MIT"));
-        assert!(!is_compound_spdx("Apache-2.0"));
-        assert!(!is_compound_spdx("CC0-1.0"));
-    }
-
-    #[test]
     fn resolve_metadata_derives_license_url_for_single_spdx() {
         let mut config = Config::default();
         config.crates = vec![CrateConfig {
@@ -1766,6 +1740,30 @@ mod tests {
             resolve_metadata(&ctx, &cfg, "mytool", "o", "r", &ctx.logger("publish")).unwrap();
         // A compound SPDX expression has no single LICENSE file → no <licenseUrl>;
         // the `<license type="expression">` element carries it losslessly.
+        assert_eq!(meta.license_url, None);
+    }
+
+    #[test]
+    fn resolve_metadata_omits_derived_license_url_for_slash_form_compound() {
+        // The legacy slash form (`MIT/Apache-2.0`) is also compound — the house
+        // SPDX parser returns `AnyOf` — so its derived single-file `<licenseUrl>`
+        // must be suppressed too. (The old bespoke whitespace check missed this
+        // and would have emitted a 404ing URL for a dual-licensed repo.)
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }];
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Tag", "v1.2.3");
+        let cfg = ChocolateyConfig {
+            license: Some("MIT/Apache-2.0".to_string()),
+            ..Default::default()
+        };
+        let meta =
+            resolve_metadata(&ctx, &cfg, "mytool", "o", "r", &ctx.logger("publish")).unwrap();
         assert_eq!(meta.license_url, None);
     }
 

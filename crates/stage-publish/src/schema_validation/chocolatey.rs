@@ -560,9 +560,9 @@ mod tests {
     /// `project_source_url`, and `bug_tracker_url` UNSET — exercising the
     /// derived-default path. `license` is a single SPDX identifier so the
     /// derived `<licenseUrl>` (a GitHub LICENSE blob URL) is emitted, proving
-    /// it is derived rather than the 404ing `opensource.org` synthesis the
-    /// audit flagged. (A compound SPDX expression suppresses `<licenseUrl>`
-    /// entirely — covered by the `publish::tests` unit tests.)
+    /// it is derived rather than synthesizing a 404ing `opensource.org` URL.
+    /// (A compound SPDX expression suppresses `<licenseUrl>` entirely —
+    /// covered by the `publish::tests` unit tests.)
     fn derive_defaults_choco_cfg(pkg: &str) -> ChocolateyConfig {
         ChocolateyConfig {
             name: Some(pkg.to_string()),
