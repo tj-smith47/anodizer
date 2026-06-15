@@ -21,7 +21,7 @@ ROUNDED="${BADGE%\%}"
 # reads "92.99", not "92.990000".
 DISPLAY="$(awk -v r="$RAW" 'BEGIN {s = sprintf("%.4f", r); sub(/0+$/, "", s); sub(/\.$/, "", s); print s}')"
 LABEL="${DISPLAY}%"
-# When rounding hides precision that matters (92.99 vs badge 93.0), show both.
+# When rounding hides precision that matters (92.49 vs badge 92.5), show both.
 if [ "$DISPLAY" != "$ROUNDED" ]; then
   LABEL="${DISPLAY}% (badge ${ROUNDED}%)"
 fi
