@@ -28,18 +28,52 @@ pub(crate) fn merge_versions(
     m
 }
 
-/// Decide add/update/no-op by matching `name` in `catalog_json` against the
-/// desired entry `want`. Comparison is structural (key order irrelevant).
-pub(crate) fn verdict(catalog_json: &str, name: &str, want: &Value) -> anyhow::Result<Verdict> {
+/// Extract the `fileMatch` globs from a catalog entry `Value` as owned strings.
+/// A missing or non-array `fileMatch` yields an empty list.
+fn file_match_globs(entry: &Value) -> Vec<String> {
+    entry
+        .get("fileMatch")
+        .and_then(Value::as_array)
+        .map(|a| {
+            a.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// True when `existing`'s `fileMatch` array shares at least one glob string
+/// with `desired_file_match`.
+///
+/// SchemaStore's real catalog uniqueness key is `fileMatch`, not `name`: its
+/// `validate` CI rejects any two entries that share a `fileMatch` glob. Keying
+/// add/update identity on a non-empty `fileMatch` intersection (rather than an
+/// exact `name`) is therefore what prevents a case- or title-only name drift
+/// from appending a duplicate entry the validator then rejects.
+fn filematch_overlaps(existing: &Value, desired_file_match: &[String]) -> bool {
+    let theirs = file_match_globs(existing);
+    desired_file_match
+        .iter()
+        .any(|d| theirs.iter().any(|t| t == d))
+}
+
+/// Decide add/update/no-op for the desired entry `want` against `catalog_json`.
+///
+/// Identity is by `fileMatch`-overlap, not `name`: an existing catalog entry is
+/// "ours" when its `fileMatch` array shares any glob with `want`'s. This matches
+/// SchemaStore's own uniqueness rule (its `validate` CI rejects duplicate
+/// `fileMatch` globs) and is robust to a `name` that differs only in case from
+/// the merged upstream entry. Comparison of a matched entry against `want` is
+/// structural (key order irrelevant).
+pub(crate) fn verdict(catalog_json: &str, want: &Value) -> anyhow::Result<Verdict> {
     let cat: Value = serde_json::from_str(catalog_json)?;
     let entries = cat
         .get("schemas")
         .and_then(Value::as_array)
         .ok_or_else(|| anyhow::anyhow!("catalog.json has no `schemas` array"))?;
-    match entries
-        .iter()
-        .find(|e| e.get("name").and_then(Value::as_str) == Some(name))
-    {
+    let want_fm = file_match_globs(want);
+    match entries.iter().find(|e| filematch_overlaps(e, &want_fm)) {
         None => Ok(Verdict::Add),
         Some(existing) if existing == want => Ok(Verdict::NoOp),
         Some(_) => Ok(Verdict::Update),
@@ -91,14 +125,18 @@ fn render_entry(entry: &Value, indent: usize) -> anyhow::Result<String> {
     Ok(out)
 }
 
-/// Insert or replace the entry named `name` in `catalog`, preserving every
-/// other byte of the original file.
+/// Insert or replace the catalog entry matching `entry` by `fileMatch`-overlap,
+/// preserving every other byte of the original file.
 ///
 /// SchemaStore's `catalog.json` is ~1 MB, insertion-ordered, and reformatted
 /// by prettier in CI. Reserializing the whole file would reorder entries and
 /// produce an unreviewable diff, so this edits only the targeted entry's byte
 /// span (replace) or appends before the array's closing `]` (add).
-pub(crate) fn splice_entry(catalog: &str, name: &str, entry: &Value) -> anyhow::Result<String> {
+///
+/// The match is by `fileMatch`-overlap, not `name`, so an upstream entry whose
+/// name drifted in case (e.g. `Anodizer` vs `anodizer`) is replaced in place
+/// rather than appended as a SchemaStore-rejected duplicate.
+pub(crate) fn splice_entry(catalog: &str, entry: &Value) -> anyhow::Result<String> {
     let v: Value = serde_json::from_str(catalog)?;
     let arr = v
         .get("schemas")
@@ -108,11 +146,9 @@ pub(crate) fn splice_entry(catalog: &str, name: &str, entry: &Value) -> anyhow::
     // object at 4 (prettier, 2-space indent).
     let entry_indent = 4usize;
 
-    if arr
-        .iter()
-        .any(|e| e.get("name").and_then(Value::as_str) == Some(name))
-    {
-        let (start, end) = find_entry_span(catalog, name)?;
+    let want_fm = file_match_globs(entry);
+    if arr.iter().any(|e| filematch_overlaps(e, &want_fm)) {
+        let (start, end) = find_entry_span(catalog, &want_fm)?;
         let rendered = render_entry(entry, entry_indent)?;
         // The span already begins at the object's `{` indentation, so strip
         // the leading pad render_entry added to the first line.
@@ -193,15 +229,15 @@ pub(crate) fn add_high_schema_version(jsonc: &str, name: &str) -> anyhow::Result
     Ok(out)
 }
 
-/// Return the `(start, end)` byte span of the entry object whose `"name"`
-/// value equals `name`. `start` is the index of the object's opening `{`;
+/// Return the `(start, end)` byte span of the entry object whose `fileMatch`
+/// array overlaps `want_fm`. `start` is the index of the object's opening `{`;
 /// `end` is the index just past its closing `}`.
 ///
 /// Top-level entry objects inside the array are enumerated by brace-balanced
 /// scanning (tracking string/escape state so braces inside string values do
 /// not perturb the count); each candidate slice is parsed on its own and its
-/// `name` compared. The first match wins.
-fn find_entry_span(catalog: &str, name: &str) -> anyhow::Result<(usize, usize)> {
+/// `fileMatch` compared for overlap. The first match wins.
+fn find_entry_span(catalog: &str, want_fm: &[String]) -> anyhow::Result<(usize, usize)> {
     let open = find_schemas_array_open(catalog)?;
     let close = find_array_close(catalog)?;
     let bytes = catalog.as_bytes();
@@ -229,7 +265,7 @@ fn find_entry_span(catalog: &str, name: &str) -> anyhow::Result<(usize, usize)> 
                         };
                         let end = i + 1;
                         if let Ok(obj) = serde_json::from_str::<Value>(&catalog[s_idx..end])
-                            && obj.get("name").and_then(Value::as_str) == Some(name)
+                            && filematch_overlaps(&obj, want_fm)
                         {
                             return Ok((s_idx, end));
                         }
@@ -239,5 +275,5 @@ fn find_entry_span(catalog: &str, name: &str) -> anyhow::Result<(usize, usize)> 
             }
         }
     }
-    anyhow::bail!("no entry named `{name}` found in `schemas` array")
+    anyhow::bail!("no entry with overlapping `fileMatch` found in `schemas` array")
 }

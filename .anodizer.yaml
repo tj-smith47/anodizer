@@ -916,7 +916,7 @@ schemastore:
     owner: tj-smith47
     name: schemastore
   schemas:
-    - name: anodizer
+    - name: Anodizer  # title-case to match the live SchemaStore catalog entry (uniqueness is by fileMatch, not name)
       required: true
       description: "Anodizer Rust release-automation configuration file"
       file_match: [".anodizer.yaml", ".anodizer.yml"]

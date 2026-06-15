@@ -161,7 +161,7 @@ pub(crate) fn plan_schema(
     );
 
     let verdict = match catalog_json {
-        Some(c) => Some(catalog::verdict(c, &entry.name, &desired_entry)?),
+        Some(c) => Some(catalog::verdict(c, &desired_entry)?),
         None => None,
     };
 
@@ -226,7 +226,7 @@ pub(crate) fn schema_change_needed(
 ) -> bool {
     // The catalog entry must already match; an `Err` (malformed catalog) is
     // uncertainty ⇒ change needed.
-    match catalog::verdict(remote.catalog_json, &plan.name, &plan.desired_entry) {
+    match catalog::verdict(remote.catalog_json, &plan.desired_entry) {
         Ok(catalog::Verdict::NoOp) => {}
         Ok(catalog::Verdict::Add) | Ok(catalog::Verdict::Update) | Err(_) => return true,
     }
@@ -670,7 +670,7 @@ fn run_real(
             write_vendor_schema(repo_path, entry, &plan, formatted, log)?;
         }
 
-        catalog_json = catalog::splice_entry(&catalog_json, &plan.name, &plan.desired_entry)
+        catalog_json = catalog::splice_entry(&catalog_json, &plan.desired_entry)
             .with_context(|| format!("schemastore: splice catalog entry for `{}`", plan.name))?;
         applied.push(plan);
     }
@@ -938,16 +938,41 @@ fn schemastore_evidence(fork_owner: &str, branch: &str) -> PublishEvidence {
     evidence
 }
 
-/// Commit message naming the registered schemas.
-fn schemastore_commit_msg(applied: &[SchemaPlan]) -> String {
-    let names: Vec<&str> = applied.iter().map(|p| p.name.as_str()).collect();
-    format!("Register/refresh {}", names.join(", "))
+/// Render the verb-grouped schema summary used by both the commit message and
+/// the PR title, e.g. `Add a, b` / `Update c` / `Add a; update b`.
+///
+/// The verb is the per-plan [`catalog::Verdict`] (`Add` vs `Update`), so the
+/// message states truthfully what the PR does — "Add if it doesn't exist,
+/// update if it does." A plan whose verdict is `None` (no upstream catalog was
+/// available, e.g. a forced run) is treated as an add; `NoOp` plans never reach
+/// here (they are filtered before `applied` is built).
+fn schemastore_summary(applied: &[SchemaPlan]) -> String {
+    let mut adds: Vec<&str> = Vec::new();
+    let mut updates: Vec<&str> = Vec::new();
+    for p in applied {
+        match p.verdict {
+            Some(catalog::Verdict::Update) => updates.push(p.name.as_str()),
+            _ => adds.push(p.name.as_str()),
+        }
+    }
+    match (adds.is_empty(), updates.is_empty()) {
+        (false, true) => format!("Add {}", adds.join(", ")),
+        (true, false) => format!("Update {}", updates.join(", ")),
+        // Mixed (or, defensively, the empty `applied` edge) — name both verbs.
+        _ => format!("Add {}; update {}", adds.join(", "), updates.join(", ")),
+    }
 }
 
-/// PR title naming the registered schemas.
+/// Commit message naming the registered schemas, verb derived from each plan's
+/// verdict (add vs update).
+fn schemastore_commit_msg(applied: &[SchemaPlan]) -> String {
+    format!("{} schema(s)", schemastore_summary(applied))
+}
+
+/// PR title naming the registered schemas, verb derived from each plan's
+/// verdict (add vs update).
 fn schemastore_pr_title(applied: &[SchemaPlan]) -> String {
-    let names: Vec<&str> = applied.iter().map(|p| p.name.as_str()).collect();
-    format!("Add/update {} schema(s)", names.join(", "))
+    format!("{} schema(s)", schemastore_summary(applied))
 }
 
 /// PR body listing each registered schema's name, hosting mode, and url.
@@ -1285,7 +1310,7 @@ mod tests {
         let (plan, cat, local) = vendor_plan_with_matching_catalog(DRAFT07_SCHEMA);
         // Prove the catalog half alone would have been a false no-op.
         assert_eq!(
-            catalog::verdict(&cat, &plan.name, &plan.desired_entry).unwrap(),
+            catalog::verdict(&cat, &plan.desired_entry).unwrap(),
             catalog::Verdict::NoOp,
             "precondition: catalog entry matches ⇒ entry-only verdict is NoOp"
         );
@@ -2142,16 +2167,49 @@ mod tests {
 
     #[test]
     fn commit_msg_and_pr_title_name_every_applied_schema() {
+        // Plans built with `None` catalog carry `verdict: None`, which the
+        // summary treats as an add — so both surfaces read "Add ...".
         let a = plan_schema(&external_entry(), "Anodizer config", false, None, None).unwrap();
         let b = plan_schema(&vendor_entry(), "cfgd machine config", false, None, None).unwrap();
         let applied = vec![a, b];
         assert_eq!(
             schemastore_commit_msg(&applied),
-            "Register/refresh Anodizer, cfgd-config"
+            "Add Anodizer, cfgd-config schema(s)"
         );
         assert_eq!(
             schemastore_pr_title(&applied),
-            "Add/update Anodizer, cfgd-config schema(s)"
+            "Add Anodizer, cfgd-config schema(s)"
+        );
+    }
+
+    /// The PR title/commit verb is derived per-plan from its [`catalog::Verdict`]:
+    /// all-Add ⇒ "Add", all-Update ⇒ "Update", mixed ⇒ "Add a; update b". This
+    /// is the user's contract — "Add if it doesn't exist, update if it does."
+    #[test]
+    fn summary_derives_verb_from_each_plans_verdict() {
+        let plan = |name: &str, verdict| SchemaPlan {
+            name: name.into(),
+            mode: SchemaMode::External,
+            url: "https://x/s.json".into(),
+            vendor_path: None,
+            versioned: false,
+            desired_entry: serde_json::json!({}),
+            verdict: Some(verdict),
+        };
+        assert_eq!(
+            schemastore_summary(&[plan("Aaa", catalog::Verdict::Add)]),
+            "Add Aaa"
+        );
+        assert_eq!(
+            schemastore_summary(&[plan("Bbb", catalog::Verdict::Update)]),
+            "Update Bbb"
+        );
+        assert_eq!(
+            schemastore_summary(&[
+                plan("Aaa", catalog::Verdict::Add),
+                plan("Bbb", catalog::Verdict::Update),
+            ]),
+            "Add Aaa; update Bbb"
         );
     }
 
@@ -2647,7 +2705,6 @@ mod tests {
 
         let spliced = catalog::splice_entry(
             &std::fs::read_to_string(&cat_abs).unwrap(),
-            &plan.name,
             &plan.desired_entry,
         )
         .expect("splice the desired entry");
