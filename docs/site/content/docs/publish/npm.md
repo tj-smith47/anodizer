@@ -187,8 +187,8 @@ current runner, it publishes **without** provenance and emits a warning rather t
 failing the release. The package still ships; only the provenance attestation is absent.
 
 To keep provenance, run npm on a separate GitHub-hosted job. Anodizer's own release does
-exactly this — the main publish runs on a self-hosted runner with `--skip npm`, and a
-small github-hosted job runs `anodizer publish --publishers npm` so the npm publish
+exactly this — the main publish runs on a self-hosted runner with `--skip=npm`, and a
+small github-hosted job runs `release --publish-only --publishers npm` so the npm publish
 carries provenance:
 
 ```yaml
@@ -196,15 +196,17 @@ jobs:
   publish:                       # self-hosted: everything except npm
     runs-on: self-hosted
     steps:
-      - run: anodizer release --skip npm
+      - run: anodizer release --publish-only --skip=npm
 
   publish-npm:                   # github-hosted: npm, with provenance
     needs: publish
     runs-on: ubuntu-latest
     permissions:
       id-token: write
+    env:
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
-      - run: anodizer publish --publishers npm
+      - run: anodizer release --publish-only --publishers npm --skip=announce
 ```
 
 The `--publishers`/`--skip` selectors that make this split possible are described in
