@@ -176,6 +176,40 @@ Configure the Trusted Publisher once per package: **npmjs.com → the package �
 
 Once configured, anodizer detects the OIDC context (the GitHub-injected `ACTIONS_ID_TOKEN_REQUEST_URL` / `ACTIONS_ID_TOKEN_REQUEST_TOKEN` env vars), writes a process-private `.npmrc` carrying **no token line**, and threads those OIDC request vars into the `npm publish` subprocess so the npm CLI performs the exchange itself. No secret is read or written.
 
+### Provenance needs a GitHub-hosted runner
+
+npm provenance attestations are produced through GitHub's OIDC provenance flow, which
+npm only accepts from a **GitHub-hosted** runner. On a self-hosted runner the provenance
+exchange is unavailable, and npm rejects a publish that requests it.
+
+Anodizer degrades gracefully: when it detects that provenance cannot be produced on the
+current runner, it publishes **without** provenance and emits a warning rather than
+failing the release. The package still ships; only the provenance attestation is absent.
+
+To keep provenance, run npm on a separate GitHub-hosted job. Anodizer's own release does
+exactly this — the main publish runs on a self-hosted runner with `--skip npm`, and a
+small github-hosted job runs `anodizer publish --publishers npm` so the npm publish
+carries provenance:
+
+```yaml
+jobs:
+  publish:                       # self-hosted: everything except npm
+    runs-on: self-hosted
+    steps:
+      - run: anodizer release --skip npm
+
+  publish-npm:                   # github-hosted: npm, with provenance
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+    steps:
+      - run: anodizer publish --publishers npm
+```
+
+The `--publishers`/`--skip` selectors that make this split possible are described in
+[Selecting publishers](./selecting-publishers.md).
+
 ### `NPM_TOKEN` fallback
 
 A Trusted Publisher cannot be attached to a package that does not yet exist, so the **first** publish that creates the package needs a token. Set the `NPM_TOKEN` env var (an [automation token](https://docs.npmjs.com/creating-and-viewing-access-tokens)); anodizer writes a process-private `.npmrc` carrying `//registry.npmjs.org/:_authToken=$NPM_TOKEN` and passes `--userconfig <that .npmrc>` to `npm publish`. The token is never placed on the argv and the `.npmrc` is deleted after publish completes.
