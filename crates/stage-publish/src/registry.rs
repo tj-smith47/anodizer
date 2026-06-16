@@ -686,25 +686,9 @@ pub fn validate_publisher_selection(allowlist: &[String], skip: &[String]) -> Re
         ));
     }
 
-    let bad_skip: Vec<&str> = skip
-        .iter()
-        .map(|s| s.as_str())
-        .filter(|s| {
-            !publishers.iter().any(|p| p == s)
-                && !anodizer_core::context::VALID_RELEASE_SKIPS.contains(s)
-        })
-        .collect();
-    if !bad_skip.is_empty() {
-        let mut valid: Vec<&str> = anodizer_core::context::VALID_RELEASE_SKIPS.to_vec();
-        valid.extend(publishers.iter().map(|s| s.as_str()));
-        return Err(format!(
-            "invalid --skip value(s): {}. Valid options: {}",
-            bad_skip.join(", "),
-            valid.join(", "),
-        ));
-    }
-
-    Ok(())
+    let mut valid: Vec<&str> = anodizer_core::context::VALID_RELEASE_SKIPS.to_vec();
+    valid.extend(publishers.iter().map(|s| s.as_str()));
+    anodizer_core::context::validate_skip_values(skip, &valid)
 }
 
 #[cfg(test)]

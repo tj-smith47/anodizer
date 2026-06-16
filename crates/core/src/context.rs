@@ -724,6 +724,8 @@ impl Context {
         Ok(should_skip)
     }
 
+    /// Whether `stage_name` (or a publisher name — the skip list is unified) is
+    /// in the operator's `--skip` denylist.
     pub fn should_skip(&self, stage_name: &str) -> bool {
         self.options.skip_stages.iter().any(|s| s == stage_name)
     }
@@ -742,7 +744,7 @@ impl Context {
     /// Returns `true` when the publisher should be reported
     /// [`crate::publish_report::SkipReason::Deselected`] instead of dispatched.
     pub fn publisher_deselected(&self, name: &str) -> bool {
-        self.options.skip_stages.iter().any(|s| s == name)
+        self.should_skip(name)
             || (!self.options.publisher_allowlist.is_empty()
                 && !self.options.publisher_allowlist.iter().any(|s| s == name))
     }
