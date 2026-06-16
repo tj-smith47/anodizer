@@ -293,6 +293,7 @@ mod tests {
             dry_run: false,
             clean: false,
             skip: vec![],
+            publishers: vec![],
             token: None,
             verbose: false,
             debug: false,

@@ -37,10 +37,13 @@ pub enum RollbackMode {
 
 /// Valid --skip values for the `release` command.
 ///
-/// Publisher skip names use the short canonical form (matching the CLI binary
-/// name and convention): `brew`, `choco`, `krew`, `cargo`, etc.
-/// Long aliases (e.g. `homebrew`, `chocolatey`) are NOT accepted forbids
-/// aliases; use the short name everywhere.
+/// Skip tokens are stage names plus publisher names. Every publisher's skip
+/// token is its canonical [`crate::Publisher::name`] (the same token
+/// `--publishers` keys on and the same one GoReleaser's `--skip` uses), so
+/// homebrew is `homebrew` and chocolatey is `chocolatey` — there are no short
+/// aliases (`brew`/`choco`). This keeps one denylist vocabulary across the
+/// `--skip` and `--publishers` selectors and matches GoReleaser's `--skip`
+/// keys, so a single name works on both tools.
 pub const VALID_RELEASE_SKIPS: &[&str] = &[
     "publish",
     "announce",
@@ -51,11 +54,11 @@ pub const VALID_RELEASE_SKIPS: &[&str] = &[
     "docker",
     "docker-sign",
     "winget",
-    "choco",
+    "chocolatey",
     "snapcraft",
     "snapcraft-publish",
     "scoop",
-    "brew",
+    "homebrew",
     "nix",
     "aur",
     "cargo",

@@ -1960,9 +1960,10 @@ crates:
 // Publisher skip-name acceptance / rejection tests
 // ============================================================================
 
-/// `--skip=brew` is accepted (short canonical name).
+/// `--skip=brew` is REJECTED — the short alias is gone; the canonical
+/// publisher skip token is the GoReleaser-aligned `homebrew`.
 #[test]
-fn test_skip_brew_accepted() {
+fn test_skip_brew_rejected() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
     init_git_repo(tmp.path());
@@ -1992,22 +1993,27 @@ crates:
         .output()
         .unwrap();
 
+    assert!(
+        !output.status.success(),
+        "--skip=brew should be rejected (use --skip=homebrew); command unexpectedly succeeded"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
     // The validator emits a single, well-known phrase on rejection (see
-    // `core::context::validate_skip_values`). Substring-matching on
+    // `registry::validate_publisher_selection`). Substring-matching on
     // "invalid" / "unknown" is too loose because the dry-run pipeline
     // legitimately prints target triples like `x86_64-unknown-linux-gnu` to
     // stderr and would false-positive on this Linux host.
     assert!(
-        !stderr.contains("invalid --skip value"),
-        "--skip=brew should be accepted, got:\n{}",
+        stderr.contains("invalid --skip value"),
+        "--skip=brew rejection should mention invalidity, got:\n{}",
         stderr
     );
 }
 
-/// `--skip=choco` is accepted (short canonical name).
+/// `--skip=choco` is REJECTED — the short alias is gone; the canonical
+/// publisher skip token is the GoReleaser-aligned `chocolatey`.
 #[test]
-fn test_skip_choco_accepted() {
+fn test_skip_choco_rejected() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
     init_git_repo(tmp.path());
@@ -2037,12 +2043,16 @@ crates:
         .output()
         .unwrap();
 
+    assert!(
+        !output.status.success(),
+        "--skip=choco should be rejected (use --skip=chocolatey); command unexpectedly succeeded"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // See note on `test_skip_brew_accepted` for why this checks the exact
+    // See note on `test_skip_brew_rejected` for why this checks the exact
     // validator phrase rather than substring-matching "invalid"/"unknown".
     assert!(
-        !stderr.contains("invalid --skip value"),
-        "--skip=choco should be accepted, got:\n{}",
+        stderr.contains("invalid --skip value"),
+        "--skip=choco rejection should mention invalidity, got:\n{}",
         stderr
     );
 }
@@ -2080,7 +2090,7 @@ crates:
         .unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // See note on `test_skip_brew_accepted` for why this checks the exact
+    // See note on `test_skip_brew_rejected` for why this checks the exact
     // validator phrase rather than substring-matching "invalid"/"unknown".
     assert!(
         !stderr.contains("invalid --skip value"),
@@ -2122,7 +2132,7 @@ crates:
         .unwrap();
 
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // See note on `test_skip_brew_accepted` for why this checks the exact
+    // See note on `test_skip_brew_rejected` for why this checks the exact
     // validator phrase rather than substring-matching "invalid"/"unknown".
     assert!(
         !stderr.contains("invalid --skip value"),
@@ -2131,9 +2141,10 @@ crates:
     );
 }
 
-/// `--skip=homebrew` is REJECTED — the long alias is not valid.
+/// `--skip=homebrew` is ACCEPTED — `homebrew` is the canonical, GoReleaser-
+/// aligned publisher skip token (the short `brew` alias was removed).
 #[test]
-fn test_skip_homebrew_alias_rejected() {
+fn test_skip_homebrew_accepted() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
     init_git_repo(tmp.path());
@@ -2163,24 +2174,24 @@ crates:
         .output()
         .unwrap();
 
-    assert!(
-        !output.status.success(),
-        "--skip=homebrew should be rejected (use --skip=brew); command unexpectedly succeeded"
-    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // Match the validator's exact phrase. The looser substring search on
-    // "invalid"/"unknown"/"valid" false-positives because dry-run output
-    // contains target triples like `x86_64-unknown-linux-gnu`.
+    // Validation passing is the assertion: the well-known rejection phrase
+    // must be absent. The command may still fail LATER (dry-run snapshot has
+    // nothing to publish) — that is unrelated to skip-token validation. The
+    // looser substring search on "invalid"/"unknown" false-positives because
+    // dry-run output contains target triples like `x86_64-unknown-linux-gnu`.
     assert!(
-        stderr.contains("invalid --skip value"),
-        "--skip=homebrew rejection should mention invalidity, got:\n{}",
+        !stderr.contains("invalid --skip value"),
+        "--skip=homebrew should be accepted, got:\n{}",
         stderr
     );
 }
 
-/// `--skip=chocolatey` is REJECTED — the long alias is not valid.
+/// `--skip=chocolatey` is ACCEPTED — `chocolatey` is the canonical,
+/// GoReleaser-aligned publisher skip token (the short `choco` alias was
+/// removed).
 #[test]
-fn test_skip_chocolatey_alias_rejected() {
+fn test_skip_chocolatey_accepted() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
     init_git_repo(tmp.path());
@@ -2210,16 +2221,12 @@ crates:
         .output()
         .unwrap();
 
-    assert!(
-        !output.status.success(),
-        "--skip=chocolatey should be rejected (use --skip=choco); command unexpectedly succeeded"
-    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    // Match the validator's exact phrase (see note on
-    // `test_skip_homebrew_alias_rejected`).
+    // Validation passing is the assertion (see note on
+    // `test_skip_homebrew_accepted`).
     assert!(
-        stderr.contains("invalid --skip value"),
-        "--skip=chocolatey rejection should mention invalidity, got:\n{}",
+        !stderr.contains("invalid --skip value"),
+        "--skip=chocolatey should be accepted, got:\n{}",
         stderr
     );
 }
@@ -2262,11 +2269,250 @@ crates:
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     // Match the validator's exact phrase (see note on
-    // `test_skip_homebrew_alias_rejected`).
+    // `test_skip_brew_rejected`).
     assert!(
         stderr.contains("invalid --skip value"),
         "--skip=crates rejection should mention invalidity, got:\n{}",
         stderr
+    );
+}
+
+/// `release --publishers cargo,homebrew` parses a 2-element allowlist of
+/// known publisher names and passes validation (the command may fail later
+/// for unrelated reasons; only skip/publisher validation is asserted here).
+#[test]
+fn test_publishers_allowlist_accepted() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--publishers=cargo,homebrew",
+            "--dry-run",
+            "--snapshot",
+            "--single-target",
+            "--clean",
+            "--timeout",
+            "30s",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("invalid --publishers value"),
+        "--publishers=cargo,homebrew should be accepted, got:\n{}",
+        stderr
+    );
+}
+
+/// `release --publishers bogusname` is REJECTED with a loud error naming the
+/// valid publishers and a nonzero exit.
+#[test]
+fn test_publishers_typo_rejected() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--publishers=bogusname",
+            "--dry-run",
+            "--snapshot",
+            "--single-target",
+            "--clean",
+            "--timeout",
+            "30s",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "--publishers=bogusname should be rejected; command unexpectedly succeeded"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid --publishers value") && stderr.contains("Valid publishers:"),
+        "--publishers typo should name the valid publishers, got:\n{}",
+        stderr
+    );
+}
+
+/// `release --skip bogusname` is REJECTED — `bogusname` is neither a stage
+/// token nor a publisher name. Loud error, nonzero exit.
+#[test]
+fn test_skip_publisher_typo_rejected() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--skip=bogusname",
+            "--dry-run",
+            "--snapshot",
+            "--single-target",
+            "--clean",
+            "--timeout",
+            "30s",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "--skip=bogusname should be rejected; command unexpectedly succeeded"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid --skip value"),
+        "--skip typo should be flagged invalid, got:\n{}",
+        stderr
+    );
+}
+
+/// `release --skip homebrew` flows to validation cleanly under the unified
+/// denylist now that `homebrew` is the GoReleaser-canonical skip token.
+/// (Companion to `test_skip_homebrew_accepted` — asserts the same token via
+/// the GR-parity framing.)
+#[test]
+fn test_skip_homebrew_canonical_accepted() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--skip=homebrew",
+            "--dry-run",
+            "--snapshot",
+            "--single-target",
+            "--clean",
+            "--timeout",
+            "30s",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("invalid --skip value"),
+        "--skip=homebrew (GR-canonical) should validate, got:\n{}",
+        stderr
+    );
+}
+
+/// `publish --publishers npm` and `check config --publishers npm` both accept
+/// the selector flag and pass validation.
+#[test]
+fn test_publish_and_check_accept_publishers_flag() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+
+    // `publish` reaches the validation gate then fails later (no dist/git);
+    // the assertion is that the selector itself is not flagged invalid.
+    let publish_out = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["publish", "--publishers=npm", "--dry-run"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let publish_err = String::from_utf8_lossy(&publish_out.stderr);
+    assert!(
+        !publish_err.contains("invalid --publishers value"),
+        "publish --publishers=npm should be accepted, got:\n{}",
+        publish_err
+    );
+
+    // `check config` validates the selectors without running anything.
+    let check_out = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["check", "config", "--publishers=npm"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let check_err = String::from_utf8_lossy(&check_out.stderr);
+    assert!(
+        !check_err.contains("invalid --publishers value"),
+        "check config --publishers=npm should be accepted, got:\n{}",
+        check_err
+    );
+
+    // A check-config typo is loud + nonzero — proves the validation gate is
+    // live on the check path.
+    let check_typo = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["check", "config", "--publishers=bogusname"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(
+        !check_typo.status.success(),
+        "check config --publishers=bogusname should exit nonzero"
+    );
+    let check_typo_err = String::from_utf8_lossy(&check_typo.stderr);
+    assert!(
+        check_typo_err.contains("invalid --publishers value"),
+        "check config publisher typo should be flagged, got:\n{}",
+        check_typo_err
     );
 }
 

@@ -28,6 +28,13 @@ pub struct PublishOpts {
     /// Surface per-crate "no `<publisher>` config block" skip lines at default
     /// verbosity (`--show-skipped`); otherwise they route to debug.
     pub show_skipped: bool,
+    /// `--skip`: unified stage/publisher denylist. Flows to
+    /// [`ContextOptions::skip_stages`]; the dispatch loop deselects any named
+    /// publisher. Always wins over `publishers`.
+    pub skip: Vec<String>,
+    /// `--publishers`: per-publisher allowlist (empty = all configured run).
+    /// Flows to [`ContextOptions::publisher_allowlist`].
+    pub publishers: Vec<String>,
 }
 
 pub fn run(opts: PublishOpts) -> Result<()> {
@@ -45,6 +52,8 @@ pub fn run(opts: PublishOpts) -> Result<()> {
         merge: opts.merge,
         allow_rerun: opts.allow_rerun,
         show_skipped: opts.show_skipped,
+        skip_stages: opts.skip,
+        publisher_allowlist: opts.publishers,
         ..Default::default()
     };
 
@@ -109,6 +118,8 @@ crates:
             merge: false,
             allow_rerun: false,
             show_skipped: false,
+            skip: vec![],
+            publishers: vec![],
         })
         .unwrap_err()
         .to_string();
@@ -141,6 +152,8 @@ crates:
             merge: false,
             allow_rerun: false,
             show_skipped: false,
+            skip: vec![],
+            publishers: vec![],
         });
         assert!(result.is_err(), "must fail with no manifest / no git");
     }
@@ -162,6 +175,8 @@ crates:
             merge: true,
             allow_rerun: false,
             show_skipped: false,
+            skip: vec![],
+            publishers: vec![],
         })
         .unwrap_err()
         .to_string();
@@ -183,6 +198,8 @@ crates:
             merge: false,
             allow_rerun: false,
             show_skipped: false,
+            skip: vec![],
+            publishers: vec![],
         };
         assert!(opts.dry_run);
         assert!(opts.quiet);
@@ -204,6 +221,8 @@ crates:
             merge: true,
             allow_rerun: false,
             show_skipped: false,
+            skip: vec![],
+            publishers: vec![],
         };
         assert!(opts.merge);
     }

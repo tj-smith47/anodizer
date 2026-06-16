@@ -37,7 +37,8 @@ Run the full release pipeline
 | `--nightly` | — | — | Create a nightly release with date-based version |
 | `--dry-run` | — | — | Run full pipeline without side effects |
 | `--clean` | — | — | Remove dist directory before starting |
-| `--skip` | — | — | Skip stages (comma-separated, e.g. docker,announce) |
+| `--skip` | — | — | Skip stages or publishers (comma-separated, e.g. docker,announce,npm). Unified denylist: a stage name skips the stage, a publisher name (npm, homebrew, chocolatey, …) skips that publisher. |
+| `--publishers` | — | — | Comma-separated publishers to run (default: all configured). --skip always wins over --publishers. |
 | `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
 | `--timeout` | — | `60m` | Pipeline timeout duration (e.g., 60m, 1h, 5s) |
 | `--parallelism` | `-p` | — | Maximum number of parallel build jobs (default: number of CPUs) |
@@ -106,6 +107,8 @@ Validate the workspace's anodize config
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--workspace` | — | — | Validate a specific workspace in a monorepo config |
+| `--skip` | — | — | Validate these skip tokens (stages or publishers) against the known set without running anything (comma-separated). Unified denylist: a stage name skips the stage, a publisher name (npm, homebrew, chocolatey, …) skips that publisher. |
+| `--publishers` | — | — | Validate these publisher names against the configured set (comma-separated). --skip always wins over --publishers. |
 
 
 ### `anodizer check determinism`
@@ -278,6 +281,8 @@ Run only the publish stages (release, publish, blob) from a completed dist/
 | `--merge` | — | — | Merge artifacts from `release --split` workers (dist/<subdir>/context.json) before running the publish-only pipeline. Mirrors `goreleaser publish --merge`. |
 | `--allow-rerun` | — | — | Force re-publish even when a prior report.json exists. WARNING: PR-based publishers will open duplicate pull requests. |
 | `--show-skipped` | — | — | Show per-crate 'no <publisher> config block' skip lines at default verbosity (normally only visible with --debug). Use to diagnose why a publisher didn't run for a given crate. |
+| `--skip` | — | — | Skip stages or publishers (comma-separated, e.g. npm,blob). Unified denylist: a stage name skips the stage, a publisher name (npm, homebrew, chocolatey, …) skips that publisher. |
+| `--publishers` | — | — | Comma-separated publishers to run (default: all configured). --skip always wins over --publishers. |
 
 
 ### `anodizer bump`

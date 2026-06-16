@@ -26,6 +26,10 @@ pub struct ReleaseOpts {
     pub dry_run: bool,
     pub clean: bool,
     pub skip: Vec<String>,
+    /// `--publishers`: per-publisher allowlist (empty = all configured run).
+    /// Flows to [`ContextOptions::publisher_allowlist`]; the dispatch loop
+    /// deselects any publisher not listed. `--skip` always wins.
+    pub publishers: Vec<String>,
     pub token: Option<String>,
     pub verbose: bool,
     pub debug: bool,
@@ -1157,7 +1161,7 @@ fn build_context_options(
         // command sets this true.
         changelog_preview: false,
         allow_snapshot_publish: opts.allow_snapshot_publish,
-        publisher_allowlist: Vec::new(),
+        publisher_allowlist: opts.publishers.clone(),
     }
 }
 
@@ -1830,6 +1834,7 @@ mod tests {
             dry_run: false,
             clean: false,
             skip: vec![],
+            publishers: vec![],
             token: None,
             verbose: false,
             debug: false,

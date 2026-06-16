@@ -1,5 +1,5 @@
 use anodizer_cli::{CheckCmd, Cli, Commands, TagSub, num_cpus};
-use anodizer_core::context::{VALID_BUILD_SKIPS, VALID_RELEASE_SKIPS, validate_skip_values};
+use anodizer_core::context::{VALID_BUILD_SKIPS, validate_skip_values};
 
 use clap::{CommandFactory, FromArgMatches};
 use colored::Colorize;
@@ -304,6 +304,7 @@ fn run() {
             dry_run,
             clean,
             skip,
+            publishers,
             token,
             timeout,
             parallelism,
@@ -390,7 +391,14 @@ fn run() {
                 }
             };
 
-            if let Err(msg) = validate_skip_values(&skip, VALID_RELEASE_SKIPS) {
+            // `--publishers` (allowlist) AND `--skip` (unified stage/publisher
+            // denylist) are validated together against the drift-proof valid
+            // name set before any irreversible work. A typo here would either
+            // silently publish nothing (empty effective allowlist) or fail to
+            // skip an intended publisher — both one-way-door hazards.
+            if let Err(msg) =
+                anodizer_stage_publish::registry::validate_publisher_selection(&publishers, &skip)
+            {
                 eprintln!("{}", anodizer_core::log::render_error(&msg));
                 std::process::exit(1);
             }
@@ -406,6 +414,7 @@ fn run() {
                     dry_run,
                     clean,
                     skip,
+                    publishers,
                     token,
                     verbose: cli.verbose,
                     debug: cli.debug,
@@ -488,13 +497,29 @@ fn run() {
             })
         }
         Commands::Check { cmd } => match cmd {
-            CheckCmd::Config { workspace } => commands::check::config::run(
-                cli.config.as_deref(),
-                workspace.as_deref(),
-                cli.verbose,
-                cli.debug,
-                cli.quiet,
-            ),
+            CheckCmd::Config {
+                workspace,
+                skip,
+                publishers,
+            } => {
+                // `check config` is the validation entry point: reject a typo'd
+                // `--skip` / `--publishers` selector here so an operator can
+                // verify a planned selection without running the pipeline.
+                if let Err(msg) = anodizer_stage_publish::registry::validate_publisher_selection(
+                    &publishers,
+                    &skip,
+                ) {
+                    eprintln!("{}", anodizer_core::log::render_error(&msg));
+                    std::process::exit(1);
+                }
+                commands::check::config::run(
+                    cli.config.as_deref(),
+                    workspace.as_deref(),
+                    cli.verbose,
+                    cli.debug,
+                    cli.quiet,
+                )
+            }
             CheckCmd::Determinism(args) => {
                 commands::check::determinism::run(args, cli.verbose, cli.debug, cli.quiet)
             }
@@ -679,18 +704,30 @@ fn run() {
             merge,
             allow_rerun,
             show_skipped,
-        } => commands::publish_cmd::run(commands::publish_cmd::PublishOpts {
-            dry_run,
-            token,
-            dist,
-            config_override: cli.config.clone(),
-            verbose: cli.verbose,
-            debug: cli.debug,
-            quiet: cli.quiet,
-            merge,
-            allow_rerun,
-            show_skipped,
-        }),
+            skip,
+            publishers,
+        } => {
+            if let Err(msg) =
+                anodizer_stage_publish::registry::validate_publisher_selection(&publishers, &skip)
+            {
+                eprintln!("{}", anodizer_core::log::render_error(&msg));
+                std::process::exit(1);
+            }
+            commands::publish_cmd::run(commands::publish_cmd::PublishOpts {
+                dry_run,
+                token,
+                dist,
+                config_override: cli.config.clone(),
+                verbose: cli.verbose,
+                debug: cli.debug,
+                quiet: cli.quiet,
+                merge,
+                allow_rerun,
+                show_skipped,
+                skip,
+                publishers,
+            })
+        }
         Commands::Bump {
             level_or_version,
             package,
@@ -1316,7 +1353,7 @@ mod tests {
         );
         if let Some(Commands::Check { cmd }) = cli.unwrap().command {
             match cmd {
-                CheckCmd::Config { workspace } => {
+                CheckCmd::Config { workspace, .. } => {
                     assert_eq!(workspace, Some("backend".to_string()));
                 }
                 _ => panic!("expected Check::Config command"),
@@ -1331,7 +1368,7 @@ mod tests {
         let cli = Cli::try_parse_from(["anodizer", "check", "config"]).unwrap();
         if let Some(Commands::Check { cmd }) = cli.command {
             match cmd {
-                CheckCmd::Config { workspace } => {
+                CheckCmd::Config { workspace, .. } => {
                     assert!(
                         workspace.is_none(),
                         "check config --workspace should default to None"

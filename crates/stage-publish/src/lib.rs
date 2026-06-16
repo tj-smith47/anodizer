@@ -340,13 +340,13 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
     let skip_via_cli = ctx.options.skip_post_publish_poll;
 
     // Chocolatey eligibility — collect a job per per-crate `chocolatey:`
-    // block when the publisher isn't deselected. Two gates, both required:
-    // the `choco` STAGE token (`should_skip`) preserves the historical
-    // stage-skip behaviour, and `publisher_deselected("chocolatey")` (the
-    // canonical PUBLISHER name, not the "choco" stage token) additionally
-    // honours a `--publishers` allowlist that excludes chocolatey — a
-    // publisher the dispatch loop never ran must never be polled.
-    if !ctx.should_skip("choco") && !ctx.publisher_deselected("chocolatey") {
+    // block when the publisher isn't deselected. `publisher_deselected`
+    // folds in both selectors keyed on the canonical publisher name
+    // `chocolatey`: `--skip=chocolatey` (the denylist; the skip token now
+    // equals the publisher name with no `choco` short alias) and a
+    // `--publishers` allowlist that excludes chocolatey. A publisher the
+    // dispatch loop never ran must never be polled.
+    if !ctx.publisher_deselected("chocolatey") {
         for crate_name in
             &crates_with_publisher(ctx, selected, |p: &PublishConfig| p.chocolatey.is_some())
         {
@@ -392,12 +392,10 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
 
     // WinGet eligibility — the PR is rediscovered via the GitHub search API
     // (mirroring `preflight::Winget`), so we don't need to thread a PR URL
-    // through from the publish step. A single `publisher_deselected` gate
-    // suffices here because the stage token and the canonical publisher name
-    // coincide ("winget"): `publisher_deselected("winget")` already folds in
-    // `should_skip("winget")` plus the `--publishers` allowlist. (The
-    // chocolatey arm above keeps a separate `should_skip("choco")` because
-    // its stage token "choco" differs from the publisher name "chocolatey".)
+    // through from the publish step. A single `publisher_deselected("winget")`
+    // gate folds in both `--skip=winget` and the `--publishers` allowlist,
+    // the same shape as the chocolatey arm above (both skip tokens now equal
+    // the canonical publisher name).
     if !ctx.publisher_deselected("winget") {
         for crate_name in
             &crates_with_publisher(ctx, selected, |p: &PublishConfig| p.winget.is_some())
@@ -796,6 +794,21 @@ impl Stage for EmissionValidateStage {
     }
 }
 
+/// Operator-facing summary line for a publisher recorded as
+/// [`SkipReason::Deselected`]. The `Deselected` outcome folds two operator
+/// causes — a `--skip` denylist hit and a `--publishers` allowlist exclusion —
+/// so the cause is re-derived from the context to surface the actionable
+/// reason. `--skip` always wins, so it is tested first: a publisher named in
+/// both selectors reports the denylist cause.
+fn deselected_skip_line(ctx: &Context, name: &str) -> String {
+    let reason = if ctx.should_skip(name) {
+        "excluded via --skip"
+    } else {
+        "not in --publishers allowlist"
+    };
+    format!("skipped {name} — {reason}")
+}
+
 pub struct PublishStage;
 
 impl PublishStage {
@@ -867,6 +880,8 @@ impl PublishStage {
                 log.warn(&format!("publisher {} failed: {}", r.name, msg));
             } else if let PublisherOutcome::Skipped(SkipReason::SubmitterGated) = &r.outcome {
                 log.status(&format!("skipped {} via submitter-gate", r.name));
+            } else if let PublisherOutcome::Skipped(SkipReason::Deselected) = &r.outcome {
+                log.status(&deselected_skip_line(ctx, &r.name));
             }
         }
 
@@ -1076,6 +1091,57 @@ mod tests {
     #[test]
     fn test_stage_name() {
         assert_eq!(PublishStage.name(), "publish");
+    }
+
+    #[test]
+    fn deselected_skip_line_names_the_skip_cause() {
+        // A publisher named in `--skip` reports the denylist cause.
+        let ctx = Context::new(
+            Config::default(),
+            ContextOptions {
+                skip_stages: vec!["npm".to_string()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            deselected_skip_line(&ctx, "npm"),
+            "skipped npm — excluded via --skip"
+        );
+    }
+
+    #[test]
+    fn deselected_skip_line_names_the_allowlist_cause() {
+        // A publisher absent from a non-empty `--publishers` allowlist (and
+        // NOT in `--skip`) reports the allowlist cause.
+        let ctx = Context::new(
+            Config::default(),
+            ContextOptions {
+                publisher_allowlist: vec!["cargo".to_string()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            deselected_skip_line(&ctx, "npm"),
+            "skipped npm — not in --publishers allowlist"
+        );
+    }
+
+    #[test]
+    fn deselected_skip_line_prefers_skip_when_both_apply() {
+        // `--skip` always wins: a publisher in both selectors reports the
+        // denylist cause, not the allowlist cause.
+        let ctx = Context::new(
+            Config::default(),
+            ContextOptions {
+                skip_stages: vec!["npm".to_string()],
+                publisher_allowlist: vec!["cargo".to_string()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(
+            deselected_skip_line(&ctx, "npm"),
+            "skipped npm — excluded via --skip"
+        );
     }
 
     #[test]
