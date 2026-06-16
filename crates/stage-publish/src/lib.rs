@@ -390,13 +390,15 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
         }
     }
 
-    // WinGet eligibility — same pattern, same dual gate as chocolatey. The
-    // PR is rediscovered via the GitHub search API (mirroring
-    // `preflight::Winget`), so we don't need to thread a PR URL through
-    // from the publish step. `winget` is both the stage token AND the
-    // canonical publisher name, but both checks are kept for symmetry with
-    // the chocolatey arm and to honour `--publishers` allowlist exclusion.
-    if !ctx.should_skip("winget") && !ctx.publisher_deselected("winget") {
+    // WinGet eligibility — the PR is rediscovered via the GitHub search API
+    // (mirroring `preflight::Winget`), so we don't need to thread a PR URL
+    // through from the publish step. A single `publisher_deselected` gate
+    // suffices here because the stage token and the canonical publisher name
+    // coincide ("winget"): `publisher_deselected("winget")` already folds in
+    // `should_skip("winget")` plus the `--publishers` allowlist. (The
+    // chocolatey arm above keeps a separate `should_skip("choco")` because
+    // its stage token "choco" differs from the publisher name "chocolatey".)
+    if !ctx.publisher_deselected("winget") {
         for crate_name in
             &crates_with_publisher(ctx, selected, |p: &PublishConfig| p.winget.is_some())
         {
@@ -1988,6 +1990,83 @@ mod tests {
         assert_eq!(results[1]["publisher"], "winget");
         assert_eq!(results[1]["package"], "TJSmith.MyLib");
         assert_eq!(results[1]["status"]["kind"], "not_polled");
+    }
+
+    /// A publisher deselected via the `--publishers` ALLOWLIST (not via a
+    /// stage-skip token) is not polled. The allowlist contains only winget,
+    /// so chocolatey — though configured with polling enabled — must be
+    /// gated out of `run_post_publish_pollers` by
+    /// `publisher_deselected("chocolatey")`.
+    ///
+    /// The observable seam is the same one the sibling skip-path test uses:
+    /// with `skip_post_publish_poll: true`, each eligible publisher records a
+    /// `NotPolled` row in `ctx.stage_outputs.post_publish_results`. A row is
+    /// only ever produced inside the per-publisher
+    /// `if !ctx.publisher_deselected(..)` guard, so the absence of any
+    /// chocolatey row is direct proof the poller path was never entered for
+    /// it. (The CLI flag makes the assertion network-free; the poll guard
+    /// under test is independent of that flag.)
+    #[test]
+    fn allowlist_deselected_publisher_is_not_polled() {
+        use anodizer_core::config::{ChocolateyConfig, PostPublishPollConfig, WingetConfig};
+
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mylib".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                chocolatey: Some(ChocolateyConfig {
+                    name: Some("mylib-choco".to_string()),
+                    post_publish_poll: Some(PostPublishPollConfig {
+                        enabled: true,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                winget: Some(WingetConfig {
+                    publisher: Some("TJSmith".to_string()),
+                    name: Some("MyLib".to_string()),
+                    post_publish_poll: Some(PostPublishPollConfig {
+                        enabled: true,
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                skip_post_publish_poll: true,
+                // Allowlist excludes chocolatey: only winget may be polled.
+                // No stage-skip token is involved — this exercises the
+                // allowlist arm of `publisher_deselected`, not `should_skip`.
+                publisher_allowlist: vec!["winget".to_string()],
+                ..Default::default()
+            },
+        );
+
+        let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+        run_post_publish_pollers(&mut ctx, &[], &log);
+
+        let results = &ctx.stage_outputs.post_publish_results;
+        assert_eq!(
+            results.len(),
+            1,
+            "only the allowlisted publisher (winget) may be polled (got {results:?})"
+        );
+        assert_eq!(
+            results[0]["publisher"], "winget",
+            "winget is allowlisted and must still be polled"
+        );
+        assert!(
+            !results.iter().any(|r| r["publisher"] == "chocolatey"),
+            "chocolatey is excluded by the allowlist and must never be polled (got {results:?})"
+        );
     }
 
     #[test]

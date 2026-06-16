@@ -117,14 +117,17 @@ pub fn fake_with_rollback(
     })
 }
 
-/// Minimal [`Publisher`] that counts its `rollback()` invocations.
-/// Used by idempotency tests that need to assert "rollback() was NOT
-/// called a second time" across two `run_with_publishers` invocations
-/// — the standard [`FakePublisher`] exposes no such counter.
+/// Minimal [`Publisher`] that counts its `run()` and `rollback()`
+/// invocations. Used by idempotency tests that need to assert
+/// "rollback() was NOT called a second time" across two
+/// `run_with_publishers` invocations, and by selection tests that need
+/// to assert "run() was NEVER called" for a deselected publisher — the
+/// standard [`FakePublisher`] exposes no such counters.
 pub struct FakeCountingPublisher {
     pub name: String,
     pub group: PublisherGroup,
     pub required: bool,
+    pub run_calls: Arc<AtomicUsize>,
     pub rollback_calls: Arc<AtomicUsize>,
 }
 
@@ -142,6 +145,7 @@ impl Publisher for FakeCountingPublisher {
         false
     }
     fn run(&self, _ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
+        self.run_calls.fetch_add(1, Ordering::SeqCst);
         Ok(PublishEvidence::new(self.name.clone()))
     }
     fn rollback(&self, _ctx: &mut Context, _evidence: &PublishEvidence) -> anyhow::Result<()> {
@@ -151,21 +155,44 @@ impl Publisher for FakeCountingPublisher {
 }
 
 /// Convenience constructor for [`FakeCountingPublisher`]. Returns the
-/// boxed publisher alongside the shared counter so the test can assert
-/// `counter.load(Ordering::SeqCst) == N` after dispatch.
+/// boxed publisher alongside the shared *rollback* counter so the test
+/// can assert `counter.load(Ordering::SeqCst) == N` after dispatch.
+/// For the run-invocation counter, use [`fake_counting_runs`].
 pub fn fake_counting(
     name: &str,
     group: PublisherGroup,
     required: bool,
 ) -> (Box<dyn Publisher>, Arc<AtomicUsize>) {
-    let counter = Arc::new(AtomicUsize::new(0));
+    let rollback_calls = Arc::new(AtomicUsize::new(0));
     let publisher = Box::new(FakeCountingPublisher {
         name: name.to_string(),
         group,
         required,
-        rollback_calls: counter.clone(),
+        run_calls: Arc::new(AtomicUsize::new(0)),
+        rollback_calls: rollback_calls.clone(),
     });
-    (publisher, counter)
+    (publisher, rollback_calls)
+}
+
+/// Convenience constructor for [`FakeCountingPublisher`]. Returns the
+/// boxed publisher alongside the shared *run* counter so the test can
+/// assert that `run()` was (or was not) invoked — independent of the
+/// recorded [`PublisherOutcome`]. For the rollback counter, use
+/// [`fake_counting`].
+pub fn fake_counting_runs(
+    name: &str,
+    group: PublisherGroup,
+    required: bool,
+) -> (Box<dyn Publisher>, Arc<AtomicUsize>) {
+    let run_calls = Arc::new(AtomicUsize::new(0));
+    let publisher = Box::new(FakeCountingPublisher {
+        name: name.to_string(),
+        group,
+        required,
+        run_calls: run_calls.clone(),
+        rollback_calls: Arc::new(AtomicUsize::new(0)),
+    });
+    (publisher, run_calls)
 }
 
 /// Minimal [`Publisher`] whose `run()` returns `Ok` but records an

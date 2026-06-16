@@ -112,6 +112,10 @@ pub fn dispatch(
                 && opts.gate_submitter
                 && report.submitter_gate_closed()
             {
+                ctx.logger("publish").status(&format!(
+                    "skipping {} — submitter-gated by an earlier required failure",
+                    p.name()
+                ));
                 report.results.push(PublisherResult {
                     name: p.name().into(),
                     group,
@@ -131,6 +135,10 @@ pub fn dispatch(
             // proxy). Honoured before `simulate_failure` so the test
             // harness still observes the real nightly gate.
             if ctx.is_nightly() && p.skips_on_nightly() {
+                ctx.logger("publish").status(&format!(
+                    "skipping {} — not published on --nightly",
+                    p.name()
+                ));
                 report.results.push(PublisherResult {
                     name: p.name().into(),
                     group,
@@ -1229,34 +1237,36 @@ mod tests {
     }
 
     /// A deselected publisher's `run()` is NOT invoked — proven with a
-    /// counting fake whose `run()` would record an invocation and whose
-    /// rollback counter must therefore stay at zero (rollback only walks
-    /// publishers whose `run` succeeded). The companion `FakeOutcome::Fail`
-    /// tests above prove non-invocation via the recorded outcome; this one
-    /// proves it via a side-effect counter that the dispatch loop would
-    /// otherwise touch.
+    /// `run()`-invocation counter that is orthogonal to the recorded
+    /// outcome. The counting fake's `run()` increments `run_calls` on
+    /// every call; after dispatching a deselected publisher the counter
+    /// must read `0`. This is independent of the companion
+    /// `FakeOutcome::Fail` tests (which infer non-invocation from the
+    /// `Skipped(Deselected)` outcome): even if the dispatch loop were
+    /// mis-wired to both run AND mislabel the outcome, this counter would
+    /// still catch the stray `run()` call.
     #[test]
     fn deselected_publisher_run_not_invoked() {
         let mut ctx = Context::test_fixture();
         ctx.options.skip_stages = vec!["npm".to_string()];
-        // A succeeding fake whose run() returns evidence; were it dispatched,
-        // its result would be `Succeeded` with evidence. Deselection must
-        // yield `Skipped(Deselected)` with no evidence instead.
-        let publishers = vec![fake(
-            "npm",
-            PublisherGroup::Manager,
-            false,
-            FakeOutcome::Succeed,
-        )];
+        let (publisher, run_calls) = fake_counting_runs("npm", PublisherGroup::Manager, false);
+        let publishers = vec![publisher];
         let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
             .expect("dispatch returns Ok");
+
+        assert_eq!(
+            run_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "deselected npm's run() must never be invoked",
+        );
+
         let npm = &report.results[0];
         assert!(
             matches!(
                 npm.outcome,
                 PublisherOutcome::Skipped(SkipReason::Deselected)
             ),
-            "deselected npm must not run, got {:?}",
+            "deselected npm must record Skipped(Deselected), got {:?}",
             npm.outcome
         );
         assert!(
