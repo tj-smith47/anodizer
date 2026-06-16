@@ -902,8 +902,11 @@ fn publish_optional_deps(
     let dist_tag = resolve_tag(ctx, cfg)?;
     let access = resolve_access(cfg);
 
-    // Gate provenance on runner capability ONCE for the whole metapackage set
-    // (per-platform packages + metapackage) so all share one publishConfig.
+    // Same graceful-degrade principle as npm AUTH (OIDC↔NPM_TOKEN fallback),
+    // applied to the independent PROVENANCE axis: the auth fallback cannot
+    // rescue a provenance 422 because publishConfig.provenance:true attaches an
+    // attestation regardless of which credential publishes. Gate ONCE for the
+    // whole set (per-platform + metapackage) so all share one publishConfig.
     let metapackage = super::optional_deps::resolve_metapackage(cfg, crate_name).to_string();
     let provenance_override = effective_provenance_override(ctx, cfg, &metapackage, log);
     let layout = generate_layout(ctx, cfg, crate_name, &version, provenance_override, log)?;
