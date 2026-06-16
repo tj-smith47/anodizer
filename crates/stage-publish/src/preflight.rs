@@ -2978,8 +2978,10 @@ mod tests {
     // -----------------------------------------------------------------------
     // FakeToolDir-driven `cargo publish --dry-run` spawn coverage.
     //
-    // Stubs `cargo` on PATH and drives the REAL spawn in `run_cargo_dry_run`,
-    // asserting the argv shape and outcome classification end-to-end.
+    // Drives the REAL spawn against a fake `cargo` binary addressed by absolute
+    // path (`run_cargo_dry_run_with_binary`), never mutating the process-wide
+    // PATH — so these run un-serialized without racing concurrent PATH-resolved
+    // spawns elsewhere in the suite. Asserts argv shape + outcome classification.
     // -----------------------------------------------------------------------
     #[cfg(unix)]
     mod publish_simulation_spawn {
@@ -2992,13 +2994,15 @@ mod tests {
         }
 
         #[test]
-        #[serial_test::serial]
         fn dry_run_exit_zero_is_ok_and_argv_is_publish_dry_run() {
             let fake = FakeToolDir::new();
             fake.tool("cargo").exit(0).install();
-            let _guard = fake.activate();
 
-            let out = run_cargo_dry_run("anodizer-core", &quiet_log());
+            let out = run_cargo_dry_run_with_binary(
+                &fake.tool_path("cargo"),
+                "anodizer-core",
+                &quiet_log(),
+            );
             assert_eq!(out, DryRunOutcome::Ok);
 
             let calls = fake.calls("cargo");
@@ -3011,16 +3015,18 @@ mod tests {
         }
 
         #[test]
-        #[serial_test::serial]
         fn dry_run_compile_error_on_stderr_aborts() {
             let fake = FakeToolDir::new();
             fake.tool("cargo")
                 .exit(101)
                 .stderr("error[E0425]: cannot find function `probe_dir` in this scope")
                 .install();
-            let _guard = fake.activate();
 
-            let out = run_cargo_dry_run("anodizer-stage-blob", &quiet_log());
+            let out = run_cargo_dry_run_with_binary(
+                &fake.tool_path("cargo"),
+                "anodizer-stage-blob",
+                &quiet_log(),
+            );
             match out {
                 DryRunOutcome::CompileError(line) => {
                     assert!(line.contains("probe_dir"), "line: {line}")
@@ -3030,16 +3036,18 @@ mod tests {
         }
 
         #[test]
-        #[serial_test::serial]
         fn dry_run_missing_sibling_on_stderr_is_benign_signal() {
             let fake = FakeToolDir::new();
             fake.tool("cargo")
                 .exit(101)
                 .stderr("error: no matching package named `anodizer-core` found")
                 .install();
-            let _guard = fake.activate();
 
-            let out = run_cargo_dry_run("anodizer-stage-blob", &quiet_log());
+            let out = run_cargo_dry_run_with_binary(
+                &fake.tool_path("cargo"),
+                "anodizer-stage-blob",
+                &quiet_log(),
+            );
             match out {
                 DryRunOutcome::BenignSiblingMissing(line) => {
                     assert!(line.contains("anodizer-core"), "line: {line}")
