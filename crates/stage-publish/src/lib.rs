@@ -340,8 +340,13 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
     let skip_via_cli = ctx.options.skip_post_publish_poll;
 
     // Chocolatey eligibility — collect a job per per-crate `chocolatey:`
-    // block when the `choco` skip isn't engaged.
-    if !ctx.should_skip("choco") {
+    // block when the publisher isn't deselected. Two gates, both required:
+    // the `choco` STAGE token (`should_skip`) preserves the historical
+    // stage-skip behaviour, and `publisher_deselected("chocolatey")` (the
+    // canonical PUBLISHER name, not the "choco" stage token) additionally
+    // honours a `--publishers` allowlist that excludes chocolatey — a
+    // publisher the dispatch loop never ran must never be polled.
+    if !ctx.should_skip("choco") && !ctx.publisher_deselected("chocolatey") {
         for crate_name in
             &crates_with_publisher(ctx, selected, |p: &PublishConfig| p.chocolatey.is_some())
         {
@@ -385,10 +390,13 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
         }
     }
 
-    // WinGet eligibility — same pattern. The PR is rediscovered via the
-    // GitHub search API (mirroring `preflight::Winget`), so we don't need
-    // to thread a PR URL through from the publish step.
-    if !ctx.should_skip("winget") {
+    // WinGet eligibility — same pattern, same dual gate as chocolatey. The
+    // PR is rediscovered via the GitHub search API (mirroring
+    // `preflight::Winget`), so we don't need to thread a PR URL through
+    // from the publish step. `winget` is both the stage token AND the
+    // canonical publisher name, but both checks are kept for symmetry with
+    // the chocolatey arm and to honour `--publishers` allowlist exclusion.
+    if !ctx.should_skip("winget") && !ctx.publisher_deselected("winget") {
         for crate_name in
             &crates_with_publisher(ctx, selected, |p: &PublishConfig| p.winget.is_some())
         {

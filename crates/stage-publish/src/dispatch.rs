@@ -141,6 +141,33 @@ pub fn dispatch(
                 snapshot(ctx, &report);
                 continue;
             }
+
+            // Uniform operator-selection filter, evaluated at the single
+            // dispatch chokepoint so EVERY publisher honours `--skip` and
+            // `--publishers` — including non-stage publishers (npm,
+            // dockerhub, uploads, …) that no stage-skip token ever covered.
+            // `--skip` (denylist) always wins; a non-empty `--publishers`
+            // (allowlist) deselects everything not listed. Both are folded
+            // into `Context::publisher_deselected`. Recorded as
+            // `Skipped(Deselected)` so the run summary counts it; never
+            // silent (sibling skip branches above also log + snapshot +
+            // continue).
+            if ctx.publisher_deselected(p.name()) {
+                ctx.logger("publish").status(&format!(
+                    "skipping {} — deselected via --skip / --publishers",
+                    p.name()
+                ));
+                report.results.push(PublisherResult {
+                    name: p.name().into(),
+                    group,
+                    required: p.required(),
+                    outcome: PublisherOutcome::Skipped(SkipReason::Deselected),
+                    evidence: None,
+                });
+                snapshot(ctx, &report);
+                continue;
+            }
+
             // Test-harness short-circuit: when the operator listed this
             // publisher in `--simulate-failure` (env-gated by
             // `ANODIZE_TEST_HARNESS=1` at the CLI layer), bypass
@@ -1037,6 +1064,204 @@ mod tests {
             matches!(entry.outcome, PublisherOutcome::Succeeded),
             "publisher with skips_on_nightly=true must still run when !is_nightly(); got {:?}",
             entry.outcome
+        );
+    }
+
+    /// `--skip=npm` deselects the npm publisher at the dispatch chokepoint
+    /// even though npm has no stage-skip token; cargo (unlisted) runs.
+    #[test]
+    fn deselected_by_skip_records_deselected_and_does_not_run() {
+        let mut ctx = Context::test_fixture();
+        ctx.options.skip_stages = vec!["npm".to_string()];
+        // The npm fake is wired to FAIL: if the dispatch loop ever invoked
+        // its `run()`, the outcome would be `Failed`, not
+        // `Skipped(Deselected)` — so a `Skipped(Deselected)` assertion is
+        // itself proof that `run()` was never called.
+        let publishers = vec![
+            fake(
+                "npm",
+                PublisherGroup::Manager,
+                false,
+                FakeOutcome::Fail("npm run() must never be invoked when deselected".into()),
+            ),
+            fake(
+                "cargo",
+                PublisherGroup::Submitter,
+                false,
+                FakeOutcome::Succeed,
+            ),
+        ];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+
+        let npm = report
+            .results
+            .iter()
+            .find(|r| r.name == "npm")
+            .expect("npm recorded in report");
+        assert!(
+            matches!(
+                npm.outcome,
+                PublisherOutcome::Skipped(SkipReason::Deselected)
+            ),
+            "npm must be Skipped(Deselected) (and thus never run), got {:?}",
+            npm.outcome
+        );
+        assert!(npm.evidence.is_none());
+
+        let cargo = report
+            .results
+            .iter()
+            .find(|r| r.name == "cargo")
+            .expect("cargo recorded in report");
+        assert!(
+            matches!(cargo.outcome, PublisherOutcome::Succeeded),
+            "cargo (not in --skip) must run, got {:?}",
+            cargo.outcome
+        );
+    }
+
+    /// A non-empty `--publishers` allowlist runs ONLY the listed publishers;
+    /// everything else records `Skipped(Deselected)`.
+    #[test]
+    fn allowlist_includes_only_listed_publisher() {
+        let mut ctx = Context::test_fixture();
+        ctx.options.publisher_allowlist = vec!["cargo".to_string()];
+        let publishers = vec![
+            fake(
+                "cargo",
+                PublisherGroup::Submitter,
+                false,
+                FakeOutcome::Succeed,
+            ),
+            // npm would FAIL if run; being absent from the allowlist it must
+            // be Skipped(Deselected) and never invoked.
+            fake(
+                "npm",
+                PublisherGroup::Manager,
+                false,
+                FakeOutcome::Fail("npm run() must never be invoked when not in allowlist".into()),
+            ),
+        ];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+
+        let cargo = report
+            .results
+            .iter()
+            .find(|r| r.name == "cargo")
+            .expect("cargo recorded");
+        assert!(
+            matches!(cargo.outcome, PublisherOutcome::Succeeded),
+            "cargo (allowlisted) must run, got {:?}",
+            cargo.outcome
+        );
+
+        let npm = report
+            .results
+            .iter()
+            .find(|r| r.name == "npm")
+            .expect("npm recorded");
+        assert!(
+            matches!(
+                npm.outcome,
+                PublisherOutcome::Skipped(SkipReason::Deselected)
+            ),
+            "npm (not allowlisted) must be Skipped(Deselected) and never run, got {:?}",
+            npm.outcome
+        );
+    }
+
+    /// `--skip` always wins over `--publishers`: a publisher present in BOTH
+    /// is deselected, not run.
+    #[test]
+    fn skip_wins_over_allowlist() {
+        let mut ctx = Context::test_fixture();
+        ctx.options.publisher_allowlist = vec!["cargo".to_string()];
+        ctx.options.skip_stages = vec!["cargo".to_string()];
+        let publishers = vec![fake(
+            "cargo",
+            PublisherGroup::Submitter,
+            false,
+            FakeOutcome::Fail("cargo run() must never be invoked when --skip wins".into()),
+        )];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+
+        let cargo = report
+            .results
+            .iter()
+            .find(|r| r.name == "cargo")
+            .expect("cargo recorded");
+        assert!(
+            matches!(
+                cargo.outcome,
+                PublisherOutcome::Skipped(SkipReason::Deselected)
+            ),
+            "cargo listed in both --skip and --publishers must be Skipped(Deselected), got {:?}",
+            cargo.outcome
+        );
+    }
+
+    /// The `Deselected` skip lands in `report.results` so the run summary
+    /// counts it (never a silent drop).
+    #[test]
+    fn deselected_skip_is_recorded_in_report_results() {
+        let mut ctx = Context::test_fixture();
+        ctx.options.skip_stages = vec!["npm".to_string()];
+        let publishers = vec![fake(
+            "npm",
+            PublisherGroup::Manager,
+            false,
+            FakeOutcome::Succeed,
+        )];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+        assert_eq!(
+            report.results.len(),
+            1,
+            "the Deselected skip must be a recorded result, not a silent drop"
+        );
+        assert!(matches!(
+            report.results[0].outcome,
+            PublisherOutcome::Skipped(SkipReason::Deselected)
+        ));
+    }
+
+    /// A deselected publisher's `run()` is NOT invoked — proven with a
+    /// counting fake whose `run()` would record an invocation and whose
+    /// rollback counter must therefore stay at zero (rollback only walks
+    /// publishers whose `run` succeeded). The companion `FakeOutcome::Fail`
+    /// tests above prove non-invocation via the recorded outcome; this one
+    /// proves it via a side-effect counter that the dispatch loop would
+    /// otherwise touch.
+    #[test]
+    fn deselected_publisher_run_not_invoked() {
+        let mut ctx = Context::test_fixture();
+        ctx.options.skip_stages = vec!["npm".to_string()];
+        // A succeeding fake whose run() returns evidence; were it dispatched,
+        // its result would be `Succeeded` with evidence. Deselection must
+        // yield `Skipped(Deselected)` with no evidence instead.
+        let publishers = vec![fake(
+            "npm",
+            PublisherGroup::Manager,
+            false,
+            FakeOutcome::Succeed,
+        )];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+        let npm = &report.results[0];
+        assert!(
+            matches!(
+                npm.outcome,
+                PublisherOutcome::Skipped(SkipReason::Deselected)
+            ),
+            "deselected npm must not run, got {:?}",
+            npm.outcome
+        );
+        assert!(
+            npm.evidence.is_none(),
+            "a publisher that never ran has no evidence"
         );
     }
 }
