@@ -477,6 +477,7 @@ impl TestContextBuilder {
             changelog_to: self.changelog_to,
             changelog_preview: self.changelog_preview,
             allow_snapshot_publish: false,
+            publisher_allowlist: Vec::new(),
         };
 
         let mut ctx = Context::new(config, options);

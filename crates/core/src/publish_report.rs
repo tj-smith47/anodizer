@@ -103,6 +103,15 @@ pub enum SkipReason {
     /// was published by an earlier run (or another actor), and deleting it on
     /// rollback would destroy state this run never created.
     AlreadyPublished,
+    /// Excluded by `--skip` (the unified stage/publisher denylist) or absent
+    /// from a non-empty `--publishers` allowlist. The operator opted this
+    /// publisher out of the run; it was never invoked. Distinct from
+    /// `NotConfigured` (the publisher block is absent from config) and from
+    /// `NotApplicable` (the publisher is configured but no in-scope artifact
+    /// matches it) — here the config and artifacts may both be present, and the
+    /// publisher would otherwise have run, but the operator's selection
+    /// suppressed it.
+    Deselected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -204,6 +213,12 @@ mod tests {
     fn skip_reason_serializes_as_kebab_case() {
         let s = serde_json::to_string(&SkipReason::SubmitterGated).expect("serialize");
         assert_eq!(s, "\"submitter-gated\"");
+    }
+
+    #[test]
+    fn skip_reason_deselected_serializes_as_kebab_case() {
+        let s = serde_json::to_string(&SkipReason::Deselected).expect("serialize");
+        assert_eq!(s, "\"deselected\"");
     }
 
     #[test]

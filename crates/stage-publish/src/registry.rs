@@ -637,6 +637,76 @@ pub const fn group_dispatch_order() -> [PublisherGroup; 3] {
     ]
 }
 
+/// Every canonical publisher name, derived from [`all_publishers`].
+///
+/// This is the drift-proof source of valid `--publishers` / `--skip` publisher
+/// tokens: it instantiates one of every publisher and reads each
+/// [`anodizer_core::Publisher::name`], so a newly registered publisher is
+/// automatically a valid selector with no hand-maintained literal list to
+/// update. The CLI validation (`init` / `release` `--publishers` / `--skip`)
+/// and any help/error text consult this rather than a duplicated constant.
+///
+/// Names are returned owned (`String`) because `Publisher::name` borrows the
+/// boxed instance, which does not outlive this call.
+pub fn valid_publisher_names() -> Vec<String> {
+    all_publishers()
+        .iter()
+        .map(|p| p.name().to_string())
+        .collect()
+}
+
+/// Validate operator publisher selection against the known publisher names.
+///
+/// Mirrors [`anodizer_core::context::validate_skip_values`]' message shape.
+/// Two selectors are checked:
+///
+/// - `allowlist` (`--publishers`): every entry MUST be a known publisher name
+///   (from [`valid_publisher_names`]).
+/// - `skip` (`--skip`, the unified stage/publisher denylist): every entry MUST
+///   be either a known publisher name OR a valid release-stage skip token
+///   (from [`anodizer_core::context::VALID_RELEASE_SKIPS`]), so `--skip=npm`
+///   and `--skip=build` both pass while `--skip=nmp` fails.
+///
+/// On any invalid value returns an `Err` string listing the offending value(s)
+/// and the valid options for that selector. Returns `Ok(())` when both
+/// selectors are clean (including when both are empty).
+pub fn validate_publisher_selection(allowlist: &[String], skip: &[String]) -> Result<(), String> {
+    let publishers = valid_publisher_names();
+
+    let bad_allow: Vec<&str> = allowlist
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|s| !publishers.iter().any(|p| p == s))
+        .collect();
+    if !bad_allow.is_empty() {
+        return Err(format!(
+            "invalid --publishers value(s): {}. Valid publishers: {}",
+            bad_allow.join(", "),
+            publishers.join(", "),
+        ));
+    }
+
+    let bad_skip: Vec<&str> = skip
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|s| {
+            !publishers.iter().any(|p| p == s)
+                && !anodizer_core::context::VALID_RELEASE_SKIPS.contains(s)
+        })
+        .collect();
+    if !bad_skip.is_empty() {
+        let mut valid: Vec<&str> = anodizer_core::context::VALID_RELEASE_SKIPS.to_vec();
+        valid.extend(publishers.iter().map(|s| s.as_str()));
+        return Err(format!(
+            "invalid --skip value(s): {}. Valid options: {}",
+            bad_skip.join(", "),
+            valid.join(", "),
+        ));
+    }
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -651,6 +721,51 @@ mod tests {
             publishers.is_empty(),
             "registry should stay empty when no crate opts into a publisher"
         );
+    }
+
+    #[test]
+    fn valid_publisher_names_non_empty_with_known_members() {
+        let names = valid_publisher_names();
+        assert!(!names.is_empty(), "publisher name set must not be empty");
+        for known in ["npm", "cargo", "uploads", "winget"] {
+            assert!(
+                names.iter().any(|n| n == known),
+                "expected {known} in {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_publisher_selection_accepts_valid_allowlist() {
+        let allow = vec!["cargo".to_string(), "npm".to_string()];
+        assert!(validate_publisher_selection(&allow, &[]).is_ok());
+    }
+
+    #[test]
+    fn validate_publisher_selection_rejects_allowlist_typo() {
+        let allow = vec!["crago".to_string()];
+        let err = validate_publisher_selection(&allow, &[]).unwrap_err();
+        assert!(err.contains("crago"), "{err}");
+        assert!(err.contains("cargo"), "hint must list valid names: {err}");
+    }
+
+    #[test]
+    fn validate_publisher_selection_skip_accepts_publisher_name() {
+        let skip = vec!["npm".to_string()];
+        assert!(validate_publisher_selection(&[], &skip).is_ok());
+    }
+
+    #[test]
+    fn validate_publisher_selection_skip_accepts_stage_name() {
+        let skip = vec!["build".to_string()];
+        assert!(validate_publisher_selection(&[], &skip).is_ok());
+    }
+
+    #[test]
+    fn validate_publisher_selection_skip_rejects_bogus() {
+        let skip = vec!["bogus".to_string()];
+        let err = validate_publisher_selection(&[], &skip).unwrap_err();
+        assert!(err.contains("bogus"), "{err}");
     }
 
     #[test]

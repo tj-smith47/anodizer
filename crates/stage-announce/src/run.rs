@@ -42,6 +42,7 @@ pub(crate) fn evaluate_gate(report: Option<&PublishReport>, gate: AnnounceGate) 
                 | PublisherOutcome::Skipped(SkipReason::Nightly)
                 | PublisherOutcome::Skipped(SkipReason::NotApplicable)
                 | PublisherOutcome::Skipped(SkipReason::AlreadyPublished)
+                | PublisherOutcome::Skipped(SkipReason::Deselected)
                 | PublisherOutcome::RolledBack
                 | PublisherOutcome::RollbackSkippedNoScope
                 | PublisherOutcome::PendingModeration

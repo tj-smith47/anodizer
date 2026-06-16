@@ -1157,6 +1157,7 @@ fn build_context_options(
         // command sets this true.
         changelog_preview: false,
         allow_snapshot_publish: opts.allow_snapshot_publish,
+        publisher_allowlist: Vec::new(),
     }
 }
 

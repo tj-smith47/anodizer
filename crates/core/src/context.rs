@@ -117,6 +117,14 @@ pub struct ContextOptions {
     pub verbose: bool,
     pub debug: bool,
     pub skip_stages: Vec<String>,
+    /// `--publishers`: per-publisher allowlist. Empty means "no allowlist" —
+    /// every publisher runs (subject to `skip_stages`). Non-empty restricts
+    /// the publish stage to exactly the named publishers. Entries are
+    /// canonical publisher names (`Publisher::name()`, e.g. `npm`, `cargo`).
+    /// Orthogonal to `selected_crates` (which scopes crates, not publishers)
+    /// and to `skip_stages` (the unified denylist, which always wins — see
+    /// [`Context::publisher_deselected`]).
+    pub publisher_allowlist: Vec<String>,
     pub selected_crates: Vec<String>,
     pub token: Option<String>,
     /// Maximum number of parallel build jobs (minimum 1).
@@ -302,6 +310,7 @@ impl Default for ContextOptions {
             verbose: false,
             debug: false,
             skip_stages: Vec::new(),
+            publisher_allowlist: Vec::new(),
             selected_crates: Vec::new(),
             token: None,
             parallelism: 4,
@@ -717,6 +726,25 @@ impl Context {
 
     pub fn should_skip(&self, stage_name: &str) -> bool {
         self.options.skip_stages.iter().any(|s| s == stage_name)
+    }
+
+    /// Whether the named publisher is excluded from this run by operator
+    /// selection. Combines the two selectors the publish dispatch consults
+    /// before running any publisher:
+    ///
+    /// - `--skip` (`skip_stages`, the UNIFIED denylist holding stage names
+    ///   AND publisher names) ALWAYS wins: a publisher named there is
+    ///   deselected regardless of any allowlist.
+    /// - `--publishers` (`publisher_allowlist`): an EMPTY allowlist deselects
+    ///   nothing (every publisher runs); a NON-EMPTY allowlist deselects every
+    ///   publisher not listed in it.
+    ///
+    /// Returns `true` when the publisher should be reported
+    /// [`crate::publish_report::SkipReason::Deselected`] instead of dispatched.
+    pub fn publisher_deselected(&self, name: &str) -> bool {
+        self.options.skip_stages.iter().any(|s| s == name)
+            || (!self.options.publisher_allowlist.is_empty()
+                && !self.options.publisher_allowlist.iter().any(|s| s == name))
     }
 
     /// Check whether "validate" is in the skip list.
@@ -1475,6 +1503,47 @@ mod tests {
         assert!(ctx.should_skip("publish"));
         assert!(ctx.should_skip("announce"));
         assert!(!ctx.should_skip("build"));
+    }
+
+    #[test]
+    fn publisher_deselected_empty_selectors_runs_everything() {
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        assert!(!ctx.publisher_deselected("npm"));
+        assert!(!ctx.publisher_deselected("cargo"));
+        assert!(!ctx.publisher_deselected("anything"));
+    }
+
+    #[test]
+    fn publisher_deselected_skip_denylists() {
+        let opts = ContextOptions {
+            skip_stages: vec!["npm".to_string()],
+            ..Default::default()
+        };
+        let ctx = Context::new(Config::default(), opts);
+        assert!(ctx.publisher_deselected("npm"));
+        assert!(!ctx.publisher_deselected("cargo"));
+    }
+
+    #[test]
+    fn publisher_deselected_allowlist_excludes_unlisted() {
+        let opts = ContextOptions {
+            publisher_allowlist: vec!["cargo".to_string()],
+            ..Default::default()
+        };
+        let ctx = Context::new(Config::default(), opts);
+        assert!(!ctx.publisher_deselected("cargo"));
+        assert!(ctx.publisher_deselected("npm"));
+    }
+
+    #[test]
+    fn publisher_deselected_skip_wins_over_allowlist() {
+        let opts = ContextOptions {
+            skip_stages: vec!["cargo".to_string()],
+            publisher_allowlist: vec!["cargo".to_string()],
+            ..Default::default()
+        };
+        let ctx = Context::new(Config::default(), opts);
+        assert!(ctx.publisher_deselected("cargo"));
     }
 
     #[test]
