@@ -406,17 +406,92 @@ pub(crate) fn insert_engines(root: &mut BTreeMap<String, serde_json::Value>, cfg
 /// value is resolvable it is co-located under the same `publishConfig` object
 /// (matching swc's `publishConfig{access,provenance}` shape); `npm publish`
 /// still honours the per-run `.npmrc` `access`, so this is purely declarative.
+///
+/// `provenance_override` lets the live publish path force the emitted value:
+/// `Some(v)` writes `v` regardless of `cfg.provenance` (used to degrade to
+/// `false` on a runner that cannot mint an npm provenance attestation — see
+/// [`runner_supports_npm_provenance`]), while `None` emits the configured
+/// value unchanged (the manifest-only / non-publish path keeps the operator's
+/// choice). The override is publish-time only and never reaches the
+/// byte-compared determinism dist.
 pub(crate) fn insert_publish_config(
     root: &mut BTreeMap<String, serde_json::Value>,
     cfg: &NpmConfig,
+    provenance_override: Option<bool>,
 ) {
-    let provenance = cfg.provenance.unwrap_or(true);
+    let provenance = provenance_override.unwrap_or_else(|| cfg.provenance.unwrap_or(true));
     let mut obj = serde_json::Map::new();
     if let Some(access) = resolve_access(cfg) {
         obj.insert("access".into(), serde_json::Value::String(access));
     }
     obj.insert("provenance".into(), serde_json::Value::Bool(provenance));
     root.insert("publishConfig".into(), serde_json::Value::Object(obj));
+}
+
+/// Whether the current runner can produce an npm provenance / Trusted
+/// Publishing attestation that the npm registry will accept.
+///
+/// npm provenance is minted from a GitHub Actions OIDC token and the registry
+/// only verifies the sigstore bundle for **GitHub-hosted** runners; on a
+/// self-hosted runner the publish is rejected with an `E422 Unprocessable
+/// Entity` whose body reads `Error verifying sigstore provenance bundle:
+/// Unsupported GitHub Actions runner`. GitHub Actions sets
+/// `RUNNER_ENVIRONMENT=github-hosted` on hosted runners and `self-hosted` on
+/// self-hosted ones.
+///
+/// Conservative: only the proven-incompatible case is reported unsupported —
+/// running under GitHub Actions (`GITHUB_ACTIONS == "true"`) with
+/// `RUNNER_ENVIRONMENT` set to anything other than `github-hosted`. Every other
+/// environment (GitHub-hosted, or any non-GitHub-Actions CI / local run) is
+/// left as configured so other ecosystems are never over-degraded.
+pub(crate) fn runner_supports_npm_provenance(
+    env: &dyn anodizer_core::env_source::EnvSource,
+) -> bool {
+    if env.var("GITHUB_ACTIONS").as_deref() != Some("true") {
+        return true;
+    }
+    match env.var("RUNNER_ENVIRONMENT") {
+        Some(v) => v == "github-hosted",
+        // GITHUB_ACTIONS=true but RUNNER_ENVIRONMENT unset: not a known-hosted
+        // runner. Treat as unsupported so a misreporting self-hosted runner
+        // (which is the env this guard exists for) cannot 422 the release.
+        None => false,
+    }
+}
+
+/// Resolve the provenance value the live publish should emit for `pkg`,
+/// applying the runner-capability gate.
+///
+/// Returns `Some(override)` to force the emitted `publishConfig.provenance`
+/// when the configured request must be downgraded, or `None` to emit the
+/// configured value unchanged. Provenance is downgraded to `false` (with an
+/// actionable `log.warn`) only when it was *requested* (explicit `true` or the
+/// unset default) AND [`runner_supports_npm_provenance`] is false; an explicit
+/// `provenance: false` stays false with no spurious warning.
+pub(crate) fn effective_provenance_override(
+    ctx: &Context,
+    cfg: &NpmConfig,
+    pkg: &str,
+    log: &StageLogger,
+) -> Option<bool> {
+    let requested = cfg.provenance.unwrap_or(true);
+    if !requested {
+        return None;
+    }
+    if runner_supports_npm_provenance(ctx.env_source()) {
+        return None;
+    }
+    let runner_env = ctx
+        .env_source()
+        .var("RUNNER_ENVIRONMENT")
+        .unwrap_or_else(|| "<unset>".to_string());
+    log.warn(&format!(
+        "npm provenance requested but unsupported on this runner \
+         (RUNNER_ENVIRONMENT={runner_env}); npm provenance/Trusted Publishing \
+         requires a GitHub-hosted runner. Publishing '{pkg}' WITHOUT provenance. \
+         Run the publish on a GitHub-hosted runner to retain provenance."
+    ));
+    Some(false)
 }
 
 /// Resolve the `files` allowlist for a package: explicit `cfg.files`
@@ -477,7 +552,9 @@ pub(crate) fn finalize_package_json(
 ///
 /// `crate_name` selects the owning crate for the per-crate metadata resolvers
 /// (`pkg_name` is the published npm name, which may be a scoped alias that
-/// shares nothing with the crate name).
+/// shares nothing with the crate name). `provenance_override` is threaded into
+/// [`insert_publish_config`] so the live publish can degrade provenance on a
+/// runner that cannot mint an attestation.
 pub(crate) fn render_package_json(
     ctx: &Context,
     cfg: &NpmConfig,
@@ -485,6 +562,7 @@ pub(crate) fn render_package_json(
     crate_name: &str,
     version: &str,
     binaries: &[PlatformBinary],
+    provenance_override: Option<bool>,
 ) -> Result<String> {
     let mut root: BTreeMap<String, serde_json::Value> = BTreeMap::new();
 
@@ -499,7 +577,7 @@ pub(crate) fn render_package_json(
 
     insert_common_metadata(&mut root, ctx, cfg, crate_name);
     insert_engines(&mut root, cfg);
-    insert_publish_config(&mut root, cfg);
+    insert_publish_config(&mut root, cfg, provenance_override);
 
     // `bin` points at the postinstall-installed launcher inside the package.
     let bin_basename = pkg_name.rsplit('/').next().unwrap_or(pkg_name);

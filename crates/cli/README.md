@@ -13,7 +13,7 @@ The release pipeline built for Rust — workspace-aware, reproducible, and signe
 [![Docs](https://github.com/tj-smith47/anodizer/actions/workflows/docs.yml/badge.svg)](https://github.com/tj-smith47/anodizer/actions/workflows/docs.yml)
 [![Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/tj-smith47/anodizer/badges/coverage.json)](https://github.com/tj-smith47/anodizer/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/anodizer.svg)](https://crates.io/crates/anodizer)
-[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue.svg)](#license)
+[![License: MIT OR Apache-2.0](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-blue.svg)](#license)
 
 </div>
 

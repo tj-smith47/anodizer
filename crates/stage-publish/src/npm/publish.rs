@@ -55,8 +55,9 @@ use anyhow::{Context as _, Result, bail};
 use tempfile::TempDir;
 
 use super::manifest::{
-    PlatformBinary, render_launcher_js, render_package_json, render_postinstall_js, resolve_access,
-    resolve_extra_files, resolve_name, resolve_registry, resolve_tag, token_env_var,
+    PlatformBinary, effective_provenance_override, render_launcher_js, render_package_json,
+    render_postinstall_js, resolve_access, resolve_extra_files, resolve_name, resolve_registry,
+    resolve_tag, token_env_var,
 };
 use super::optional_deps::generate_layout;
 
@@ -94,19 +95,32 @@ pub struct StagedTarball {
 /// `postinstall.js`, `bin/<name>.js`, and any `extra_files` into a staging
 /// `package/` directory, then tar+gzip it. Every file is written with a fixed
 /// mode/mtime so repeated runs produce byte-identical tarballs.
+///
+/// `provenance_override` is forwarded to [`render_package_json`] so the live
+/// publish can downgrade `publishConfig.provenance` on a runner that cannot
+/// mint an npm attestation.
 pub fn assemble_postinstall_tarball(
     ctx: &Context,
     cfg: &NpmConfig,
     crate_name: &str,
     version: &str,
     binaries: &[PlatformBinary],
+    provenance_override: Option<bool>,
 ) -> Result<StagedTarball> {
     let staging = TempDir::new().context("npm: create staging dir")?;
     let pkg_dir = staging.path().join("package");
     fs::create_dir_all(&pkg_dir).context("npm: create package/ in staging dir")?;
 
     let pkg_name = resolve_name(cfg, crate_name).to_string();
-    let pkg_json = render_package_json(ctx, cfg, &pkg_name, crate_name, version, binaries)?;
+    let pkg_json = render_package_json(
+        ctx,
+        cfg,
+        &pkg_name,
+        crate_name,
+        version,
+        binaries,
+        provenance_override,
+    )?;
     write_deterministic(&pkg_dir.join("package.json"), pkg_json.as_bytes())?;
 
     let postinstall = render_postinstall_js(&pkg_name);
@@ -888,7 +902,11 @@ fn publish_optional_deps(
     let dist_tag = resolve_tag(ctx, cfg)?;
     let access = resolve_access(cfg);
 
-    let layout = generate_layout(ctx, cfg, crate_name, &version, log)?;
+    // Gate provenance on runner capability ONCE for the whole metapackage set
+    // (per-platform packages + metapackage) so all share one publishConfig.
+    let metapackage = super::optional_deps::resolve_metapackage(cfg, crate_name).to_string();
+    let provenance_override = effective_provenance_override(ctx, cfg, &metapackage, log);
+    let layout = generate_layout(ctx, cfg, crate_name, &version, provenance_override, log)?;
 
     if ctx.is_dry_run() {
         log.status(&format!(
@@ -982,7 +1000,15 @@ fn publish_postinstall(
         return Ok(());
     }
 
-    let staged = assemble_postinstall_tarball(ctx, cfg, crate_name, &version, &binaries)?;
+    let provenance_override = effective_provenance_override(ctx, cfg, &pkg_name, log);
+    let staged = assemble_postinstall_tarball(
+        ctx,
+        cfg,
+        crate_name,
+        &version,
+        &binaries,
+        provenance_override,
+    )?;
 
     if ctx.is_dry_run() {
         log.status(&format!(

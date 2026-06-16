@@ -12,9 +12,9 @@ use anodizer_core::{PreflightCheck, Publisher, PublisherGroup};
 use anodizer_core::PublisherOutcome;
 
 use super::manifest::{
-    PlatformBinary, collect_platform_binaries, npm_triple, render_package_json,
-    render_postinstall_js, resolve_access, resolve_extra_files, resolve_format, resolve_name,
-    resolve_registry, resolve_tag,
+    PlatformBinary, collect_platform_binaries, effective_provenance_override, npm_triple,
+    render_package_json, render_postinstall_js, resolve_access, resolve_extra_files,
+    resolve_format, resolve_name, resolve_registry, resolve_tag, runner_supports_npm_provenance,
 };
 use super::optional_deps::generate_layout;
 use super::publish::{
@@ -306,8 +306,8 @@ fn render_package_json_emits_canonical_fields() {
     let ctx = TestContextBuilder::new().project_name("demo").build();
     let cfg = npm_cfg();
     let bins = vec![one_binary("linux", "x64")];
-    let body =
-        render_package_json(&ctx, &cfg, "anodize-demo", "demo", "1.2.3", &bins).expect("render");
+    let body = render_package_json(&ctx, &cfg, "anodize-demo", "demo", "1.2.3", &bins, None)
+        .expect("render");
     let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid json");
     assert_eq!(parsed["name"], "anodize-demo");
     assert_eq!(parsed["version"], "1.2.3");
@@ -337,7 +337,7 @@ fn render_package_json_metadata_fallback() {
         name: Some("demo".into()),
         ..Default::default()
     };
-    let body = render_package_json(&ctx, &cfg, "demo", "demo", "1.0.0", &[]).expect("render");
+    let body = render_package_json(&ctx, &cfg, "demo", "demo", "1.0.0", &[], None).expect("render");
     let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid json");
     assert_eq!(parsed["description"], "From metadata");
     assert_eq!(parsed["homepage"], "https://meta.example.com");
@@ -366,7 +366,7 @@ fn compound_spdx_license_emitted_verbatim() {
         name: Some("demo".into()),
         ..Default::default()
     };
-    let body = render_package_json(&ctx, &cfg, "demo", "demo", "1.0.0", &[]).expect("render");
+    let body = render_package_json(&ctx, &cfg, "demo", "demo", "1.0.0", &[], None).expect("render");
     let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid json");
     assert_eq!(parsed["license"], "MIT OR Apache-2.0");
 }
@@ -386,7 +386,7 @@ fn render_package_json_extra_can_override_root_keys() {
         extra: Some(extra),
         ..Default::default()
     };
-    let body = render_package_json(&ctx, &cfg, "demo", "demo", "1.0.0", &[]).expect("render");
+    let body = render_package_json(&ctx, &cfg, "demo", "demo", "1.0.0", &[], None).expect("render");
     let parsed: serde_json::Value = serde_json::from_str(&body).expect("valid json");
     assert_eq!(parsed["description"], "override");
 }
@@ -439,8 +439,10 @@ fn assemble_postinstall_tarball_is_reproducible() {
     let bins =
         collect_platform_binaries(&ctx, &cfg, "anodize-demo", "1.2.3", &ctx.logger("publish"))
             .expect("collect");
-    let t1 = assemble_postinstall_tarball(&ctx, &cfg, "demo", "1.2.3", &bins).expect("assemble 1");
-    let t2 = assemble_postinstall_tarball(&ctx, &cfg, "demo", "1.2.3", &bins).expect("assemble 2");
+    let t1 =
+        assemble_postinstall_tarball(&ctx, &cfg, "demo", "1.2.3", &bins, None).expect("assemble 1");
+    let t2 =
+        assemble_postinstall_tarball(&ctx, &cfg, "demo", "1.2.3", &bins, None).expect("assemble 2");
     let b1 = std::fs::read(&t1.tarball_path).expect("read 1");
     let b2 = std::fs::read(&t2.tarball_path).expect("read 2");
     assert_eq!(
@@ -455,7 +457,7 @@ fn assemble_postinstall_tarball_scoped_package_basename() {
     let cfg = scoped_cfg();
     let bins = vec![one_binary("linux", "x64")];
     let staged =
-        assemble_postinstall_tarball(&ctx, &cfg, "demo", "1.2.3", &bins).expect("assemble");
+        assemble_postinstall_tarball(&ctx, &cfg, "demo", "1.2.3", &bins, None).expect("assemble");
     let fname = staged
         .tarball_path
         .file_name()
@@ -494,8 +496,15 @@ fn opt_cfg() -> NpmConfig {
 #[test]
 fn optional_deps_emits_per_platform_packages_with_derived_triples() {
     let (_tmp, ctx) = optional_deps_ctx();
-    let layout =
-        generate_layout(&ctx, &opt_cfg(), "demo", "1.2.3", &ctx.logger("publish")).expect("layout");
+    let layout = generate_layout(
+        &ctx,
+        &opt_cfg(),
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect("layout");
 
     // 4 distinct platform packages (musl + gnu are separate under libc_aware).
     let names: Vec<&str> = layout.platforms.iter().map(|p| p.name.as_str()).collect();
@@ -541,8 +550,15 @@ fn optional_deps_emits_per_platform_packages_with_derived_triples() {
 #[test]
 fn optional_deps_metapackage_lists_all_platform_deps_and_shim() {
     let (_tmp, ctx) = optional_deps_ctx();
-    let layout =
-        generate_layout(&ctx, &opt_cfg(), "demo", "1.2.3", &ctx.logger("publish")).expect("layout");
+    let layout = generate_layout(
+        &ctx,
+        &opt_cfg(),
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect("layout");
 
     let meta: serde_json::Value = serde_json::from_str(&layout.metapackage_json).expect("json");
     assert_eq!(meta["name"], "demo");
@@ -568,7 +584,7 @@ fn optional_deps_libc_aware_false_collapses_linux() {
         ..opt_cfg()
     };
     let layout =
-        generate_layout(&ctx, &cfg, "demo", "1.2.3", &ctx.logger("publish")).expect("layout");
+        generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish")).expect("layout");
     let names: Vec<&str> = layout.platforms.iter().map(|p| p.name.as_str()).collect();
     // musl + gnu collapse to one linux-x64 package (no libc suffix).
     assert!(names.contains(&"@anodize/demo-linux-x64"), "{names:?}");
@@ -604,7 +620,7 @@ fn optional_deps_libc_aware_false_collapse_keeps_glibc_deterministically() {
         ..opt_cfg()
     };
     let layout =
-        generate_layout(&ctx, &cfg, "demo", "1.2.3", &ctx.logger("publish")).expect("layout");
+        generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish")).expect("layout");
 
     let linux = layout
         .platforms
@@ -631,7 +647,7 @@ fn optional_deps_requires_scope() {
         metapackage: Some("demo".into()),
         ..Default::default()
     };
-    let err = generate_layout(&ctx, &cfg, "demo", "1.2.3", &ctx.logger("publish"))
+    let err = generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish"))
         .expect_err("must require scope");
     assert!(err.to_string().contains("scope:"), "{err}");
 }
@@ -642,8 +658,15 @@ fn optional_deps_no_binaries_errors() {
         .project_name("demo")
         .crates(vec![demo_crate()])
         .build();
-    let err = generate_layout(&ctx, &opt_cfg(), "demo", "1.2.3", &ctx.logger("publish"))
-        .expect_err("no binaries");
+    let err = generate_layout(
+        &ctx,
+        &opt_cfg(),
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect_err("no binaries");
     assert!(err.to_string().contains("no binary artifacts"), "{err}");
 }
 
@@ -651,8 +674,10 @@ fn optional_deps_no_binaries_errors() {
 fn optional_deps_layout_is_deterministic() {
     let (_tmp, ctx) = optional_deps_ctx();
     let cfg = opt_cfg();
-    let l1 = generate_layout(&ctx, &cfg, "demo", "1.2.3", &ctx.logger("publish")).expect("l1");
-    let l2 = generate_layout(&ctx, &cfg, "demo", "1.2.3", &ctx.logger("publish")).expect("l2");
+    let l1 =
+        generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish")).expect("l1");
+    let l2 =
+        generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish")).expect("l2");
     assert_eq!(l1.metapackage_json, l2.metapackage_json);
     assert_eq!(l1.shim_js, l2.shim_js);
     let n1: Vec<&str> = l1.platforms.iter().map(|p| p.name.as_str()).collect();
@@ -701,7 +726,7 @@ fn optional_deps_filters_by_ids_for_workspace_per_crate() {
         ..opt_cfg()
     };
     let layout =
-        generate_layout(&ctx, &cfg, "demo", "1.2.3", &ctx.logger("publish")).expect("layout");
+        generate_layout(&ctx, &cfg, "demo", "1.2.3", None, &ctx.logger("publish")).expect("layout");
     assert_eq!(
         layout.platforms.len(),
         1,
@@ -1598,7 +1623,7 @@ fn optional_deps_warns_on_unsupported_target_and_skips_it() {
         "publish",
         anodizer_core::log::Verbosity::Normal,
     );
-    let layout = generate_layout(&ctx, &opt_cfg(), "demo", "1.2.3", &log).expect("layout");
+    let layout = generate_layout(&ctx, &opt_cfg(), "demo", "1.2.3", None, &log).expect("layout");
     // Only the linux package is emitted; the universal target is excluded.
     assert_eq!(layout.platforms.len(), 1);
     assert_eq!(layout.platforms[0].name, "@anodize/demo-linux-x64-musl");
@@ -1983,7 +2008,7 @@ fn postinstall_metadata_falls_back_to_cargo_toml_per_crate() {
         name: Some("demo".into()),
         ..Default::default()
     };
-    let body = render_package_json(&ctx, &cfg, "demo", "demo", "1.0.0", &[]).expect("render");
+    let body = render_package_json(&ctx, &cfg, "demo", "demo", "1.0.0", &[], None).expect("render");
     let j: serde_json::Value = serde_json::from_str(&body).expect("json");
     assert_eq!(j["description"], "A demo CLI");
     assert_eq!(j["homepage"], "https://demo.example");
@@ -2035,8 +2060,8 @@ fn optional_deps_metadata_per_crate_isolated_in_per_crate_workspace() {
         bin: Some("alpha".into()),
         ..Default::default()
     };
-    let layout =
-        generate_layout(&ctx, &cfg, "alpha", "1.0.0", &ctx.logger("publish")).expect("layout");
+    let layout = generate_layout(&ctx, &cfg, "alpha", "1.0.0", None, &ctx.logger("publish"))
+        .expect("layout");
 
     let meta_j: serde_json::Value =
         serde_json::from_str(&layout.metapackage_json).expect("meta json");
@@ -2068,6 +2093,7 @@ fn engines_default_node_18_and_overridable() {
         &opt_cfg(),
         "demo",
         "1.0.0",
+        None,
         &ctx_b.logger("publish"),
     )
     .expect("layout");
@@ -2085,8 +2111,15 @@ fn engines_default_node_18_and_overridable() {
         engines: Some(engines),
         ..opt_cfg()
     };
-    let layout2 =
-        generate_layout(&ctx_b, &cfg2, "demo", "1.0.0", &ctx_b.logger("publish")).expect("layout");
+    let layout2 = generate_layout(
+        &ctx_b,
+        &cfg2,
+        "demo",
+        "1.0.0",
+        None,
+        &ctx_b.logger("publish"),
+    )
+    .expect("layout");
     let j2: serde_json::Value = serde_json::from_str(&layout2.metapackage_json).expect("json");
     assert_eq!(j2["engines"]["node"], ">=20");
 
@@ -2095,8 +2128,15 @@ fn engines_default_node_18_and_overridable() {
         engines: Some(std::collections::BTreeMap::new()),
         ..opt_cfg()
     };
-    let layout3 =
-        generate_layout(&ctx_b, &cfg3, "demo", "1.0.0", &ctx_b.logger("publish")).expect("layout");
+    let layout3 = generate_layout(
+        &ctx_b,
+        &cfg3,
+        "demo",
+        "1.0.0",
+        None,
+        &ctx_b.logger("publish"),
+    )
+    .expect("layout");
     let j3: serde_json::Value = serde_json::from_str(&layout3.metapackage_json).expect("json");
     assert!(
         j3.get("engines").is_none(),
@@ -2107,8 +2147,15 @@ fn engines_default_node_18_and_overridable() {
 #[test]
 fn publish_config_provenance_default_true_and_disable() {
     let (_tmp, ctx) = optional_deps_ctx();
-    let layout =
-        generate_layout(&ctx, &opt_cfg(), "demo", "1.0.0", &ctx.logger("publish")).expect("layout");
+    let layout = generate_layout(
+        &ctx,
+        &opt_cfg(),
+        "demo",
+        "1.0.0",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect("layout");
     let meta_j: serde_json::Value = serde_json::from_str(&layout.metapackage_json).expect("json");
     assert_eq!(
         meta_j["publishConfig"]["provenance"],
@@ -2121,8 +2168,15 @@ fn publish_config_provenance_default_true_and_disable() {
         access: Some("public".into()),
         ..opt_cfg()
     };
-    let l2 = generate_layout(&ctx, &cfg_access, "demo", "1.0.0", &ctx.logger("publish"))
-        .expect("layout");
+    let l2 = generate_layout(
+        &ctx,
+        &cfg_access,
+        "demo",
+        "1.0.0",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect("layout");
     let j2: serde_json::Value = serde_json::from_str(&l2.metapackage_json).expect("json");
     assert_eq!(j2["publishConfig"]["access"], "public");
     assert_eq!(
@@ -2135,8 +2189,15 @@ fn publish_config_provenance_default_true_and_disable() {
         provenance: Some(false),
         ..opt_cfg()
     };
-    let l3 =
-        generate_layout(&ctx, &cfg_off, "demo", "1.0.0", &ctx.logger("publish")).expect("layout");
+    let l3 = generate_layout(
+        &ctx,
+        &cfg_off,
+        "demo",
+        "1.0.0",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect("layout");
     let j3: serde_json::Value = serde_json::from_str(&l3.metapackage_json).expect("json");
     assert_eq!(
         j3["publishConfig"]["provenance"],
@@ -2145,10 +2206,197 @@ fn publish_config_provenance_default_true_and_disable() {
 }
 
 #[test]
+fn runner_supports_npm_provenance_across_env_permutations() {
+    use anodizer_core::MapEnvSource;
+
+    // Not GitHub Actions at all → supported (leave provenance as configured).
+    assert!(runner_supports_npm_provenance(&MapEnvSource::new()));
+    assert!(runner_supports_npm_provenance(
+        &MapEnvSource::new().with("RUNNER_ENVIRONMENT", "self-hosted")
+    ));
+
+    // GitHub Actions + github-hosted runner → supported.
+    assert!(runner_supports_npm_provenance(
+        &MapEnvSource::new()
+            .with("GITHUB_ACTIONS", "true")
+            .with("RUNNER_ENVIRONMENT", "github-hosted")
+    ));
+
+    // GitHub Actions + self-hosted runner → UNSUPPORTED (the E422 case).
+    assert!(!runner_supports_npm_provenance(
+        &MapEnvSource::new()
+            .with("GITHUB_ACTIONS", "true")
+            .with("RUNNER_ENVIRONMENT", "self-hosted")
+    ));
+
+    // GitHub Actions but RUNNER_ENVIRONMENT unset → unsupported (conservative:
+    // a self-hosted runner that fails to report its environment must not 422).
+    assert!(!runner_supports_npm_provenance(
+        &MapEnvSource::new().with("GITHUB_ACTIONS", "true")
+    ));
+}
+
+fn npm_ctx_with_env(
+    env: Vec<(&'static str, &'static str)>,
+) -> (tempfile::TempDir, anodizer_core::context::Context) {
+    let tmp = tempfile::TempDir::new().expect("tmp");
+    let mut b = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate()]);
+    for (k, v) in env {
+        b = b.env(k, v);
+    }
+    (tmp, b.build())
+}
+
+#[test]
+fn provenance_emitted_true_when_runner_supports() {
+    // No GitHub Actions env → provenance left as configured (true).
+    let (_tmp, ctx) = npm_ctx_with_env(vec![]);
+    let cfg = npm_cfg();
+    let (log, cap) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Normal,
+    );
+    let override_ = effective_provenance_override(&ctx, &cfg, "anodize-demo", &log);
+    assert_eq!(override_, None, "supported runner emits configured value");
+
+    let body = render_package_json(&ctx, &cfg, "anodize-demo", "demo", "1.0.0", &[], override_)
+        .expect("render");
+    let j: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(
+        j["publishConfig"]["provenance"],
+        serde_json::Value::Bool(true)
+    );
+    assert!(
+        cap.warn_messages().is_empty(),
+        "no warning on a supported runner"
+    );
+}
+
+#[test]
+fn provenance_degraded_false_with_warning_on_self_hosted_runner() {
+    // GitHub Actions self-hosted + provenance requested (default) → degrade to
+    // false and warn (the live E422 case this fix addresses).
+    let (_tmp, ctx) = npm_ctx_with_env(vec![
+        ("GITHUB_ACTIONS", "true"),
+        ("RUNNER_ENVIRONMENT", "self-hosted"),
+    ]);
+    let cfg = npm_cfg();
+    let (log, cap) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Normal,
+    );
+    let override_ = effective_provenance_override(&ctx, &cfg, "anodize-demo", &log);
+    assert_eq!(
+        override_,
+        Some(false),
+        "self-hosted runner forces provenance off"
+    );
+
+    let body = render_package_json(&ctx, &cfg, "anodize-demo", "demo", "1.0.0", &[], override_)
+        .expect("render");
+    let j: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(
+        j["publishConfig"]["provenance"],
+        serde_json::Value::Bool(false)
+    );
+
+    let warns = cap.warn_messages().join("\n");
+    assert!(
+        warns.contains("RUNNER_ENVIRONMENT=self-hosted")
+            && warns.contains("WITHOUT provenance")
+            && warns.contains("anodize-demo")
+            && warns.contains("GitHub-hosted runner"),
+        "warning must be actionable and name the package + the constraint: {warns}"
+    );
+}
+
+#[test]
+fn provenance_explicit_false_stays_false_without_spurious_warning() {
+    // Explicit `provenance: false` on a self-hosted runner must NOT warn — the
+    // operator already opted out, there is nothing to degrade.
+    let (_tmp, ctx) = npm_ctx_with_env(vec![
+        ("GITHUB_ACTIONS", "true"),
+        ("RUNNER_ENVIRONMENT", "self-hosted"),
+    ]);
+    let cfg = NpmConfig {
+        provenance: Some(false),
+        ..npm_cfg()
+    };
+    let (log, cap) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Normal,
+    );
+    let override_ = effective_provenance_override(&ctx, &cfg, "anodize-demo", &log);
+    assert_eq!(override_, None, "explicit false needs no override");
+
+    let body = render_package_json(&ctx, &cfg, "anodize-demo", "demo", "1.0.0", &[], override_)
+        .expect("render");
+    let j: serde_json::Value = serde_json::from_str(&body).expect("json");
+    assert_eq!(
+        j["publishConfig"]["provenance"],
+        serde_json::Value::Bool(false)
+    );
+    assert!(
+        cap.warn_messages().is_empty(),
+        "explicit provenance:false must not warn on any runner"
+    );
+}
+
+#[test]
+fn optional_deps_provenance_degraded_uniformly_on_self_hosted() {
+    // The gate applies to the whole optional-deps set (per-platform + meta) so
+    // workspace per-crate / lockstep publishes degrade consistently.
+    let (_tmp, ctx) = {
+        let tmp = tempfile::TempDir::new().expect("tmp");
+        let mut ctx = TestContextBuilder::new()
+            .project_name("demo")
+            .tag("v1.2.3")
+            .crates(vec![demo_crate()])
+            .env("GITHUB_ACTIONS", "true")
+            .env("RUNNER_ENVIRONMENT", "self-hosted")
+            .build();
+        add_binary(&mut ctx, tmp.path(), "x86_64-unknown-linux-gnu", "demo");
+        add_binary(&mut ctx, tmp.path(), "x86_64-apple-darwin", "demo");
+        (tmp, ctx)
+    };
+    let cfg = opt_cfg();
+    let log = ctx.logger("publish");
+    let override_ = effective_provenance_override(&ctx, &cfg, "demo", &log);
+    assert_eq!(override_, Some(false));
+
+    let layout = generate_layout(&ctx, &cfg, "demo", "1.2.3", override_, &log).expect("layout");
+    let meta: serde_json::Value = serde_json::from_str(&layout.metapackage_json).expect("json");
+    assert_eq!(
+        meta["publishConfig"]["provenance"],
+        serde_json::Value::Bool(false),
+        "metapackage degraded"
+    );
+    for p in &layout.platforms {
+        let j: serde_json::Value = serde_json::from_str(&p.package_json).expect("json");
+        assert_eq!(
+            j["publishConfig"]["provenance"],
+            serde_json::Value::Bool(false),
+            "platform {} degraded",
+            p.name
+        );
+    }
+}
+
+#[test]
 fn files_allowlist_derived_per_package() {
     let (_tmp, ctx) = optional_deps_ctx();
-    let layout =
-        generate_layout(&ctx, &opt_cfg(), "demo", "1.0.0", &ctx.logger("publish")).expect("layout");
+    let layout = generate_layout(
+        &ctx,
+        &opt_cfg(),
+        "demo",
+        "1.0.0",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect("layout");
 
     // Metapackage ships the shim + the default README*/LICENSE* extra_files.
     let meta_j: serde_json::Value = serde_json::from_str(&layout.metapackage_json).expect("json");
@@ -2182,7 +2430,7 @@ fn files_explicit_override_and_empty_suppresses() {
         ..opt_cfg()
     };
     let layout =
-        generate_layout(&ctx, &cfg, "demo", "1.0.0", &ctx.logger("publish")).expect("layout");
+        generate_layout(&ctx, &cfg, "demo", "1.0.0", None, &ctx.logger("publish")).expect("layout");
     let j: serde_json::Value = serde_json::from_str(&layout.metapackage_json).expect("json");
     assert_eq!(j["files"], serde_json::json!(["only-this"]));
 
@@ -2190,8 +2438,15 @@ fn files_explicit_override_and_empty_suppresses() {
         files: Some(vec![]),
         ..opt_cfg()
     };
-    let l2 =
-        generate_layout(&ctx, &cfg_empty, "demo", "1.0.0", &ctx.logger("publish")).expect("layout");
+    let l2 = generate_layout(
+        &ctx,
+        &cfg_empty,
+        "demo",
+        "1.0.0",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect("layout");
     let j2: serde_json::Value = serde_json::from_str(&l2.metapackage_json).expect("json");
     assert!(
         j2.get("files").is_none(),

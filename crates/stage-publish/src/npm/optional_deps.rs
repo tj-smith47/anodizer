@@ -121,6 +121,7 @@ fn render_platform_json(
     version: &str,
     triple: &NpmTriple,
     libc_aware: bool,
+    provenance_override: Option<bool>,
 ) -> Result<String> {
     let mut root: BTreeMap<String, serde_json::Value> = BTreeMap::new();
     root.insert(
@@ -133,7 +134,7 @@ fn render_platform_json(
     );
     insert_common_metadata(&mut root, ctx, cfg, crate_name);
     insert_engines(&mut root, cfg);
-    insert_publish_config(&mut root, cfg);
+    insert_publish_config(&mut root, cfg, provenance_override);
     insert_files(&mut root, cfg, &[binary_name.to_string()]);
     root.insert(
         "os".into(),
@@ -157,6 +158,7 @@ fn render_platform_json(
 /// Render the metapackage `package.json`: shared metadata, the `bin` map
 /// pointing at `shim.js`, and `optionalDependencies` listing every
 /// per-platform package at the same version.
+#[allow(clippy::too_many_arguments)]
 fn render_metapackage_json(
     ctx: &Context,
     cfg: &NpmConfig,
@@ -165,6 +167,7 @@ fn render_metapackage_json(
     bin: &str,
     version: &str,
     platforms: &[PlatformPackage],
+    provenance_override: Option<bool>,
 ) -> Result<String> {
     let mut root: BTreeMap<String, serde_json::Value> = BTreeMap::new();
     root.insert(
@@ -177,7 +180,7 @@ fn render_metapackage_json(
     );
     insert_common_metadata(&mut root, ctx, cfg, crate_name);
     insert_engines(&mut root, cfg);
-    insert_publish_config(&mut root, cfg);
+    insert_publish_config(&mut root, cfg, provenance_override);
     // The metapackage ships only the `bin` shim (binaries live in the
     // per-platform optionalDependencies).
     insert_files(&mut root, cfg, &["shim.js".to_string()]);
@@ -313,11 +316,16 @@ process.exit(result.status === null ? 1 : result.status);
 /// Errors when no platform binary maps to an npm triple — emitting an empty
 /// `optionalDependencies` set would make `npm install` of the metapackage
 /// silently install nothing.
+///
+/// `provenance_override` is applied uniformly to every per-platform package
+/// and the metapackage so the whole `optional-deps` set publishes with a
+/// consistent `publishConfig.provenance` (see [`super::manifest::insert_publish_config`]).
 pub(crate) fn generate_layout(
     ctx: &Context,
     cfg: &NpmConfig,
     crate_name: &str,
     version: &str,
+    provenance_override: Option<bool>,
     log: &StageLogger,
 ) -> Result<OptionalDepsLayout> {
     let metapackage = resolve_metapackage(cfg, crate_name).to_string();
@@ -374,6 +382,7 @@ pub(crate) fn generate_layout(
             version,
             &triple,
             libc_aware,
+            provenance_override,
         )?;
         platforms.push(PlatformPackage {
             name: pkg_name,
@@ -418,6 +427,7 @@ pub(crate) fn generate_layout(
         &bin,
         version,
         &platforms,
+        provenance_override,
     )?;
     let shim_js = render_shim_js(&bin, &platforms);
 
