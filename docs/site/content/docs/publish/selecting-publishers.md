@@ -125,9 +125,37 @@ $ anodizer release --publishers cargo,homebrew
    …
 ```
 
-Every deselected publisher prints a `skipping <name> — deselected via --skip /
---publishers` line — the selection is never silent, so the run summary accounts for
-each publisher you turned off.
+### Two deselect outputs: the dispatch line and the summary line
+
+A deselected publisher is never silent. anodizer emits **two** distinct
+operator-visible lines for it, at two different points in the run:
+
+| Phase | Line | When |
+|---|---|---|
+| **Dispatch** (in-flight) | `skipping <name> — deselected via --skip / --publishers` | As the pipeline walks the publisher list and reaches a deselected one. |
+| **Publish summary** (final) | `skipped <name> — excluded via --skip` | The publisher was named in the `--skip` denylist. |
+| **Publish summary** (final) | `skipped <name> — not in --publishers allowlist` | A non-empty `--publishers` allowlist was given and this publisher was not in it. |
+
+The dispatch line is uniform — it states only that the publisher was
+deselected. The summary line is **distinguished**: it names the exact cause
+so you can confirm a publisher was turned off the way you intended. When both
+selectors apply to one publisher, `--skip` wins and the summary reports the
+denylist cause.
+
+```bash
+$ anodizer release --skip npm
+   • skipping npm — deselected via --skip / --publishers   # dispatch
+   …    # every other configured publisher runs
+   • skipped npm — excluded via --skip                     # summary
+```
+
+```bash
+$ anodizer release --publishers cargo
+   • publishing cargo
+   • skipping npm — deselected via --skip / --publishers   # dispatch
+   …
+   • skipped npm — not in --publishers allowlist           # summary
+```
 
 ## Validating a selection ahead of release
 
