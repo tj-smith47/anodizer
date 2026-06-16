@@ -39,9 +39,14 @@ inputs:
     default: ""
   linux-packaging-tools:
     description: >-
-      "true to apt-install the Linux flat-installer toolchain (bomutils/xar/cpio/
-      genisoimage/nsis/msitools/makeself). Installer-assembly stages runtime-probe
-      these and skip-with-pass when absent, so coverage of those paths needs them."
+      "true to apt-install the Linux installer-assembly toolchain available on
+      the GitHub-hosted runner (cpio/genisoimage/nsis/msitools/makeself). These
+      cover the dmg/nsis/msi/makeself assembly stages, which runtime-probe their
+      tool and skip-with-pass when absent. The flat-pkg (.pkg) stage additionally
+      needs bomutils(mkbom)+xar, neither of which is packaged for Ubuntu 24.04;
+      its 2 end-to-end tests stay hermetic skip-with-pass here and are exercised
+      locally / on the self-hosted release runner (whose base image carries them).
+      The pre-spawn .pkg logic is covered by injected-probe unit tests regardless."
     default: "false"
 
 runs:
@@ -76,4 +81,4 @@ runs:
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
-          bomutils xar cpio genisoimage nsis msitools makeself
+          cpio genisoimage nsis msitools makeself
