@@ -2097,6 +2097,14 @@ crates:
         "--skip=cargo should be accepted, got:\n{}",
         stderr
     );
+    // Non-vacuous: prove the run progressed PAST the validation gate. The
+    // pipeline prints "Preparing release" only after selection validation
+    // passes, so a pre-gate abort would fail this assertion.
+    assert!(
+        stderr.contains("Preparing release"),
+        "expected post-gate marker, got:\n{}",
+        stderr
+    );
 }
 
 /// `--skip=krew` is accepted (krew publisher skip).
@@ -2137,6 +2145,11 @@ crates:
     assert!(
         !stderr.contains("invalid --skip value"),
         "--skip=krew should be accepted, got:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("Preparing release"),
+        "expected post-gate marker, got:\n{}",
         stderr
     );
 }
@@ -2185,6 +2198,11 @@ crates:
         "--skip=homebrew should be accepted, got:\n{}",
         stderr
     );
+    assert!(
+        stderr.contains("Preparing release"),
+        "expected post-gate marker, got:\n{}",
+        stderr
+    );
 }
 
 /// `--skip=chocolatey` is ACCEPTED — `chocolatey` is the canonical,
@@ -2227,6 +2245,11 @@ crates:
     assert!(
         !stderr.contains("invalid --skip value"),
         "--skip=chocolatey should be accepted, got:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("Preparing release"),
+        "expected post-gate marker, got:\n{}",
         stderr
     );
 }
@@ -2315,6 +2338,11 @@ crates:
     assert!(
         !stderr.contains("invalid --publishers value"),
         "--publishers=cargo,homebrew should be accepted, got:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("Preparing release"),
+        "expected post-gate marker, got:\n{}",
         stderr
     );
 }
@@ -2450,15 +2478,26 @@ crates:
         "--skip=homebrew (GR-canonical) should validate, got:\n{}",
         stderr
     );
+    assert!(
+        stderr.contains("Preparing release"),
+        "expected post-gate marker, got:\n{}",
+        stderr
+    );
 }
 
-/// `publish --publishers npm` and `check config --publishers npm` both accept
-/// the selector flag and pass validation.
+/// `publish --publishers npm` accepts the selector against the known set (the
+/// publish gate is a vocabulary check), while `check config --publishers` is
+/// tightened to the CONFIGURED set: a configured publisher passes, a known-but-
+/// unconfigured publisher is rejected with a "not configured" error, and a typo
+/// keeps the loud invalid-value rejection.
 #[test]
 fn test_publish_and_check_accept_publishers_flag() {
     let tmp = TempDir::new().unwrap();
     create_test_project(tmp.path());
     init_git_repo(tmp.path());
+    // `publish.cargo` configures the cargo publisher so `check config
+    // --publishers=cargo` resolves against a real publish block; `npm` is
+    // deliberately left unconfigured to exercise the not-configured path.
     create_config(
         tmp.path(),
         r#"
@@ -2467,11 +2506,16 @@ crates:
   - name: test-project
     path: "."
     tag_template: "v{{ .Version }}"
+    publish:
+      cargo: {}
 "#,
     );
 
-    // `publish` reaches the validation gate then fails later (no dist/git);
-    // the assertion is that the selector itself is not flagged invalid.
+    // `publish` validates the selector against the KNOWN set (vocabulary
+    // check), then reaches dist loading and fails for lack of a manifest.
+    // Assert both: the selector is not flagged invalid AND the run reached
+    // the post-gate dist stage (non-vacuous — a pre-gate abort would not
+    // print the manifest error).
     let publish_out = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["publish", "--publishers=npm", "--dry-run"])
         .current_dir(tmp.path())
@@ -2483,22 +2527,51 @@ crates:
         "publish --publishers=npm should be accepted, got:\n{}",
         publish_err
     );
+    assert!(
+        publish_err.contains("no artifacts manifest found"),
+        "expected post-gate dist marker, got:\n{}",
+        publish_err
+    );
 
-    // `check config` validates the selectors without running anything.
-    let check_out = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+    // `check config --publishers=cargo` names a CONFIGURED publisher → passes
+    // and reaches config validation (non-vacuous: "Config is valid." prints
+    // only after the publisher check passes).
+    let check_ok = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["check", "config", "--publishers=cargo"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let check_ok_err = String::from_utf8_lossy(&check_ok.stderr);
+    assert!(
+        check_ok.status.success(),
+        "check config --publishers=cargo should pass, got:\n{}",
+        check_ok_err
+    );
+    assert!(
+        check_ok_err.contains("Config is valid"),
+        "expected post-validation marker, got:\n{}",
+        check_ok_err
+    );
+
+    // `check config --publishers=npm` names a KNOWN but UNCONFIGURED publisher
+    // → rejected with the not-configured error (not the typo phrase).
+    let check_unconfigured = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["check", "config", "--publishers=npm"])
         .current_dir(tmp.path())
         .output()
         .unwrap();
-    let check_err = String::from_utf8_lossy(&check_out.stderr);
     assert!(
-        !check_err.contains("invalid --publishers value"),
-        "check config --publishers=npm should be accepted, got:\n{}",
-        check_err
+        !check_unconfigured.status.success(),
+        "check config --publishers=npm (unconfigured) should exit nonzero"
+    );
+    let check_unconfigured_err = String::from_utf8_lossy(&check_unconfigured.stderr);
+    assert!(
+        check_unconfigured_err.contains("not configured") && check_unconfigured_err.contains("npm"),
+        "unconfigured publisher should yield a not-configured error, got:\n{}",
+        check_unconfigured_err
     );
 
-    // A check-config typo is loud + nonzero — proves the validation gate is
-    // live on the check path.
+    // A check-config typo keeps the loud invalid-value rejection + nonzero exit.
     let check_typo = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["check", "config", "--publishers=bogusname"])
         .current_dir(tmp.path())

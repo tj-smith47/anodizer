@@ -108,7 +108,7 @@ Validate the workspace's anodize config
 |------|-------|---------|-------------|
 | `--workspace` | — | — | Validate a specific workspace in a monorepo config |
 | `--skip` | — | — | Validate these skip tokens (stages or publishers) against the known set without running anything (comma-separated). Unified denylist: a stage name skips the stage, a publisher name (npm, homebrew, chocolatey, …) skips that publisher. |
-| `--publishers` | — | — | Validate these publisher names against the configured set (comma-separated). --skip always wins over --publishers. |
+| `--publishers` | — | — | Validate-only: check that each name is a publisher the active config actually enables (a known but unconfigured publisher is rejected). Comma-separated publishers to run (default: all configured). --skip always wins over --publishers. |
 
 
 ### `anodizer check determinism`

@@ -2,6 +2,12 @@ use clap::{Parser, Subcommand};
 use clap_complete::Shell;
 use std::path::PathBuf;
 
+/// Shared `--publishers` help stem used across `release`, `publish`, and
+/// `check config` so the flag presents one mental model on every command.
+/// `check config` appends its validate-only clause (see its `#[arg]`).
+const PUBLISHERS_HELP_STEM: &str = "Comma-separated publishers to run (default: all configured). \
+     --skip always wins over --publishers.";
+
 #[derive(Parser)]
 #[command(name = "anodizer", version, about = "Release Rust projects with ease")]
 pub struct Cli {
@@ -64,12 +70,7 @@ pub enum Commands {
                     (npm, homebrew, chocolatey, …) skips that publisher."
         )]
         skip: Vec<String>,
-        #[arg(
-            long = "publishers",
-            value_delimiter = ',',
-            help = "Comma-separated publishers to run (default: all configured). \
-                    --skip always wins over --publishers."
-        )]
+        #[arg(long = "publishers", value_delimiter = ',', help = PUBLISHERS_HELP_STEM)]
         publishers: Vec<String>,
         #[arg(
             long,
@@ -575,12 +576,7 @@ pub enum Commands {
                     (npm, homebrew, chocolatey, …) skips that publisher."
         )]
         skip: Vec<String>,
-        #[arg(
-            long = "publishers",
-            value_delimiter = ',',
-            help = "Comma-separated publishers to run (default: all configured). \
-                    --skip always wins over --publishers."
-        )]
+        #[arg(long = "publishers", value_delimiter = ',', help = PUBLISHERS_HELP_STEM)]
         publishers: Vec<String>,
     },
     /// Bump crate versions (Conventional Commits → semver level)
@@ -797,8 +793,12 @@ pub enum CheckCmd {
         #[arg(
             long = "publishers",
             value_delimiter = ',',
-            help = "Validate these publisher names against the configured set \
-                    (comma-separated). --skip always wins over --publishers."
+            help = concat!(
+                "Validate-only: check that each name is a publisher the active config \
+                 actually enables (a known but unconfigured publisher is rejected). ",
+                "Comma-separated publishers to run (default: all configured). \
+                 --skip always wins over --publishers.",
+            )
         )]
         publishers: Vec<String>,
     },

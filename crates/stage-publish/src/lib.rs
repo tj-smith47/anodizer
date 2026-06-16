@@ -391,8 +391,8 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
     }
 
     // WinGet eligibility — the PR is rediscovered via the GitHub search API
-    // (mirroring `preflight::Winget`), so we don't need to thread a PR URL
-    // through from the publish step. A single `publisher_deselected("winget")`
+    // (mirroring `preflight::Winget`), so no PR URL needs threading from the
+    // publish step. A single `publisher_deselected("winget")`
     // gate folds in both `--skip=winget` and the `--publishers` allowlist,
     // the same shape as the chocolatey arm above (both skip tokens now equal
     // the canonical publisher name).

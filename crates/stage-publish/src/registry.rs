@@ -691,6 +691,60 @@ pub fn validate_publisher_selection(allowlist: &[String], skip: &[String]) -> Re
     anodizer_core::context::validate_skip_values(skip, &valid)
 }
 
+/// Validate a `--publishers` allowlist against the *configured* publisher set
+/// for `check config`.
+///
+/// Where [`validate_publisher_selection`] only proves a `--publishers` token is
+/// a *known* publisher name (the vocabulary check the release/publish gate
+/// needs before runtime selection), `check config` is a configuration-validation
+/// command: its `--publishers` selectors must name publishers the active config
+/// actually enables, or the operator's planned selection silently selects
+/// nothing at release time. Two failure classes are distinguished:
+///
+/// - A token that is not even a known publisher (a typo) returns the same loud
+///   `invalid --publishers value(s)` error as [`validate_publisher_selection`],
+///   listing the valid names.
+/// - A token that *is* a known publisher but is *not configured* (no matching
+///   publish block) returns `publisher '<name>' named in --publishers is not
+///   configured (no <name> publish block)` so the operator sees the genuine
+///   config-validation signal.
+///
+/// Returns `Ok(())` when every token names a configured publisher (including
+/// when the allowlist is empty).
+pub fn validate_publisher_allowlist_configured(
+    allowlist: &[String],
+    ctx: &Context,
+) -> Result<(), String> {
+    let known = valid_publisher_names();
+
+    let bad_allow: Vec<&str> = allowlist
+        .iter()
+        .map(|s| s.as_str())
+        .filter(|s| !known.iter().any(|p| p == s))
+        .collect();
+    if !bad_allow.is_empty() {
+        return Err(format!(
+            "invalid --publishers value(s): {}. Valid publishers: {}",
+            bad_allow.join(", "),
+            known.join(", "),
+        ));
+    }
+
+    let configured: Vec<String> = configured_publishers(ctx)
+        .iter()
+        .map(|p| p.name().to_string())
+        .collect();
+    for name in allowlist {
+        if !configured.iter().any(|c| c == name) {
+            return Err(format!(
+                "publisher '{name}' named in --publishers is not configured \
+                 (no {name} publish block)"
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -750,6 +804,56 @@ mod tests {
         let skip = vec!["bogus".to_string()];
         let err = validate_publisher_selection(&[], &skip).unwrap_err();
         assert!(err.contains("bogus"), "{err}");
+    }
+
+    fn cargo_configured_ctx() -> Context {
+        let crate_cfg = CrateConfig {
+            name: "demo".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                cargo: Some(CargoPublishConfig::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        TestContextBuilder::new().crates(vec![crate_cfg]).build()
+    }
+
+    #[test]
+    fn allowlist_configured_accepts_configured_publisher() {
+        let ctx = cargo_configured_ctx();
+        let allow = vec!["cargo".to_string()];
+        assert!(validate_publisher_allowlist_configured(&allow, &ctx).is_ok());
+    }
+
+    #[test]
+    fn allowlist_configured_rejects_known_but_unconfigured_publisher() {
+        let ctx = cargo_configured_ctx();
+        let allow = vec!["npm".to_string()];
+        let err = validate_publisher_allowlist_configured(&allow, &ctx).unwrap_err();
+        assert!(err.contains("not configured"), "{err}");
+        assert!(err.contains("npm"), "{err}");
+        assert!(
+            !err.contains("invalid --publishers value"),
+            "unconfigured must NOT use the typo phrase: {err}"
+        );
+    }
+
+    #[test]
+    fn allowlist_configured_rejects_typo_with_loud_error() {
+        let ctx = cargo_configured_ctx();
+        let allow = vec!["crago".to_string()];
+        let err = validate_publisher_allowlist_configured(&allow, &ctx).unwrap_err();
+        assert!(err.contains("invalid --publishers value"), "{err}");
+        assert!(err.contains("crago"), "{err}");
+        assert!(err.contains("cargo"), "hint must list valid names: {err}");
+    }
+
+    #[test]
+    fn allowlist_configured_accepts_empty() {
+        let ctx = cargo_configured_ctx();
+        assert!(validate_publisher_allowlist_configured(&[], &ctx).is_ok());
     }
 
     #[test]

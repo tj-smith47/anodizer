@@ -502,19 +502,21 @@ fn run() {
                 skip,
                 publishers,
             } => {
-                // `check config` is the validation entry point: reject a typo'd
-                // `--skip` / `--publishers` selector here so an operator can
-                // verify a planned selection without running the pipeline.
-                if let Err(msg) = anodizer_stage_publish::registry::validate_publisher_selection(
-                    &publishers,
-                    &skip,
-                ) {
+                // `--skip` validates against the KNOWN stage/publisher vocabulary
+                // here (no config needed): a typo'd skip token is a typo regardless
+                // of what the active config enables. `--publishers` is validated
+                // downstream in `config::run` against the CONFIGURED set, which
+                // requires the loaded config — so `--skip` (only) is checked here.
+                if let Err(msg) =
+                    anodizer_stage_publish::registry::validate_publisher_selection(&[], &skip)
+                {
                     eprintln!("{}", anodizer_core::log::render_error(&msg));
                     std::process::exit(1);
                 }
                 commands::check::config::run(
                     cli.config.as_deref(),
                     workspace.as_deref(),
+                    &publishers,
                     cli.verbose,
                     cli.debug,
                     cli.quiet,

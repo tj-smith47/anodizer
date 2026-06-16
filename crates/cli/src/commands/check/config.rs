@@ -9,6 +9,7 @@ use std::path::Path;
 pub fn run(
     config_override: Option<&Path>,
     workspace: Option<&str>,
+    publishers: &[String],
     verbose: bool,
     debug: bool,
     quiet: bool,
@@ -26,6 +27,34 @@ pub fn run(
     // Always validate the raw config first
     log.status("validating configuration");
     run_checks(&config, true, &log)?;
+
+    // `--publishers` is a config-validation selector: each name must be a
+    // publisher the active config actually enables, so the configured (not
+    // merely the known) set is the floor. Validate against the config the
+    // pipeline would resolve for this invocation — overlaid when --workspace
+    // is given — so a per-workspace publish block is honored.
+    let publisher_config = if let Some(ws_name) = workspace {
+        let ws = super::super::release::resolve_workspace(&config, ws_name)?;
+        let mut resolved = config.clone();
+        helpers::apply_workspace_overlay(&mut resolved, ws);
+        resolved
+    } else {
+        config.clone()
+    };
+    if !publishers.is_empty() {
+        let ctx = anodizer_core::context::Context::new(
+            publisher_config,
+            anodizer_core::context::ContextOptions::default(),
+        );
+        // Return the raw validator message: the top-level error handler wraps
+        // returned errors in `render_error`, so prefixing it here would double
+        // the "Error:" label.
+        if let Err(msg) = anodizer_stage_publish::registry::validate_publisher_allowlist_configured(
+            publishers, &ctx,
+        ) {
+            bail!("{msg}");
+        }
+    }
 
     // When --workspace is specified, also validate the resolved (overlaid) config
     if let Some(ws_name) = workspace {
