@@ -32,6 +32,16 @@ elif (( $(echo "$COVERAGE >= 70" | bc -l) )); then COLOR="yellowgreen"
 elif (( $(echo "$COVERAGE >= 60" | bc -l) )); then COLOR="yellow"
 else COLOR="red"; fi
 
+# Restore the original checkout before exit. The coverage job resolves a LOCAL
+# composite action (`./.github/actions/setup-rust`), whose files must exist in
+# the working tree at the job's post phase (cache-save, composite cleanup) — not
+# just the main phase. Leaving the tree on the `badges` branch (which lacks
+# `.github/`) makes the post phase fail with "Can't find action.yml". --force
+# discards the badge-branch tree state; the badge is already committed+pushed.
+ORIG_REF="$(git symbolic-ref --quiet --short HEAD || git rev-parse HEAD)"
+restore_ref() { git checkout --force "$ORIG_REF" > /dev/null 2>&1 || true; }
+trap restore_ref EXIT
+
 git config user.email "github-actions[bot]@users.noreply.github.com"
 git config user.name "github-actions[bot]"
 git fetch origin badges:badges 2>/dev/null || true
