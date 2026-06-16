@@ -1,0 +1,79 @@
+name: Setup Rust
+description: >-
+  Provision a Rust CI job: toolchain (+ components/targets), optional sccache,
+  Swatinem build cache, go-task, taiki-e cargo tools, and the Linux flat-installer
+  packaging toolchain. Collapses the toolchain/cache/task/tool steps every ci.yml
+  Rust job otherwise repeats. Checkout is NOT included — a local composite requires
+  the repo already checked out, so each job keeps its own checkout step.
+
+inputs:
+  toolchain:
+    description: Rust toolchain channel passed to dtolnay/rust-toolchain.
+    default: stable
+  components:
+    description: Space/comma-separated rustup components (e.g. "clippy", "llvm-tools-preview").
+    default: ""
+  targets:
+    description: Space/comma-separated rustup targets to add.
+    default: ""
+  cache:
+    description: "true to enable the Swatinem/rust-cache build cache."
+    default: "true"
+  cache-key:
+    description: Extra key segment for rust-cache so distinct jobs don't share a cache slot.
+    default: ""
+  sccache:
+    description: >-
+      "true to start mozilla-actions/sccache-action. Leave false for coverage:
+      sccache's compile cache masks the source llvm-cov must instrument. Callers
+      enabling this must also set the job-level RUSTC_WRAPPER=sccache env."
+    default: "false"
+  task:
+    description: "true to install go-task (for jobs that run `task` targets)."
+    default: "false"
+  github-token:
+    description: Token forwarded to go-task/setup-task as repo-token to avoid API rate limits.
+    default: ""
+  tools:
+    description: Comma-separated cargo tools for taiki-e/install-action (e.g. "cargo-nextest,cargo-llvm-cov").
+    default: ""
+  linux-packaging-tools:
+    description: >-
+      "true to apt-install the Linux flat-installer toolchain (bomutils/xar/cpio/
+      genisoimage/nsis/msitools/makeself). Installer-assembly stages runtime-probe
+      these and skip-with-pass when absent, so coverage of those paths needs them."
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable branch
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        components: ${{ inputs.components }}
+        targets: ${{ inputs.targets }}
+
+    - if: ${{ inputs.sccache == 'true' }}
+      uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+
+    - if: ${{ inputs.cache == 'true' }}
+      uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      with:
+        key: ${{ inputs.cache-key }}
+
+    - if: ${{ inputs.task == 'true' }}
+      uses: go-task/setup-task@01a4adf9db2d14c1de7a560f09170b6e0df736aa # v2.1.0
+      with:
+        repo-token: ${{ inputs.github-token }}
+
+    - if: ${{ inputs.tools != '' }}
+      uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+      with:
+        tool: ${{ inputs.tools }}
+
+    - if: ${{ inputs.linux-packaging-tools == 'true' }}
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          bomutils xar cpio genisoimage nsis msitools makeself
