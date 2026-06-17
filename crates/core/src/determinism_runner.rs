@@ -94,6 +94,9 @@ pub fn compute_skip_arg(extra: &[&str]) -> String {
 ///   because of this skip list.
 /// - `--no-preflight` — always. The replica runs in a deliberately
 ///   credential-less env; see [`build_subprocess_command`].
+/// - `--rollback none` — always. The hermetic harness has no published
+///   release to undo, so the child's default rollback (which would probe
+///   GitHub without a token) is disabled by construction.
 /// - `--targets=<csv>` (when `targets` is `Some`) — restricts the
 ///   rebuild to a subset of configured triples. The sharded
 ///   `release.yml` matrix passes this so each runner only validates
@@ -182,6 +185,13 @@ fn build_subprocess_command(spec: &ChildInvocation<'_>) -> Command {
     if snapshot {
         cmd.arg("--snapshot");
     }
+    // The harness is hermetic: it skips the release stage and runs
+    // credential-less, so there is never a published release to undo. The
+    // child's default `on_failure=rollback` would otherwise probe GitHub
+    // (`get_release_by_tag`) with no token on any stage failure and emit a
+    // confusing "set the GH_TOKEN environment variable" warning. Force the
+    // no-op rollback mode so a harness stage failure surfaces plainly.
+    cmd.arg("--rollback").arg("none");
     // The child's stderr is inherited into the harness's own stream, so
     // the operator's verbosity choice must extend to the child — a
     // `check determinism -q` whose children still print every section
@@ -399,6 +409,41 @@ mod tests {
             assert!(
                 args.contains(&"--no-preflight"),
                 "child argv (snapshot={snapshot}) must always carry --no-preflight; got {args:?}"
+            );
+        }
+    }
+
+    /// The child release subprocess MUST disable rollback in every mode.
+    /// The harness is hermetic (release stage skipped, no credentials), so
+    /// there is never a published release to undo; the child's default
+    /// `on_failure=rollback` would otherwise probe GitHub without a token
+    /// on any stage failure and emit a confusing GH_TOKEN warning. Assert
+    /// `--rollback` is present and immediately followed by `none`.
+    #[test]
+    fn subprocess_command_always_disables_rollback() {
+        let env = HashMap::new();
+        for snapshot in [true, false] {
+            let cmd = build_subprocess_command(&ChildInvocation {
+                anodize_binary: &PathBuf::from("/usr/bin/anodize"),
+                worktree_path: &std::env::temp_dir(),
+                env: &env,
+                targets: None,
+                extra_skip: &[],
+                snapshot,
+                crate_name: None,
+                verbosity: crate::log::Verbosity::Normal,
+            });
+            let args: Vec<&str> = cmd.get_args().map(|s| s.to_str().expect("ascii")).collect();
+            let pos = args
+                .iter()
+                .position(|a| *a == "--rollback")
+                .unwrap_or_else(|| {
+                    panic!("child argv (snapshot={snapshot}) must carry --rollback; got {args:?}")
+                });
+            assert_eq!(
+                args.get(pos + 1),
+                Some(&"none"),
+                "child argv (snapshot={snapshot}) must pass `--rollback none`; got {args:?}"
             );
         }
     }
