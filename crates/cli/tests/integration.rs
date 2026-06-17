@@ -2720,7 +2720,7 @@ crates:
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args([
             "release",
-            "--publishers=blob,snapcraft-publish,docker,docker-sign",
+            "--publishers=blob,snapcraft-publish,docker,docker-sign,announce",
             "--dry-run",
             "--snapshot",
             "--single-target",
@@ -2735,7 +2735,7 @@ crates:
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !stderr.contains("invalid --publishers value"),
-        "--publishers=blob,snapcraft-publish,docker,docker-sign must be accepted, got:\n{}",
+        "--publishers=blob,snapcraft-publish,docker,docker-sign,announce must be accepted, got:\n{}",
         stderr
     );
     assert!(

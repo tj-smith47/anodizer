@@ -657,14 +657,26 @@ pub const fn group_dispatch_order() -> [PublisherGroup; 3] {
 /// before doing any irreversible work). This keeps `valid_publisher_names`
 /// the single source of truth — there is no second list to drift.
 ///
+/// `announce` is a governed leaf publisher: `AnnounceStage` broadcasts to
+/// webhooks/Slack/Twitter/Mastodon/Bluesky — external, irreversible sends —
+/// from a pipeline stage outside dispatch, so it consults `publisher_deselected`
+/// before any broadcast. Like homebrew, it DEPENDS on the release substrate (it
+/// reads `ReleaseURL`) yet is itself a leaf, so it is governed by the allowlist
+/// exactly like blob/docker — NOT exempt the way `release` is.
+///
 /// `release` is deliberately ABSENT: the GitHub/GitLab/Gitea release the
 /// `release` stage creates is the substrate every other publisher depends on
 /// (homebrew/scoop/nix/krew manifests reference its assets; announce needs
 /// `ReleaseURL`), so excluding it via an allowlist would silently break the
 /// common `--publishers homebrew` case. It stays governed by `--skip=release`
 /// (the denylist) only.
-pub const PUBLISH_STAGE_PUBLISHERS: &[&str] =
-    &["blob", "snapcraft-publish", "docker", "docker-sign"];
+pub const PUBLISH_STAGE_PUBLISHERS: &[&str] = &[
+    "blob",
+    "snapcraft-publish",
+    "docker",
+    "docker-sign",
+    "announce",
+];
 
 /// Every canonical publisher name: the trait-based publishers from
 /// [`all_publishers`] PLUS the out-of-dispatch publish stages in

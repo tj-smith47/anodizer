@@ -17,7 +17,7 @@ publisher runs, the same one-way-door guard the other commands carry.
 
 | Flag | Role | Effect when set |
 |------|------|-----------------|
-| `--publishers <a,b,…>` | allowlist | Only the named publishers run. Every other publisher — including the irreversible publish stages `blob`, `snapcraft-publish`, `docker`, and `docker-sign` — is deselected. (The `release` stage that creates the GitHub release is the substrate the others depend on and is governed by `--skip=release` only; see the valid-names note below.) |
+| `--publishers <a,b,…>` | allowlist | Only the named publishers run. Every other publisher — including the irreversible publish stages `blob`, `snapcraft-publish`, `docker`, `docker-sign`, and `announce` (the last broadcasts to webhooks/Slack/Twitter/Mastodon/Bluesky) — is deselected. (The `release` stage that creates the GitHub release is the substrate the others depend on and is governed by `--skip=release` only; see the valid-names note below.) |
 | `--skip <a,b,…>` | denylist | The named stages **and** publishers are removed; everything else runs. |
 
 Both flags are comma-separated and may be repeated:
@@ -77,20 +77,24 @@ never drifts):
 | `snapcraft-publish` | the publish stage `snapcraft-publish` (Snap Store upload) |
 | `docker` | the publish stage `docker` (image-registry push) |
 | `docker-sign` | the publish stage `docker-sign` (cosign signatures to the registry) |
+| `announce` | the publish stage `announce` (irreversible external broadcasts — webhooks, Slack, Twitter, Mastodon, Bluesky) |
 
 A name in the **yes** rows resolves the same whether you reach it through `--skip` (which
 also accepts stage tokens) or `--publishers`. The **publisher only** names have no stage
 of their own, so before this selection surface the only way to gate them was per-block
 config — now they honor `--skip`/`--publishers` uniformly at dispatch time.
 
-The last four names — `blob`, `snapcraft-publish`, `docker`, `docker-sign` — are publish
-**stages** rather than dispatch publishers, but each performs an external, irreversible
-push (an object store, the Snap Store, an image registry, registry signatures). They are
-therefore governed by the same selectors: `--publishers cargo` deselects them, and
-`--publishers blob` allow-lists a blob-only upload. The one exception is the `release`
-stage that creates the GitHub/GitLab/Gitea release: it is the substrate every other
-publisher depends on (manifests reference its assets; announce needs the release URL), so
-it is governed by `--skip=release` only and is never dropped by a `--publishers` allowlist.
+The last five names — `blob`, `snapcraft-publish`, `docker`, `docker-sign`, `announce` —
+are publish **stages** rather than dispatch publishers, but each performs an external,
+irreversible push (an object store, the Snap Store, an image registry, registry
+signatures, or — for `announce` — broadcasts to webhooks/Slack/Twitter/Mastodon/Bluesky).
+They are therefore governed by the same selectors: `--publishers cargo` deselects them, and
+`--publishers blob` allow-lists a blob-only upload. Like `homebrew`, `announce` depends on
+the release substrate (it reads the release URL) yet is itself a leaf, so the allowlist
+governs it just like the others. The one exception is the `release` stage that creates the
+GitHub/GitLab/Gitea release: it is the substrate every other publisher depends on
+(manifests reference its assets; announce needs the release URL), so it is governed by
+`--skip=release` only and is never dropped by a `--publishers` allowlist.
 
 ### Canonical names: `homebrew`, not `brew`; `chocolatey`, not `choco`
 
@@ -117,8 +121,8 @@ pipeline. Pair it with `--publishers` to release one channel without re-running 
 ```bash
 $ anodizer publish --publishers npm
    • publishing npm
-   • skipping cargo — deselected via --skip / --publishers
-   • skipping homebrew — deselected via --skip / --publishers
+   • skipped cargo — not in --publishers allowlist
+   • skipped homebrew — not in --publishers allowlist
    …
 ```
 
@@ -126,7 +130,7 @@ $ anodizer publish --publishers npm
 
 ```bash
 $ anodizer release --skip npm
-   • skipping npm — deselected via --skip / --publishers
+   • skipped npm — excluded via --skip
    …    # every other configured publisher runs
 ```
 
@@ -136,48 +140,49 @@ $ anodizer release --skip npm
 $ anodizer release --publishers cargo,homebrew
    • publishing cargo
    • publishing homebrew
-   • skipping npm — deselected via --skip / --publishers
-   • skipping dockerhub — deselected via --skip / --publishers
+   • skipped npm — not in --publishers allowlist
+   • skipped dockerhub — not in --publishers allowlist
    …
 ```
 
 ### Two deselect outputs: the dispatch line and the summary line
 
-A deselected publisher is never silent. anodizer emits **two** distinct
-operator-visible lines for it, at two different points in the run:
+A deselected publisher is never silent. anodizer emits the deselect line at
+two points in the run — **in-flight** (as the publish pipeline reaches the
+publisher) and again in the **publish summary** — with the **same**
+distinguished wording at both. The two outputs differ only in *phase*, not in
+text: both come from the one `deselected_reason` source, so they always name
+the same cause.
 
-| Phase | Line | When |
-|---|---|---|
-| **Dispatch** (in-flight) | `skipping <name> — deselected via --skip / --publishers` | As the pipeline walks the publisher list and reaches a deselected one. |
-| **Publish summary** (final) | `skipped <name> — excluded via --skip` | The publisher was named in the `--skip` denylist. |
-| **Publish summary** (final) | `skipped <name> — not in --publishers allowlist` | A non-empty `--publishers` allowlist was given and this publisher was not in it. |
+| Wording (both phases) | When it applies |
+|---|---|
+| `skipped <name> — excluded via --skip` | The publisher was named in the `--skip` denylist. |
+| `skipped <name> — not in --publishers allowlist` | A non-empty `--publishers` allowlist was given and this publisher was not in it. |
 
-The dispatch line is uniform — it states only that the publisher was
-deselected. The summary line is **distinguished**: it names the exact cause
-so you can confirm a publisher was turned off the way you intended. When both
-selectors apply to one publisher, `--skip` wins and the summary reports the
-denylist cause.
+The line is **distinguished**: it names the exact cause so you can confirm a
+publisher was turned off the way you intended. When both selectors apply to one
+publisher, `--skip` wins and the line reports the denylist cause.
 
-The four publish **stages** (`blob`, `snapcraft-publish`, `docker`,
-`docker-sign`) run outside the dispatch loop, so a deselected one emits a
-single **distinguished** line at its stage — `skipped blob — not in
---publishers allowlist` / `skipped docker — excluded via --skip` — rather than
-the dispatch-plus-summary pair. The cause is named the same way, so you still
-see exactly which selector turned it off.
+The five publish **stages** (`blob`, `snapcraft-publish`, `docker`,
+`docker-sign`, `announce`) run outside the dispatch loop, so a deselected one
+emits a single line at its stage — `skipped blob — not in --publishers
+allowlist` / `skipped docker — excluded via --skip` — rather than the
+in-flight-plus-summary pair. The wording is identical, so you still see exactly
+which selector turned it off.
 
 ```bash
 $ anodizer release --skip npm
-   • skipping npm — deselected via --skip / --publishers   # dispatch
+   • skipped npm — excluded via --skip   # in-flight
    …    # every other configured publisher runs
-   • skipped npm — excluded via --skip                     # summary
+   • skipped npm — excluded via --skip   # summary (same wording)
 ```
 
 ```bash
 $ anodizer release --publishers cargo
    • publishing cargo
-   • skipping npm — deselected via --skip / --publishers   # dispatch
+   • skipped npm — not in --publishers allowlist   # in-flight
    …
-   • skipped npm — not in --publishers allowlist           # summary
+   • skipped npm — not in --publishers allowlist   # summary (same wording)
 ```
 
 ## Validating a selection ahead of release

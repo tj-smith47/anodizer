@@ -125,6 +125,15 @@ pub(crate) fn announce_should_run(
     ctx: &mut Context,
     announce: &anodizer_core::config::AnnounceConfig,
 ) -> Result<bool> {
+    // A deselected announce (`--publishers` omitting it, or `--skip=announce`)
+    // never dispatches, so the pre-publish render guard must report it as
+    // not-running — otherwise it would dry-render and flag templates for
+    // announcers that will never fire. Mirrors the same short-circuit in
+    // `announce_body`.
+    if ctx.publisher_deselected("announce") {
+        return Ok(false);
+    }
+
     Ok(matches!(
         announce_decision(ctx, announce)?,
         AnnounceDecision::Proceed
@@ -159,6 +168,19 @@ impl Stage for AnnounceStage {
 /// only" while `Pipeline::run` is responsible for `emit_summary`.
 fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
     let log = ctx.logger("announce");
+
+    // Operator-selection gate. AnnounceStage broadcasts to webhooks/Slack/
+    // Twitter/Mastodon/Bluesky (external, irreversible sends) but runs as a
+    // pipeline stage OUTSIDE the trait-based dispatch chokepoint, so the
+    // uniform `--skip` / `--publishers` filter does not reach it. Consult
+    // `publisher_deselected("announce")` FIRST so an operator who ran
+    // `--publishers cargo` (or `--skip=announce`) does NOT re-broadcast on a
+    // partial re-publish. The skip is never silent.
+    if ctx.publisher_deselected("announce") {
+        log.status(&ctx.deselected_reason("announce"));
+        return Ok(());
+    }
+
     if ctx.skip_in_snapshot(&log, "announce") {
         return Ok(());
     }
@@ -648,6 +670,178 @@ mod gate_tests {
         assert!(
             msg.contains("--allow-snapshot-publish"),
             "error must tell the operator how to override: {msg}",
+        );
+    }
+
+    // ---- operator-selection (`--publishers` / `--skip`) deselect gate ----
+    //
+    // AnnounceStage broadcasts to external channels (webhook/Slack/…) from a
+    // pipeline stage OUTSIDE the trait dispatch chokepoint, so it must honor
+    // `--publishers` / `--skip` itself via `publisher_deselected("announce")`.
+    // A partial re-publish (`release --publishers cargo` after cargo failed)
+    // must NOT re-broadcast.
+
+    /// Build a Config whose named crates each carry an announce block with an
+    /// ENABLED webhook whose `message_template` references an undefined var.
+    /// Used as a non-invocation oracle: if the deselect gate fires, the stage
+    /// returns `Ok(())` before any dispatch; if it leaks, dispatch renders the
+    /// broken template and the stage returns `Err`. Empty `crates` ≡ single
+    /// crate; one entry ≡ lockstep; many ≡ per-crate (the gate is
+    /// mode-invariant — it fires before any per-crate loop).
+    fn broken_webhook_announce_config(crate_names: &[&str]) -> Config {
+        use anodizer_core::config::{CrateConfig, WebhookConfig};
+        let announce = AnnounceConfig {
+            webhook: Some(WebhookConfig {
+                enabled: Some(anodizer_core::config::StringOrBool::Bool(true)),
+                endpoint_url: Some("https://example.test/hook".to_string()),
+                // Renders against an undefined var → dispatch errors. Never
+                // reached when announce is deselected.
+                message_template: Some("{{ NoSuchVar }}".to_string()),
+                ..Default::default()
+            }),
+            // No PublishReport gate interference: this run has no report.
+            gate_on: AnnounceGate::None,
+            ..Default::default()
+        };
+        Config {
+            project_name: "myapp".to_string(),
+            announce: Some(announce.clone()),
+            crates: crate_names
+                .iter()
+                .map(|name| CrateConfig {
+                    name: name.to_string(),
+                    path: ".".to_string(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn assert_announce_deselected_not_broadcast(crate_names: &[&str], opts: ContextOptions) {
+        let mut ctx = Context::new(broken_webhook_announce_config(crate_names), opts);
+        // Real-release version so the non-release guard passes; a non-snapshot,
+        // non-dry-run, non-nightly ctx so only the deselect gate can stop it.
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+        // A clean Ok proves the broken-template dispatch path was never entered.
+        AnnounceStage
+            .run(&mut ctx)
+            .expect("deselected announce must short-circuit to Ok before any broadcast");
+    }
+
+    #[test]
+    fn announce_deselected_by_allowlist_not_broadcast_single_crate() {
+        // single-crate mode: `--publishers cargo` excludes announce.
+        let opts = ContextOptions {
+            publisher_allowlist: vec!["cargo".to_string()],
+            ..Default::default()
+        };
+        assert_announce_deselected_not_broadcast(&[], opts);
+    }
+
+    #[test]
+    fn announce_deselected_by_allowlist_not_broadcast_workspace_lockstep() {
+        // workspace-lockstep mode: a single crate entry; the gate fires before
+        // any per-crate loop, so one lockstep crate must deselect identically.
+        let opts = ContextOptions {
+            publisher_allowlist: vec!["cargo".to_string()],
+            ..Default::default()
+        };
+        assert_announce_deselected_not_broadcast(&["solo"], opts);
+    }
+
+    #[test]
+    fn announce_deselected_by_allowlist_not_broadcast_workspace_per_crate() {
+        // workspace per-crate mode: multiple crates; the allowlist omitting
+        // announce must deselect it for the whole run.
+        let opts = ContextOptions {
+            publisher_allowlist: vec!["cargo".to_string()],
+            ..Default::default()
+        };
+        assert_announce_deselected_not_broadcast(&["core", "cli"], opts);
+    }
+
+    #[test]
+    fn announce_deselected_by_skip_not_broadcast() {
+        // `--skip=announce` (regression guard) must still deselect announce.
+        let opts = ContextOptions {
+            skip_stages: vec!["announce".to_string()],
+            ..Default::default()
+        };
+        assert_announce_deselected_not_broadcast(&[], opts);
+    }
+
+    #[test]
+    fn announce_deselected_skip_wins_over_allowlist() {
+        // `--skip=announce` AND `--publishers announce`: --skip wins.
+        let opts = ContextOptions {
+            skip_stages: vec!["announce".to_string()],
+            publisher_allowlist: vec!["announce".to_string()],
+            ..Default::default()
+        };
+        assert_announce_deselected_not_broadcast(&[], opts);
+    }
+
+    #[test]
+    fn announce_in_allowlist_is_not_deselected() {
+        // `--publishers announce`: announce IS selected, so the deselect gate
+        // must NOT fire — the broken webhook template then surfaces its real
+        // render error, proving the dispatch path WAS entered.
+        let opts = ContextOptions {
+            publisher_allowlist: vec!["announce".to_string()],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(broken_webhook_announce_config(&[]), opts);
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+        let err = AnnounceStage
+            .run(&mut ctx)
+            .expect_err("selected announce enters dispatch and hits the broken-template error");
+        assert!(
+            err.to_string().contains("announce errors"),
+            "expected a dispatch render error, got: {err}",
+        );
+    }
+
+    /// The pre-publish render guard (`announce_should_run`) must report a
+    /// deselected announce as "not running" so it does not dry-render (and
+    /// flag) templates for announcers that will never fire.
+    #[test]
+    fn announce_should_run_false_when_deselected() {
+        let opts = ContextOptions {
+            publisher_allowlist: vec!["cargo".to_string()],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(broken_webhook_announce_config(&[]), opts);
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+        let announce = ctx.config.announce.clone().expect("announce config");
+        assert!(
+            !announce_should_run(&mut ctx, &announce).expect("decision"),
+            "a deselected announce must report as not-running to the pre-publish guard",
+        );
+    }
+
+    /// With no selector, the same announce config DOES run (guard would
+    /// dry-render). Pins that the deselect gate is the only thing suppressing
+    /// the run in the test above.
+    #[test]
+    fn announce_should_run_true_when_not_deselected() {
+        let mut ctx = Context::new(
+            broken_webhook_announce_config(&[]),
+            ContextOptions::default(),
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+        let announce = ctx.config.announce.clone().expect("announce config");
+        assert!(
+            announce_should_run(&mut ctx, &announce).expect("decision"),
+            "a non-deselected announce must report as running",
         );
     }
 
