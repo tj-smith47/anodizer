@@ -42,8 +42,8 @@ fn snapcraft_download_cache(xdg_cache_home: Option<&str>, home: Option<&str>) ->
 
 /// Wipe snapcraft's download cache to dodge the ≤8.14.5 import-time crash
 /// (see `SNAPCRAFT_CACHE_LOCK`). Only removes the `…/snapcraft/download`
-/// leaf, only when it already exists, and logs what is being cleared and
-/// why so the destructive step is never silent.
+/// leaf, only when it already exists, and logs (at verbose) what is being
+/// cleared and why so the destructive step is auditable under `-v`.
 fn clear_snapcraft_cache(xdg_cache_home: Option<&str>, home: Option<&str>, log: &StageLogger) {
     let Some(cache) = snapcraft_download_cache(xdg_cache_home, home) else {
         return;
@@ -51,7 +51,7 @@ fn clear_snapcraft_cache(xdg_cache_home: Option<&str>, home: Option<&str>, log: 
     if !cache.exists() {
         return;
     }
-    log.status(&format!(
+    log.verbose(&format!(
         "clearing stale download cache at {} (works around snapcraft ≤8.14.5 import-time os.makedirs crash)",
         cache.display()
     ));
@@ -1072,11 +1072,18 @@ fn run_snap_jobs(
             .map_err(|_| anyhow::anyhow!("snapcraft cache lock poisoned"))?;
         clear_snapcraft_cache(xdg_cache_home, home_for_cache, &thread_log);
 
-        thread_log.status(&format!("running {}", job.cmd_args.join(" ")));
+        thread_log.verbose(&format!("running {}", job.cmd_args.join(" ")));
 
         let mut command = Command::new(&job.cmd_args[0]);
         command.args(&job.cmd_args[1..]);
         anodizer_core::run::run_checked(&mut command, &thread_log, "snapcraft pack")?;
+
+        let snap_name = job
+            .snap_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| job.snap_path.display().to_string());
+        thread_log.status(&format!("packed snap {snap_name}"));
 
         Ok(Artifact {
             kind: ArtifactKind::Snap,

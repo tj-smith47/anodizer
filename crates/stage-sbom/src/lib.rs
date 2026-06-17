@@ -657,7 +657,7 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
             rendered_env.push((k.clone(), rendered_val));
         }
 
-        log.status(&format!(
+        log.verbose(&format!(
             "running {} {} (sbom[{}])",
             cmd,
             rendered_args.join(" "),

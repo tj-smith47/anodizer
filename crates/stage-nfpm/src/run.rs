@@ -1260,7 +1260,7 @@ fn execute_nfpm_jobs(
     let run_job = |job: &NfpmJob| -> Result<Artifact> {
         let thread_log = anodizer_core::log::StageLogger::new("nfpm", verbosity);
 
-        thread_log.status(&format!("running {}", job.cmd_args.join(" ")));
+        thread_log.verbose(&format!("running {}", job.cmd_args.join(" ")));
 
         let output = Command::new(&job.cmd_args[0])
             .args(&job.cmd_args[1..])
@@ -1272,6 +1272,13 @@ fn execute_nfpm_jobs(
                 )
             })?;
         thread_log.check_output(output, "nfpm")?;
+
+        let pkg_name = job
+            .pkg_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| job.pkg_path.display().to_string());
+        thread_log.status(&format!("packed {pkg_name}"));
 
         if let Some(mt) = job.mtime {
             if let Err(e) = anodizer_core::util::set_file_mtime(&job.pkg_path, mt) {
