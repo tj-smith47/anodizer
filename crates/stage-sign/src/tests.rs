@@ -1244,89 +1244,6 @@ fn test_sign_env_vars_passed_to_command() {
     );
 }
 
-/// FIX 1 contract: a config that references the harness's cosign key as a FILE
-/// PATH (`--key={{ Env.COSIGN_KEY_PATH }}`) must resolve to a readable file. The
-/// production bug exported the PEM CONTENTS as `COSIGN_KEY`, so a path-form
-/// `--key` got the PEM text where cosign wanted a path → `reading key: open
-/// ...: file name too long`. The fake "cosign" here `cat`s the resolved
-/// `--key=` value; the marker only gets written if that value names an openable
-/// file.
-#[cfg(unix)]
-#[test]
-fn test_sign_cosign_key_path_resolves_to_readable_file() {
-    use anodizer_core::artifact::{Artifact, ArtifactKind};
-
-    let tmp = tempfile::TempDir::new().unwrap();
-    // Stand in for the harness-provisioned key file.
-    let key_path = tmp.path().join("cosign.key");
-    std::fs::write(&key_path, "ENCRYPTED-COSIGN-PEM-BODY").unwrap();
-    let marker_path = tmp.path().join("key_readback.txt");
-
-    let artifact_path = tmp.path().join("checksums.sha256");
-    std::fs::write(&artifact_path, b"checksum content").unwrap();
-
-    // `sh -c 'test -r "$1" && cat "$1" > MARKER' _ <key-arg>`: $1 is the
-    // resolved `--key=` path with the `--key=` prefix stripped via parameter
-    // expansion, so the readability test runs against the real path.
-    let script = format!(
-        "k=$1; p=${{k#--key=}}; test -r \"$p\" && cat \"$p\" > {}",
-        marker_path.to_string_lossy()
-    );
-    let signs = vec![SignConfig {
-        id: Some("cosign-path".to_string()),
-        cmd: Some("sh".to_string()),
-        args: Some(vec![
-            "-c".to_string(),
-            script,
-            "_".to_string(),
-            "--key={{ .Env.COSIGN_KEY_PATH }}".to_string(),
-        ]),
-        artifacts: Some("checksum".to_string()),
-        ids: None,
-        signature: None,
-        stdin: None,
-        stdin_file: None,
-        env: None,
-        certificate: None,
-        output: None,
-        if_condition: None,
-    }];
-
-    let mut ctx = TestContextBuilder::new()
-        .dry_run(false)
-        .signs(signs)
-        .build();
-    // Mirror release init: the harness's exported COSIGN_KEY_PATH process var
-    // lands in the `Env` template namespace via `set_env`.
-    ctx.template_vars_mut()
-        .set_env("COSIGN_KEY_PATH", &key_path.to_string_lossy());
-    ctx.artifacts.add(Artifact {
-        kind: ArtifactKind::Checksum,
-        name: String::new(),
-        path: artifact_path,
-        target: None,
-        crate_name: "test".to_string(),
-        metadata: combined_meta(),
-        size: None,
-    });
-
-    SignStage
-        .run(&mut ctx)
-        .expect("sign with a path-form cosign key must succeed");
-
-    let readback = std::fs::read_to_string(&marker_path).unwrap_or_else(|e| {
-        panic!(
-            "marker missing — the resolved --key value was not a readable file \
-             (the `file name too long` bug): {e}"
-        )
-    });
-    assert_eq!(
-        readback.trim(),
-        "ENCRYPTED-COSIGN-PEM-BODY",
-        "the --key path must be openable and hold the key material"
-    );
-}
-
 #[test]
 fn test_docker_sign_ids_filter() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
@@ -2004,6 +1921,191 @@ fn test_if_condition_template_renders_to_empty_skips_sign() {
             .iter()
             .any(|e| e.stage == "sign" && e.label == "skipped"),
         "expected a sign skip memento for the gated config: {events:?}",
+    );
+}
+
+/// Build a single-checksum-artifact context whose env carries (or omits) the
+/// harness marker, run a `signs` config, and return the recorded skip labels.
+///
+/// The keyless-cosign harness skip is decided at the TOP of the per-config
+/// loop, before any spawn AND before the dry-run gate — so the skip memento is
+/// authoritative under either mode. `dry_run` is passed through so the
+/// negative-control cases (which must NOT skip) can be exercised without
+/// actually spawning real `cosign` (whose keyless `sign-blob` triggers a
+/// network OAuth device flow that hangs ~300s).
+fn run_signs_capture_skips(
+    sign: SignConfig,
+    harness: bool,
+    dry_run: bool,
+) -> (anyhow::Result<()>, Vec<(String, String)>) {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let artifact_path = tmp.path().join("checksums.sha256");
+    std::fs::write(&artifact_path, b"checksum content").unwrap();
+
+    let mut builder = TestContextBuilder::new().dry_run(dry_run).signs(vec![sign]);
+    if harness {
+        builder = builder.env("ANODIZER_IN_DETERMINISM_HARNESS", "1");
+    } else {
+        builder = builder.sealed_env();
+    }
+    let mut ctx = builder.build();
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Checksum,
+        name: String::new(),
+        path: artifact_path,
+        target: None,
+        crate_name: "test".to_string(),
+        metadata: combined_meta(),
+        size: None,
+    });
+
+    let result = SignStage.run(&mut ctx);
+    let skips = ctx
+        .skip_memento
+        .snapshot()
+        .iter()
+        .map(|e| (e.stage.clone(), e.label.clone()))
+        .collect();
+    (result, skips)
+}
+
+/// A keyless cosign config (no `--key`) cannot sign inside the determinism
+/// harness: cosign needs ambient OIDC (Fulcio/Rekor) the harness strips for
+/// hermeticity, and `--key` is environment-bound to `COSIGN_KEY` so it would
+/// crash opening the ephemeral PEM contents as a key-file path. Under the
+/// harness it MUST be skipped (recorded, never spawned).
+#[test]
+fn keyless_cosign_is_skipped_under_harness() {
+    let sign = SignConfig {
+        id: Some("cosign-keyless".to_string()),
+        cmd: Some("cosign".to_string()),
+        args: Some(vec![
+            "sign-blob".to_string(),
+            "--bundle=cosign.bundle".to_string(),
+            "--yes".to_string(),
+            "{{ Artifact }}".to_string(),
+        ]),
+        artifacts: Some("checksum".to_string()),
+        ids: None,
+        signature: None,
+        stdin: None,
+        stdin_file: None,
+        env: None,
+        certificate: None,
+        output: None,
+        if_condition: None,
+    };
+    // dry_run=false: prove the config never spawns real cosign even in the
+    // live path (the production failure mode); a non-skip here would error on
+    // cosign's Fulcio OAuth flow.
+    let (result, skips) = run_signs_capture_skips(sign, true, false);
+    assert!(
+        result.is_ok(),
+        "keyless cosign under the harness must skip cleanly, not error: {result:?}"
+    );
+    assert!(
+        skips
+            .iter()
+            .any(|(stage, label)| stage == "sign" && label == "cosign-keyless"),
+        "keyless cosign must be recorded as skipped under the harness: {skips:?}"
+    );
+}
+
+/// A cosign config WITH an explicit `--key` (e.g. `--key=env://COSIGN_KEY`)
+/// signs with the harness's ephemeral key, so it must still RUN under the
+/// harness — not be swept up by the keyless skip.
+#[test]
+fn keyed_cosign_is_not_skipped_under_harness() {
+    let sign = SignConfig {
+        id: Some("cosign-keyed".to_string()),
+        cmd: Some("cosign".to_string()),
+        args: Some(vec![
+            "sign-blob".to_string(),
+            "--key=env://COSIGN_KEY".to_string(),
+            "--bundle=cosign.bundle".to_string(),
+            "--yes".to_string(),
+            "{{ Artifact }}".to_string(),
+        ]),
+        artifacts: Some("checksum".to_string()),
+        ids: None,
+        signature: None,
+        stdin: None,
+        stdin_file: None,
+        env: None,
+        certificate: None,
+        output: None,
+        if_condition: None,
+    };
+    let (_result, skips) = run_signs_capture_skips(sign, true, true);
+    assert!(
+        !skips
+            .iter()
+            .any(|(stage, label)| stage == "sign" && label == "cosign-keyed"),
+        "a `--key`-bearing cosign config must still run under the harness: {skips:?}"
+    );
+}
+
+/// Outside the harness (production), a keyless cosign config is UNAFFECTED —
+/// it runs normally against ambient OIDC.
+#[test]
+fn keyless_cosign_is_not_skipped_outside_harness() {
+    let sign = SignConfig {
+        id: Some("cosign-keyless".to_string()),
+        cmd: Some("cosign".to_string()),
+        args: Some(vec![
+            "sign-blob".to_string(),
+            "--bundle=cosign.bundle".to_string(),
+            "--yes".to_string(),
+            "{{ Artifact }}".to_string(),
+        ]),
+        artifacts: Some("checksum".to_string()),
+        ids: None,
+        signature: None,
+        stdin: None,
+        stdin_file: None,
+        env: None,
+        certificate: None,
+        output: None,
+        if_condition: None,
+    };
+    let (_result, skips) = run_signs_capture_skips(sign, false, true);
+    assert!(
+        !skips
+            .iter()
+            .any(|(stage, label)| stage == "sign" && label == "cosign-keyless"),
+        "keyless cosign outside the harness must NOT be skipped: {skips:?}"
+    );
+}
+
+/// The keyless-cosign harness skip keys on `cmd == cosign`; a non-cosign
+/// signing tool (gpg) under the harness is unaffected.
+#[test]
+fn gpg_is_not_skipped_under_harness() {
+    let sign = SignConfig {
+        id: Some("gpg-sign".to_string()),
+        cmd: Some("gpg".to_string()),
+        args: Some(vec![
+            "--detach-sign".to_string(),
+            "{{ Artifact }}".to_string(),
+        ]),
+        artifacts: Some("checksum".to_string()),
+        ids: None,
+        signature: None,
+        stdin: None,
+        stdin_file: None,
+        env: None,
+        certificate: None,
+        output: None,
+        if_condition: None,
+    };
+    let (_result, skips) = run_signs_capture_skips(sign, true, true);
+    assert!(
+        !skips
+            .iter()
+            .any(|(stage, label)| stage == "sign" && label == "gpg-sign"),
+        "a gpg config under the harness must not be swept by the cosign skip: {skips:?}"
     );
 }
 

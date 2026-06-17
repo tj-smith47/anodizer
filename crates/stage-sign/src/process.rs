@@ -24,6 +24,39 @@ use crate::helpers::{
     resolve_signature_path, should_sign_artifact,
 };
 
+/// Skip reason recorded when a keyless cosign sign config is bypassed under
+/// the determinism harness.
+pub(crate) const KEYLESS_COSIGN_HARNESS_SKIP: &str = "keyless cosign cannot sign in the determinism harness (no ambient OIDC); \
+     signatures are non-deterministic and allowlisted";
+
+/// True when a sign config is keyless cosign (resolved `cmd` basename is
+/// `cosign`, no explicit `--key` arg) AND the determinism harness is active.
+///
+/// Shared by the `signs` / `binary_signs` loop here and the `docker_signs`
+/// loop in `lib.rs`. The discriminator is purely `cmd == cosign` + absence of
+/// `--key`, so it is config-mode-agnostic (single-crate, workspace-lockstep,
+/// workspace per-crate all flow through these loops). The harness signal
+/// mirrors the `IsHarness` derivation in `Context::populate_runtime_vars`:
+/// the `ANODIZER_IN_DETERMINISM_HARNESS` env var is set.
+pub(crate) fn is_keyless_cosign_under_harness(cmd: &str, args: &[String], ctx: &Context) -> bool {
+    if ctx.env_var("ANODIZER_IN_DETERMINISM_HARNESS").is_none() {
+        return false;
+    }
+    // Compare the basename so an absolute/relative path to cosign still matches.
+    let basename = std::path::Path::new(cmd)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(cmd);
+    if basename != "cosign" {
+        return false;
+    }
+    // A `--key` (the keyed form, e.g. `--key=env://COSIGN_KEY`) signs with the
+    // harness's ephemeral key and must still run. The flag is a literal, so the
+    // raw (unrendered) args are sufficient to detect it.
+    let has_key = args.iter().any(|a| a == "--key" || a.starts_with("--key="));
+    !has_key
+}
+
 /// Artifact filter mode for `process_sign_configs`.
 #[derive(Clone, Copy)]
 pub(crate) enum ArtifactFilter {
@@ -240,6 +273,25 @@ pub(crate) fn process_sign_configs(
             .as_deref()
             .map(|s| s.to_string())
             .unwrap_or_else(default_sign_cmd);
+
+        // Keyless cosign cannot run inside the determinism harness: cosign's
+        // keyless mode needs ambient OIDC (Fulcio/Rekor), which the harness
+        // strips for hermeticity, and a keyless config inherits the harness's
+        // ephemeral `COSIGN_KEY` env (the `--key` flag is environment-bound),
+        // crashing on `reading key: open $COSIGN_KEY: file name too long`.
+        // Its signatures are non-deterministic and already drift-allowlisted,
+        // so the harness skips it — exactly like the unavailable-tool / docker
+        // / srpm skips above. A config with an explicit `--key` (anodizer's own
+        // `--key=env://COSIGN_KEY`) signs with the ephemeral key and still runs.
+        if is_keyless_cosign_under_harness(&cmd, &sign_cfg.resolved_args(), ctx) {
+            let reason = KEYLESS_COSIGN_HARNESS_SKIP.to_string();
+            log.verbose(&format!(
+                "skipped {} config '{}' — {}",
+                label, sub_label, reason
+            ));
+            ctx.remember_skip(label, &sub_label, &reason);
+            continue;
+        }
 
         if sign_cfg.args.as_ref().is_some_and(|a| a.is_empty()) {
             log.warn(&format!(

@@ -166,6 +166,21 @@ impl Stage for DockerSignStage {
 
                 let args = docker_sign_cfg.resolved_args();
 
+                // Keyless cosign cannot run inside the determinism harness (no
+                // ambient OIDC; the ephemeral `COSIGN_KEY` env crashes a `--key`-
+                // less invocation). Mirror the `signs`/`binary_signs` skip so the
+                // discriminator (cmd==cosign + no `--key`) is uniform across
+                // every sign family. A `--key`-bearing config still runs.
+                if crate::process::is_keyless_cosign_under_harness(&cmd, &args, ctx) {
+                    let reason = crate::process::KEYLESS_COSIGN_HARNESS_SKIP.to_string();
+                    log.verbose(&format!(
+                        "skipped docker-sign config '{}' — {}",
+                        sign_id, reason
+                    ));
+                    ctx.remember_skip("docker-sign", sign_id, &reason);
+                    continue;
+                }
+
                 let docker_filter = docker_sign_cfg.resolved_artifacts();
 
                 if docker_filter == "none" {
