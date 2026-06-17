@@ -1360,6 +1360,9 @@ pub(crate) fn process_docker_manifest(
                 manifest_base_delay,
                 manifest_max_delay,
             )?;
+            log.status(&format!("pushed manifest {}", manifest_name));
+        } else {
+            log.status(&format!("created manifest {}", manifest_name));
         }
     }
 
@@ -1474,7 +1477,7 @@ fn run_manifest_create_with_retry(
                 max_attempts,
             ));
         }
-        log.status(&format!("running {}", create_cmd.join(" ")));
+        log.verbose(&format!("running {}", create_cmd.join(" ")));
         let mut create_command = Command::new(&create_cmd[0]);
         create_command.args(&create_cmd[1..]);
         for (key, value) in manifest_env_vars {
@@ -1541,7 +1544,7 @@ fn run_manifest_push_with_retry(
                 max_attempts,
             ));
         }
-        log.status(&format!("running {}", push_cmd.join(" ")));
+        log.verbose(&format!("running {}", push_cmd.join(" ")));
         let mut push_command = Command::new(&push_cmd[0]);
         push_command.args(&push_cmd[1..]);
         for (key, value) in manifest_env_vars {

@@ -517,7 +517,7 @@ impl Stage for NsisStage {
                         let script_path_str = nsi_script_path.to_string_lossy().into_owned();
                         let cmd_args = nsis_command(&script_path_str);
 
-                        log.status(&format!("running {}", cmd_args.join(" ")));
+                        log.verbose(&format!("running {}", cmd_args.join(" ")));
 
                         let output = Command::new(&cmd_args[0])
                             .args(&cmd_args[1..])
@@ -544,6 +544,14 @@ impl Stage for NsisStage {
                                 exe_path.display()
                             ));
                         }
+
+                        log.status(&format!(
+                            "built installer {}",
+                            exe_path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| exe_path.to_string_lossy().into_owned())
+                        ));
 
                         new_artifacts.push(Artifact {
                             kind: ArtifactKind::Installer,

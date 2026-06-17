@@ -133,7 +133,7 @@ pub(crate) fn execute_docker_build(
     job: &DockerBuildJob,
     log: &StageLogger,
 ) -> Result<DockerBuildResult> {
-    log.status(&format!("running {}", job.cmd_args.join(" ")));
+    log.verbose(&format!("running {}", job.cmd_args.join(" ")));
 
     use anodizer_core::retry::{RetryPolicy, retry_sync};
     use std::ops::ControlFlow;
@@ -350,7 +350,7 @@ fn push_podman_tags(job: &DockerBuildJob, log: &StageLogger) -> Result<()> {
     };
 
     for push_args in &push_cmds {
-        log.status(&format!("running {}", push_args.join(" ")));
+        log.verbose(&format!("running {}", push_args.join(" ")));
         retry_sync(&policy, |attempt| {
             if attempt > 1 {
                 log.warn(&format!(
@@ -430,6 +430,10 @@ fn push_podman_tags(job: &DockerBuildJob, log: &StageLogger) -> Result<()> {
                 push_args.last().map(String::as_str).unwrap_or(""),
             )
         })?;
+        log.status(&format!(
+            "pushed image {}",
+            push_args.last().map(String::as_str).unwrap_or("")
+        ));
     }
 
     Ok(())

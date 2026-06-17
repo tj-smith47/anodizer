@@ -407,10 +407,14 @@ pub(crate) fn run_sequential(
             .as_ref()
             .context("build job has no cmd (programmer bug: planner should populate)")?;
         exec.log
-            .status(&format!("running {} {}", cmd.program, cmd.args.join(" ")));
+            .verbose(&format!("running {} {}", cmd.program, cmd.args.join(" ")));
         let mut command = Command::new(&cmd.program);
         command.args(&cmd.args).envs(&cmd.env).current_dir(&cmd.cwd);
         anodizer_core::run::run_checked(&mut command, exec.log, &cmd.program)?;
+        exec.log.status(&format!(
+            "built {}/{} for {}",
+            job.crate_name, job.binary_name, job.target
+        ));
 
         let resolved_bin = resolve_binary_path(&job.bin_path, &job.crate_path);
 
@@ -572,7 +576,7 @@ pub(crate) fn run_parallel(
                             )?;
                         }
 
-                        thread_log.status(&format!("running {} {}", program, args.join(" ")));
+                        thread_log.verbose(&format!("running {} {}", program, args.join(" ")));
                         let mut command = Command::new(&program);
                         command.args(&args).envs(&env).current_dir(&cwd);
                         anodizer_core::run::run_checked(&mut command, &thread_log, &program)?;

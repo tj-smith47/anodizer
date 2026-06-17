@@ -1179,7 +1179,7 @@ impl Stage for PkgStage {
                                     &pkg_path.to_string_lossy(),
                                 );
 
-                                log.status(&format!("running {}", cmd_args.join(" ")));
+                                log.verbose(&format!("running {}", cmd_args.join(" ")));
 
                                 let output = Command::new(&cmd_args[0])
                                     .args(&cmd_args[1..])
@@ -1219,6 +1219,14 @@ impl Stage for PkgStage {
                                 )?;
                             }
                         }
+
+                        log.status(&format!(
+                            "built pkg {}",
+                            pkg_path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| pkg_path.to_string_lossy().into_owned())
+                        ));
 
                         new_artifacts.push(Artifact {
                             kind: ArtifactKind::MacOsPackage,

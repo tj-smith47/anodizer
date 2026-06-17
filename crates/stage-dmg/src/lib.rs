@@ -603,7 +603,7 @@ impl Stage for DmgStage {
                             if let Ok(out) = detach
                                 && out.status.success()
                             {
-                                log.status(&format!("detached stale mount at {mount_path}"));
+                                log.verbose(&format!("detached stale mount at {mount_path}"));
                             }
                         }
 
@@ -615,7 +615,7 @@ impl Stage for DmgStage {
                             &dmg_path.to_string_lossy(),
                         );
 
-                        log.status(&format!("running {}", cmd_args.join(" ")));
+                        log.verbose(&format!("running {}", cmd_args.join(" ")));
 
                         let output = Command::new(&cmd_args[0])
                             .args(&cmd_args[1..])
@@ -627,6 +627,14 @@ impl Stage for DmgStage {
                                 )
                             })?;
                         log.check_output(output, "dmg")?;
+
+                        log.status(&format!(
+                            "built DMG {}",
+                            dmg_path
+                                .file_name()
+                                .map(|n| n.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| dmg_path.to_string_lossy().into_owned())
+                        ));
 
                         new_artifacts.push(Artifact {
                             kind: ArtifactKind::DiskImage,

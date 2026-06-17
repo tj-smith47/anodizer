@@ -178,7 +178,8 @@ pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> R
                 label, cmd_str
             ));
         } else {
-            log.status(&format!("running {} hook via `{}`", label, cmd_str));
+            log.status(&format!("running {} hook", label));
+            log.verbose(&format!("running {} hook via `{}`", label, cmd_str));
             let mut command = Command::new("sh");
             command.arg("-c").arg(&cmd_str);
             // Hooks inherit the host env so toolchain env vars (PATH, MSVC

@@ -518,7 +518,7 @@ fn execute_msi_build(
         }
     }
 
-    log.status(&format!("running {}", commands.primary.join(" ")));
+    log.verbose(&format!("running {}", commands.primary.join(" ")));
     let output = Command::new(&commands.primary[0])
         .args(&commands.primary[1..])
         .output()
@@ -531,7 +531,7 @@ fn execute_msi_build(
     log.check_output(output, &commands.primary[0])?;
 
     if let Some(link_cmd) = &commands.link {
-        log.status(&format!("running {}", link_cmd.join(" ")));
+        log.verbose(&format!("running {}", link_cmd.join(" ")));
         let output = Command::new(&link_cmd[0])
             .args(&link_cmd[1..])
             .output()
@@ -554,6 +554,14 @@ fn execute_msi_build(
             msi_path.display()
         ));
     }
+
+    log.status(&format!(
+        "built MSI {}",
+        msi_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| msi_path.to_string_lossy().into_owned())
+    ));
 
     Ok(())
 }

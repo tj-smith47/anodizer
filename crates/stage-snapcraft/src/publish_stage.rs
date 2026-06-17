@@ -426,7 +426,7 @@ fn run_uploads(
                                 max_attempts,
                             ));
                         }
-                        log.status(&format!("running {}", upload_args.join(" ")));
+                        log.verbose(&format!("running {}", upload_args.join(" ")));
                         let upload_output = match Command::new(&upload_args[0])
                             .args(&upload_args[1..])
                             .output()
@@ -484,6 +484,7 @@ fn run_uploads(
                             Err(ControlFlow::Break(err))
                         }
                     })?;
+                    log.status(&format!("uploaded snap {} {}", snap_name, version));
                 }
             }
         }

@@ -1712,7 +1712,7 @@ fn publish_to_cargo_with(
         }
 
         let cmd = publish_command(name, cargo_cfg);
-        log.status(&format!("running {}", cmd.join(" ")));
+        log.verbose(&format!("running {}", cmd.join(" ")));
 
         // Defense in depth: even though poll_crates_io_index already waits
         // for the prior crate to land on the index edge anodizer queries,
