@@ -1044,7 +1044,7 @@ pub fn publish_to_artifactory(
             for a in &artifacts {
                 let url = render_artifact_url(ctx, target_template, a, custom_artifact_name)?;
                 let url = append_deb_matrix_params(&url, a, entry)?;
-                log.status(&format!("(dry-run)   {} ({}) → {}", a.name(), a.kind, url));
+                log.status(&format!("(dry-run) {} ({}) → {}", a.name(), a.kind, url));
             }
             continue;
         }

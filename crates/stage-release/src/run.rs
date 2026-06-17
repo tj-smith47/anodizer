@@ -855,48 +855,48 @@ fn log_dry_run_provider_urls(ctx: &Context, log: &anodizer_core::log::StageLogge
         ScmTokenType::GitHub => {
             if let Some(urls) = &ctx.config.github_urls {
                 if let Some(api) = &urls.api {
-                    log.status(&format!("(dry-run)   github_urls.api = {}", api));
+                    log.status(&format!("(dry-run) github_urls.api = {}", api));
                 }
                 if let Some(upload) = &urls.upload {
-                    log.status(&format!("(dry-run)   github_urls.upload = {}", upload));
+                    log.status(&format!("(dry-run) github_urls.upload = {}", upload));
                 }
                 if let Some(download) = &urls.download {
-                    log.status(&format!("(dry-run)   github_urls.download = {}", download));
+                    log.status(&format!("(dry-run) github_urls.download = {}", download));
                 }
                 if urls.skip_tls_verify.unwrap_or(false) {
-                    log.status("(dry-run)   github_urls.skip_tls_verify = true");
+                    log.status("(dry-run) github_urls.skip_tls_verify = true");
                 }
             }
         }
         ScmTokenType::GitLab => {
             if let Some(urls) = &ctx.config.gitlab_urls {
                 if let Some(api) = &urls.api {
-                    log.status(&format!("(dry-run)   gitlab_urls.api = {}", api));
+                    log.status(&format!("(dry-run) gitlab_urls.api = {}", api));
                 }
                 if let Some(download) = &urls.download {
-                    log.status(&format!("(dry-run)   gitlab_urls.download = {}", download));
+                    log.status(&format!("(dry-run) gitlab_urls.download = {}", download));
                 }
                 if urls.skip_tls_verify.unwrap_or(false) {
-                    log.status("(dry-run)   gitlab_urls.skip_tls_verify = true");
+                    log.status("(dry-run) gitlab_urls.skip_tls_verify = true");
                 }
                 if urls.use_package_registry.unwrap_or(false) {
-                    log.status("(dry-run)   gitlab_urls.use_package_registry = true");
+                    log.status("(dry-run) gitlab_urls.use_package_registry = true");
                 }
                 if urls.use_job_token.unwrap_or(false) {
-                    log.status("(dry-run)   gitlab_urls.use_job_token = true");
+                    log.status("(dry-run) gitlab_urls.use_job_token = true");
                 }
             }
         }
         ScmTokenType::Gitea => {
             if let Some(urls) = &ctx.config.gitea_urls {
                 if let Some(api) = &urls.api {
-                    log.status(&format!("(dry-run)   gitea_urls.api = {}", api));
+                    log.status(&format!("(dry-run) gitea_urls.api = {}", api));
                 }
                 if let Some(download) = &urls.download {
-                    log.status(&format!("(dry-run)   gitea_urls.download = {}", download));
+                    log.status(&format!("(dry-run) gitea_urls.download = {}", download));
                 }
                 if urls.skip_tls_verify.unwrap_or(false) {
-                    log.status("(dry-run)   gitea_urls.skip_tls_verify = true");
+                    log.status("(dry-run) gitea_urls.skip_tls_verify = true");
                 }
             }
         }
@@ -932,34 +932,34 @@ fn handle_dry_run(
     ));
     if let Some((owner, repo)) = &s.publish_repo_override {
         log.status(&format!(
-            "(dry-run)   would publish to override repo '{owner}/{repo}' (nightly.publish_repo)",
+            "(dry-run) would publish to override repo '{owner}/{repo}' (nightly.publish_repo)",
         ));
     }
     // retention_keep_last folds in the keep_single_release alias (=> Some(1)).
     if let Some(keep_last) = s.retention_keep_last {
         if keep_last == 1 {
             log.status(
-                "(dry-run)   would delete prior nightly release(s) before recreating (nightly retention keep_last=1 / keep_single_release)",
+                "(dry-run) would delete prior nightly release(s) before recreating (nightly retention keep_last=1 / keep_single_release)",
             );
         } else {
             log.status(&format!(
-                "(dry-run)   would keep the {keep_last} newest nightly release(s) and delete the rest, incl. their tags (nightly retention)",
+                "(dry-run) would keep the {keep_last} newest nightly release(s) and delete the rest, incl. their tags (nightly retention)",
             ));
         }
     }
     if s.skip_upload {
-        log.status("(dry-run)   skip_upload is set, would skip artifact uploads");
+        log.status("(dry-run) skip_upload is set, would skip artifact uploads");
     } else {
         for (path, custom_name) in s.artifact_entries {
             if let Some(name) = custom_name {
                 log.status(&format!(
-                    "(dry-run)   would upload artifact {} (as '{}')",
+                    "(dry-run) would upload artifact {} (as '{}')",
                     path.display(),
                     name,
                 ));
             } else {
                 log.status(&format!(
-                    "(dry-run)   would upload artifact {}",
+                    "(dry-run) would upload artifact {}",
                     path.display()
                 ));
             }

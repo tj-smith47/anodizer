@@ -225,7 +225,7 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
             for a in &artifacts {
                 let url = render_artifact_url(ctx, target_template, a, custom_artifact_name)?;
                 log.status(&format!(
-                    "(dry-run)   {} ({}) → {} {}",
+                    "(dry-run) {} ({}) → {} {}",
                     a.name(),
                     a.kind,
                     method.to_uppercase(),

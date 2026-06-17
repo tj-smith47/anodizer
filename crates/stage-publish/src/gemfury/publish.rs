@@ -400,7 +400,7 @@ pub fn publish_to_gemfury(
                 account
             ));
             for a in &artifacts {
-                log.status(&format!("(dry-run)   {} ({})", a.name(), a.kind));
+                log.status(&format!("(dry-run) {} ({})", a.name(), a.kind));
             }
             continue;
         }

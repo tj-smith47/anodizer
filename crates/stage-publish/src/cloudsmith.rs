@@ -724,7 +724,7 @@ pub(crate) fn publish_to_cloudsmith(
             ));
             log.status(&format!("(dry-run) {} artifacts matched", artifacts.len()));
             for a in &artifacts {
-                log.status(&format!("(dry-run)   {} ({})", a.name(), a.kind));
+                log.status(&format!("(dry-run) {} ({})", a.name(), a.kind));
             }
             continue;
         }
