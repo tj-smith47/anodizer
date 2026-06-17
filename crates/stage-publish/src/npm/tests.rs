@@ -1311,6 +1311,10 @@ fn resolve_auth_auto_renders_cfg_token_template() {
     let ctx = TestContextBuilder::new()
         .project_name("demo")
         .tag("v1.0.0")
+        // Seal the env so a host/runner that exports the OIDC request vars
+        // (ACTIONS_ID_TOKEN_REQUEST_*) cannot flip the auto verdict from Token
+        // to Oidc — this asserts the cfg.token path, not the ambient env.
+        .sealed_env()
         .build();
     let cfg = NpmConfig {
         // A `{{ .Version }}` token proves the template render fires rather than
@@ -2243,7 +2247,11 @@ fn npm_ctx_with_env(
     let mut b = TestContextBuilder::new()
         .project_name("demo")
         .tag("v1.2.3")
-        .crates(vec![demo_crate()]);
+        .crates(vec![demo_crate()])
+        // Seal so the runner-detection vars (GITHUB_ACTIONS / RUNNER_ENVIRONMENT)
+        // come ONLY from `env`; an empty list must read as "not on a runner",
+        // never inherit a GitHub-hosted/self-hosted host's ambient values.
+        .sealed_env();
     for (k, v) in env {
         b = b.env(k, v);
     }

@@ -145,6 +145,7 @@ pub struct TestContextBuilder {
     sboms: Vec<crate::config::SbomConfig>,
     project_root: Option<PathBuf>,
     env_overrides: Vec<(String, String)>,
+    seal_env: bool,
     changelog_from: Option<String>,
     changelog_full_history: bool,
     changelog_to: Option<String>,
@@ -192,6 +193,7 @@ impl Default for TestContextBuilder {
             sboms: Vec::new(),
             project_root: None,
             env_overrides: Vec::new(),
+            seal_env: false,
             changelog_from: None,
             changelog_full_history: false,
             changelog_to: None,
@@ -423,6 +425,34 @@ impl TestContextBuilder {
         self
     }
 
+    /// Seal the built context's env source to a *closed*
+    /// [`MapEnvSource`](crate::MapEnvSource) holding only the values added
+    /// via [`env`](Self::env) (an empty map when none were added) — never the
+    /// ambient process environment.
+    ///
+    /// The default env source is [`ProcessEnvSource`], which reads
+    /// `std::env::var`. A test that exercises a credential / runner-detection
+    /// path (`NPM_TOKEN`, `ACTIONS_ID_TOKEN_REQUEST_*`, `GITHUB_ACTIONS`,
+    /// `RUNNER_ENVIRONMENT`, …) without sealing observes whatever the dev shell
+    /// or CI runner happens to export, so the same test passes locally and
+    /// fails on a GitHub-hosted runner (which sets those vars). Sealing makes
+    /// the env hermetic so the assertion reflects only the injected fixture.
+    ///
+    /// [`env`](Self::env) already seals (a non-empty override list swaps to a
+    /// closed map); call this to seal an *empty* env without seeding a sentinel
+    /// override.
+    ///
+    /// ```ignore
+    /// // Closed env: production code sees no OIDC/token vars regardless of host.
+    /// let ctx = TestContextBuilder::new().sealed_env().build();
+    /// ```
+    ///
+    /// [`ProcessEnvSource`]: crate::env_source::ProcessEnvSource
+    pub fn sealed_env(mut self) -> Self {
+        self.seal_env = true;
+        self
+    }
+
     /// Build the [`Context`] with the configured values.
     #[allow(clippy::field_reassign_with_default)]
     pub fn build(self) -> Context {
@@ -506,7 +536,7 @@ impl TestContextBuilder {
 
         ctx.populate_metadata_var().unwrap();
 
-        if !self.env_overrides.is_empty() {
+        if self.seal_env || !self.env_overrides.is_empty() {
             let mut src = crate::MapEnvSource::new();
             for (k, v) in self.env_overrides {
                 src.set(k, v);
