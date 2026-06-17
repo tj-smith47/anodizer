@@ -1476,7 +1476,7 @@ crates:
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_makeself_live_run_invokes_makeself_and_records_artifact() {
         let fx = MakeselfFixture::new();
         let mut ctx = fx.ctx(&[("x86_64-unknown-linux-gnu", "proj")]);
@@ -1529,7 +1529,7 @@ crates:
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_makeself_live_run_argv_shape() {
         let fx = MakeselfFixture::new();
         let mut ctx = fx.ctx(&[("x86_64-unknown-linux-gnu", "proj")]);
@@ -1580,7 +1580,7 @@ crates:
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_makeself_live_run_stages_files_into_work_dir() {
         // The work dir must contain the copied binary, the copied startup
         // script, the LSM file, and (via `files:`) an extra file at its
@@ -1624,7 +1624,7 @@ crates:
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_makeself_live_run_pins_workdir_mtimes_under_sde() {
         // With SOURCE_DATE_EPOCH set, every staged file's mtime is pinned to
         // that epoch before makeself runs, so tar embeds stable timestamps.
@@ -1646,6 +1646,7 @@ crates:
         let _g = tools.activate();
         let prior_sde = std::env::var_os("SOURCE_DATE_EPOCH");
         // SAFETY: serialised by the env mutex held inside `_g` for this test.
+        // env-ok: SOURCE_DATE_EPOCH under #[serial(path_env)] + env_mutex; restored on drop
         unsafe { std::env::set_var("SOURCE_DATE_EPOCH", "1577836800") };
 
         let run = MakeselfStage.run(&mut ctx);
@@ -1654,7 +1655,9 @@ crates:
         // SAFETY: still inside the `_g` serialised window.
         unsafe {
             match prior_sde {
+                // env-ok: SOURCE_DATE_EPOCH under #[serial(path_env)] + env_mutex; restored on drop
                 Some(v) => std::env::set_var("SOURCE_DATE_EPOCH", v),
+                // env-ok: SOURCE_DATE_EPOCH under #[serial(path_env)] + env_mutex; restored on drop
                 None => std::env::remove_var("SOURCE_DATE_EPOCH"),
             }
         }
@@ -1675,7 +1678,7 @@ crates:
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_makeself_live_run_tool_failure_surfaces_stderr() {
         // Non-zero exit → the stage bails, naming the filename, id, and the
         // tool's stderr/stdout in the error.
@@ -1715,7 +1718,7 @@ crates:
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_makeself_live_run_output_missing_after_success() {
         // makeself exits 0 but produces no .run file in the work dir — the
         // rename/copy of the built archive out to dist must fail.
@@ -1745,7 +1748,7 @@ crates:
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_makeself_live_run_multi_platform_one_run_per_platform() {
         // Two targets (linux amd64 + darwin arm64) → two makeself invocations,
         // two .run files, two registered artifacts. Mirrors workspace builds
@@ -1790,7 +1793,7 @@ crates:
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_makeself_live_run_per_crate_binaries_share_one_platform_run() {
         // Two binaries from different crates but the SAME platform group into a
         // single .run (one makeself invocation), with both staged into the work
@@ -1842,7 +1845,7 @@ crates:
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_makeself_live_run_custom_filename_template_and_compression() {
         // A templated `filename:` (without .run) gets `.run` appended; an
         // explicit `compression: gzip` lands `--gzip` in argv; the output
@@ -1893,7 +1896,7 @@ crates:
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_makeself_live_run_emits_replaces_metadata() {
         // A binary carrying `replaces` metadata propagates it onto the
         // resulting Makeself artifact.
@@ -1933,7 +1936,7 @@ crates:
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_makeself_live_run_arch_filter_narrows_platforms() {
         // `arch: [amd64]` drops the arm64 binary; only the amd64 .run is built.
         let fx = MakeselfFixture::new();
@@ -1972,7 +1975,7 @@ crates:
 
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(path_env)]
     fn test_makeself_live_run_two_configs_distinct_ids() {
         // Two configs (distinct ids) each emit their own .run with the id in
         // the work-dir path and the artifact metadata. Two invocations.

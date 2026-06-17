@@ -1156,6 +1156,7 @@ fn submit_winget_pr(
     update_existing_pr: bool,
     log: &StageLogger,
     render: &dyn Fn(&str) -> String,
+    env: &dyn anodizer_core::EnvSource,
 ) -> Option<anodizer_core::PublisherOutcome> {
     let has_pr_config = repo_for_pr
         .and_then(|r| r.pull_request.as_ref())
@@ -1169,7 +1170,7 @@ fn submit_winget_pr(
     );
 
     if has_pr_config {
-        util::maybe_submit_pr(
+        util::maybe_submit_pr_with_env(
             repo_path,
             repo_for_pr,
             &util::PrOrigin {
@@ -1183,6 +1184,7 @@ fn submit_winget_pr(
             "winget",
             log,
             render,
+            env,
         )
     } else {
         // A templated `base.owner` / `base.name` must render before it forms
@@ -1197,7 +1199,7 @@ fn submit_winget_pr(
             })
             .unwrap_or_else(|| "microsoft/winget-pkgs".to_string());
 
-        util::submit_pr_via_gh_with_opts(
+        util::submit_pr_via_gh_with_opts_with_env(
             repo_path,
             &upstream_slug,
             &format!("{}:{}", repo_owner, branch_name),
@@ -1206,6 +1208,7 @@ fn submit_winget_pr(
             "winget",
             log,
             util::SubmitPrOpts { update_existing_pr },
+            env,
         )
     }
 }
@@ -1557,6 +1560,7 @@ fn submit_winget_manifests(
         update_existing_pr,
         log,
         &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
+        ctx.env_source(),
     );
 
     if let Some(outcome) = pr_outcome {
@@ -3777,15 +3781,15 @@ license-file = "LICENSE.txt"
     // =====================================================================
     // LIVE push + PR flow — drives `publish_to_winget` / `submit_winget_pr`
     // against a local bare git repo (no network), forcing the GitHub REST
-    // API PR transport by installing a failing `gh` stub and pointing
+    // API PR transport by installing a failing `gh` stub and injecting
     // `ANODIZER_GITHUB_API_BASE` at an in-process scripted responder.
     //
     // Pattern mirrors `krew.rs`'s PrDirect harness. The winget PR path
-    // threads submission through the *process* env (`util::maybe_submit_pr`
-    // / `submit_pr_via_gh_with_opts`, not the `_with_env` siblings), so the
-    // responder address is set in the process env under the env mutex that
-    // the `gh`-absent `PathGuard` already holds. Each test mutates PATH +
-    // process env, so each is `#[serial]`.
+    // threads submission through the Context's injectable `EnvSource`
+    // (`maybe_submit_pr_with_env` / `submit_pr_via_gh_with_opts_with_env`),
+    // so the responder address is a per-Context value set via
+    // `inject_api_base` — not a process-global mutation. Each test still
+    // mutates PATH (the `gh` stub), so each is `#[serial(path_env)]`.
     // =====================================================================
     mod live_pr {
         use super::*;
@@ -3818,11 +3822,11 @@ license-file = "LICENSE.txt"
             INIT.get_or_init(|| {
                 // SAFETY: runs once per process under OnceLock; constants only.
                 unsafe {
-                    std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
-                    std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
-                    std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
-                    std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
-                    std::env::set_var("GIT_TERMINAL_PROMPT", "0");
+                    std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                    std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                    std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                    std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                    std::env::set_var("GIT_TERMINAL_PROMPT", "0"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
                 }
             });
         }
@@ -3916,16 +3920,16 @@ license-file = "LICENSE.txt"
             (tools, guard)
         }
 
-        /// Set `ANODIZER_GITHUB_API_BASE` in the *process* env. Safe without
-        /// re-locking the env mutex: the caller already holds it via the
-        /// `gh_absent()` `PathGuard` for the whole `#[serial]` test.
-        fn set_api_base(addr: &std::net::SocketAddr) {
-            // SAFETY: env mutex is held by the live `PathGuard` from `gh_absent()`.
-            unsafe { std::env::set_var("ANODIZER_GITHUB_API_BASE", format!("http://{addr}")) };
-        }
-        fn clear_api_base() {
-            // SAFETY: same mutex still held by the `PathGuard`.
-            unsafe { std::env::remove_var("ANODIZER_GITHUB_API_BASE") };
+        /// Point the scripted responder's address at the winget PR path by
+        /// injecting `ANODIZER_GITHUB_API_BASE` into the Context's env source.
+        /// The base is per-Context, not process-global, so no env mutation and
+        /// no teardown is needed; PATH stays process-global via the
+        /// `gh_absent`/`gh_present` `PathGuard`.
+        fn inject_api_base(ctx: &mut Context, addr: &std::net::SocketAddr) {
+            ctx.set_env_source(
+                anodizer_core::MapEnvSource::new()
+                    .with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}")),
+            );
         }
 
         /// Return the value that immediately follows `flag` in a recorded
@@ -4046,7 +4050,7 @@ license-file = "LICENSE.txt"
         ///       `/repos/fork-owner/winget-pkgs/pulls` with head = fork:branch.
         #[cfg(unix)]
         #[test]
-        #[serial]
+        #[serial(path_env)]
         fn publish_pushes_three_manifests_and_opens_pr() {
             let (_tools, _guard) = gh_absent();
             let (bare_url, bare) = init_bare_fork();
@@ -4056,10 +4060,9 @@ license-file = "LICENSE.txt"
                 response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
                 times: Some(1),
             }]);
-            set_api_base(&addr);
-
             let c = live_winget_crate("widget", &bare_url);
             let mut ctx = build_ctx(vec![c], "1.0.0");
+            inject_api_base(&mut ctx, &addr);
             let sha = "c".repeat(64);
             add_windows_zip(&mut ctx, "widget", &sha);
 
@@ -4123,7 +4126,6 @@ license-file = "LICENSE.txt"
                 "base branch must be the fork default"
             );
             drop(entries);
-            clear_api_base();
             drop(bare);
         }
 
@@ -4133,7 +4135,7 @@ license-file = "LICENSE.txt"
         /// push (the in-process render test only proves the string; this
         /// proves it reaches the actual git commit).
         #[test]
-        #[serial]
+        #[serial(path_env)]
         fn publish_renders_custom_commit_message_into_pushed_commit() {
             let (_tools, _guard) = gh_absent();
             let (bare_url, bare) = init_bare_fork();
@@ -4143,14 +4145,13 @@ license-file = "LICENSE.txt"
                 response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
                 times: None,
             }]);
-            set_api_base(&addr);
-
             let mut c = live_winget_crate("widget", &bare_url);
             if let Some(w) = c.publish.as_mut().and_then(|p| p.winget.as_mut()) {
                 w.commit_msg_template =
                     Some("Bump {{ PackageIdentifier }} to {{ Version }}".to_string());
             }
             let mut ctx = build_ctx(vec![c], "2.5.0");
+            inject_api_base(&mut ctx, &addr);
             add_windows_zip(&mut ctx, "widget", &"d".repeat(64));
 
             publish_to_winget(&mut ctx, "widget", &quiet()).expect("publish ok");
@@ -4163,7 +4164,6 @@ license-file = "LICENSE.txt"
                 subject, "Bump AcmeCo.widget to 2.5.0",
                 "pushed commit subject must carry the rendered custom template"
             );
-            clear_api_base();
             drop(bare);
         }
 
@@ -4173,7 +4173,7 @@ license-file = "LICENSE.txt"
         /// The branch push still happened first.
         #[cfg(unix)]
         #[test]
-        #[serial]
+        #[serial(path_env)]
         fn publish_already_exists_records_pending_validation() {
             let (_tools, _guard) = gh_absent();
             let (bare_url, bare) = init_bare_fork();
@@ -4191,10 +4191,9 @@ license-file = "LICENSE.txt"
                 ),
                 times: Some(1),
             }]);
-            set_api_base(&addr);
-
             let c = live_winget_crate("widget", &bare_url);
             let mut ctx = build_ctx(vec![c], "1.0.0");
+            inject_api_base(&mut ctx, &addr);
             add_windows_zip(&mut ctx, "widget", &"e".repeat(64));
 
             publish_to_winget(&mut ctx, "widget", &quiet()).expect("publish ok");
@@ -4213,7 +4212,6 @@ license-file = "LICENSE.txt"
                 ),
                 "422 already-exists must record PendingValidation, got {pending:?}"
             );
-            clear_api_base();
             drop(bare);
         }
 
@@ -4221,7 +4219,7 @@ license-file = "LICENSE.txt"
         /// surfaced as a `Failed` outcome (silent-fail would let dispatch
         /// record `succeeded`). The branch still pushed.
         #[test]
-        #[serial]
+        #[serial(path_env)]
         fn publish_pr_http_error_records_failed_outcome() {
             let (_tools, _guard) = gh_absent();
             let (bare_url, bare) = init_bare_fork();
@@ -4231,10 +4229,9 @@ license-file = "LICENSE.txt"
                 response: "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 3\r\n\r\nboo",
                 times: Some(1),
             }]);
-            set_api_base(&addr);
-
             let c = live_winget_crate("widget", &bare_url);
             let mut ctx = build_ctx(vec![c], "1.0.0");
+            inject_api_base(&mut ctx, &addr);
             add_windows_zip(&mut ctx, "widget", &"f".repeat(64));
 
             publish_to_winget(&mut ctx, "widget", &quiet()).expect("publish returns Ok");
@@ -4244,7 +4241,6 @@ license-file = "LICENSE.txt"
                 matches!(pending, Some(anodizer_core::PublisherOutcome::Failed(_))),
                 "a 500 from PR-create must record Failed, got {pending:?}"
             );
-            clear_api_base();
             drop(bare);
         }
 
@@ -4253,7 +4249,7 @@ license-file = "LICENSE.txt"
         /// `commit_and_push_with_opts` reports `NoChanges` and nothing is
         /// re-pushed. Proves the publish path does not blindly force a commit.
         #[test]
-        #[serial]
+        #[serial(path_env)]
         fn publish_idempotent_second_run_no_changes() {
             let (_tools, _guard) = gh_absent();
             let (bare_url, bare) = init_bare_fork();
@@ -4263,12 +4259,11 @@ license-file = "LICENSE.txt"
                 response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
                 times: None,
             }]);
-            set_api_base(&addr);
-
             let sha = "1".repeat(64);
             let build = || {
                 let c = live_winget_crate("widget", &bare_url);
                 let mut ctx = build_ctx(vec![c], "1.0.0");
+                inject_api_base(&mut ctx, &addr);
                 add_windows_zip(&mut ctx, "widget", &sha);
                 ctx
             };
@@ -4284,7 +4279,6 @@ license-file = "LICENSE.txt"
                 head1, head2,
                 "re-publishing the identical manifest must not advance the branch tip"
             );
-            clear_api_base();
             drop(bare);
         }
 
@@ -4294,7 +4288,7 @@ license-file = "LICENSE.txt"
         /// proving per-crate name/package-id/branch resolution is not
         /// clobbered by a sibling.
         #[test]
-        #[serial]
+        #[serial(path_env)]
         fn publish_workspace_per_crate_distinct_branches_and_paths() {
             let (_tools, _guard) = gh_absent();
             let (bare_url, bare) = init_bare_fork();
@@ -4304,11 +4298,10 @@ license-file = "LICENSE.txt"
                 response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
                 times: None,
             }]);
-            set_api_base(&addr);
-
             let alpha = live_winget_crate("alpha", &bare_url);
             let beta = live_winget_crate("beta", &bare_url);
             let mut ctx = build_ctx(vec![alpha, beta], "3.1.0");
+            inject_api_base(&mut ctx, &addr);
             add_windows_zip(&mut ctx, "alpha", &"a".repeat(64));
             add_windows_zip(&mut ctx, "beta", &"b".repeat(64));
 
@@ -4344,7 +4337,6 @@ license-file = "LICENSE.txt"
                 beta_ver.contains("PackageIdentifier: AcmeCo.beta"),
                 "beta manifest wrong:\n{beta_ver}"
             );
-            clear_api_base();
             drop(bare);
         }
 
@@ -4363,7 +4355,7 @@ license-file = "LICENSE.txt"
         /// (it runs before the transport match) and feeds `--base`.
         #[cfg(unix)]
         #[test]
-        #[serial]
+        #[serial(path_env)]
         fn publish_without_pr_config_targets_microsoft_winget_pkgs() {
             let (tools, _guard) = gh_present();
             let (bare_url, bare) = init_bare_fork();
@@ -4376,8 +4368,6 @@ license-file = "LICENSE.txt"
                 response: "HTTP/1.1 200 OK\r\nContent-Length: 27\r\n\r\n{\"default_branch\":\"master\"}",
                 times: Some(1),
             }]);
-            set_api_base(&addr);
-
             let mut c = live_winget_crate("widget", &bare_url);
             // Drop the pull_request block so the canonical-fallback arm runs.
             if let Some(w) = c.publish.as_mut().and_then(|p| p.winget.as_mut())
@@ -4386,6 +4376,7 @@ license-file = "LICENSE.txt"
                 r.pull_request = None;
             }
             let mut ctx = build_ctx(vec![c], "1.0.0");
+            inject_api_base(&mut ctx, &addr);
             add_windows_zip(&mut ctx, "widget", &"9".repeat(64));
 
             publish_to_winget(&mut ctx, "widget", &quiet()).expect("publish ok");
@@ -4425,7 +4416,6 @@ license-file = "LICENSE.txt"
                 Some("master"),
                 "base must be the resolved upstream default branch; got: {pr_create:?}"
             );
-            clear_api_base();
             drop(bare);
         }
 
@@ -4440,7 +4430,7 @@ license-file = "LICENSE.txt"
         /// and feeds `--base`.
         #[cfg(unix)]
         #[test]
-        #[serial]
+        #[serial(path_env)]
         fn publish_honors_pull_request_base_override() {
             let (tools, _guard) = gh_present();
             let (bare_url, bare) = init_bare_fork();
@@ -4450,8 +4440,6 @@ license-file = "LICENSE.txt"
                 response: "HTTP/1.1 200 OK\r\nContent-Length: 27\r\n\r\n{\"default_branch\":\"master\"}",
                 times: Some(1),
             }]);
-            set_api_base(&addr);
-
             let mut c = live_winget_crate("widget", &bare_url);
             if let Some(w) = c.publish.as_mut().and_then(|p| p.winget.as_mut())
                 && let Some(r) = w.repository.as_mut()
@@ -4470,6 +4458,7 @@ license-file = "LICENSE.txt"
                 });
             }
             let mut ctx = build_ctx(vec![c], "1.0.0");
+            inject_api_base(&mut ctx, &addr);
             add_windows_zip(&mut ctx, "widget", &"7".repeat(64));
 
             publish_to_winget(&mut ctx, "widget", &quiet()).expect("publish ok");
@@ -4496,7 +4485,6 @@ license-file = "LICENSE.txt"
                 Some("master"),
                 "base must be the overridden upstream's resolved default branch; got: {pr_create:?}"
             );
-            clear_api_base();
             drop(bare);
         }
 
@@ -4506,7 +4494,7 @@ license-file = "LICENSE.txt"
         /// files under that path, proving `write_winget_manifests_to_disk`'s
         /// path-override branch runs through the real push.
         #[test]
-        #[serial]
+        #[serial(path_env)]
         fn publish_honors_path_override() {
             let (_tools, _guard) = gh_absent();
             let (bare_url, bare) = init_bare_fork();
@@ -4516,13 +4504,12 @@ license-file = "LICENSE.txt"
                 response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
                 times: None,
             }]);
-            set_api_base(&addr);
-
             let mut c = live_winget_crate("widget", &bare_url);
             if let Some(w) = c.publish.as_mut().and_then(|p| p.winget.as_mut()) {
                 w.path = Some("custom/manifests/here".to_string());
             }
             let mut ctx = build_ctx(vec![c], "1.0.0");
+            inject_api_base(&mut ctx, &addr);
             add_windows_zip(&mut ctx, "widget", &"3".repeat(64));
 
             publish_to_winget(&mut ctx, "widget", &quiet()).expect("publish ok");
@@ -4536,7 +4523,6 @@ license-file = "LICENSE.txt"
                 ver.contains("PackageIdentifier: AcmeCo.widget"),
                 "manifest must land under the custom path override:\n{ver}"
             );
-            clear_api_base();
             drop(bare);
         }
 
@@ -4544,7 +4530,7 @@ license-file = "LICENSE.txt"
         /// clone/push: the bare fork gains no new branch and no PR POST fires.
         /// Proves the skip gate guards the whole side-effecting flow.
         #[test]
-        #[serial]
+        #[serial(path_env)]
         fn publish_skip_upload_true_performs_no_side_effects() {
             let (_tools, _guard) = gh_absent();
             let (bare_url, bare) = init_bare_fork();
@@ -4554,13 +4540,12 @@ license-file = "LICENSE.txt"
                 response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
                 times: None,
             }]);
-            set_api_base(&addr);
-
             let mut c = live_winget_crate("widget", &bare_url);
             if let Some(w) = c.publish.as_mut().and_then(|p| p.winget.as_mut()) {
                 w.skip_upload = Some(anodizer_core::config::StringOrBool::Bool(true));
             }
             let mut ctx = build_ctx(vec![c], "1.0.0");
+            inject_api_base(&mut ctx, &addr);
             add_windows_zip(&mut ctx, "widget", &"5".repeat(64));
 
             publish_to_winget(&mut ctx, "widget", &quiet()).expect("publish ok");
@@ -4574,7 +4559,6 @@ license-file = "LICENSE.txt"
                 req_log.lock().unwrap().is_empty(),
                 "skip_upload must fire no PR POST"
             );
-            clear_api_base();
             drop(bare);
         }
 
@@ -4582,7 +4566,7 @@ license-file = "LICENSE.txt"
         /// clone/push/PR: no branch, no POST. Pins the `ctx.is_dry_run()`
         /// guard in `publish_to_winget`.
         #[test]
-        #[serial]
+        #[serial(path_env)]
         fn publish_dry_run_performs_no_side_effects() {
             let (_tools, _guard) = gh_absent();
             let (bare_url, bare) = init_bare_fork();
@@ -4592,8 +4576,6 @@ license-file = "LICENSE.txt"
                 response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
                 times: None,
             }]);
-            set_api_base(&addr);
-
             let c = live_winget_crate("widget", &bare_url);
             let config = Config {
                 crates: vec![c],
@@ -4606,6 +4588,7 @@ license-file = "LICENSE.txt"
                     ..Default::default()
                 },
             );
+            inject_api_base(&mut ctx, &addr);
             ctx.template_vars_mut().set("Version", "1.0.0");
             ctx.template_vars_mut().set("RawVersion", "1.0.0");
             ctx.template_vars_mut().set("Tag", "v1.0.0");
@@ -4622,7 +4605,6 @@ license-file = "LICENSE.txt"
                 req_log.lock().unwrap().is_empty(),
                 "dry-run must fire no PR POST"
             );
-            clear_api_base();
             drop(bare);
         }
 
@@ -4632,7 +4614,7 @@ license-file = "LICENSE.txt"
         /// push it. Pins `build_archive_installer`'s sha256 guard through the
         /// live entrypoint, and confirms no branch leaked to the fork.
         #[test]
-        #[serial]
+        #[serial(path_env)]
         fn publish_missing_sha256_errors_before_push() {
             let (_tools, _guard) = gh_absent();
             let (bare_url, bare) = init_bare_fork();
@@ -4642,10 +4624,9 @@ license-file = "LICENSE.txt"
                 response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
                 times: None,
             }]);
-            set_api_base(&addr);
-
             let c = live_winget_crate("widget", &bare_url);
             let mut ctx = build_ctx(vec![c], "1.0.0");
+            inject_api_base(&mut ctx, &addr);
             // Archive with NO sha256 metadata.
             let target = "x86_64-pc-windows-msvc";
             let mut meta = HashMap::new();
@@ -4680,7 +4661,6 @@ license-file = "LICENSE.txt"
                 req_log.lock().unwrap().is_empty(),
                 "a sha256 bail must fire no PR POST"
             );
-            clear_api_base();
             drop(bare);
         }
 
@@ -4689,7 +4669,7 @@ license-file = "LICENSE.txt"
         /// Pins `collect_winget_installers`'s empty guard through the live
         /// entrypoint.
         #[test]
-        #[serial]
+        #[serial(path_env)]
         fn publish_no_windows_artifact_errors_before_push() {
             let (_tools, _guard) = gh_absent();
             let (bare_url, bare) = init_bare_fork();
@@ -4699,10 +4679,9 @@ license-file = "LICENSE.txt"
                 response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
                 times: None,
             }]);
-            set_api_base(&addr);
-
             let c = live_winget_crate("widget", &bare_url);
             let mut ctx = build_ctx(vec![c], "1.0.0");
+            inject_api_base(&mut ctx, &addr);
             // A LINUX archive only — not a winget Windows installer.
             let mut meta = HashMap::new();
             meta.insert("format".to_string(), "tar.gz".to_string());
@@ -4727,7 +4706,6 @@ license-file = "LICENSE.txt"
                 req_log.lock().unwrap().is_empty(),
                 "an artifact bail must fire no PR POST"
             );
-            clear_api_base();
             drop(bare);
         }
 
@@ -4739,7 +4717,7 @@ license-file = "LICENSE.txt"
         /// `update_existing_pr` semantics.
         #[cfg(unix)]
         #[test]
-        #[serial]
+        #[serial(path_env)]
         fn publish_update_existing_pr_via_api_is_noop_records_pending() {
             let (_tools, _guard) = gh_absent();
             let (bare_url, bare) = init_bare_fork();
@@ -4757,13 +4735,12 @@ license-file = "LICENSE.txt"
                 ),
                 times: Some(1),
             }]);
-            set_api_base(&addr);
-
             let mut c = live_winget_crate("widget", &bare_url);
             if let Some(w) = c.publish.as_mut().and_then(|p| p.winget.as_mut()) {
                 w.update_existing_pr = Some(anodizer_core::config::StringOrBool::Bool(true));
             }
             let mut ctx = build_ctx(vec![c], "1.0.0");
+            inject_api_base(&mut ctx, &addr);
             add_windows_zip(&mut ctx, "widget", &"8".repeat(64));
 
             publish_to_winget(&mut ctx, "widget", &quiet()).expect("publish ok");
@@ -4777,7 +4754,6 @@ license-file = "LICENSE.txt"
                 "update_existing_pr over the API transport must still record \
                  PendingValidation on a 422, got {pending:?}"
             );
-            clear_api_base();
             drop(bare);
         }
     }

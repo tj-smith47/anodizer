@@ -2696,7 +2696,7 @@ list:
     /// process env through the default token-file loader.
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(setup_env)]
     fn setup_env_missing_token_bails_with_github_hint() {
         let config = Config {
             project_name: "p".to_string(),
@@ -2720,7 +2720,7 @@ list:
     /// snapshot is a supported local-validation flow.
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(setup_env)]
     fn setup_env_missing_token_ok_in_snapshot() {
         let config = Config {
             project_name: "p".to_string(),
@@ -2746,7 +2746,7 @@ list:
     /// Gated + serial: drives setup_env's process-env touchpoints.
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(setup_env)]
     fn setup_env_multiple_tokens_without_force_bails() {
         let config = Config {
             project_name: "p".to_string(),
@@ -3015,7 +3015,7 @@ list:
     /// arm and the snapshot tag-default arm.
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd)]
     fn resolve_git_context_workspace_only_snapshot_defaults_version() {
         with_empty_git_repo_cwd(|| {
             let config = Config {
@@ -3052,7 +3052,7 @@ list:
     /// tag discovery. The `Tag` var stays unset (never populated from a crate).
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd)]
     fn resolve_git_context_no_crates_populates_vars_and_ok() {
         with_empty_git_repo_cwd(|| {
             let config = Config {
@@ -3073,7 +3073,7 @@ list:
     /// hard error: `resolve_git_context` bails demanding a tag or --snapshot.
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd)]
     fn resolve_git_context_no_tag_non_snapshot_bails() {
         with_empty_git_repo_cwd(|| {
             let config = Config {
@@ -3103,7 +3103,7 @@ list:
     /// (the warn arm fires, no github filled). Gated + serial: cwd swap.
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(cwd)]
     fn auto_detect_github_leaves_github_none_without_remote() {
         with_empty_git_repo_cwd(|| {
             let mut config = Config {

@@ -1528,7 +1528,7 @@ mod tests {
     /// -> Publisher::rollback. A `cargo` PATH stub records the yank argv.
     #[cfg(unix)]
     #[test]
-    #[serial_test::serial(cargo_stub_path)]
+    #[serial_test::serial(path_env)]
     fn end_to_end_failed_cargo_submitter_yanks_only_succeeded_crate() {
         use crate::cargo::{CargoPublisher, CargoYankTarget, encode_cargo_yank_targets};
         use anodizer_core::{PublishEvidence, Publisher, PublisherGroup, PublisherOutcome};
@@ -1618,12 +1618,15 @@ mod tests {
         );
         // SAFETY: serialised by env_mutex above (shared with every other
         // PATH mutator) plus this test's serial group; paired restore below.
+        // env-ok: PATH stub swap under #[serial(path_env)] + env_mutex; restored on drop
         unsafe { std::env::set_var("PATH", &new_path) };
         let res = run_dispatch_and_rollback(&mut ctx, &publishers);
         // SAFETY: restore PATH within the same serial group.
         unsafe {
             match prev_path {
+                // env-ok: PATH stub swap under #[serial(path_env)] + env_mutex; restored on drop
                 Some(p) => std::env::set_var("PATH", p),
+                // env-ok: PATH stub swap under #[serial(path_env)] + env_mutex; restored on drop
                 None => std::env::remove_var("PATH"),
             }
         }

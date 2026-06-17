@@ -1908,10 +1908,12 @@ mod tests {
 
     // ---- rollback-scope + Publisher::preflight() extension ----
     //
-    // These tests mutate process-wide env vars (CARGO_REGISTRY_TOKEN,
-    // GITHUB_TOKEN, ANODIZER_GITHUB_TOKEN). The `serial_test::serial`
-    // attribute serializes them under a shared lock to prevent races
-    // with other tests in the suite that read the same vars.
+    // These tests resolve rollback-scope token availability
+    // (CARGO_REGISTRY_TOKEN, GITHUB_TOKEN, ANODIZER_GITHUB_TOKEN) through
+    // the Context's injected `EnvSource` (`scope_available_with_env`), so
+    // they inject or omit tokens via a `MapEnvSource` installed with
+    // `ctx.set_env_source(..)` rather than mutating process-wide env. No
+    // shared-lock serialization is needed.
 
     /// Build a Context where a single crate has `publish.cargo`
     /// configured. Used by the rollback-scope tests below; the
@@ -1958,17 +1960,12 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(preflight_env)]
     fn preflight_warns_on_missing_rollback_scope() {
         use anodizer_core::log::{StageLogger, Verbosity};
-        // SAFETY: serialized via serial_test::serial across the env-mutating
-        // tests in this set; no other thread reads CARGO_REGISTRY_TOKEN
-        // during the remove_var window.
-        unsafe {
-            std::env::remove_var("CARGO_REGISTRY_TOKEN");
-        }
 
         let mut ctx = fixture_cargo_publisher(false, None);
+        // Omit CARGO_REGISTRY_TOKEN so the scope reads as missing.
+        ctx.set_env_source(anodizer_core::MapEnvSource::new());
         let log = StageLogger::new("preflight", Verbosity::Normal);
         let factory = empty_factory();
         let report = run_preflight_with_factory(&mut ctx, &log, &factory).expect("ok");
@@ -1993,15 +1990,12 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(preflight_env)]
     fn preflight_blocks_on_missing_rollback_scope_when_strict() {
         use anodizer_core::log::{StageLogger, Verbosity};
-        // SAFETY: serialized via serial_test::serial.
-        unsafe {
-            std::env::remove_var("CARGO_REGISTRY_TOKEN");
-        }
 
         let mut ctx = fixture_cargo_publisher(true, None);
+        // Omit CARGO_REGISTRY_TOKEN so the scope reads as missing.
+        ctx.set_env_source(anodizer_core::MapEnvSource::new());
         let log = StageLogger::new("preflight", Verbosity::Normal);
         let factory = empty_factory();
         let report = run_preflight_with_factory(&mut ctx, &log, &factory).expect("ok");
@@ -2025,16 +2019,13 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(preflight_env)]
     fn preflight_bails_when_required_publisher_missing_scope_and_rollback_best_effort() {
         use anodizer_core::context::RollbackMode;
         use anodizer_core::log::{StageLogger, Verbosity};
-        // SAFETY: serialized via serial_test::serial.
-        unsafe {
-            std::env::remove_var("CARGO_REGISTRY_TOKEN");
-        }
 
         let mut ctx = fixture_cargo_publisher(false, Some(RollbackMode::BestEffort));
+        // Omit CARGO_REGISTRY_TOKEN so the scope reads as missing.
+        ctx.set_env_source(anodizer_core::MapEnvSource::new());
         let log = StageLogger::new("preflight", Verbosity::Normal);
         let factory = empty_factory();
         let err = run_preflight_with_factory(&mut ctx, &log, &factory).expect_err(
@@ -2138,19 +2129,12 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(preflight_env)]
     fn preflight_honors_anodizer_github_token_fallback() {
         use anodizer_core::config::{
             Config, CrateConfig, HomebrewConfig, PublishConfig, RepositoryConfig,
         };
         use anodizer_core::context::{Context, ContextOptions};
         use anodizer_core::log::{StageLogger, Verbosity};
-
-        // SAFETY: serialized via serial_test::serial.
-        unsafe {
-            std::env::remove_var("GITHUB_TOKEN");
-            std::env::set_var("ANODIZER_GITHUB_TOKEN", "fallback-token");
-        }
 
         let publish = PublishConfig {
             homebrew: Some(HomebrewConfig {
@@ -2174,6 +2158,11 @@ mod tests {
             ..Default::default()
         };
         let mut ctx = Context::new(config, ContextOptions::default());
+        // Omit GITHUB_TOKEN but provide ANODIZER_GITHUB_TOKEN: the fallback
+        // must satisfy the GITHUB_TOKEN scope through the injected source.
+        ctx.set_env_source(
+            anodizer_core::MapEnvSource::new().with("ANODIZER_GITHUB_TOKEN", "fallback-token"),
+        );
         let log = StageLogger::new("preflight", Verbosity::Normal);
         let factory = empty_factory();
 
@@ -2189,11 +2178,6 @@ mod tests {
             "ANODIZER_GITHUB_TOKEN fallback must satisfy GITHUB_TOKEN scope; warnings: {:?}",
             report.warnings
         );
-
-        // SAFETY: serialized via serial_test::serial.
-        unsafe {
-            std::env::remove_var("ANODIZER_GITHUB_TOKEN");
-        }
     }
 
     // ---- gpg --faked-system-time capability probe ----
@@ -2979,21 +2963,27 @@ mod tests {
     // FakeToolDir-driven `cargo publish --dry-run` spawn coverage.
     //
     // Drives the REAL spawn against a fake `cargo` binary addressed by absolute
-    // path (`run_cargo_dry_run_with_binary`), never mutating the process-wide
-    // PATH — so these run un-serialized without racing concurrent PATH-resolved
-    // spawns elsewhere in the suite. Asserts argv shape + outcome classification.
+    // path (`run_cargo_dry_run_with_binary`). Each test fork+execs a
+    // freshly-written stub, so they share the `path_env` serial group: a
+    // sibling test's concurrent `fork()` would otherwise duplicate the
+    // in-flight write FD of this stub and make the subsequent `exec` fail with
+    // ETXTBSY ("Text file busy"). Serializing every fork+exec-of-fresh-binary
+    // test under one group closes that window. Asserts argv shape + outcome
+    // classification.
     // -----------------------------------------------------------------------
     #[cfg(unix)]
     mod publish_simulation_spawn {
         use super::super::*;
         use anodizer_core::log::{StageLogger, Verbosity};
         use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+        use serial_test::serial;
 
         fn quiet_log() -> StageLogger {
             StageLogger::new("publish-sim-spawn-test", Verbosity::Normal)
         }
 
         #[test]
+        #[serial(path_env)]
         fn dry_run_exit_zero_is_ok_and_argv_is_publish_dry_run() {
             let fake = FakeToolDir::new();
             fake.tool("cargo").exit(0).install();
@@ -3015,6 +3005,7 @@ mod tests {
         }
 
         #[test]
+        #[serial(path_env)]
         fn dry_run_compile_error_on_stderr_aborts() {
             let fake = FakeToolDir::new();
             fake.tool("cargo")
@@ -3036,6 +3027,7 @@ mod tests {
         }
 
         #[test]
+        #[serial(path_env)]
         fn dry_run_missing_sibling_on_stderr_is_benign_signal() {
             let fake = FakeToolDir::new();
             fake.tool("cargo")
@@ -3057,6 +3049,7 @@ mod tests {
         }
 
         #[test]
+        #[serial(path_env)]
         fn dry_run_spawn_failure_is_unavailable() {
             // A nonexistent cargo binary makes the spawn fail (cargo
             // absent / not on PATH). The runner must degrade to

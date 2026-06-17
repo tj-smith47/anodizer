@@ -1931,10 +1931,6 @@ mod tests {
         // nesting) behind a colored marker glyph. ANSI codes are stripped
         // for the assertion so the test pins the visible shape, not palette.
         let _guard = SECTION_TEST_LOCK.lock().unwrap();
-        // SAFETY: single-threaded under SECTION_TEST_LOCK.
-        unsafe {
-            std::env::remove_var("GITHUB_ACTIONS");
-        }
         let strip = |s: String| {
             // Drop CSI sequences so the assertion is palette-independent.
             let mut out = String::new();

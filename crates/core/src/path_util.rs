@@ -1,6 +1,7 @@
 //! Path-string utilities shared across config loading, env-file reading, and
 //! the template engine.
 
+use crate::EnvSource;
 use std::borrow::Cow;
 use std::path::PathBuf;
 
@@ -10,11 +11,11 @@ use std::path::PathBuf;
 /// MSYS setups), falling back to `%USERPROFILE%` on Windows where `$HOME`
 /// is frequently unset. Empty values are treated as unset so a stray
 /// `HOME=` export does not collapse `~/foo` into `/foo`.
-fn home_dir() -> Option<PathBuf> {
-    if let Some(home) = std::env::var_os("HOME").filter(|h| !h.is_empty()) {
+fn home_dir_with_env<E: EnvSource + ?Sized>(env: &E) -> Option<PathBuf> {
+    if let Some(home) = env.var("HOME").filter(|h| !h.is_empty()) {
         return Some(PathBuf::from(home));
     }
-    std::env::var_os("USERPROFILE")
+    env.var("USERPROFILE")
         .filter(|h| !h.is_empty())
         .map(PathBuf::from)
 }
@@ -50,9 +51,18 @@ pub fn probe_dir() -> PathBuf {
 /// `~/`), the input is returned unchanged. A `Cow::Borrowed` is returned for
 /// the non-expanding case to avoid an allocation.
 pub fn expand_tilde(path: &str) -> Cow<'_, str> {
+    expand_tilde_with_env(path, &crate::ProcessEnvSource)
+}
+
+/// [`EnvSource`]-injecting form of [`expand_tilde`].
+///
+/// Resolves the home directory from `env` (`HOME`, then `USERPROFILE`)
+/// instead of the process environment, so callers and tests can drive
+/// tilde expansion deterministically without mutating global env state.
+pub fn expand_tilde_with_env<'p, E: EnvSource + ?Sized>(path: &'p str, env: &E) -> Cow<'p, str> {
     if let Some(rest) = path.strip_prefix('~')
         && (rest.is_empty() || rest.starts_with('/'))
-        && let Some(home) = home_dir()
+        && let Some(home) = home_dir_with_env(env)
     {
         let rest_trimmed = rest.strip_prefix('/').unwrap_or(rest);
         // `home.join("")` would append a trailing separator, so bare `~` and
@@ -70,70 +80,53 @@ pub fn expand_tilde(path: &str) -> Cow<'_, str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MapEnvSource;
 
-    // Mutating process env is racy across threads; the unsafe blocks below are
-    // required by the Rust 2024 edition's `set_var`/`remove_var` signatures.
-    // These tests run single-threaded relative to each other only by virtue of
-    // each restoring the env it touched before returning.
+    // Home-directory resolution is driven through an injected `MapEnvSource`
+    // so these tests never touch the process environment and run race-free in
+    // parallel with the rest of the crate's suite.
 
     #[test]
-    #[serial_test::serial]
     fn expands_leading_tilde_slash() {
-        unsafe {
-            std::env::set_var("HOME", "/home/tester");
-        }
+        let env = MapEnvSource::new().with("HOME", "/home/tester");
         let expected = PathBuf::from("/home/tester")
             .join("x")
             .to_string_lossy()
             .into_owned();
-        assert_eq!(expand_tilde("~/x"), expected);
+        assert_eq!(expand_tilde_with_env("~/x", &env), expected);
     }
 
     #[test]
-    #[serial_test::serial]
     fn expands_bare_tilde() {
-        unsafe {
-            std::env::set_var("HOME", "/home/tester");
-        }
-        assert_eq!(expand_tilde("~"), "/home/tester");
+        let env = MapEnvSource::new().with("HOME", "/home/tester");
+        assert_eq!(expand_tilde_with_env("~", &env), "/home/tester");
     }
 
     #[test]
     fn passes_through_non_tilde_path() {
-        assert_eq!(expand_tilde("/etc/anodize.yaml"), "/etc/anodize.yaml");
-        assert_eq!(expand_tilde("./safe~backup.yaml"), "./safe~backup.yaml");
+        let env = MapEnvSource::new().with("HOME", "/home/tester");
+        assert_eq!(
+            expand_tilde_with_env("/etc/anodize.yaml", &env),
+            "/etc/anodize.yaml"
+        );
+        assert_eq!(
+            expand_tilde_with_env("./safe~backup.yaml", &env),
+            "./safe~backup.yaml"
+        );
     }
 
     #[test]
-    #[serial_test::serial]
     fn user_home_form_not_expanded() {
-        unsafe {
-            std::env::set_var("HOME", "/home/tester");
-        }
-        assert_eq!(expand_tilde("~bob/foo"), "~bob/foo");
-        assert_eq!(expand_tilde("~bob"), "~bob");
+        let env = MapEnvSource::new().with("HOME", "/home/tester");
+        assert_eq!(expand_tilde_with_env("~bob/foo", &env), "~bob/foo");
+        assert_eq!(expand_tilde_with_env("~bob", &env), "~bob");
     }
 
     #[test]
-    #[serial_test::serial]
     fn falls_back_to_userprofile() {
-        let saved_home = std::env::var_os("HOME");
-        let saved_profile = std::env::var_os("USERPROFILE");
-        unsafe {
-            std::env::remove_var("HOME");
-            std::env::set_var("USERPROFILE", "/Users/winuser");
-        }
-        let got = expand_tilde("~/docs").into_owned();
-        unsafe {
-            match saved_home {
-                Some(v) => std::env::set_var("HOME", v),
-                None => std::env::remove_var("HOME"),
-            }
-            match saved_profile {
-                Some(v) => std::env::set_var("USERPROFILE", v),
-                None => std::env::remove_var("USERPROFILE"),
-            }
-        }
+        // HOME unset (absent from the map), USERPROFILE present.
+        let env = MapEnvSource::new().with("USERPROFILE", "/Users/winuser");
+        let got = expand_tilde_with_env("~/docs", &env).into_owned();
         let expected = PathBuf::from("/Users/winuser")
             .join("docs")
             .to_string_lossy()

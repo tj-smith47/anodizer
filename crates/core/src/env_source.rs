@@ -127,10 +127,15 @@ mod tests {
     fn process_env_source_reads_actual_env() {
         let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let key = "ANODIZER_T3_PROCESS_ENV_FIXTURE";
+        // env-ok: this is the contract test for ProcessEnvSource — it must
+        // observe the *real* process env, so there is no injection seam to
+        // route through; env_mutex serialises the unique-key mutation.
         // SAFETY: serialised by env_mutex; cleaned up before guard drop.
+        // env-ok: ProcessEnvSource contract test; env_mutex-guarded, unique key
         unsafe { std::env::set_var(key, "from-process-env") };
         let got = ProcessEnvSource.var(key);
         // SAFETY: serialised by env_mutex.
+        // env-ok: ProcessEnvSource contract test; env_mutex-guarded, unique key
         unsafe { std::env::remove_var(key) };
         assert_eq!(got, Some("from-process-env".to_string()));
     }

@@ -3320,16 +3320,13 @@ mod tests {
     /// `ARTIFACTORY_PROD_USERNAME` / `_SECRET` resolve the basic-auth
     /// pair. Confirms the prefix + uppercased-name env ladder.
     #[test]
-    #[serial_test::serial]
     fn credentials_resolve_from_named_env_vars() {
-        use anodizer_core::test_helpers::env::env_mutex;
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
-        // SAFETY: serialised by env_mutex; paired set/remove below.
-        unsafe {
-            std::env::set_var("ARTIFACTORY_PROD_USERNAME", "envuser");
-            std::env::set_var("ARTIFACTORY_PROD_SECRET", "envsecret");
-        }
-        let ctx = upload_ctx();
+        let mut ctx = upload_ctx();
+        ctx.set_env_source(
+            anodizer_core::MapEnvSource::new()
+                .with("ARTIFACTORY_PROD_USERNAME", "envuser")
+                .with("ARTIFACTORY_PROD_SECRET", "envsecret"),
+        );
         let (u, p) = crate::http_upload::resolve_http_credentials(
             &ctx,
             &crate::http_upload::CredentialResolveSpec {
@@ -3342,10 +3339,6 @@ mod tests {
             },
         )
         .expect("env creds resolve");
-        unsafe {
-            std::env::remove_var("ARTIFACTORY_PROD_USERNAME");
-            std::env::remove_var("ARTIFACTORY_PROD_SECRET");
-        }
         assert_eq!(u, "envuser");
         assert_eq!(p, "envsecret");
     }
@@ -3353,16 +3346,13 @@ mod tests {
     /// A hyphenated entry name is folded to `_` and upper-cased for the
     /// env lookup, so `my-repo` reads `ARTIFACTORY_MY_REPO_SECRET`.
     #[test]
-    #[serial_test::serial]
     fn credentials_fold_hyphen_in_entry_name() {
-        use anodizer_core::test_helpers::env::env_mutex;
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
-        // SAFETY: serialised by env_mutex; paired set/remove below.
-        unsafe {
-            std::env::set_var("ARTIFACTORY_MY_REPO_USERNAME", "hu");
-            std::env::set_var("ARTIFACTORY_MY_REPO_SECRET", "hp");
-        }
-        let ctx = upload_ctx();
+        let mut ctx = upload_ctx();
+        ctx.set_env_source(
+            anodizer_core::MapEnvSource::new()
+                .with("ARTIFACTORY_MY_REPO_USERNAME", "hu")
+                .with("ARTIFACTORY_MY_REPO_SECRET", "hp"),
+        );
         let (u, p) = crate::http_upload::resolve_http_credentials(
             &ctx,
             &crate::http_upload::CredentialResolveSpec {
@@ -3375,10 +3365,6 @@ mod tests {
             },
         )
         .expect("hyphen-folded env creds resolve");
-        unsafe {
-            std::env::remove_var("ARTIFACTORY_MY_REPO_USERNAME");
-            std::env::remove_var("ARTIFACTORY_MY_REPO_SECRET");
-        }
         assert_eq!(u, "hu");
         assert_eq!(p, "hp");
     }
@@ -3386,16 +3372,11 @@ mod tests {
     /// Anonymous resolution (no config, no env) is refused when
     /// `anonymous_ok = false` — the live artifactory path's guard.
     #[test]
-    #[serial_test::serial]
     fn credentials_refuse_anonymous_when_required() {
-        use anodizer_core::test_helpers::env::env_mutex;
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
-        // SAFETY: serialised; ensure no stale env leaks into the lookup.
-        unsafe {
-            std::env::remove_var("ARTIFACTORY_LONELY_USERNAME");
-            std::env::remove_var("ARTIFACTORY_LONELY_SECRET");
-        }
-        let ctx = upload_ctx();
+        let mut ctx = upload_ctx();
+        // An empty env source carries neither ARTIFACTORY_LONELY_USERNAME nor
+        // _SECRET, so the resolver sees both as unset without touching process env.
+        ctx.set_env_source(anodizer_core::MapEnvSource::new());
         let err = crate::http_upload::resolve_http_credentials(
             &ctx,
             &crate::http_upload::CredentialResolveSpec {

@@ -39,6 +39,18 @@ pub const ENV_WHITELIST: &[&str] = &[
 /// allow-listed boundary is preferable to deferring failure to the
 /// kernel via an empty `program` path.
 pub fn whitelisted<S: AsRef<OsStr>>(argv: &[S]) -> Result<Command> {
+    whitelisted_with_env(argv, &crate::ProcessEnvSource)
+}
+
+/// [`EnvSource`](crate::EnvSource)-injecting form of [`whitelisted`].
+///
+/// The [`ENV_WHITELIST`] subset is copied from `env` rather than the process
+/// environment, so tests can prove the forward-whitelisted / drop-everything-
+/// else contract against a closed fixture map without mutating global env.
+pub fn whitelisted_with_env<S: AsRef<OsStr>, E: crate::EnvSource + ?Sized>(
+    argv: &[S],
+    env: &E,
+) -> Result<Command> {
     anyhow::ensure!(!argv.is_empty(), "user command argv cannot be empty");
     let program = argv[0].as_ref();
     let mut cmd = Command::new(program);
@@ -47,7 +59,7 @@ pub fn whitelisted<S: AsRef<OsStr>>(argv: &[S]) -> Result<Command> {
     }
     cmd.env_clear();
     for key in ENV_WHITELIST {
-        if let Ok(val) = std::env::var(key) {
+        if let Some(val) = env.var(key) {
             cmd.env(key, val);
         }
     }
@@ -100,31 +112,20 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
     fn whitelisted_env_is_inherited_non_whitelisted_is_dropped() {
-        // Forward the real parent PATH verbatim rather than clobbering the
-        // process PATH to a sentinel: a global `set_var("PATH", …)` leaks into
-        // every concurrently-running test (Rust runs the binary's tests on
-        // parallel threads), breaking PATH-dependent probes like
-        // `util::find_binary`. Reading the real value proves the same
-        // forwarding contract without mutating shared state.
-        let real_path = std::env::var_os("PATH");
-
-        // SAFETY: `#[serial]` excludes other env-mutating tests; the
-        // credential key is namespaced and removed below before the guard ends.
-        unsafe {
-            std::env::set_var("ANODIZER_SECRET_TOKEN", "leak-me");
-        }
-        let cmd = whitelisted(&["true"]).expect("valid argv");
+        // A closed fixture env proves the forwarding contract without touching
+        // process env: PATH is whitelisted and must forward verbatim; the
+        // credential-shaped key is not whitelisted and must be dropped.
+        let env = crate::MapEnvSource::new()
+            .with("PATH", "/fixture/bin")
+            .with("ANODIZER_SECRET_TOKEN", "leak-me");
+        let cmd = whitelisted_with_env(&["true"], &env).expect("valid argv");
         let envs = env_map(&cmd);
-        unsafe {
-            std::env::remove_var("ANODIZER_SECRET_TOKEN");
-        }
 
         // A whitelisted key present in the parent env is forwarded verbatim.
         assert_eq!(
             envs.get(OsStr::new("PATH")),
-            Some(&real_path),
+            Some(&Some(OsString::from("/fixture/bin"))),
             "PATH should be inherited from the whitelist verbatim"
         );
         // A non-whitelisted key (credential-shaped) must not leak through.
@@ -136,14 +137,12 @@ mod tests {
 
     #[test]
     fn unset_whitelist_key_adds_no_override_entry() {
-        // SAFETY: see above — single-threaded env mutation in test context.
-        unsafe {
-            std::env::remove_var("USERPROFILE");
-        }
-        let cmd = whitelisted(&["true"]).expect("valid argv");
+        // A fixture env with no USERPROFILE entry: the whitelist key is unset.
+        let env = crate::MapEnvSource::new();
+        let cmd = whitelisted_with_env(&["true"], &env).expect("valid argv");
         let envs = env_map(&cmd);
         // An unset whitelist key is skipped entirely (the loop only adds an
-        // override when `std::env::var` returns `Ok`), so it must not appear
+        // override when the source returns a value), so it must not appear
         // even as a removal entry.
         assert!(
             !envs.contains_key(OsStr::new("USERPROFILE")),

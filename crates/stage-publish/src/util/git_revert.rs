@@ -214,9 +214,13 @@ mod tests {
             // OnceLock; no other test thread observes a half-applied
             // identity. The values are constants, not user input.
             unsafe {
+                // env-ok: idempotent OnceLock set of constant git identity, never mutated after
                 std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
+                // env-ok: idempotent OnceLock set of constant git identity, never mutated after
                 std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
+                // env-ok: idempotent OnceLock set of constant git identity, never mutated after
                 std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
+                // env-ok: idempotent OnceLock set of constant git identity, never mutated after
                 std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
             }
         });

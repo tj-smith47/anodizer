@@ -461,11 +461,13 @@ mod tests {
     struct EnvGuard;
     impl Drop for EnvGuard {
         fn drop(&mut self) {
+            // env-ok: #[serial(announce_env)] + env_mutex; per-test API-base redirect
             unsafe { std::env::remove_var("ANODIZE_OPENCOLLECTIVE_API_BASE") };
         }
     }
     fn set_base(addr: std::net::SocketAddr) -> EnvGuard {
         unsafe {
+            // env-ok: #[serial(announce_env)] + env_mutex; per-test API-base redirect
             std::env::set_var(
                 "ANODIZE_OPENCOLLECTIVE_API_BASE",
                 format!("http://{addr}/graphql/v2"),
@@ -482,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(announce_env)]
     fn send_opencollective_two_step_flow_posts_create_then_publish() {
         let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         // Both mutations POST to the same path; `times: Some(1)` on the first
@@ -558,7 +560,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(announce_env)]
     fn send_opencollective_create_401_aborts_before_publish() {
         let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
@@ -585,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(announce_env)]
     fn send_opencollective_create_graphql_errors_aborts_before_publish() {
         let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         // HTTP 200 + a non-empty `errors` array on createUpdate must abort.

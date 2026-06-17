@@ -88,6 +88,11 @@ fn delete_recorded_targets(ctx: &mut Context, targets: &[GemFuryTarget]) {
         }
     };
     let policy = ctx.retry_policy();
+    // Snapshot the injected env source once so the API-base resolution in
+    // `delete_version` reads the same source as the rest of the stage without
+    // re-borrowing `ctx` inside the loop (which also mutably borrows it via
+    // `resolve_api_token`).
+    let env = ctx.env_source_arc();
 
     // Find the per-entry API-token override (if any) for each target. The
     // target carries only the env-var NAME — re-read the config to honor a
@@ -123,7 +128,14 @@ fn delete_recorded_targets(ctx: &mut Context, targets: &[GemFuryTarget]) {
             continue;
         }
         match delete_version(
-            &client, &t.account, &t.package, &t.version, &token, &policy, &log,
+            &client,
+            &t.account,
+            &t.package,
+            &t.version,
+            &token,
+            &policy,
+            &log,
+            env.as_ref(),
         ) {
             Ok(()) => {
                 log.status(&format!(

@@ -122,6 +122,10 @@ impl FakeToolDir {
             entries.extend(std::env::split_paths(p));
         }
         let joined = std::env::join_paths(entries).expect("fake_tool: join PATH");
+        // env-ok: PATH is resolved by spawned children via execvp(3), not
+        // through any injectable EnvSource, so binary-stub tests must mutate the
+        // real process PATH; env_mutex (held for the guard's life) + the
+        // documented `#[serial]` caller requirement serialise it.
         // SAFETY: serialised by the env mutex held in `lock` for the guard's life.
         unsafe { std::env::set_var("PATH", &joined) };
         PathGuard { prior, _lock: lock }

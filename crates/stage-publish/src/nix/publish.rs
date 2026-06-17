@@ -2354,11 +2354,11 @@ mod tests {
                 // SAFETY: runs exactly once per process, guarded by OnceLock;
                 // values are constants, not user input.
                 unsafe {
-                    std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
-                    std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
-                    std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
-                    std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
-                    std::env::set_var("GIT_TERMINAL_PROMPT", "0");
+                    std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                    std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                    std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                    std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                    std::env::set_var("GIT_TERMINAL_PROMPT", "0"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
                 }
             });
         }

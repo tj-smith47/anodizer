@@ -92,7 +92,19 @@ pub struct EnvFilesTokenConfig {
 /// Returns `Ok(None)` if the file does not exist.
 /// Returns `Err` if the file exists but cannot be read.
 pub fn read_token_file(path: &str) -> Result<Option<String>, String> {
-    let expanded = crate::path_util::expand_tilde(path);
+    read_token_file_with_env(path, &crate::ProcessEnvSource)
+}
+
+/// [`EnvSource`](crate::EnvSource)-injecting form of [`read_token_file`].
+///
+/// Tilde expansion resolves the home directory from `env` instead of the
+/// process environment, so tests can point `~` at a fixture directory
+/// without mutating global `HOME`.
+pub fn read_token_file_with_env<E: crate::EnvSource + ?Sized>(
+    path: &str,
+    env: &E,
+) -> Result<Option<String>, String> {
+    let expanded = crate::path_util::expand_tilde_with_env(path, env);
 
     match std::fs::read_to_string(expanded.as_ref()) {
         Ok(content) => {
@@ -120,6 +132,20 @@ pub fn read_token_file(path: &str) -> Result<Option<String>, String> {
 pub fn load_token_files(
     config: &EnvFilesTokenConfig,
     log: &crate::log::StageLogger,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    load_token_files_with_env(config, log, &crate::ProcessEnvSource)
+}
+
+/// [`EnvSource`](crate::EnvSource)-injecting form of [`load_token_files`].
+///
+/// The "process env var takes precedence over the token file" check and the
+/// `~`-expansion of candidate paths both read through `env`, so tests can
+/// drive token precedence and home-relative paths deterministically without
+/// mutating the process environment.
+pub fn load_token_files_with_env<E: crate::EnvSource + ?Sized>(
+    config: &EnvFilesTokenConfig,
+    log: &crate::log::StageLogger,
+    env: &E,
 ) -> Result<std::collections::HashMap<String, String>, String> {
     let mut vars = std::collections::HashMap::new();
 
@@ -155,16 +181,12 @@ pub fn load_token_files(
 
     for (env_name, candidates) in &mappings {
         // Skip if the env var is already set in the process environment
-        if std::env::var(env_name)
-            .ok()
-            .filter(|v| !v.is_empty())
-            .is_some()
-        {
+        if env.var(env_name).filter(|v| !v.is_empty()).is_some() {
             log.verbose(&format!("using {} from process environment", env_name));
             continue;
         }
         for file_path in candidates.iter() {
-            match read_token_file(file_path) {
+            match read_token_file_with_env(file_path, env) {
                 Ok(Some(token)) => {
                     log.verbose(&format!("loaded {} from {}", env_name, file_path));
                     vars.insert(env_name.to_string(), token);

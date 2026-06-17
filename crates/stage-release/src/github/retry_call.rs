@@ -408,6 +408,7 @@ mod tests {
     /// distinguishes "delay applied" from "no delay" given normal scheduler
     /// jitter.
     #[tokio::test]
+    #[serial_test::serial(secondary_rl_env)]
     async fn secondary_rate_limit_403_retries_with_delay() {
         use std::time::Instant;
 
@@ -450,8 +451,13 @@ mod tests {
         // Set secondary-RL delay to 1 s. With ±20 % jitter the actual sleep
         // is in [800 ms, 1.2 s); we assert >= 800 ms to prove the delay was
         // honored without paying a multi-second wall-clock cost per run.
-        // SAFETY: test-only env mutation; unique key, brief window.
+        // The delay is read process-globally deep inside the async retry loop
+        // (`retry_octocrab_call` → `secondary_rl_delay`), which does not thread
+        // an `EnvSource`; the `serial(secondary_rl_env)` attribute serializes
+        // this mutation against any other test touching the same var.
+        // SAFETY: test-only env mutation; unique key, serialized window.
         unsafe {
+            // env-ok: #[serial(secondary_rl_env)]; sole mutator of this var
             std::env::set_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS", "1");
         }
 
@@ -464,6 +470,7 @@ mod tests {
         let elapsed = t0.elapsed();
 
         unsafe {
+            // env-ok: #[serial(secondary_rl_env)]; sole mutator of this var
             std::env::remove_var("ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS");
         }
 

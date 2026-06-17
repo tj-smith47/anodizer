@@ -1297,19 +1297,14 @@ dockerhub:
     }
 
     /// A templated image (`{{ .Env.NS }}/app`) is rendered before
-    /// validation — proving the image-render pass runs. The render falls
-    /// back to the process env (set under the mutex guard). Asserts the
-    /// dry-run intent log names the *rendered* image, not the raw
-    /// `{{ }}` form (which would also trip the empty-segment validator
+    /// validation — proving the image-render pass runs. The `.Env.NS`
+    /// value is supplied via the Context's TemplateVars env map (which
+    /// wins over process env), so no process-global state is touched.
+    /// Asserts the dry-run intent log names the *rendered* image, not the
+    /// raw `{{ }}` form (which would also trip the empty-segment validator
     /// if rendering were skipped).
     #[test]
-    #[serial_test::serial]
     fn test_dockerhub_renders_image_template_before_validation() {
-        use anodizer_core::test_helpers::env::env_mutex;
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
-        // SAFETY: serialised by env_mutex; paired set/remove below.
-        unsafe { std::env::set_var("DOCKERHUB_TEST_NS", "myns") };
-
         let capture = anodizer_core::log::LogCapture::new();
         let mut config = Config::default();
         config.dockerhub = Some(vec![DockerHubConfig {
@@ -1319,10 +1314,10 @@ dockerhub:
             ..Default::default()
         }]);
         let mut ctx = dry_run_ctx(config);
+        ctx.template_vars_mut().set_env("DOCKERHUB_TEST_NS", "myns");
         ctx.with_log_capture(capture.clone());
         let log = ctx.logger("dockerhub");
         let result = publish_to_dockerhub(&ctx, &log);
-        unsafe { std::env::remove_var("DOCKERHUB_TEST_NS") };
         result.expect("templated image renders + validates");
         let msgs = capture.all_messages();
         assert!(
@@ -1453,18 +1448,13 @@ dockerhub:
     }
 
     /// The `from_url.url` is template-rendered through `ctx` before the
-    /// fetch, so `{{ .Env.OWNER }}`-style configs resolve. The render
-    /// path falls back to the process env, so the var is set under the
-    /// `env_mutex` guard; the rendered path (`/tj/README.md`) is the one
-    /// that must actually hit the wire (raw `{{ }}` would 404).
+    /// fetch, so `{{ .Env.OWNER }}`-style configs resolve. The `.Env.OWNER`
+    /// value is supplied via the Context's TemplateVars env map (which
+    /// wins over process env), so no process-global state is touched; the
+    /// rendered path (`/tj/README.md`) is the one that must actually hit
+    /// the wire (raw `{{ }}` would 404).
     #[test]
-    #[serial_test::serial]
     fn resolve_full_description_from_url_renders_template() {
-        use anodizer_core::test_helpers::env::env_mutex;
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
-        // SAFETY: serialised by env_mutex; paired set/remove below.
-        unsafe { std::env::set_var("DOCKERHUB_TEST_OWNER", "tj") };
-
         let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
             method: "GET",
             path_pattern: "/tj/README.md",
@@ -1482,10 +1472,11 @@ dockerhub:
                 headers: None,
             }),
         };
-        let ctx = render_ctx();
+        let mut ctx = render_ctx();
+        ctx.template_vars_mut()
+            .set_env("DOCKERHUB_TEST_OWNER", "tj");
         let body = resolve_full_description(&desc, &ctx, &client, &fast_policy())
             .expect("templated url resolves");
-        unsafe { std::env::remove_var("DOCKERHUB_TEST_OWNER") };
         assert_eq!(body, "rendered");
         let entries = log.lock().expect("log");
         assert_eq!(entries.len(), 1);
@@ -1524,23 +1515,14 @@ dockerhub:
     /// `{{ .Env.DOCS_DIR }}/README.md` config resolves the env var and
     /// reads the file at the rendered path. Distinct from the existing
     /// literal-path file test — this exercises the `render_template` call
-    /// on the from_file branch (which falls back to the process env).
+    /// on the from_file branch. The `.Env.DOCS_DIR` value is supplied via
+    /// the Context's TemplateVars env map (which wins over process env),
+    /// so no process-global state is touched.
     #[test]
-    #[serial_test::serial]
     fn resolve_full_description_from_file_renders_template_path() {
-        use anodizer_core::test_helpers::env::env_mutex;
         let dir = tempfile::tempdir().expect("tempdir");
         let readme = dir.path().join("README.md");
         std::fs::write(&readme, "# Templated path").expect("write");
-
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
-        // SAFETY: serialised by env_mutex; paired set/remove below.
-        unsafe {
-            std::env::set_var(
-                "DOCKERHUB_TEST_DOCS_DIR",
-                dir.path().to_str().expect("path utf-8"),
-            )
-        };
 
         let client = reqwest::blocking::Client::new();
         let desc = DockerHubFullDescription {
@@ -1549,10 +1531,13 @@ dockerhub:
             }),
             from_url: None,
         };
-        let ctx = render_ctx();
+        let mut ctx = render_ctx();
+        ctx.template_vars_mut().set_env(
+            "DOCKERHUB_TEST_DOCS_DIR",
+            dir.path().to_str().expect("path utf-8"),
+        );
         let body =
             resolve_full_description(&desc, &ctx, &client, &fast_policy()).expect("render + read");
-        unsafe { std::env::remove_var("DOCKERHUB_TEST_DOCS_DIR") };
         assert_eq!(body, "# Templated path");
     }
 

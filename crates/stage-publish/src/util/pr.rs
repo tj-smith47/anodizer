@@ -17,7 +17,7 @@ use anodizer_core::{EnvSource, ProcessEnvSource};
 use std::path::Path;
 use std::process::Command;
 
-use super::branch::{fetch_default_branch, github_api_base_from};
+use super::branch::{fetch_default_branch_with_env, github_api_base_from};
 use super::cmd::run_cmd_in;
 
 /// Sync a fork with its upstream base repository.
@@ -667,7 +667,7 @@ pub(crate) fn submit_pr_via_gh_with_opts_with_env<E: EnvSource + ?Sized>(
     // must be a branch". Fall back to "main" only if the lookup fails.
     let base_branch = upstream_repo
         .split_once('/')
-        .and_then(|(owner, name)| fetch_default_branch(owner, name, token.as_deref()))
+        .and_then(|(owner, name)| fetch_default_branch_with_env(owner, name, token.as_deref(), env))
         .unwrap_or_else(|| "main".to_string());
 
     let spec = PrSpec {
@@ -733,8 +733,9 @@ mod tests {
     use anodizer_core::test_helpers::scripted_responder::{
         ScriptedRoute, spawn_scripted_responder,
     };
-    // `#[serial]` appears only on the unix-gated PATH-stub tests below; the
-    // gate must match or the import reads as unused on a Windows build.
+    // `#[serial(path_env)]` appears only on the unix-gated PATH-stub tests
+    // below; the gate must match or the import reads as unused on a Windows
+    // build.
     #[cfg(unix)]
     use serial_test::serial;
     use std::path::Path;
@@ -1268,14 +1269,14 @@ mod tests {
             // SAFETY: runs exactly once per process, guarded by OnceLock;
             // values are constants, not user input.
             unsafe {
-                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
-                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
-                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
-                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
+                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
                 // Fail the cross-repo fork-sync `git fetch <https-upstream>`
                 // immediately instead of blocking on an interactive
                 // credential prompt — these tests never reach a real host.
-                std::env::set_var("GIT_TERMINAL_PROMPT", "0");
+                std::env::set_var("GIT_TERMINAL_PROMPT", "0"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
             }
         });
     }
@@ -1485,7 +1486,8 @@ mod tests {
     // each test installs a failing `gh` stub via `FakeToolDir` so
     // `gh_is_available()` returns false, forcing the token-driven API
     // transport onto an in-process scripted responder. Both touch
-    // `PATH`, so they hold the env mutex and run `#[serial]`.
+    // `PATH`, so they hold the env mutex and run `#[serial(path_env)]`
+    // (the shared crate-wide PATH-mutation group).
     // -----------------------------------------------------------------
 
     /// Install a `gh` stub that exits non-zero on `--version` so
@@ -1515,7 +1517,7 @@ mod tests {
     ///      through to the request, not the fork's own slug.
     #[cfg(unix)]
     #[test]
-    #[serial]
+    #[serial(path_env)]
     fn maybe_submit_pr_cross_repo_force_pushes_and_targets_upstream() {
         let (_tools, _guard) = gh_absent_path();
         let (_origin_url, bare, work) = init_origin_with_work();
@@ -1611,7 +1613,7 @@ mod tests {
     /// path still reaches the transport with the fork as upstream.
     #[cfg(unix)]
     #[test]
-    #[serial]
+    #[serial(path_env)]
     fn maybe_submit_pr_same_repo_skips_sync_but_still_creates_pr() {
         let (_tools, _guard) = gh_absent_path();
         let (_origin_url, bare, work) = init_origin_with_work();
@@ -1683,7 +1685,7 @@ mod tests {
     /// fields — the config-to-request wiring, not just the return value.
     #[cfg(unix)]
     #[test]
-    #[serial]
+    #[serial(path_env)]
     fn maybe_submit_pr_applies_body_override_and_draft_flag() {
         let (_tools, _guard) = gh_absent_path();
         let (_origin_url, _bare, work) = init_origin_with_work();
@@ -1749,7 +1751,7 @@ mod tests {
     /// created — proving env-based token resolution reaches the transport.
     #[cfg(unix)]
     #[test]
-    #[serial]
+    #[serial(path_env)]
     fn maybe_submit_pr_resolves_token_from_env_when_repo_token_absent() {
         let (_tools, _guard) = gh_absent_path();
         let (_origin_url, _bare, work) = init_origin_with_work();
@@ -1815,7 +1817,7 @@ mod tests {
     /// proof of the silent-skip contract at the orchestration boundary.
     #[cfg(unix)]
     #[test]
-    #[serial]
+    #[serial(path_env)]
     fn maybe_submit_pr_no_gh_no_token_returns_failed() {
         let (_tools, _guard) = gh_absent_path();
         let (_origin_url, _bare, work) = init_origin_with_work();
@@ -1957,7 +1959,7 @@ mod tests {
     /// request carries the expanded values, never the literal template strings.
     #[cfg(unix)]
     #[test]
-    #[serial]
+    #[serial(path_env)]
     fn pr_body_and_base_fields_are_rendered_before_submission() {
         let (_tools, _guard) = gh_absent_path();
         let (_origin_url, _bare, work) = init_origin_with_work();

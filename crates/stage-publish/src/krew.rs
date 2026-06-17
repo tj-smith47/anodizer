@@ -1236,7 +1236,7 @@ pub fn publish_to_krew(
     let repo_for_pr = krew_cfg.repository.clone();
 
     let pr_outcome = if has_pr_config {
-        util::maybe_submit_pr(
+        util::maybe_submit_pr_with_env(
             repo_path,
             repo_for_pr.as_ref(),
             &util::PrOrigin {
@@ -1253,6 +1253,7 @@ pub fn publish_to_krew(
             "krew",
             log,
             &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
+            ctx.env_source(),
         )
     } else {
         // No `repository.pull_request:` block — always submit a PR against the
@@ -1270,7 +1271,7 @@ pub fn publish_to_krew(
             })
             .unwrap_or_else(|| "kubernetes-sigs/krew-index".to_string());
 
-        util::submit_pr_via_gh_with_opts(
+        util::submit_pr_via_gh_with_opts_with_env(
             repo_path,
             &upstream_slug,
             &format!("{}:{}", repo_owner, branch_name),
@@ -1282,6 +1283,7 @@ pub fn publish_to_krew(
             "krew",
             log,
             util::SubmitPrOpts { update_existing_pr },
+            ctx.env_source(),
         )
     };
 
@@ -2212,15 +2214,15 @@ mod tests {
     // bare git repo: `repository.git.url` points the clone at a `file`
     // path (no network), and the PR-submission transport is forced onto an
     // in-process scripted responder by installing a failing `gh` stub
-    // (so `gh_is_available()` is false) and pointing
-    // `ANODIZER_GITHUB_API_BASE` at the responder. These tests mutate PATH
-    // + process env, so each is `#[serial]`.
+    // (so `gh_is_available()` is false) and injecting
+    // `ANODIZER_GITHUB_API_BASE` at the responder. These tests still mutate
+    // PATH (the `gh` stub), so each is `#[serial(path_env)]`.
     //
-    // The krew publish path threads PR submission through the *process*
-    // env (`util::maybe_submit_pr` / `submit_pr_via_gh_with_opts`, not the
-    // `_with_env` siblings), so the responder address + token are set in
-    // the process env under the env mutex the `gh`-absent `PathGuard`
-    // already holds.
+    // The krew publish path threads PR submission through the Context's
+    // injectable `EnvSource` (`maybe_submit_pr_with_env` /
+    // `submit_pr_via_gh_with_opts_with_env`), so the responder address is a
+    // per-Context value set via `inject_api_base` — not a process-global
+    // mutation. Tokens come from `repository.token` config.
     // =====================================================================
 
     use anodizer_core::artifact::{Artifact, ArtifactKind};
@@ -2252,11 +2254,11 @@ mod tests {
         INIT.get_or_init(|| {
             // SAFETY: runs once per process under OnceLock; constants only.
             unsafe {
-                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
-                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
-                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
-                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
-                std::env::set_var("GIT_TERMINAL_PROMPT", "0");
+                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                std::env::set_var("GIT_TERMINAL_PROMPT", "0"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
             }
         });
     }
@@ -2324,18 +2326,16 @@ mod tests {
         (tools, guard)
     }
 
-    /// Set `ANODIZER_GITHUB_API_BASE` in the *process* env (the krew PR
-    /// path reads it via `ProcessEnvSource`). Safe to call without
-    /// re-locking the env mutex: the caller already holds it via the
-    /// `gh_absent()` `PathGuard` for the whole `#[serial]` test. Pair with
-    /// [`clear_api_base`].
-    fn set_api_base(addr: &std::net::SocketAddr) {
-        // SAFETY: env mutex is held by the live `PathGuard` from `gh_absent()`.
-        unsafe { std::env::set_var("ANODIZER_GITHUB_API_BASE", format!("http://{addr}")) };
-    }
-    fn clear_api_base() {
-        // SAFETY: same mutex still held by the `PathGuard`.
-        unsafe { std::env::remove_var("ANODIZER_GITHUB_API_BASE") };
+    /// Point the scripted responder's address at the krew PR path by
+    /// injecting `ANODIZER_GITHUB_API_BASE` into the Context's env source.
+    /// The base is per-Context, not process-global, so no env mutation and
+    /// no teardown is needed; PATH stays process-global via the
+    /// `gh_absent`/`gh_present` `PathGuard`.
+    fn inject_api_base(ctx: &mut Context, addr: &std::net::SocketAddr) {
+        ctx.set_env_source(
+            anodizer_core::MapEnvSource::new()
+                .with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}")),
+        );
     }
 
     /// Register one archive artifact carrying the `url` / `sha256` /
@@ -2840,7 +2840,7 @@ mod tests {
     ///       `/repos/fork-owner/krew-index/pulls` with head = fork:branch.
     #[cfg(unix)]
     #[test]
-    #[serial]
+    #[serial(path_env)]
     fn publish_to_krew_pr_direct_pushes_branch_and_opens_pr() {
         let (_tools, _guard) = gh_absent();
         let (bare_url, bare) = init_bare_fork();
@@ -2850,10 +2850,9 @@ mod tests {
             response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
             times: Some(1),
         }]);
-        set_api_base(&addr);
-
         let c = pr_direct_crate("widget", "kubectl-widget", &bare_url);
         let mut ctx = build_ctx(vec![c], "1.0.0");
+        inject_api_base(&mut ctx, &addr);
         let sha = "c".repeat(64);
         add_archive(
             &mut ctx,
@@ -2901,7 +2900,6 @@ mod tests {
             "head must be fork-owner:<plugin>-v<version>"
         );
         drop(entries);
-        clear_api_base();
         drop(bare);
     }
 
@@ -2912,7 +2910,7 @@ mod tests {
     /// happened, so `pushed` is true.
     #[cfg(unix)]
     #[test]
-    #[serial]
+    #[serial(path_env)]
     fn publish_to_krew_pr_direct_already_exists_records_pending() {
         let (_tools, _guard) = gh_absent();
         let (bare_url, bare) = init_bare_fork();
@@ -2930,10 +2928,9 @@ mod tests {
             ),
             times: Some(1),
         }]);
-        set_api_base(&addr);
-
         let c = pr_direct_crate("widget", "kubectl-widget", &bare_url);
         let mut ctx = build_ctx(vec![c], "1.0.0");
+        inject_api_base(&mut ctx, &addr);
         add_archive(
             &mut ctx,
             "widget",
@@ -2954,7 +2951,6 @@ mod tests {
             ),
             "422 already-exists must record PendingValidation, got {pending:?}"
         );
-        clear_api_base();
         drop(bare);
     }
 
@@ -2964,7 +2960,7 @@ mod tests {
     /// outcome's `pushed` is false (nothing to roll back). The PR is not
     /// re-submitted side-effect-wise; we assert the no-push outcome.
     #[test]
-    #[serial]
+    #[serial(path_env)]
     fn publish_to_krew_pr_direct_idempotent_no_changes() {
         let (_tools, _guard) = gh_absent();
         let (bare_url, bare) = init_bare_fork();
@@ -2975,12 +2971,11 @@ mod tests {
             response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
             times: None,
         }]);
-        set_api_base(&addr);
-
         let sha = "e".repeat(64);
         let build = || {
             let c = pr_direct_crate("widget", "kubectl-widget", &bare_url);
             let mut ctx = build_ctx(vec![c], "1.0.0");
+            inject_api_base(&mut ctx, &addr);
             add_archive(
                 &mut ctx,
                 "widget",
@@ -3005,7 +3000,6 @@ mod tests {
             !second.pushed,
             "re-publishing an identical manifest must report NoChanges (pushed=false)"
         );
-        clear_api_base();
         drop(bare);
     }
 
@@ -3015,7 +3009,7 @@ mod tests {
     /// distinct `<plugin>-v<version>` branch — proving the per-crate name +
     /// branch resolution is not clobbered by a sibling.
     #[test]
-    #[serial]
+    #[serial(path_env)]
     fn publish_to_krew_pr_direct_workspace_per_crate_distinct_branches() {
         let (_tools, _guard) = gh_absent();
         let (bare_url, bare) = init_bare_fork();
@@ -3025,11 +3019,10 @@ mod tests {
             response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
             times: None,
         }]);
-        set_api_base(&addr);
-
         let alpha = pr_direct_crate("alpha", "kubectl-alpha", &bare_url);
         let beta = pr_direct_crate("beta", "kubectl-beta", &bare_url);
         let mut ctx = build_ctx(vec![alpha, beta], "2.3.4");
+        inject_api_base(&mut ctx, &addr);
         for (cn, bin) in [("alpha", "kubectl-alpha"), ("beta", "kubectl-beta")] {
             add_archive(
                 &mut ctx,
@@ -3065,7 +3058,6 @@ mod tests {
             &["show", "kubectl-beta-v2.3.4:plugins/kubectl-beta.yaml"],
         );
         assert!(beta_file.contains("name: kubectl-beta"), "{beta_file}");
-        clear_api_base();
         drop(bare);
     }
 
@@ -3081,7 +3073,7 @@ mod tests {
     /// `widget` and the plugin is `kubectl-widget`, so the two are
     /// distinguishable in the rendered uri.
     #[test]
-    #[serial]
+    #[serial(path_env)]
     fn publish_to_krew_pr_direct_applies_url_template() {
         let (_tools, _guard) = gh_absent();
         let (bare_url, bare) = init_bare_fork();
@@ -3091,8 +3083,6 @@ mod tests {
             response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
             times: None,
         }]);
-        set_api_base(&addr);
-
         let mut c = pr_direct_crate("widget", "kubectl-widget", &bare_url);
         if let Some(k) = c.publish.as_mut().and_then(|p| p.krew.as_mut()) {
             k.url_template = Some(
@@ -3101,6 +3091,7 @@ mod tests {
             );
         }
         let mut ctx = build_ctx(vec![c], "1.0.0");
+        inject_api_base(&mut ctx, &addr);
         add_archive(
             &mut ctx,
             "widget",
@@ -3128,7 +3119,6 @@ mod tests {
                 .contains("releases/download/v1.0.0/kubectl-widget-linux-amd64.tar.gz"),
             "the raw artifact URL must be replaced by the templated uri; got:\n{manifest_in_repo}"
         );
-        clear_api_base();
         drop(bare);
     }
 
@@ -3249,7 +3239,6 @@ mod tests {
     /// for anodizer to roll back). Asserts the request reached the
     /// responder carrying the plugin coordinates.
     #[test]
-    #[serial]
     fn publish_to_krew_bot_webhook_posts_release_request() {
         let (bare_url, bare) = init_bare_fork();
         let resp_body =
@@ -3352,7 +3341,6 @@ mod tests {
     /// NOT an already-submitted signal): the publisher surfaces a loud
     /// error — krew must never silently skip a one-way publish.
     #[test]
-    #[serial]
     fn publish_to_krew_bot_webhook_genuine_failure_bails() {
         let (bare_url, bare) = init_bare_fork();
         let body = "opening pr: failed when validating plugin spec";
@@ -3523,7 +3511,7 @@ mod tests {
     /// is `<plugin>-v0.1.0`.
     #[cfg(unix)]
     #[test]
-    #[serial]
+    #[serial(path_env)]
     fn krew_publisher_run_records_rollback_target_after_push() {
         use anodizer_core::Publisher;
         let (_tools, _guard) = gh_absent();
@@ -3534,7 +3522,6 @@ mod tests {
             response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
             times: None,
         }]);
-        set_api_base(&addr);
 
         let c = pr_direct_crate("widget", "kubectl-widget", &bare_url);
         // Per-crate version resolution needs a real tag matching the
@@ -3554,6 +3541,7 @@ mod tests {
         ctx.template_vars_mut().set("Version", "0.1.0");
         ctx.template_vars_mut().set("RawVersion", "0.1.0");
         ctx.template_vars_mut().set("Tag", "v0.1.0");
+        inject_api_base(&mut ctx, &addr);
         add_archive(
             &mut ctx,
             "widget",
@@ -3576,7 +3564,6 @@ mod tests {
             targets[0].branch, "kubectl-widget-v0.1.0",
             "branch carries the per-crate-scoped version (v0.1.0 from the hermetic tag)"
         );
-        clear_api_base();
         drop(bare);
     }
 }

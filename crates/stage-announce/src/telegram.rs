@@ -282,10 +282,12 @@ mod tests {
     }
     impl Drop for EnvGuard {
         fn drop(&mut self) {
+            // env-ok: #[serial(announce_env)] + env_mutex; per-test API-base redirect
             unsafe { std::env::remove_var(self.key) };
         }
     }
     fn set_base(addr: std::net::SocketAddr) -> EnvGuard {
+        // env-ok: #[serial(announce_env)] + env_mutex; per-test API-base redirect
         unsafe { std::env::set_var("ANODIZE_TELEGRAM_API_BASE", format!("http://{addr}")) };
         EnvGuard {
             key: "ANODIZE_TELEGRAM_API_BASE",
@@ -305,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(announce_env)]
     fn send_telegram_happy_path_posts_templated_payload() {
         let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
@@ -341,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(announce_env)]
     fn send_telegram_non_2xx_maps_to_error_with_context() {
         let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
@@ -361,7 +363,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(announce_env)]
     fn send_telegram_http_200_ok_false_surfaces_api_error() {
         let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         // Telegram returns HTTP 200 with `ok:false` for logical rejections;

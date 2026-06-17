@@ -505,7 +505,6 @@ impl From<GemFuryTarget> for anodizer_core::publish_evidence::GemFuryTargetSnaps
 // -----------------------------------------------------------------------------
 
 #[test]
-#[serial_test::serial]
 fn version_already_published_returns_false_on_404() {
     use super::publish::version_already_published;
     use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
@@ -522,9 +521,11 @@ fn version_already_published_returns_false_on_404() {
     };
     let log = anodizer_core::log::StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
 
-    unsafe {
-        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
-    }
+    // Inject the API base via a MapEnvSource so the probe reads THIS test's
+    // responder without touching the process env — no cross-test race, no
+    // misrouted request to a sibling test's torn-down listener.
+    let env = anodizer_core::MapEnvSource::new()
+        .with("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
     let result = version_already_published(
         &client,
         "acme",
@@ -533,10 +534,8 @@ fn version_already_published_returns_false_on_404() {
         "fake-push-token",
         &policy,
         &log,
+        &env,
     );
-    unsafe {
-        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
-    }
 
     // A 404 is the documented "not present" response: the probe must
     // coerce it to Ok(false) so the publish path runs.
@@ -551,7 +550,6 @@ fn version_already_published_returns_false_on_404() {
 /// prove the version is absent, so it bails rather than returning Ok(false)
 /// and green-lighting a push to a registry that is irreversible for up to 72h.
 #[test]
-#[serial_test::serial]
 fn version_already_published_bails_on_non_404() {
     use super::publish::version_already_published;
     use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
@@ -569,9 +567,8 @@ fn version_already_published_bails_on_non_404() {
     };
     let log = anodizer_core::log::StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
 
-    unsafe {
-        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
-    }
+    let env = anodizer_core::MapEnvSource::new()
+        .with("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
     let result = version_already_published(
         &client,
         "acme",
@@ -580,10 +577,8 @@ fn version_already_published_bails_on_non_404() {
         "fake-push-token",
         &policy,
         &log,
+        &env,
     );
-    unsafe {
-        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
-    }
 
     let err = result.expect_err("non-404 probe must bail, not return Ok(false)");
     let msg = format!("{err:#}");
@@ -596,7 +591,6 @@ fn version_already_published_bails_on_non_404() {
 /// A transport/connect failure (registry unreachable) must FAIL CLOSED for the
 /// same reason: an unproven absence cannot green-light an irreversible push.
 #[test]
-#[serial_test::serial]
 fn version_already_published_bails_on_transport_failure() {
     use super::publish::version_already_published;
     use std::net::TcpListener;
@@ -615,9 +609,8 @@ fn version_already_published_bails_on_transport_failure() {
     };
     let log = anodizer_core::log::StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
 
-    unsafe {
-        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{dead_addr}"));
-    }
+    let env = anodizer_core::MapEnvSource::new()
+        .with("ANODIZE_GEMFURY_API_BASE", format!("http://{dead_addr}"));
     let result = version_already_published(
         &client,
         "acme",
@@ -626,10 +619,8 @@ fn version_already_published_bails_on_transport_failure() {
         "fake-push-token",
         &policy,
         &log,
+        &env,
     );
-    unsafe {
-        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
-    }
 
     let err = result.expect_err("transport failure must bail, not return Ok(false)");
     let msg = format!("{err:#}");
@@ -703,7 +694,6 @@ fn fury_package_name_version_at_start_falls_through_to_ext_strip() {
 /// → treated as success with no rollback target recorded. A genuine failure
 /// (400) still errors.
 #[test]
-#[serial_test::serial]
 fn gemfury_push_conflict_is_idempotent_success() {
     use anodizer_core::log::{StageLogger, Verbosity};
     use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
@@ -733,7 +723,14 @@ fn gemfury_push_conflict_is_idempotent_success() {
         .tag("v1.2.3")
         .build();
     ctx.config = config;
-    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_PUSH_TOKEN", "fake-token"));
+    // Inject the push token AND the responder bases through one MapEnvSource so
+    // the publish reads THIS test's mock addresses without mutating process env.
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new()
+            .with("FURY_PUSH_TOKEN", "fake-token")
+            .with("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"))
+            .with("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}")),
+    );
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::LinuxPackage,
         path: art_path.clone(),
@@ -744,16 +741,8 @@ fn gemfury_push_conflict_is_idempotent_success() {
         size: None,
     });
 
-    unsafe {
-        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
-        std::env::set_var("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}"));
-    }
     let log = StageLogger::new("gemfury", Verbosity::Quiet);
     let result = run_publish(&ctx, &log);
-    unsafe {
-        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
-        std::env::remove_var("ANODIZE_GEMFURY_PUSH_BASE");
-    }
 
     let pushed = result.expect("409 conflict must be an idempotent success, not an error");
     assert!(
@@ -769,7 +758,6 @@ fn gemfury_push_conflict_is_idempotent_success() {
 
 /// A genuine non-conflict failure (HTTP 400) on push still errors.
 #[test]
-#[serial_test::serial]
 fn gemfury_push_genuine_failure_still_errors() {
     use anodizer_core::log::{StageLogger, Verbosity};
     use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
@@ -797,7 +785,12 @@ fn gemfury_push_genuine_failure_still_errors() {
         .tag("v1.2.3")
         .build();
     ctx.config = config;
-    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_PUSH_TOKEN", "fake-token"));
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new()
+            .with("FURY_PUSH_TOKEN", "fake-token")
+            .with("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"))
+            .with("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}")),
+    );
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::LinuxPackage,
         path: art_path.clone(),
@@ -808,16 +801,8 @@ fn gemfury_push_genuine_failure_still_errors() {
         size: None,
     });
 
-    unsafe {
-        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
-        std::env::set_var("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}"));
-    }
     let log = StageLogger::new("gemfury", Verbosity::Quiet);
     let result = run_publish(&ctx, &log);
-    unsafe {
-        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
-        std::env::remove_var("ANODIZE_GEMFURY_PUSH_BASE");
-    }
 
     assert!(
         result.is_err(),
@@ -830,7 +815,6 @@ fn gemfury_push_genuine_failure_still_errors() {
 /// /packages/<name>/versions/… must hit the same name the push registered —
 /// a full-filename key 404s and orphans the artifact.
 #[test]
-#[serial_test::serial]
 fn gemfury_recorded_rollback_target_uses_derived_package_name() {
     use anodizer_core::log::{StageLogger, Verbosity};
     use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
@@ -858,7 +842,12 @@ fn gemfury_recorded_rollback_target_uses_derived_package_name() {
         .tag("v1.2.3")
         .build();
     ctx.config = config;
-    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_PUSH_TOKEN", "fake-token"));
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new()
+            .with("FURY_PUSH_TOKEN", "fake-token")
+            .with("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"))
+            .with("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}")),
+    );
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::LinuxPackage,
         path: art_path.clone(),
@@ -869,16 +858,8 @@ fn gemfury_recorded_rollback_target_uses_derived_package_name() {
         size: None,
     });
 
-    unsafe {
-        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
-        std::env::set_var("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}"));
-    }
     let log = StageLogger::new("gemfury", Verbosity::Quiet);
     let result = run_publish(&ctx, &log);
-    unsafe {
-        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
-        std::env::remove_var("ANODIZE_GEMFURY_PUSH_BASE");
-    }
 
     let pushed = result.expect("successful push should return a target");
     assert_eq!(
@@ -899,7 +880,6 @@ fn gemfury_recorded_rollback_target_uses_derived_package_name() {
 /// landed. The `?`-on-`Result<Vec<_>>` signature discarded that evidence,
 /// orphaning the first artifact on a second-artifact failure.
 #[test]
-#[serial_test::serial]
 fn gemfury_partial_push_records_landed_target_on_later_failure() {
     use anodizer_core::log::{StageLogger, Verbosity};
     use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
@@ -932,7 +912,12 @@ fn gemfury_partial_push_records_landed_target_on_later_failure() {
         .tag("v1.2.3")
         .build();
     ctx.config = config;
-    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_PUSH_TOKEN", "fake-token"));
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new()
+            .with("FURY_PUSH_TOKEN", "fake-token")
+            .with("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"))
+            .with("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}")),
+    );
     for (path, name, krate) in [
         (&art1, "alpha_1.2.3_amd64.deb", "alpha"),
         (&art2, "beta_1.2.3_amd64.deb", "beta"),
@@ -948,18 +933,10 @@ fn gemfury_partial_push_records_landed_target_on_later_failure() {
         });
     }
 
-    unsafe {
-        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
-        std::env::set_var("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}"));
-    }
     let log = StageLogger::new("gemfury", Verbosity::Quiet);
     // Drive the out-param directly so the partial survives the Err return.
     let mut pushed: Vec<GemFuryTarget> = Vec::new();
     let result = publish_to_gemfury(&ctx, &log, &mut pushed);
-    unsafe {
-        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
-        std::env::remove_var("ANODIZE_GEMFURY_PUSH_BASE");
-    }
 
     assert!(
         result.is_err(),
@@ -985,8 +962,14 @@ fn gemfury_partial_push_records_landed_target_on_later_failure() {
 // -----------------------------------------------------------------------------
 
 /// Build a one-deb context wired to the given probe + push responder
-/// addresses, with a resolvable push token from the injected env source.
-fn ctx_one_deb(art_path: std::path::PathBuf) -> anodizer_core::context::Context {
+/// addresses, with a resolvable push token AND both responder bases injected
+/// through the env source — no process-env mutation, so the test stays
+/// race-free and needs no `#[serial]`.
+fn ctx_one_deb(
+    art_path: std::path::PathBuf,
+    api_addr: std::net::SocketAddr,
+    push_addr: std::net::SocketAddr,
+) -> anodizer_core::context::Context {
     let config = Config {
         project_name: "demo".to_string(),
         gemfury: Some(vec![GemFuryConfig {
@@ -1000,7 +983,12 @@ fn ctx_one_deb(art_path: std::path::PathBuf) -> anodizer_core::context::Context 
         .tag("v1.2.3")
         .build();
     ctx.config = config;
-    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_PUSH_TOKEN", "push-secret"));
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new()
+            .with("FURY_PUSH_TOKEN", "push-secret")
+            .with("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"))
+            .with("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}")),
+    );
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::LinuxPackage,
         path: art_path,
@@ -1014,7 +1002,6 @@ fn ctx_one_deb(art_path: std::path::PathBuf) -> anodizer_core::context::Context 
 }
 
 #[test]
-#[serial_test::serial]
 fn gemfury_push_wire_uses_basic_auth_and_account_path() {
     use anodizer_core::log::{StageLogger, Verbosity};
     use anodizer_core::test_helpers::scripted_responder::{
@@ -1040,18 +1027,10 @@ fn gemfury_push_wire_uses_basic_auth_and_account_path() {
         times: None,
     }]);
 
-    let ctx = ctx_one_deb(art_path);
+    let ctx = ctx_one_deb(art_path, api_addr, push_addr);
 
-    unsafe {
-        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
-        std::env::set_var("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}"));
-    }
     let log = StageLogger::new("gemfury", Verbosity::Quiet);
     let result = run_publish(&ctx, &log);
-    unsafe {
-        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
-        std::env::remove_var("ANODIZE_GEMFURY_PUSH_BASE");
-    }
 
     let pushed = result.expect("push should succeed");
     assert_eq!(pushed.len(), 1);
@@ -1089,8 +1068,8 @@ fn gemfury_push_wire_uses_basic_auth_and_account_path() {
 // issues `DELETE api_base/<account>/packages/<name>/versions/<version>` with
 // HTTP Basic auth (API token as username). These cover the previously
 // unmeasured `delete_recorded_targets` / `delete_version` branches. The API
-// base reads `ANODIZE_GEMFURY_API_BASE` from the PROCESS env, so each test is
-// `#[serial]` and removes the var even on panic.
+// base is injected via the context's `MapEnvSource` (read through the
+// `api_base_from` seam), so each test stays hermetic and needs no `#[serial]`.
 // -----------------------------------------------------------------------------
 
 /// A 1-attempt, zero-delay retry policy so a rollback DELETE that 500s gives up
@@ -1123,7 +1102,6 @@ fn gemfury_evidence_for(account: &str, package: &str, version: &str) -> PublishE
 }
 
 #[test]
-#[serial_test::serial]
 fn gemfury_rollback_deletes_recorded_version_with_basic_auth() {
     use anodizer_core::log::LogCapture;
     use anodizer_core::test_helpers::scripted_responder::{
@@ -1140,19 +1118,18 @@ fn gemfury_rollback_deletes_recorded_version_with_basic_auth() {
 
     let capture = LogCapture::new();
     let mut ctx = TestContextBuilder::new().build();
-    // API (delete) token resolved from the injected env source — never process env.
-    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_API_TOKEN", "api-secret"));
+    // API (delete) token AND base resolved from the injected env source — never
+    // process env, so the delete reads THIS test's responder race-free.
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new()
+            .with("FURY_API_TOKEN", "api-secret")
+            .with("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}")),
+    );
     ctx.with_log_capture(capture.clone());
     ctx.config.retry = Some(fast_retry());
 
-    unsafe {
-        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
-    }
     let p = GemFuryPublisher::new();
     let result = p.rollback(&mut ctx, &gemfury_evidence_for("acme", "demo", "1.2.3"));
-    unsafe {
-        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
-    }
     result.expect("rollback returns Ok on a clean delete");
 
     let entries = del_log.lock().unwrap();
@@ -1185,7 +1162,6 @@ fn gemfury_rollback_deletes_recorded_version_with_basic_auth() {
 }
 
 #[test]
-#[serial_test::serial]
 fn gemfury_rollback_delete_http_error_is_warned_not_raised() {
     use anodizer_core::log::LogCapture;
     use anodizer_core::test_helpers::scripted_responder::{
@@ -1205,18 +1181,16 @@ fn gemfury_rollback_delete_http_error_is_warned_not_raised() {
 
     let capture = LogCapture::new();
     let mut ctx = TestContextBuilder::new().build();
-    ctx.set_env_source(anodizer_core::MapEnvSource::new().with("FURY_API_TOKEN", "api-secret"));
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new()
+            .with("FURY_API_TOKEN", "api-secret")
+            .with("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}")),
+    );
     ctx.with_log_capture(capture.clone());
     ctx.config.retry = Some(fast_retry());
 
-    unsafe {
-        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
-    }
     let p = GemFuryPublisher::new();
     let result = p.rollback(&mut ctx, &gemfury_evidence_for("acme", "demo", "1.2.3"));
-    unsafe {
-        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
-    }
     result.expect("rollback must stay Ok despite a delete failure");
 
     let warns = capture.warn_messages();
@@ -1240,7 +1214,6 @@ fn gemfury_rollback_delete_http_error_is_warned_not_raised() {
 /// `delete_recorded_targets`. The DELETE must still fire (token resolved from
 /// cfg), proving the override path reaches the wire.
 #[test]
-#[serial_test::serial]
 fn gemfury_rollback_resolves_api_token_from_cfg_override() {
     use anodizer_core::log::LogCapture;
     use anodizer_core::test_helpers::scripted_responder::{
@@ -1256,8 +1229,12 @@ fn gemfury_rollback_resolves_api_token_from_cfg_override() {
 
     let capture = LogCapture::new();
     let mut ctx = TestContextBuilder::new().build();
-    // No FURY_API_TOKEN in the env source — the token must come from cfg.
-    ctx.set_env_source(anodizer_core::MapEnvSource::new());
+    // No FURY_API_TOKEN in the env source — the token must come from cfg. The
+    // responder base is still injected so the DELETE hits THIS test's mock.
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new()
+            .with("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}")),
+    );
     // The config still declares the entry with an inline `api_token`, which
     // rollback re-reads to resolve the token the env no longer carries.
     ctx.config.gemfury = Some(vec![GemFuryConfig {
@@ -1268,14 +1245,8 @@ fn gemfury_rollback_resolves_api_token_from_cfg_override() {
     ctx.with_log_capture(capture.clone());
     ctx.config.retry = Some(fast_retry());
 
-    unsafe {
-        std::env::set_var("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"));
-    }
     let p = GemFuryPublisher::new();
     let result = p.rollback(&mut ctx, &gemfury_evidence_for("acme", "demo", "1.2.3"));
-    unsafe {
-        std::env::remove_var("ANODIZE_GEMFURY_API_BASE");
-    }
     result.expect("rollback Ok via cfg token");
 
     let entries = del_log.lock().unwrap();

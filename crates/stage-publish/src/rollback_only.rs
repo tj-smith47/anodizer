@@ -890,6 +890,7 @@ mod tests {
     fn rollback_only_skips_when_scope_unavailable_records_no_scope() {
         // SAFETY: env mutation is single-threaded within a serial group.
         unsafe {
+            // env-ok: #[serial(scope_env)]; unique per-test ROLLBACK_ONLY_* token
             std::env::remove_var("ROLLBACK_ONLY_SCOPE_TEST_TOKEN");
         }
         let (mut ctx, _tmp) = ctx_with_dist();
@@ -931,6 +932,7 @@ mod tests {
         // would flip to RollbackFailed (because rollback errored).
         // SAFETY: env mutation is single-threaded within a serial group.
         unsafe {
+            // env-ok: #[serial(scope_env)]; unique per-test ROLLBACK_ONLY_* token
             std::env::remove_var("ROLLBACK_ONLY_SCOPE_GUARD_TOKEN");
         }
         let (mut ctx, _tmp) = ctx_with_dist();
@@ -972,6 +974,7 @@ mod tests {
     fn rollback_only_proceeds_when_scope_available() {
         // SAFETY: env mutation is single-threaded within a serial group.
         unsafe {
+            // env-ok: #[serial(scope_env)]; unique per-test ROLLBACK_ONLY_* token
             std::env::set_var("ROLLBACK_ONLY_SCOPE_PRESENT_TOKEN", "xyz");
         }
         let (mut ctx, _tmp) = ctx_with_dist();
@@ -997,6 +1000,7 @@ mod tests {
         );
         // SAFETY: env mutation is single-threaded within a serial group.
         unsafe {
+            // env-ok: #[serial(scope_env)]; unique per-test ROLLBACK_ONLY_* token
             std::env::remove_var("ROLLBACK_ONLY_SCOPE_PRESENT_TOKEN");
         }
     }

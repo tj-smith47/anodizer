@@ -1773,11 +1773,10 @@ mod tests {
     // pattern mirrors `util/pr.rs`: a `file://`-equivalent local git repo
     // reached through `repository.git.url`, a failing `gh`/network surface
     // forced by a non-resolvable upstream, and `StageLogger::with_capture`
-    // for status-line assertions. Tests that mutate `PATH`/process env run
-    // `#[serial]`.
+    // for status-line assertions. Git identity is set once per process via
+    // `OnceLock` (constants), so no test here needs serialization.
     // ===================================================================
 
-    use serial_test::serial;
     use std::sync::OnceLock;
 
     /// Quiet logger paired with an in-memory capture so the helper's status
@@ -1800,11 +1799,11 @@ mod tests {
             // SAFETY: runs exactly once per process under OnceLock; values
             // are constants, not user input.
             unsafe {
-                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
-                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
-                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
-                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
-                std::env::set_var("GIT_TERMINAL_PROMPT", "0");
+                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                std::env::set_var("GIT_TERMINAL_PROMPT", "0"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
             }
         });
     }
@@ -2050,7 +2049,6 @@ mod tests {
     // (no `.git`) before any network contact, and the error propagates.
 
     #[test]
-    #[serial]
     fn sync_to_upstream_propagates_fetch_error_in_a_non_repo_dir() {
         // A dir with no `.git`: `git remote add upstream` fails (ignored,
         // best-effort), then `git fetch --depth=1 upstream master` fails
@@ -2139,7 +2137,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn run_real_aborts_when_fork_clone_fails() {
         // Past the pre-clone guards, the first irreversible step is cloning
         // the fork. A `repository.git.url` pointing at a path that is not a

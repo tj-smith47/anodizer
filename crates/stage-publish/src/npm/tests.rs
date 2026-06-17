@@ -1737,6 +1737,7 @@ fn assemble_optional_deps_tarball_is_reproducible_and_binary_is_0o755() {
 /// evidence instead of dropping it to `None`).
 #[cfg(unix)]
 #[test]
+#[serial_test::serial(npm_counter)]
 fn partial_publish_failure_preserves_rollback_evidence() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -1792,7 +1793,8 @@ esac
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let orig_path = std::env::var("PATH").unwrap_or_default();
-    // SAFETY: serialised by env_mutex; paired set/restore below.
+    // SAFETY: serialised by `#[serial(npm_counter)]` plus the crate-wide
+    // env_mutex (the shared PATH coordinator); paired set/restore below.
     unsafe {
         std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path));
         std::env::set_var("NPM_PUBLISH_COUNTER", counter.display().to_string());
@@ -1803,7 +1805,8 @@ esac
         .run(&mut ctx)
         .expect("run must NOT bubble Err — evidence must survive");
 
-    // SAFETY: serialised by env_mutex; paired with the set above.
+    // SAFETY: serialised by `#[serial(npm_counter)]` plus the crate-wide
+    // env_mutex (the shared PATH coordinator); paired with the set above.
     unsafe {
         std::env::set_var("PATH", orig_path);
         std::env::remove_var("NPM_PUBLISH_COUNTER");
@@ -1848,6 +1851,7 @@ esac
 /// must stay at zero.
 #[cfg(unix)]
 #[test]
+#[serial_test::serial(npm_counter)]
 fn missing_platform_binary_publishes_nothing() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -1908,7 +1912,8 @@ esac
         .lock()
         .unwrap_or_else(|e| e.into_inner());
     let orig_path = std::env::var("PATH").unwrap_or_default();
-    // SAFETY: serialised by env_mutex; paired set/restore below.
+    // SAFETY: serialised by `#[serial(npm_counter)]` plus the crate-wide
+    // env_mutex (the shared PATH coordinator); paired set/restore below.
     unsafe {
         std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), orig_path));
         std::env::set_var("NPM_PUBLISH_COUNTER", counter.display().to_string());
@@ -1919,7 +1924,8 @@ esac
         .run(&mut ctx)
         .expect("run records Failed, never bubbles Err");
 
-    // SAFETY: serialised by env_mutex; paired with the set above.
+    // SAFETY: serialised by `#[serial(npm_counter)]` plus the crate-wide
+    // env_mutex (the shared PATH coordinator); paired with the set above.
     unsafe {
         std::env::set_var("PATH", orig_path);
         std::env::remove_var("NPM_PUBLISH_COUNTER");

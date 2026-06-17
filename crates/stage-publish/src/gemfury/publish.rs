@@ -52,18 +52,26 @@ pub(crate) const PUSH_BASE: &str = "https://push.fury.io";
 /// Base URL for the API (used by version probe + delete).
 pub(crate) const API_BASE: &str = "https://api.fury.io";
 
-/// Resolve the push base URL. Defaults to [`PUSH_BASE`];
-/// `ANODIZE_GEMFURY_PUSH_BASE` overrides it so tests can point the push at a
-/// local responder. The env read is the only test seam — production never
-/// sets the variable.
-pub(crate) fn push_base() -> String {
-    std::env::var("ANODIZE_GEMFURY_PUSH_BASE").unwrap_or_else(|_| PUSH_BASE.to_string())
+/// Resolve the push base URL from an injected [`EnvSource`]. Defaults to
+/// [`PUSH_BASE`]; `ANODIZE_GEMFURY_PUSH_BASE` overrides it so tests can point
+/// the push at a local responder. Threading the read through an `EnvSource`
+/// (rather than `std::env::var`) lets a test inject the base via a
+/// [`MapEnvSource`](anodizer_core::MapEnvSource) without mutating the process
+/// env — eliminating the cross-test race where one test's base points another
+/// test's HTTP probe at a torn-down listener. Production never sets the
+/// variable.
+pub(crate) fn push_base_from<E: anodizer_core::EnvSource + ?Sized>(env: &E) -> String {
+    env.var("ANODIZE_GEMFURY_PUSH_BASE")
+        .unwrap_or_else(|| PUSH_BASE.to_string())
 }
 
-/// Resolve the API base URL (version probe + delete). Defaults to
-/// [`API_BASE`]; `ANODIZE_GEMFURY_API_BASE` overrides it for tests.
-pub(crate) fn api_base() -> String {
-    std::env::var("ANODIZE_GEMFURY_API_BASE").unwrap_or_else(|_| API_BASE.to_string())
+/// Resolve the API base URL (version probe + delete) from an injected
+/// [`EnvSource`]. Defaults to [`API_BASE`]; `ANODIZE_GEMFURY_API_BASE`
+/// overrides it for tests. See [`push_base_from`] for why the read is
+/// `EnvSource`-routed rather than a bare `std::env::var`.
+pub(crate) fn api_base_from<E: anodizer_core::EnvSource + ?Sized>(env: &E) -> String {
+    env.var("ANODIZE_GEMFURY_API_BASE")
+        .unwrap_or_else(|| API_BASE.to_string())
 }
 
 /// Best-effort Fury package name from an artifact filename.
@@ -249,7 +257,8 @@ pub(crate) fn resolve_formats(cfg: &GemFuryConfig) -> Vec<String> {
 ///
 /// Endpoint: `GET https://api.fury.io/<account>/packages/<name>/versions/<version>`.
 /// HTTP Basic auth (push token as username).
-pub(crate) fn version_already_published(
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn version_already_published<E: anodizer_core::EnvSource + ?Sized>(
     client: &reqwest::blocking::Client,
     account: &str,
     package: &str,
@@ -257,10 +266,11 @@ pub(crate) fn version_already_published(
     push_token: &str,
     policy: &RetryPolicy,
     log: &StageLogger,
+    env: &E,
 ) -> Result<bool> {
     let url = format!(
         "{}/{}/packages/{}/versions/{}",
-        api_base(),
+        api_base_from(env),
         account,
         package,
         version
@@ -429,7 +439,7 @@ pub fn publish_to_gemfury(
             .context("gemfury: build HTTP client")?;
 
         let version = ctx.version();
-        let push_url = format!("{}/{}", push_base(), account);
+        let push_url = format!("{}/{}", push_base_from(ctx.env_source()), account);
 
         for artifact in &artifacts {
             let path = &artifact.path;
@@ -469,6 +479,7 @@ pub fn publish_to_gemfury(
                 &push_token,
                 &policy,
                 log,
+                ctx.env_source(),
             )? {
                 log.status(&format!(
                     "skipped '{}@{}' — already on gemfury account '{}' (idempotent)",
@@ -595,7 +606,8 @@ pub fn publish_to_gemfury(
 /// Issue `DELETE https://api.fury.io/<account>/packages/<name>/versions/<version>`
 /// against the Fury API. Used by [`crate::gemfury::publisher::GemFuryPublisher::rollback`].
 /// Returns Ok on 2xx; bubbles a 4xx/5xx error chain with a redacted body.
-pub fn delete_version(
+#[allow(clippy::too_many_arguments)]
+pub fn delete_version<E: anodizer_core::EnvSource + ?Sized>(
     client: &reqwest::blocking::Client,
     account: &str,
     package: &str,
@@ -603,10 +615,11 @@ pub fn delete_version(
     api_token: &str,
     policy: &RetryPolicy,
     log: &StageLogger,
+    env: &E,
 ) -> Result<()> {
     let url = format!(
         "{}/{}/packages/{}/versions/{}",
-        api_base(),
+        api_base_from(env),
         account,
         package,
         version

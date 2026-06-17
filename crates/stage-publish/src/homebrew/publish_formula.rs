@@ -1047,8 +1047,8 @@ mod tests {
     /// authenticated `gh` in PATH). Returns the `FakeToolDir` holder (keeps
     /// the stub on disk) plus the `PathGuard` (restores `PATH` + releases the
     /// env mutex on drop) — both must be held for the test's duration. Tests
-    /// using this MUST be `#[serial]` because the guard mutates process
-    /// `PATH`. Mirrors `util/pr.rs::gh_absent_path`.
+    /// using this MUST be `#[serial(path_env)]` because the guard mutates
+    /// process `PATH`. Mirrors `util/pr.rs::gh_absent_path`.
     fn gh_absent() -> (FakeToolDir, PathGuard) {
         let tools = FakeToolDir::new();
         tools.tool("gh").exit(1).install();
@@ -1066,11 +1066,11 @@ mod tests {
             // SAFETY: runs exactly once per process, guarded by OnceLock;
             // values are constants, not user input.
             unsafe {
-                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
-                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
-                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
-                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
-                std::env::set_var("GIT_TERMINAL_PROMPT", "0");
+                std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                std::env::set_var("GIT_TERMINAL_PROMPT", "0"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
             }
         });
     }
@@ -1771,10 +1771,11 @@ mod tests {
     /// PR submission resolves to the `NoneAvailable` fallback IN-PROCESS — it
     /// never issues a live `gh pr create` / GitHub API call against
     /// `myorg/homebrew-tap`. Holds the `PathGuard` for the whole test and is
-    /// `#[serial]` because it mutates process `PATH` (the env mutex serializes
-    /// it against the `util/pr.rs` gh-stub tests).
+    /// `#[serial(path_env)]` because it mutates process `PATH` (the shared
+    /// `path_env` group serializes it against the `util/pr.rs` and
+    /// winget/scoop/krew gh-stub tests crate-wide).
     #[test]
-    #[serial]
+    #[serial(path_env)]
     fn publish_to_homebrew_pr_enabled_still_pushes_formula() {
         let (_tools, _guard) = gh_absent();
         let (bare_url, bare) = make_bare_tap("main");

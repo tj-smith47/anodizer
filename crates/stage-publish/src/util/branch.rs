@@ -1,13 +1,15 @@
 //! Branch helpers — resolve the configured push branch and look up
 //! the upstream default-branch via the GitHub REST API.
 //!
-//! `fetch_default_branch` is `pub(super)` because the only caller is
-//! `super::pr::submit_pr_via_gh_with_opts`; keeping it out of
-//! `pub(crate)` keeps the surface tight.
+//! `fetch_default_branch_with_env` is `pub(super)` because the only caller
+//! is `super::pr::submit_pr_via_gh_with_opts_with_env`, which threads the
+//! Context's `EnvSource` so an in-process responder can intercept the
+//! lookup without mutating the process env; keeping it out of `pub(crate)`
+//! keeps the surface tight.
 
+use anodizer_core::EnvSource;
 use anodizer_core::config::RepositoryConfig;
 use anodizer_core::context::Context;
-use anodizer_core::{EnvSource, ProcessEnvSource};
 
 /// Resolve the push branch from a RepositoryConfig, rendering its template.
 ///
@@ -25,7 +27,7 @@ pub(crate) fn resolve_branch(ctx: &Context, repo: Option<&RepositoryConfig>) -> 
 /// so unit tests can redirect requests to an in-process responder via a
 /// [`MapEnvSource`](anodizer_core::MapEnvSource); defaults to the
 /// canonical `https://api.github.com` in production where production
-/// callers pass [`ProcessEnvSource`] and the var is unset. Any trailing
+/// callers pass `ProcessEnvSource` and the var is unset. Any trailing
 /// `/` is stripped so callers can unconditionally `format!` with a
 /// `/`-prefixed suffix without producing a double slash.
 pub(super) fn github_api_base_from<E: EnvSource + ?Sized>(env: &E) -> String {
@@ -35,16 +37,12 @@ pub(super) fn github_api_base_from<E: EnvSource + ?Sized>(env: &E) -> String {
     raw.trim_end_matches('/').to_string()
 }
 
-/// Look up a GitHub repo's `default_branch` via the REST API. Returns `None`
-/// on any failure (token missing, network error, repo not found, parse
-/// failure) so the caller can fall back to a sensible default.
-pub(super) fn fetch_default_branch(owner: &str, name: &str, token: Option<&str>) -> Option<String> {
-    fetch_default_branch_with_env(owner, name, token, &ProcessEnvSource)
-}
-
-/// Env-injectable form of [`fetch_default_branch`] — resolves the API
-/// base through `env` instead of `ProcessEnvSource` so an in-process
-/// responder can intercept the request without mutating the process env.
+/// Look up a GitHub repo's `default_branch` via the REST API, resolving
+/// the API base through the injected `env` (honoring
+/// `ANODIZER_GITHUB_API_BASE`) so an in-process responder can intercept
+/// the request without mutating the process env. Returns `None` on any
+/// failure (token missing, network error, repo not found, parse failure)
+/// so the caller can fall back to a sensible default.
 pub(super) fn fetch_default_branch_with_env<E: EnvSource + ?Sized>(
     owner: &str,
     name: &str,
@@ -150,8 +148,8 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // `fetch_default_branch` HTTP coverage. Each test redirects requests
-    // to an in-process responder by injecting `ANODIZER_GITHUB_API_BASE`
+    // `fetch_default_branch_with_env` HTTP coverage. Each test redirects
+    // requests to an in-process responder by injecting `ANODIZER_GITHUB_API_BASE`
     // through a [`MapEnvSource`] passed to `fetch_default_branch_with_env`
     // — no process env mutation, no env mutex acquisition, no shared
     // state with sibling tests.

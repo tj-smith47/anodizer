@@ -21,7 +21,8 @@ use super::{BuilderKind, all_builds_prebuilt, validate_builds};
 use super::{ChangelogConfig, MilestoneConfig, SbomConfig};
 use super::{CrateConfig, CrossStrategy, MetadataConfig};
 use super::{
-    EnvFilesConfig, EnvFilesTokenConfig, load_env_files, load_token_files, read_token_file,
+    EnvFilesConfig, EnvFilesTokenConfig, load_env_files, load_token_files_with_env,
+    read_token_file, read_token_file_with_env,
 };
 use super::{
     ForceTokenKind, GitHubUrlsConfig, GitLabUrlsConfig, GiteaUrlsConfig, MakeLatestConfig,
@@ -3766,7 +3767,6 @@ fn test_read_token_file_empty_returns_none() {
 }
 
 #[test]
-#[serial_test::serial]
 fn test_load_token_files_reads_tokens() {
     use std::io::Write;
     let dir = tempfile::TempDir::new().unwrap();
@@ -3787,32 +3787,10 @@ fn test_load_token_files_reads_tokens() {
         gitea_token: None, // uses default path which won't exist
     };
 
-    // Temporarily unset any existing tokens to avoid interference
-    let orig_gh = std::env::var("GITHUB_TOKEN").ok();
-    let orig_gl = std::env::var("GITLAB_TOKEN").ok();
-    let orig_gt = std::env::var("GITEA_TOKEN").ok();
-    // SAFETY: test runs serially
-    unsafe {
-        std::env::remove_var("GITHUB_TOKEN");
-        std::env::remove_var("GITLAB_TOKEN");
-        std::env::remove_var("GITEA_TOKEN");
-    }
-
+    // Empty env: no token vars set, so the files are the only source.
+    let env = crate::MapEnvSource::new();
     let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Normal);
-    let vars = load_token_files(&config, &log).unwrap();
-
-    // Restore original env
-    unsafe {
-        if let Some(v) = orig_gh {
-            std::env::set_var("GITHUB_TOKEN", v);
-        }
-        if let Some(v) = orig_gl {
-            std::env::set_var("GITLAB_TOKEN", v);
-        }
-        if let Some(v) = orig_gt {
-            std::env::set_var("GITEA_TOKEN", v);
-        }
-    }
+    let vars = load_token_files_with_env(&config, &log, &env).unwrap();
 
     assert_eq!(vars.get("GITHUB_TOKEN").unwrap(), "ghp_test123");
     assert_eq!(vars.get("GITLAB_TOKEN").unwrap(), "glpat-test456");
@@ -3821,7 +3799,6 @@ fn test_load_token_files_reads_tokens() {
 }
 
 #[test]
-#[serial_test::serial]
 fn test_load_token_files_env_var_takes_precedence() {
     use std::io::Write;
     let dir = tempfile::TempDir::new().unwrap();
@@ -3837,23 +3814,10 @@ fn test_load_token_files_env_var_takes_precedence() {
         gitea_token: None,
     };
 
-    // Set GITHUB_TOKEN env var — should take precedence over file
-    let orig = std::env::var("GITHUB_TOKEN").ok();
-    // SAFETY: test runs serially
-    unsafe {
-        std::env::set_var("GITHUB_TOKEN", "env_token");
-    }
-
+    // GITHUB_TOKEN injected into the env source — should take precedence over file.
+    let env = crate::MapEnvSource::new().with("GITHUB_TOKEN", "env_token");
     let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Normal);
-    let vars = load_token_files(&config, &log).unwrap();
-
-    // Restore
-    unsafe {
-        match orig {
-            Some(v) => std::env::set_var("GITHUB_TOKEN", v),
-            None => std::env::remove_var("GITHUB_TOKEN"),
-        }
-    }
+    let vars = load_token_files_with_env(&config, &log, &env).unwrap();
 
     // File token should NOT be loaded because env var was set
     assert!(
@@ -3864,26 +3828,14 @@ fn test_load_token_files_env_var_takes_precedence() {
 
 #[test]
 fn test_read_token_file_tilde_expansion() {
-    // Test that tilde expansion uses HOME env var
+    // Test that tilde expansion uses the injected HOME value.
     let dir = tempfile::TempDir::new().unwrap();
     let token_path = dir.path().join(".config/goreleaser/github_token");
     std::fs::create_dir_all(token_path.parent().unwrap()).unwrap();
     std::fs::write(&token_path, "tilde_token\n").unwrap();
 
-    let orig_home = std::env::var("HOME").ok();
-    // SAFETY: test runs serially
-    unsafe {
-        std::env::set_var("HOME", dir.path());
-    }
-
-    let result = read_token_file("~/.config/goreleaser/github_token").unwrap();
-
-    unsafe {
-        match orig_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-    }
+    let env = crate::MapEnvSource::new().with("HOME", dir.path().to_string_lossy().to_string());
+    let result = read_token_file_with_env("~/.config/goreleaser/github_token", &env).unwrap();
 
     assert_eq!(result, Some("tilde_token".to_string()));
 }

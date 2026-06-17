@@ -625,9 +625,10 @@ mod tests {
     impl EnvVarGuard {
         fn set(key: &'static str, value: &str) -> Self {
             let prev = std::env::var(key).ok();
-            // SAFETY: the whole test is `#[serial]`, so no other thread reads
-            // or writes the environment concurrently; the guard restores the
-            // prior value on drop.
+            // SAFETY: every caller test carries `#[serial(git_env)]`, so no
+            // other git-identity test reads or writes the environment
+            // concurrently; the guard restores the prior value on drop.
+            // env-ok: EnvVarGuard set/restore; every caller test is #[serial(git_env)]
             unsafe { std::env::set_var(key, value) };
             Self { key, prev }
         }
@@ -639,7 +640,9 @@ mod tests {
             // access for the lifetime of the guard.
             unsafe {
                 match &self.prev {
+                    // env-ok: EnvVarGuard set/restore; every caller test is #[serial(git_env)]
                     Some(v) => std::env::set_var(self.key, v),
+                    // env-ok: EnvVarGuard set/restore; every caller test is #[serial(git_env)]
                     None => std::env::remove_var(self.key),
                 }
             }
@@ -653,7 +656,7 @@ mod tests {
     /// config) silently defeats — so the commit carried the ambient identity
     /// (e.g. a CI runner's), breaking the CLA-registered-author guarantee.
     #[test]
-    #[serial]
+    #[serial(git_env)]
     fn configured_author_overrides_ambient_git_author_env() {
         let tmp = tempfile::tempdir().unwrap();
         let remote_dir = tmp.path().join("remote");
@@ -708,7 +711,7 @@ mod tests {
     /// the GitHub App's `<slug>[bot]` identity (set by actions/checkout in the
     /// repo's git config / env) stays authoritative.
     #[test]
-    #[serial]
+    #[serial(git_env)]
     fn use_github_app_token_leaves_ambient_identity_intact() {
         let tmp = tempfile::tempdir().unwrap();
         let remote_dir = tmp.path().join("remote");

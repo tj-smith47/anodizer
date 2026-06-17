@@ -190,20 +190,15 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
-    //! Env-mutating tests in this module use `serial_test` with the
-    //! shared group name `rollback_env`. Any new test that calls
-    //! `std::env::set_var` / `remove_var` (directly or through a future
-    //! helper) MUST carry `#[serial(rollback_env)]` — without it the
-    //! `unsafe` env mutations can race a concurrent reader in another
-    //! test, which is UB per the `set_var` contract. The group name
-    //! is distinct from `scope_env` (used in `scope.rs::tests`) so
-    //! the two suites don't serialize against each other unnecessarily.
+    //! Scope-availability tests inject a closed `MapEnvSource` on the test
+    //! `Context` (read through `scope_available_with_env(ctx.env_source())`)
+    //! rather than mutating process env, so the suite is hermetic and runs
+    //! fully in parallel — no `serial_test` group is required.
     use super::*;
     use crate::testing::*;
     use anodizer_core::{
         PublishEvidence, PublisherGroup, PublisherOutcome, PublisherResult, SkipReason,
     };
-    use serial_test::serial;
 
     /// Helper to build a [`PublisherResult`] entry with `Succeeded` +
     /// matching `PublishEvidence`, mirroring what `dispatch()` writes
@@ -396,19 +391,12 @@ mod tests {
     }
 
     #[test]
-    #[serial(rollback_env)]
     fn rollback_skips_when_no_scope_available() {
-        // Ensure the env var isn't set by any sibling test that mutated
-        // it without cleanup. The `serial(rollback_env)` attribute pins
-        // ordering so the value the test reads is the one it wrote.
-        // Safe inside the serial-guarded block: no concurrent reader
-        // can observe the in-flight mutation.
-        // SAFETY: env mutation is single-threaded within a serial group.
-        unsafe {
-            std::env::remove_var("FAKE_TOKEN");
-        }
-
         let mut ctx = Context::test_fixture();
+        // Inject an empty env source so the `FAKE_TOKEN` scope reads as unset
+        // through `scope_available_with_env(ctx.env_source())` — no process-env
+        // mutation, so the test is hermetic and needs no serial group.
+        ctx.set_env_source(anodizer_core::MapEnvSource::new());
         let publishers = vec![fake_with_scope(
             "scoped",
             PublisherGroup::Manager,

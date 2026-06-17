@@ -409,6 +409,19 @@ fn resolve_push_branch(
     bump_sha: &str,
     explicit: Option<&str>,
 ) -> Result<String> {
+    resolve_push_branch_with_env(cwd, bump_sha, explicit, &anodizer_core::ProcessEnvSource)
+}
+
+/// [`resolve_push_branch`] with the env source injected so the
+/// detached-HEAD `GITHUB_REF_NAME` fallback can be driven from a
+/// [`MapEnvSource`](anodizer_core::MapEnvSource) in tests rather than
+/// mutating the real process environment.
+fn resolve_push_branch_with_env<E: anodizer_core::EnvSource + ?Sized>(
+    cwd: &std::path::Path,
+    bump_sha: &str,
+    explicit: Option<&str>,
+    env: &E,
+) -> Result<String> {
     if let Some(b) = explicit {
         return Ok(b.to_string());
     }
@@ -429,7 +442,7 @@ fn resolve_push_branch(
             [] => {}
         }
     }
-    match git::get_current_branch_in(cwd) {
+    match git::get_current_branch_in_with_env(cwd, env) {
         Ok(b) => Ok(b),
         Err(_) => bail!(
             "cannot determine branch for revert push — bump commit {} is \
@@ -1116,7 +1129,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn resolve_push_branch_hard_fails_on_detached_head_without_branch() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
@@ -1145,24 +1157,14 @@ mod tests {
         run_git(dir, &["commit", "-m", "c2"]);
         run_git(dir, &["checkout", "--detach", &older_sha]);
 
-        // Clear GITHUB_REF_NAME so the env-var fallback can't supply a
-        // value, then verify the hard-fail surfaces the remediation.
-        struct EnvGuard(&'static str, Option<String>);
-        impl Drop for EnvGuard {
-            fn drop(&mut self) {
-                match &self.1 {
-                    Some(v) => unsafe { std::env::set_var(self.0, v) },
-                    None => unsafe { std::env::remove_var(self.0) },
-                }
-            }
-        }
-        let _g = EnvGuard("GITHUB_REF_NAME", std::env::var("GITHUB_REF_NAME").ok());
-        unsafe { std::env::remove_var("GITHUB_REF_NAME") };
+        // An empty env source means the `GITHUB_REF_NAME` fallback can't
+        // supply a value, then verify the hard-fail surfaces the remediation.
+        let env = anodizer_core::MapEnvSource::new();
 
         // No remote configured → SHA-derivation returns empty, falls
         // through to get_current_branch_in, which fails on detached
         // HEAD with no env fallback → operator-friendly hard-fail.
-        let err = resolve_push_branch(dir, &older_sha, None).unwrap_err();
+        let err = resolve_push_branch_with_env(dir, &older_sha, None, &env).unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("cannot determine branch for revert push"),
@@ -1175,7 +1177,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn resolve_push_branch_hard_fails_when_github_ref_name_looks_like_tag() {
         // Same shape as above (detached HEAD with no pointing branch),
         // but GITHUB_REF_NAME is set to a tag-shaped value. The
@@ -1206,19 +1207,9 @@ mod tests {
         run_git(dir, &["commit", "-m", "c2"]);
         run_git(dir, &["checkout", "--detach", &older_sha]);
 
-        struct EnvGuard(&'static str, Option<String>);
-        impl Drop for EnvGuard {
-            fn drop(&mut self) {
-                match &self.1 {
-                    Some(v) => unsafe { std::env::set_var(self.0, v) },
-                    None => unsafe { std::env::remove_var(self.0) },
-                }
-            }
-        }
-        let _g = EnvGuard("GITHUB_REF_NAME", std::env::var("GITHUB_REF_NAME").ok());
-        unsafe { std::env::set_var("GITHUB_REF_NAME", "v0.4.5") };
+        let env = anodizer_core::MapEnvSource::new().with("GITHUB_REF_NAME", "v0.4.5");
 
-        let err = resolve_push_branch(dir, &older_sha, None).unwrap_err();
+        let err = resolve_push_branch_with_env(dir, &older_sha, None, &env).unwrap_err();
         let msg = format!("{err}");
         assert!(
             msg.contains("cannot determine branch for revert push"),
@@ -1227,7 +1218,6 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn resolve_push_branch_explicit_branch_wins_over_detached_head() {
         // Even when auto-resolution would hard-fail, --branch wins.
         let tmp = tempfile::tempdir().unwrap();
@@ -1254,19 +1244,10 @@ mod tests {
         run_git(dir, &["commit", "-m", "c2"]);
         run_git(dir, &["checkout", "--detach", &older_sha]);
 
-        struct EnvGuard(&'static str, Option<String>);
-        impl Drop for EnvGuard {
-            fn drop(&mut self) {
-                match &self.1 {
-                    Some(v) => unsafe { std::env::set_var(self.0, v) },
-                    None => unsafe { std::env::remove_var(self.0) },
-                }
-            }
-        }
-        let _g = EnvGuard("GITHUB_REF_NAME", std::env::var("GITHUB_REF_NAME").ok());
-        unsafe { std::env::set_var("GITHUB_REF_NAME", "v0.4.5") };
-
-        let b = resolve_push_branch(dir, &older_sha, Some("master")).unwrap();
+        // --branch short-circuits before any env read, so an empty env source
+        // proves the explicit flag wins regardless of `GITHUB_REF_NAME`.
+        let env = anodizer_core::MapEnvSource::new();
+        let b = resolve_push_branch_with_env(dir, &older_sha, Some("master"), &env).unwrap();
         assert_eq!(b, "master");
     }
 

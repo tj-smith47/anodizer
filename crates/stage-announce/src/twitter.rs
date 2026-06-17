@@ -284,11 +284,13 @@ mod tests {
     struct EnvGuard;
     impl Drop for EnvGuard {
         fn drop(&mut self) {
+            // env-ok: #[serial(announce_env)] + env_mutex; per-test API-base redirect
             unsafe { std::env::remove_var("ANODIZE_TWITTER_API_BASE") };
         }
     }
     fn set_base(addr: std::net::SocketAddr) -> EnvGuard {
         unsafe {
+            // env-ok: #[serial(announce_env)] + env_mutex; per-test API-base redirect
             std::env::set_var(
                 "ANODIZE_TWITTER_API_BASE",
                 format!("http://{addr}/2/tweets"),
@@ -305,7 +307,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(announce_env)]
     fn send_twitter_happy_path_posts_text_with_oauth_header() {
         let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let (addr, log) = spawn_scripted_responder(vec![ScriptedRoute {
@@ -341,7 +343,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(announce_env)]
     fn send_twitter_non_2xx_maps_to_error_with_status_and_body() {
         let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {

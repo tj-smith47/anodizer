@@ -1118,7 +1118,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
     // drops the immutable borrow, making the subsequent `&mut ctx`
     // call legal.
     let repo_for_pr = scoop_cfg.repository.clone();
-    let pr_outcome = util::maybe_submit_pr(
+    let pr_outcome = util::maybe_submit_pr_with_env(
         repo_path,
         repo_for_pr.as_ref(),
         &util::PrOrigin {
@@ -1140,6 +1140,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         "scoop",
         log,
         &|s| ctx.render_template(s).unwrap_or_else(|_| s.to_string()),
+        ctx.env_source(),
     );
 
     // Surface PR-already-exists skips to the dispatch summary table.
@@ -2990,9 +2991,11 @@ mod tests {
 // The end-to-end tests drive the live publish against a local bare git repo:
 // `repository.git.url` points the clone at a `file` path (no network), and the
 // PR-submission transport is forced onto an in-process scripted responder by
-// installing a failing `gh` stub (so `gh_is_available()` is false) and pointing
-// `ANODIZER_GITHUB_API_BASE` at the responder. These tests mutate PATH +
-// process env, so each is `#[cfg(unix)]` + `#[serial]`. Precedent: the krew
+// installing a failing `gh` stub (so `gh_is_available()` is false) and
+// injecting `ANODIZER_GITHUB_API_BASE` at the responder via the Context's
+// `EnvSource` (`maybe_submit_pr_with_env` + `inject_api_base`), a per-Context
+// value rather than a process-global mutation. These tests still mutate PATH
+// (the `gh` stub), so each is `#[serial(path_env)]`. Precedent: the krew
 // publish-flow tests in this crate and `crates/stage-publish/src/npm/tests.rs`.
 // ===========================================================================
 
@@ -3921,7 +3924,7 @@ mod publish_flow_tests {
 
     // -----------------------------------------------------------------
     // publish_to_scoop — full clone→write→commit→push→PR against a local
-    // bare bucket repo (gated: spawns git, mutates PATH + process env).
+    // bare bucket repo (gated: spawns git, mutates PATH via the `gh` stub).
     // -----------------------------------------------------------------
 
     #[cfg(unix)]
@@ -3942,11 +3945,11 @@ mod publish_flow_tests {
             INIT.get_or_init(|| {
                 // SAFETY: runs once per process under OnceLock; constants only.
                 unsafe {
-                    std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test");
-                    std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local");
-                    std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test");
-                    std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local");
-                    std::env::set_var("GIT_TERMINAL_PROMPT", "0");
+                    std::env::set_var("GIT_AUTHOR_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                    std::env::set_var("GIT_AUTHOR_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                    std::env::set_var("GIT_COMMITTER_NAME", "Anodize Test"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                    std::env::set_var("GIT_COMMITTER_EMAIL", "test@anodize.local"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
+                    std::env::set_var("GIT_TERMINAL_PROMPT", "0"); // env-ok: idempotent OnceLock set of constant git identity, never mutated after
                 }
             });
         }
@@ -4006,13 +4009,16 @@ mod publish_flow_tests {
             (tools, guard)
         }
 
-        fn set_api_base(addr: &std::net::SocketAddr) {
-            // SAFETY: env mutex held by the live PathGuard from gh_absent().
-            unsafe { std::env::set_var("ANODIZER_GITHUB_API_BASE", format!("http://{addr}")) };
-        }
-        fn clear_api_base() {
-            // SAFETY: same mutex still held by the PathGuard.
-            unsafe { std::env::remove_var("ANODIZER_GITHUB_API_BASE") };
+        /// Point the scripted responder's address at the publisher by
+        /// injecting `ANODIZER_GITHUB_API_BASE` into the Context's env
+        /// source. The base is per-Context, not process-global, so no env
+        /// mutation and no pairing teardown is needed; PATH stays process
+        /// global via the `gh_absent`/`gh_present` `PathGuard`.
+        fn inject_api_base(ctx: &mut Context, addr: &std::net::SocketAddr) {
+            ctx.set_env_source(
+                anodizer_core::MapEnvSource::new()
+                    .with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}")),
+            );
         }
 
         /// Enable a PR against the bucket repo so `maybe_submit_pr` runs.
@@ -4040,7 +4046,7 @@ mod publish_flow_tests {
         /// the pushed manifest carries the real sha256 AND the PR-create POST
         /// reached the bucket repo's `/pulls`.
         #[test]
-        #[serial]
+        #[serial(path_env)]
         fn publish_to_scoop_pushes_manifest_and_opens_pr() {
             let (_tools, _guard) = gh_absent();
             let (bucket_url, bare) = init_bare_bucket();
@@ -4050,11 +4056,11 @@ mod publish_flow_tests {
                 response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
                 times: Some(1),
             }]);
-            set_api_base(&addr);
 
             let mut c = scoop_crate_for_bucket("widget", &bucket_url);
             enable_self_pr(&mut c);
             let mut ctx = build_ctx(vec![c], "1.0.0");
+            inject_api_base(&mut ctx, &addr);
             let sha = "d".repeat(64);
             add_windows_archive(
                 &mut ctx,
@@ -4080,14 +4086,13 @@ mod publish_flow_tests {
             assert_eq!(entries.len(), 1, "exactly one PR-create POST expected");
             assert_eq!(entries[0].path, "/repos/acme/scoop-bucket/pulls");
             drop(entries);
-            clear_api_base();
             drop(bare);
         }
 
         /// `directory:` places the manifest under a subdirectory of the
         /// bucket; the pushed file lands at `<dir>/<name>.json`.
         #[test]
-        #[serial]
+        #[serial(path_env)]
         fn publish_to_scoop_honors_directory_subdir() {
             let (_tools, _guard) = gh_absent();
             let (bucket_url, bare) = init_bare_bucket();
@@ -4097,7 +4102,6 @@ mod publish_flow_tests {
                 response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
                 times: None,
             }]);
-            set_api_base(&addr);
 
             let mut c = scoop_crate_for_bucket("widget", &bucket_url);
             enable_self_pr(&mut c);
@@ -4105,6 +4109,7 @@ mod publish_flow_tests {
                 s.directory = Some("bucket".to_string());
             }
             let mut ctx = build_ctx(vec![c], "1.0.0");
+            inject_api_base(&mut ctx, &addr);
             add_windows_archive(
                 &mut ctx,
                 "widget",
@@ -4125,7 +4130,7 @@ mod publish_flow_tests {
         /// Re-publishing the identical manifest finds an unchanged tree and
         /// reports `pushed=false` (NoChanges) — nothing to roll back.
         #[test]
-        #[serial]
+        #[serial(path_env)]
         fn publish_to_scoop_idempotent_no_changes() {
             let (_tools, _guard) = gh_absent();
             let (bucket_url, bare) = init_bare_bucket();
@@ -4135,13 +4140,13 @@ mod publish_flow_tests {
                 response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
                 times: None,
             }]);
-            set_api_base(&addr);
 
             let sha = "f".repeat(64);
             let build = || {
                 let mut c = scoop_crate_for_bucket("widget", &bucket_url);
                 enable_self_pr(&mut c);
                 let mut ctx = build_ctx(vec![c], "1.0.0");
+                inject_api_base(&mut ctx, &addr);
                 add_windows_archive(
                     &mut ctx,
                     "widget",
@@ -4163,7 +4168,6 @@ mod publish_flow_tests {
                 !publish_to_scoop(&mut ctx2, "widget", &quiet()).expect("second publish"),
                 "re-publishing an identical manifest must report NoChanges (pushed=false)"
             );
-            clear_api_base();
             drop(bare);
         }
 
@@ -4171,7 +4175,7 @@ mod publish_flow_tests {
         /// rollback target carrying the bucket repo URL + branch (the
         /// `any_pushed` evidence gate).
         #[test]
-        #[serial]
+        #[serial(path_env)]
         fn scoop_publisher_run_records_rollback_target_after_push() {
             use anodizer_core::Publisher;
             let (_tools, _guard) = gh_absent();
@@ -4182,7 +4186,6 @@ mod publish_flow_tests {
                 response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
                 times: None,
             }]);
-            set_api_base(&addr);
 
             let mut c = scoop_crate_for_bucket("widget", &bucket_url);
             enable_self_pr(&mut c);
@@ -4206,6 +4209,7 @@ mod publish_flow_tests {
             ctx.template_vars_mut().set("Version", "0.1.0");
             ctx.template_vars_mut().set("Tag", "v0.1.0");
             ctx.template_vars_mut().set("ProjectName", "widget");
+            inject_api_base(&mut ctx, &addr);
             add_windows_archive(
                 &mut ctx,
                 "widget",
@@ -4224,7 +4228,6 @@ mod publish_flow_tests {
                 "https://github.com/acme/scoop-bucket.git"
             );
             assert_eq!(targets[0].branch.as_deref(), Some("main"));
-            clear_api_base();
             drop(bare);
         }
     }

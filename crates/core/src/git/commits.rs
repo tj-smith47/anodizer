@@ -431,6 +431,18 @@ pub fn is_branchlike(name: &str) -> bool {
 /// through to the bail at the end so callers hard-fail and prompt the
 /// operator for `--branch <name>` explicitly.
 pub fn get_current_branch_in(cwd: &Path) -> Result<String> {
+    get_current_branch_in_with_env(cwd, &crate::ProcessEnvSource)
+}
+
+/// [`EnvSource`](crate::EnvSource)-injecting form of [`get_current_branch_in`].
+///
+/// Reads the `GITHUB_REF_NAME` fallback from `env` rather than the process
+/// environment, so tests can drive the tag-shaped / branch-shaped fallback
+/// branches deterministically without mutating global env state.
+pub fn get_current_branch_in_with_env<E: crate::EnvSource + ?Sized>(
+    cwd: &Path,
+    env: &E,
+) -> Result<String> {
     if let Ok(name) = git_output_in(cwd, &["symbolic-ref", "--short", "HEAD"]) {
         return Ok(name);
     }
@@ -462,7 +474,7 @@ pub fn get_current_branch_in(cwd: &Path) -> Result<String> {
     {
         return Ok(name.to_string());
     }
-    if let Ok(name) = std::env::var("GITHUB_REF_NAME")
+    if let Some(name) = env.var("GITHUB_REF_NAME")
         && !name.is_empty()
         && is_branchlike(&name)
     {
@@ -1448,7 +1460,6 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
     fn get_current_branch_in_rejects_tag_shaped_github_ref_name() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
@@ -1481,38 +1492,28 @@ mod tests {
         run(&["commit", "-m", "c2"]);
         run(&["checkout", "--detach", &sha]);
 
-        // Restore env on every exit path — set/remove in a guard so a
-        // panic doesn't leak state across the serial-test queue.
-        struct EnvGuard(&'static str, Option<String>);
-        impl Drop for EnvGuard {
-            fn drop(&mut self) {
-                match &self.1 {
-                    Some(v) => unsafe { std::env::set_var(self.0, v) },
-                    None => unsafe { std::env::remove_var(self.0) },
-                }
-            }
-        }
-        let _g = EnvGuard("GITHUB_REF_NAME", std::env::var("GITHUB_REF_NAME").ok());
+        // GITHUB_REF_NAME is injected via the env seam, so each branch of the
+        // fallback is driven without mutating process-global env.
 
         // Tag-shaped: must NOT be accepted; bail surfaces.
-        unsafe { std::env::set_var("GITHUB_REF_NAME", "v0.4.5") };
-        let err = get_current_branch_in(dir).unwrap_err();
+        let env = crate::MapEnvSource::new().with("GITHUB_REF_NAME", "v0.4.5");
+        let err = get_current_branch_in_with_env(dir, &env).unwrap_err();
         assert!(
             err.to_string().contains("could not resolve current branch"),
             "tag-shaped GITHUB_REF_NAME must trigger bail: {err}"
         );
 
         // Per-crate-shaped: must NOT be accepted either.
-        unsafe { std::env::set_var("GITHUB_REF_NAME", "mycrate-v1.2.3") };
-        let err = get_current_branch_in(dir).unwrap_err();
+        let env = crate::MapEnvSource::new().with("GITHUB_REF_NAME", "mycrate-v1.2.3");
+        let err = get_current_branch_in_with_env(dir, &env).unwrap_err();
         assert!(
             err.to_string().contains("could not resolve current branch"),
             "per-crate tag GITHUB_REF_NAME must trigger bail: {err}"
         );
 
         // Real branch name: accepted.
-        unsafe { std::env::set_var("GITHUB_REF_NAME", "master") };
-        let branch = get_current_branch_in(dir).unwrap();
+        let env = crate::MapEnvSource::new().with("GITHUB_REF_NAME", "master");
+        let branch = get_current_branch_in_with_env(dir, &env).unwrap();
         assert_eq!(branch, "master");
     }
 
@@ -2547,7 +2548,7 @@ mod tests {
     // ---- resolve_rollback_identity / read_git_identity ----
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(git_env)]
     fn resolve_rollback_identity_inherits_when_repo_has_identity() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
@@ -2560,7 +2561,9 @@ mod tests {
             fn drop(&mut self) {
                 for (k, v) in &self.0 {
                     match v {
+                        // env-ok: restore/clear inside #[serial(git_env)] test; no concurrent reader
                         Some(val) => unsafe { std::env::set_var(k, val) },
+                        // env-ok: restore/clear inside #[serial(git_env)] test; no concurrent reader
                         None => unsafe { std::env::remove_var(k) },
                     }
                 }
@@ -2574,6 +2577,7 @@ mod tests {
         ];
         let _g = EnvGuard(keys.iter().map(|k| (*k, std::env::var(k).ok())).collect());
         for k in keys {
+            // env-ok: restore/clear inside #[serial(git_env)] test; no concurrent reader
             unsafe { std::env::remove_var(k) };
         }
 
@@ -2586,7 +2590,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(git_env)]
     fn resolve_rollback_identity_synthesizes_when_no_identity_anywhere() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
@@ -2598,7 +2602,9 @@ mod tests {
             fn drop(&mut self) {
                 for (k, v) in &self.0 {
                     match v {
+                        // env-ok: restore/clear inside #[serial(git_env)] test; no concurrent reader
                         Some(val) => unsafe { std::env::set_var(k, val) },
+                        // env-ok: restore/clear inside #[serial(git_env)] test; no concurrent reader
                         None => unsafe { std::env::remove_var(k) },
                     }
                 }
@@ -2612,6 +2618,7 @@ mod tests {
         ];
         let _g = EnvGuard(keys.iter().map(|k| (*k, std::env::var(k).ok())).collect());
         for k in keys {
+            // env-ok: restore/clear inside #[serial(git_env)] test; no concurrent reader
             unsafe { std::env::remove_var(k) };
         }
 

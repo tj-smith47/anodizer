@@ -2974,6 +2974,7 @@ mod tests {
     /// platform; the shell-script path is preferred on unix (faster compile).
     #[cfg(not(unix))]
     #[test]
+    #[serial_test::serial(stub_counter)]
     fn run_cargo_publish_with_retry_recovers_from_propagation_lag_windows() {
         // Build the counter stub from an in-test source string. We write
         // a tiny Rust program to a tempdir and compile it with `rustc`.
@@ -3026,15 +3027,13 @@ fn main() {
             "publish-test",
             anodizer_core::log::Verbosity::Normal,
         );
-        // Serialize STUB_COUNTER mutation across tests in the same
-        // binary — the sibling `..._unrelated_failure_windows` test
-        // also mutates this env var; two tests running in parallel
-        // race the set/remove pair and the spawned stub then sees
-        // either the wrong path or NotPresent.
-        let _g = anodizer_core::test_helpers::env::env_mutex()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // SAFETY: serialised by env_mutex above; pair set / remove.
+        // STUB_COUNTER points the spawned stub at this test's own tempdir
+        // counter file; the env-var NAME is shared, so the sibling
+        // `..._unrelated_failure_windows` test races the set/remove pair
+        // without serialization. The `#[serial(stub_counter)]` annotation on
+        // the test guarantees no other stub_counter test runs concurrently.
+        // SAFETY: serialised by `#[serial(stub_counter)]`; pair set / remove.
+        // env-ok: STUB_COUNTER under #[serial(stub_counter)]; per-test tempdir counter file
         unsafe { std::env::set_var("STUB_COUNTER", counter.display().to_string()) };
         let result = run_cargo_publish_with_retry(
             &cmd,
@@ -3043,7 +3042,8 @@ fn main() {
             std::time::Duration::from_millis(1),
         )
         .expect("retry harness must succeed after propagation lag");
-        // SAFETY: serialised by env_mutex above; pair with set.
+        // SAFETY: serialised by `#[serial(stub_counter)]`; pair with set.
+        // env-ok: STUB_COUNTER under #[serial(stub_counter)]; per-test tempdir counter file
         unsafe { std::env::remove_var("STUB_COUNTER") };
         assert!(result.status.success(), "final attempt must succeed");
 
@@ -3060,6 +3060,7 @@ fn main() {
     /// variants are excluded on non-unix platforms.
     #[cfg(not(unix))]
     #[test]
+    #[serial_test::serial(stub_counter)]
     fn run_cargo_publish_with_retry_does_not_retry_unrelated_failure_windows() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let counter = tmp.path().join("counter.txt");
@@ -3102,13 +3103,11 @@ fn main() {
             "publish-test",
             anodizer_core::log::Verbosity::Normal,
         );
-        // Serialize STUB_COUNTER mutation — see the sibling
+        // Serialized by `#[serial(stub_counter)]` — see the sibling
         // `..._recovers_from_propagation_lag_windows` test for the
         // race this guards against.
-        let _g = anodizer_core::test_helpers::env::env_mutex()
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // SAFETY: serialised by env_mutex above; pair set / remove.
+        // SAFETY: serialised by `#[serial(stub_counter)]`; pair set / remove.
+        // env-ok: STUB_COUNTER under #[serial(stub_counter)]; per-test tempdir counter file
         unsafe { std::env::set_var("STUB_COUNTER", counter.display().to_string()) };
         let err = run_cargo_publish_with_retry(
             &cmd,
@@ -3117,7 +3116,8 @@ fn main() {
             std::time::Duration::from_millis(1),
         )
         .expect_err("non-propagation failure must surface");
-        // SAFETY: serialised by env_mutex above; pair with set.
+        // SAFETY: serialised by `#[serial(stub_counter)]`; pair with set.
+        // env-ok: STUB_COUNTER under #[serial(stub_counter)]; per-test tempdir counter file
         unsafe { std::env::remove_var("STUB_COUNTER") };
         let chain = format!("{err:#}");
         assert!(
@@ -4526,12 +4526,15 @@ lib.workspace = true
             .unwrap_or_else(|e| e.into_inner());
         let prev = std::env::var("PATH").ok();
         // SAFETY: serialised by env_mutex; paired with the restore below.
+        // env-ok: PATH stub prepend under env_mutex (serializes all PATH mutators); restored on drop
         unsafe { std::env::set_var("PATH", &new_path) };
         let rb = CargoPublisher::new().rollback(&mut ctx, &evidence);
         // SAFETY: restore PATH (paired with the set above).
         unsafe {
             match prev {
+                // env-ok: PATH stub prepend under env_mutex (serializes all PATH mutators); restored on drop
                 Some(p) => std::env::set_var("PATH", p),
+                // env-ok: PATH stub prepend under env_mutex (serializes all PATH mutators); restored on drop
                 None => std::env::remove_var("PATH"),
             }
         }
@@ -4914,6 +4917,7 @@ mod partial_rollback_tests {
         let prev_path = std::env::var("PATH").ok();
         // SAFETY: serialised by env_mutex above (shared with every other
         // PATH mutator) plus this test's serial group; paired restore below.
+        // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
         unsafe { std::env::set_var("PATH", &new_path) };
         let result = publish_to_cargo_with(
             &mut ctx,
@@ -4925,7 +4929,9 @@ mod partial_rollback_tests {
         // SAFETY: restore PATH within the same serial group.
         unsafe {
             match prev_path {
+                // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
                 Some(p) => std::env::set_var("PATH", p),
+                // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
                 None => std::env::remove_var("PATH"),
             }
         }
@@ -5002,6 +5008,7 @@ mod partial_rollback_tests {
         let prev_path = std::env::var("PATH").ok();
         // SAFETY: serialised by env_mutex above (shared with every other
         // PATH mutator) plus this test's serial group; paired restore below.
+        // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
         unsafe { std::env::set_var("PATH", &new_path) };
 
         let mut record: Vec<CargoYankTarget> = Vec::new();
@@ -5027,7 +5034,9 @@ mod partial_rollback_tests {
         // SAFETY: restore PATH within the same serial group.
         unsafe {
             match prev_path {
+                // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
                 Some(p) => std::env::set_var("PATH", p),
+                // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
                 None => std::env::remove_var("PATH"),
             }
         }
@@ -5076,6 +5085,7 @@ mod partial_rollback_tests {
         let prev_path = std::env::var("PATH").ok();
         // SAFETY: serialised by env_mutex above (shared with every other
         // PATH mutator) plus this test's serial group; paired restore below.
+        // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
         unsafe { std::env::set_var("PATH", &new_path) };
 
         let publisher = CargoPublisher::new();
@@ -5084,7 +5094,9 @@ mod partial_rollback_tests {
         // SAFETY: restore PATH within the same serial group.
         unsafe {
             match prev_path {
+                // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
                 Some(p) => std::env::set_var("PATH", p),
+                // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
                 None => std::env::remove_var("PATH"),
             }
         }
@@ -5131,12 +5143,15 @@ mod partial_rollback_tests {
         // PATH mutator in the workspace, including fake_tool::activate)
         // plus the callers' `#[serial(cargo_stub_path)]` guard; paired
         // restore below.
+        // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
         unsafe { std::env::set_var("PATH", new_path) };
         let out = f();
         // SAFETY: restore the prior PATH (paired with the set above).
         unsafe {
             match prev {
+                // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
                 Some(p) => std::env::set_var("PATH", p),
+                // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
                 None => std::env::remove_var("PATH"),
             }
         }
@@ -5569,6 +5584,7 @@ mod partial_rollback_tests {
         let prev_path = std::env::var("PATH").ok();
         // SAFETY: serialised by env_mutex above (shared with every other
         // PATH mutator) plus this test's serial group; paired restore below.
+        // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
         unsafe { std::env::set_var("PATH", &new_path) };
 
         let mut record: Vec<CargoYankTarget> = Vec::new();
@@ -5584,7 +5600,9 @@ mod partial_rollback_tests {
         // SAFETY: restore PATH.
         unsafe {
             match prev_path {
+                // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
                 Some(p) => std::env::set_var("PATH", p),
+                // env-ok: PATH stub swap under #[serial(cargo_stub_path)] + env_mutex; restored on drop
                 None => std::env::remove_var("PATH"),
             }
         }

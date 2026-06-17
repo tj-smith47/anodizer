@@ -1043,7 +1043,7 @@ fn test_find_latest_tag_with_monorepo_prefix_and_prerelease() {
 use super::commits::{add_path_in, commit_in};
 
 #[test]
-#[serial]
+#[serial(token_env)]
 fn test_add_path_in_bail_redacts_token_in_stderr() {
     // SAFETY: `serial_test` serializes env-var-mutating tests so the
     // process env is single-writer; this test sets GITHUB_TOKEN to a
@@ -1092,7 +1092,7 @@ fn test_add_path_in_bail_redacts_token_in_stderr() {
 }
 
 #[test]
-#[serial]
+#[serial(token_env)]
 fn test_commit_in_bail_redacts_token_in_stderr() {
     // Same shape as the add_path_in test, but for the `commit_in`
     // bail site. Set GITHUB_TOKEN, trigger a commit failure by

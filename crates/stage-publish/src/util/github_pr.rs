@@ -444,47 +444,52 @@ pub(crate) fn close_pr_via_api_with_env<E: EnvSource + ?Sized>(
 mod tests {
     use super::*;
 
-    /// With a clearly bogus owner/repo, the lookup must surface an
-    /// `Err` variant (not panic, not silently return `Ok(Vec::new())`).
-    /// The specific variant depends on environment — in CI with internet,
-    /// `api.github.com` returns 404 and we bucket into `RepoNotFound`; on
-    /// a sandboxed runner with no network we get `Network`. Both are
-    /// acceptable failure modes for the "graceful degradation on
-    /// failure" contract; what matters is that auth-blindness (the bug
-    /// `FindPrError` exists to prevent) cannot return `Ok(empty)`.
+    /// The lookup must surface an `Err` variant (not panic, not silently
+    /// return `Ok(Vec::new())`) when the request fails — auth-blindness
+    /// (the bug `FindPrError` exists to prevent) must never collapse to
+    /// `Ok(empty)`. Driven through the `_with_env` seam with the API base
+    /// pointed at a guaranteed-dead local URL (`127.0.0.1:1`) so the
+    /// transport always errors into `FindPrError::Network`. Firing at the
+    /// real `api.github.com` made the variant environment-dependent
+    /// (404→`RepoNotFound` with internet, transport-fail offline);
+    /// pinning the dead URL makes it deterministic and hermetic.
     #[test]
     fn find_open_pr_numbers_for_head_returns_err_on_failure() {
-        let result = find_open_pr_numbers_for_head(
+        let env = anodizer_core::MapEnvSource::new()
+            .with("ANODIZER_GITHUB_API_BASE", "http://127.0.0.1:1");
+        let result = find_open_pr_numbers_for_head_with_env(
             "this-org-does-not-exist-anodize",
             "neither-does-this-repo-anodize",
             "ghost",
             "branch",
             None,
             "KREW_INDEX_TOKEN",
+            &env,
         );
         assert!(
-            matches!(
-                result,
-                Err(FindPrError::Network { .. })
-                    | Err(FindPrError::RepoNotFound { .. })
-                    | Err(FindPrError::Auth401 { .. })
-                    | Err(FindPrError::Auth403 { .. })
-                    | Err(FindPrError::Other { .. })
-            ),
-            "expected Err, got {:?}",
+            matches!(result, Err(FindPrError::Network { .. })),
+            "expected Network err (dead URL), got {:?}",
             result
         );
     }
 
-    /// `close_pr_via_api` against a non-existent host should bucket
-    /// into `Failed(_)` (transport-error variant), not panic.
+    /// `close_pr_via_api` against an unreachable target must bucket into
+    /// `Failed(_)` (transport-error variant), not panic. Driven through
+    /// the `_with_env` seam with the GitHub API base pointed at a
+    /// guaranteed-dead local URL (`127.0.0.1:1`) so the transport always
+    /// errors — firing at the real `api.github.com` made this flaky, since
+    /// a reachable host returning 404 classifies as `AlreadyClosed`, not
+    /// `Failed`. Hermetic: no process-env mutation, no network egress.
     #[test]
     fn close_pr_via_api_failed_when_target_unreachable() {
-        let result = close_pr_via_api(
+        let env = anodizer_core::MapEnvSource::new()
+            .with("ANODIZER_GITHUB_API_BASE", "http://127.0.0.1:1");
+        let result = close_pr_via_api_with_env(
             "this-org-does-not-exist-anodize",
             "neither-does-this-repo-anodize",
             999,
             "ghs_invalidtoken",
+            &env,
         );
         assert!(matches!(result, CloseOutcome::Failed(_)));
     }

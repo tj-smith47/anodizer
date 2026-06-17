@@ -775,18 +775,12 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    #[serial]
     fn test_resolve_with_os_default() {
-        // Clear env vars that might interfere
-        // SAFETY: test-only, no concurrent env var access in these serial tests
-        unsafe {
-            std::env::remove_var("TARGET");
-            std::env::remove_var("ANODIZER_OS");
-            std::env::remove_var("ANODIZER_ARCH");
-        }
+        // Empty env drives the host-fallback branch without mutating process env.
+        let env = crate::MapEnvSource::new();
 
         let config = None; // defaults to "os"
-        let target = resolve_partial_target(&config).unwrap();
+        let target = resolve_partial_target_with_env(&config, &env).unwrap();
 
         // Should be an OsArch with the host's OS
         match target {
@@ -799,19 +793,13 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_resolve_with_by_target() {
-        // SAFETY: test-only, no concurrent env var access in these serial tests
-        unsafe {
-            std::env::remove_var("TARGET");
-            std::env::remove_var("ANODIZER_OS");
-            std::env::remove_var("ANODIZER_ARCH");
-        }
+        let env = crate::MapEnvSource::new();
 
         let config = Some(PartialConfig {
             by: Some("target".to_string()),
         });
-        let target = resolve_partial_target(&config).unwrap();
+        let target = resolve_partial_target_with_env(&config, &env).unwrap();
 
         // Should be an Exact match with the full host triple
         match target {
@@ -823,43 +811,37 @@ mod tests {
     }
 
     #[test]
-    #[serial]
     fn test_resolve_invalid_by_value() {
-        // SAFETY: test-only, no concurrent env var access in these serial tests
-        unsafe {
-            std::env::remove_var("TARGET");
-            std::env::remove_var("ANODIZER_OS");
-            std::env::remove_var("ANODIZER_ARCH");
-        }
+        let env = crate::MapEnvSource::new();
 
         let config = Some(PartialConfig {
             by: Some("invalid".to_string()),
         });
-        let err = resolve_partial_target(&config).unwrap_err();
+        let err = resolve_partial_target_with_env(&config, &env).unwrap_err();
         assert!(err.to_string().contains("unknown value"), "got: {}", err);
     }
 
     #[test]
-    #[serial]
     fn test_resolve_by_os_works_and_legacy_goos_rejected() {
-        // SAFETY: test-only, no concurrent env var access in these serial tests
-        unsafe {
-            std::env::remove_var("TARGET");
-            std::env::remove_var("ANODIZER_OS");
-            std::env::remove_var("ANODIZER_ARCH");
-        }
+        let env = crate::MapEnvSource::new();
 
-        let ok = resolve_partial_target(&Some(PartialConfig {
-            by: Some("os".to_string()),
-        }))
+        let ok = resolve_partial_target_with_env(
+            &Some(PartialConfig {
+                by: Some("os".to_string()),
+            }),
+            &env,
+        )
         .unwrap();
         assert!(matches!(ok, PartialTarget::OsArch { arch: None, .. }));
 
         // The Go-named `goos` value was hard-renamed to `os`; the old
         // spelling must no longer resolve.
-        let err = resolve_partial_target(&Some(PartialConfig {
-            by: Some("goos".to_string()),
-        }))
+        let err = resolve_partial_target_with_env(
+            &Some(PartialConfig {
+                by: Some("goos".to_string()),
+            }),
+            &env,
+        )
         .unwrap_err();
         assert!(err.to_string().contains("unknown value"), "got: {}", err);
     }

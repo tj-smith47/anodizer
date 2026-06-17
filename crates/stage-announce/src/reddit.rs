@@ -252,7 +252,9 @@ mod tests {
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             unsafe {
+                // env-ok: #[serial(announce_env)] + env_mutex; per-test API-base redirect
                 std::env::remove_var("ANODIZE_REDDIT_TOKEN_BASE");
+                // env-ok: #[serial(announce_env)] + env_mutex; per-test API-base redirect
                 std::env::remove_var("ANODIZE_REDDIT_OAUTH_BASE");
             }
         }
@@ -260,7 +262,9 @@ mod tests {
     fn set_bases(addr: std::net::SocketAddr) -> EnvGuard {
         let base = format!("http://{addr}");
         unsafe {
+            // env-ok: #[serial(announce_env)] + env_mutex; per-test API-base redirect
             std::env::set_var("ANODIZE_REDDIT_TOKEN_BASE", &base);
+            // env-ok: #[serial(announce_env)] + env_mutex; per-test API-base redirect
             std::env::set_var("ANODIZE_REDDIT_OAUTH_BASE", &base);
         }
         EnvGuard
@@ -287,7 +291,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(announce_env)]
     fn send_reddit_two_step_flow_token_then_submit() {
         let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         let (addr, log) = spawn_scripted_responder(vec![
@@ -346,7 +350,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(announce_env)]
     fn send_reddit_token_fetch_failure_aborts_before_submit() {
         let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         // A 401 on the token leg must surface and NOT fire the submit POST.
@@ -369,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
+    #[serial_test::serial(announce_env)]
     fn send_reddit_submit_json_errors_surface() {
         let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
         // Reddit returns HTTP 200 even on a logical submit rejection; a

@@ -49,12 +49,18 @@ pub fn cloudsmith_format_matches(filename: &str, formats: &[impl AsRef<str>]) ->
 /// Cloudsmith API base URL (used for files/create and packages/upload/*).
 const CLOUDSMITH_API_BASE: &str = "https://api.cloudsmith.io/v1";
 
-/// Resolve the Cloudsmith API base URL. Defaults to [`CLOUDSMITH_API_BASE`];
-/// `ANODIZE_CLOUDSMITH_API_BASE` overrides it so tests can point the 3-step
-/// upload flow at a local responder without a real network call. The env
-/// read is the only test seam — production runs never set the variable.
-fn cloudsmith_api_base() -> String {
-    std::env::var("ANODIZE_CLOUDSMITH_API_BASE").unwrap_or_else(|_| CLOUDSMITH_API_BASE.to_string())
+/// Resolve the Cloudsmith API base URL from an injected [`EnvSource`].
+/// Defaults to [`CLOUDSMITH_API_BASE`]; `ANODIZE_CLOUDSMITH_API_BASE` overrides
+/// it so tests can point the 3-step upload flow (files/create → S3 presigned →
+/// packages/upload) at a local responder without a real network call. Threading
+/// the read through an `EnvSource` (rather than `std::env::var`) lets a test
+/// inject the base via a [`MapEnvSource`](anodizer_core::MapEnvSource) without
+/// mutating the process env — eliminating the cross-test race where one test's
+/// base pointed another test's HTTP call at a torn-down listener. Production
+/// never sets the variable.
+fn cloudsmith_api_base_from<E: anodizer_core::EnvSource + ?Sized>(env: &E) -> String {
+    env.var("ANODIZE_CLOUDSMITH_API_BASE")
+        .unwrap_or_else(|| CLOUDSMITH_API_BASE.to_string())
 }
 
 /// Build the CloudSmith upload URL for the given org, repo, format, and distribution.
@@ -826,7 +832,7 @@ pub(crate) fn publish_to_cloudsmith(
             // step-3 409-recovery path below can re-issue the same query
             // when an upload races against another concurrent CI loop
             // submitting the same package between pre-check and step-3.
-            let api_base = cloudsmith_api_base();
+            let api_base = cloudsmith_api_base_from(ctx.env_source());
             let check_url = format!("{}/packages/{}/{}/", api_base, organization, repository);
             let check_query = format!("filename:{}", art_name);
             if !republish {
@@ -1135,7 +1141,7 @@ pub(crate) fn publish_to_cloudsmith(
                 for pkg_name in &prune_package_names {
                     prune_cloudsmith_versions(
                         &client,
-                        &cloudsmith_api_base(),
+                        &cloudsmith_api_base_from(ctx.env_source()),
                         &organization,
                         &repository,
                         pkg_name,
@@ -1548,6 +1554,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
         let client = anodizer_core::http::blocking_client(std::time::Duration::from_secs(30))
             .context("cloudsmith: failed to build HTTP client for rollback")?;
         let policy = ctx.retry_policy();
+        let env = ctx.env_source_arc();
 
         let mut deleted = 0usize;
         let mut already_absent = 0usize;
@@ -1572,7 +1579,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
 
             let url = format!(
                 "{}/packages/{}/{}/{}/",
-                cloudsmith_api_base(),
+                cloudsmith_api_base_from(env.as_ref()),
                 target.org,
                 target.repo,
                 slug
@@ -2308,7 +2315,6 @@ mod tests {
     /// out of the loop) would serve only 4 (1 files/create + 1 presigned +
     /// 2 package-creates). The connection count is the load-bearing assertion.
     #[test]
-    #[serial_test::serial]
     fn cloudsmith_multi_distribution_stages_one_file_per_distro() {
         use anodizer_core::MapEnvSource;
         use anodizer_core::config::CloudSmithDistributions;
@@ -2379,11 +2385,6 @@ mod tests {
                 .with("CLOUDSMITH_TOKEN", "fake-token")
                 .with("ANODIZE_CLOUDSMITH_API_BASE", &base),
         );
-        // `cloudsmith_api_base()` reads the process env (not ctx.env_var),
-        // so the base override must be set there too. Serialized via #[serial].
-        unsafe {
-            std::env::set_var("ANODIZE_CLOUDSMITH_API_BASE", &base);
-        }
 
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::LinuxPackage,
@@ -2397,10 +2398,6 @@ mod tests {
 
         let log = StageLogger::new("cloudsmith", Verbosity::Quiet);
         let result = publish_to_cloudsmith(&ctx, &log);
-
-        unsafe {
-            std::env::remove_var("ANODIZE_CLOUDSMITH_API_BASE");
-        }
 
         let uploaded = result.expect("multi-distribution upload should succeed");
         // One CloudsmithTarget recorded per distribution package-create.
@@ -2517,14 +2514,12 @@ mod tests {
     // These tests redirect ALL Cloudsmith API traffic to an in-process TCP
     // responder via the `ANODIZE_CLOUDSMITH_API_BASE` env seam, then drive a
     // real `publish_to_cloudsmith` and assert on the recorded request log
-    // (method / path / body). Every one mutates the process env (the base
-    // override) so all are `#[serial_test::serial]` and hold the shared
-    // `env_mutex` across the publish call — `cloudsmith_api_base()` reads
-    // `std::env::var`, not `ctx.env_var`, so the override must live in the
-    // process env for the duration of the run.
+    // (method / path / body). The base override is injected per-test through
+    // each Context's `MapEnvSource` (`cloudsmith_api_base_from` reads it via
+    // `ctx.env_source()`), so nothing touches the process env and the tests
+    // run concurrently — no `#[serial_test::serial]`, no shared `env_mutex`.
 
     use anodizer_core::log::{StageLogger, Verbosity};
-    use anodizer_core::test_helpers::env::env_mutex;
     use anodizer_core::test_helpers::scripted_responder::{
         RequestLog, ScriptedRoute, spawn_scripted_responder_with,
     };
@@ -2615,7 +2610,6 @@ mod tests {
     /// the files/create `identifier` and the configured `distribution`, and
     /// the returned target captures the response `slug_perm`.
     #[test]
-    #[serial_test::serial]
     fn live_deb_full_three_step_records_slug_and_routes_deb() {
         use anodizer_core::config::CloudSmithDistributions;
 
@@ -2670,11 +2664,7 @@ mod tests {
             None,
         );
 
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
-        unsafe { std::env::set_var("ANODIZE_CLOUDSMITH_API_BASE", &base) };
         let result = publish_to_cloudsmith(&ctx, &StageLogger::new("cloudsmith", Verbosity::Quiet));
-        unsafe { std::env::remove_var("ANODIZE_CLOUDSMITH_API_BASE") };
-        drop(_g);
 
         let uploaded = result.expect("happy-path upload");
         assert_eq!(uploaded.len(), 1);
@@ -2782,11 +2772,7 @@ mod tests {
         extra_cfg(&mut cfg);
         let ctx = ctx_with_one_artifact(cfg, &base, kind, art_name, art.clone(), None);
 
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
-        unsafe { std::env::set_var("ANODIZE_CLOUDSMITH_API_BASE", &base) };
         let result = publish_to_cloudsmith(&ctx, &StageLogger::new("cloudsmith", Verbosity::Quiet));
-        unsafe { std::env::remove_var("ANODIZE_CLOUDSMITH_API_BASE") };
-        drop(_g);
         result.expect("upload should succeed");
         let entries = log.lock().unwrap();
         entries.clone()
@@ -2794,7 +2780,6 @@ mod tests {
 
     /// `.rpm` routes step 3 to `/upload/rpm/`.
     #[test]
-    #[serial_test::serial]
     fn live_rpm_routes_to_upload_rpm() {
         let log = run_one_format(
             "app-1.0.0.x86_64.rpm",
@@ -2811,7 +2796,6 @@ mod tests {
     /// `.src.rpm` is a distinct format slug: step 3 routes to `/upload/srpm/`,
     /// NOT `/upload/rpm/` (the suffix overlap is resolved in `detect_format`).
     #[test]
-    #[serial_test::serial]
     fn live_src_rpm_routes_to_upload_srpm() {
         let log = run_one_format(
             "app-1.0.0.src.rpm",
@@ -2832,7 +2816,6 @@ mod tests {
 
     /// `.apk` maps to the API-side `alpine` slug: step 3 -> `/upload/alpine/`.
     #[test]
-    #[serial_test::serial]
     fn live_apk_routes_to_upload_alpine() {
         let log = run_one_format(
             "app-1.0.0.apk",
@@ -2849,7 +2832,6 @@ mod tests {
     /// A non-package Archive (`.zip`) detects as the `raw` format and routes
     /// step 3 to `/upload/raw/` (the `detect_format` fallback slug).
     #[test]
-    #[serial_test::serial]
     fn live_zip_archive_routes_to_upload_raw() {
         let log = run_one_format(
             "app-1.0.0.zip",
@@ -2866,7 +2848,6 @@ mod tests {
     /// `component:` is included in the step-3 body for `deb` (a
     /// component-bearing format).
     #[test]
-    #[serial_test::serial]
     fn live_deb_includes_component_in_body() {
         let log = run_one_format(
             "app_1.0.0_amd64.deb",
@@ -2888,7 +2869,6 @@ mod tests {
     /// `component:` is DROPPED from the step-3 body for `rpm` (rpm is not in
     /// `COMPONENT_BEARING_FORMATS`); the upload still succeeds.
     #[test]
-    #[serial_test::serial]
     fn live_rpm_drops_component_from_body() {
         let log = run_one_format(
             "app-1.0.0.x86_64.rpm",
@@ -2910,7 +2890,6 @@ mod tests {
     /// `republish: true` puts `"republish": true` into the step-3 body so
     /// Cloudsmith overwrites an existing package rather than 409ing.
     #[test]
-    #[serial_test::serial]
     fn live_republish_sets_republish_flag_in_body() {
         let log = run_one_format(
             "app_1.0.0_amd64.deb",
@@ -2968,11 +2947,7 @@ mod tests {
             retry,
         );
 
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
-        unsafe { std::env::set_var("ANODIZE_CLOUDSMITH_API_BASE", &base) };
         let result = publish_to_cloudsmith(&ctx, &StageLogger::new("cloudsmith", Verbosity::Quiet));
-        unsafe { std::env::remove_var("ANODIZE_CLOUDSMITH_API_BASE") };
-        drop(_g);
         let entries = log.lock().unwrap().clone();
         (result, entries)
     }
@@ -2996,7 +2971,6 @@ mod tests {
     /// republish=false + a pre-check that reports the same md5 ⇒ the upload
     /// is skipped (idempotent): no files/create, no step-3, empty targets.
     #[test]
-    #[serial_test::serial]
     fn live_precheck_skip_idempotent_when_md5_matches() {
         let md5 = md5_hex_of(b"deb-bytes");
         let body: &'static str = Box::leak(
@@ -3018,7 +2992,6 @@ mod tests {
     /// republish=false + a pre-check reporting a DIFFERENT md5 ⇒ bail with a
     /// conflict error naming both md5s; nothing is uploaded.
     #[test]
-    #[serial_test::serial]
     fn live_precheck_bails_on_md5_mismatch() {
         let (result, log) = run_deb_with_routes(
             move |_base| {
@@ -3042,7 +3015,6 @@ mod tests {
     /// A files/create that 4xxs surfaces the HTTP status and the response
     /// body in the error chain (and does not retry — 4xx fast-fails).
     #[test]
-    #[serial_test::serial]
     fn live_files_create_4xx_surfaces_body() {
         let (result, log) = run_deb_with_routes(
             move |_base| {
@@ -3069,7 +3041,6 @@ mod tests {
     /// A files/create 200 whose JSON lacks `identifier` is a contract
     /// violation: bail with a message naming the missing field + artifact.
     #[test]
-    #[serial_test::serial]
     fn live_files_create_missing_identifier_errors() {
         let (result, _log) = run_deb_with_routes(
             move |base| {
@@ -3097,7 +3068,6 @@ mod tests {
 
     /// A files/create 200 missing `upload_url` bails naming that field.
     #[test]
-    #[serial_test::serial]
     fn live_files_create_missing_upload_url_errors() {
         let (result, _log) = run_deb_with_routes(
             move |_base| {
@@ -3122,7 +3092,6 @@ mod tests {
     /// A files/create that returns a 200 with a non-JSON body bails with the
     /// "non-JSON body" diagnostic (the parse-context branch).
     #[test]
-    #[serial_test::serial]
     fn live_files_create_non_json_errors() {
         let (result, _log) = run_deb_with_routes(
             move |_base| {
@@ -3145,7 +3114,6 @@ mod tests {
     /// exhausted, so the unlimited 200 route serves attempt 2. Two recorded
     /// files/create calls prove the retry actually happened.
     #[test]
-    #[serial_test::serial]
     fn live_files_create_5xx_then_success_retries() {
         let (result, log) = run_deb_with_routes(
             move |base| {
@@ -3193,7 +3161,6 @@ mod tests {
 
     /// A missing artifact file bails before any HTTP call.
     #[test]
-    #[serial_test::serial]
     fn live_missing_artifact_file_bails() {
         let (addr, log) = spawn_scripted_responder_with(|_| Vec::new());
         let base = format!("http://{addr}");
@@ -3213,11 +3180,7 @@ mod tests {
             PathBuf::from("/nonexistent/app_1.0.0_amd64.deb"),
             None,
         );
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
-        unsafe { std::env::set_var("ANODIZE_CLOUDSMITH_API_BASE", &base) };
         let result = publish_to_cloudsmith(&ctx, &StageLogger::new("cloudsmith", Verbosity::Quiet));
-        unsafe { std::env::remove_var("ANODIZE_CLOUDSMITH_API_BASE") };
-        drop(_g);
         let err = result.expect_err("missing file must bail").to_string();
         assert!(err.contains("artifact file not found"), "{err}");
         assert!(
@@ -3229,7 +3192,6 @@ mod tests {
     /// When no artifact matches the format filter, the publisher reports the
     /// no-match status and returns an empty target list (no HTTP traffic).
     #[test]
-    #[serial_test::serial]
     fn live_no_matching_artifacts_is_noop() {
         // A `.rpm` artifact but a `deb`-only filter ⇒ zero matches.
         let log = {
@@ -3252,12 +3214,8 @@ mod tests {
                 art.clone(),
                 None,
             );
-            let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
-            unsafe { std::env::set_var("ANODIZE_CLOUDSMITH_API_BASE", &base) };
             let result =
                 publish_to_cloudsmith(&ctx, &StageLogger::new("cloudsmith", Verbosity::Quiet));
-            unsafe { std::env::remove_var("ANODIZE_CLOUDSMITH_API_BASE") };
-            drop(_g);
             assert!(result.expect("no-match is ok").is_empty());
             log
         };
@@ -3267,7 +3225,6 @@ mod tests {
     /// step-3 response carrying only `slug` (not `slug_perm`) still captures
     /// the slug into the recorded target (the `or_else` fallback key).
     #[test]
-    #[serial_test::serial]
     fn live_step3_slug_fallback_key() {
         let (result, _log) = run_deb_with_routes(
             move |base| {
@@ -3304,7 +3261,6 @@ mod tests {
     /// target (slug = None) so the upload is counted; rollback degrades to
     /// the warn-only path for it.
     #[test]
-    #[serial_test::serial]
     fn live_step3_no_slug_records_target_without_slug() {
         let (result, _log) = run_deb_with_routes(
             move |base| {
@@ -3387,7 +3343,6 @@ mod tests {
     /// concurrent uploader won the race) ⇒ idempotent skip: Ok, no target
     /// recorded, and the recovery re-query actually fired (2 GETs).
     #[test]
-    #[serial_test::serial]
     fn live_step3_409_recovers_as_idempotent_skip() {
         let md5 = md5_hex_of(b"deb-bytes");
         let recheck: &'static str = Box::leak(
@@ -3411,7 +3366,6 @@ mod tests {
     /// step-3 409 + a re-query showing a DIFFERENT md5 ⇒ surface the conflict
     /// (a concurrent uploader landed different bytes under our name).
     #[test]
-    #[serial_test::serial]
     fn live_step3_409_recovery_bails_on_md5_mismatch() {
         let (result, _log) = run_deb_with_routes(
             move |base| {
@@ -3437,7 +3391,6 @@ mod tests {
     /// not a same-name race) ⇒ the original step-3 error re-propagates instead
     /// of being silently swallowed.
     #[test]
-    #[serial_test::serial]
     fn live_step3_409_recovery_repropagates_when_not_found() {
         let (result, _log) = run_deb_with_routes(
             move |base| conflict_recovery_routes(base, "[]"),
@@ -3535,11 +3488,7 @@ mod tests {
         // disables it to protect the just-uploaded release).
         ctx.template_vars_mut().set("Version", version);
 
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
-        unsafe { std::env::set_var("ANODIZE_CLOUDSMITH_API_BASE", &base) };
         let result = publish_to_cloudsmith(&ctx, &StageLogger::new("cloudsmith", Verbosity::Quiet));
-        unsafe { std::env::remove_var("ANODIZE_CLOUDSMITH_API_BASE") };
-        drop(_g);
         result.expect("upload + prune should succeed");
         let entries = log.lock().unwrap();
         entries.clone()
@@ -3549,7 +3498,6 @@ mod tests {
     /// version's slug is DELETEd; the list query + delete are real HTTP, and
     /// the upload's own version is always retained.
     #[test]
-    #[serial_test::serial]
     fn live_prune_lists_and_deletes_oldest_version() {
         let list_body: &'static str = Box::leak(
             http_json(
@@ -3617,7 +3565,6 @@ mod tests {
     /// (100 entries, all the current version) then a short second page
     /// carrying the prunable old version. Two GETs prove pagination fired.
     #[test]
-    #[serial_test::serial]
     fn live_prune_paginates_until_short_page() {
         // Page 1: exactly PAGE_SIZE (100) entries, all version 0.9.1
         // (current), each a distinct slug. A full page forces a page-2 fetch.
@@ -3690,7 +3637,6 @@ mod tests {
     /// succeeded, so the publish still returns Ok and NO DELETE is issued
     /// (the warn-and-continue branch).
     #[test]
-    #[serial_test::serial]
     fn live_prune_list_4xx_is_nonfatal_and_deletes_nothing() {
         let log = run_prune(2, "0.9.1", move |_base| {
             vec![ScriptedRoute {
@@ -3714,7 +3660,6 @@ mod tests {
     /// the publish returns Ok (the upload succeeded) while the delete failure
     /// only warns. Proves the destructive follow-up can never fail the stage.
     #[test]
-    #[serial_test::serial]
     fn live_prune_delete_4xx_is_nonfatal() {
         let list_body: &'static str = Box::leak(
             http_json(
@@ -3757,7 +3702,6 @@ mod tests {
     /// but they DO render their config values against the active context —
     /// this pins that the rendered values reach the wire.
     #[test]
-    #[serial_test::serial]
     fn live_templated_org_repo_render_into_request_paths() {
         let tmp = tempfile::tempdir().unwrap();
         let art = tmp.path().join("app_1.0.0_amd64.deb");
@@ -3805,11 +3749,7 @@ mod tests {
             None,
         );
 
-        let _g = env_mutex().lock().unwrap_or_else(|e| e.into_inner());
-        unsafe { std::env::set_var("ANODIZE_CLOUDSMITH_API_BASE", &base) };
         let result = publish_to_cloudsmith(&ctx, &StageLogger::new("cloudsmith", Verbosity::Quiet));
-        unsafe { std::env::remove_var("ANODIZE_CLOUDSMITH_API_BASE") };
-        drop(_g);
 
         let uploaded = result.expect("templated org/repo upload ok");
         assert_eq!(uploaded.len(), 1);
@@ -3835,7 +3775,6 @@ mod tests {
     /// unobservable). Drives republish=false so the pre-check GET is on the
     /// route table too.
     #[test]
-    #[serial_test::serial]
     fn live_auth_header_present_on_every_cloudsmith_call() {
         let (result, log) = run_deb_with_routes(
             move |base| {

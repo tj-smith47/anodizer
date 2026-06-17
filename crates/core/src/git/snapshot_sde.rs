@@ -141,39 +141,29 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(snapshot_sde_env)]
     fn snapshot_sde_uses_env_var_when_set() {
         let dir = init_repo();
-        unsafe {
-            std::env::set_var("ANODIZE_SOURCE_DATE_EPOCH", "999999999");
-        }
-        let sde = resolve_snapshot_sde(dir.path()).unwrap();
+        // The env-var branch is driven through an injected source, not process env.
+        let env = crate::MapEnvSource::new().with("ANODIZE_SOURCE_DATE_EPOCH", "999999999");
+        let sde = resolve_snapshot_sde_with_env(dir.path(), &env).unwrap();
         assert_eq!(sde, 999_999_999);
-        unsafe {
-            std::env::remove_var("ANODIZE_SOURCE_DATE_EPOCH");
-        }
     }
 
     #[test]
-    #[serial_test::serial(snapshot_sde_env)]
     fn snapshot_sde_uses_head_when_tree_clean() {
-        unsafe {
-            std::env::remove_var("ANODIZE_SOURCE_DATE_EPOCH");
-        }
+        // Empty env → no ANODIZE_SOURCE_DATE_EPOCH → falls through to HEAD time.
+        let env = crate::MapEnvSource::new();
         let dir = init_repo();
-        let sde = resolve_snapshot_sde(dir.path()).unwrap();
+        let sde = resolve_snapshot_sde_with_env(dir.path(), &env).unwrap();
         assert_eq!(sde, 1_715_000_000);
     }
 
     #[test]
-    #[serial_test::serial(snapshot_sde_env)]
     fn snapshot_sde_uses_dirty_tree_hash_when_tree_dirty() {
-        unsafe {
-            std::env::remove_var("ANODIZE_SOURCE_DATE_EPOCH");
-        }
+        let env = crate::MapEnvSource::new();
         let dir = init_repo();
         fs::write(dir.path().join("b.txt"), "dirty").unwrap();
-        let sde = resolve_snapshot_sde(dir.path()).unwrap();
+        let sde = resolve_snapshot_sde_with_env(dir.path(), &env).unwrap();
         assert!(sde > 1_715_000_000);
         // The hash offset is bounded by u32::MAX (about 4.3e9). Verify it
         // sits in that range so the offset addition is bounded.
@@ -181,15 +171,12 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial(snapshot_sde_env)]
     fn snapshot_sde_is_stable_for_unchanged_dirty_tree() {
-        unsafe {
-            std::env::remove_var("ANODIZE_SOURCE_DATE_EPOCH");
-        }
+        let env = crate::MapEnvSource::new();
         let dir = init_repo();
         fs::write(dir.path().join("b.txt"), "dirty").unwrap();
-        let sde1 = resolve_snapshot_sde(dir.path()).unwrap();
-        let sde2 = resolve_snapshot_sde(dir.path()).unwrap();
+        let sde1 = resolve_snapshot_sde_with_env(dir.path(), &env).unwrap();
+        let sde2 = resolve_snapshot_sde_with_env(dir.path(), &env).unwrap();
         assert_eq!(sde1, sde2);
     }
 }
