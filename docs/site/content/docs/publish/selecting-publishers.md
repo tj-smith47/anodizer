@@ -7,14 +7,17 @@ template = "docs.html"
 
 Anodizer runs every configured publisher by default. Two flags narrow that set when
 you want a targeted release — `--publishers` (an allowlist) and `--skip` (a denylist).
-Both are available on `release`, `publish`, and `check config`, and both accept the
-same publisher vocabulary, so a selection that works on one command works on all three.
+Both are available on `release`, `publish`, `continue`, and `check config`, and both
+accept the same publisher vocabulary, so a selection that works on one command works on
+all of them. `continue` resumes a stalled release through the same publish pipeline, so
+it validates and honors the selectors identically — a typo there is rejected before any
+publisher runs, the same one-way-door guard the other commands carry.
 
 ## Allowlist vs denylist
 
 | Flag | Role | Effect when set |
 |------|------|-----------------|
-| `--publishers <a,b,…>` | allowlist | Only the named publishers run. Everything else is deselected. |
+| `--publishers <a,b,…>` | allowlist | Only the named publishers run. Every other publisher — including the irreversible publish stages `blob`, `snapcraft-publish`, `docker`, and `docker-sign` — is deselected. (The `release` stage that creates the GitHub release is the substrate the others depend on and is governed by `--skip=release` only; see the valid-names note below.) |
 | `--skip <a,b,…>` | denylist | The named stages **and** publishers are removed; everything else runs. |
 
 Both flags are comma-separated and may be repeated:
@@ -70,11 +73,24 @@ never drifts):
 | `schemastore` | publisher only |
 | `mcp` | publisher only |
 | `upstream-aur` | publisher only |
+| `blob` | the publish stage `blob` (object-store upload) |
+| `snapcraft-publish` | the publish stage `snapcraft-publish` (Snap Store upload) |
+| `docker` | the publish stage `docker` (image-registry push) |
+| `docker-sign` | the publish stage `docker-sign` (cosign signatures to the registry) |
 
 A name in the **yes** rows resolves the same whether you reach it through `--skip` (which
 also accepts stage tokens) or `--publishers`. The **publisher only** names have no stage
 of their own, so before this selection surface the only way to gate them was per-block
 config — now they honor `--skip`/`--publishers` uniformly at dispatch time.
+
+The last four names — `blob`, `snapcraft-publish`, `docker`, `docker-sign` — are publish
+**stages** rather than dispatch publishers, but each performs an external, irreversible
+push (an object store, the Snap Store, an image registry, registry signatures). They are
+therefore governed by the same selectors: `--publishers cargo` deselects them, and
+`--publishers blob` allow-lists a blob-only upload. The one exception is the `release`
+stage that creates the GitHub/GitLab/Gitea release: it is the substrate every other
+publisher depends on (manifests reference its assets; announce needs the release URL), so
+it is governed by `--skip=release` only and is never dropped by a `--publishers` allowlist.
 
 ### Canonical names: `homebrew`, not `brew`; `chocolatey`, not `choco`
 
@@ -141,6 +157,13 @@ deselected. The summary line is **distinguished**: it names the exact cause
 so you can confirm a publisher was turned off the way you intended. When both
 selectors apply to one publisher, `--skip` wins and the summary reports the
 denylist cause.
+
+The four publish **stages** (`blob`, `snapcraft-publish`, `docker`,
+`docker-sign`) run outside the dispatch loop, so a deselected one emits a
+single **distinguished** line at its stage — `skipped blob — not in
+--publishers allowlist` / `skipped docker — excluded via --skip` — rather than
+the dispatch-plus-summary pair. The cause is named the same way, so you still
+see exactly which selector turned it off.
 
 ```bash
 $ anodizer release --skip npm

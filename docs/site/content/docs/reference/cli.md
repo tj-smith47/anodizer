@@ -264,7 +264,8 @@ Resume a release after a transient failure or after `--prepare`/`--split`
 | `--merge` | — | — | Merge artifacts from split build jobs and run post-build stages |
 | `--dist` | — | — | Custom dist directory (overrides config) |
 | `--dry-run` | — | — | Run full pipeline without side effects |
-| `--skip` | — | — | Skip stages (comma-separated, e.g. docker,announce) |
+| `--skip` | — | — | Skip stages or publishers (comma-separated, e.g. docker,announce,npm). Unified denylist: a stage name skips the stage, a publisher name (npm, homebrew, chocolatey, …) skips that publisher. |
+| `--publishers` | — | — | Comma-separated publishers to run (default: all configured). --skip always wins over --publishers. |
 | `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
 
 
