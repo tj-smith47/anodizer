@@ -390,16 +390,16 @@ fn harness_skips_env_preflight_and_prints_header_and_config_warnings_once() {
         !stderr.contains("no release tags at HEAD"),
         "children must select the fixture crate from the tag, not no-op: {stderr}"
     );
-    // The build stage announces the compile as `running cargo zigbuild …`
-    // (zigbuild on PATH) or `running cargo build …` (fallback); one per
-    // child run. Anchoring on verb + subcommand keeps unrelated
-    // `running cargo <other>` body lines (e.g. a publish dry-run probe)
-    // out of the count.
-    let builds = stderr.matches("running cargo zigbuild").count()
-        + stderr.matches("running cargo build").count();
+    // Each child's build stage emits one default `built <crate>/<bin> for
+    // <target>` result line per compiled binary (the `running cargo …`
+    // command echo is verbose-only). The fixture declares a single binary,
+    // so a non-vacuous run contributes exactly one such line per child run.
+    let builds = stderr
+        .matches("built anodize-preflight-fixture/anodize-preflight-fixture for ")
+        .count();
     assert_eq!(
         builds, 2,
-        "expected one cargo build invocation per run (runs=2), got {builds}:\n{stderr}"
+        "expected one build-result line per run (runs=2), got {builds}:\n{stderr}"
     );
 
     let header_count = stderr.matches("Checking determinism").count();

@@ -3870,9 +3870,10 @@ fn test_e2e_skip_archive_and_checksum() {
         stderr
     );
 
-    // Build stage should have run (not skipped)
+    // Build stage should have run (not skipped). Anchor on the section
+    // header (the `running cargo …` command echo is verbose-only now).
     assert!(
-        stderr.contains("build"),
+        stderr.contains("Building binaries"),
         "stderr should mention the build stage, got:\n{}",
         stderr
     );
