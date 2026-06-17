@@ -62,6 +62,22 @@ fn determinism() -> &'static Value {
     &DETERMINISM
 }
 
+/// Parsed `download-preserved-dist` composite action. The release/publish
+/// jobs delegate dist-* artifact download to it, so the `pattern` +
+/// `merge-multiple` invariant lives here rather than inline in `release.yml`.
+static DOWNLOAD_PRESERVED_DIST: LazyLock<Value> = LazyLock::new(|| {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../.github/actions/download-preserved-dist/action.yml"
+    );
+    let raw = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+    serde_yaml_ng::from_str(&raw).unwrap_or_else(|e| panic!("parse {path}: {e}"))
+});
+
+fn download_preserved_dist() -> &'static Value {
+    &DOWNLOAD_PRESERVED_DIST
+}
+
 fn jobs(wf: &Value) -> &serde_yaml_ng::Mapping {
     wf.get("jobs")
         .and_then(Value::as_mapping)
@@ -277,14 +293,35 @@ fn release_job_downloads_dist_artifacts_with_merge_multiple() {
         .and_then(Value::as_sequence)
         .expect("release.yml: `release:` job missing `steps:`");
 
-    let download = steps
+    // Dist-* artifact download is delegated to the `download-preserved-dist`
+    // composite action (the inline `actions/download-artifact` step was hoisted
+    // there in the CI-dedup refactor). The release job must still reference it.
+    assert!(
+        steps.iter().any(|s| {
+            s.get("uses")
+                .and_then(Value::as_str)
+                .is_some_and(|u| u.starts_with("./.github/actions/download-preserved-dist"))
+        }),
+        "release.yml: `release:` job must download dist via the \
+         `download-preserved-dist` composite action"
+    );
+
+    // The pattern + merge-multiple guarantee now lives inside that composite:
+    // its `actions/download-artifact` step must collapse every per-shard
+    // `dist-*` tree into a single dist/.
+    let action_steps = download_preserved_dist()
+        .get("runs")
+        .and_then(|r| r.get("steps"))
+        .and_then(Value::as_sequence)
+        .expect("download-preserved-dist: missing `runs.steps:`");
+    let download = action_steps
         .iter()
         .find(|s| {
             s.get("uses")
                 .and_then(Value::as_str)
                 .is_some_and(|u| u.starts_with("actions/download-artifact"))
         })
-        .expect("release.yml: `release:` job must download artifacts");
+        .expect("download-preserved-dist: must use actions/download-artifact");
 
     let with = download.get("with").expect("download step missing `with:`");
     let pattern = with
