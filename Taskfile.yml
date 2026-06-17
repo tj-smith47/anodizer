@@ -187,6 +187,11 @@ tasks:
     cmds:
       - .claude/scripts/audit-log-status.sh
 
+  audit:test-isolation:
+    desc: "Guard: no unjustified process-global env mutation in tests (serial/seam/env-ok)."
+    cmds:
+      - .claude/scripts/audit-test-isolation.sh
+
   lint:
     desc: Local pre-commit check (tidy, clippy, build, snapshot dry-run)
     cmds:
@@ -195,6 +200,7 @@ tasks:
       - task: build
       - task: snapshot
       - task: audit:log
+      - task: audit:test-isolation
 
   ci:
     desc: Run all CI checks (everything except cross-platform builds)
