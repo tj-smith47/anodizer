@@ -195,10 +195,13 @@ fn render_top_level_cask_inner(
                 cask_cfg.ids.as_deref().unwrap_or(&[])
             );
         }
-        log.status(&format!(
-            "skipped cask '{}' — no macOS artifact in scope (not applicable)",
-            cask_name
-        ));
+        log.skip_line(
+            ctx.options.show_skipped,
+            &format!(
+                "skipped cask '{}' — no macOS artifact in scope (not applicable)",
+                cask_name
+            ),
+        );
         return Ok(None);
     };
 

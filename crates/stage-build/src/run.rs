@@ -313,10 +313,13 @@ fn plan_build_jobs(
                         ..Default::default()
                     }]
                 } else {
-                    log.status(&format!(
-                        "skipped build for crate '{}' — no builds configured and no binary target found",
-                        crate_cfg.name
-                    ));
+                    log.skip_line(
+                        ctx.options.show_skipped,
+                        &format!(
+                            "skipped build for crate '{}' — no builds configured and no binary target found",
+                            crate_cfg.name
+                        ),
+                    );
                     continue;
                 }
             }
@@ -366,10 +369,13 @@ fn plan_build_jobs(
             // `binary:` field would otherwise fall back to the crate
             // name and `cargo build --bin <library-name>` would fail.
             if build.binary.is_none() && !crate_has_binary_target(&crate_cfg.path) {
-                log.status(&format!(
-                    "skipped build for crate '{}' — no explicit binary, no binary target found",
-                    crate_cfg.name
-                ));
+                log.skip_line(
+                    ctx.options.show_skipped,
+                    &format!(
+                        "skipped build for crate '{}' — no explicit binary, no binary target found",
+                        crate_cfg.name
+                    ),
+                );
                 continue;
             }
 

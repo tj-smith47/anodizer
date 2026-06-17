@@ -63,7 +63,8 @@ impl Stage for super::ChangelogStage {
                 .map(|c| c.resolved_snapshot())
                 .unwrap_or(false);
             if !snapshot_opt_in {
-                log.status(
+                log.skip_line(
+                    ctx.options.show_skipped,
                     "skipped changelog — snapshot mode (set `changelog.snapshot: true` to render)",
                 );
                 return Ok(());

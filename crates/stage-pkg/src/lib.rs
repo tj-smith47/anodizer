@@ -930,19 +930,20 @@ impl Stage for PkgStage {
 
                     // Warn and skip if no source artifacts found
                     if filtered.is_empty() && source_artifacts.is_empty() {
-                        if use_mode == "appbundle" {
-                            log.warn(&format!(
+                        let msg = if use_mode == "appbundle" {
+                            format!(
                                 "skipped PKG generation for crate '{}' — no appbundle artifacts \
                              found (expected Installer artifacts with format=appbundle)",
                                 krate.name
-                            ));
+                            )
                         } else {
-                            log.warn(&format!(
+                            format!(
                                 "skipped PKG generation for crate '{}' — no macOS binary \
                              artifacts found (expected binaries targeting darwin/apple)",
                                 krate.name
-                            ));
-                        }
+                            )
+                        };
+                        log.skip_line(ctx.options.show_skipped, &msg);
                         continue;
                     }
                     if filtered.is_empty() {

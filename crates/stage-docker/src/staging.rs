@@ -96,10 +96,13 @@ pub(crate) fn stage_artifacts_v2(
         }
 
         if platform_artifact_count == 0 {
-            log.warn(&format!(
-                "no binaries found for platform {} — check ids/binary filters",
-                platform
-            ));
+            log.skip_line(
+                ctx.options.show_skipped,
+                &format!(
+                    "skipped docker image for platform {} — no binaries (check ids/binary filters)",
+                    platform
+                ),
+            );
         }
     }
     Ok(())

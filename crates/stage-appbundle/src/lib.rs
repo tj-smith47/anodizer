@@ -426,11 +426,14 @@ impl Stage for AppBundleStage {
 
                     // Warn and skip if no darwin binaries found
                     if filtered.is_empty() && darwin_binaries.is_empty() {
-                        log.warn(&format!(
-                            "skipped app bundle generation for crate '{}' — no macOS binary \
+                        log.skip_line(
+                            ctx.options.show_skipped,
+                            &format!(
+                                "skipped app bundle generation for crate '{}' — no macOS binary \
                          artifacts found (expected binaries targeting darwin/apple)",
-                            krate.name
-                        ));
+                                krate.name
+                            ),
+                        );
                         continue;
                     }
                     if filtered.is_empty() {

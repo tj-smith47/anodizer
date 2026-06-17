@@ -78,10 +78,10 @@ impl Stage for ArchiveStage {
                 let has_any_meta = archive_cfgs.iter().any(|cfg| cfg.meta.unwrap_or(false));
 
                 if all_binaries.is_empty() && !has_any_meta {
-                    ctx.strict_guard(
-                        &log,
+                    log.skip_line(
+                        ctx.options.show_skipped,
                         &format!("skipped archive for crate {crate_name} — no binaries"),
-                    )?;
+                    );
                     continue;
                 }
 

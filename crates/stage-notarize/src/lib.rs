@@ -55,7 +55,7 @@ impl Stage for NotarizeStage {
             && d.try_evaluates_to_true(|s| ctx.render_template(s))
                 .with_context(|| "notarize: evaluate top-level skip expression")?
         {
-            log.status("notarization skipped");
+            log.skip_line(ctx.options.show_skipped, "notarization skipped");
             return Ok(());
         }
 

@@ -5614,3 +5614,64 @@ fn mode_a_artifact_path_does_not_leak_into_name_or_templated_files() {
         "ArtifactPath leaked into templated_files body (should be empty)"
     );
 }
+
+/// The per-crate "crate has no binaries" skip is a no-op the archive stage
+/// emits once per binary-less workspace member (a library crate). In a
+/// workspace of N such crates it would print N near-identical lines at
+/// default verbosity, so it routes through
+/// `log.skip_line(ctx.options.show_skipped, …)` — Debug by default (invisible
+/// at Normal and Verbose), Status only under `--show-skipped`. These tests
+/// pin that visibility contract on the message the stage emits at `run.rs`.
+mod no_binaries_skip_visibility {
+    use anodizer_core::context::ContextOptions;
+    use anodizer_core::log::{LogCapture, LogLevel, StageLogger, Verbosity};
+
+    /// Drive the archive skip line at the given `show_skipped` and verbosity,
+    /// returning the recorded `(level, message)` lines.
+    fn capture_archive_skip(show_skipped: bool, verbosity: Verbosity) -> Vec<(LogLevel, String)> {
+        let opts = ContextOptions {
+            show_skipped,
+            ..Default::default()
+        };
+        let log = StageLogger::new("archive", verbosity);
+        let cap = LogCapture::new();
+        let log = log.with_capture_handle(cap.clone());
+        log.skip_line(
+            opts.show_skipped,
+            "skipped archive for crate lib-only — no binaries",
+        );
+        cap.all_messages()
+    }
+
+    #[test]
+    fn no_binaries_skip_is_debug_level_by_default() {
+        // Default (show_skipped=false, Normal): the per-crate no-binaries line
+        // records at Debug, NOT Status, so a library-heavy workspace does not
+        // emit one such line per member at default verbosity.
+        let lines = capture_archive_skip(false, Verbosity::Normal);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].0, LogLevel::Debug, "{lines:?}");
+        assert!(lines[0].1.contains("no binaries"), "{lines:?}");
+        assert!(
+            lines.iter().all(|(l, _)| *l != LogLevel::Status),
+            "no-binaries skip must not record at Status by default: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn no_binaries_skip_stays_debug_at_verbose() {
+        // `-v` alone must NOT surface the skip — it is per-crate no-op noise,
+        // not subprocess detail; only `--show-skipped` promotes it.
+        let lines = capture_archive_skip(false, Verbosity::Verbose);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].0, LogLevel::Debug, "{lines:?}");
+    }
+
+    #[test]
+    fn no_binaries_skip_surfaces_with_show_skipped() {
+        // --show-skipped forces the line back to Status for diagnosis.
+        let lines = capture_archive_skip(true, Verbosity::Normal);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].0, LogLevel::Status, "{lines:?}");
+    }
+}

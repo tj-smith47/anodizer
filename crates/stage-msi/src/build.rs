@@ -102,9 +102,13 @@ pub(super) fn process_msi_crate(
             continue;
         }
 
-        let Some(effective_binaries) =
-            filter_msi_binaries(msi_cfg, &windows_binaries, &krate.name, log)
-        else {
+        let Some(effective_binaries) = filter_msi_binaries(
+            msi_cfg,
+            &windows_binaries,
+            &krate.name,
+            log,
+            ctx.options.show_skipped,
+        ) else {
             continue;
         };
 
@@ -316,6 +320,7 @@ fn filter_msi_binaries(
     windows_binaries: &[Artifact],
     crate_name: &str,
     log: &anodizer_core::log::StageLogger,
+    show_skipped: bool,
 ) -> Option<Vec<(Option<String>, String)>> {
     let mut filtered: Vec<&Artifact> = windows_binaries.iter().collect();
 
@@ -350,11 +355,14 @@ fn filter_msi_binaries(
     }
 
     if filtered.is_empty() && windows_binaries.is_empty() {
-        log.warn(&format!(
-            "skipped MSI generation for crate '{}' — no Windows binary \
+        log.skip_line(
+            show_skipped,
+            &format!(
+                "skipped MSI generation for crate '{}' — no Windows binary \
              artifacts found (expected binaries targeting windows/msvc)",
-            crate_name
-        ));
+                crate_name
+            ),
+        );
         return None;
     }
     if filtered.is_empty() {

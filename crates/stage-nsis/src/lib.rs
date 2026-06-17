@@ -262,11 +262,14 @@ impl Stage for NsisStage {
 
                     // Warn and skip if no Windows binaries found
                     if filtered.is_empty() && windows_binaries.is_empty() {
-                        log.warn(&format!(
-                            "skipped NSIS generation for crate '{}' — no Windows binary \
+                        log.skip_line(
+                            ctx.options.show_skipped,
+                            &format!(
+                                "skipped NSIS generation for crate '{}' — no Windows binary \
                          artifacts found (expected binaries targeting windows)",
-                            krate.name
-                        ));
+                                krate.name
+                            ),
+                        );
                         continue;
                     }
                     if filtered.is_empty() {

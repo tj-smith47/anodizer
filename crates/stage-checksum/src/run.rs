@@ -172,9 +172,10 @@ impl Stage for ChecksumStage {
                 )?;
                 new_artifacts.push(combined_artifact);
             } else {
-                log.status(&format!(
-                    "skipped combined checksums file for crate {crate_name} — split mode"
-                ));
+                log.skip_line(
+                    ctx.options.show_skipped,
+                    &format!("skipped combined checksums file for crate {crate_name} — split mode"),
+                );
             }
 
             propagate_checksum_metadata(ctx, &artifact_checksums);

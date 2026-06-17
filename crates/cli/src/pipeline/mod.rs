@@ -182,6 +182,7 @@ impl Pipeline {
         // determinism-harness child) would otherwise drown its real
         // output in dozens of single-skip lines.
         let mut pending_skips: Vec<(&str, bool)> = Vec::new();
+        let show_skipped = ctx.options.show_skipped;
 
         for stage in &self.stages {
             let name = stage.name();
@@ -205,7 +206,7 @@ impl Pipeline {
                 continue;
             }
 
-            flush_skipped(log, &mut pending_skips);
+            flush_skipped(log, &mut pending_skips, show_skipped);
 
             // Write metadata.json + artifacts.json before the release stage
             // so that include_meta can attach them to the GitHub release.
@@ -270,7 +271,7 @@ impl Pipeline {
             }
         }
 
-        flush_skipped(log, &mut pending_skips);
+        flush_skipped(log, &mut pending_skips, show_skipped);
 
         // End-of-pipeline skip summary. Stages (sign, docker-sign, publisher)
         // record intentional per-sub-config skips via
@@ -305,8 +306,19 @@ impl Pipeline {
 ///
 /// Each `(name, no_binaries)` pair records one skipped stage in pipeline
 /// order; ordering within each row follows the pipeline.
-fn flush_skipped(log: &StageLogger, pending: &mut Vec<(&str, bool)>) {
+///
+/// These rows are diagnostic ("why didn't publish run for this snapshot?",
+/// "why did archive skip a library crate?") and at default verbosity they
+/// would bury the real output. They surface only under `--show-skipped`
+/// (`show`), mirroring [`StageLogger::skip_line`] so every no-op skip — the
+/// per-crate ones inside the stages and these consolidated pipeline rows —
+/// shares one visibility gate.
+fn flush_skipped(log: &StageLogger, pending: &mut Vec<(&str, bool)>, show: bool) {
     if pending.is_empty() {
+        return;
+    }
+    if !show {
+        pending.clear();
         return;
     }
     let join = |no_binaries: bool| -> Option<String> {
@@ -575,6 +587,9 @@ mod tests {
         p.add(Box::new(ChattyStage));
         let opts = ContextOptions {
             skip_stages: vec!["alpha".to_string()],
+            // The consolidated skip row is gated behind --show-skipped; this
+            // ordering test asserts the row is emitted, so opt in.
+            show_skipped: true,
             ..Default::default()
         };
         let mut ctx = Context::new(Config::default(), opts);
@@ -604,6 +619,9 @@ mod tests {
         p.add(Box::new(FailingGuardStage));
         let opts = ContextOptions {
             skip_stages: vec!["alpha".to_string()],
+            // The consolidated skip row is gated behind --show-skipped; this
+            // ordering test asserts the row is emitted, so opt in.
+            show_skipped: true,
             ..Default::default()
         };
         let mut ctx = Context::new(Config::default(), opts);
