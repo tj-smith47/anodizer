@@ -758,7 +758,7 @@ impl Context {
     /// named in both selectors reports the denylist cause.
     ///
     /// Shared by the dispatch chokepoint and the out-of-dispatch publish
-    /// stages (blob / snapcraft-publish / docker / docker-sign) so the
+    /// stages (blob / snapcraft-publish / docker / docker-sign / announce) so the
     /// "skipped X — excluded via --skip" / "… — not in --publishers allowlist"
     /// wording is identical everywhere a publisher is deselected. Call only
     /// when [`Self::publisher_deselected`] is `true`.

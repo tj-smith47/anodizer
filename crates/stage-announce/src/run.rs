@@ -64,6 +64,11 @@ pub(crate) fn evaluate_gate(report: Option<&PublishReport>, gate: AnnounceGate) 
 pub(crate) enum AnnounceDecision {
     /// Every short-circuit passed; the stage dispatches announcers.
     Proceed,
+    /// The operator excluded announce via `--publishers` (an allowlist
+    /// omitting it) or `--skip=announce`. Evaluated FIRST so a deselected
+    /// announce never reaches the template renders — neither the live path
+    /// nor the pre-publish guard does any work for a channel that won't fire.
+    Deselected,
     /// `announce.skip` rendered truthy.
     SkipBySkipTemplate,
     /// `announce.if` rendered falsy.
@@ -73,10 +78,14 @@ pub(crate) enum AnnounceDecision {
     GatedByReport { required_failures: usize },
 }
 
-/// Evaluate the three template/report short-circuits the real announce path
-/// applies — `announce.skip`, `announce.if`, and the `gate_on` PublishReport
-/// gate — in dispatch order, returning the first that fires (or
-/// [`AnnounceDecision::Proceed`]).
+/// Evaluate the announce stage's short-circuits — operator deselection
+/// (`--publishers` / `--skip`), then `announce.skip`, `announce.if`, and the
+/// `gate_on` PublishReport gate — in dispatch order, returning the first that
+/// fires (or [`AnnounceDecision::Proceed`]).
+///
+/// Deselection is checked FIRST so an operator who excluded announce never
+/// triggers a template render, and so both consumers short-circuit before any
+/// side effect.
 ///
 /// Read-only (never mutates `publish_report.announce_gated`); the caller owns
 /// any side effect. Both [`announce_body`] and [`announce_should_run`] derive
@@ -85,6 +94,10 @@ pub(crate) fn announce_decision(
     ctx: &mut Context,
     announce: &anodizer_core::config::AnnounceConfig,
 ) -> Result<AnnounceDecision> {
+    if ctx.publisher_deselected("announce") {
+        return Ok(AnnounceDecision::Deselected);
+    }
+
     if let Some(ref skip_val) = announce.skip {
         let should_skip = skip_val
             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
@@ -125,15 +138,6 @@ pub(crate) fn announce_should_run(
     ctx: &mut Context,
     announce: &anodizer_core::config::AnnounceConfig,
 ) -> Result<bool> {
-    // A deselected announce (`--publishers` omitting it, or `--skip=announce`)
-    // never dispatches, so the pre-publish render guard must report it as
-    // not-running — otherwise it would dry-render and flag templates for
-    // announcers that will never fire. Mirrors the same short-circuit in
-    // `announce_body`.
-    if ctx.publisher_deselected("announce") {
-        return Ok(false);
-    }
-
     Ok(matches!(
         announce_decision(ctx, announce)?,
         AnnounceDecision::Proceed
@@ -169,14 +173,20 @@ impl Stage for AnnounceStage {
 fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
     let log = ctx.logger("announce");
 
-    // Operator-selection gate. AnnounceStage broadcasts to webhooks/Slack/
-    // Twitter/Mastodon/Bluesky (external, irreversible sends) but runs as a
-    // pipeline stage OUTSIDE the trait-based dispatch chokepoint, so the
-    // uniform `--skip` / `--publishers` filter does not reach it. Consult
-    // `publisher_deselected("announce")` FIRST so an operator who ran
+    // Operator-selection gate, folded into `announce_decision` as its FIRST
+    // arm. AnnounceStage broadcasts to webhooks/Slack/Twitter/Mastodon/Bluesky
+    // (external, irreversible sends) but runs as a pipeline stage OUTSIDE the
+    // trait-based dispatch chokepoint, so the uniform `--skip` / `--publishers`
+    // filter does not reach it. The enum is the single source of truth for the
+    // deselect predicate (shared with the pre-publish guard), and it is
+    // evaluated here BEFORE snapshot/nightly/refresh so an operator who ran
     // `--publishers cargo` (or `--skip=announce`) does NOT re-broadcast on a
-    // partial re-publish. The skip is never silent.
-    if ctx.publisher_deselected("announce") {
+    // partial re-publish, with no side effect run first. Deselection needs no
+    // announce config, so this fires even when `config.announce` is absent
+    // (the deselect line wins over "no announce config"). The skip is never
+    // silent.
+    let announce = ctx.config.announce.clone().unwrap_or_default();
+    if let AnnounceDecision::Deselected = announce_decision(ctx, &announce)? {
         log.status(&ctx.deselected_reason("announce"));
         return Ok(());
     }
@@ -196,13 +206,10 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
     // Refresh Artifacts template var so announce templates can iterate artifacts.
     ctx.refresh_artifacts_var();
 
-    let announce = match ctx.config.announce.clone() {
-        Some(a) => a,
-        None => {
-            log.status("skipped announce — no announce config");
-            return Ok(());
-        }
-    };
+    if ctx.config.announce.is_none() {
+        log.status("skipped announce — no announce config");
+        return Ok(());
+    }
 
     // Refuse to broadcast a non-release version (snapshot / dirty /
     // 0.0.0-sentinel) to any announcer. A `--skip=publish` run reaches announce
@@ -215,8 +222,16 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
     // Single source of truth for the skip/if/gate_on decision (shared with
     // the pre-publish guard via `announce_should_run`). Only the
     // side-effecting bits — the log line and, on the gate path, the
-    // `announce_gated` mutation — live here.
+    // `announce_gated` mutation — live here. Deselection was already handled
+    // above (it short-circuits before any side effect), so it cannot recur.
     match announce_decision(ctx, &announce)? {
+        AnnounceDecision::Deselected => {
+            // Unreachable: the deselect short-circuit above runs first, before
+            // snapshot/nightly/refresh. Handled for exhaustiveness so a future
+            // reordering surfaces here rather than silently broadcasting.
+            log.status(&ctx.deselected_reason("announce"));
+            return Ok(());
+        }
         AnnounceDecision::Proceed => {}
         AnnounceDecision::SkipBySkipTemplate => {
             log.status("skipped announce — `skip` condition evaluated truthy");
@@ -842,6 +857,57 @@ mod gate_tests {
         assert!(
             announce_should_run(&mut ctx, &announce).expect("decision"),
             "a non-deselected announce must report as running",
+        );
+    }
+
+    /// Pins that the deselect short-circuit is driven by `announce_decision`
+    /// itself (the `Deselected` enum arm), NOT a predicate bolted on ahead of
+    /// it. `Deselected` must be the FIRST arm evaluated — it wins even when the
+    /// `skip` template would error — so a deselected announce never renders a
+    /// template for a channel that will not fire.
+    #[test]
+    fn announce_decision_returns_deselected_when_deselected() {
+        let opts = ContextOptions {
+            publisher_allowlist: vec!["cargo".to_string()],
+            ..Default::default()
+        };
+        // A `skip` template referencing an undefined var would error if
+        // rendered — proving the deselect arm short-circuits before it.
+        let mut config = broken_webhook_announce_config(&[]);
+        if let Some(announce) = config.announce.as_mut() {
+            announce.skip = Some(anodizer_core::config::StringOrBool::String(
+                "{{ NoSuchVar }}".to_string(),
+            ));
+        }
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        let announce = ctx.config.announce.clone().expect("announce config");
+        assert!(
+            matches!(
+                announce_decision(&mut ctx, &announce).expect("decision"),
+                AnnounceDecision::Deselected
+            ),
+            "a deselected announce must resolve to AnnounceDecision::Deselected \
+             before any skip-template render",
+        );
+    }
+
+    /// Control for the test above: with no selector, the same config does NOT
+    /// resolve to `Deselected` (the deselect arm is the only thing producing it).
+    #[test]
+    fn announce_decision_not_deselected_without_selector() {
+        let mut ctx = Context::new(
+            broken_webhook_announce_config(&[]),
+            ContextOptions::default(),
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        let announce = ctx.config.announce.clone().expect("announce config");
+        assert!(
+            !matches!(
+                announce_decision(&mut ctx, &announce).expect("decision"),
+                AnnounceDecision::Deselected
+            ),
+            "a non-deselected announce must not resolve to Deselected",
         );
     }
 

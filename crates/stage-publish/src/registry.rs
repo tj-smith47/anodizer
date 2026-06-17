@@ -641,9 +641,10 @@ pub const fn group_dispatch_order() -> [PublisherGroup; 3] {
 /// PIPELINE STAGE rather than the trait-based dispatch chokepoint, keyed by
 /// the stage's [`anodizer_core::stage::Stage::name`] token.
 ///
-/// These four stages each push to an external store/registry —
+/// These five stages each fire an external, irreversible publish —
 /// `blob` (object store), `snapcraft-publish` (Snap Store), `docker`
-/// (image registry), `docker-sign` (cosign signatures to the registry) —
+/// (image registry), `docker-sign` (cosign signatures to the registry), and
+/// `announce` (broadcasts to webhooks/Slack/Twitter/Mastodon/Bluesky) —
 /// but, unlike npm/cargo/homebrew/…, they are NOT registered in
 /// [`all_publishers`] (a parallel trait registration would double-publish;
 /// see the doc comment on [`configured_publishers`]). They therefore never
@@ -904,10 +905,11 @@ mod tests {
 
     #[test]
     fn valid_publisher_names_includes_out_of_dispatch_publish_stages() {
-        // blob / snapcraft-publish / docker / docker-sign perform external,
-        // irreversible publishes from a pipeline stage outside dispatch; they
-        // must be part of the selector vocabulary so `--publishers <stage>`
-        // is accepted and an allowlist omitting them deselects them.
+        // Every PUBLISH_STAGE_PUBLISHERS entry (blob / snapcraft-publish /
+        // docker / docker-sign / announce) performs an external, irreversible
+        // publish from a pipeline stage outside dispatch; each must be part of
+        // the selector vocabulary so `--publishers <stage>` is accepted and an
+        // allowlist omitting it deselects it.
         let names = valid_publisher_names();
         for stage in PUBLISH_STAGE_PUBLISHERS {
             assert!(
