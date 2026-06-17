@@ -4,12 +4,8 @@
 //! current cosign CLI supports for `generate-key-pair`) and one GPG
 //! keypair (EdDSA ed25519, deterministic under RFC 8032) inside a
 //! temp dir whose lifetime is bound to [`EphemeralSigningKeys`]. The
-//! harness consumes both via env vars (`COSIGN_KEY`, `COSIGN_KEY_PATH`,
-//! `GPG_FINGERPRINT`, `GNUPGHOME`, ...) so the sign stage never sees host
-//! credentials. Cosign keys are exported in both forms — `COSIGN_KEY` as
-//! the PEM contents (for `--key=env://COSIGN_KEY`) and `COSIGN_KEY_PATH` as
-//! the on-disk key path (for `--key=$COSIGN_KEY_PATH`) — so a config picks
-//! whichever its `--key=` arg expects.
+//! harness consumes both via env vars (`COSIGN_KEY`, `GPG_FINGERPRINT`,
+//! `GNUPGHOME`, ...) so the sign stage never sees host credentials.
 //!
 //! Cosign signatures are non-deterministic regardless of key reuse —
 //! ECDSA random-`k` makes byte equality impossible. The harness's
@@ -61,12 +57,6 @@ pub struct EphemeralSigningKeys {
     /// Encrypted cosign private-key contents (PEM). Read by
     /// `cosign sign-blob --key=env://COSIGN_KEY`.
     pub cosign_key_contents: String,
-    /// On-disk path to the encrypted cosign private key (`tmpdir/cosign.key`),
-    /// kept alive by [`Self::_tmpdir`]. Read by configs that pass the key as a
-    /// FILE PATH (`cosign sign-blob --key=$COSIGN_KEY_PATH`) rather than via the
-    /// `env://` scheme — passing the PEM *contents* where cosign expects a path
-    /// fails with `reading key: open ...: file name too long`.
-    pub cosign_key_path: PathBuf,
     /// Password for [`Self::cosign_key_contents`], set as
     /// `COSIGN_PASSWORD` env var.
     pub cosign_password: String,
@@ -106,45 +96,17 @@ pub fn provision_ephemeral_keys(sde: i64) -> Result<EphemeralSigningKeys> {
         .tempdir_in(&root)
         .context("harness signing: create tempdir")?;
 
-    let (cosign_key_contents, cosign_key_path) = provision_cosign(tmpdir.path())?;
+    let cosign_key_contents = provision_cosign(tmpdir.path())?;
     let (gnupg_home, gpg_fingerprint, gpg_key_path) = provision_gpg(tmpdir.path(), sde)?;
 
     Ok(EphemeralSigningKeys {
         cosign_key_contents,
-        cosign_key_path,
         cosign_password: HARNESS_COSIGN_PASSWORD.into(),
         gnupg_home,
         gpg_fingerprint,
         gpg_key_path,
         _tmpdir: tmpdir,
     })
-}
-
-impl EphemeralSigningKeys {
-    /// Build a fixture instance backed by a real temp dir, without invoking
-    /// `cosign`/`gpg`. Writes a `cosign.key` and an exported GPG key file so
-    /// downstream env-export plumbing (`COSIGN_KEY_PATH`, `GPG_KEY_PATH`) can
-    /// be exercised against openable paths in unit tests that have no signing
-    /// tools on PATH. Gated behind `test-helpers` so it never ships.
-    #[cfg(feature = "test-helpers")]
-    pub fn fixture_for_test(cosign_key_contents: &str) -> std::io::Result<Self> {
-        let tmpdir = tempfile::Builder::new().prefix("agpg-test-").tempdir()?;
-        let cosign_key_path = tmpdir.path().join("cosign.key");
-        std::fs::write(&cosign_key_path, cosign_key_contents)?;
-        let gnupg_home = tmpdir.path().join("gnupg");
-        std::fs::create_dir(&gnupg_home)?;
-        let gpg_key_path = tmpdir.path().join("anodize-harness.asc");
-        std::fs::write(&gpg_key_path, "FAKE-ARMORED-SECRET-KEY\n")?;
-        Ok(Self {
-            cosign_key_contents: cosign_key_contents.to_string(),
-            cosign_key_path,
-            cosign_password: HARNESS_COSIGN_PASSWORD.into(),
-            gnupg_home,
-            gpg_fingerprint: "ABCDEF1234567890ABCDEF1234567890ABCDEF12".into(),
-            gpg_key_path,
-            _tmpdir: tmpdir,
-        })
-    }
 }
 
 /// Render `path` as the string we pass to subprocess env vars. The
@@ -197,7 +159,7 @@ mod path_tests {
     }
 }
 
-fn provision_cosign(tmpdir: &Path) -> Result<(String, PathBuf)> {
+fn provision_cosign(tmpdir: &Path) -> Result<String> {
     if Command::new("cosign")
         .arg("version")
         .current_dir(crate::path_util::probe_dir())
@@ -232,7 +194,7 @@ fn provision_cosign(tmpdir: &Path) -> Result<(String, PathBuf)> {
     let key_path = tmpdir.join("cosign.key");
     let contents = std::fs::read_to_string(&key_path)
         .with_context(|| format!("harness signing: read cosign key at {}", key_path.display()))?;
-    Ok((contents, key_path))
+    Ok(contents)
 }
 
 fn provision_gpg(tmpdir: &Path, sde: i64) -> Result<(PathBuf, String, PathBuf)> {
@@ -464,18 +426,6 @@ mod provision_tests {
         let keys = provision_ephemeral_keys(1735689600).expect("provision succeeds");
 
         assert_eq!(keys.cosign_key_contents, "FAKE-ENCRYPTED-COSIGN-PEM");
-        // The path points at the on-disk key the provisioner wrote, and that
-        // file is openable (contents match) — configs using `--key=$COSIGN_KEY_PATH`
-        // get a real path, not the PEM-as-path that triggers `file name too long`.
-        assert_eq!(
-            keys.cosign_key_path,
-            keys.gnupg_home.parent().unwrap().join("cosign.key")
-        );
-        assert!(keys.cosign_key_path.is_file(), "cosign key file must exist");
-        assert_eq!(
-            std::fs::read_to_string(&keys.cosign_key_path).unwrap(),
-            "FAKE-ENCRYPTED-COSIGN-PEM"
-        );
         assert_eq!(keys.cosign_password, "anodize-harness");
         assert_eq!(keys.gpg_fingerprint, FAKE_FPR);
         assert_eq!(
