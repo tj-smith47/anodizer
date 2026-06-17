@@ -197,6 +197,8 @@ jobs:
 
 Anodizer reads the OIDC request URL and token from the standard GHA env vars, requests an id-token scoped to the registry's audience, exchanges it for a short-lived registry bearer, and publishes.
 
+This works on **both GitHub-hosted and self-hosted runners**. The registry verifies repository ownership — issuer, audience, and the token's `repository_owner` claim — not the runner environment. Unlike [npm provenance](./npm.md), which rejects a `self-hosted` runner-environment claim, MCP publishing needs no separate github-hosted job.
+
 ## Common gotchas
 
 - **`packages` is required**: omitting `packages` causes a config validation error; an empty list is rejected by the registry.

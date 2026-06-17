@@ -182,6 +182,14 @@ npm provenance attestations are produced through GitHub's OIDC provenance flow, 
 npm only accepts from a **GitHub-hosted** runner. On a self-hosted runner the provenance
 exchange is unavailable, and npm rejects a publish that requests it.
 
+This github-hosted requirement is specific to **npm's provenance policy**, not a property
+of GitHub Actions OIDC in general. GitHub mints a valid OIDC id-token on self-hosted
+runners too; npm's provenance verifier is what rejects the `self-hosted` runner-environment
+claim. Anodizer's other OIDC-authenticated publisher — the [MCP registry](./mcp-registry.md)
+(`auth.type: github-oidc`) — runs on a self-hosted runner without issue, because that
+registry verifies repository ownership (issuer, audience, and `repository_owner`), not the
+runner environment. So only npm needs the separate github-hosted job.
+
 Anodizer degrades gracefully: when it detects that provenance cannot be produced on the
 current runner, it publishes **without** provenance and emits a warning rather than
 failing the release. The package still ships; only the provenance attestation is absent.
