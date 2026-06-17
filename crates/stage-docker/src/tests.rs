@@ -1716,6 +1716,128 @@ fn test_docker_v2_dry_run_registers_artifacts() {
     }
 }
 
+/// Build a Config whose named crates each carry a `dockers_v2` block that, on
+/// a (dry-run) `DockerStage::run`, registers `DockerImageV2` artifacts. Used
+/// as a non-invocation oracle: a correctly-firing deselect gate returns before
+/// the artifact-registration loop, so NO `DockerImageV2` artifacts appear.
+fn docker_v2_config(
+    crate_names: &[&str],
+    dockerfile: &std::path::Path,
+) -> anodizer_core::config::Config {
+    use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.crates = crate_names
+        .iter()
+        .map(|name| CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dockers_v2: Some(vec![DockerV2Config {
+                id: Some(format!("{name}-v2")),
+                images: vec![format!("ghcr.io/owner/{name}")],
+                tags: vec!["{{ .Tag }}".to_string()],
+                dockerfile: dockerfile.to_string_lossy().into_owned(),
+                platforms: Some(vec!["linux/amd64".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        })
+        .collect();
+    config
+}
+
+fn assert_docker_deselected_not_built(
+    crate_names: &[&str],
+    opts: anodizer_core::context::ContextOptions,
+) {
+    use anodizer_core::artifact::ArtifactKind;
+    use anodizer_core::context::Context;
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+    let mut config = docker_v2_config(crate_names, &dockerfile);
+    config.dist = tmp.path().join("dist");
+
+    // dry_run keeps the oracle hermetic (no daemon); the gate returns BEFORE
+    // the dry-run artifact-registration loop, so a clean run leaves zero
+    // DockerImageV2 artifacts — the proof the build/push path was skipped.
+    let mut opts = opts;
+    opts.dry_run = true;
+    let mut ctx = Context::new(config, opts);
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+
+    DockerStage::new()
+        .run(&mut ctx)
+        .expect("deselected docker must short-circuit to Ok");
+    assert!(
+        ctx.artifacts
+            .by_kind(ArtifactKind::DockerImageV2)
+            .is_empty(),
+        "deselected docker must register no images (build/push path skipped)"
+    );
+}
+
+#[test]
+fn docker_deselected_by_skip_not_built_single_crate() {
+    let opts = anodizer_core::context::ContextOptions {
+        skip_stages: vec!["docker".to_string()],
+        ..Default::default()
+    };
+    assert_docker_deselected_not_built(&["myapp"], opts);
+}
+
+#[test]
+fn docker_deselected_by_allowlist_not_built_single_crate() {
+    let opts = anodizer_core::context::ContextOptions {
+        publisher_allowlist: vec!["cargo".to_string()],
+        ..Default::default()
+    };
+    assert_docker_deselected_not_built(&["myapp"], opts);
+}
+
+#[test]
+fn docker_deselected_by_allowlist_not_built_workspace_per_crate() {
+    let opts = anodizer_core::context::ContextOptions {
+        publisher_allowlist: vec!["cargo".to_string()],
+        ..Default::default()
+    };
+    assert_docker_deselected_not_built(&["core", "cli"], opts);
+}
+
+#[test]
+fn docker_in_allowlist_is_not_deselected() {
+    // `--publishers docker`: docker IS selected, so the gate must NOT fire —
+    // a dry-run then registers the images, proving the build path was entered.
+    use anodizer_core::artifact::ArtifactKind;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let dockerfile = tmp.path().join("Dockerfile");
+    fs::write(&dockerfile, b"FROM scratch\n").unwrap();
+    let mut config = docker_v2_config(&["myapp"], &dockerfile);
+    config.dist = tmp.path().join("dist");
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            publisher_allowlist: vec!["docker".to_string()],
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    DockerStage::new().run(&mut ctx).unwrap();
+    assert!(
+        !ctx.artifacts
+            .by_kind(ArtifactKind::DockerImageV2)
+            .is_empty(),
+        "selected docker must register images"
+    );
+}
+
 #[test]
 fn test_docker_v2_dry_run_with_hooks_does_not_panic() {
     // Hooks rendered in dry-run mode must template-expand cleanly when

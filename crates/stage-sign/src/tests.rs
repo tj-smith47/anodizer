@@ -1568,6 +1568,128 @@ fn test_docker_sign_env_vars_passed_to_command() {
     );
 }
 
+/// Run `DockerSignStage` with a `docker_signs` config whose command writes a
+/// marker file when executed, under the given options, and assert the marker
+/// was NEVER written — proving the (irreversible) cosign signature push was
+/// skipped. The non-invocation oracle for the operator-selection gate.
+fn assert_docker_sign_deselected_not_run(opts: anodizer_core::context::ContextOptions) {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::DockerSignConfig;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let marker_path = tmp.path().join("docker_sign_ran.txt");
+    let marker_str = marker_path.to_string_lossy().to_string();
+    let (cmd, args) = shell_echo_to_file("ANODIZER_TEST_DOCKER_SIGN", &marker_str);
+
+    let docker_signs = vec![DockerSignConfig {
+        id: Some("deselect-probe".to_string()),
+        cmd: Some(cmd),
+        args: Some(args),
+        artifacts: Some("all".to_string()),
+        ids: None,
+        stdin: None,
+        stdin_file: None,
+        env: Some(vec!["ANODIZER_TEST_DOCKER_SIGN=ran".to_string()]),
+        output: None,
+        if_condition: None,
+        signature: None,
+        certificate: None,
+    }];
+
+    // dry_run is false: only the deselect gate (not the dry-run guard) may
+    // prevent the command from running, so a missing marker isolates the gate.
+    let mut ctx = TestContextBuilder::new().dry_run(false).build();
+    ctx.config.docker_signs = Some(docker_signs);
+    ctx.options.skip_stages = opts.skip_stages;
+    ctx.options.publisher_allowlist = opts.publisher_allowlist;
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::DockerImage,
+        name: String::new(),
+        path: std::path::PathBuf::from("ghcr.io/test/app:latest"),
+        target: None,
+        crate_name: "test".to_string(),
+        metadata: Default::default(),
+        size: None,
+    });
+
+    DockerSignStage
+        .run(&mut ctx)
+        .expect("deselected docker-sign must short-circuit to Ok");
+    assert!(
+        !marker_path.exists(),
+        "deselected docker-sign must NOT run the signing command"
+    );
+}
+
+#[test]
+fn docker_sign_deselected_by_skip_not_run() {
+    assert_docker_sign_deselected_not_run(anodizer_core::context::ContextOptions {
+        skip_stages: vec!["docker-sign".to_string()],
+        ..Default::default()
+    });
+}
+
+#[test]
+fn docker_sign_deselected_by_allowlist_not_run() {
+    assert_docker_sign_deselected_not_run(anodizer_core::context::ContextOptions {
+        publisher_allowlist: vec!["cargo".to_string()],
+        ..Default::default()
+    });
+}
+
+#[test]
+fn docker_sign_deselected_skip_wins_over_allowlist() {
+    assert_docker_sign_deselected_not_run(anodizer_core::context::ContextOptions {
+        skip_stages: vec!["docker-sign".to_string()],
+        publisher_allowlist: vec!["docker-sign".to_string()],
+        ..Default::default()
+    });
+}
+
+#[test]
+fn docker_sign_in_allowlist_is_not_deselected() {
+    // `--publishers docker-sign`: docker-sign IS selected, so the gate must
+    // NOT fire and the command runs (marker written), proving the path entered.
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::DockerSignConfig;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let marker_path = tmp.path().join("docker_sign_ran.txt");
+    let marker_str = marker_path.to_string_lossy().to_string();
+    let (cmd, args) = shell_echo_to_file("ANODIZER_TEST_DOCKER_SIGN", &marker_str);
+    let docker_signs = vec![DockerSignConfig {
+        id: Some("selected-probe".to_string()),
+        cmd: Some(cmd),
+        args: Some(args),
+        artifacts: Some("all".to_string()),
+        ids: None,
+        stdin: None,
+        stdin_file: None,
+        env: Some(vec!["ANODIZER_TEST_DOCKER_SIGN=ran".to_string()]),
+        output: None,
+        if_condition: None,
+        signature: None,
+        certificate: None,
+    }];
+    let mut ctx = TestContextBuilder::new().dry_run(false).build();
+    ctx.config.docker_signs = Some(docker_signs);
+    ctx.options.publisher_allowlist = vec!["docker-sign".to_string()];
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::DockerImage,
+        name: String::new(),
+        path: std::path::PathBuf::from("ghcr.io/test/app:latest"),
+        target: None,
+        crate_name: "test".to_string(),
+        metadata: Default::default(),
+        size: None,
+    });
+    DockerSignStage.run(&mut ctx).unwrap();
+    assert!(
+        marker_path.exists(),
+        "selected docker-sign must run the signing command"
+    );
+}
+
 // -----------------------------------------------------------------------
 // Sign stage parity — output, if, binary_signs, docker vars
 // -----------------------------------------------------------------------

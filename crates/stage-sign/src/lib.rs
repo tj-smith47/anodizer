@@ -113,6 +113,19 @@ impl Stage for DockerSignStage {
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("docker-sign");
 
+        // Operator-selection gate. DockerSignStage runs `cosign sign` and
+        // PUSHES signatures to the OCI registry (an external, irreversible
+        // publish) but runs as a pipeline stage OUTSIDE the trait-based
+        // dispatch chokepoint, so the uniform `--skip` / `--publishers` filter
+        // does not reach it. Consult `publisher_deselected("docker-sign")` so
+        // an operator who ran `--publishers cargo` (or `--skip=docker-sign`)
+        // does NOT push signatures. Like its other skip paths, docker-sign
+        // records no `publish_report` row — but the skip is never silent.
+        if ctx.publisher_deselected("docker-sign") {
+            log.status(&ctx.deselected_reason("docker-sign"));
+            return Ok(());
+        }
+
         // ----------------------------------------------------------------
         // Docker image signing via `docker_signs` config
         // ----------------------------------------------------------------

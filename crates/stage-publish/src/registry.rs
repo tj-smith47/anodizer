@@ -637,14 +637,46 @@ pub const fn group_dispatch_order() -> [PublisherGroup; 3] {
     ]
 }
 
-/// Every canonical publisher name, derived from [`all_publishers`].
+/// Publish surfaces that fire an external, irreversible publish from a
+/// PIPELINE STAGE rather than the trait-based dispatch chokepoint, keyed by
+/// the stage's [`anodizer_core::stage::Stage::name`] token.
+///
+/// These four stages each push to an external store/registry —
+/// `blob` (object store), `snapcraft-publish` (Snap Store), `docker`
+/// (image registry), `docker-sign` (cosign signatures to the registry) —
+/// but, unlike npm/cargo/homebrew/…, they are NOT registered in
+/// [`all_publishers`] (a parallel trait registration would double-publish;
+/// see the doc comment on [`configured_publishers`]). They therefore never
+/// pass through [`crate::dispatch::dispatch`], where the uniform
+/// `--skip` / `--publishers` filter lives.
+///
+/// Listing their tokens here folds them into [`valid_publisher_names`] so
+/// the SAME selector vocabulary governs them: `--publishers blob` is a valid
+/// allowlist entry, and an allowlist that omits them correctly deselects
+/// them (each stage consults [`anodizer_core::context::Context::publisher_deselected`]
+/// before doing any irreversible work). This keeps `valid_publisher_names`
+/// the single source of truth — there is no second list to drift.
+///
+/// `release` is deliberately ABSENT: the GitHub/GitLab/Gitea release the
+/// `release` stage creates is the substrate every other publisher depends on
+/// (homebrew/scoop/nix/krew manifests reference its assets; announce needs
+/// `ReleaseURL`), so excluding it via an allowlist would silently break the
+/// common `--publishers homebrew` case. It stays governed by `--skip=release`
+/// (the denylist) only.
+pub const PUBLISH_STAGE_PUBLISHERS: &[&str] =
+    &["blob", "snapcraft-publish", "docker", "docker-sign"];
+
+/// Every canonical publisher name: the trait-based publishers from
+/// [`all_publishers`] PLUS the out-of-dispatch publish stages in
+/// [`PUBLISH_STAGE_PUBLISHERS`].
 ///
 /// This is the drift-proof source of valid `--publishers` / `--skip` publisher
 /// tokens: it instantiates one of every publisher and reads each
-/// [`anodizer_core::Publisher::name`], so a newly registered publisher is
-/// automatically a valid selector with no hand-maintained literal list to
-/// update. The CLI validation (`init` / `release` `--publishers` / `--skip`)
-/// and any help/error text consult this rather than a duplicated constant.
+/// [`anodizer_core::Publisher::name`], then appends the publish-stage tokens,
+/// so a newly registered publisher is automatically a valid selector with no
+/// hand-maintained literal list to update. The CLI validation (`init` /
+/// `release` `--publishers` / `--skip`) and any help/error text consult this
+/// rather than a duplicated constant.
 ///
 /// Names are returned owned (`String`) because `Publisher::name` borrows the
 /// boxed instance, which does not outlive this call.
@@ -652,6 +684,7 @@ pub fn valid_publisher_names() -> Vec<String> {
     all_publishers()
         .iter()
         .map(|p| p.name().to_string())
+        .chain(PUBLISH_STAGE_PUBLISHERS.iter().map(|s| s.to_string()))
         .collect()
 }
 
@@ -730,10 +763,20 @@ pub fn validate_publisher_allowlist_configured(
         ));
     }
 
-    let configured: Vec<String> = configured_publishers(ctx)
+    let mut configured: Vec<String> = configured_publishers(ctx)
         .iter()
         .map(|p| p.name().to_string())
         .collect();
+    // The out-of-dispatch publish stages (blob/snapcraft-publish/docker/
+    // docker-sign) never appear in `configured_publishers` (they are not
+    // trait publishers), so union in any that the active config enables —
+    // otherwise `check config --publishers blob` on a config WITH a blob
+    // block would falsely report blob "not configured".
+    configured.extend(
+        configured_publish_stage_publishers(ctx)
+            .into_iter()
+            .map(str::to_string),
+    );
     for name in allowlist {
         if !configured.iter().any(|c| c == name) {
             return Err(format!(
@@ -743,6 +786,47 @@ pub fn validate_publisher_allowlist_configured(
         }
     }
     Ok(())
+}
+
+/// The subset of [`PUBLISH_STAGE_PUBLISHERS`] the active config enables.
+///
+/// Each out-of-dispatch publish stage is "configured" when its config block
+/// is present:
+/// - `blob` — any crate has a `blobs:` block,
+/// - `snapcraft-publish` — any crate has a `snapcrafts:` block,
+/// - `docker` — any crate has a `dockers_v2:` or `docker_manifests:` block
+///   (the same predicate [`anodizer_stage_docker`]'s `DockerStage::run` uses
+///   to decide whether it has work),
+/// - `docker-sign` — the top-level `docker_signs:` block is non-empty.
+///
+/// Consumed by [`validate_publisher_allowlist_configured`] so `check config
+/// --publishers <stage>` validates against the real config, mirroring how the
+/// trait publishers go through [`configured_publishers`].
+fn configured_publish_stage_publishers(ctx: &Context) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if ctx.config.crates.iter().any(|c| c.blobs.is_some()) {
+        out.push("blob");
+    }
+    if ctx.config.crates.iter().any(|c| c.snapcrafts.is_some()) {
+        out.push("snapcraft-publish");
+    }
+    if ctx
+        .config
+        .crates
+        .iter()
+        .any(|c| c.dockers_v2.is_some() || c.docker_manifests.is_some())
+    {
+        out.push("docker");
+    }
+    if ctx
+        .config
+        .docker_signs
+        .as_ref()
+        .is_some_and(|v| !v.is_empty())
+    {
+        out.push("docker-sign");
+    }
+    out
 }
 
 #[cfg(test)]
@@ -804,6 +888,47 @@ mod tests {
         let skip = vec!["bogus".to_string()];
         let err = validate_publisher_selection(&[], &skip).unwrap_err();
         assert!(err.contains("bogus"), "{err}");
+    }
+
+    #[test]
+    fn valid_publisher_names_includes_out_of_dispatch_publish_stages() {
+        // blob / snapcraft-publish / docker / docker-sign perform external,
+        // irreversible publishes from a pipeline stage outside dispatch; they
+        // must be part of the selector vocabulary so `--publishers <stage>`
+        // is accepted and an allowlist omitting them deselects them.
+        let names = valid_publisher_names();
+        for stage in PUBLISH_STAGE_PUBLISHERS {
+            assert!(
+                names.iter().any(|n| n == stage),
+                "expected {stage} in {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_publisher_selection_accepts_publish_stage_allowlist() {
+        // `--publishers blob` / `snapcraft-publish` / `docker` / `docker-sign`
+        // must NOT be rejected as invalid.
+        for stage in PUBLISH_STAGE_PUBLISHERS {
+            let allow = vec![stage.to_string()];
+            assert!(
+                validate_publisher_selection(&allow, &[]).is_ok(),
+                "--publishers {stage} must validate"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_publisher_selection_skip_accepts_publish_stage_name() {
+        // `--skip=blob` / `--skip=snapcraft-publish` must still pass (denylist
+        // must not regress now that they are publisher tokens too).
+        for stage in ["blob", "snapcraft-publish", "docker", "docker-sign"] {
+            let skip = vec![stage.to_string()];
+            assert!(
+                validate_publisher_selection(&[], &skip).is_ok(),
+                "--skip={stage} must validate"
+            );
+        }
     }
 
     fn cargo_configured_ctx() -> Context {

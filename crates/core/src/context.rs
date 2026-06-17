@@ -752,6 +752,25 @@ impl Context {
                 && !self.options.publisher_allowlist.iter().any(|s| s == name))
     }
 
+    /// A distinguished, operator-facing summary line for a deselected
+    /// publisher, naming WHICH selector excluded it so the operator can fix
+    /// their command. `--skip` always wins, so it is tested first: a publisher
+    /// named in both selectors reports the denylist cause.
+    ///
+    /// Shared by the dispatch chokepoint and the out-of-dispatch publish
+    /// stages (blob / snapcraft-publish / docker / docker-sign) so the
+    /// "skipped X — excluded via --skip" / "… — not in --publishers allowlist"
+    /// wording is identical everywhere a publisher is deselected. Call only
+    /// when [`Self::publisher_deselected`] is `true`.
+    pub fn deselected_reason(&self, name: &str) -> String {
+        let reason = if self.should_skip(name) {
+            "excluded via --skip"
+        } else {
+            "not in --publishers allowlist"
+        };
+        format!("skipped {name} — {reason}")
+    }
+
     /// Check whether "validate" is in the skip list.
     pub fn skip_validate(&self) -> bool {
         self.should_skip("validate")

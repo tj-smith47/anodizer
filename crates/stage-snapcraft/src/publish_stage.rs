@@ -41,6 +41,22 @@ impl Stage for SnapcraftPublishStage {
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("snapcraft-publish");
+
+        // Operator-selection gate. SnapcraftPublishStage performs an external,
+        // irreversible Snap Store upload but runs as a pipeline stage OUTSIDE
+        // the trait-based dispatch chokepoint, so the uniform `--skip` /
+        // `--publishers` filter that governs every dispatched publisher does
+        // not reach it. Consult `publisher_deselected("snapcraft-publish")`
+        // here — BEFORE the snapshot/submitter gates or any upload — so an
+        // operator who ran `--publishers cargo` (or `--skip=snapcraft-publish`)
+        // does NOT push a snap to the store. Recorded as `Skipped(Deselected)`
+        // so the run summary counts it; never silent.
+        if ctx.publisher_deselected("snapcraft-publish") {
+            log.status(&ctx.deselected_reason("snapcraft-publish"));
+            record_snapcraft_result(ctx, None, PublisherOutcome::Skipped(SkipReason::Deselected));
+            return Ok(());
+        }
+
         if ctx.skip_in_snapshot(&log, "snapcraft-publish") {
             // Mirror BlobStage's discipline: snapshot-skip leaves
             // `publish_report` untouched. Recording a `Skipped(Snapshot)`
@@ -1000,6 +1016,156 @@ mod publish_stage_tests {
         assert!(
             !recorded_snap,
             "publish_report must be untouched on stage-error fast-fail"
+        );
+    }
+
+    /// A snap-configured crate whose `publish.skip` template references an
+    /// undefined var — reaching the pre-pass would hard-error. Used as a
+    /// non-invocation oracle: a correctly-firing deselect gate returns
+    /// `Ok(Deselected)` before the pre-pass, so the render error never
+    /// surfaces; a leaked gate hits the error.
+    fn render_error_snap_crate(name: &str) -> CrateConfig {
+        use anodizer_core::config::StringOrBool;
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            snapcrafts: Some(vec![SnapcraftConfig {
+                name: Some(name.to_string()),
+                publish: Some(true),
+                skip: Some(StringOrBool::String(
+                    "{{ undefined_var_that_will_not_render }}".to_string(),
+                )),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }
+    }
+
+    fn assert_snapcraft_deselected_not_uploaded(
+        crate_names: &[&str],
+        opts: anodizer_core::context::ContextOptions,
+    ) {
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            crates: crate_names
+                .iter()
+                .map(|n| render_error_snap_crate(n))
+                .collect(),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        // Seed a snap artifact per crate so a leaked gate would reach the
+        // pre-pass (the empty-snap_artifacts early-return must not mask the
+        // proof).
+        for n in crate_names {
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Snap,
+                name: String::new(),
+                path: PathBuf::from(format!("/tmp/dist/{n}_1.0.0_amd64.snap")),
+                target: Some("x86_64-unknown-linux-gnu".to_string()),
+                crate_name: n.to_string(),
+                metadata: HashMap::new(),
+                size: None,
+            });
+        }
+
+        SnapcraftPublishStage
+            .run(&mut ctx)
+            .expect("deselected snapcraft must short-circuit to Ok before the upload pre-pass");
+
+        let snap = ctx
+            .publish_report()
+            .expect("report present")
+            .results
+            .iter()
+            .find(|r| r.name == "snapcraft")
+            .expect("snapcraft entry recorded")
+            .clone();
+        assert_eq!(
+            snap.outcome,
+            PublisherOutcome::Skipped(SkipReason::Deselected),
+            "deselected snapcraft must record Skipped(Deselected)"
+        );
+    }
+
+    #[test]
+    fn snapcraft_deselected_by_skip_not_uploaded_single_crate() {
+        let opts = anodizer_core::context::ContextOptions {
+            skip_stages: vec!["snapcraft-publish".to_string()],
+            ..Default::default()
+        };
+        assert_snapcraft_deselected_not_uploaded(&["demo"], opts);
+    }
+
+    #[test]
+    fn snapcraft_deselected_by_allowlist_not_uploaded_single_crate() {
+        let opts = anodizer_core::context::ContextOptions {
+            publisher_allowlist: vec!["cargo".to_string()],
+            ..Default::default()
+        };
+        assert_snapcraft_deselected_not_uploaded(&["demo"], opts);
+    }
+
+    #[test]
+    fn snapcraft_deselected_by_allowlist_not_uploaded_workspace_per_crate() {
+        let opts = anodizer_core::context::ContextOptions {
+            publisher_allowlist: vec!["cargo".to_string()],
+            ..Default::default()
+        };
+        assert_snapcraft_deselected_not_uploaded(&["core", "cli"], opts);
+    }
+
+    #[test]
+    fn snapcraft_deselected_skip_wins_over_allowlist() {
+        let opts = anodizer_core::context::ContextOptions {
+            skip_stages: vec!["snapcraft-publish".to_string()],
+            publisher_allowlist: vec!["snapcraft-publish".to_string()],
+            ..Default::default()
+        };
+        assert_snapcraft_deselected_not_uploaded(&["demo"], opts);
+    }
+
+    #[test]
+    fn snapcraft_in_allowlist_is_not_deselected() {
+        // `--publishers snapcraft-publish`: snapcraft IS selected, so the
+        // deselect gate must NOT fire — the render-error config then surfaces
+        // its error, proving the upload pre-pass WAS entered.
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let config = anodizer_core::config::Config {
+            project_name: "demo".to_string(),
+            crates: vec![render_error_snap_crate("demo")],
+            ..Default::default()
+        };
+        let opts = anodizer_core::context::ContextOptions {
+            publisher_allowlist: vec!["snapcraft-publish".to_string()],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Snap,
+            name: String::new(),
+            path: PathBuf::from("/tmp/dist/demo_1.0.0_amd64.snap"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "demo".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        let err = SnapcraftPublishStage
+            .run(&mut ctx)
+            .expect_err("selected snapcraft enters the pre-pass and hits the render error");
+        assert!(
+            format!("{err:#}").contains("render publish.skip template"),
+            "{err}"
         );
     }
 

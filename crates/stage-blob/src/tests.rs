@@ -1718,6 +1718,131 @@ fn blob_stage_skips_via_gate_on_required_upstream_failure() {
     assert_eq!(blob.group, PublisherGroup::Assets);
 }
 
+/// Build a Config with a blob block on each named crate whose provider is
+/// EMPTY — `BlobStage::run` hard-errors ("provider is required") the moment it
+/// reaches the upload-preparation path. Used as a non-invocation oracle: if a
+/// deselect gate fires correctly the stage returns `Ok(Deselected)` and the
+/// error path is never reached; if the gate leaks, the test sees the error.
+fn empty_provider_blob_config(crate_names: &[&str]) -> anodizer_core::config::Config {
+    anodizer_core::config::Config {
+        project_name: "test".to_string(),
+        crates: crate_names
+            .iter()
+            .map(|name| anodizer_core::config::CrateConfig {
+                name: name.to_string(),
+                path: ".".to_string(),
+                blobs: Some(vec![BlobConfig {
+                    provider: String::new(),
+                    bucket: "b".to_string(),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            })
+            .collect(),
+        ..Default::default()
+    }
+}
+
+fn assert_blob_deselected_not_uploaded(
+    config: anodizer_core::config::Config,
+    opts: ContextOptions,
+) {
+    use anodizer_core::{PublisherOutcome, SkipReason};
+    let mut ctx = Context::new(config, opts);
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("ProjectName", "test");
+    ctx.template_vars_mut().set("IsSnapshot", "false");
+
+    // The blob config has an empty provider; reaching the upload path would
+    // return Err("provider is required"). A clean Ok here is the proof the
+    // upload path was never entered.
+    BlobStage
+        .run(&mut ctx)
+        .expect("deselected blob must short-circuit to Ok before any upload");
+
+    let blob = ctx
+        .publish_report()
+        .expect("report present")
+        .results
+        .iter()
+        .find(|r| r.name == "blob")
+        .expect("blob entry recorded")
+        .clone();
+    assert_eq!(
+        blob.outcome,
+        PublisherOutcome::Skipped(SkipReason::Deselected),
+        "deselected blob must record Skipped(Deselected)"
+    );
+    assert!(
+        blob.evidence.is_none(),
+        "a blob that never uploaded has no evidence"
+    );
+}
+
+#[test]
+fn blob_deselected_by_skip_not_uploaded_single_crate() {
+    // single-crate mode: `--skip=blob`.
+    let opts = ContextOptions {
+        skip_stages: vec!["blob".to_string()],
+        ..Default::default()
+    };
+    assert_blob_deselected_not_uploaded(empty_provider_blob_config(&["solo"]), opts);
+}
+
+#[test]
+fn blob_deselected_by_allowlist_not_uploaded_single_crate() {
+    // single-crate mode: `--publishers cargo` excludes blob.
+    let opts = ContextOptions {
+        publisher_allowlist: vec!["cargo".to_string()],
+        ..Default::default()
+    };
+    assert_blob_deselected_not_uploaded(empty_provider_blob_config(&["solo"]), opts);
+}
+
+#[test]
+fn blob_deselected_by_allowlist_not_uploaded_workspace_per_crate() {
+    // workspace mode: multiple crates each carrying a blob block; the
+    // allowlist omitting blob must deselect it for the whole run.
+    let opts = ContextOptions {
+        publisher_allowlist: vec!["cargo".to_string()],
+        ..Default::default()
+    };
+    assert_blob_deselected_not_uploaded(empty_provider_blob_config(&["core", "cli"]), opts);
+}
+
+#[test]
+fn blob_deselected_skip_wins_over_allowlist() {
+    // `--skip=blob` AND `--publishers blob` both present: --skip wins, blob
+    // is deselected (and never uploads).
+    let opts = ContextOptions {
+        skip_stages: vec!["blob".to_string()],
+        publisher_allowlist: vec!["blob".to_string()],
+        ..Default::default()
+    };
+    assert_blob_deselected_not_uploaded(empty_provider_blob_config(&["solo"]), opts);
+}
+
+#[test]
+fn blob_in_allowlist_is_not_deselected() {
+    // `--publishers blob`: blob IS selected, so the deselect gate must NOT
+    // fire — the empty-provider config then surfaces its real error, proving
+    // the upload path WAS entered.
+    let opts = ContextOptions {
+        publisher_allowlist: vec!["blob".to_string()],
+        ..Default::default()
+    };
+    let mut ctx = Context::new(empty_provider_blob_config(&["solo"]), opts);
+    ctx.template_vars_mut().set("Tag", "v1.0.0");
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.template_vars_mut().set("ProjectName", "test");
+    ctx.template_vars_mut().set("IsSnapshot", "false");
+    let err = BlobStage
+        .run(&mut ctx)
+        .expect_err("selected blob enters the upload path and hits the empty-provider error");
+    assert!(err.to_string().contains("provider is required"), "{err}");
+}
+
 #[test]
 fn blob_stage_not_gated_on_optional_upstream_failure() {
     use anodizer_core::{PublisherGroup, PublisherOutcome, PublisherResult, SkipReason};

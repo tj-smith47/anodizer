@@ -161,10 +161,8 @@ pub fn dispatch(
             // silent (sibling skip branches above also log + snapshot +
             // continue).
             if ctx.publisher_deselected(p.name()) {
-                ctx.logger("publish").status(&format!(
-                    "skipping {} — deselected via --skip / --publishers",
-                    p.name()
-                ));
+                let line = ctx.deselected_reason(p.name());
+                ctx.logger("publish").status(&line);
                 report.results.push(PublisherResult {
                     name: p.name().into(),
                     group,

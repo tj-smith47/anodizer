@@ -795,18 +795,12 @@ impl Stage for EmissionValidateStage {
 }
 
 /// Operator-facing summary line for a publisher recorded as
-/// [`SkipReason::Deselected`]. The `Deselected` outcome folds two operator
-/// causes — a `--skip` denylist hit and a `--publishers` allowlist exclusion —
-/// so the cause is re-derived from the context to surface the actionable
-/// reason. `--skip` always wins, so it is tested first: a publisher named in
-/// both selectors reports the denylist cause.
+/// [`SkipReason::Deselected`]. Delegates to the shared
+/// [`Context::deselected_reason`] so the dispatch chokepoint, the publish
+/// summary, and the out-of-dispatch publish stages all surface identical
+/// wording.
 fn deselected_skip_line(ctx: &Context, name: &str) -> String {
-    let reason = if ctx.should_skip(name) {
-        "excluded via --skip"
-    } else {
-        "not in --publishers allowlist"
-    };
-    format!("skipped {name} — {reason}")
+    ctx.deselected_reason(name)
 }
 
 pub struct PublishStage;

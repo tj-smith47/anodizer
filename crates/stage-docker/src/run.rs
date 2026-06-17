@@ -51,6 +51,20 @@ impl Stage for super::DockerStage {
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("docker");
+
+        // Operator-selection gate. DockerStage builds and PUSHES images to a
+        // registry (an external, irreversible publish) but runs as a pipeline
+        // stage OUTSIDE the trait-based dispatch chokepoint, so the uniform
+        // `--skip` / `--publishers` filter does not reach it. Consult
+        // `publisher_deselected("docker")` here so an operator who ran
+        // `--publishers cargo` (or `--skip=docker`) does NOT push images.
+        // Docker is not a `publish_report` participant — like its other skip
+        // paths it records no report row — but the skip is never silent.
+        if ctx.publisher_deselected("docker") {
+            log.status(&ctx.deselected_reason("docker"));
+            return Ok(());
+        }
+
         let selected = ctx.options.selected_crates.clone();
         let dry_run = ctx.options.dry_run;
         let dist = ctx.config.dist.clone();

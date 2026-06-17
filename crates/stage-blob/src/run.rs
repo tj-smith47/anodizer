@@ -126,6 +126,22 @@ impl Stage for BlobStage {
     }
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
+        // Operator-selection gate. BlobStage performs an external,
+        // irreversible object-store upload but runs as a pipeline stage
+        // OUTSIDE the trait-based dispatch chokepoint, so the uniform
+        // `--skip` / `--publishers` filter that governs every dispatched
+        // publisher does not reach it. Consult `publisher_deselected("blob")`
+        // here — BEFORE the version guard or any upload — so an operator who
+        // ran `--publishers cargo` (or `--skip=blob`) does NOT push blobs to
+        // the store. Recorded as `Skipped(Deselected)` so the run summary
+        // counts it; never silent.
+        if ctx.publisher_deselected("blob") {
+            let line = ctx.deselected_reason("blob");
+            ctx.logger("blob").status(&line);
+            record_blob_deselected(ctx);
+            return Ok(());
+        }
+
         // Refuse to upload a non-release version (snapshot / dirty /
         // 0.0.0-sentinel) to an object store. A `--skip=publish` run reaches
         // BlobStage without the publish guard ever firing, so the same shared
@@ -279,6 +295,32 @@ pub(crate) fn record_blob_gated(ctx: &mut Context) {
         group: PublisherGroup::Assets,
         required,
         outcome: PublisherOutcome::Skipped(SkipReason::SubmitterGated),
+        evidence: None,
+    });
+}
+
+/// Record a `Skipped(Deselected)` row for the blob stage when the operator
+/// excluded it via `--skip=blob` or omitted it from a `--publishers`
+/// allowlist. Mirrors [`record_blob_gated`]'s report-init discipline.
+///
+/// The recorded `required` flag carries [`derive_blob_required`] so the row
+/// reflects the operator's configured intent even though no upload was
+/// attempted — a deselected skip is not a failure, so it never trips the
+/// required-failures exit gate, but the flag keeps the report row honest.
+pub(crate) fn record_blob_deselected(ctx: &mut Context) {
+    let required = derive_blob_required(ctx);
+    if ctx.publish_report.is_none() {
+        ctx.publish_report = Some(PublishReport::default());
+    }
+    let report = ctx
+        .publish_report
+        .as_mut()
+        .expect("publish_report initialized above");
+    report.results.push(PublisherResult {
+        name: "blob".to_string(),
+        group: PublisherGroup::Assets,
+        required,
+        outcome: PublisherOutcome::Skipped(SkipReason::Deselected),
         evidence: None,
     });
 }
