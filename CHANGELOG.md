@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-06-17
+
+### Features
+
+* a77311e95c11 --publishers allowlist + GR-parity skip vocab (homebrew/chocolatey canonical) + deselect observability ([@tj-smith47](https://github.com/tj-smith47))
+* aa051889ed18 core foundation for per-publisher selection ([@tj-smith47](https://github.com/tj-smith47))
+* f83e607adb2e uniform per-publisher --skip/--publishers filter at dispatch ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* 61f1e9b3df55 continue honors and validates --publishers / --skip selectors ([@tj-smith47](https://github.com/tj-smith47))
+* 07a55d666c8a tighten check-config --publishers to configured set + unify help + strengthen accept tests ([@tj-smith47](https://github.com/tj-smith47))
+* af5972956f69 disable rollback in the hermetic harness child ([@tj-smith47](https://github.com/tj-smith47))
+* daf08c6c1f94 export cosign key as a path, not only contents ([@tj-smith47](https://github.com/tj-smith47))
+* 489861307239 skip keyless cosign in the harness (no ambient OIDC) ([@tj-smith47](https://github.com/tj-smith47))
+* de308e1f6137 demote subprocess command echoes to verbose across all stages ([@tj-smith47](https://github.com/tj-smith47))
+* d36692cbd8be demote subprocess-command echo to verbose; keep concise default results ([@tj-smith47](https://github.com/tj-smith47))
+* a48412794798 skip a zero-match config under restricted builds ([@tj-smith47](https://github.com/tj-smith47))
+* 6b9469dd0793 seal env in two auth/provenance tests to kill ambient-env flake ([@tj-smith47](https://github.com/tj-smith47))
+* 47dc025d6524 address T2 review — poller-deselect test, real non-invocation proof, simplify winget guard, log sibling skips ([@tj-smith47](https://github.com/tj-smith47))
+* 4419b14d6661 gate out-of-dispatch publish stages on --publishers allowlist ([@tj-smith47](https://github.com/tj-smith47))
+* 4e107f773580 govern announce stage by the publisher allowlist ([@tj-smith47](https://github.com/tj-smith47))
+* bdeee1a91b84 fold deselect gate into AnnounceDecision ([@tj-smith47](https://github.com/tj-smith47))
+* fe9af0bf9dbc DRY publisher-selection validation + doc should_skip ([@tj-smith47](https://github.com/tj-smith47))
+* e5234a05b412 use sealed_env() for hermetic-env publish tests ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Others
+
+* 818e2582c30b normalize dry-run indentation to one nesting level ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.10.0] - 2026-06-15
 
 ### Features
@@ -317,7 +349,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/tj-smith47/anodizer/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/tj-smith47/anodizer/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/tj-smith47/anodizer/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/tj-smith47/anodizer/compare/v0.8.0...v0.9.0
