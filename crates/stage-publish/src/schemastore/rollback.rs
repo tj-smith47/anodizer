@@ -473,8 +473,8 @@ mod tests {
         // env carries the API base but NONE of SCHEMASTORE_TOKEN /
         // ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN.
         let mut ctx = TestContextBuilder::new()
+            .sealed_env()
             .env("ANODIZER_GITHUB_API_BASE", format!("http://{dead_addr}"))
-            .env("UNRELATED", "x")
             .build();
         ctx.with_log_capture(capture.clone());
 

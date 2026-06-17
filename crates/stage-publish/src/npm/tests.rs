@@ -992,12 +992,11 @@ fn auth_oidc_mode_writes_no_token_and_threads_env() {
 fn auth_no_token_no_oidc_is_clear_error_not_panic_or_skip() {
     // Neither credential present (auto mode) → hard error, never anonymous
     // publish, never silent skip, and no network probe (the verdict is
-    // ErrorNoAuth regardless of existence). Seeding one unrelated override
-    // forces a CLOSED MapEnvSource so the dev/CI host's real NPM_TOKEN / OIDC
-    // vars cannot leak in.
+    // ErrorNoAuth regardless of existence). A sealed (closed, empty) env
+    // ensures the dev/CI host's real NPM_TOKEN / OIDC vars cannot leak in.
     let ctx = TestContextBuilder::new()
         .project_name("demo")
-        .env("UNRELATED", "x")
+        .sealed_env()
         .build();
     let cfg = opt_cfg();
     let err = resolve_auth_for_package(
@@ -1390,7 +1389,7 @@ fn auth_token_mode_no_token_errors_naming_mode() {
     // `auth: token` with no token → specific error naming the mode, no probe.
     let ctx = TestContextBuilder::new()
         .project_name("demo")
-        .env("UNRELATED", "x")
+        .sealed_env()
         .build();
     let cfg = opt_cfg_auth(NpmAuthMode::Token);
     let err = resolve_auth_for_package(

@@ -4152,11 +4152,11 @@ mod publisher_tests {
     #[test]
     fn krew_rollback_warns_and_skips_target_when_no_token_resolvable() {
         let capture = anodizer_core::log::LogCapture::new();
-        // `.env(...)` swaps the ctx env source to a MapEnvSource carrying
-        // NONE of KREW_INDEX_TOKEN / ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN,
-        // so resolve_token yields None and the target is skipped before
-        // any api.github.com request.
-        let mut ctx = TestContextBuilder::new().env("UNRELATED", "x").build();
+        // A sealed (closed, empty) env source carries NONE of
+        // KREW_INDEX_TOKEN / ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN, so
+        // resolve_token yields None and the target is skipped before any
+        // api.github.com request.
+        let mut ctx = TestContextBuilder::new().sealed_env().build();
         ctx.with_log_capture(capture.clone());
         let mut evidence = PublishEvidence::new("krew");
         evidence.extra =
