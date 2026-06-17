@@ -589,6 +589,27 @@ fn collect_makeself_config_jobs(
     let all_binaries = collect_matching_binaries(ctx, cfg, &os_filter);
 
     if all_binaries.is_empty() {
+        // A zero-match is only a real config error in a FULL, unrestricted
+        // release: every selected crate's binaries for every target are
+        // present, so an empty set means the config's os/arch/ids scope can
+        // never match. Under a restricted build the set is incomplete BY
+        // CONSTRUCTION, so a config scoped to a crate/target that isn't in
+        // this slice legitimately matches nothing and must step aside (mirrors
+        // emission-validate / sbom skipping under `--targets`):
+        //   - `--targets` (`partial_target`) trims the built targets, so a
+        //     darwin-only or different-arch config finds no binary.
+        //   - per-crate determinism (`--crate cfgd-csi`, `selected_crates`
+        //     non-empty) builds one crate, so a config scoped to a different
+        //     crate's binary id (cfgd's `ids: [cfgd]`) finds nothing.
+        if ctx.options.partial_target.is_some() || !ctx.options.selected_crates.is_empty() {
+            log.status(&format!(
+                "skipped makeself config '{}' — no binaries match its os {:?} \
+                 under a restricted build (--targets / per-crate); the config's \
+                 crate/target scope isn't part of this slice",
+                id, os_filter
+            ));
+            return Ok(());
+        }
         anyhow::bail!(
             "makeself: no binaries found for config '{}' with os {:?}",
             id,
@@ -1283,6 +1304,85 @@ crates:
         });
         let err = MakeselfStage.run(&mut ctx).unwrap_err().to_string();
         assert!(err.contains("no binaries found"), "{err}");
+    }
+
+    /// Per-crate determinism (`--crate cfgd-csi`): only one crate's binaries
+    /// are built, so a config scoped to a DIFFERENT crate (cfgd's
+    /// `ids: [cfgd]`) matches nothing. Under per-crate scope this must SKIP,
+    /// not bail — the config legitimately doesn't apply to this crate.
+    #[test]
+    fn test_makeself_empty_match_skips_when_per_crate_scoped() {
+        let options = anodizer_core::context::ContextOptions {
+            selected_crates: vec!["cfgd-csi".into()],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(anodizer_core::config::Config::default(), options);
+        ctx.config.project_name = "cfgd-csi".into();
+        ctx.config.makeselfs = vec![MakeselfConfig {
+            id: Some("default".into()),
+            ids: Some(vec!["cfgd".into()]),
+            script: Some("install.sh".into()),
+            ..Default::default()
+        }];
+        ctx.template_vars_mut().set("ProjectName", "cfgd-csi");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        // Only the foreign crate's binary exists (cfgd-csi), so `ids: [cfgd]`
+        // matches nothing.
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "cfgd-csi".into(),
+            path: PathBuf::from("/dist/cfgd-csi"),
+            target: Some("x86_64-unknown-linux-gnu".into()),
+            crate_name: "cfgd-csi".into(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        MakeselfStage
+            .run(&mut ctx)
+            .expect("per-crate-scoped empty match must skip, not bail");
+        assert!(
+            ctx.artifacts
+                .all()
+                .iter()
+                .all(|a| a.kind != ArtifactKind::Makeself),
+            "skipped config must register no Makeself artifact"
+        );
+    }
+
+    /// Target-restricted (`--targets`) build: the built target set is partial
+    /// by construction, so a config whose os/arch can't match the slice must
+    /// SKIP (mirrors emission-validate / sbom under `--targets`).
+    #[test]
+    fn test_makeself_empty_match_skips_when_target_restricted() {
+        let options = anodizer_core::context::ContextOptions {
+            partial_target: Some(anodizer_core::partial::PartialTarget::Targets(vec![
+                "x86_64-pc-windows-msvc".into(),
+            ])),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(anodizer_core::config::Config::default(), options);
+        ctx.config.project_name = "proj".into();
+        ctx.config.makeselfs = vec![MakeselfConfig {
+            id: Some("d".into()),
+            script: Some("install.sh".into()),
+            ..Default::default()
+        }];
+        ctx.template_vars_mut().set("ProjectName", "proj");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        // Only a windows binary was built (the --targets slice), so the
+        // default linux/darwin os filter matches nothing.
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "proj.exe".into(),
+            path: PathBuf::from("/dist/proj.exe"),
+            target: Some("x86_64-pc-windows-msvc".into()),
+            crate_name: "proj".into(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        MakeselfStage
+            .run(&mut ctx)
+            .expect("target-restricted empty match must skip, not bail");
     }
 
     #[test]
