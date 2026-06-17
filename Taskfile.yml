@@ -182,6 +182,11 @@ tasks:
       - task: fmt
       - task: docs
 
+  audit:log:
+    desc: "Guard: no subprocess command-echo at default log verbosity (status vs verbose)."
+    cmds:
+      - .claude/scripts/audit-log-status.sh
+
   lint:
     desc: Local pre-commit check (tidy, clippy, build, snapshot dry-run)
     cmds:
@@ -189,6 +194,7 @@ tasks:
       - task: clippy
       - task: build
       - task: snapshot
+      - task: audit:log
 
   ci:
     desc: Run all CI checks (everything except cross-platform builds)

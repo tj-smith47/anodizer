@@ -10,7 +10,7 @@
 .zig-cache/
 docs/site/public/
 CLAUDE.local.md
-# Ignore everything under .claude/ except the three load-bearing CI scripts.
+# Ignore everything under .claude/ except the load-bearing CI/lint scripts.
 # `.claude/*` (not `.claude/`) keeps the directory itself traversable so
 # the per-file re-includes below are actually evaluated.
 .claude/*
@@ -19,5 +19,6 @@ CLAUDE.local.md
 !.claude/scripts/coverage-percent.sh
 !.claude/scripts/coverage-gate.sh
 !.claude/scripts/publish-coverage.sh
+!.claude/scripts/audit-log-status.sh
 # Coverage artifact emitted by `task coverage:check`.
 cobertura.xml
