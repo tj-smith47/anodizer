@@ -129,6 +129,7 @@ pub struct TestContextBuilder {
     debug: bool,
     show_skipped: bool,
     skip_stages: Vec<String>,
+    publisher_allowlist: Vec<String>,
     selected_crates: Vec<String>,
     token: Option<String>,
     parallelism: usize,
@@ -177,6 +178,7 @@ impl Default for TestContextBuilder {
             debug: false,
             show_skipped: false,
             skip_stages: Vec::new(),
+            publisher_allowlist: Vec::new(),
             selected_crates: Vec::new(),
             token: None,
             parallelism: 1,
@@ -290,6 +292,14 @@ impl TestContextBuilder {
     /// Set stages to skip.
     pub fn skip_stages(mut self, stages: Vec<String>) -> Self {
         self.skip_stages = stages;
+        self
+    }
+
+    /// Set the `--publishers` allowlist (`ContextOptions::publisher_allowlist`).
+    /// An empty vec deselects nothing; a non-empty one restricts the publish
+    /// stage to exactly the named publishers.
+    pub fn publisher_allowlist(mut self, publishers: Vec<String>) -> Self {
+        self.publisher_allowlist = publishers;
         self
     }
 
@@ -507,7 +517,7 @@ impl TestContextBuilder {
             changelog_to: self.changelog_to,
             changelog_preview: self.changelog_preview,
             allow_snapshot_publish: false,
-            publisher_allowlist: Vec::new(),
+            publisher_allowlist: self.publisher_allowlist,
         };
 
         let mut ctx = Context::new(config, options);

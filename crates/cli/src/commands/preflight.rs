@@ -220,12 +220,20 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
         );
     }
 
-    // The UNGATED publisher list, not `configured_publishers`: requirement
-    // derivation must see publishers configured only on workspace crates,
-    // which the registry's top-level-crate predicates cannot — each
+    // The full registry, not `configured_publishers`: requirement derivation
+    // must see publishers configured only on workspace crates, which the
+    // registry's top-level-crate predicates cannot — each
     // `Publisher::requirements` self-gates on the resolved config instead.
+    // Publishers DESELECTED at runtime via `--publishers` (allowlist) or
+    // `--skip` (denylist) are excluded so their secrets/tools cannot gate a
+    // run that will never invoke them — `publisher_deselected` is the same
+    // predicate the publish dispatch layer uses, keeping preflight and
+    // dispatch in lockstep across every config mode.
     if runs("publish") {
         for publisher in anodizer_stage_publish::registry::all_publishers() {
+            if ctx.publisher_deselected(publisher.name()) {
+                continue;
+            }
             add(
                 &format!("publish:{}", publisher.name()),
                 publisher.requirements(ctx),
@@ -676,6 +684,78 @@ flatpaks:
         assert!(
             !reqs.iter().any(|r| r.source == "stage:announce"),
             "--skip=announce must drop announce requirements: {reqs:?}"
+        );
+    }
+
+    /// `--publishers npm` must restrict the publish-only preflight to npm's
+    /// requirements alone: the github-hosted npm-provenance job carries only
+    /// NPM_TOKEN, so demanding cargo / chocolatey / etc. credentials —
+    /// publishers the allowlist deselected — falsely aborts the run.
+    #[test]
+    fn publishers_allowlist_restricts_publisher_requirements() {
+        let top = crate_from_yaml(
+            r#"
+name: top
+publish:
+  cargo: {}
+  scoop:
+    repository: { owner: o, name: bucket }
+"#,
+        );
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![top])
+            .publisher_allowlist(vec!["npm".to_string()])
+            .build();
+        ctx.config.npms = Some(vec![anodizer_core::config::NpmConfig::default()]);
+        let reqs = collect_requirements(&ctx, PreflightScope::PublishOnly);
+
+        let publisher_sources: Vec<&str> = reqs
+            .iter()
+            .map(|r| r.source.as_str())
+            .filter(|s| s.starts_with("publish:"))
+            .collect();
+        assert!(
+            !publisher_sources.is_empty(),
+            "the npm publisher must still contribute its own requirements: {reqs:?}"
+        );
+        assert!(
+            publisher_sources.iter().all(|s| *s == "publish:npm"),
+            "--publishers npm must yield only npm publisher requirements: {publisher_sources:?}"
+        );
+        for absent in ["publish:cargo", "publish:scoop", "publish:github-release"] {
+            assert!(
+                !reqs.iter().any(|r| r.source == absent),
+                "deselected publisher {absent} must contribute no requirements: {reqs:?}"
+            );
+        }
+    }
+
+    /// The symmetric denylist case: `--skip=npm` drops npm's requirements
+    /// while every other configured publisher keeps contributing.
+    #[test]
+    fn skip_publisher_drops_only_that_publisher() {
+        let top = crate_from_yaml(
+            r#"
+name: top
+publish:
+  scoop:
+    repository: { owner: o, name: bucket }
+"#,
+        );
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![top])
+            .skip_stages(vec!["npm".to_string()])
+            .build();
+        ctx.config.npms = Some(vec![anodizer_core::config::NpmConfig::default()]);
+        let reqs = collect_requirements(&ctx, PreflightScope::PublishOnly);
+
+        assert!(
+            !reqs.iter().any(|r| r.source == "publish:npm"),
+            "--skip=npm must drop npm requirements: {reqs:?}"
+        );
+        assert!(
+            reqs.iter().any(|r| r.source == "publish:scoop"),
+            "--skip=npm must keep other publishers' requirements: {reqs:?}"
         );
     }
 
