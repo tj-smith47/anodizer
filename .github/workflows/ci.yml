@@ -15,7 +15,6 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   SCCACHE_GHA_ENABLED: "true"
-  CARGO_NET_RETRY: "10"
 
 jobs:
   actionlint:
@@ -76,6 +75,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     env:
       RUSTC_WRAPPER: sccache
+      # The release-binary bootstrap runs on master, Linux only — used by the
+      # `release` job's `--publish-only` step (consumed via
+      # `from-artifact: anodizer-linux`) and the snapshot dry-run. Stated once
+      # here so both the build and upload steps gate on the same condition.
+      RELEASE_BOOTSTRAP: ${{ github.ref == 'refs/heads/master' && matrix.os == 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
       - uses: ./.github/actions/setup-rust
@@ -86,14 +90,11 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Tests
         run: task test
-      # Build release binary on Linux only — used as bootstrap for
-      # the `release` job's `--publish-only` step (consumed via
-      # `from-artifact: anodizer-linux`) and for the snapshot dry-run.
       - name: Build release binary
-        if: github.ref == 'refs/heads/master' && runner.os == 'Linux'
+        if: env.RELEASE_BOOTSTRAP == 'true'
         run: task build
       - name: Upload release binary
-        if: github.ref == 'refs/heads/master' && runner.os == 'Linux'
+        if: env.RELEASE_BOOTSTRAP == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: anodizer-linux

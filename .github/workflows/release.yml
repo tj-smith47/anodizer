@@ -48,7 +48,7 @@ jobs:
       sha: ${{ steps.resolve.outputs.sha }}
       tagged: ${{ steps.resolve.outputs.tagged }}
       dist_run_id: ${{ steps.resolve.outputs.dist_run_id }}
-      run_determinism: ${{ steps.resolve.outputs.run_determinism }}
+      should_run_determinism: ${{ steps.resolve.outputs.should_run_determinism }}
       publish_from_artifact: ${{ steps.resolve.outputs.publish_from_artifact }}
       publish_version: ${{ steps.resolve.outputs.publish_version }}
     steps:
@@ -91,7 +91,7 @@ jobs:
   determinism-check:
     name: Determinism
     needs: tag
-    if: needs.tag.result == 'success' && needs.tag.outputs.tagged == 'true' && needs.tag.outputs.run_determinism == 'true'
+    if: needs.tag.result == 'success' && needs.tag.outputs.should_run_determinism == 'true'
     uses: ./.github/workflows/determinism.yml
     with:
       head_sha: ${{ needs.tag.outputs.sha }}
@@ -127,12 +127,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Download preserved dist artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: ./.github/actions/download-preserved-dist
         with:
-          path: dist/
-          pattern: dist-*
-          merge-multiple: true
-          run-id: ${{ needs.tag.outputs.dist_run_id != '' && needs.tag.outputs.dist_run_id || github.run_id }}
+          run-id: ${{ needs.tag.outputs.dist_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Verify preserved dist
@@ -235,12 +232,9 @@ jobs:
           ref: ${{ needs.tag.outputs.sha }}
 
       - name: Download preserved dist artifacts
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: ./.github/actions/download-preserved-dist
         with:
-          path: dist/
-          pattern: dist-*
-          merge-multiple: true
-          run-id: ${{ needs.tag.outputs.dist_run_id != '' && needs.tag.outputs.dist_run_id || github.run_id }}
+          run-id: ${{ needs.tag.outputs.dist_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run anodizer release --publish-only --publishers npm

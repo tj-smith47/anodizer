@@ -32,10 +32,13 @@ outputs:
     value: ${{ steps.resolve.outputs.sha }}
   tagged:
     value: ${{ steps.resolve.outputs.tagged }}
-  is_republish:
-    value: ${{ steps.resolve.outputs.is_republish }}
   run_determinism:
     value: ${{ steps.resolve.outputs.run_determinism }}
+  should_run_determinism:
+    description: >-
+      tagged AND run_determinism, pre-combined so the determinism gate states a
+      single condition instead of re-ANDing the two flags.
+    value: ${{ steps.resolve.outputs.should_run_determinism }}
   dist_run_id:
     value: ${{ steps.resolve.outputs.dist_run_id }}
   publish_from_artifact:
@@ -73,6 +76,10 @@ runs:
 
         run_determinism=true
         [ "$SKIP_DET" = "true" ] && run_determinism=false
+
+        # Pre-combine the gate the determinism job would otherwise re-AND.
+        should_run_determinism=false
+        [ "$tagged" = "true" ] && [ "$run_determinism" = "true" ] && should_run_determinism=true
 
         dist_run_id=""
         if [ "$run_determinism" = "false" ]; then
@@ -113,8 +120,8 @@ runs:
         {
           echo "sha=$sha"
           echo "tagged=$tagged"
-          echo "is_republish=$republish"
           echo "run_determinism=$run_determinism"
+          echo "should_run_determinism=$should_run_determinism"
           echo "dist_run_id=$dist_run_id"
           echo "publish_from_artifact=$from_artifact"
           echo "publish_version=$version"
