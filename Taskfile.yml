@@ -1,5 +1,9 @@
 version: '3'
 
+# Plain anodizer output under CI (GHA forces ANSI, splitting asserted headers).
+env:
+  ANODIZER_COLOR: '{{if env "GITHUB_ACTIONS"}}never{{end}}'
+
 tasks:
   default:
     desc: Show available tasks
