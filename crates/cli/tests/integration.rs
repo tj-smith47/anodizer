@@ -2589,6 +2589,203 @@ crates:
     );
 }
 
+/// `continue` runs the same publish pipeline as `publish` and dispatches the
+/// same irreversible publishers, so its `--publishers` / `--skip` selectors
+/// MUST be validated before dispatch. A typo must error loudly with a nonzero
+/// exit, BEFORE the command does any work — the one-way-door guard.
+#[test]
+fn test_continue_publishers_typo_rejected_before_dispatch() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["continue", "--publishers=bogusname", "--dry-run"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "continue --publishers=bogusname must be rejected; got success"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid --publishers value") && stderr.contains("Valid publishers:"),
+        "continue publisher typo must name valid publishers, got:\n{}",
+        stderr
+    );
+}
+
+/// `continue --skip=nmp` (a typo for `npm`) must be rejected before dispatch —
+/// previously `continue` wired `--skip` straight into `skip_stages` with no
+/// validation, so a typo silently failed to deselect a publisher.
+#[test]
+fn test_continue_skip_typo_rejected_before_dispatch() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["continue", "--skip=nmp", "--dry-run"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "continue --skip=nmp (typo) must be rejected; got success"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid --skip value"),
+        "continue skip typo must be flagged invalid, got:\n{}",
+        stderr
+    );
+}
+
+/// `continue --skip=npm` (valid publisher) passes validation. The command may
+/// later fail loading a populated dist, but it must get PAST the selector
+/// gate (no "invalid" rejection).
+#[test]
+fn test_continue_skip_publisher_accepted() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["continue", "--skip=npm", "--dry-run"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("invalid --skip value") && !stderr.contains("invalid --publishers value"),
+        "continue --skip=npm must pass the selector gate, got:\n{}",
+        stderr
+    );
+}
+
+/// The out-of-dispatch publish stages — `blob`, `snapcraft-publish`, `docker`,
+/// `docker-sign` — must be ACCEPTED as `--publishers` allowlist entries (they
+/// perform irreversible publishes and are now governed by the allowlist). A
+/// release naming only them must clear the selector gate.
+#[test]
+fn test_publishers_allowlist_accepts_publish_stages() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--publishers=blob,snapcraft-publish,docker,docker-sign",
+            "--dry-run",
+            "--snapshot",
+            "--single-target",
+            "--clean",
+            "--timeout",
+            "30s",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("invalid --publishers value"),
+        "--publishers=blob,snapcraft-publish,docker,docker-sign must be accepted, got:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("Preparing release"),
+        "expected post-gate marker, got:\n{}",
+        stderr
+    );
+}
+
+/// `--skip=blob` / `--skip=snapcraft-publish` must STILL validate after the
+/// publish stages became publisher tokens — the denylist must not regress.
+#[test]
+fn test_skip_publish_stage_still_accepted() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    init_git_repo(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--skip=blob,snapcraft-publish",
+            "--dry-run",
+            "--snapshot",
+            "--single-target",
+            "--clean",
+            "--timeout",
+            "30s",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("invalid --skip value"),
+        "--skip=blob,snapcraft-publish must still be accepted, got:\n{}",
+        stderr
+    );
+}
+
 // ============================================================================
 // Error Path Tests
 // ============================================================================

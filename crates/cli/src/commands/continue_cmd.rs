@@ -26,6 +26,10 @@ pub struct ContinueOpts {
     pub dist: Option<PathBuf>,
     pub dry_run: bool,
     pub skip: Vec<String>,
+    /// `--publishers`: per-publisher allowlist (empty = all configured). The
+    /// same selector the release/publish paths carry; `continue` dispatches
+    /// the same irreversible publishers, so it honors it identically.
+    pub publishers: Vec<String>,
     pub token: Option<String>,
     pub config_override: Option<PathBuf>,
     pub verbose: bool,
@@ -51,6 +55,7 @@ pub fn run(opts: ContinueOpts) -> Result<()> {
         verbose: opts.verbose,
         debug: opts.debug,
         skip_stages: opts.skip,
+        publisher_allowlist: opts.publishers,
         token: opts.token,
         merge: opts.merge,
         ..Default::default()
@@ -125,6 +130,7 @@ crates:
             dist: Some(dist),
             dry_run: true,
             skip: vec![],
+            publishers: vec![],
             token: None,
             config_override: Some(tmp.path().join(".anodizer.yaml")),
             verbose: false,
@@ -146,6 +152,7 @@ crates:
             dist: None,
             dry_run: true,
             skip: vec![],
+            publishers: vec![],
             token: None,
             config_override: Some(tmp.path().join("nope.yaml")),
             verbose: false,
@@ -164,6 +171,7 @@ crates:
             dist: Some(std::path::PathBuf::from("/tmp/x")),
             dry_run: true,
             skip: vec!["docker".into()],
+            publishers: vec!["cargo".into()],
             token: Some("t".into()),
             config_override: None,
             verbose: false,
@@ -173,6 +181,7 @@ crates:
         };
         assert!(opts.dry_run);
         assert_eq!(opts.skip, vec!["docker".to_string()]);
+        assert_eq!(opts.publishers, vec!["cargo".to_string()]);
         assert_eq!(opts.token.as_deref(), Some("t"));
         assert!(!opts.merge);
     }

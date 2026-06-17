@@ -687,18 +687,33 @@ fn run() {
             dist,
             dry_run,
             skip,
+            publishers,
             token,
-        } => commands::continue_cmd::run(commands::continue_cmd::ContinueOpts {
-            dist,
-            dry_run,
-            skip,
-            token,
-            config_override: cli.config.clone(),
-            verbose: cli.verbose,
-            debug: cli.debug,
-            quiet: cli.quiet,
-            merge,
-        }),
+        } => {
+            // `continue` runs the same `build_publish_pipeline()` as `publish`
+            // and dispatches the same irreversible publishers, so it must
+            // validate `--publishers` / `--skip` before dispatch — a typo here
+            // (`--skip=nmp`) would silently fail to deselect a publisher, the
+            // exact one-way-door hazard the validation exists to prevent.
+            if let Err(msg) =
+                anodizer_stage_publish::registry::validate_publisher_selection(&publishers, &skip)
+            {
+                eprintln!("{}", anodizer_core::log::render_error(&msg));
+                std::process::exit(1);
+            }
+            commands::continue_cmd::run(commands::continue_cmd::ContinueOpts {
+                dist,
+                dry_run,
+                skip,
+                publishers,
+                token,
+                config_override: cli.config.clone(),
+                verbose: cli.verbose,
+                debug: cli.debug,
+                quiet: cli.quiet,
+                merge,
+            })
+        }
         Commands::Publish {
             dry_run,
             token,

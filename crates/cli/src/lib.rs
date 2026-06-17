@@ -519,9 +519,13 @@ pub enum Commands {
         #[arg(
             long,
             value_delimiter = ',',
-            help = "Skip stages (comma-separated, e.g. docker,announce)"
+            help = "Skip stages or publishers (comma-separated, e.g. docker,announce,npm). \
+                    Unified denylist: a stage name skips the stage, a publisher name \
+                    (npm, homebrew, chocolatey, …) skips that publisher."
         )]
         skip: Vec<String>,
+        #[arg(long = "publishers", value_delimiter = ',', help = PUBLISHERS_HELP_STEM)]
+        publishers: Vec<String>,
         #[arg(
             long,
             help = "GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars)"
