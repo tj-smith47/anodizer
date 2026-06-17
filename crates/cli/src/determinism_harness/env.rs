@@ -450,7 +450,21 @@ pub(crate) fn build_subprocess_env_with_env(
     // host-leaked credential vars under either the allow-list or the
     // Windows inherit pass.
     if let Some(keys) = inputs.signing_keys {
+        // Two cosign key-ref forms, two env vars, so a config picks whichever
+        // its `--key=` arg expects:
+        //   * `COSIGN_KEY` = PEM CONTENTS — for `--key=env://COSIGN_KEY`
+        //     (cosign reads the var's value as the key material).
+        //   * `COSIGN_KEY_PATH` = the on-disk key FILE path — for
+        //     `--key=$COSIGN_KEY_PATH`. Passing the PEM contents where cosign
+        //     wants a path fails with `reading key: open ...: file name too
+        //     long` (POSIX) / `syntax is incorrect` (Windows). cosign on every
+        //     platform is a native binary, so it opens the native path
+        //     directly (unlike the MSYS `gpg`, which needs `/c/...` folding).
         env.insert("COSIGN_KEY".into(), keys.cosign_key_contents.clone());
+        env.insert(
+            "COSIGN_KEY_PATH".into(),
+            keys.cosign_key_path.to_string_lossy().into_owned(),
+        );
         env.insert("COSIGN_PASSWORD".into(), keys.cosign_password.clone());
         env.insert(
             "GNUPGHOME".into(),
@@ -550,6 +564,40 @@ mod tests {
         assert!(
             !env.values().any(|v| v == "ghp_secret_value"),
             "no env entry may carry the token value"
+        );
+    }
+
+    /// The harness must export a `COSIGN_KEY_PATH` that points to an existing,
+    /// openable key file (for configs whose `--key=$COSIGN_KEY_PATH` expects a
+    /// path) AND a `COSIGN_KEY` carrying the PEM contents (for
+    /// `--key=env://COSIGN_KEY`). Passing PEM contents where cosign wants a path
+    /// is the `file name too long` production bug.
+    #[test]
+    fn harness_env_exports_openable_cosign_key_path_and_contents() {
+        let tmp = tempfile::tempdir().unwrap();
+        let keys = EphemeralSigningKeys::fixture_for_test("FAKE-ENCRYPTED-COSIGN-PEM")
+            .expect("build fixture signing keys");
+        let mut input = inputs(tmp.path());
+        input.signing_keys = Some(&keys);
+        let env = build_subprocess_env_with_env(&input, &MapEnvSource::new());
+
+        let key_path = env
+            .get("COSIGN_KEY_PATH")
+            .expect("COSIGN_KEY_PATH must be exported");
+        let on_disk = std::path::Path::new(key_path);
+        assert!(
+            on_disk.is_file(),
+            "COSIGN_KEY_PATH must point to an existing file, got {key_path}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(on_disk).unwrap(),
+            "FAKE-ENCRYPTED-COSIGN-PEM",
+            "the path must be cosign-openable and hold the key material"
+        );
+        assert_eq!(
+            env.get("COSIGN_KEY").map(String::as_str),
+            Some("FAKE-ENCRYPTED-COSIGN-PEM"),
+            "COSIGN_KEY must still carry PEM contents for the env:// form"
         );
     }
 

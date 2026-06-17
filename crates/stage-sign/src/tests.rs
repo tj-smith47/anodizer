@@ -1244,6 +1244,89 @@ fn test_sign_env_vars_passed_to_command() {
     );
 }
 
+/// FIX 1 contract: a config that references the harness's cosign key as a FILE
+/// PATH (`--key={{ Env.COSIGN_KEY_PATH }}`) must resolve to a readable file. The
+/// production bug exported the PEM CONTENTS as `COSIGN_KEY`, so a path-form
+/// `--key` got the PEM text where cosign wanted a path → `reading key: open
+/// ...: file name too long`. The fake "cosign" here `cat`s the resolved
+/// `--key=` value; the marker only gets written if that value names an openable
+/// file.
+#[cfg(unix)]
+#[test]
+fn test_sign_cosign_key_path_resolves_to_readable_file() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    // Stand in for the harness-provisioned key file.
+    let key_path = tmp.path().join("cosign.key");
+    std::fs::write(&key_path, "ENCRYPTED-COSIGN-PEM-BODY").unwrap();
+    let marker_path = tmp.path().join("key_readback.txt");
+
+    let artifact_path = tmp.path().join("checksums.sha256");
+    std::fs::write(&artifact_path, b"checksum content").unwrap();
+
+    // `sh -c 'test -r "$1" && cat "$1" > MARKER' _ <key-arg>`: $1 is the
+    // resolved `--key=` path with the `--key=` prefix stripped via parameter
+    // expansion, so the readability test runs against the real path.
+    let script = format!(
+        "k=$1; p=${{k#--key=}}; test -r \"$p\" && cat \"$p\" > {}",
+        marker_path.to_string_lossy()
+    );
+    let signs = vec![SignConfig {
+        id: Some("cosign-path".to_string()),
+        cmd: Some("sh".to_string()),
+        args: Some(vec![
+            "-c".to_string(),
+            script,
+            "_".to_string(),
+            "--key={{ .Env.COSIGN_KEY_PATH }}".to_string(),
+        ]),
+        artifacts: Some("checksum".to_string()),
+        ids: None,
+        signature: None,
+        stdin: None,
+        stdin_file: None,
+        env: None,
+        certificate: None,
+        output: None,
+        if_condition: None,
+    }];
+
+    let mut ctx = TestContextBuilder::new()
+        .dry_run(false)
+        .signs(signs)
+        .build();
+    // Mirror release init: the harness's exported COSIGN_KEY_PATH process var
+    // lands in the `Env` template namespace via `set_env`.
+    ctx.template_vars_mut()
+        .set_env("COSIGN_KEY_PATH", &key_path.to_string_lossy());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Checksum,
+        name: String::new(),
+        path: artifact_path,
+        target: None,
+        crate_name: "test".to_string(),
+        metadata: combined_meta(),
+        size: None,
+    });
+
+    SignStage
+        .run(&mut ctx)
+        .expect("sign with a path-form cosign key must succeed");
+
+    let readback = std::fs::read_to_string(&marker_path).unwrap_or_else(|e| {
+        panic!(
+            "marker missing — the resolved --key value was not a readable file \
+             (the `file name too long` bug): {e}"
+        )
+    });
+    assert_eq!(
+        readback.trim(),
+        "ENCRYPTED-COSIGN-PEM-BODY",
+        "the --key path must be openable and hold the key material"
+    );
+}
+
 #[test]
 fn test_docker_sign_ids_filter() {
     use anodizer_core::artifact::{Artifact, ArtifactKind};
