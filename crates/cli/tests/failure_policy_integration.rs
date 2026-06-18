@@ -390,15 +390,20 @@ crates:
     assert_eq!(sibling["failure_policy"]["action"], "held");
 }
 
-/// The publish-only credential gate is a zero-mutation preflight: with a
-/// release token present but NO production signing key, `--publish-only`
-/// must abort with the fix-and-re-run message BEFORE the failure-policy
-/// boundary — no rollback, no revert commit, tag intact on both ends,
-/// and no `failure_policy` record written.
+/// The publish-only credential gate scopes its production-signing-key
+/// requirement to the RESOLVED publisher surface. A signing-free surface
+/// — here cargo-only, with `--skip` deselecting the `sign` stage and
+/// every `signs:` consumer (github-release / blob / artifactory /
+/// uploads) — needs no cosign/GPG material, so a run with a release token
+/// but NO signing key must PASS the credential gate and proceed into the
+/// publish pipeline. This is the regression behind the github-hosted
+/// npm-provenance job (`--publish-only --publishers npm`, which carries
+/// no signing keys by design): the old blanket gate aborted it with
+/// "missing production signing key" before it could publish.
 #[test]
-fn publish_only_missing_sign_key_aborts_without_rollback() {
+fn publish_only_signing_free_surface_passes_credential_gate() {
     if !tool_on_path("git") {
-        eprintln!("SKIP publish_only_missing_sign_key: git missing");
+        eprintln!("SKIP publish_only_signing_free_surface: git missing");
         return;
     }
     let (repo, origin) = setup_tagged_repo_with_origin(CARGO_PUBLISH_CONFIG);
@@ -421,13 +426,82 @@ fn publish_only_missing_sign_key_aborts_without_rollback() {
         .expect("invoking anodizer release --publish-only");
     let stderr = String::from_utf8_lossy(&output.stderr);
 
+    // The credential gate must NOT trip on the missing signing key for a
+    // surface that consumes no production signatures.
+    assert!(
+        !stderr.contains("missing production signing key"),
+        "a signing-free surface must not be blocked on the signing key; got: {stderr}"
+    );
+    // The run reached the publish pipeline (proof it got past the gate):
+    // the cargo publisher's own log line appears.
+    assert!(
+        stderr.contains("cargo publish"),
+        "run must proceed past the credential gate into the publish pipeline; got: {stderr}"
+    );
+    // The original tags stay intact; nothing destructive ran.
+    assert_eq!(git_stdout(repo.path(), &["tag", "-l", "v0.1.0"]), "v0.1.0");
+    assert_eq!(
+        git_stdout(origin.path(), &["tag", "-l", "v0.1.0"]),
+        "v0.1.0"
+    );
+}
+
+/// Counterpart to the signing-free case: a publish-only surface that DOES
+/// keep a `signs:` consumer selected (github-release) must STILL abort on
+/// a missing production signing key — the guard is scoped, not removed.
+/// Zero-mutation: no rollback, no revert commit, tags intact on both ends,
+/// no `failure_policy` record written.
+#[test]
+fn publish_only_signing_surface_still_requires_sign_key() {
+    if !tool_on_path("git") {
+        eprintln!("SKIP publish_only_signing_surface_requires_key: git missing");
+        return;
+    }
+    // A surface with a `signs:` slice and a selected signs consumer
+    // (github-release). The `--skip` list below deselects everything EXCEPT
+    // sign + release, so `signs_fully_deselected` is false and signing is
+    // genuinely required.
+    let signing_config = r#"
+project_name: test-project
+signs:
+  - artifacts: all
+    cmd: cosign
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      github:
+        owner: test-owner
+        name: test-repo
+"#;
+    let (repo, origin) = setup_tagged_repo_with_origin(signing_config);
+    let bump_sha = git_stdout(repo.path(), &["rev-parse", "HEAD"]);
+    fs::write(repo.path().join(".gitignore"), "dist/\n.gitignore\n").unwrap();
+    bootstrap_preserved_dist(repo.path(), "test-project", "0.1.0", &bump_sha);
+
+    // Keep sign + release (the signs consumer) selected; skip the rest.
+    let skip_all_but_sign_release = "--skip=build,upx,appbundle,dmg,msi,pkg,nsis,notarize,changelog,archive,source,nfpm,\
+         srpm,makeself,snapcraft,flatpak,sbom,templatefiles,checksum,docker,docker-sign,blob,\
+         snapcraft-publish,announce,cargo";
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["release", "--publish-only", skip_all_but_sign_release])
+        .env("GITHUB_TOKEN", "dummy-token")
+        .env_remove("COSIGN_KEY")
+        .env_remove("GPG_PRIVATE_KEY")
+        .current_dir(repo.path())
+        .output()
+        .expect("invoking anodizer release --publish-only");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
     assert!(
         !output.status.success(),
-        "missing sign key must abort; stderr: {stderr}"
+        "missing sign key must abort a signing surface; stderr: {stderr}"
     );
     assert!(
         stderr.contains("missing production signing key"),
-        "the credential gate must name the gap; got: {stderr}"
+        "the credential gate must name the gap for a signing surface; got: {stderr}"
     );
     assert!(
         !stderr.contains("on_failure") && !stderr.contains("rolling back"),

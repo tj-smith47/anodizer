@@ -182,7 +182,7 @@ pub(super) fn credential_preflight_gate(
         );
         return Ok(());
     }
-    preflight_credentials(|k| ctx.env_var(k))
+    preflight_credentials(signing_required(ctx), |k| ctx.env_var(k))
 }
 
 /// `--publish-only` entry point. Wired from `commands/release/mod.rs::run`
@@ -969,12 +969,24 @@ fn run_one_crate_dist(
 /// credential miss doesn't leave a partially-uploaded release behind.
 ///
 /// Required: a GitHub-shaped token (release stage needs to upload
-/// assets / create the release) AND at least one of the production
-/// signing keys (sign stage re-signs the preserved archives). Other
+/// assets / create the release) — always — AND, only when
+/// `signing_required` is `true`, at least one of the production signing
+/// keys (the sign stage re-signs the preserved archives). Other
 /// publisher credentials (chocolatey api key, AUR ssh key, etc.) are
 /// per-publisher and surface at dispatch time — the pre-flight
 /// publisher-state check (separate code path, runs before this branch
 /// in `commands/release/mod.rs`) already validates them.
+///
+/// **`signing_required`** is computed at the call site from the run's
+/// RESOLVED publisher surface (after `--publishers` / `--skip`), via the
+/// same `signs_fully_deselected` predicate the sign stage and
+/// `anodizer preflight` use. A signing-free surface (e.g.
+/// `--publishers npm`, where the `signs:` loop self-skips because every
+/// signature consumer is deselected) sets it `false`, so this gate does
+/// NOT demand cosign/GPG material the publish-time runner does not carry.
+/// Any surface that keeps a signature consumer selected sets it `true`
+/// and the key requirement stands — the guard is never weakened for a
+/// surface that will actually produce shippable signatures.
 ///
 /// Pragmatic intentionally: the user is expected to drive
 /// publish-only from CI where the secrets are exported into env
@@ -987,7 +999,10 @@ fn run_one_crate_dist(
 /// doesn't race with sibling tests on shared process env. This
 /// mirrors how `stage-sign::helpers::should_sign_artifact` is
 /// independently testable.
-fn preflight_credentials(env: impl Fn(&str) -> Option<String>) -> Result<()> {
+fn preflight_credentials(
+    signing_required: bool,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<()> {
     let token_present = GITHUB_TOKEN_ENV_VARS
         .iter()
         .any(|v| env(v).map(|s| !s.is_empty()).unwrap_or(false));
@@ -1002,7 +1017,7 @@ fn preflight_credentials(env: impl Fn(&str) -> Option<String>) -> Result<()> {
             GITHUB_TOKEN_ENV_VARS.join(" / "),
         );
     }
-    if !sign_key_present {
+    if signing_required && !sign_key_present {
         anyhow::bail!(
             "publish-only: missing production signing key. Set at least one of {} before \
              running --publish-only (or pass --dry-run to preview without secrets). \
@@ -1012,6 +1027,29 @@ fn preflight_credentials(env: impl Fn(&str) -> Option<String>) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// Whether the resolved publisher surface for this `--publish-only` run
+/// will drive the sign stage's `signs:` loop to produce shippable
+/// detached signatures — i.e. whether [`preflight_credentials`] must
+/// demand a production signing key.
+///
+/// Reuses the single source of truth shared with `SignStage::run` and
+/// `anodizer preflight`: [`anodizer_stage_sign::signs_fully_deselected`].
+/// Signing is required only when ALL of:
+/// - the `sign` stage is not in `--skip` (`should_skip("sign")`),
+/// - the user actually configured a `signs:` slice, and
+/// - at least one `signs:` consumer (github-release / blob / artifactory /
+///   uploads, or a selected custom publisher with `signature: true`)
+///   survives the `--publishers` / `--skip` resolution.
+///
+/// `binary_signs:` is intentionally not consulted: in publish-only mode
+/// its output has no publish-time consumer (it self-skips via
+/// `binary_signs_skipped`), so it never demands signing material here.
+fn signing_required(ctx: &Context) -> bool {
+    !ctx.should_skip("sign")
+        && !ctx.config.signs.is_empty()
+        && !anodizer_stage_sign::signs_fully_deselected(ctx)
 }
 
 /// Strip `Signature` / `Certificate` artifacts the harness may have
@@ -1640,7 +1678,9 @@ mod tests {
 
     #[test]
     fn preflight_credentials_bails_when_token_missing() {
-        let err = preflight_credentials(|_| None).unwrap_err();
+        // Token is unconditional, so the missing-token error fires
+        // regardless of whether signing is required.
+        let err = preflight_credentials(true, |_| None).unwrap_err();
         assert!(
             format!("{err}").contains("missing release token"),
             "expected missing-token error; got: {err}"
@@ -1649,8 +1689,10 @@ mod tests {
 
     #[test]
     fn preflight_credentials_bails_when_sign_key_missing() {
+        // signing_required = true: a signing-consuming surface with no
+        // key in env must still hard-fail (guard NOT weakened).
         let env = env_from(HashMap::from([("GITHUB_TOKEN", "x")]));
-        let err = preflight_credentials(env).unwrap_err();
+        let err = preflight_credentials(true, env).unwrap_err();
         assert!(
             format!("{err}").contains("missing production signing key"),
             "expected missing-sign-key error after token set; got: {err}"
@@ -1658,9 +1700,33 @@ mod tests {
     }
 
     #[test]
+    fn preflight_credentials_skips_sign_key_when_signing_not_required() {
+        // The regression this fixes: a signing-free resolved surface
+        // (e.g. `--publishers npm`, where every `signs:` consumer is
+        // deselected so the sign stage self-skips) carries NO production
+        // signing key by design. With signing_required = false the gate
+        // must PASS on token-only env — the npm-provenance job died here
+        // before because the key check was an unconditional front-gate.
+        let env = env_from(HashMap::from([("GITHUB_TOKEN", "x")]));
+        preflight_credentials(false, env)
+            .expect("token-only signing-free surface must preflight clean");
+    }
+
+    #[test]
+    fn preflight_credentials_token_still_required_when_signing_not_required() {
+        // Scoping the signing-key half must NOT relax the token half:
+        // a signing-free surface with no token still fails on the token.
+        let err = preflight_credentials(false, |_| None).unwrap_err();
+        assert!(
+            format!("{err}").contains("missing release token"),
+            "token must stay unconditional even when signing is not required; got: {err}"
+        );
+    }
+
+    #[test]
     fn preflight_credentials_accepts_token_and_cosign_key() {
         let env = env_from(HashMap::from([("GITHUB_TOKEN", "x"), ("COSIGN_KEY", "y")]));
-        preflight_credentials(env).expect("token + cosign should preflight clean");
+        preflight_credentials(true, env).expect("token + cosign should preflight clean");
     }
 
     #[test]
@@ -1672,7 +1738,8 @@ mod tests {
             ("ANODIZER_GITHUB_TOKEN", "x"),
             ("GPG_PRIVATE_KEY", "y"),
         ]));
-        preflight_credentials(env).expect("anodizer github token + gpg key should preflight clean");
+        preflight_credentials(true, env)
+            .expect("anodizer github token + gpg key should preflight clean");
     }
 
     #[test]
@@ -1682,10 +1749,112 @@ mod tests {
         // where CI declares the secret but the upstream provider
         // returned nothing.
         let env = env_from(HashMap::from([("GITHUB_TOKEN", ""), ("COSIGN_KEY", "y")]));
-        let err = preflight_credentials(env).unwrap_err();
+        let err = preflight_credentials(true, env).unwrap_err();
         assert!(
             format!("{err}").contains("missing release token"),
             "empty token must be treated as missing; got: {err}"
+        );
+    }
+
+    // ── signing_required: derived from the resolved publisher surface ──
+
+    use anodizer_core::config::SignConfig;
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    fn cosign_signs() -> Vec<SignConfig> {
+        vec![SignConfig {
+            artifacts: Some("all".to_string()),
+            cmd: Some("cosign".to_string()),
+            ..Default::default()
+        }]
+    }
+
+    #[test]
+    fn signing_required_false_for_npm_only_surface() {
+        // The regression surface: `--publishers npm` deselects every
+        // `signs:` consumer (github-release / blob / artifactory /
+        // uploads), so the sign stage's `signs:` loop self-skips and no
+        // production signing key is needed — even though `signs:` IS
+        // configured. signing_required must mirror that self-skip.
+        let ctx = TestContextBuilder::new()
+            .signs(cosign_signs())
+            .publisher_allowlist(vec!["npm".to_string()])
+            .build();
+        assert!(
+            !signing_required(&ctx),
+            "npm-only surface deselects all signs consumers — no key required"
+        );
+    }
+
+    #[test]
+    fn signing_required_true_when_a_signs_consumer_is_selected() {
+        // Selecting any `signs:` consumer (here github-release) keeps the
+        // detached-signature loop alive, so production signing material
+        // IS required — the guard must NOT be weakened for this surface.
+        let ctx = TestContextBuilder::new()
+            .signs(cosign_signs())
+            .publisher_allowlist(vec!["npm".to_string(), "github-release".to_string()])
+            .build();
+        assert!(
+            signing_required(&ctx),
+            "a selected signs consumer revives the signs loop — key required"
+        );
+    }
+
+    #[test]
+    fn signing_required_true_for_empty_allowlist_main_job() {
+        // The main self-hosted job runs with an EMPTY allowlist, which
+        // deselects nothing — every signs consumer is live, so signing
+        // material is required (it carries the keys via --publish-only).
+        let ctx = TestContextBuilder::new().signs(cosign_signs()).build();
+        assert!(
+            signing_required(&ctx),
+            "empty allowlist deselects no consumer — key required"
+        );
+    }
+
+    #[test]
+    fn signing_required_false_when_no_signs_configured() {
+        // No `signs:` slice means the loop produces nothing regardless of
+        // the publisher surface, so no key is needed.
+        let ctx = TestContextBuilder::new().build();
+        assert!(
+            !signing_required(&ctx),
+            "no signs config — nothing to sign, no key required"
+        );
+    }
+
+    #[test]
+    fn signing_required_false_when_sign_stage_skipped() {
+        // `--skip sign` removes the stage entirely, so even a fully
+        // selected signs surface needs no signing material.
+        let ctx = TestContextBuilder::new()
+            .signs(cosign_signs())
+            .skip_stages(vec!["sign".to_string()])
+            .build();
+        assert!(
+            !signing_required(&ctx),
+            "--skip sign removes the stage — no key required"
+        );
+    }
+
+    #[test]
+    fn signing_required_false_when_signs_consumer_explicitly_skipped() {
+        // `--skip github-release,blob,artifactory,uploads` deselects every
+        // signs consumer via the denylist (not the allowlist), exercising
+        // the other half of signs_fully_deselected.
+        let ctx = TestContextBuilder::new()
+            .signs(cosign_signs())
+            .skip_stages(vec![
+                "github-release".to_string(),
+                "blob".to_string(),
+                "artifactory".to_string(),
+                "uploads".to_string(),
+            ])
+            .build();
+        assert!(
+            !signing_required(&ctx),
+            "all signs consumers skipped via denylist — no key required"
         );
     }
 
