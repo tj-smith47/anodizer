@@ -1,0 +1,72 @@
+# One-shot publisher backfill — manual, determinism-free.
+#
+# Re-publishes a single publisher (default npm) for an ALREADY-RELEASED
+# version whose other publishers landed but this one did not (e.g. npm fell
+# behind cargo because a publish-only preflight aborted it). Unlike the main
+# Release pipeline this runs NO determinism harness: the binaries npm wraps
+# come from the byte-proven `dist-*` artifacts a prior Release run already
+# preserved (`dist_run_id`), so there is nothing left to re-prove and the
+# round-trip is a single fast job. The anodizer that DRIVES the publish is
+# built fresh from `from_branch` (NOT the released binary), so it carries
+# publish-path fixes that the broken release shipped without.
+name: Backfill publisher
+
+on:
+  workflow_dispatch:
+    inputs:
+      publishers:
+        description: Publisher allowlist passed to `--publishers` (comma-separated).
+        required: true
+        default: npm
+      dist_run_id:
+        description: >-
+          Release run id whose preserved `dist-*` artifacts to wrap (the run
+          that shipped the rest of this version). Its context.json fixes the
+          published version.
+        required: true
+      from_branch:
+        description: Branch of tj-smith47/anodizer to build the publishing binary from.
+        required: false
+        default: master
+      dry_run:
+        description: >-
+          Resolve and stage the publish without writing to the registry. Leave
+          on while iterating; turn off for the real backfill.
+        type: boolean
+        default: true
+
+concurrency:
+  group: backfill-${{ inputs.publishers }}-${{ inputs.dist_run_id }}
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    name: Backfill ${{ inputs.publishers }}${{ inputs.dry_run && ' (dry-run)' || '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance is OIDC-minted on this github-hosted runner
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.from_branch }}
+
+      - name: Download preserved dist artifacts
+        uses: ./.github/actions/download-preserved-dist
+        with:
+          run-id: ${{ inputs.dist_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run anodizer release --publish-only
+        uses: tj-smith47/anodizer-action@v1
+        with:
+          # Build the publishing binary from source so it carries publish-path
+          # fixes absent from the released artifact. The published VERSION still
+          # comes from the preserved dist context, not this checkout.
+          from-branch: ${{ inputs.from_branch }}
+          install: node
+          args: release --publish-only --publishers ${{ inputs.publishers }}${{ inputs.dry_run && ' --dry-run' || '' }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
