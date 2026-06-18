@@ -17,9 +17,11 @@ xtask = "run --package xtask --"
 #     <https://learn.microsoft.com/en-us/cpp/build/reference/brepro>
 #   - `/OPT:NOICF` — disables Identical COMDAT Folding, whose fold
 #     decisions depend on input-file presentation order.
-#   - `/INCREMENTAL:NO` — release-profile default, but explicit because
-#     `/Brepro` is incompatible with incremental linking and a future
-#     profile edit shouldn't silently re-enable it.
+#   - `/INCREMENTAL:NO` — cargo's stock release default already disables
+#     incremental linking, but it's set explicitly because `/Brepro` is
+#     incompatible with incremental linking and a future profile edit (e.g.
+#     a custom `[profile.release]` with `incremental = true`) shouldn't
+#     silently re-enable it.
 #   - `/DEBUG:NONE` — do not emit a PDB or CodeView debug record.
 #     Eliminates the debug directory entry whose GUID would otherwise
 #     have to be carefully content-hashed for reproducibility.
