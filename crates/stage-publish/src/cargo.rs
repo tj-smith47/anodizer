@@ -1574,7 +1574,7 @@ fn publish_to_cargo_with(
 
     if ctx.is_dry_run() {
         for name in &sorted_names {
-            log.status(&run_per_crate_start_message(name));
+            log.verbose(&run_per_crate_start_message(name));
             let cmd = publish_command(name, cargo_cfgs.get(name));
             log.status(&format!("(dry-run) would run: {}", cmd.join(" ")));
         }
@@ -1623,7 +1623,7 @@ fn publish_to_cargo_with(
     let mut ws_root_cache = RootDepCache::new();
 
     for (i, name) in sorted_names.iter().enumerate() {
-        log.status(&run_per_crate_start_message(name));
+        log.verbose(&run_per_crate_start_message(name));
         // Per-crate resolved version (own Cargo.toml `[package].version`,
         // falling back to the release version) — sourced from the plan so the
         // already-published check uses the same version the preflight queried.
@@ -3882,11 +3882,12 @@ lib.workspace = true
         let selected = ctx.options.selected_crates.clone();
         let mut record = Vec::new();
         publish_to_cargo(ctx, &selected, &log, &mut record).expect("dry-run publish must succeed");
-        // Each crate emits `run_per_crate_start_message(name)` exactly once,
-        // in topological order, before its `(dry-run) would run` line.
+        // Each crate emits `run_per_crate_start_message(name)` exactly once
+        // (at verbose), in topological order, before its `(dry-run) would
+        // run` line.
         cap.all_messages()
             .into_iter()
-            .filter(|(lvl, _)| *lvl == LogLevel::Status)
+            .filter(|(lvl, _)| *lvl == LogLevel::Verbose)
             .filter_map(|(_, m)| {
                 m.strip_prefix("starting per-crate cargo publish for '")
                     .and_then(|rest| rest.strip_suffix('\''))

@@ -448,6 +448,11 @@ impl LogCapture {
         self.count(LogLevel::Debug)
     }
 
+    /// Number of [`LogLevel::Verbose`] lines recorded.
+    pub fn verbose_count(&self) -> usize {
+        self.count(LogLevel::Verbose)
+    }
+
     /// Number of [`LogLevel::Warn`] lines recorded.
     pub fn warn_count(&self) -> usize {
         self.count(LogLevel::Warn)

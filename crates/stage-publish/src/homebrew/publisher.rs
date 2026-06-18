@@ -334,7 +334,7 @@ impl anodizer_core::Publisher for HomebrewPublisher {
                 continue;
             }
             processed += 1;
-            log.status(&run_per_crate_start_message(crate_name));
+            log.verbose(&run_per_crate_start_message(crate_name));
             // Re-scope the version/name template vars to THIS crate's own tag so
             // the rendered formula carries the crate's version, not the first
             // crate's (workspace per-crate independent-version mode).

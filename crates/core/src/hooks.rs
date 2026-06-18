@@ -178,7 +178,6 @@ pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> R
                 label, cmd_str
             ));
         } else {
-            log.status(&format!("running {} hook", label));
             log.verbose(&format!("running {} hook via `{}`", label, cmd_str));
             let mut command = Command::new("sh");
             command.arg("-c").arg(&cmd_str);
@@ -221,6 +220,8 @@ pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> R
                 &format!("{} hook: {}", label, cmd_str),
             )?;
 
+            log.status(&format!("ran {label} hook"));
+
             // When output flag is true, echo the hook's (redacted) stdout as a
             // `[hook output]` summary line — but NOT at verbose, where the run
             // helper already teed that stdout live; echoing again would print
@@ -229,7 +230,7 @@ pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> R
             if output_flag == Some(true) && !log.is_verbose() {
                 let redacted_stdout = redact_secrets(&String::from_utf8_lossy(&output.stdout));
                 if !redacted_stdout.trim().is_empty() {
-                    log.status(&format!("[hook output] {}", redacted_stdout.trim()));
+                    log.status(&format!("[hook output] {}", redacted_stdout.trim())); // status-ok: opt-in hook stdout summary, only emitted when output: true and non-verbose
                 }
             }
         }

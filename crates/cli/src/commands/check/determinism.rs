@@ -240,6 +240,14 @@ pub fn run(args: CheckDeterminismArgs, verbose: bool, debug: bool, quiet: bool) 
         std::process::exit(1);
     }
 
+    // No drift: reaching here means every rebuild produced byte-identical
+    // artifacts. Emit one concise default RESULT so a passing run is not
+    // silent (the drift path above is the only loud branch otherwise).
+    log.success(&format!(
+        "{}/{} runs byte-identical",
+        report.runs, report.runs
+    ));
+
     Ok(())
 }
 

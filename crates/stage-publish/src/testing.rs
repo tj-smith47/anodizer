@@ -345,18 +345,33 @@ pub fn assert_publisher_visible_work_contract(publisher: &dyn Publisher, ctx: &m
     );
 
     let status_count = capture.status_count();
+    let verbose_count = capture.verbose_count();
     let warn_count = capture.warn_count();
     // Typed enum: `Empty` is the only "no operator-public fields"
     // variant. Anything else carries at least one target struct.
     let extra_is_empty = matches!(evidence.extra, anodizer_core::PublishEvidenceExtra::Empty);
     let has_evidence = evidence.primary_ref.is_some() || !extra_is_empty;
 
+    // The publisher's default surface is a stage header + a done summary
+    // (both at status); the per-crate-start line lives at verbose so the
+    // per-crate × per-publisher loop stays quiet at default. Proof the
+    // publisher actually visited a crate is the verbose per-crate-start
+    // line, not a default status line.
     assert!(
-        status_count >= 3,
-        "publisher '{}': expected ≥3 status log lines (start + per-crate-start + done), got {}. \
+        status_count >= 2,
+        "publisher '{}': expected ≥2 status log lines (start + done), got {}. \
          Captured: {:?}",
         publisher.name(),
         status_count,
+        capture.all_messages()
+    );
+    assert!(
+        verbose_count >= 1,
+        "publisher '{}': expected ≥1 verbose log line (per-crate-start), got {}. \
+         This is the load-bearing proof the publisher visited a crate rather \
+         than silently continuing. Captured: {:?}",
+        publisher.name(),
+        verbose_count,
         capture.all_messages()
     );
 
@@ -364,15 +379,14 @@ pub fn assert_publisher_visible_work_contract(publisher: &dyn Publisher, ctx: &m
     // operator-readable signals is present:
     //   - evidence has content (production push completed), OR
     //   - a warn fired (no-eligible-crates explanation), OR
-    //   - the loop emitted more than the bare start/per-crate-start/done
-    //     trio — i.e. at least one dry-run / skip / per-crate-progress
-    //     status line, which is what tells the operator what would have
-    //     happened on a real push.
-    let extra_status_lines = status_count > 3;
+    //   - the loop emitted more than the bare start/done pair — i.e. at
+    //     least one dry-run / skip / per-crate-progress status line, which
+    //     is what tells the operator what would have happened on a real push.
+    let extra_status_lines = status_count > 2;
     assert!(
         has_evidence || warn_count >= 1 || extra_status_lines,
         "publisher '{}': run() returned empty evidence AND emitted zero warnings AND \
-         emitted no progress status beyond the standard start/per-crate-start/done trio \
+         emitted no progress status beyond the standard start/done pair \
          — operator has no signal this publisher did anything. Captured: {:?}",
         publisher.name(),
         capture.all_messages()
