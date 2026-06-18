@@ -125,8 +125,9 @@ const WINDOWS_ENV_DENYLIST: &[&str] = &[
 ///    workflow-state values that would leak the GH Actions runner's
 ///    on-host directories into the supposedly hermetic child.
 ///
-/// Check order: explicit deny-list → ACTIONS_* / RUNNER_TOKEN → credential
-/// suffix sweep → GH/RUNNER namespace hermeticity gate.
+/// Check order: explicit deny-list → ACTIONS_* / RUNNER_TOKEN →
+/// rustflags-family sweep (`/Brepro`-precedence guard) → credential suffix
+/// sweep → GH/RUNNER namespace hermeticity gate.
 #[cfg(windows)]
 fn windows_env_should_drop(key: &str) -> bool {
     if WINDOWS_ENV_DENYLIST
@@ -138,7 +139,24 @@ fn windows_env_should_drop(key: &str) -> bool {
     if key.starts_with("ACTIONS_") || key.eq_ignore_ascii_case("RUNNER_TOKEN") {
         return true;
     }
+    // Drop every inherited rustflags-family var. The harness builds its own
+    // authoritative RUSTFLAGS / CARGO_TARGET_<msvc>_RUSTFLAGS carrying
+    // `/Brepro` (the flag that makes the PE COFF TimeDateStamp a content
+    // hash instead of wall-clock). Cargo picks ONE rustflags source,
+    // first-present-wins with NO merge, and CARGO_ENCODED_RUSTFLAGS sits at
+    // the top of that order — so a host-supplied one (Cargo exports it into
+    // the `cargo run`-launched anodizer process) would silently out-precedence
+    // the harness's `/Brepro` injection, yielding a non-reproducible binary.
+    if key.eq_ignore_ascii_case("CARGO_ENCODED_RUSTFLAGS")
+        || key.eq_ignore_ascii_case("RUSTFLAGS")
+        || key.eq_ignore_ascii_case("CARGO_BUILD_RUSTFLAGS")
+    {
+        return true;
+    }
     let lower = key.to_ascii_lowercase();
+    if lower.starts_with("cargo_target_") && lower.ends_with("_rustflags") {
+        return true;
+    }
     for suffix in [
         "_token",
         "_key",
@@ -886,6 +904,36 @@ mod tests {
             rf.contains("--remap-path-prefix="),
             "global RUSTFLAGS must also carry --remap-path-prefix. got={rf}"
         );
+    }
+
+    /// Regression: the inherit-everything pass must DROP every rustflags-
+    /// family host var. A host `CARGO_ENCODED_RUSTFLAGS` (Cargo exports it
+    /// into the `cargo run`-launched anodizer process) out-precedences the
+    /// harness's deliberately-injected `/Brepro`, silently dropping it and
+    /// producing a non-reproducible binary.
+    #[test]
+    #[cfg(windows)]
+    fn windows_env_should_drop_rustflags_family() {
+        for key in [
+            "CARGO_ENCODED_RUSTFLAGS",
+            "cargo_encoded_rustflags",
+            "RUSTFLAGS",
+            "CARGO_BUILD_RUSTFLAGS",
+            "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS",
+            "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_RUSTFLAGS",
+            "cargo_target_x86_64_pc_windows_msvc_rustflags",
+        ] {
+            assert!(
+                windows_env_should_drop(key),
+                "{key} is a rustflags-family var that out-precedences /Brepro and MUST be dropped"
+            );
+        }
+        for key in ["CARGO_HOME", "PATH", "CARGO_TARGET_DIR"] {
+            assert!(
+                !windows_env_should_drop(key),
+                "{key} is unrelated to rustflags and MUST NOT be dropped by the rustflags sweep"
+            );
+        }
     }
 
     #[test]
