@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-06-18
+
+### Bug Fixes
+
+* 7415e789d825 route per-crate no-op skips through skip_line so default output is clean ([@tj-smith47](https://github.com/tj-smith47))
+* f0f0a718678c honor --publishers/--skip publisher selection in env requirement collection ([@tj-smith47](https://github.com/tj-smith47))
+* 38e54b15bb0c restore skip-output tests under --show-skipped; widen sign artifact-filter ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.11.0] - 2026-06-17
 
 ### Features
@@ -349,7 +357,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/tj-smith47/anodizer/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/tj-smith47/anodizer/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/tj-smith47/anodizer/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/tj-smith47/anodizer/compare/v0.9.0...v0.9.1
