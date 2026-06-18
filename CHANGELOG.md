@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.2] - 2026-06-18
+
+### Bug Fixes
+
+* 9fcf93cfabc6 scope --publishers to its true surface; close custom-publisher allowlist escape ([@tj-smith47](https://github.com/tj-smith47))
+* d79b4efbfb68 tighten release-pipeline default output to header+RESULT ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.11.1] - 2026-06-18
 
 ### Bug Fixes
@@ -357,7 +364,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.11.2...HEAD
+[0.11.2]: https://github.com/tj-smith47/anodizer/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/tj-smith47/anodizer/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/tj-smith47/anodizer/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/tj-smith47/anodizer/compare/v0.9.1...v0.10.0
