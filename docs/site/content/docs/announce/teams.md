@@ -11,7 +11,7 @@ template = "docs.html"
 announce:
   teams:
     enabled: true
-    webhook_url: "{{ Env.TEAMS_WEBHOOK_URL }}"
+    webhook_url: "{{ Env.TEAMS_WEBHOOK }}"
     message_template: "{{ ProjectName }} {{ Tag }} has been released! {{ ReleaseURL }}"
 ```
 
@@ -23,14 +23,14 @@ The message is delivered as a Microsoft [Adaptive Card](https://adaptivecards.io
 
 ### Environment variables
 
-Store the webhook URL in an environment variable rather than committing it to your config file:
+Store the webhook URL in an environment variable rather than committing it to your config file. When `webhook_url` is unset, anodizer falls back to the `TEAMS_WEBHOOK` env var:
 
 ```yaml
-webhook_url: "{{ Env.TEAMS_WEBHOOK_URL }}"
+webhook_url: "{{ Env.TEAMS_WEBHOOK }}"
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `enabled` | bool | Enable Teams notifications |
-| `webhook_url` | string | Teams incoming webhook URL (use template to read from env) |
+| `webhook_url` | string | Teams incoming webhook URL (falls back to `TEAMS_WEBHOOK`) |
 | `message_template` | string | Message body (templates supported) |

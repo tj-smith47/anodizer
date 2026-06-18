@@ -42,15 +42,15 @@ srpm:
   contents: []                       # optional; additional contents
   signature:                         # optional; RPM signing config
     key_file: ""
-    passphrase: ""                   # optional; falls back to SRPM_PASSPHRASE env var
-  disable: false                     # optional
+    key_passphrase: ""               # optional; falls back to SRPM_PASSPHRASE env var
+  skip: false                        # optional
 ```
 
 ## Authentication
 
 | Variable | Description |
 |----------|-------------|
-| `SRPM_PASSPHRASE` | GPG passphrase for signing (or set `signature.passphrase` in config) |
+| `SRPM_PASSPHRASE` | GPG passphrase for signing (or set `signature.key_passphrase` in config) |
 
 No authentication is required when `signature` is not configured.
 
@@ -87,14 +87,14 @@ Not applicable — this is a local packaging stage, not a publisher.
 | `docs` | list | none | Documentation files to include |
 | `contents` | list | none | Additional contents (same format as nFPM contents) |
 | `signature` | object | none | RPM signing configuration |
-| `disable` | string/bool | none | Disable this config |
+| `skip` | string/bool | none | Skip this config (accepts bool or template string) |
 
 ### Signature config
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `key_file` | string | Path to GPG key file |
-| `passphrase` | string | GPG passphrase (falls back to `SRPM_PASSPHRASE` env var) |
+| `key_passphrase` | string | GPG passphrase (falls back to `SRPM_PASSPHRASE` env var). |
 
 ## Prerequisites
 

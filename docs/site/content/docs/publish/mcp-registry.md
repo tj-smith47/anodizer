@@ -282,7 +282,7 @@ Optional. The `transports:` list is accepted for GoReleaser config-portability (
 ```yaml
 mcp:
   # ...
-  skip: "{{ if Prerelease }}true{{ endif }}"
+  skip: "{{ if Prerelease }}true{{ end }}"
 ```
 
 Common patterns:
@@ -290,8 +290,8 @@ Common patterns:
 | Goal | Value |
 |------|-------|
 | Always skip | `skip: true` or `skip: "{{ true }}"` |
-| Skip pre-releases | `skip: "{{ if Prerelease }}true{{ endif }}"` |
-| Skip snapshot builds | `skip: "{{ if IsSnapshot }}true{{ endif }}"` |
+| Skip pre-releases | `skip: "{{ if Prerelease }}true{{ end }}"` |
+| Skip snapshot builds | `skip: "{{ if IsSnapshot }}true{{ end }}"` |
 
 ## Full example
 
@@ -317,7 +317,7 @@ mcp:
     - type: stdio
   auth:
     type: github-oidc
-  skip: "{{ if Prerelease }}true{{ endif }}"
+  skip: "{{ if Prerelease }}true{{ end }}"
 ```
 
 ## Templating

@@ -16,7 +16,7 @@ Works on Linux, macOS, and Windows. Uses a P12 certificate for signing and an Ap
 ```yaml
 notarize:
   macos:
-    - enabled: true
+    - skip: false
       sign:
         certificate: "{{ Env.P12_CERTIFICATE }}"
         password: "{{ Env.P12_PASSWORD }}"
@@ -31,7 +31,7 @@ notarize:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `ids` | list | project name | Build IDs to filter |
-| `enabled` | string/bool | `false` | Enable this config (must be explicitly enabled) |
+| `skip` | string/bool | `true` | Skip this config. **Canonical** field — notarization is off until you set `skip: false`. The upstream-style `enabled:` is accepted as an inverting back-compat alias (`enabled: true` ⇒ `skip: false`). |
 
 #### Sign config (`sign`)
 
@@ -40,6 +40,7 @@ notarize:
 | `certificate` | string | none | Path to .p12 certificate or base64 contents (template) |
 | `password` | string | none | Password for the .p12 certificate (template) |
 | `entitlements` | string | none | Path to entitlements XML file (template) |
+| `timestamp_url` | string | `http://timestamp.apple.com/ts01` | RFC-3161 timestamp service URL passed to `rcodesign sign --timestamp-url`. Override when running behind a corporate proxy or when Apple's service is unreachable. |
 
 #### Notarize config (`notarize`, optional — omit for sign-only)
 
@@ -60,7 +61,7 @@ macOS only. Uses Keychain identities for signing and `xcrun notarytool` for nota
 ```yaml
 notarize:
   macos_native:
-    - enabled: true
+    - skip: false
       use: dmg
       sign:
         identity: "Developer ID Application: My Org"
@@ -73,7 +74,7 @@ notarize:
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `ids` | list | project name | Build IDs to filter |
-| `enabled` | string/bool | `false` | Enable this config (must be explicitly enabled) |
+| `skip` | string/bool | `true` | Skip this config. **Canonical** field — set `skip: false` to enable. The upstream-style `enabled:` is accepted as an inverting back-compat alias. |
 | `use` | string | `dmg` | Artifact type to sign: `"dmg"` or `"pkg"` |
 
 #### Sign config (`sign`)
@@ -85,7 +86,7 @@ notarize:
 | `options` | list | none | Options for codesign (e.g., `["runtime"]`). DMG only |
 | `entitlements` | string | none | Path to entitlements XML (template). DMG only |
 
-#### Notarize config (`notarize`, required)
+#### Notarize config (`notarize`, optional — omit for sign-only)
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
@@ -95,12 +96,12 @@ notarize:
 
 ## Behavior
 
-- Notarization must be explicitly enabled (`enabled: true`) — it is off by default
+- Notarization must be explicitly enabled (`skip: false`, or the `enabled: true` back-compat alias) — it is off by default
 - After signing, SHA-256 checksums are refreshed for all affected darwin binary artifacts
 - Notarization status is differentiated: accepted, invalid, rejected, and timeout
 - Timeouts are treated as non-fatal (the submission may still be processing)
 - Sensitive values (P12 password, API key file path) are redacted from log output
-- In native DMG mode, when `wait` is enabled, the notarization ticket is automatically stapled to the DMG
+- In native mode, when `wait` is enabled, the notarization ticket is automatically stapled to the artifact — both DMG (`use: dmg`) and PKG (`use: pkg`) are stapled
 - Skippable with `--skip notarize`
 
 ## Both modes together
@@ -110,12 +111,14 @@ You can use cross-platform signing for CI builds and native signing for local bu
 ```yaml
 notarize:
   macos:
-    - enabled: "{{ Env.CI != \"\" }}"
+    # cross-platform path runs in CI (skip when NOT in CI)
+    - skip: "{{ Env.CI == \"\" }}"
       sign:
         certificate: "{{ Env.P12_CERTIFICATE }}"
         password: "{{ Env.P12_PASSWORD }}"
   macos_native:
-    - enabled: "{{ Env.CI == \"\" }}"
+    # native path runs locally (skip when IN CI)
+    - skip: "{{ Env.CI != \"\" }}"
       sign:
         identity: "Developer ID Application: My Org"
 ```

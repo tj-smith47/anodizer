@@ -18,7 +18,7 @@ These flags are all **defaults-off**. Set them when you want anodizer to overwri
 | Chocolatey | `chocolatey.republish_in_moderation` | re-`choco push` over a version still in the community moderation queue | a prior version is stuck in moderation |
 | Winget | `winget.update_existing_pr` | `git push --force-with-lease` over the stale PR branch | a prior release attempt left an open PR on `microsoft/winget-pkgs` |
 | Krew | `krew.update_existing_pr` | `git push --force-with-lease` over the stale PR branch | prior release left an open PR on `kubernetes-sigs/krew-index` |
-| Homebrew Cask | `homebrew.cask.update_existing_pr` | `git push --force-with-lease` over the stale PR branch | prior release left an open PR on the cask tap |
+| Homebrew Cask | `homebrew_cask.update_existing_pr` | `git push --force-with-lease` over the stale PR branch | prior release left an open PR on the cask tap |
 | Cloudsmith | `cloudsmith.republish` | Cloudsmith API "replace prior version" | re-cutting any version (Cloudsmith versions are otherwise immutable) |
 | Artifactory | `artifactories[].overwrite` | PUT unconditionally, replacing the stored object | a repo allows mutable artifact paths and you intend to replace prior bytes |
 

@@ -20,7 +20,8 @@ cadence with its own tag prefix, and anodizer keeps cross-crate version specs in
 
 ```yaml
 workspaces:
-  - crates:
+  - name: tools
+    crates:
       - name: my-core
         tag_template: "my-core-v{{ Version }}"
       - name: my-cli
@@ -49,10 +50,11 @@ Workspace crates publish in dependency order, and anodizer waits for each depend
 on the sparse index before publishing its dependents — no racing propagation.
 
 ```yaml
-publish:
-  cargo:
-    wait_for_workspace_deps: true
-    required: true          # fail the release if cargo publish fails
+defaults:
+  publish:
+    cargo:
+      wait_for_workspace_deps: { enabled: true }
+      required: true        # fail the release if cargo publish fails
 ```
 
 ## npm packages with automatic auth selection
@@ -108,15 +110,19 @@ but the *bundles themselves* are produced from Linux:
 | `.msi` | `wixl` (msitools) |
 | `.exe` (NSIS) | `makensis` |
 
+These installer formats are per-crate keys, so they live under a `crates[]` entry:
+
 ```yaml
-app_bundles:
-  - { name: My App, bundle_id: com.example.myapp }
-dmgs:
-  - { name_template: "{{ .ProjectName }}-{{ .Version }}" }
-msis:
-  - { version: wixl }        # Linux-native WiX backend
-nsis:
-  - { name_template: "{{ .ProjectName }}-installer" }
+crates:
+  - name: my-cli
+    app_bundles:
+      - { name: My App, bundle: com.example.myapp }
+    dmgs:
+      - { name: "{{ .ProjectName }}-{{ .Version }}" }
+    msis:
+      - { version: v4 }      # WiX schema version (v3 or v4); auto-detected if omitted
+    nsis:
+      - { name: "{{ .ProjectName }}-installer" }
 ```
 
 The installer bytes are covered by the [determinism harness](@/docs/advanced/determinism.md) like
@@ -188,7 +194,7 @@ readable JSON.
 ```bash
 anodizer changelog                     # render from latest tag to HEAD
 anodizer changelog v0.4.0..v0.5.0     # explicit range
-anodizer changelog --format release-notes --write   # write + use as release body
+anodizer changelog --format release-notes           # GitHub release body to stdout
 ```
 
 In a monorepo, each crate gets its own `CHANGELOG.md`:
@@ -258,8 +264,7 @@ rollback support if a later required publisher fails.
 gemfury:
   - { account: my-org }                       # token from FURY_PUSH_TOKEN
 cloudsmiths:
-  - id: my-cli
-    organization: my-org
+  - organization: my-org
     repository: stable
     distributions:
       deb: [ubuntu/jammy, debian/bookworm]

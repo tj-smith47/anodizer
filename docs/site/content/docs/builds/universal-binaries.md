@@ -16,9 +16,11 @@ Add `universal_binaries` to a crate definition:
 ```yaml
 crates:
   - name: myapp
-    targets:
-      - x86_64-apple-darwin
-      - aarch64-apple-darwin
+    builds:
+      - binary: myapp
+        targets:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
     universal_binaries:
       - replace: true
 ```
@@ -27,7 +29,7 @@ crates:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `name_template` | string | binary name | Template for the output filename. Supports all standard template variables (`ProjectName`, `Version`, etc.). |
+| `name_template` | string | `{{ .ProjectName }}` | Template for the output filename. Supports all standard template variables (`ProjectName`, `Version`, etc.). |
 | `replace` | bool | `false` | When `true`, remove the individual per-architecture binaries from the artifact registry. Downstream stages (archives, release, publishers) will only see the universal binary. |
 | `ids` | list of strings | all binaries | Filter which binaries to combine. Only artifacts whose binary name matches an entry in this list are considered. Useful when a crate produces multiple binaries and you only want universal builds for some of them. |
 | `hooks` | object | none | Pre/post hooks to run around universal binary creation. Uses the same `pre`/`post` hook format as build hooks. |
@@ -42,10 +44,12 @@ Produce a universal binary and keep the per-arch binaries as well:
 ```yaml
 crates:
   - name: myapp
-    targets:
-      - x86_64-apple-darwin
-      - aarch64-apple-darwin
-      - x86_64-unknown-linux-gnu
+    builds:
+      - binary: myapp
+        targets:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - x86_64-unknown-linux-gnu
     universal_binaries:
       - {}
 ```
@@ -57,9 +61,11 @@ Ship only the universal binary for macOS, removing the individual `x86_64` and `
 ```yaml
 crates:
   - name: myapp
-    targets:
-      - x86_64-apple-darwin
-      - aarch64-apple-darwin
+    builds:
+      - binary: myapp
+        targets:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
     universal_binaries:
       - replace: true
 ```
@@ -69,9 +75,11 @@ crates:
 ```yaml
 crates:
   - name: myapp
-    targets:
-      - x86_64-apple-darwin
-      - aarch64-apple-darwin
+    builds:
+      - binary: myapp
+        targets:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
     universal_binaries:
       - name_template: "{{ ProjectName }}-{{ Version }}-darwin-universal"
         replace: true
@@ -84,9 +92,15 @@ When a crate produces multiple binaries, combine only specific ones:
 ```yaml
 crates:
   - name: myapp
-    targets:
-      - x86_64-apple-darwin
-      - aarch64-apple-darwin
+    builds:
+      - binary: myapp
+        targets:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+      - binary: myapp-cli
+        targets:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
     universal_binaries:
       - ids:
           - myapp
@@ -100,9 +114,11 @@ Run commands before and after the `lipo` step:
 ```yaml
 crates:
   - name: myapp
-    targets:
-      - x86_64-apple-darwin
-      - aarch64-apple-darwin
+    builds:
+      - binary: myapp
+        targets:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
     universal_binaries:
       - hooks:
           pre:

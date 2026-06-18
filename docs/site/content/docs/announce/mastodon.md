@@ -26,11 +26,14 @@ announce:
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `MASTODON_ACCESS_TOKEN` | Yes | User access token for the posting account |
+| `MASTODON_CLIENT_ID` | Yes | OAuth application client ID |
+| `MASTODON_CLIENT_SECRET` | Yes | OAuth application client secret |
 
-`MASTODON_ACCESS_TOKEN` is sent as a Bearer credential on
-`POST /api/v1/statuses`. No client ID or secret is required or accepted —
-those belong to OAuth authorization flows, not to posting an authenticated
-status.
+All three credentials are required and validated fail-fast: a missing
+`MASTODON_CLIENT_ID` or `MASTODON_CLIENT_SECRET` aborts the release up front
+rather than mid-announce. `MASTODON_ACCESS_TOKEN` is sent as a Bearer
+credential on `POST /api/v1/statuses`; the client ID and secret back the
+OAuth refresh flow.
 
 ## Empty server handling
 

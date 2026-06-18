@@ -90,7 +90,7 @@ prebuilt:
 
 # Per-architecture amd64 variant suffix
 prebuilt:
-  path: "output/myapp_{{ Os }}_{{ Arch }}{{ if Amd64 }}_{{ Amd64 }}{{ endif }}"
+  path: "output/myapp_{{ Os }}_{{ Arch }}{{ if Amd64 }}_{{ Amd64 }}{{ end }}"
 ```
 
 The rendered path is `stat()`-ed before the import. A missing file, a

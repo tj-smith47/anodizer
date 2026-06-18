@@ -24,7 +24,7 @@ makeselfs:
 makeselfs:
   - id: default                      # optional; unique identifier
     ids: []                          # optional; filter by build IDs
-    name_template: ""                # optional; output filename template
+    filename: ""                     # optional; output filename template
     name: ""                         # optional; display name embedded in archive
     script: ./scripts/install.sh     # required; startup script path (template)
     description: ""                  # optional; LSM metadata description
@@ -60,7 +60,7 @@ Not applicable — this is a local packaging stage, not a publisher.
 |-------|------|---------|-------------|
 | `id` | string | `default` | Unique identifier |
 | `ids` | list | all builds | Filter by build IDs |
-| `name_template` | string | `{project}_{version}_{os}_{arch}.run` | Output filename (template) |
+| `filename` | string | `{project}_{version}_{os}_{arch}.run` | Output filename (template) |
 | `name` | string | project name | Display name embedded in the archive |
 | `script` | string | **required** | Startup script path (template) |
 | `description` | string | none | LSM metadata description |

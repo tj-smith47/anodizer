@@ -27,10 +27,12 @@ crates:
   - name: myapp
     archives:
       - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"  # optional
-        format: tar.gz                  # optional; tar.gz | tar.xz | tar.zst | zip | binary
+        formats: [tar.gz]               # optional; one archive per listed format
+                                        # tar.gz | tar.xz | tar.zst | tar | zip | gz | xz | binary | none
+                                        # aliases: tgz | txz | tzst
         format_overrides:               # optional; per-OS format overrides
           - os: windows
-            format: zip
+            formats: [zip]
         files: []                       # optional; extra files to include
         binaries: []                    # optional; specific binaries (default: all)
         wrap_in_directory: ""           # optional; wrap contents in a subdirectory
@@ -55,8 +57,8 @@ Not applicable — this is a local packaging stage, not a publisher.
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `name_template` | string | `{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}` | Archive filename (without extension) |
-| `format` | string | `tar.gz` | Archive format: `tar.gz`, `tar.xz`, `tar.zst`, `zip`, `binary` |
-| `format_overrides` | list | none | Per-OS format overrides |
+| `formats` | list | `[tar.gz]` | Archive formats; one archive is produced per entry. Values: `tar.gz`, `tar.xz`, `tar.zst`, `tar`, `zip`, `gz`, `xz`, `binary`, `none` (aliases: `tgz`, `txz`, `tzst`). The singular `format` is a deprecated alias folded into `formats` with a warning. |
+| `format_overrides` | list | none | Per-OS format overrides (each entry takes `os` plus `formats`) |
 | `files` | list | none | Extra files to include (e.g., `LICENSE`, `README.md`) |
 | `binaries` | list | all | Specific binaries to include (default: all from builds) |
 | `wrap_in_directory` | string | none | Wrap contents in a subdirectory |
@@ -68,10 +70,10 @@ Use different formats for different operating systems:
 ```yaml
 archives:
   - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
-    format: tar.gz
+    formats: [tar.gz]
     format_overrides:
       - os: windows
-        format: zip
+        formats: [zip]
 ```
 
 ## Including extra files
@@ -146,11 +148,11 @@ nfpm:
 
 ## Raw binary (no archive)
 
-Use `format: binary` to skip archiving and distribute the raw binary:
+Use `formats: [binary]` to skip archiving and distribute the raw binary:
 
 ```yaml
 archives:
-  - format: binary
+  - formats: [binary]
     name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
 ```
 
@@ -169,10 +171,10 @@ crates:
   - name: myapp
     archives:
       - name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
-        format: tar.gz
+        formats: [tar.gz]
         format_overrides:
           - os: windows
-            format: zip
+            formats: [zip]
         files: [LICENSE, README.md]
         wrap_in_directory: "{{ ProjectName }}-{{ Version }}"
 ```

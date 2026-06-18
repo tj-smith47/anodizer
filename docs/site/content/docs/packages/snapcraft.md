@@ -31,7 +31,7 @@ crates:
         ids: []                        # optional; filter by build IDs
         name: ""                       # optional; snap package name (default: binary name)
         title: ""                      # optional; user-facing application title
-        summary: ""                    # optional; single-line description (max 79 chars)
+        summary: ""                    # optional; single-line description (max 78 chars)
         description: ""                # optional; extended description
         icon: ""                       # optional; path to .png or .svg icon
         base: core22                   # optional; core | core18 | core20 | core22 | core24 | bare
@@ -39,7 +39,6 @@ crates:
         license: ""                    # optional; SPDX identifier
         confinement: strict            # optional; strict | devmode | classic
         plugs: {}                      # optional; interface plug definitions
-        slots: []                      # optional; shared interface slots
         assumes: []                    # optional; required snapd features
         apps: {}                       # optional; named app entries (auto-generated if omitted)
         layout: {}                     # optional; filesystem layout mappings (accepts `layouts:` alias)
@@ -79,7 +78,7 @@ Not applicable — once a snap revision is uploaded to the Snap Store, it cannot
 | `ids` | list | all | Filter to specific build IDs. |
 | `name` | string | binary name | Snap package name in the store. |
 | `title` | string | | User-facing application title. |
-| `summary` | string | `"<name> snap package"` | Single-line description (max 79 characters). |
+| `summary` | string | crate `description` | Single-line description (max 78 characters). Falls back to the resolved `description` (which itself falls back to the crate's `Cargo.toml` `package.description`); the result is hard-capped at 78 characters. |
 | `description` | string | | Extended description shown in the store. |
 | `icon` | string | | Path to the snap icon image (`.png` or `.svg`). Anodizer copies the file to `meta/gui/<name>.<ext>` inside the staged prime directory before `snapcraft pack` runs. The icon is picked up by snapcraft via the GUI metadata channel and does NOT appear in `snap.json`, keeping uploads schema-clean. The source path may be absolute or relative to the project root. |
 | `base` | string | `core22` | Base snap: `core`, `core18`, `core20`, `core22`, `core24`, `bare`. |
@@ -87,7 +86,6 @@ Not applicable — once a snap revision is uploaded to the Snap Store, it cannot
 | `license` | string | | SPDX license identifier. |
 | `confinement` | string | `strict` | Security model: `strict`, `devmode`, or `classic`. |
 | `plugs` | map | | Interface plug definitions (HashMap\<String, Value\>). Keys are plug names; values are plug attributes. |
-| `slots` | list | | Shared interface slots for other snaps. |
 | `assumes` | list | | Required snapd features or minimum versions. |
 | `apps` | map | auto | Named app entries. Auto-generates a default entry from the first binary if omitted. |
 | `layout` | map | | Filesystem layout mappings for sandbox accessibility. The plural `layouts:` spelling is still accepted via serde alias. |
@@ -115,10 +113,11 @@ Each entry under `apps` describes an application exposed by the snap.
 |-------|------|-------------|
 | `command` | string | Command path relative to the snap root. Defaults to the app's name when omitted. |
 | `args` | string | Additional arguments appended to the command. |
-| `daemon` | string | Run as a daemon: `simple`, `forking`, `oneshot`, `notify`. |
+| `daemon` | string | Run as a daemon: `simple`, `forking`, `oneshot`, `notify`, `dbus`. |
 | `stop_mode` | string | Signal used to stop the daemon: `sigterm`, `sigkill`, etc. |
 | `restart_condition` | string | When to restart: `on-failure`, `always`, `never`, etc. |
 | `plugs` | list | Interfaces this app needs. |
+| `slots` | list | Interface slots this app provides (this is the only place snap slots are configured; there is no top-level `slots`). |
 | `environment` | map | Environment variables for the app. |
 
 When no `apps` map is provided, a default entry is generated using the first binary's name with the command `bin/<name>`.

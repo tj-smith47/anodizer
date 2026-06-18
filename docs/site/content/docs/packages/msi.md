@@ -30,11 +30,11 @@ crates:
         id: ""                        # optional; unique identifier
         ids: []                       # optional; filter by build IDs
         name: ""                      # optional; output filename template
-        version: ""                   # optional; v3 | v4 (auto-detected if omitted)
+        version: ""                   # optional; v3 | v4 | wixl (alias: linux); auto-detected if omitted
         replace: false                # optional; remove archive artifacts, keep MSI only
         mod_timestamp: ""             # optional; fixed timestamp for reproducible builds (template)
         amd64_variant: ""             # optional; amd64 variant filter (v1/v2/v3/v4)
-        extra_files: []               # optional; extra files available in the WiX build context
+        extra_files: []               # optional; plain filename strings copied into the WiX build context
         extensions: []                # optional; WiX extensions to enable (template per entry)
         if: ""                        # optional; skip this config if rendered result is falsy
         disable: false                # optional (alias for skip)
@@ -49,7 +49,7 @@ Not applicable — MSI generation is a local build step with no external service
 
 ## Common gotchas
 
-- **WiX must be on `PATH`**: the stage probes for `wix` (v4) then `candle` (v3). If neither is found, the stage errors immediately.
+- **WiX must be on `PATH`**: the stage probes for `wix` (v4), then `candle` (v3), then `wixl` (the Linux-native [msitools](https://wiki.gnome.org/msitools) path). If none is found, the stage errors immediately.
 - **`.wxs` template rendering**: the WiX source file is rendered through Tera before being passed to WiX. Ensure any `{{ ... }}` expressions in the `.wxs` are valid Tera.
 - **Architecture mapping**: `amd64` → `x64`, `386`/`i686` → `x86`, `arm64`/`aarch64` → `arm64`. WiX build commands vary by arch.
 - **Stable `UpgradeCode`**: see the [Stable IDs and the upgrade chain](#stable-ids-and-the-upgrade-chain) section below — this is the most common cause of broken upgrades.
@@ -64,8 +64,9 @@ Not applicable — this is a local packaging stage, not a publisher.
 |------|---------|-------|
 | `wix` | v4 | Unified `wix build` command. |
 | `candle` + `light` | v3 | Two-step compilation. |
+| `wixl` | msitools | Linux-native MSI build (from GNOME msitools); consumes a WiX v3-dialect `.wxs`. Does not support WiX `-ext` extensions. |
 
-WiX v4 is preferred. If only v3 tools are found (`candle` and `light` on `PATH`), the v3 workflow is used automatically.
+WiX v4 is preferred. If only v3 tools are found (`candle` and `light` on `PATH`), the v3 workflow is used automatically. On Linux, where neither `wix` nor `candle`/`light` exists, anodizer builds the same `.wxs` through `wixl` — letting you produce MSIs without Windows. Select it explicitly with `version: wixl` (or `version: linux`).
 
 ## Platform
 
@@ -75,9 +76,9 @@ MSI only processes binary artifacts targeting Windows. Binaries for other operat
 
 The WiX version is determined in this order:
 
-1. **`version` field** — if set in config (`v3` or `v4`), that version is used.
+1. **`version` field** — if set in config (`v3`, `v4`, or `wixl`/`linux`), that toolchain is used.
 2. **`.wxs` content** — if the file contains `http://schemas.microsoft.com/wix/2006/wi`, WiX v3 is selected; the `http://wixtoolset.org/schemas/v4/wxs` namespace or no namespace defaults to v4.
-3. **Installed tools** — checks for `wix` (v4) then `candle` (v3) on `PATH`.
+3. **Installed tools** — checks for `wix` (v4), then `candle` (v3), then `wixl` (Linux msitools) on `PATH`.
 
 ## Config fields
 
@@ -87,11 +88,11 @@ The WiX version is determined in this order:
 | `ids` | list | all | Filter to specific build IDs. |
 | `wxs` | string | **required** | Path to the WiX source file (`.wxs`). The path itself and the file contents are both rendered through the template engine. |
 | `name` | string | `{{ ProjectName }}_{{ MsiArch }}` | Output filename template. `.msi` is appended automatically when absent. |
-| `version` | string | auto | WiX schema version: `v3` or `v4`. Auto-detected if omitted. |
+| `version` | string | auto | WiX toolchain: `v3`, `v4`, or `wixl` (alias `linux`) for the Linux-native msitools path. Auto-detected from the `.wxs` namespace and installed tools when omitted. |
 | `replace` | bool | `false` | Remove matching archive artifacts, keeping only the MSI. |
 | `mod_timestamp` | string | | Fixed timestamp for reproducible builds. Templates allowed (e.g. `{{ CommitTimestamp }}`). |
 | `amd64_variant` | string | | amd64 microarchitecture variant filter (`v1`/`v2`/`v3`/`v4`). |
-| `extra_files` | list | | Additional files copied into the WiX build context alongside the rendered `.wxs`. |
+| `extra_files` | list | | Plain filename strings (not `{src, dst}` objects) copied into the WiX build context alongside the rendered `.wxs`. |
 | `extensions` | list | | WiX extensions to enable (e.g. `WixUIExtension`). Each entry is a template. |
 | `if` | string | | Skip this config when the rendered value is `false` or empty. Anodizer-additive — see note below. |
 | `disable` / `skip` | bool or string | `false` | Skip this MSI config. Accepts a bool or a template string. |

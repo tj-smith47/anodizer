@@ -46,7 +46,7 @@ uploads:
     client_x509_cert: ""               # optional; client TLS cert path
     client_x509_key: ""                # optional; client TLS private key path
     trusted_certificates: ""           # optional; CA bundle path
-    disable: false                     # optional
+    skip: false                        # optional
 ```
 
 ## Authentication
@@ -87,7 +87,7 @@ Where `{NAME}` is the uppercased `name` field.
 | `client_x509_cert` | string | none | Path to client TLS certificate |
 | `client_x509_key` | string | none | Path to client TLS private key |
 | `trusted_certificates` | string | none | Path to CA certificate bundle |
-| `disable` | string/bool | none | Disable this config |
+| `skip` | string/bool | none | Skip this config (template-conditional) |
 
 ## Target URL templating
 

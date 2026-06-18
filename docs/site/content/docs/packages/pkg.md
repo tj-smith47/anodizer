@@ -5,11 +5,11 @@ weight = 63
 template = "docs.html"
 +++
 
-The PKG stage builds macOS `.pkg` installer packages from your Darwin binaries using the native `pkgbuild` tool. Installers are placed in `dist/macos/`.
+The PKG stage builds macOS `.pkg` installer packages from your Darwin binaries. On macOS it uses the native `pkgbuild` tool; on Linux it assembles the identical flat XAR package from `xar` + `mkbom` + `cpio`, so you can produce `.pkg` installers in CI without a Mac. Installers are placed in `dist/macos/`.
 
 ## Classification
 
-Packager — creates macOS PKG installers from Darwin binaries. Required: not a publisher; macOS only.
+Packager — creates macOS PKG installers from Darwin binaries. Required: not a publisher. Builds on macOS (`pkgbuild`) or Linux (`xar`/`mkbom`/`cpio`).
 
 ## Minimal config
 
@@ -31,6 +31,8 @@ crates:
         ids: []                         # optional; filter by build IDs
         name: ""                        # optional; output filename template (user controls extension)
         install_location: /usr/local/bin  # optional; installation path on target system
+        use: binary                     # optional; binary | appbundle (what to package)
+        min_os_version: ""              # optional; minimum macOS version (e.g. "10.13")
         scripts: ""                     # optional; directory with preinstall/postinstall scripts
         extra_files: []                 # optional; additional files in the package payload (anodizer-additive)
         templated_extra_files: []       # optional; extra files rendered through template engine (anodizer-additive)
@@ -45,7 +47,7 @@ Not applicable — PKG creation is a local build step using the native `pkgbuild
 
 ## Common gotchas
 
-- **macOS only**: `pkgbuild` is not available on Linux. Cross-compilation is not supported.
+- **Linux build path**: when `pkgbuild` is absent (e.g. on Linux CI), anodizer assembles the same flat XAR package from `xar` + `mkbom` (bomutils) + `cpio` (gzip is done in-process). Install all three to build `.pkg` installers without a Mac. Note: signing/notarization still requires macOS.
 - **Signing**: `pkgbuild` does not sign packages. For distribution outside the Mac App Store, pipe the output through the [notarize stage](../notarize/) using `use: pkg`. The notarize stage handles `productsign` and `xcrun notarytool` automatically.
 - **`install_location`**: the default `/usr/local/bin` requires admin privileges. Use `/usr/local/bin` for CLI tools; use a user-writable path only for user-space tools.
 - **Multi-arch identifier collisions**: pkg produces one package per binary. If `identifier:` is a literal string (no template vars), two builds for different architectures will share the same identifier. Disambiguate with a template (e.g. `com.example.myapp.{{ Arch }}`).
@@ -56,11 +58,14 @@ Not applicable — this is a local packaging stage, not a publisher.
 
 ## Required tools
 
+The stage prefers `pkgbuild` when present, otherwise the Linux flat-package toolchain — at least one of these two must be available:
+
 - `pkgbuild` — part of Xcode Command Line Tools on macOS. Install with `xcode-select --install`.
+- `xar` + `mkbom` (bomutils) + `cpio` — the Linux-native path. All three must be present together; anodizer assembles the identical XAR layout `pkgbuild` would produce (gzip is handled in-process).
 
 ## Platform
 
-PKG only processes binary artifacts targeting Darwin (macOS). Binaries for other operating systems are ignored.
+PKG only processes binary artifacts targeting Darwin (macOS) — the *output* is always a macOS installer. Binaries for other operating systems are ignored. The *build host*, however, may be macOS or Linux (see [Required tools](#required-tools)).
 
 ## Config fields
 
@@ -71,6 +76,8 @@ PKG only processes binary artifacts targeting Darwin (macOS). Binaries for other
 | `identifier` | string | **required** | Bundle identifier in reverse-domain notation (e.g. `com.example.myapp`). Templates allowed. |
 | `name` | string | `{{ ProjectName }}_{{ Arch }}` | Output filename template. User controls the extension — include `.pkg` explicitly if desired. |
 | `install_location` | string | `/usr/local/bin` | Installation path on the target system. Templates allowed. |
+| `use` | string | `binary` | Which artifact type to package: `binary` (the built executable) or `appbundle` (a `.app` bundle from the app-bundles stage). |
+| `min_os_version` | string | | Minimum macOS version (e.g. `10.13`). Forwarded to `pkgbuild --min-os-version`. |
 | `scripts` | string | | Path to a directory containing `preinstall` and/or `postinstall` scripts. Templates allowed. |
 | `extra_files` | list | | Additional files to include in the package payload. Anodizer-additive (not in GoReleaser Pro pkg). |
 | `templated_extra_files` | list | | Extra files rendered through the template engine before inclusion. Anodizer-additive. |

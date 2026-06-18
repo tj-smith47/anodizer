@@ -36,6 +36,8 @@ nightly:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
+| `nightly.tag_name` | `string` | `"nightly"` | Name of the rolling git tag created for nightly releases (moved on each run rather than accumulating semver tags). |
+| `nightly.name_template` | `string` | `"{{ ProjectName }}-nightly"` | Template for the nightly release name. Distinct from `version_template`, which renders the version string. |
 | `nightly.version_template` | `string` | `"{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly"` | Template for the rendered nightly version. May reference `{{ NightlyBuild }}` and `{{ Base }}` (see below). |
 | `nightly.publish_release` | `bool` | `true` | Whether to create a GitHub Release at all. Set `false` to build and publish packages without creating a release entry. |
 | `nightly.publish_repo` | `string` | (source repo) | Publish the nightly release to a different `"owner/repo"` than the one resolved from `release.github` (e.g. a dedicated `org/nightly` repo). The release create, asset upload, and retention deletes all target this repo. The active token must have write access to it. GitHub-only. |

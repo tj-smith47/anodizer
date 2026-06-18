@@ -11,7 +11,7 @@ template = "docs.html"
 announce:
   mattermost:
     enabled: true
-    webhook_url: "{{ Env.MATTERMOST_WEBHOOK_URL }}"
+    webhook_url: "{{ Env.MATTERMOST_WEBHOOK }}"
     channel: "releases"
     username: "release-bot"
     icon_url: "https://example.com/icon.png"
@@ -30,16 +30,16 @@ The `channel`, `username`, and `icon_url` fields are all optional. When omitted,
 
 ### Environment variables
 
-Store the webhook URL in an environment variable rather than committing it to your config file:
+Store the webhook URL in an environment variable rather than committing it to your config file. When `webhook_url` is unset, anodizer falls back to the `MATTERMOST_WEBHOOK` env var:
 
 ```yaml
-webhook_url: "{{ Env.MATTERMOST_WEBHOOK_URL }}"
+webhook_url: "{{ Env.MATTERMOST_WEBHOOK }}"
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `enabled` | bool | Enable Mattermost notifications |
-| `webhook_url` | string | Mattermost incoming webhook URL (use template to read from env) |
+| `webhook_url` | string | Mattermost incoming webhook URL (falls back to `MATTERMOST_WEBHOOK`) |
 | `channel` | string | Optional channel override |
 | `username` | string | Optional display name override |
 | `icon_url` | string | Optional bot avatar URL |

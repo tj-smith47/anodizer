@@ -266,7 +266,7 @@ schemastore:
     - name: MyTool
       file_match: [".mytool.yaml"]
       url: "https://myorg.github.io/mytool/schema.json"
-      skip: "{{ if Prerelease }}true{{ endif }}"   # also skip this entry on pre-releases
+      skip: "{{ if Prerelease }}true{{ end }}"   # also skip this entry on pre-releases
 ```
 
 ## Idempotency

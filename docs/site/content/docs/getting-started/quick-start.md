@@ -24,7 +24,7 @@ This reads your `Cargo.toml` and generates a starter config with sensible defaul
 ## 3. Validate the config
 
 ```bash
-anodizer check
+anodizer check config
 ```
 
 This validates your `.anodizer.yaml` against the schema — checks for missing fields, invalid target triples, dependency cycles, and more.

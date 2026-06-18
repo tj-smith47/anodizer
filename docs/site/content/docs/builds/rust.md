@@ -27,9 +27,9 @@ This builds a single binary for the default targets.
 | `targets` | list | inherited from `defaults.targets` | Target triples to compile for |
 | `features` | list | none | Cargo features to enable |
 | `no_default_features` | bool | `false` | Disable default features |
-| `flags` | string | none | Additional flags passed to `cargo build` |
+| `flags` | list | none | Additional flags passed to `cargo build`, one token per entry (e.g., `["--locked"]`) |
 | `env` | map | none | Per-target environment variables |
-| `copy_from` | string | none | Copy build config from another crate |
+| `copy_from` | string | none | Copies the built binary from another build's **binary name** in the same crate instead of compiling it |
 | `reproducible` | bool | `false` | Enable reproducible build settings |
 
 ## Multiple binaries

@@ -22,7 +22,7 @@ defaults:
   checksum:
     name_template: "{{ ProjectName }}_{{ Version }}_checksums.txt"  # optional
     algorithm: sha256                   # optional; sha256 | sha512 | sha1 | blake2b | etc.
-    disable: false                      # optional; skip checksum generation
+    skip: false                         # optional; skip checksum generation
     extra_files: []                     # optional; additional files to checksum
     ids: []                             # optional; only checksum artifacts matching these IDs
 ```
@@ -33,7 +33,7 @@ Not applicable — checksum generation is a local build step with no external se
 
 ## Common gotchas
 
-- The checksum file aggregates hashes for all artifacts produced up to this stage. Stages that run after checksums (e.g., signing) produce additional artifacts that are not covered unless the checksum stage is configured to run after signing.
+- The checksum file aggregates hashes for all artifacts produced up to this stage. Signing runs *after* checksums in the fixed pipeline order (`checksum → attest → sign → release`), so signature files are never listed inside the checksum file — they are themselves separate release assets. This ordering is not configurable.
 - `extra_files` adds files to the checksum file without uploading them; ensure they exist at the path specified.
 
 ## Republish / update behavior
@@ -46,7 +46,7 @@ Not applicable — this is a local packaging stage, not a publisher.
 |-------|------|---------|-------------|
 | `name_template` | string | `{{ ProjectName }}_{{ Version }}_checksums.txt` | Checksum filename |
 | `algorithm` | string | `sha256` | Hash algorithm |
-| `disable` | bool | `false` | Disable checksum generation |
+| `skip` | bool/template | `false` | Skip checksum generation. The legacy `disable` spelling is accepted as a deprecation-warned alias. |
 | `extra_files` | list | none | Additional files to checksum |
 | `ids` | list | none | Only checksum artifacts matching these IDs |
 

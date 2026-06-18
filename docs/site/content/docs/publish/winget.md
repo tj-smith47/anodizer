@@ -215,7 +215,7 @@ crates:
 |----------|-------------|
 | `GITHUB_TOKEN` | Token with push access to your winget-pkgs fork and `pull_request:write` scope for the upstream PR |
 
-The token can also be set via `repository.token` in the config. Falls back to `ANODIZER_FORCE_TOKEN` if `GITHUB_TOKEN` is not set.
+Anodizer resolves the token from the first source that is set, in this order: `repository.token` in the config, then the `ANODIZER_GITHUB_TOKEN` env var, then the `GITHUB_TOKEN` env var.
 
 ## Common gotchas
 

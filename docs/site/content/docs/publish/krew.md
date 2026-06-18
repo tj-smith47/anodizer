@@ -140,7 +140,7 @@ crates:
 
 ## Authentication
 
-Anodizer resolves a GitHub token from the `repository.token` field, or falls back to the `GITHUB_TOKEN` / `ANODIZER_FORCE_TOKEN` environment variables. The token must have push access to your krew-index fork.
+Anodizer resolves a GitHub token from the first source that is set, in this order: `repository.token` in the config, then the `ANODIZER_GITHUB_TOKEN` env var, then the `GITHUB_TOKEN` env var. The token must have push access to your krew-index fork.
 
 ## How plugin manifests are generated
 

@@ -34,7 +34,7 @@ Everything else maps over directly — the table below is the field-by-field tra
 | `mcp` | `mcp` | Identical top-level key. The deprecated nested `mcp.github:` block from older GoReleaser configs collapses to top-level `mcp.*` fields in anodizer (matches upstream's current recommendation). See [MCP registry](@/docs/publish/mcp-registry.md) |
 | `dockers` | `crates[].dockers_v2` | Nested under crate (multi-arch buildx; V2-only) |
 | `signs` | `signs` | Top-level, same structure |
-| `nfpms` | `crates[].nfpm` | Nested under crate |
+| `nfpms` | `crates[].nfpms` | Nested under crate (singular `nfpm` accepted as a legacy alias) |
 | `announces` | `announce` | Same structure |
 | `snapshot` | `snapshot` | Identical |
 | `env` | `env` | Identical |

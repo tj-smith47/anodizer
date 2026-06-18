@@ -39,7 +39,7 @@ Anodizer shells out to external tools for several stages (nfpm, cosign, zig, etc
 
 | Input | Default | Description |
 |-------|---------|-------------|
-| `install` | | Comma-separated list of dependencies to install: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `syft`, `zig`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`, `alejandra` (14 total). Uses the platform's native package manager (apt on Linux, brew on macOS, choco on Windows); some deps fall back to direct downloads when no packaged version exists. |
+| `install` | | Comma-separated list of dependencies to install: `nfpm`, `makeself`, `snapcraft`, `rpmbuild`, `cosign`, `syft`, `zig`, `node`, `cargo-zigbuild`, `upx`, `nsis`, `create-dmg`, `flatpak`, `alejandra`, `linuxdeploy`, `rcodesign`, `wix`, `pkgbuild` (18 total). Uses the platform's native package manager (apt on Linux, brew on macOS, choco on Windows); some deps fall back to direct downloads when no packaged version exists. |
 | `auto-install` | `false` | Parse `.anodizer.yaml` in the workdir and install whatever the configured stages need. Inspects top-level keys like `nfpms:`, `makeselfs:`, `snapcrafts:`, `srpm:`, `binary_signs:`, `docker_signs:`, `upx:`, and `cross: auto\|zigbuild` to derive the dependency list. |
 | `install-rust` | `false` | Install the stable Rust toolchain via `dtolnay/rust-toolchain@stable`. Prerequisite for `from-source: true` and for cross-compilation stages that invoke `cargo` or `cargo-zigbuild`. |
 
@@ -50,7 +50,7 @@ Signing keys are passed via inputs (never env vars that echo into logs).
 | Input | Default | Description |
 |-------|---------|-------------|
 | `gpg-private-key` | | GPG private key contents. Imported via `gpg --batch --import`. Pair with `GPG_FINGERPRINT` in the env to tell anodizer which key to sign with. |
-| `apk-private-key` | | PEM-format RSA private key for signing apk packages produced by nfpm. Required when `.anodizer.yaml` configures `nfpm[].apk.signature` (apk uses RSA-PSS, not OpenPGP — the `gpg-private-key` does NOT work here). The action writes the key to a temp file with mode `0600`, exports the path as `APK_PRIVATE_KEY_PATH`, derives the public key, and copies it into `./dist/` as `<repo>-apk-signing-key.rsa.pub` so consumers can attach it via `release.extra_files`. apk verifiers install that pubkey under `/etc/apk/keys/` before `apk add`-ing a signed package. |
+| `apk-private-key` | `""` | PEM-format RSA private key for signing apk packages produced by nfpm. Required when `.anodizer.yaml` configures `nfpm[].apk.signature` (apk uses RSA-PSS, not OpenPGP — the `gpg-private-key` does NOT work here). The action writes the key to a temp file with mode `0600`, exports the path as `APK_PRIVATE_KEY_PATH`, derives the public key, and copies it into `./dist/` as `<repo>-apk-signing-key.rsa.pub` so consumers can attach it via `release.extra_files`. apk verifiers install that pubkey under `/etc/apk/keys/` before `apk add`-ing a signed package. |
 | `cosign-key` | | Cosign private key contents. Written to `cosign.key` in the workdir with mode `0600`. Pair with `COSIGN_PASSWORD` in the env. |
 
 ### Docker setup
@@ -60,7 +60,7 @@ When the action sees `docker-registry` set, it logs in, sets up QEMU (for emulat
 | Input | Default | Description |
 |-------|---------|-------------|
 | `docker-registry` | | Container registry hostname (e.g. `ghcr.io`, `docker.io`). |
-| `docker-username` | `github.actor` | Registry username. Defaults to the GitHub user that triggered the workflow. |
+| `docker-username` | | Registry username. When unset, the action falls back to the `GITHUB_ACTOR` env var (the GitHub user that triggered the workflow). |
 | `docker-password` | | Registry password or token (commonly `secrets.GITHUB_TOKEN` for ghcr.io). |
 
 ### Split / merge artifact management
@@ -92,8 +92,8 @@ the caller needing to know the harness CLI. See
 |-------|---------|-------------|
 | `determinism` | `false` | Run the determinism harness on this shard. When true, the action installs Rust (if missing), builds anodizer from source, installs cross-build deps (zig, cargo-zigbuild, upx on Linux), derives the configured-target CSV for the current `RUNNER_OS`, `rustup target add`s those triples, and invokes `anodizer check determinism`. Intended as the entire body of a per-OS harness shard. **Mutually exclusive with `args`.** |
 | `determinism-runs` | `2` | N for `anodizer check determinism --runs=N`. |
-| `determinism-stages` | (auto) | Stages to validate (CSV). Default: Linux gets `build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum`; macOS/Windows get `build,source,upx,archive,sbom,sign,checksum` (no Linux-only formats). Explicit values override. |
-| `determinism-targets` | (auto) | Explicit target CSV override. Default: filter `anodizer targets --json` to entries matching the current `RUNNER_OS`. Set when your shard runs on a non-standard runner label. The release matrix uses this to pin each shard to one MSVC triple on Windows. |
+| `determinism-stages` | `""` | Stages to validate (CSV). Default: Linux gets `build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum`; macOS/Windows get `build,source,upx,archive,sbom,sign,checksum` (no Linux-only formats). Explicit values override. |
+| `determinism-targets` | | Explicit target CSV override. Default: filter `anodizer targets --json` to entries matching the current `RUNNER_OS`. Set when your shard runs on a non-standard runner label. The release matrix uses this to pin each shard to one MSVC triple on Windows. |
 | `preserve-dist` | `false` | Have the harness preserve its hermetic dist tree to `./preserved-dist/` so a downstream `release --publish-only` job can publish from the byte-stable artifacts (no recompile). Manifests get a `-<shard-label>` suffix (`context-<label>.json`, etc.) so sharded uploads don't collide under `merge-multiple: true`. **Requires `determinism: true` and `shard-label`.** |
 | `shard-label` | | Per-shard suffix appended to preserved-dist manifests. Required when `preserve-dist: true`. The caller names each shard explicitly; the action does not derive labels. |
 

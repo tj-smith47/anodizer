@@ -33,22 +33,34 @@ crates:
   - name: myapp
     nfpm:
       - package_name: myapp            # optional; defaults to crate name
-        formats: [deb, rpm]            # optional; deb | rpm | apk | archlinux | ipk
+        formats: [deb, rpm]            # REQUIRED (>= 1 entry): deb | rpm | apk | archlinux | ipk
+                                       #   with no formats entry, this config emits nothing
         vendor: ""                     # optional
         homepage: ""                   # optional
         maintainer: ""                 # optional; maintainer email
         description: ""                # optional
         license: ""                    # optional; SPDX identifier
         bindir: /usr/bin               # optional; binary installation directory
+        bin_alias: ""                  # optional; rename the installed binary inside the package only
         file_name_template: ""         # optional; custom filename template
         contents: []                   # optional; additional files to include
         dependencies: {}               # optional; per-format package dependencies
+        recommends: []                 # optional; soft dependencies
+        suggests: []                   # optional; weaker-than-recommends dependencies
+        conflicts: []                  # optional; packages this conflicts with
+        replaces: []                   # optional; packages this replaces (rename upgrades)
+        provides: []                   # optional; virtual packages provided
         scripts:                       # optional; install scripts
           preinstall: ""
           postinstall: ""
           preremove: ""
           postremove: ""
         overrides: {}                  # optional; per-format field overrides
+        rpm: {}                        # optional; RPM-specific block (see Per-format blocks)
+        deb: {}                        # optional; deb-specific block
+        apk: {}                        # optional; apk-specific block
+        archlinux: {}                  # optional; archlinux-specific block
+        ipk: {}                        # optional; ipk (OpenWrt) block
 ```
 
 ## Authentication
@@ -69,19 +81,30 @@ Not applicable — this is a local packaging stage, not a publisher.
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `package_name` | string | — | Package name |
-| `formats` | list | — | Package formats: `deb`, `rpm`, `apk`, `archlinux`, `ipk` |
+| `package_name` | string | crate name | Package name |
+| `formats` | list | **required** | Package formats: `deb`, `rpm`, `apk`, `archlinux`, `ipk`. At least one entry is required — a config with no `formats` produces no package. |
 | `vendor` | string | Cargo first author | Distributing entity recorded in the rpm/deb `Vendor` field. Auto-derives from the crate's first `Cargo.toml` author (with any `<email>` suffix stripped); set to override. See [Vendor](#vendor). |
 | `homepage` | string | none | Homepage URL |
 | `maintainer` | string | none | Maintainer email |
 | `description` | string | none | Package description |
 | `license` | string | none | License identifier |
 | `bindir` | string | `/usr/bin` | Binary installation directory |
+| `bin_alias` | string | none | Rename the installed binary inside the package only (e.g. `fd` → `fdfind` for the Debian package); the build output and archive are untouched. Templated. |
 | `file_name_template` | string | auto | Custom filename template |
 | `contents` | list | none | Additional files to include |
 | `dependencies` | map | none | Package dependencies keyed by format (e.g., `deb: [git]`) |
-| `scripts` | object | none | Pre/post install/remove scripts |
+| `recommends` | list | none | Soft (recommended) dependencies |
+| `suggests` | list | none | Suggested dependencies (weaker than `recommends`) |
+| `conflicts` | list | none | Packages this package conflicts with |
+| `replaces` | list | none | Packages this package replaces (upgrade paths from renamed packages) |
+| `provides` | list | none | Virtual packages this package provides |
+| `scripts` | object | none | Pre/post install/remove scripts (`preinstall`, `postinstall`, `preremove`, `postremove`) |
 | `overrides` | map | none | Per-format field overrides |
+| `rpm` | object | none | RPM-specific block (see [Per-format blocks](#per-format-blocks)) |
+| `deb` | object | none | Deb-specific block |
+| `apk` | object | none | APK-specific block |
+| `archlinux` | object | none | Archlinux-specific block |
+| `ipk` | object | none | IPK (OpenWrt) block |
 
 ## Vendor
 
@@ -132,6 +155,68 @@ nfpm:
       postinstall: scripts/postinstall.sh
       preremove: scripts/preremove.sh
       postremove: scripts/postremove.sh
+```
+
+## Per-format blocks
+
+Each package format has an optional dedicated block carrying settings that only
+apply to that format. Set the block alongside `formats`; anodizer emits the
+matching nfpm section only for the formats you list.
+
+```yaml
+nfpm:
+  - package_name: myapp
+    formats: [rpm, deb, apk, archlinux, ipk]
+    rpm:
+      summary: "A fast CLI tool"        # RPM Summary tag
+      compression: zstd                 # lzma | gzip | xz | zstd
+      group: "System/Tools"
+      packager: "Build Team <build@example.com>"
+      prefixes: ["/usr"]                # relocatable RPM prefixes
+      build_host: "reproducible"        # override RPM BuildHost tag
+      signature:
+        key_file: signing.gpg
+        key_passphrase: ""              # falls back to NFPM_PASSPHRASE
+      scripts:
+        pretrans: scripts/pretrans.sh   # %pretrans scriptlet
+        posttrans: scripts/posttrans.sh # %posttrans scriptlet
+    deb:
+      compression: xz                   # gzip | xz | zstd | none
+      predepends: ["dpkg (>= 1.17)"]    # stronger than Depends
+      breaks: ["oldpkg (<< 2.0)"]       # Breaks relationship
+      lintian_overrides: ["binary-without-manpage"]
+      fields:                           # extra control fields
+        Built-Using: "rustc"
+      signature:
+        key_file: signing.gpg
+        type: origin                    # origin | maint | archive
+      triggers:
+        activate_noawait: ["ldconfig"]
+      scripts:
+        rules: debian/rules
+        templates: debian/templates     # debconf templates
+        config: debian/config           # debconf config script
+    apk:
+      signature:
+        key_file: signing.rsa
+        key_name: "build@example.com.rsa.pub"
+      scripts:
+        preupgrade: scripts/preupgrade.sh
+        postupgrade: scripts/postupgrade.sh
+    archlinux:
+      pkgbase: myapp                    # base name for split packages
+      packager: "Build Team <build@example.com>"
+      scripts:
+        preupgrade: scripts/preupgrade.sh
+        postupgrade: scripts/postupgrade.sh
+    ipk:
+      abi_version: "1"
+      auto_installed: false
+      essential: false
+      predepends: ["libc"]
+      tags: ["net"]
+      fields:
+        Maintainer: "team@example.com"
 ```
 
 ## Full example

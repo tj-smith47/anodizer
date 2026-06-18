@@ -104,7 +104,7 @@ Application Default Credentials (ADC) via `gcloud auth application-default login
 ## Common gotchas
 
 - **`s3_force_path_style`** defaults to `true` when `endpoint` is set. Virtual-hosted style (`https://<bucket>.s3.amazonaws.com`) is only valid for AWS proper — S3-compatible backends (MinIO, R2, Spaces) require path style.
-- **`disable` template**: the `disable` field accepts a template string, enabling conditional skip: `"{{ if IsSnapshot }}true{{ endif }}"` skips blob upload for snapshot builds.
+- **`disable` template**: the `disable` field accepts a template string, enabling conditional skip: `"{{ if IsSnapshot }}true{{ end }}"` skips blob upload for snapshot builds.
 - **`content_disposition: "-"`**: set to the literal string `"-"` to disable the `Content-Disposition` header entirely (useful for direct-browser-download use cases).
 
 ## Config fields
@@ -124,7 +124,7 @@ Application Default Credentials (ADC) via `gcloud auth application-default login
 | `content_disposition` | string | `attachment;filename={{Filename}}` | HTTP `Content-Disposition` header. Set to `-` to disable. Supports templates (includes `{{ Filename }}`). |
 | `kms_key` | string | | AWS KMS key ARN for server-side encryption (S3 only). |
 | `ids` | list | all | Filter to artifacts with these IDs. |
-| `disable` | bool or template | `false` | Skip this blob config. Accepts a bool or a template string (e.g. `"{{ if IsSnapshot }}true{{ endif }}"`). |
+| `disable` | bool or template | `false` | Skip this blob config. Accepts a bool or a template string (e.g. `"{{ if IsSnapshot }}true{{ end }}"`). |
 | `include_meta` | bool | `false` | Also upload `metadata.json` and `artifacts.json`. |
 | `extra_files` | list | | Additional files to upload. Supports glob patterns and optional name templates. |
 | `extra_files_only` | bool | `false` | Upload only `extra_files`; skip all artifact uploads. |
@@ -197,7 +197,7 @@ crates:
         include_meta: true
         extra_files:
           - glob: dist/checksums.txt
-        skip: "{{ if IsSnapshot }}true{{ endif }}"
+        skip: "{{ if IsSnapshot }}true{{ end }}"
 ```
 
 ```yaml

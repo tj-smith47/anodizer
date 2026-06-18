@@ -305,7 +305,7 @@ sboms:
   - id: default
     skip: true
   - id: conditional
-    skip: "{{ if Env.SKIP_SBOM }}true{{ endif }}"
+    skip: "{{ if Env.SKIP_SBOM }}true{{ end }}"
 ```
 
 ---

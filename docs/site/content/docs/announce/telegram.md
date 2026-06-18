@@ -11,7 +11,7 @@ template = "docs.html"
 announce:
   telegram:
     enabled: true
-    bot_token: "{{ Env.TELEGRAM_BOT_TOKEN }}"
+    bot_token: "{{ Env.TELEGRAM_TOKEN }}"
     chat_id: "-100123456789"
     parse_mode: "MarkdownV2"
     message_template: "{{ ProjectName }} {{ Tag }} has been released!"
@@ -29,16 +29,16 @@ The optional `parse_mode` field controls how Telegram renders the message text. 
 
 ### Environment variables
 
-Store the bot token in an environment variable rather than committing it to your config file:
+Store the bot token in an environment variable rather than committing it to your config file. When `bot_token` is unset, anodizer falls back to the `TELEGRAM_TOKEN` env var:
 
 ```yaml
-bot_token: "{{ Env.TELEGRAM_BOT_TOKEN }}"
+bot_token: "{{ Env.TELEGRAM_TOKEN }}"
 ```
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `enabled` | bool | Enable Telegram notifications |
-| `bot_token` | string | Telegram Bot API token (use template to read from env) |
+| `bot_token` | string | Telegram Bot API token (falls back to `TELEGRAM_TOKEN`) |
 | `chat_id` | string | Target chat, group, or channel ID |
 | `parse_mode` | string | Optional: `MarkdownV2` or `HTML` |
 | `message_template` | string | Message body (templates supported) |

@@ -1,0 +1,8 @@
+* @tj-smith47
+
+# Security & governance surface — changes route to the owner explicitly.
+/SECURITY.md @tj-smith47
+/THREAT_MODEL.md @tj-smith47
+/INCIDENT_RESPONSE.md @tj-smith47
+/.github/ @tj-smith47
+/.claude/rules/module-boundaries.md @tj-smith47

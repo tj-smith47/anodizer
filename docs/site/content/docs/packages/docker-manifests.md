@@ -42,7 +42,6 @@ crates:
           attempts: 10               # optional; default 10
           delay: 10s                 # optional; base delay
           max_delay: 5m              # optional; delay cap
-        disable: false               # optional
 ```
 
 ## Authentication
@@ -71,7 +70,6 @@ Not applicable as a config flag — the stage removes any existing manifest befo
 | `id` | string | none | Unique identifier |
 | `use` | string | `docker` | Backend: `"docker"` or `"podman"`. The `"podman"` backend is **Linux-only** — see [Podman backend](@/docs/packages/podman.md) for the full caveats and flag-compatibility table. |
 | `retry` | object | see below | Retry config for manifest push |
-| `disable` | string/bool | none | Disable this manifest |
 
 ### Retry config
 
