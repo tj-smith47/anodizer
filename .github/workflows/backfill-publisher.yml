@@ -1,31 +1,41 @@
 # One-shot publisher backfill — manual, determinism-free.
 #
-# Re-publishes a single publisher (default npm) for an ALREADY-RELEASED
-# version whose other publishers landed but this one did not (e.g. npm fell
-# behind cargo because a publish-only preflight aborted it). Unlike the main
-# Release pipeline this runs NO determinism harness: the binaries npm wraps
+# Re-publishes a single publisher (default npm) for an ALREADY-RELEASED tag
+# whose other publishers landed but this one did not (e.g. npm fell behind
+# cargo because a publish-only preflight aborted it). Unlike the main Release
+# pipeline this runs NO determinism harness: the binaries the publisher wraps
 # come from the byte-proven `dist-*` artifacts a prior Release run already
 # preserved (`dist_run_id`), so there is nothing left to re-prove and the
-# round-trip is a single fast job. The anodizer that DRIVES the publish is
-# built fresh from `from_branch` (NOT the released binary), so it carries
-# publish-path fixes that the broken release shipped without.
+# round-trip is a single fast job.
+#
+# Two refs are deliberately SEPARATE:
+#   * `tag`         — the released tag, checked out as the WORKDIR. anodizer's
+#                     publish-only path derives the published version from the
+#                     workdir Cargo.toml and guards that HEAD points at that
+#                     version's tag, so the workdir MUST be the tag (not master).
+#   * `from_branch` — the branch the publishing BINARY is built from. Built
+#                     fresh (not the released artifact) so it carries
+#                     publish-path fixes the broken release shipped without.
+# The artifact download is inlined (not the `./.github/actions/...` composite)
+# because older tags predate that composite and `./` actions resolve from the
+# checked-out tag tree.
 name: Backfill publisher
 
 on:
   workflow_dispatch:
     inputs:
+      tag:
+        description: Released tag to backfill, e.g. v0.10.0 (its Cargo.toml version + the preserved dist must agree).
+        required: true
       publishers:
         description: Publisher allowlist passed to `--publishers` (comma-separated).
         required: true
         default: npm
       dist_run_id:
-        description: >-
-          Release run id whose preserved `dist-*` artifacts to wrap (the run
-          that shipped the rest of this version). Its context.json fixes the
-          published version.
+        description: Release run id whose preserved `dist-*` artifacts to wrap (the run that shipped the rest of this tag).
         required: true
       from_branch:
-        description: Branch of tj-smith47/anodizer to build the publishing binary from.
+        description: Branch of tj-smith47/anodizer to build the publishing binary from (carries publish-path fixes; separate from `tag`).
         required: false
         default: master
       dry_run:
@@ -36,34 +46,35 @@ on:
         default: true
 
 concurrency:
-  group: backfill-${{ inputs.publishers }}-${{ inputs.dist_run_id }}
+  group: backfill-${{ inputs.publishers }}-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
   backfill:
-    name: Backfill ${{ inputs.publishers }}${{ inputs.dry_run && ' (dry-run)' || '' }}
+    name: Backfill ${{ inputs.publishers }} @ ${{ inputs.tag }}${{ inputs.dry_run && ' (dry-run)' || '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       id-token: write # npm provenance is OIDC-minted on this github-hosted runner
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+      - name: Check out the released tag (workdir = published version)
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          fetch-depth: 0
-          ref: ${{ inputs.from_branch }}
+          fetch-depth: 0 # fetch tags so the HEAD-points-at-tag guard resolves
+          ref: ${{ inputs.tag }}
 
       - name: Download preserved dist artifacts
-        uses: ./.github/actions/download-preserved-dist
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          path: dist/
+          pattern: dist-*
+          merge-multiple: true
           run-id: ${{ inputs.dist_run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Run anodizer release --publish-only
         uses: tj-smith47/anodizer-action@v1
         with:
-          # Build the publishing binary from source so it carries publish-path
-          # fixes absent from the released artifact. The published VERSION still
-          # comes from the preserved dist context, not this checkout.
           from-branch: ${{ inputs.from_branch }}
           install: node
           args: release --publish-only --publishers ${{ inputs.publishers }}${{ inputs.dry_run && ' --dry-run' || '' }}
