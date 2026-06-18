@@ -184,6 +184,7 @@ Verify the environment can run the configured release: required tools, env vars/
 | `--json` | — | — | Output the report as JSON |
 | `--publish-only` | — | — | Check only the publish-time surface (the stages `release --publish-only` runs), not artifact-producing stages |
 | `--skip` | — | — | Skip requirement collection for these stages (comma-separated, same names as release --skip) |
+| `--publishers` | — | — | Comma-separated publishers to run (default: all configured). --skip always wins over --publishers. |
 | `--token` | — | — | GitHub token override; when set, GitHub token env-var requirements are treated as satisfied |
 
 

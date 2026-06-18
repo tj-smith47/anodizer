@@ -571,12 +571,14 @@ fn run() {
         Commands::Preflight {
             json,
             skip,
+            publishers,
             publish_only,
             token,
         } => commands::preflight::run(commands::preflight::PreflightOpts {
             config_override: cli.config.clone(),
             json,
             skip,
+            publishers,
             publish_only,
             token,
             quiet: cli.quiet,

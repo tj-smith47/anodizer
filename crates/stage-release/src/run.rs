@@ -21,6 +21,26 @@ impl Stage for super::ReleaseStage {
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("release");
 
+        // Operator-selection gate. The GitHub-release publisher
+        // (`GithubReleasePublisher::PUBLISHER_NAME == "github-release"`) creates
+        // the release and uploads its assets through this stage, which runs as a
+        // pipeline stage OUTSIDE the trait-based dispatch chokepoint — so the
+        // uniform `--skip` / `--publishers` filter that governs every dispatched
+        // publisher does not reach it on its own. Consult
+        // `publisher_deselected("github-release")` here, BEFORE any token use or
+        // SCM side effect, so an operator who ran `--publishers npm` (or
+        // `--skip=github-release`) does NOT create a release or re-upload assets.
+        // An EMPTY allowlist deselects nothing, so the main release job (empty
+        // allowlist + `--skip=npm`) still runs. Mirrors the docker / blob /
+        // snapcraft-publish / docker-sign / announce self-skips; the record-row
+        // discipline lives in the publish-loop's github-release dispatch, which
+        // already reports the deselected publisher, so this stage need only
+        // short-circuit and announce the skip.
+        if ctx.publisher_deselected("github-release") {
+            log.status(&ctx.deselected_reason("github-release"));
+            return Ok(());
+        }
+
         // The SCM token is already resolved into ctx.options.token by the CLI
         // pipeline init (resolve_scm_token_type). Trust it directly.
         let token = ctx.options.token.clone();

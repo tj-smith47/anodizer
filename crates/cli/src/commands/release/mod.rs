@@ -1512,6 +1512,37 @@ pub(crate) fn gate_required_failures(ctx: &Context) -> Result<()> {
     );
 }
 
+/// Filter `config.publishers` down to the entries the operator-selection
+/// filter (`--skip` / `--publishers`) leaves selected, mirroring the built-in
+/// dispatch chokepoint so custom publishers are not a second-class escape
+/// hatch from the allowlist. A nameless entry resolves to its index label
+/// (`publisher[i]`), so a non-empty `--publishers` allowlist deselects it; an
+/// empty allowlist (the main release job) deselects only what `--skip` names.
+/// Deselected entries are recorded in the skip memento and logged so the run
+/// summary counts them, never silently dropped.
+fn select_custom_publishers(
+    ctx: &Context,
+    publishers: &[anodizer_core::config::PublisherConfig],
+    log: &StageLogger,
+) -> Vec<anodizer_core::config::PublisherConfig> {
+    publishers
+        .iter()
+        .enumerate()
+        .filter(|(i, p)| {
+            let name = p.name.clone().unwrap_or_else(|| format!("publisher[{i}]"));
+            if ctx.publisher_deselected(&name) {
+                let reason = ctx.deselected_reason(&name);
+                ctx.skip_memento.remember("publisher", &name, &reason);
+                log.status(&reason);
+                false
+            } else {
+                true
+            }
+        })
+        .map(|(_, p)| p.clone())
+        .collect()
+}
+
 /// Post-pipeline tasks: metadata writing, publishers, after hooks.
 fn run_post_pipeline(
     ctx: &mut Context,
@@ -1535,20 +1566,33 @@ fn run_post_pipeline(
     // even in dry-run mode; applies metadata.mod_timestamp when set).
     helpers::write_metadata_and_artifacts(ctx, config, log)?;
 
-    // Run custom publishers
+    // Run custom publishers — honoring the operator-selection filter
+    // (`--skip` / `--publishers`) exactly like the built-in publishers do at
+    // the dispatch chokepoint. A custom publisher IS a publisher: under a
+    // publisher-scoped run (e.g. the npm job's `--publishers npm`) it must
+    // self-deselect, otherwise an unrelated entry (the `minio-mirror` that
+    // wants AWS_* the github-hosted runner never carries) keeps firing and
+    // fails the job. A nameless entry resolves to its index label, so a
+    // non-empty allowlist deselects it; an empty allowlist (the main release
+    // job) deselects only what `--skip` names, so the mirror still runs there.
+    // Deselection is recorded in the skip memento so the run summary counts
+    // it, never silent.
     if let Some(ref publishers) = config.publishers
         && !publishers.is_empty()
     {
-        log.status("running custom publishers...");
-        super::publisher::run_publishers(
-            publishers,
-            ctx.artifacts.all(),
-            ctx.template_vars(),
-            dry_run,
-            log,
-            ctx.options.parallelism,
-            Some(&ctx.skip_memento),
-        )?;
+        let selected = select_custom_publishers(ctx, publishers, log);
+        if !selected.is_empty() {
+            log.status("running custom publishers...");
+            super::publisher::run_publishers(
+                &selected,
+                ctx.artifacts.all(),
+                ctx.template_vars(),
+                dry_run,
+                log,
+                ctx.options.parallelism,
+                Some(&ctx.skip_memento),
+            )?;
+        }
     }
 
     // Close milestones (skipped on nightly — a
@@ -1781,6 +1825,57 @@ fn topo_sort_selected(all_crates: &[CrateConfig], selected: &[String]) -> Vec<St
 mod tests {
     use super::*;
     use anodizer_core::config::{CrateConfig, NightlyConfig, WorkspaceConfig};
+
+    #[test]
+    fn custom_publishers_honor_operator_selection() {
+        use anodizer_core::config::PublisherConfig;
+        let named = |n: &str| PublisherConfig {
+            name: Some(n.to_string()),
+            ..Default::default()
+        };
+        let pubs = vec![named("minio-mirror"), PublisherConfig::default()];
+        let log = StageLogger::new("test", Verbosity::Quiet);
+
+        // Empty selectors (the main release job): everything runs.
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        assert_eq!(select_custom_publishers(&ctx, &pubs, &log).len(), 2);
+
+        // `--publishers npm` (the npm job): neither custom entry is "npm", so
+        // both deselect — the AWS-needing mirror never fires on the npm runner.
+        let ctx = Context::new(
+            Config::default(),
+            ContextOptions {
+                publisher_allowlist: vec!["npm".to_string()],
+                ..Default::default()
+            },
+        );
+        assert!(select_custom_publishers(&ctx, &pubs, &log).is_empty());
+
+        // `--publishers minio-mirror`: the named entry runs; the nameless one
+        // (index label `publisher[1]`) deselects.
+        let ctx = Context::new(
+            Config::default(),
+            ContextOptions {
+                publisher_allowlist: vec!["minio-mirror".to_string()],
+                ..Default::default()
+            },
+        );
+        let sel = select_custom_publishers(&ctx, &pubs, &log);
+        assert_eq!(sel.len(), 1);
+        assert_eq!(sel[0].name.as_deref(), Some("minio-mirror"));
+
+        // `--skip minio-mirror`: the named entry deselects; the nameless runs.
+        let ctx = Context::new(
+            Config::default(),
+            ContextOptions {
+                skip_stages: vec!["minio-mirror".to_string()],
+                ..Default::default()
+            },
+        );
+        let sel = select_custom_publishers(&ctx, &pubs, &log);
+        assert_eq!(sel.len(), 1);
+        assert!(sel[0].name.is_none());
+    }
 
     fn make_crate(name: &str, deps: Option<Vec<&str>>) -> CrateConfig {
         CrateConfig {

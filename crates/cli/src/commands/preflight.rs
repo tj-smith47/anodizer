@@ -78,6 +78,14 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
         out.extend(reqs.into_iter().map(|r| SourcedRequirement::new(source, r)));
     };
     let runs = |stage: &str| -> bool { scope.includes(stage) && !ctx.should_skip(stage) };
+    // Stages that self-skip at runtime when a `--publishers` allowlist (or
+    // `--skip`) deselects them (docker/docker-sign/blob/snapcraft-publish/
+    // announce) must gate their preflight requirements on the SAME predicate
+    // the runtime uses, or an npm-only `--publishers npm` run is falsely
+    // blocked by cosign/minio/snapcraft tooling those stages will never reach.
+    // Mirrors the publish-loop's `publisher_deselected` lockstep below.
+    let runs_selected =
+        |stage: &str| -> bool { scope.includes(stage) && !ctx.publisher_deselected(stage) };
 
     // Build stage: the run path spawns the literal `cargo` from PATH, so
     // probe exactly that.
@@ -102,7 +110,7 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
             anodizer_stage_snapcraft::build_env_requirements(ctx),
         );
     }
-    if runs("snapcraft-publish") {
+    if runs_selected("snapcraft-publish") {
         add(
             "stage:snapcraft-publish",
             anodizer_stage_snapcraft::publish_env_requirements(ctx),
@@ -110,18 +118,43 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
     }
     // The release pipeline's sign stage drives both `signs:` and
     // `binary_signs:` (BinarySignStage is the `anodizer build` selection),
-    // so both slices hang off the `sign` skip gate here.
+    // so both slices hang off the `sign` skip gate here. Each slice carries an
+    // additional gate that mirrors what `SignStage::run` does at runtime, so
+    // preflight cannot demand credentials for work the stage will not perform:
+    //
+    // - `signs:` (detached archive/checksum signatures) self-skips when EVERY
+    //   publisher in `signs_consumers()` is deselected (shared
+    //   `signs_fully_deselected` predicate), since no selected surface would
+    //   read them — so an npm-only `--publishers npm` run is not demanded
+    //   cosign/GPG material for signatures it will never produce.
+    //
+    // - `binary_signs:` (raw-binary signatures embedded into archives at BUILD
+    //   time) self-skips in `--publish-only` mode: its `binary_sign`-marked
+    //   output is filtered out of every publish-time consumer
+    //   (`is_binary_sign_output`), so in publish-only it is discarded work that
+    //   would demand cosign/GPG material the publish-time runner does not carry.
+    //   The runtime keys this on `ctx.is_publish_only()` via the shared
+    //   `binary_signs_skipped` predicate; here the `PublishOnly` SCOPE is the
+    //   authoritative publish-only signal (the standalone `preflight` ctx does
+    //   not carry the run-level flag), and both derive from the same
+    //   `--publish-only` selection. The full release job (`Full` scope, empty
+    //   allowlist) still demands binary-signing material, so binaries that ship
+    //   are still signed.
     if runs("sign") {
-        add(
-            "stage:sign",
-            anodizer_stage_sign::sign_env_requirements(ctx),
-        );
-        add(
-            "stage:sign",
-            anodizer_stage_sign::binary_sign_env_requirements(ctx),
-        );
+        if !anodizer_stage_sign::signs_fully_deselected(ctx) {
+            add(
+                "stage:sign",
+                anodizer_stage_sign::sign_env_requirements(ctx),
+            );
+        }
+        if scope != PreflightScope::PublishOnly {
+            add(
+                "stage:sign",
+                anodizer_stage_sign::binary_sign_env_requirements(ctx),
+            );
+        }
     }
-    if runs("docker-sign") {
+    if runs_selected("docker-sign") {
         add(
             "stage:docker-sign",
             anodizer_stage_sign::docker_sign_env_requirements(ctx),
@@ -145,10 +178,10 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
             anodizer_stage_appimage::env_requirements(ctx),
         );
     }
-    if runs("docker") {
+    if runs_selected("docker") {
         add("stage:docker", anodizer_stage_docker::env_requirements(ctx));
     }
-    if runs("blob") {
+    if runs_selected("blob") {
         add("stage:blob", anodizer_stage_blob::env_requirements(ctx));
     }
     if runs("verify-release") {
@@ -190,7 +223,7 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
             anodizer_stage_notarize::env_requirements(ctx),
         );
     }
-    if runs("announce") {
+    if runs_selected("announce") {
         add(
             "stage:announce",
             anodizer_stage_announce::env_requirements(ctx),
@@ -201,6 +234,17 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
     // via the github-release publisher's ladder. The publisher is also in
     // the registry below, but the release stage runs even when `publish`
     // is skipped — declare it under its own gate (the evaluator dedups).
+    //
+    // github-release is a real publisher, so the release stage self-skips at
+    // runtime when a `--publishers` allowlist deselects it (keyed on the
+    // PUBLISHER name `github-release`, the same predicate `ReleaseStage::run`
+    // and the publish-loop below use) — gate the preflight demand on that too,
+    // so an npm-only `--publishers npm` run is not asked for the GitHub token
+    // ladder for a release it will never create. The `--skip` stage gate stays
+    // on the STAGE name `release` (`runs("release")`), since `--skip=release`
+    // is a stage-name denylist; the publisher-name gate is additive on top of
+    // it. An EMPTY allowlist deselects nothing, so the main release job
+    // (empty allowlist + `--skip=npm`) still demands the ladder.
     let release_skipped = ctx
         .config
         .release
@@ -210,7 +254,7 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
             s.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                 .unwrap_or(false)
         });
-    if runs("release") && !release_skipped {
+    if runs("release") && !ctx.publisher_deselected("github-release") && !release_skipped {
         add(
             "stage:release",
             anodizer_core::Publisher::requirements(
@@ -315,6 +359,12 @@ pub struct PreflightOpts {
     pub config_override: Option<PathBuf>,
     pub json: bool,
     pub skip: Vec<String>,
+    /// `--publishers` allowlist: mirrors `release --publishers` so the
+    /// standalone canary can validate the exact publish-time surface a
+    /// publisher-scoped release runs (e.g. the npm-provenance job's
+    /// `--publishers npm`), including the stages that self-skip when a
+    /// publisher is deselected.
+    pub publishers: Vec<String>,
     pub publish_only: bool,
     pub token: Option<String>,
     pub quiet: bool,
@@ -338,6 +388,7 @@ pub fn run(opts: PreflightOpts) -> Result<()> {
     // not depend on HEAD being tagged.
     let ctx_opts = anodizer_core::context::ContextOptions {
         skip_stages: opts.skip.clone(),
+        publisher_allowlist: opts.publishers.clone(),
         token: opts.token.clone(),
         quiet: opts.quiet,
         verbose: opts.verbose,
@@ -728,6 +779,230 @@ publish:
                 "deselected publisher {absent} must contribute no requirements: {reqs:?}"
             );
         }
+    }
+
+    /// The github-hosted npm-provenance job runs
+    /// `release --publish-only --publishers npm` with NO `--skip`: the
+    /// `--publishers npm` allowlist alone must deselect every non-npm surface.
+    /// That is every OTHER publisher PLUS the stages that self-skip at runtime
+    /// on publisher deselection —
+    ///
+    /// - publisher-named stages — blob / snapcraft-publish / docker /
+    ///   docker-sign / announce / **release** (github-release is a real
+    ///   publisher, so the release stage self-skips when it is deselected);
+    /// - the `signs:` slice of the `sign` stage — its only consumers are
+    ///   github-release / blob / artifactory, ALL deselected here, so the
+    ///   stage skips the detached-signature loop and demands no cosign/GPG.
+    ///
+    /// `binary_signs:` is the negative control: it is the build-time
+    /// binary-signing selection (a different consumer model) and is NOT gated
+    /// on the publish-time allowlist, so it survives.
+    #[test]
+    fn publishers_allowlist_deselects_self_skipping_stages() {
+        let top = crate_from_yaml(
+            r#"
+name: top
+release: { github: { owner: o, name: r } }
+blobs:
+  - provider: s3
+    bucket: releases
+    endpoint: "https://minio.example.com"
+snapcrafts:
+  - publish: true
+publish:
+  cargo: {}
+"#,
+        );
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![top])
+            .signs(vec![anodizer_core::config::SignConfig {
+                artifacts: Some("all".to_string()),
+                cmd: Some("cosign".to_string()),
+                ..Default::default()
+            }])
+            // binary_signs is gated OFF in PublishOnly scope (its output has no
+            // publish-time consumer), so it contributes nothing here regardless
+            // of the allowlist.
+            .binary_signs(vec![anodizer_core::config::SignConfig {
+                artifacts: Some("all".to_string()),
+                cmd: Some("cosign".to_string()),
+                ..Default::default()
+            }])
+            .publisher_allowlist(vec!["npm".to_string()])
+            .build();
+        ctx.config.npms = Some(vec![anodizer_core::config::NpmConfig::default()]);
+        ctx.config.announce = Some({
+            use anodizer_core::config::{AnnounceConfig, SlackAnnounce, StringOrBool};
+            AnnounceConfig {
+                slack: Some(SlackAnnounce {
+                    enabled: Some(StringOrBool::Bool(true)),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
+        });
+
+        let reqs = collect_requirements(&ctx, PreflightScope::PublishOnly);
+        let has = |source: &str| reqs.iter().any(|r| r.source == source);
+        // Count the `stage:sign` cosign tool demands. Both slices use cosign,
+        // so the COUNT distinguishes "neither slice ran" (0), "one slice ran"
+        // (1), and "both ran" (2).
+        let cosign_sign_reqs = reqs
+            .iter()
+            .filter(|r| {
+                r.source == "stage:sign"
+                    && matches!(&r.requirement, EnvRequirement::Tool { name } if name == "cosign")
+            })
+            .count();
+
+        assert!(
+            has("publish:npm"),
+            "npm is selected — it must still contribute its requirements: {reqs:?}"
+        );
+        for absent in [
+            "stage:blob",
+            "stage:snapcraft-publish",
+            "stage:docker",
+            "stage:docker-sign",
+            "stage:announce",
+            "stage:release",
+        ] {
+            assert!(
+                !has(absent),
+                "allowlist-deselected stage {absent} must contribute no requirements: {reqs:?}"
+            );
+        }
+        // PublishOnly scope: the `signs:` consumers are ALL deselected (npm-only
+        // allowlist) so that slice self-skips, AND `binary_signs:` is gated off
+        // for publish-only (no publish-time consumer). Neither slice runs, so
+        // ZERO cosign demands survive — this is the npm-job's clean surface.
+        assert_eq!(
+            cosign_sign_reqs, 0,
+            "under --publish-only --publishers npm BOTH sign slices must self-skip \
+             (signs: all consumers deselected; binary_signs: publish-only): {reqs:?}"
+        );
+
+        // Selecting any ONE signs consumer (here: github-release) revives the
+        // signs slice; binary_signs stays publish-only-skipped, so exactly ONE
+        // cosign demand returns.
+        let mut keep_one = TestContextBuilder::new()
+            .crates(ctx.config.crates.clone())
+            .signs(vec![anodizer_core::config::SignConfig {
+                artifacts: Some("all".to_string()),
+                cmd: Some("cosign".to_string()),
+                ..Default::default()
+            }])
+            .binary_signs(vec![anodizer_core::config::SignConfig {
+                artifacts: Some("all".to_string()),
+                cmd: Some("cosign".to_string()),
+                ..Default::default()
+            }])
+            .publisher_allowlist(vec!["npm".to_string(), "github-release".to_string()])
+            .build();
+        keep_one.config.npms = ctx.config.npms.clone();
+        let reqs = collect_requirements(&keep_one, PreflightScope::PublishOnly);
+        assert!(
+            reqs.iter().any(|r| r.source == "stage:release"),
+            "selecting github-release must keep the release requirement: {reqs:?}"
+        );
+        let cosign_sign_reqs = reqs
+            .iter()
+            .filter(|r| {
+                r.source == "stage:sign"
+                    && matches!(&r.requirement, EnvRequirement::Tool { name } if name == "cosign")
+            })
+            .count();
+        assert_eq!(
+            cosign_sign_reqs, 1,
+            "selecting a signs consumer must revive the signs: slice; binary_signs: \
+             stays publish-only-skipped, so exactly one cosign demand: {reqs:?}"
+        );
+    }
+
+    /// FULL scope (the main release job's shape) keeps BOTH sign slices: the
+    /// `binary_signs:` publish-only gate must NOT fire here, so the binaries
+    /// that ship are still signed. Pins the main-job binary-signing invariant
+    /// alongside the publish-only deselection above.
+    #[test]
+    fn full_scope_keeps_both_sign_slices() {
+        let top = crate_from_yaml(
+            r#"
+name: top
+release: { github: { owner: o, name: r } }
+publish:
+  cargo: {}
+"#,
+        );
+        let ctx = TestContextBuilder::new()
+            .crates(vec![top])
+            .signs(vec![anodizer_core::config::SignConfig {
+                artifacts: Some("all".to_string()),
+                cmd: Some("cosign".to_string()),
+                ..Default::default()
+            }])
+            .binary_signs(vec![anodizer_core::config::SignConfig {
+                artifacts: Some("all".to_string()),
+                cmd: Some("cosign".to_string()),
+                ..Default::default()
+            }])
+            .build();
+        let reqs = collect_requirements(&ctx, PreflightScope::Full);
+        let cosign_sign_reqs = reqs
+            .iter()
+            .filter(|r| {
+                r.source == "stage:sign"
+                    && matches!(&r.requirement, EnvRequirement::Tool { name } if name == "cosign")
+            })
+            .count();
+        assert_eq!(
+            cosign_sign_reqs, 2,
+            "full scope must keep BOTH sign slices (signs: + binary_signs:): {reqs:?}"
+        );
+    }
+
+    /// The main release job runs with an EMPTY allowlist + `--skip=npm`, so
+    /// neither the release stage nor the `signs:` slice may be deselected:
+    /// `publisher_deselected` short-circuits to the denylist alone, which names
+    /// only `npm`. This pins the non-regression of the main job alongside the
+    /// npm-job deselection above.
+    #[test]
+    fn empty_allowlist_keeps_release_and_signs_for_main_job() {
+        let top = crate_from_yaml(
+            r#"
+name: top
+release: { github: { owner: o, name: r } }
+publish:
+  cargo: {}
+"#,
+        );
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![top])
+            .signs(vec![anodizer_core::config::SignConfig {
+                artifacts: Some("all".to_string()),
+                cmd: Some("cosign".to_string()),
+                ..Default::default()
+            }])
+            .skip_stages(vec!["npm".to_string()])
+            .build();
+        ctx.config.npms = Some(vec![anodizer_core::config::NpmConfig::default()]);
+        let reqs = collect_requirements(&ctx, PreflightScope::PublishOnly);
+        let has = |source: &str| reqs.iter().any(|r| r.source == source);
+
+        assert!(
+            has("stage:release"),
+            "empty allowlist must keep the release requirement (main job): {reqs:?}"
+        );
+        assert!(
+            reqs.iter().any(|r| {
+                r.source == "stage:sign"
+                    && matches!(&r.requirement, EnvRequirement::Tool { name } if name == "cosign")
+            }),
+            "empty allowlist must keep the signs cosign demand (main job): {reqs:?}"
+        );
+        assert!(
+            !reqs.iter().any(|r| r.source == "publish:npm"),
+            "--skip=npm must still drop npm: {reqs:?}"
+        );
     }
 
     /// The symmetric denylist case: `--skip=npm` drops npm's requirements

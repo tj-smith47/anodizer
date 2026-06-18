@@ -23,6 +23,79 @@ use process::{ArtifactFilter, process_sign_configs};
 // Shared sign processing (ArtifactFilter, SignJob, execute_sign_job,
 // process_sign_configs, label_to_static) lives in `process.rs`.
 
+/// Publishers that consume the `signs:` stage's detached signature /
+/// certificate artifacts in publish-only mode.
+///
+/// `github-release` and `blob` upload them via `release_uploadable_kinds`;
+/// `artifactory` and `uploads` upload them when an entry sets
+/// `signature: true`. The `signs:` loop self-skips only when EVERY one of
+/// these is deselected (see [`signs_fully_deselected`]), so a selected
+/// signature consumer can never be starved of the sidecars it was
+/// configured to publish. This is the single source of truth shared by the
+/// runtime ([`SignStage::run`]) and `anodizer preflight`; adding or removing
+/// a consumer is a one-line edit here that both sites pick up.
+pub fn signs_consumers() -> &'static [&'static str] {
+    &["github-release", "blob", "artifactory", "uploads"]
+}
+
+/// True when no selected publisher consumes `signs:` output, so the
+/// `signs:` loop has no downstream sink and can be skipped.
+///
+/// An empty `--publishers` allowlist deselects nothing, so this returns
+/// `false` (the loop runs); it returns `true` only when EVERY built-in
+/// publisher in [`signs_consumers`] is deselected AND no *selected* custom
+/// publisher (`config.publishers`) opts into signature uploads
+/// (`signature: true`). A custom publisher with `signature: true` is a fifth
+/// kind of `signs:` consumer — one with a user-defined name that cannot live
+/// in the static [`signs_consumers`] list — so targeting it
+/// (`--publishers my-cdn`) must keep `signs:` alive even though every built-in
+/// consumer is deselected. A nameless custom entry resolves to its index label
+/// for the deselection check, matching `select_custom_publishers`.
+pub fn signs_fully_deselected(ctx: &Context) -> bool {
+    let builtins_deselected = signs_consumers()
+        .iter()
+        .all(|p| ctx.publisher_deselected(p));
+    if !builtins_deselected {
+        return false;
+    }
+    let custom_signature_selected = ctx
+        .config
+        .publishers
+        .as_deref()
+        .unwrap_or(&[])
+        .iter()
+        .enumerate()
+        .any(|(i, p)| {
+            p.signature == Some(true) && {
+                let name = p.name.clone().unwrap_or_else(|| format!("publisher[{i}]"));
+                !ctx.publisher_deselected(&name)
+            }
+        });
+    !custom_signature_selected
+}
+
+/// True when the `binary_signs:` slice has no live work in this run, so the
+/// stage skips it and `anodizer preflight` omits its env requirements.
+///
+/// Unlike `signs:` (gated on its consumer set), `binary_signs:` signs the raw
+/// binaries and embeds those signatures at BUILD time; its
+/// `Signature`/`Certificate` outputs carry the `binary_sign` marker and are
+/// filtered out of EVERY publish-time consumer (`is_binary_sign_output` —
+/// github/gitlab/gitea release upload, blob, artifactory, the generic
+/// per-publisher signature opt-in, attest subjects) and are excluded from the
+/// `expected_signature_assets` set verify-release checks. So in publish-only
+/// mode the loop produces only discarded work while demanding cosign/GPG
+/// material the publish-time runner does not carry. The full `anodizer build`
+/// / `anodizer release` pipeline (`is_publish_only() == false`) still runs it,
+/// so the binaries that ship are still signed.
+///
+/// This is the single source of truth shared by the runtime
+/// ([`SignStage::run`]) and `anodizer preflight`, the same discipline as
+/// [`signs_fully_deselected`].
+pub fn binary_signs_skipped(ctx: &Context) -> bool {
+    ctx.is_publish_only()
+}
+
 // ---------------------------------------------------------------------------
 // SignStage
 // ---------------------------------------------------------------------------
@@ -78,21 +151,68 @@ impl Stage for SignStage {
         // ----------------------------------------------------------------
         // GPG / generic signing via `signs` config (supports multiple)
         // ----------------------------------------------------------------
-        let sign_configs = ctx.config.signs.clone();
+        //
+        // Consumer-selection gate (scoped to the `signs:` slice only). `sign`
+        // is a PREP stage, not a publisher, so it has no `--publishers`
+        // identity of its own. Its `signs:` output — detached signatures and
+        // certificates over archives/checksums — is consumed by the publishers
+        // in `signs_consumers()`. When EVERY one of those consumers is
+        // deselected (e.g. `--publishers npm`), no selected surface will ever
+        // read these signatures, so producing them would demand cosign/GPG
+        // material a publisher-scoped runner does not carry for no downstream
+        // effect. Skip the `signs:` loop in that case. The consumer set is the
+        // single source of truth in `signs_consumers()`, so the runtime gate
+        // and the preflight gate can never diverge.
+        //
+        // `binary_signs:` is deliberately NOT gated here: it is the
+        // build-time binary-signing selection (a different consumer model —
+        // the signed binaries flow into archives/installers, not detached
+        // sidecars), so it keeps running below regardless of the publish-time
+        // allowlist. An EMPTY allowlist deselects nothing, so the main release
+        // job still signs.
+        let sign_configs = if signs_fully_deselected(ctx) {
+            if !ctx.config.signs.is_empty() {
+                log.status(&format!(
+                    "skipped signs — every consumer ({}) is deselected",
+                    signs_consumers().join(" / "),
+                ));
+            }
+            Vec::new()
+        } else {
+            ctx.config.signs.clone()
+        };
         process_sign_configs(&sign_configs, ctx, &log, ArtifactFilter::FromConfig, "sign")?;
 
         // ----------------------------------------------------------------
         // Binary-specific signing via `binary_signs` config
         // Same as `signs` but always filters to Binary artifacts only.
         // ----------------------------------------------------------------
-        let binary_sign_configs = ctx.config.binary_signs.clone();
-        process_sign_configs(
-            &binary_sign_configs,
-            ctx,
-            &log,
-            ArtifactFilter::BinaryOnly,
-            "binary-sign",
-        )?;
+        //
+        // Publish-only gate (scoped to the `binary_signs:` slice only).
+        // `binary_signs:` signs the raw BINARIES and its signatures are
+        // embedded into archives at BUILD time; the `Signature`/`Certificate`
+        // outputs carry the `binary_sign` marker and are filtered out of every
+        // publish-time consumer (`is_binary_sign_output`). In `--publish-only`
+        // the source binaries are not even rebuilt, so this loop would only
+        // produce discarded sidecars while demanding cosign/GPG material the
+        // publish-time runner does not carry. Skip it there. The full build /
+        // release pipeline (`is_publish_only() == false`) still runs it, so the
+        // shipped binaries are still signed. `binary_signs_skipped` is the
+        // single source of truth shared with `anodizer preflight`.
+        if binary_signs_skipped(ctx) {
+            if !ctx.config.binary_signs.is_empty() {
+                log.verbose("skipped binary_signs — publish-only mode (binary signing is a build-time concern; its output has no publish-time consumer)");
+            }
+        } else {
+            let binary_sign_configs = ctx.config.binary_signs.clone();
+            process_sign_configs(
+                &binary_sign_configs,
+                ctx,
+                &log,
+                ArtifactFilter::BinaryOnly,
+                "binary-sign",
+            )?;
+        }
 
         // Refresh the artifacts template variable so newly-added signatures
         // and certificates are visible to downstream stages (matching

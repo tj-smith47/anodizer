@@ -398,6 +398,213 @@ fn re_sign_idempotency_does_not_chain_signatures() {
     assert!(should_sign(ArtifactKind::Archive, "any").unwrap());
 }
 
+/// `sign` is a prep stage with no `--publishers` identity, but its `signs:`
+/// output (detached archive/checksum signatures) is consumed only by
+/// github-release, blob, and artifactory. When a `--publishers` allowlist
+/// deselects ALL THREE consumers (e.g. `--publishers npm`), the stage skips
+/// the `signs:` loop so a publisher-scoped runner isn't asked to sign output
+/// nothing selected will read. An EMPTY allowlist deselects nothing, so the
+/// signs loop runs — and an allowlist that keeps ANY one consumer keeps it
+/// running too.
+#[test]
+fn signs_loop_skips_only_when_every_consumer_is_deselected() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+
+    let gpg_sign = || SignConfig {
+        id: Some("gpg".to_string()),
+        cmd: Some("gpg".to_string()),
+        args: Some(vec![
+            "--output".to_string(),
+            "{{ .Signature }}".to_string(),
+            "--detach-sign".to_string(),
+            "{{ .Artifact }}".to_string(),
+        ]),
+        artifacts: Some("all".to_string()),
+        ids: None,
+        signature: None,
+        stdin: None,
+        stdin_file: None,
+        env: None,
+        certificate: None,
+        output: None,
+        if_condition: None,
+    };
+
+    // (allowlist, expect the `signs:` loop to run -> a signature is produced)
+    let cases: [(&[&str], bool); 6] = [
+        // Empty allowlist: nothing deselected, the loop runs.
+        (&[], true),
+        // npm-only: every consumer in `signs_consumers()` is deselected, so the
+        // loop self-skips and produces no signature.
+        (&["npm"], false),
+        // Any single consumer still selected keeps the loop running.
+        (&["github-release"], true),
+        (&["blob"], true),
+        (&["artifactory"], true),
+        // `uploads` consumes the signs sidecars when an entry sets
+        // `signature: true`; selecting it alone must keep the loop running.
+        (&["uploads"], true),
+    ];
+
+    for (allowlist, expect_signed) in cases {
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .signs(vec![gpg_sign()])
+            .publisher_allowlist(allowlist.iter().map(|s| s.to_string()).collect())
+            .build();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: "myapp.tar.gz".to_string(),
+            path: std::path::PathBuf::from("/tmp/myapp.tar.gz"),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        SignStage.run(&mut ctx).unwrap();
+
+        let produced_sig = ctx
+            .artifacts
+            .by_kind(ArtifactKind::Signature)
+            .iter()
+            .any(|a| a.name == "myapp.tar.gz.sig");
+        assert_eq!(
+            produced_sig, expect_signed,
+            "allowlist {allowlist:?}: expected signs-loop ran == {expect_signed}, \
+             but signature present == {produced_sig}"
+        );
+    }
+}
+
+/// A custom publisher (`config.publishers`) with `signature: true` is a fifth
+/// `signs:` consumer that no static list can name. `signs_fully_deselected`
+/// must keep `signs:` alive when such a publisher is *selected*, and ignore it
+/// when it is `signature: false` or itself deselected.
+#[test]
+fn signs_gate_honors_selected_custom_signature_publisher() {
+    use anodizer_core::config::PublisherConfig;
+    let custom = |name: &str, sig: bool| PublisherConfig {
+        name: Some(name.to_string()),
+        signature: Some(sig),
+        ..Default::default()
+    };
+
+    // `--publishers my-cdn` where my-cdn opts into signatures: every built-in
+    // consumer is deselected, but the selected custom consumer keeps signs: on.
+    let mut ctx = TestContextBuilder::new()
+        .publisher_allowlist(vec!["my-cdn".to_string()])
+        .build();
+    ctx.config.publishers = Some(vec![custom("my-cdn", true)]);
+    assert!(
+        !crate::signs_fully_deselected(&ctx),
+        "selected custom publisher with signature:true must keep signs: alive"
+    );
+
+    // Same target but `signature: false` → not a consumer → signs: skips.
+    let mut ctx = TestContextBuilder::new()
+        .publisher_allowlist(vec!["my-cdn".to_string()])
+        .build();
+    ctx.config.publishers = Some(vec![custom("my-cdn", false)]);
+    assert!(
+        crate::signs_fully_deselected(&ctx),
+        "custom publisher with signature:false is not a signs: consumer"
+    );
+
+    // The signature publisher exists but is deselected (npm-only run): it won't
+    // run, so it must not keep signs: alive.
+    let mut ctx = TestContextBuilder::new()
+        .publisher_allowlist(vec!["npm".to_string()])
+        .build();
+    ctx.config.publishers = Some(vec![custom("my-cdn", true)]);
+    assert!(
+        crate::signs_fully_deselected(&ctx),
+        "a deselected custom signature publisher does not keep signs: alive"
+    );
+}
+
+/// `binary_signs:` (raw-binary signing) self-skips in `--publish-only` mode:
+/// its output carries the `binary_sign` marker and is filtered out of every
+/// publish-time consumer, so signing in publish-only is discarded work that
+/// would demand cosign/GPG material a publish-time runner does not carry. The
+/// FULL build/release pipeline (`publish_only == false`) still signs — under
+/// ANY `--publishers` allowlist value, including the npm-only allowlist — so
+/// the main job's binary signing is never weakened. The empty allowlist (the
+/// main release job's invariant) ALWAYS signs.
+#[test]
+fn binary_signs_loop_skips_only_in_publish_only_mode() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+
+    let cosign_sign = || SignConfig {
+        id: Some("binkey".to_string()),
+        cmd: Some("echo".to_string()),
+        args: Some(vec![
+            "--output".to_string(),
+            "{{ .Signature }}".to_string(),
+            "{{ .Artifact }}".to_string(),
+        ]),
+        artifacts: Some("binary".to_string()),
+        ids: None,
+        signature: None,
+        stdin: None,
+        stdin_file: None,
+        env: None,
+        certificate: None,
+        output: None,
+        if_condition: None,
+    };
+
+    // (publish_only, allowlist, expect the `binary_signs:` loop to run)
+    let cases: [(bool, &[&str], bool); 5] = [
+        // FULL pipeline, empty allowlist — the main release job's invariant:
+        // binaries ARE signed.
+        (false, &[], true),
+        // FULL pipeline, npm-only allowlist: `binary_signs:` is NOT gated on
+        // the publish-time allowlist (it is a build-time concern), so it still
+        // runs — a `--publishers` value never weakens binary signing.
+        (false, &["npm"], true),
+        // FULL pipeline, github-release allowlist: still signs.
+        (false, &["github-release"], true),
+        // publish-only, npm-only allowlist (the npm provenance job): the loop
+        // self-skips — no consumer reads binary-sign output in publish-only.
+        (true, &["npm"], false),
+        // publish-only, empty allowlist: still publish-only, so it skips.
+        (true, &[], false),
+    ];
+
+    for (publish_only, allowlist, expect_signed) in cases {
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .publish_only(publish_only)
+            .binary_signs(vec![cosign_sign()])
+            .publisher_allowlist(allowlist.iter().map(|s| s.to_string()).collect())
+            .build();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "myapp".to_string(),
+            path: std::path::PathBuf::from("/tmp/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        SignStage.run(&mut ctx).unwrap();
+
+        let produced_sig = ctx
+            .artifacts
+            .by_kind(ArtifactKind::Signature)
+            .iter()
+            .any(|a| anodizer_core::artifact::is_binary_sign_output(a));
+        assert_eq!(
+            produced_sig, expect_signed,
+            "publish_only={publish_only}, allowlist {allowlist:?}: expected \
+             binary_signs-loop ran == {expect_signed}, but binary-sign signature \
+             present == {produced_sig}"
+        );
+    }
+}
+
 #[test]
 fn test_filter_artifacts_archive() {
     assert!(should_sign(ArtifactKind::Archive, "archive").unwrap());

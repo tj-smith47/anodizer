@@ -784,6 +784,17 @@ impl Context {
         self.options.snapshot
     }
 
+    /// Whether this run is `anodizer release --publish-only` (publishing a
+    /// preserved dist rather than building from source).
+    ///
+    /// Build-time concerns (notably the `binary_signs:` per-binary signing
+    /// loop, whose output is embedded into archives at build time and has no
+    /// publish-time consumer) are gated off this in publish-only mode, where
+    /// the runner carries only publish-time credentials.
+    pub fn is_publish_only(&self) -> bool {
+        self.options.publish_only
+    }
+
     pub fn is_strict(&self) -> bool {
         self.options.strict
     }

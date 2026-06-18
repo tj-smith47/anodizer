@@ -128,6 +128,7 @@ pub struct TestContextBuilder {
     verbose: bool,
     debug: bool,
     show_skipped: bool,
+    publish_only: bool,
     skip_stages: Vec<String>,
     publisher_allowlist: Vec<String>,
     selected_crates: Vec<String>,
@@ -177,6 +178,7 @@ impl Default for TestContextBuilder {
             verbose: false,
             debug: false,
             show_skipped: false,
+            publish_only: false,
             skip_stages: Vec::new(),
             publisher_allowlist: Vec::new(),
             selected_crates: Vec::new(),
@@ -286,6 +288,15 @@ impl TestContextBuilder {
     /// [`ContextOptions::show_skipped`].
     pub fn show_skipped(mut self, show_skipped: bool) -> Self {
         self.show_skipped = show_skipped;
+        self
+    }
+
+    /// Enable or disable `--publish-only` mode
+    /// ([`ContextOptions::publish_only`]). Drives `Context::is_publish_only`,
+    /// which gates the `binary_signs:` loop off (its output has no publish-time
+    /// consumer).
+    pub fn publish_only(mut self, publish_only: bool) -> Self {
+        self.publish_only = publish_only;
         self
     }
 
@@ -496,7 +507,7 @@ impl TestContextBuilder {
             fail_fast: false,
             partial_target: None,
             merge: false,
-            publish_only: false,
+            publish_only: self.publish_only,
             project_root: self.project_root,
             strict: false,
             resume_release: false,

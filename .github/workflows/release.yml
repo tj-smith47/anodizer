@@ -245,7 +245,19 @@ jobs:
           artifact-run-id: auto
           artifact-workflow: ci.yml
           install: node
-          args: release --publish-only --publishers npm --skip=announce
+          # No --skip: `--publishers npm` auto-determines the surface. The
+          # allowlist deselects every non-npm PUBLISHER — including
+          # github-release (so the GitHub Release the main job owns is not
+          # re-touched), blob, snapcraft-publish, docker, docker-sign, and
+          # announce — and the sign stage self-skips BOTH cosign/GPG loops on
+          # this github-hosted runner: the detached-signature (`signs:`) loop
+          # because all of its consumers (github-release / blob / artifactory /
+          # uploads) are deselected, and the raw-binary (`binary_signs:`) loop
+          # because publish-only mode discards binary-sign output (it has no
+          # publish-time consumer — binaries are signed at build time on the
+          # main job). So this runner is never asked for cosign/GPG material it
+          # does not carry.
+          args: release --publish-only --publishers npm
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}

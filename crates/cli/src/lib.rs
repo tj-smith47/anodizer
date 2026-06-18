@@ -401,6 +401,8 @@ pub enum Commands {
             help = "Skip requirement collection for these stages (comma-separated, same names as release --skip)"
         )]
         skip: Vec<String>,
+        #[arg(long = "publishers", value_delimiter = ',', help = PUBLISHERS_HELP_STEM)]
+        publishers: Vec<String>,
         #[arg(
             long,
             hide_env_values = true,

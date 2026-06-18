@@ -67,6 +67,90 @@ fn test_stage_skips_crate_without_release_config() {
     assert!(stage.run(&mut ctx).is_ok());
 }
 
+/// A crate config carrying a `release` block plus a mutually-exclusive draft
+/// flag combination (`replace_existing_draft` + `use_existing_draft`), so the
+/// per-crate loop's `validate_release_flags` bails the moment the stage enters
+/// it. This makes "did the stage process the crate?" observable without a live
+/// SCM: an `Err` means it entered the loop, `Ok` means it short-circuited
+/// before touching any crate.
+fn release_crate_with_conflicting_draft_flags() -> CrateConfig {
+    let mut crate_cfg = CrateConfig {
+        name: "app".to_string(),
+        ..Default::default()
+    };
+    crate_cfg.release = Some(ReleaseConfig {
+        replace_existing_draft: Some(true),
+        use_existing_draft: Some(true),
+        github: Some(anodizer_core::config::ScmRepoConfig {
+            owner: "o".to_string(),
+            name: "r".to_string(),
+        }),
+        ..Default::default()
+    });
+    crate_cfg
+}
+
+/// github-release is a real publisher (`PUBLISHER_NAME = "github-release"`),
+/// so `--publishers npm` must deselect the release stage the same way it
+/// deselects docker / blob / snapcraft-publish / announce. With the crate's
+/// release stage deselected the stage self-skips before entering the per-crate
+/// loop, so the conflicting-draft-flag config never trips `validate_release_flags`
+/// and the run returns `Ok`.
+#[test]
+fn release_stage_self_skips_when_github_release_deselected() {
+    let mut ctx = TestContextBuilder::new()
+        .crates(vec![release_crate_with_conflicting_draft_flags()])
+        .publisher_allowlist(vec!["npm".to_string()])
+        .build();
+    let stage = ReleaseStage;
+    assert!(
+        stage.run(&mut ctx).is_ok(),
+        "an allowlist that excludes github-release must self-skip the release \
+         stage before it validates (or touches) any crate's release config"
+    );
+}
+
+/// The main-job invariant: an EMPTY `--publishers` allowlist deselects nothing,
+/// so the release stage still runs and DOES enter the per-crate loop — proven
+/// by the conflicting-draft-flag config tripping `validate_release_flags`.
+/// `publisher_deselected("github-release")` short-circuits to
+/// `should_skip("github-release")` (false) on an empty allowlist, exactly as
+/// the main release job (empty allowlist + `--skip=npm`) requires.
+#[test]
+fn release_stage_runs_when_allowlist_empty() {
+    let mut ctx = TestContextBuilder::new()
+        .crates(vec![release_crate_with_conflicting_draft_flags()])
+        .build();
+    let stage = ReleaseStage;
+    let err = stage
+        .run(&mut ctx)
+        .expect_err("an empty allowlist must keep the release stage running");
+    assert!(
+        err.to_string().contains("replace_existing_draft"),
+        "the release stage must enter the per-crate loop and validate flags \
+         when no allowlist deselects github-release; got: {err}"
+    );
+}
+
+/// `--publishers github-release` (the publisher SELECTED) keeps the release
+/// stage running — the deselect gate fires only when github-release is absent
+/// from a non-empty allowlist, not whenever an allowlist exists.
+#[test]
+fn release_stage_runs_when_github_release_is_selected() {
+    let mut ctx = TestContextBuilder::new()
+        .crates(vec![release_crate_with_conflicting_draft_flags()])
+        .publisher_allowlist(vec!["github-release".to_string()])
+        .build();
+    let stage = ReleaseStage;
+    let err = stage
+        .run(&mut ctx)
+        .expect_err("github-release in the allowlist must keep the stage running");
+    assert!(
+        err.to_string().contains("replace_existing_draft"),
+        "selecting github-release must let the stage enter its per-crate loop; got: {err}"
+    );
+}
+
 // ---- populate_artifact_download_urls tests ----
 
 #[test]
