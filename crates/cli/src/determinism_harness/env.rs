@@ -157,6 +157,17 @@ fn windows_env_should_drop(key: &str) -> bool {
     if lower.starts_with("cargo_target_") && lower.ends_with("_rustflags") {
         return true;
     }
+    // Compile-cache wrapper + its config namespace. A determinism probe must
+    // build from clean: a cache can serve a non-reproducible cached object
+    // (spurious .text drift) and cold-start-fails when its backend creds are
+    // stripped by this hermetic env. The empty-string inserts above are the
+    // authoritative override; this keeps the passthrough from re-adding them.
+    if key.eq_ignore_ascii_case("RUSTC_WRAPPER")
+        || key.eq_ignore_ascii_case("RUSTC_WORKSPACE_WRAPPER")
+        || lower.starts_with("sccache_")
+    {
+        return true;
+    }
     for suffix in [
         "_token",
         "_key",
@@ -261,6 +272,16 @@ pub(crate) fn build_subprocess_env_with_env(
     );
     env.insert("SOURCE_DATE_EPOCH".into(), inputs.sde.to_string());
     env.insert("PATH".into(), allow_listed_path_with_env(host_env));
+
+    // A determinism probe must build from clean with no compile-cache
+    // wrapper: a cache can serve a non-reproducible cached object across
+    // rebuilds (spurious .text drift) and, when its backend creds are
+    // stripped by this hermetic env, fail to cold-start the cache server
+    // and abort the build. Empty value = cargo treats the wrapper as unset.
+    // Set before BOTH the allow-list and the Windows passthrough loops so
+    // neither can reintroduce an inherited host value.
+    env.insert("RUSTC_WRAPPER".into(), String::new());
+    env.insert("RUSTC_WORKSPACE_WRAPPER".into(), String::new());
 
     // Inject `--remap-path-prefix` so the absolute worktree path doesn't
     // leak into the compiled binary. Rustc embeds the absolute workspace
@@ -663,6 +684,100 @@ mod tests {
         assert!(
             !env.contains_key("RUNNER_TEMP"),
             "RUNNER_TEMP must NOT propagate — harness owns TMPDIR"
+        );
+    }
+
+    /// A determinism probe must build with NO compile-cache wrapper. The
+    /// Windows passthrough historically leaked `RUSTC_WRAPPER=sccache` into
+    /// the hermetic child, which then cold-start-failed (creds stripped) and
+    /// aborted the build. Both wrapper vars must be neutralized to the empty
+    /// string (cargo treats an empty wrapper as unset) regardless of what the
+    /// host env supplies.
+    #[test]
+    fn harness_env_neutralizes_compile_cache_wrapper() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = build_with(
+            tmp.path(),
+            &[
+                ("RUSTC_WRAPPER", "sccache"),
+                ("RUSTC_WORKSPACE_WRAPPER", "sccache"),
+                ("SCCACHE_GHA_ENABLED", "true"),
+            ],
+        );
+        assert_eq!(
+            env.get("RUSTC_WRAPPER").map(String::as_str),
+            Some(""),
+            "RUSTC_WRAPPER must be neutralized to empty so cargo runs no compile cache"
+        );
+        assert_eq!(
+            env.get("RUSTC_WORKSPACE_WRAPPER").map(String::as_str),
+            Some(""),
+            "RUSTC_WORKSPACE_WRAPPER must be neutralized to empty"
+        );
+    }
+
+    /// Regression: the Windows inherit-everything pass must not let a host
+    /// `RUSTC_WRAPPER=sccache` survive. The passthrough loop's
+    /// `env.entry(key).or_insert(value)` could only clobber the authoritative
+    /// empty if the wrapper keys weren't dropped first — the original
+    /// failure was a Windows-only non-reproducible build served from sccache.
+    #[test]
+    #[cfg(windows)]
+    fn harness_env_windows_neutralizes_compile_cache_wrapper() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = build_with(
+            tmp.path(),
+            &[
+                ("RUSTC_WRAPPER", "sccache"),
+                ("RUSTC_WORKSPACE_WRAPPER", "sccache"),
+                ("SCCACHE_GHA_ENABLED", "true"),
+                // A normal host var that SHOULD pass through, proving the
+                // inherit-everything loop actually ran.
+                ("WINDIR", r"C:\Windows"),
+            ],
+        );
+        assert_eq!(
+            env.get("RUSTC_WRAPPER").map(String::as_str),
+            Some(""),
+            "host RUSTC_WRAPPER=sccache must NOT clobber the authoritative empty on Windows"
+        );
+        assert_eq!(
+            env.get("RUSTC_WORKSPACE_WRAPPER").map(String::as_str),
+            Some(""),
+            "host RUSTC_WORKSPACE_WRAPPER=sccache must NOT clobber the authoritative empty on Windows"
+        );
+        assert!(
+            !env.contains_key("SCCACHE_GHA_ENABLED"),
+            "sccache_* config namespace must be dropped by the Windows pass"
+        );
+        assert_eq!(
+            env.get("WINDIR").map(String::as_str),
+            Some(r"C:\Windows"),
+            "non-credential host vars must still inherit, proving the passthrough loop ran"
+        );
+    }
+
+    /// Direct coverage of the predicate driving the Windows wrapper drop:
+    /// case-insensitive name match plus the `sccache_` config-namespace
+    /// prefix, with a negative to prove a normal system var is untouched.
+    #[test]
+    #[cfg(windows)]
+    fn windows_env_should_drop_compile_cache_wrapper() {
+        for key in [
+            "RUSTC_WRAPPER",
+            "RUSTC_WORKSPACE_WRAPPER",
+            "rustc_wrapper",
+            "SCCACHE_GHA_ENABLED",
+            "sccache_dir",
+        ] {
+            assert!(
+                windows_env_should_drop(key),
+                "{key} is a compile-cache wrapper/config var and MUST be dropped"
+            );
+        }
+        assert!(
+            !windows_env_should_drop("WINDIR"),
+            "WINDIR is a load-bearing system var and MUST NOT be dropped"
         );
     }
 
