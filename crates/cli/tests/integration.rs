@@ -49,6 +49,118 @@ fn test_check_invalid_config() {
     assert!(stderr.contains("no anodizer config file found"));
 }
 
+/// A config that loads but fails to deserialize (unknown field under
+/// `deny_unknown_fields`) is a FATAL config error: `check config` must exit
+/// non-zero so CI catches the broken config. Regression guard — a printed-
+/// but-swallowed error would let a typo'd field pass CI silently.
+#[test]
+fn test_check_config_unknown_field_fails_nonzero() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+totally_unknown_key: oops
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["check", "config"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "check config must exit non-zero on a deserialize failure; got success.\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown field") && stderr.contains("totally_unknown_key"),
+        "expected a deserialize error naming the unknown field, got:\n{stderr}"
+    );
+}
+
+/// An unknown field nested inside a `deny_unknown_fields` sub-struct (here
+/// `signs[]`) is equally fatal — the failure must not be confined to the
+/// top level.
+#[test]
+fn test_check_config_unknown_nested_field_fails_nonzero() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+signs:
+  - artifacts: sbom
+    bogus_nested_key: x
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["check", "config"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "check config must exit non-zero on a nested deserialize failure.\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("unknown field") && stderr.contains("bogus_nested_key"),
+        "expected a deserialize error naming the nested unknown field, got:\n{stderr}"
+    );
+}
+
+/// A valid `signs.artifacts: sbom` config (and the other previously-stale
+/// filters) must pass `check config` with exit 0 AND emit no "unrecognized
+/// artifact filter" warning — the runtime sign stage honors these values, so
+/// check-time validation must too (Bug 1 regression, end-to-end).
+#[test]
+fn test_check_config_sbom_sign_filter_no_warning() {
+    let tmp = TempDir::new().unwrap();
+    create_test_project(tmp.path());
+    create_config(
+        tmp.path(),
+        r#"
+project_name: test-project
+signs:
+  - artifacts: sbom
+  - artifacts: any
+  - artifacts: installer
+  - artifacts: diskimage
+  - artifacts: snap
+  - artifacts: macos_package
+crates:
+  - name: test-project
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+    );
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["check", "config"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "check config should succeed for runtime-valid sign filters.\nstderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("unrecognized signs artifacts filter"),
+        "no spurious unrecognized-filter warning expected, got:\n{stderr}"
+    );
+}
+
 #[test]
 fn test_init_generates_config() {
     let tmp = TempDir::new().unwrap();
@@ -951,6 +1063,11 @@ fn test_release_prepare_matches_explicit_skip() {
             "release",
             "--snapshot",
             "--dry-run",
+            // Surface the consolidated pipeline skip row at default
+            // verbosity so `extract_skipped_stages` can read it; both
+            // invocations share these base args, so the comparison stays
+            // symmetric.
+            "--show-skipped",
             // Skip everything heavy so the test stays fast — these stages
             // are skipped by both invocations identically, so they cancel
             // out of the comparison and only the prepare-injected stages
@@ -1350,6 +1467,9 @@ fn test_e2e_workspace_all_force_detects_crates() {
             "--dry-run",
             "--all",
             "--force",
+            // Surface the per-crate skip detail at default verbosity so the
+            // crate-name assertions below can read it.
+            "--show-skipped",
             "--skip=release,publish,docker,sign,announce,changelog,nfpm",
             "--timeout",
             "5m",
@@ -1650,6 +1770,9 @@ crates:
             "--snapshot",
             "--all",
             "--single-target",
+            // Surface the per-crate skip detail at default verbosity so the
+            // crate-name assertions below can read it.
+            "--show-skipped",
             "--skip=release,publish,docker,sign,announce,changelog,nfpm",
             "--timeout",
             "5m",
@@ -1802,6 +1925,10 @@ crates:
             "--snapshot",
             "--all",
             "--single-target",
+            // Surface the per-crate build-skip detail (these libs have no
+            // binary target) at default verbosity so the `crate '<name>'`
+            // selection assertions below can read it.
+            "--show-skipped",
             "--skip=release,publish,docker,sign,announce,changelog,nfpm",
             "--timeout",
             "5m",
@@ -3797,6 +3924,9 @@ fn test_e2e_workspace_dependency_ordering() {
             "--dry-run",
             "--all",
             "--force",
+            // Surface the per-crate skip detail at default verbosity so the
+            // crate-ordering assertions below can read it.
+            "--show-skipped",
             "--skip=release,publish,docker,sign,announce,changelog,nfpm",
             "--timeout",
             "5m",
@@ -3855,6 +3985,9 @@ fn test_e2e_skip_archive_and_checksum() {
         .args([
             "release",
             "--snapshot",
+            // Surface the consolidated pipeline skip row at default verbosity
+            // so the archive/checksum skip assertions below can read it.
+            "--show-skipped",
             "--skip=archive,checksum,release,publish,docker,sign,announce,changelog,nfpm",
             "--timeout",
             "5m",
@@ -4278,6 +4411,9 @@ crates:
             "release",
             "--dry-run",
             "--snapshot",
+            // Surface the changelog skip detail at default verbosity so the
+            // changelog-stage assertion below can read it.
+            "--show-skipped",
             "--skip=release,publish,docker,announce,nfpm",
             "--timeout",
             "5m",

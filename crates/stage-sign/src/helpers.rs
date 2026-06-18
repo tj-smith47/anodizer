@@ -13,6 +13,30 @@ use anodizer_core::config::SignConfig;
 use anodizer_core::context::Context;
 use anodizer_core::env_expand::expand_with_preserve;
 
+/// The complete set of recognized `signs[].artifacts` / `docker_signs[].artifacts`
+/// filter strings, in match-arm order.
+///
+/// This is the single source of truth shared between the runtime resolver
+/// ([`should_sign_artifact`]) and the config-time validator
+/// (`anodizer check config`). The `valid_filters_match_resolver` drift-guard
+/// test asserts every entry here is accepted by [`should_sign_artifact`] and
+/// that the resolver rejects anything not listed, so the two cannot diverge.
+pub const VALID_SIGN_ARTIFACT_FILTERS: &[&str] = &[
+    "none",
+    "all",
+    "any",
+    "source",
+    "archive",
+    "binary",
+    "package",
+    "installer",
+    "diskimage",
+    "sbom",
+    "snap",
+    "macos_package",
+    "checksum",
+];
+
 /// Returns `true` if an artifact of `kind` should be signed given the `filter`
 /// string from `SignConfig::artifacts` / `DockerSignConfig::artifacts`.
 ///
@@ -311,4 +335,38 @@ pub(crate) fn resolve_sign_args(
             resolved
         })
         .collect()
+}
+
+#[cfg(test)]
+mod filter_drift_tests {
+    use super::*;
+
+    /// The published `VALID_SIGN_ARTIFACT_FILTERS` constant and the runtime
+    /// `should_sign_artifact` resolver must stay in lockstep: every listed
+    /// value resolves without error, and any value NOT listed is rejected.
+    /// This is what lets `anodizer check config` validate against the same
+    /// vocabulary the sign stage actually honors.
+    #[test]
+    fn valid_filters_match_resolver() {
+        // Any kind works as the probe — `should_sign_artifact` only errors on
+        // an unrecognized filter, never on the kind.
+        let probe = ArtifactKind::Archive;
+
+        for filter in VALID_SIGN_ARTIFACT_FILTERS {
+            assert!(
+                should_sign_artifact(probe, filter).is_ok(),
+                "filter '{filter}' is listed in VALID_SIGN_ARTIFACT_FILTERS but \
+                 the resolver rejects it",
+            );
+        }
+
+        // Values not in the list must be rejected — proves the const is the
+        // complete accepted set, not merely a subset.
+        for bogus in ["", "bogus", "All", "ANY", "sboms", "macos-package"] {
+            assert!(
+                should_sign_artifact(probe, bogus).is_err(),
+                "filter '{bogus}' is not listed but the resolver accepted it",
+            );
+        }
+    }
 }

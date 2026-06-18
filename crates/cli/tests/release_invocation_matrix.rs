@@ -169,6 +169,10 @@ fn release_snapshot_skips_publish_chain() {
             "release",
             "--snapshot",
             "--dry-run",
+            // Surface the consolidated pipeline skip row at default
+            // verbosity; without it the `• skipped  …` line routes to
+            // debug and `extract_skipped_stages` sees nothing.
+            "--show-skipped",
             // Skip the heavy artifact stages — the assertion is on the
             // publish-chain skip, not the build chain itself.
             "--skip=build,archive,checksum,docker,sign,nfpm,changelog,sbom",
@@ -213,6 +217,8 @@ fn release_prepare_skips_publish_release_announce() {
             "--prepare",
             "--snapshot",
             "--dry-run",
+            // Surface the consolidated pipeline skip row at default verbosity.
+            "--show-skipped",
             "--skip=build,archive,checksum,docker,sign,nfpm,changelog,sbom",
             "--timeout",
             "2m",
@@ -253,6 +259,8 @@ fn release_prepare_only_alias_matches_prepare() {
             "--prepare-only",
             "--snapshot",
             "--dry-run",
+            // Surface the consolidated pipeline skip row at default verbosity.
+            "--show-skipped",
             "--skip=build,archive,checksum,docker,sign,nfpm,changelog,sbom",
             "--timeout",
             "2m",

@@ -586,10 +586,13 @@ fn check_crate_paths(config: &Config, errors: &mut Vec<String>) {
 }
 
 /// Warn on unrecognized sign artifact filter values.
+///
+/// The accepted vocabulary is the runtime resolver's own
+/// `VALID_SIGN_ARTIFACT_FILTERS` (the source of truth for
+/// `should_sign_artifact`), so check-time validation cannot drift behind a
+/// value the sign stage actually honors.
 fn check_sign_artifact_filters(config: &Config, warnings: &mut Vec<String>) {
-    let valid_artifact_filters = [
-        "none", "all", "checksum", "source", "archive", "binary", "package",
-    ];
+    let valid_artifact_filters = anodizer_stage_sign::VALID_SIGN_ARTIFACT_FILTERS;
     for sign_cfg in &config.signs {
         if let Some(ref filter) = sign_cfg.artifacts
             && !valid_artifact_filters.contains(&filter.as_str())
@@ -1771,6 +1774,51 @@ mod tests {
         assert!(
             warnings.iter().any(|w| w.contains("Env.B_TOKEN")),
             "second ref in same block missed: {:?}",
+            warnings
+        );
+    }
+
+    // ---- Sign artifact-filter validation tests ----
+
+    fn config_with_sign_artifacts(filter: &str) -> Config {
+        Config {
+            project_name: "test".to_string(),
+            signs: vec![anodizer_core::config::SignConfig {
+                artifacts: Some(filter.to_string()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn sign_filter_accepts_runtime_recognized_values_without_warning() {
+        // Every value the runtime `should_sign_artifact` resolver accepts must
+        // be accepted by the check validator too — otherwise a config that
+        // signs correctly at release time emits a spurious "unrecognized
+        // artifact filter" warning at check time. The previously-missing
+        // values (`any`, `installer`, `diskimage`, `sbom`, `snap`,
+        // `macos_package`) are the regression this guards.
+        for filter in anodizer_stage_sign::VALID_SIGN_ARTIFACT_FILTERS {
+            let config = config_with_sign_artifacts(filter);
+            let mut warnings: Vec<String> = vec![];
+            check_sign_artifact_filters(&config, &mut warnings);
+            assert!(
+                warnings.is_empty(),
+                "filter '{filter}' must NOT warn (it is runtime-valid), got: {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sign_filter_warns_on_unrecognized_value() {
+        let config = config_with_sign_artifacts("bogus");
+        let mut warnings: Vec<String> = vec![];
+        check_sign_artifact_filters(&config, &mut warnings);
+        assert_eq!(warnings.len(), 1, "an unknown filter must still warn");
+        assert!(
+            warnings[0].contains("bogus"),
+            "warning should name the offending filter: {:?}",
             warnings
         );
     }

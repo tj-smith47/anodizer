@@ -12,6 +12,7 @@ mod helpers;
 mod process;
 
 pub use expected::expected_signature_assets;
+pub use helpers::VALID_SIGN_ARTIFACT_FILTERS;
 
 use helpers::{default_sign_cmd, prepare_stdin_from, resolve_sign_args, validate_sign_config_ids};
 use process::{ArtifactFilter, process_sign_configs};
