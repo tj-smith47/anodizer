@@ -35,6 +35,16 @@ jobs:
         # artifact. The macOS/Windows shards build only their native binaries
         # + archives, so they keep the empty (OS-default) stage list.
         #
+        # `docker` is Linux-only and present ONLY on the ubuntu shard. It
+        # drives the `--output=type=oci,rewrite-timestamp=true` BuildKit
+        # exporter and byte-compares the OCI tarball + image digest across
+        # runs, so a drifting docker image cannot ship undetected. The OCI
+        # exporter is unsupported by the default `docker` buildx driver, so
+        # the ubuntu shard provisions a `docker-container` driver below
+        # before the harness runs. Because docker is explicitly requested
+        # here, the harness HARD-FAILS (not warn-skips) if buildx is
+        # unreachable — a silent skip would be false coverage.
+        #
         # What this harness does NOT cover: the NATIVE installer tools
         # (hdiutil .dmg, pkgbuild .pkg, WiX .msi) are non-reproducible by nature
         # — hdiutil writes a fresh UDIF koly SegmentID GUID, pkgbuild stamps a
@@ -53,7 +63,7 @@ jobs:
           - os: ubuntu-latest
             shard: ubuntu-latest
             targets: ''
-            det_stages: 'build,source,upx,archive,nfpm,makeself,snapcraft,srpm,sbom,sign,checksum,appbundle,dmg,pkg,msi,nsis'
+            det_stages: 'build,source,upx,archive,nfpm,makeself,snapcraft,srpm,sbom,sign,checksum,appbundle,dmg,pkg,msi,nsis,docker'
             auto_install: 'true'
           - { os: macos-latest,   shard: macos-latest,     targets: '', det_stages: '', auto_install: 'false' }
           - { os: windows-latest, shard: windows-x86_64,   targets: 'x86_64-pc-windows-msvc',  det_stages: '', auto_install: 'false' }
@@ -64,6 +74,16 @@ jobs:
         with:
           fetch-depth: 0
           ref: ${{ inputs.head_sha }}
+
+      # The harness's docker stage drives `--output=type=oci`, which the
+      # default `docker` buildx driver cannot serve; provision a
+      # `docker-container` builder so the OCI exporter works. Ubuntu shard
+      # only — docker is Linux-only and absent from the other shards' stages.
+      - name: Set up Docker Buildx (docker-container driver for OCI exporter)
+        if: matrix.os == 'ubuntu-latest'
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+        with:
+          driver: docker-container
 
       - uses: tj-smith47/anodizer-action@v1
         with:

@@ -527,7 +527,13 @@ impl Harness {
                     })?;
             }
             if effective_stages.contains(&StageId::Docker) {
-                self.run_docker_stage(worktree.path(), &env)
+                // `docker` is never auto-included: it is absent from the
+                // parser's default set and from the `installers` umbrella,
+                // so its presence here means the operator typed it. A gate
+                // that silently skips an explicitly-requested stage is
+                // false coverage, hence the hard-error skip contract below.
+                let docker_explicitly_requested = self.stages.contains(&StageId::Docker);
+                self.run_docker_stage(worktree.path(), &env, docker_explicitly_requested)
                     .with_context(|| {
                         format!("running docker stage for determinism run {}", run_idx)
                     })?;
@@ -804,14 +810,30 @@ impl Harness {
     /// the harness must stay harmless for repos whose docker config
     /// points at a non-default path (and for the cargo-package /
     /// cargo-only test fixtures that share the same harness binary).
+    /// This skip is unconditional: a missing Dockerfile yields nothing to
+    /// byte-compare, so it is not coverage loss regardless of intent.
     ///
-    /// Skipped (with a warning through the harness logger, so `-q`
-    /// silences it) when `docker buildx` is not reachable on the
-    /// host. The harness is run on minimal images (e.g. the docs
-    /// build container) that legitimately do not have Docker installed;
-    /// failing the whole harness there would block unrelated stages from
-    /// completing.
-    fn run_docker_stage(&self, worktree_path: &Path, env: &HashMap<String, String>) -> Result<()> {
+    /// When `docker buildx` is unreachable or the project opted into
+    /// `use: podman`, the behaviour forks on `explicitly_requested`:
+    /// - `true` (operator typed `--stages=…,docker`): a hard ERROR. A
+    ///   determinism gate that silently skips a stage the caller asked it
+    ///   to byte-verify is false coverage — a non-reproducible image could
+    ///   ship while the gate reports green. The release pipeline's ubuntu
+    ///   shard requests docker explicitly and provisions a
+    ///   `docker-container` buildx driver, so this error fires only when
+    ///   that provisioning regressed.
+    /// - `false` (auto-included): a warning through the harness logger (so
+    ///   `-q` silences it). The harness also runs on minimal images (e.g.
+    ///   the docs build container) that legitimately lack Docker; failing
+    ///   the whole harness there would block unrelated stages. `docker` is
+    ///   never in the default or `installers` stage sets today, so this
+    ///   branch is reserved for any future auto-inclusion path.
+    fn run_docker_stage(
+        &self,
+        worktree_path: &Path,
+        env: &HashMap<String, String>,
+        explicitly_requested: bool,
+    ) -> Result<()> {
         let dockerfile = worktree_path.join("Dockerfile");
         if !dockerfile.exists() {
             return Ok(());
@@ -830,17 +852,30 @@ impl Harness {
         // the flag (BuildKit has no equivalent quiet passthrough here).
         let log = StageLogger::new("check-determinism", self.verbosity);
         if self.docker_backend_hint.as_deref() == Some("podman") {
-            log.warn(
-                "docker stage requested but project config has `use: podman` \
+            let msg = "docker stage requested but project config has `use: podman` \
                  (Linux-only); the determinism harness only probes BuildKit-based \
-                 builds, so the docker stage is skipped for this run. Verify podman \
-                 image byte-stability outside the harness.",
-            );
+                 builds. Verify podman image byte-stability outside the harness.";
+            if explicitly_requested {
+                anyhow::bail!(
+                    "{msg} Refusing to report byte-stability for an image the harness \
+                     cannot probe — remove `docker` from --stages or build the image \
+                     with BuildKit."
+                );
+            }
+            log.warn(&format!("{msg} The docker stage is skipped for this run."));
             return Ok(());
         }
         match anodizer_core::docker_detect::buildx_available() {
             Ok(true) => {}
             Ok(false) | Err(_) => {
+                if explicitly_requested {
+                    anyhow::bail!(
+                        "docker stage requested via --stages but `docker buildx` is not \
+                         available on PATH; the determinism gate cannot byte-verify the \
+                         image. Provision a `docker-container` buildx driver \
+                         (docker/setup-buildx-action) before running the harness."
+                    );
+                }
                 log.warn(
                     "skipped docker stage for this run — `docker buildx` is not available on PATH \
                      (no artifacts emitted)",
@@ -1330,5 +1365,61 @@ mod tests {
         let report = h.build_report(runs);
         assert_eq!(report.drift.len() as u32, report.drift_count);
         assert_eq!(report.drift_count, 2);
+    }
+
+    /// A missing Dockerfile is an unconditional Ok no-op — there is
+    /// nothing to byte-compare, so it is never coverage loss, even when
+    /// the operator explicitly requested the docker stage.
+    #[test]
+    fn docker_stage_no_dockerfile_is_ok_even_when_explicit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let h = empty_harness();
+        let env = HashMap::new();
+        assert!(
+            h.run_docker_stage(tmp.path(), &env, true).is_ok(),
+            "missing Dockerfile must be a harmless no-op regardless of intent"
+        );
+    }
+
+    /// The podman backend hint short-circuits before the buildx probe, so
+    /// this exercises the explicit-vs-auto fork deterministically on any
+    /// host (docker need not be installed).
+    ///
+    /// Explicitly-requested (`--stages=…,docker`): the harness must HARD
+    /// ERROR rather than warn-and-skip. Silently skipping a stage the
+    /// caller asked it to byte-verify is false coverage — a
+    /// non-reproducible image could ship while the gate reports green.
+    #[test]
+    fn docker_stage_podman_explicit_request_is_hard_error() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+        let mut h = empty_harness();
+        h.docker_backend_hint = Some("podman".into());
+        let env = HashMap::new();
+        let err = h
+            .run_docker_stage(tmp.path(), &env, true)
+            .expect_err("explicit docker request under podman must fail the run, not skip");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("podman") && msg.contains("Refusing"),
+            "error must explain the false-coverage refusal: {msg}"
+        );
+    }
+
+    /// Auto-included (not explicitly typed): the podman/buildx-absent
+    /// path must remain a warn-and-skip so the harness stays harmless on
+    /// minimal hosts. `docker` is never auto-included today, but the fork
+    /// must preserve this branch for any future auto-inclusion path.
+    #[test]
+    fn docker_stage_podman_auto_included_warns_and_skips() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::write(tmp.path().join("Dockerfile"), "FROM scratch\n").unwrap();
+        let mut h = empty_harness();
+        h.docker_backend_hint = Some("podman".into());
+        let env = HashMap::new();
+        assert!(
+            h.run_docker_stage(tmp.path(), &env, false).is_ok(),
+            "auto-included docker under podman must warn-and-skip, not error"
+        );
     }
 }
