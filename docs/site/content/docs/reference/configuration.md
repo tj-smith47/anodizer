@@ -315,8 +315,13 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 ## `crates`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
+| `after` | HooksConfig | — | Hooks that run inside THIS crate's scope at the end of the release, after the crate's publish dispatch (and post-publish verification) completes. Per-crate counterpart of the top-level `after:` (which fires once around the whole release). Same per-crate firing semantics across all modes, template surface, and abort semantics as the per-crate `before:`. |
 | `app_bundles` | list of AppBundleConfig | — | macOS app bundle configurations for this crate. |
 | `archives` | list of ArchiveConfig | `[]` | Archive configurations for this crate. Set to false to disable archiving, or provide an array of archive configs. |
+| `before` | HooksConfig | — | Hooks that run inside THIS crate's scope at the start of the release, before the build. Distinct from the top-level `before:`, which fires ONCE around the whole release; these fire once per crate with that crate's version/tag template vars anchored, so `cmd` / `dir` / `env` / `if` render against the crate's own `Version` / `Tag` / `ProjectName`. A non-zero exit aborts the release.
+
+Fires once per crate in EVERY multi-crate mode — workspace per-crate AND workspace lockstep with multiple publisher crates — in both a full `anodizer release` and `anodizer release --publish-only`, matching the per-crate iteration of `before_publish:` and the publishers. With an explicit `--crate` subset only the selected crates' hooks fire. No-op in a single-crate config with no `crates:` block (use the top-level `before:` there). |
+| `before_publish` | HooksConfig | — | Hooks that run immediately before THIS crate's publishers dispatch, once per matching artifact (the same per-artifact semantics as the top-level `before_publish:`), scoped to the crate's own artifacts and template vars. Honors the per-entry `ids:` / `artifacts:` filters. A non-zero exit aborts the release before that crate publishes to any registry. The top-level `before_publish:` still fires once over the full artifact set; this one targets a single crate's artifacts. |
 | `binstall` | BinstallConfig | — | cargo-binstall metadata configuration for this crate. |
 | `blobs` | list of BlobConfig | — | Cloud storage (S3/GCS/Azure) upload configurations for this crate. |
 | `builds` | list of BuildConfig | — | Build configurations for this crate. One entry per binary by default. |

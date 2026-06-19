@@ -6,8 +6,9 @@ use serde::{Deserialize, Serialize};
 use super::{
     AppBundleConfig, ArchiveConfig, ArchivesConfig, BinstallConfig, BlobConfig, ChecksumConfig,
     DmgConfig, DockerDigestConfig, DockerManifestConfig, DockerV2Config, FlatpakConfig, HookEntry,
-    MsiConfig, NfpmConfig, NsisConfig, PkgConfig, PublishConfig, ReleaseConfig, SnapcraftConfig,
-    StringOrBool, VersionSyncConfig, deserialize_archives_config, deserialize_string_or_bool_opt,
+    HooksConfig, MsiConfig, NfpmConfig, NsisConfig, PkgConfig, PublishConfig, ReleaseConfig,
+    SnapcraftConfig, StringOrBool, VersionSyncConfig, deserialize_archives_config,
+    deserialize_string_or_bool_opt,
 };
 
 // ---------------------------------------------------------------------------
@@ -204,6 +205,36 @@ pub struct CrateConfig {
     /// placed in a flat `dist/` directory instead of `dist/{target}/`.
     #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
     pub no_unique_dist_dir: Option<StringOrBool>,
+    /// Hooks that run inside THIS crate's scope at the start of the release,
+    /// before the build. Distinct from the top-level `before:`, which fires
+    /// ONCE around the whole release; these fire once per crate with that
+    /// crate's version/tag template vars anchored, so `cmd` / `dir` / `env` /
+    /// `if` render against the crate's own `Version` / `Tag` / `ProjectName`.
+    /// A non-zero exit aborts the release.
+    ///
+    /// Fires once per crate in EVERY multi-crate mode — workspace per-crate
+    /// AND workspace lockstep with multiple publisher crates — in both a full
+    /// `anodizer release` and `anodizer release --publish-only`, matching the
+    /// per-crate iteration of `before_publish:` and the publishers. With an
+    /// explicit `--crate` subset only the selected crates' hooks fire. No-op
+    /// in a single-crate config with no `crates:` block (use the top-level
+    /// `before:` there).
+    pub before: Option<HooksConfig>,
+    /// Hooks that run inside THIS crate's scope at the end of the release,
+    /// after the crate's publish dispatch (and post-publish verification)
+    /// completes. Per-crate counterpart of the top-level `after:` (which fires
+    /// once around the whole release). Same per-crate firing semantics across
+    /// all modes, template surface, and abort semantics as the per-crate
+    /// `before:`.
+    pub after: Option<HooksConfig>,
+    /// Hooks that run immediately before THIS crate's publishers dispatch,
+    /// once per matching artifact (the same per-artifact semantics as the
+    /// top-level `before_publish:`), scoped to the crate's own artifacts and
+    /// template vars. Honors the per-entry `ids:` / `artifacts:` filters. A
+    /// non-zero exit aborts the release before that crate publishes to any
+    /// registry. The top-level `before_publish:` still fires once over the
+    /// full artifact set; this one targets a single crate's artifacts.
+    pub before_publish: Option<HooksConfig>,
 }
 
 /// Helper schema function for archives (accepts false or array).
@@ -248,6 +279,9 @@ impl Default for CrateConfig {
             version_files: None,
             universal_binaries: None,
             no_unique_dist_dir: None,
+            before: None,
+            after: None,
+            before_publish: None,
         }
     }
 }

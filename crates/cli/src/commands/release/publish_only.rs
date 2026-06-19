@@ -357,13 +357,79 @@ pub(super) fn run_per_crate(
         let per_crate_opts = RunOpts {
             dry_run: opts.dry_run,
         };
+        // Per-crate `before:` hooks fire at the START of this crate's scope —
+        // after its version/tag template vars are anchored so the hooks render
+        // against THIS crate's `Version` / `Tag`, and before its pipeline runs.
+        run_per_crate_lifecycle_hooks(ctx, crate_name, HookKind::Before, opts.dry_run, log)?;
         run_one_crate_dist(ctx, config, log, &per_crate_opts, crate_dist)?;
+        // Per-crate `after:` hooks fire at the END of this crate's scope, once
+        // its publish dispatch has completed (still scoped to this crate's vars).
+        run_per_crate_lifecycle_hooks(ctx, crate_name, HookKind::After, opts.dry_run, log)?;
     }
     // Explicit drop is redundant — `guard` falls out of scope and
     // restores at function exit — but it documents the restore point
     // for a reader.
     drop(guard);
     Ok(())
+}
+
+/// Which per-crate lifecycle hook block to run.
+#[derive(Clone, Copy)]
+enum HookKind {
+    Before,
+    After,
+}
+
+impl HookKind {
+    /// Label used in hook output (`ran <label> hook`) and in the `--skip`
+    /// gate. Matches the top-level hook labels so per-crate and global hooks
+    /// read identically in logs.
+    fn label(self) -> &'static str {
+        match self {
+            HookKind::Before => "before",
+            HookKind::After => "after",
+        }
+    }
+}
+
+/// Fire a crate's per-crate `before:` / `after:` lifecycle hooks (resolved
+/// from the crate's RESOLVED [`CrateConfig`] after the workspace overlay is
+/// applied) scoped to the crate's already-anchored template vars.
+///
+/// Honors `--skip=before` / `--skip=after` exactly like the top-level hooks
+/// so an operator can suppress both surfaces with one flag. A crate with no
+/// matching hook block is a no-op. The top-level `before:` / `after:` hooks
+/// fire separately (once per release in the outer dispatcher) — this only
+/// adds the per-crate surface.
+fn run_per_crate_lifecycle_hooks(
+    ctx: &Context,
+    crate_name: &str,
+    kind: HookKind,
+    dry_run: bool,
+    log: &StageLogger,
+) -> Result<()> {
+    let label = kind.label();
+    if ctx.should_skip(label) {
+        return Ok(());
+    }
+    let Some(crate_cfg) = ctx.config.crates.iter().find(|c| c.name == crate_name) else {
+        return Ok(());
+    };
+    let block = match kind {
+        HookKind::Before => crate_cfg.before.as_ref(),
+        HookKind::After => crate_cfg.after.as_ref(),
+    };
+    let Some(hooks) = block
+        .and_then(|b| b.hooks.as_ref())
+        .filter(|h| !h.is_empty())
+    else {
+        return Ok(());
+    };
+    pipeline::run_hooks(
+        hooks,
+        label,
+        anodizer_core::hooks::HookRunContext::new(dry_run, log, Some(ctx.template_vars())),
+    )
 }
 
 /// RAII guard that snapshots the `ctx` fields mutated by
@@ -3610,5 +3676,90 @@ mod tests {
             !crate_subdir_has_manifest(tmp.path(), "cfgd", &subdir_test_log()),
             "absence of dist/<crate>/ must fall back to flat (returns false)",
         );
+    }
+
+    // ── per-crate before / after lifecycle hooks ────────────────────────
+
+    use anodizer_core::config::{CrateConfig, HookEntry, HooksConfig};
+    use anodizer_core::context::ContextOptions;
+
+    fn crate_with_lifecycle(name: &str, before: Option<&str>, after: Option<&str>) -> CrateConfig {
+        let mk = |cmd: &str| HooksConfig {
+            hooks: Some(vec![HookEntry::Simple(cmd.to_string())]),
+            post: None,
+        };
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            before: before.map(mk),
+            after: after.map(mk),
+            ..Default::default()
+        }
+    }
+
+    /// Per-crate `before:` / `after:` fire from the crate's RESOLVED config,
+    /// rendered against the crate's already-anchored template vars, writing a
+    /// distinct line per phase so the test proves both ran scoped.
+    #[test]
+    fn per_crate_lifecycle_hooks_fire_scoped() {
+        let dir = std::env::temp_dir().join(format!("anodizer-pclc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("lifecycle.txt");
+        let _ = std::fs::remove_file(&out);
+        let out_s = out.display().to_string().replace('\\', "/");
+
+        let config = Config {
+            crates: vec![crate_with_lifecycle(
+                "foo",
+                Some(&format!("echo before:{{{{ Version }}}} >> {out_s}")),
+                Some(&format!("echo after:{{{{ Version }}}} >> {out_s}")),
+            )],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "3.4.5");
+        let log = StageLogger::new("test", anodizer_core::log::Verbosity::Normal);
+
+        run_per_crate_lifecycle_hooks(&ctx, "foo", HookKind::Before, false, &log)
+            .expect("before hook runs");
+        run_per_crate_lifecycle_hooks(&ctx, "foo", HookKind::After, false, &log)
+            .expect("after hook runs");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            contents.contains("before:3.4.5"),
+            "per-crate before: must render against the crate's Version; got: {contents:?}"
+        );
+        assert!(
+            contents.contains("after:3.4.5"),
+            "per-crate after: must render against the crate's Version; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// `--skip=before` suppresses the per-crate before: hook (parity with the
+    /// top-level surface); a crate with no block is a no-op.
+    #[test]
+    fn per_crate_lifecycle_hooks_honor_skip_and_absent_block() {
+        let opts = ContextOptions {
+            skip_stages: vec!["before".to_string()],
+            ..Default::default()
+        };
+        // `false` would error if spawned; skip must prevent the spawn.
+        let config = Config {
+            crates: vec![crate_with_lifecycle("foo", Some("false"), None)],
+            ..Default::default()
+        };
+        let ctx = Context::new(config, opts);
+        let log = StageLogger::new("test", anodizer_core::log::Verbosity::Normal);
+        run_per_crate_lifecycle_hooks(&ctx, "foo", HookKind::Before, false, &log)
+            .expect("--skip=before must prevent the hook from spawning");
+        // Absent after: block is a no-op.
+        run_per_crate_lifecycle_hooks(&ctx, "foo", HookKind::After, false, &log)
+            .expect("absent after: block must be a no-op");
+        // Unknown crate name is a no-op.
+        run_per_crate_lifecycle_hooks(&ctx, "ghost", HookKind::Before, false, &log)
+            .expect("unknown crate must be a no-op");
     }
 }

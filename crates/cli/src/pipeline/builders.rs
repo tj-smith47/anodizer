@@ -47,6 +47,18 @@ pub fn build_release_pipeline() -> Pipeline {
     let mut p = Pipeline::new();
     p.expect_binaries();
 
+    // ── Per-crate lifecycle: before ────────────────────────────────────────
+    // BeforeCrateStage runs each selected crate's `crates[].before` hooks at
+    // the pipeline HEAD, after version/tag anchoring (done in the dispatcher
+    // before `p.run`) and before the build. A full release runs as ONE
+    // pipeline pass with no Rust-level per-crate loop, so without this stage
+    // `crates[].before` would silently no-op on a workspace-per-crate /
+    // lockstep-multi-crate config — even though `before_publish` and the
+    // publishers DO iterate per crate. Publish-only fires before/after via its
+    // own per-crate loop (`run_per_crate_lifecycle_hooks`) and deliberately
+    // does NOT get these stages, so neither path double-fires.
+    p.add(Box::new(anodizer_core::hooks::BeforeCrateStage));
+
     // ── Build ────────────────────────────────────────────────────────────
     p.add(Box::new(BuildStage));
     p.add(Box::new(UpxStage));
@@ -119,6 +131,15 @@ pub fn build_release_pipeline() -> Pipeline {
     // against. A no-op unless `verify_release.enabled`; on a detected defect
     // it reports + exits non-zero but never undoes the (already-live) release.
     p.add(Box::new(VerifyReleaseStage));
+
+    // ── Per-crate lifecycle: after ──────────────────────────────────────────
+    // AfterCrateStage runs each selected crate's `crates[].after` hooks at the
+    // pipeline TAIL — after publish + post-publish verification — mirroring the
+    // top-level `after:` (which fires once after the whole release) and the
+    // publish-only per-crate loop's `after` hooks. Tail counterpart of
+    // BeforeCrateStage; same full-release-only placement (publish-only owns its
+    // own per-crate after-hook firing).
+    p.add(Box::new(anodizer_core::hooks::AfterCrateStage));
     p
 }
 
@@ -636,10 +657,19 @@ mod tests {
     /// pipeline (release / merge / publish-only): AnnounceStage follows the
     /// publisher chain so it only fires on a green release and the
     /// `required_publishers` gate sees the final publish report, and it is the
-    /// last stage of the *publish phase* — immediately before the terminal
+    /// last stage of the *publish phase* — immediately before the
     /// `verify-release` post-publish report. `verify-release` runs AFTER
-    /// announce (it needs the live release to verify against), so it, not
-    /// announce, is the absolute final stage.
+    /// announce (it needs the live release to verify against).
+    ///
+    /// `verify-release` is the absolute terminal stage EXCEPT in the full
+    /// release pipeline, which appends one trailing per-crate `after`
+    /// lifecycle stage (the tail counterpart of `BeforeCrateStage`). The
+    /// `after` hooks must fire after the whole release completes — matching
+    /// the top-level `after:`, which fires last in `run_post_pipeline` — so
+    /// verify-release is the last *post-publish report* stage, with `after`
+    /// (when present) trailing it. publish-only / merge carry no `after`
+    /// stage (they fire per-crate / top-level after-hooks elsewhere), so for
+    /// them verify-release is the absolute final stage.
     fn assert_announce_then_verify_release_terminal(names: &[&str], label: &str) {
         let announce_idx = names
             .iter()
@@ -657,10 +687,27 @@ mod tests {
             announce_idx > publish_idx,
             "{label}: announce (idx {announce_idx}) must follow publish (idx {publish_idx}); got {names:?}"
         );
+        // verify-release is terminal among the report stages; the only stage
+        // allowed to trail it is the per-crate `after` lifecycle hook stage.
+        let after_idx = names.iter().position(|n| *n == "after");
+        let expected_last = match after_idx {
+            Some(after) => {
+                assert_eq!(
+                    after,
+                    names.len() - 1,
+                    "{label}: `after` lifecycle stage, when present, must be the absolute terminal stage; got {names:?}"
+                );
+                assert!(
+                    after > verify_release_idx,
+                    "{label}: `after` ({after}) must trail verify-release ({verify_release_idx}); got {names:?}"
+                );
+                names.len() - 2
+            }
+            None => names.len() - 1,
+        };
         assert_eq!(
-            verify_release_idx,
-            names.len() - 1,
-            "{label}: verify-release must be the terminal post-publish stage; got {names:?}"
+            verify_release_idx, expected_last,
+            "{label}: verify-release must be the terminal post-publish report stage (before any trailing `after`); got {names:?}"
         );
         assert_eq!(
             announce_idx,
@@ -1712,5 +1759,75 @@ before_publish:
             summary_path.exists(),
             "summary.json must be written even when announce is operator-skipped",
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // Per-crate lifecycle (before / after) stage placement + no-double-fire
+    //
+    // `crates[].before` / `crates[].after` must fire per crate in a full
+    // release via BeforeCrateStage / AfterCrateStage. Publish-only fires the
+    // same hooks via its own per-crate loop (`run_per_crate_lifecycle_hooks`)
+    // and must NOT also carry these stages, or a publish-only run would
+    // double-fire. These tests pin that invariant structurally.
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn release_pipeline_has_before_crate_at_head_after_crate_at_tail() {
+        let p = build_release_pipeline();
+        let names = p.stage_names();
+        let before = idx(&names, "before", "build_release_pipeline");
+        let after = idx(&names, "after", "build_release_pipeline");
+        let build = idx(&names, "build", "build_release_pipeline");
+        let publish = idx(&names, "publish", "build_release_pipeline");
+        assert!(
+            before < build,
+            "before must precede build (pipeline head); got {names:?}"
+        );
+        assert!(
+            after > publish,
+            "after must follow publish (pipeline tail); got {names:?}"
+        );
+        // after is the terminal stage.
+        assert_eq!(
+            names.last().copied(),
+            Some("after"),
+            "after must be the final stage; got {names:?}"
+        );
+    }
+
+    #[test]
+    fn publish_only_pipeline_omits_before_after_crate_stages() {
+        // Publish-only owns its per-crate before/after firing in
+        // `run_per_crate_lifecycle_hooks`; the pipeline must NOT carry the
+        // stages too, or per-crate publish-only would fire each hook twice.
+        let p = build_publish_only_pipeline();
+        let names = p.stage_names();
+        assert!(
+            !names.contains(&"before"),
+            "build_publish_only_pipeline must not contain a `before` stage \
+             (publish-only fires it via its own per-crate loop); got {names:?}"
+        );
+        assert!(
+            !names.contains(&"after"),
+            "build_publish_only_pipeline must not contain an `after` stage; got {names:?}"
+        );
+    }
+
+    #[test]
+    fn merge_and_publish_pipelines_omit_before_after_crate_stages() {
+        // Neither legacy publish nor merge runs the per-crate Rust loop, and
+        // their top-level before/after are handled separately by the
+        // dispatcher; they must not carry the per-crate lifecycle stages.
+        let publish = build_publish_pipeline();
+        let merge = build_merge_pipeline();
+        for (name, names) in [
+            ("build_publish_pipeline", publish.stage_names()),
+            ("build_merge_pipeline", merge.stage_names()),
+        ] {
+            assert!(
+                !names.contains(&"before") && !names.contains(&"after"),
+                "{name} must not contain before/after crate stages; got {names:?}"
+            );
+        }
     }
 }

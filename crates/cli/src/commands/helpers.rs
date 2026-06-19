@@ -1177,13 +1177,19 @@ pub fn init_publish_stage_ctx(
     log: &StageLogger,
 ) -> Result<(Config, Context, std::path::PathBuf)> {
     let config_path = crate::pipeline::find_config_with_logger(config_override, Some(log))?;
-    let mut config = crate::pipeline::load_config_logged(&config_path, log)?;
+    // Bare load: the submitter advisories are emitted below once `ctx` carries
+    // the `--skip` / `--publishers` selection surface, so a deselected
+    // publisher's advisory is suppressed instead of printed as noise.
+    let mut config = crate::pipeline::load_config(&config_path)?;
     if infer_project {
         infer_project_name(&mut config, log);
     }
     auto_detect_github(&mut config, log);
 
     let mut ctx = Context::new(config.clone(), ctx_opts);
+    crate::pipeline::emit_config_advisories_filtered(&config, log, |name| {
+        ctx.publisher_deselected(name)
+    });
     setup_context(&mut ctx, &config, log)?;
 
     let dist = dist_override.unwrap_or(&config.dist).to_path_buf();
@@ -1214,10 +1220,15 @@ pub fn init_merge_stage_ctx(
     log: &StageLogger,
 ) -> Result<(Config, Context)> {
     let config_path = crate::pipeline::find_config_with_logger(config_override, Some(log))?;
-    let mut config = crate::pipeline::load_config_logged(&config_path, log)?;
+    // Bare load: advisories emitted below once `ctx` carries the selection
+    // surface (see `init_publish_stage_ctx`).
+    let mut config = crate::pipeline::load_config(&config_path)?;
     infer_project_name(&mut config, log);
     auto_detect_github(&mut config, log);
     let mut ctx = Context::new(config.clone(), ctx_opts);
+    crate::pipeline::emit_config_advisories_filtered(&config, log, |name| {
+        ctx.publisher_deselected(name)
+    });
     setup_context(&mut ctx, &config, log)?;
     ctx.populate_metadata_var()?;
     Ok((config, ctx))

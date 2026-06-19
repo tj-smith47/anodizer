@@ -275,25 +275,263 @@ impl crate::stage::Stage for BeforePublishStage {
 
     fn run(&self, ctx: &mut crate::context::Context) -> Result<()> {
         let log = ctx.logger("before-publish");
-        let Some(cfg) = ctx.config.before_publish.as_ref() else {
-            return Ok(());
-        };
-        let Some(hooks) = cfg.hooks.as_ref() else {
-            return Ok(());
-        };
-        if hooks.is_empty() {
-            return Ok(());
-        }
-
         let dry_run = ctx.is_dry_run();
+        before_publish_stage_inner(ctx, dry_run, &log, &crate::crate_scope::resolve_crate_tag)
+    }
+}
+
+/// Body of [`BeforePublishStage::run`] with an injectable per-crate tag
+/// resolver. Production passes [`crate::crate_scope::resolve_crate_tag`];
+/// tests inject a fixed-tag closure so the full stage (global + per-crate
+/// passes) can be exercised without a git fixture.
+fn before_publish_stage_inner(
+    ctx: &mut crate::context::Context,
+    dry_run: bool,
+    log: &StageLogger,
+    resolve_tag: &dyn Fn(&crate::context::Context, &crate::config::CrateConfig) -> Option<String>,
+) -> Result<()> {
+    // 1. Global `before_publish:` — fires ONCE over the full artifact set
+    //    with the run-level template vars (UNCHANGED behavior).
+    if let Some(hooks) = ctx
+        .config
+        .before_publish
+        .as_ref()
+        .and_then(|c| c.hooks.as_ref())
+        .filter(|h| !h.is_empty())
+    {
         let base_vars = ctx.template_vars().clone();
         let artifacts: Vec<Artifact> = ctx.artifacts.all().to_vec();
-
         for entry in hooks {
-            run_before_publish_entry(entry, &artifacts, dry_run, &log, &base_vars)?;
+            run_before_publish_entry(entry, &artifacts, dry_run, log, &base_vars)?;
         }
-        Ok(())
     }
+
+    // 2. Per-crate `before_publish:` — fires once per selected crate that
+    //    declares the block, scoped to that crate's own template vars
+    //    (`Version` / `Tag` / `ProjectName`) and restricted to that crate's
+    //    artifacts. Works in workspace per-crate mode (each crate's hooks
+    //    run before its publishers) and in publish-only per-crate mode
+    //    (the stage re-runs per crate, with a single selected crate). A
+    //    single-crate / lockstep config with no per-crate block is a no-op.
+    run_per_crate_before_publish_with_resolver(ctx, dry_run, log, resolve_tag)
+}
+
+/// Which per-crate lifecycle hook block ([`BeforeCrateStage`] /
+/// [`AfterCrateStage`]) to run.
+#[derive(Clone, Copy)]
+enum CrateLifecycleKind {
+    /// `crates[].before` — fires at the pipeline HEAD (after version/tag
+    /// anchoring, before the build) for each crate.
+    Before,
+    /// `crates[].after` — fires at the pipeline TAIL (after publish) for
+    /// each crate.
+    After,
+}
+
+impl CrateLifecycleKind {
+    /// Stage name + hook label. Matches the top-level `before:` / `after:`
+    /// labels so the per-crate and top-level surfaces read identically in
+    /// logs and so the pipeline's `--skip=before` / `--skip=after` gate
+    /// (keyed on `Stage::name`) suppresses both surfaces with one flag.
+    fn label(self) -> &'static str {
+        match self {
+            CrateLifecycleKind::Before => "before",
+            CrateLifecycleKind::After => "after",
+        }
+    }
+
+    /// The per-crate hook block this kind reads from a [`CrateConfig`].
+    fn block(self, c: &crate::config::CrateConfig) -> Option<&crate::config::HooksConfig> {
+        match self {
+            CrateLifecycleKind::Before => c.before.as_ref(),
+            CrateLifecycleKind::After => c.after.as_ref(),
+        }
+    }
+}
+
+/// Pipeline stage that runs each selected crate's `crates[].before` hooks
+/// at the HEAD of a full release pipeline (after version/tag anchoring,
+/// before the build stage), scoped to that crate's own template vars.
+///
+/// This is the full-release counterpart of the publish-only per-crate
+/// loop's lifecycle hooks (`run_per_crate_lifecycle_hooks`). A plain
+/// `anodizer release` on a workspace-per-crate (or lockstep-with-multiple-
+/// publisher-crates) config runs as ONE pipeline pass with no Rust-level
+/// per-crate loop, so without this stage `crates[].before` would silently
+/// no-op there — even though `crates[].before_publish` and the publishers
+/// DO iterate per crate internally. This stage closes that gap by
+/// iterating the selected crates the SAME way [`BeforePublishStage`] does
+/// (`crate::crate_scope::with_crate_scope` + the `selected_crates` filter,
+/// empty = all configured crates).
+///
+/// Single-crate (no `crates:` block) → no-op. Honors `--skip=before` via
+/// the pipeline's generic skip gate, keyed on this stage's `name()`.
+///
+/// Not added to `build_publish_only_pipeline`: publish-only's per-crate
+/// loop re-anchors each crate's `Version`/`Tag` from its preserved
+/// `context.json` (not a fresh git tag lookup) and fires before/after via
+/// `run_per_crate_lifecycle_hooks` against those already-anchored vars.
+/// A `with_crate_scope`-based stage would re-resolve the tag from git and
+/// could fail or stamp a divergent version, so the two paths are kept
+/// distinct by design — see that function's docs and the pipeline builder.
+pub struct BeforeCrateStage;
+
+impl crate::stage::Stage for BeforeCrateStage {
+    fn name(&self) -> &str {
+        "before"
+    }
+
+    fn run(&self, ctx: &mut crate::context::Context) -> Result<()> {
+        let log = ctx.logger("before");
+        let dry_run = ctx.is_dry_run();
+        run_per_crate_lifecycle(ctx, CrateLifecycleKind::Before, dry_run, &log)
+    }
+}
+
+/// Pipeline stage that runs each selected crate's `crates[].after` hooks at
+/// the TAIL of a full release pipeline (after publish), scoped to that
+/// crate's own template vars. Tail counterpart of [`BeforeCrateStage`];
+/// see that stage's docs for the full-release vs publish-only rationale.
+///
+/// Honors `--skip=after` via the pipeline's generic skip gate.
+pub struct AfterCrateStage;
+
+impl crate::stage::Stage for AfterCrateStage {
+    fn name(&self) -> &str {
+        "after"
+    }
+
+    fn run(&self, ctx: &mut crate::context::Context) -> Result<()> {
+        let log = ctx.logger("after");
+        let dry_run = ctx.is_dry_run();
+        run_per_crate_lifecycle(ctx, CrateLifecycleKind::After, dry_run, &log)
+    }
+}
+
+/// Run the per-crate `before` / `after` lifecycle hooks for every selected
+/// crate that declares the block, each rendered against that crate's own
+/// scoped template vars (`Version` / `Tag` / `ProjectName`) via
+/// [`crate::crate_scope::with_crate_scope`].
+///
+/// Crate selection mirrors [`run_per_crate_before_publish_with_resolver`]:
+/// a non-empty `ctx.options.selected_crates` (explicit `--crate` subset)
+/// restricts the set; an empty selection iterates every configured crate. A
+/// crate with no matching hook block contributes nothing. Single-crate /
+/// lockstep configs with no per-crate block are a no-op.
+fn run_per_crate_lifecycle(
+    ctx: &mut crate::context::Context,
+    kind: CrateLifecycleKind,
+    dry_run: bool,
+    log: &StageLogger,
+) -> Result<()> {
+    run_per_crate_lifecycle_with_resolver(
+        ctx,
+        kind,
+        dry_run,
+        log,
+        &crate::crate_scope::resolve_crate_tag,
+    )
+}
+
+/// [`run_per_crate_lifecycle`] with an injectable tag resolver so tests can
+/// exercise the per-crate scoping without a git fixture (production passes
+/// [`crate::crate_scope::resolve_crate_tag`]). Mirrors
+/// [`run_per_crate_before_publish_with_resolver`].
+fn run_per_crate_lifecycle_with_resolver(
+    ctx: &mut crate::context::Context,
+    kind: CrateLifecycleKind,
+    dry_run: bool,
+    log: &StageLogger,
+    resolve_tag: &dyn Fn(&crate::context::Context, &crate::config::CrateConfig) -> Option<String>,
+) -> Result<()> {
+    let label = kind.label();
+    // Collect the (crate, hooks) pairs up-front so the per-crate scope can
+    // take a `&mut Context` without holding a borrow on `ctx.config`.
+    let selected = &ctx.options.selected_crates;
+    let pending: Vec<(crate::config::CrateConfig, Vec<HookEntry>)> = ctx
+        .config
+        .crates
+        .iter()
+        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
+        .filter_map(|c| {
+            kind.block(c)
+                .and_then(|b| b.hooks.as_ref())
+                .filter(|h| !h.is_empty())
+                .map(|h| (c.clone(), h.clone()))
+        })
+        .collect();
+
+    for (crate_cfg, hooks) in pending {
+        crate::crate_scope::with_crate_scope(ctx, &crate_cfg, resolve_tag, |ctx| {
+            run_hooks(
+                &hooks,
+                label,
+                HookRunContext::new(dry_run, log, Some(ctx.template_vars())),
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// Run the per-crate `before_publish:` hooks for every selected crate that
+/// declares the block. Each crate's hooks render against its own scoped
+/// template vars (via [`crate::crate_scope::with_crate_scope`]) and iterate
+/// only that crate's artifacts.
+///
+/// Crate selection: when `ctx.options.selected_crates` is non-empty (an
+/// explicit `--crate` subset, or the publish-only per-crate loop's single
+/// entry) only those crates are considered; otherwise every configured crate
+/// is. A crate with no per-crate `before_publish` block contributes nothing.
+///
+/// Takes an injectable tag resolver so tests can exercise the per-crate
+/// scoping without a git fixture (production passes
+/// [`crate::crate_scope::resolve_crate_tag`] via
+/// [`before_publish_stage_inner`]). Mirrors the `with_published_crate_scope`
+/// test seam used by the publisher stages.
+fn run_per_crate_before_publish_with_resolver(
+    ctx: &mut crate::context::Context,
+    dry_run: bool,
+    log: &StageLogger,
+    resolve_tag: &dyn Fn(&crate::context::Context, &crate::config::CrateConfig) -> Option<String>,
+) -> Result<()> {
+    // Collect the (crate, hooks) pairs up-front so the per-crate scope can take
+    // a `&mut Context` without holding a borrow on `ctx.config`.
+    let selected = &ctx.options.selected_crates;
+    let pending: Vec<(crate::config::CrateConfig, Vec<HookEntry>)> = ctx
+        .config
+        .crates
+        .iter()
+        .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
+        .filter_map(|c| {
+            c.before_publish
+                .as_ref()
+                .and_then(|b| b.hooks.as_ref())
+                .filter(|h| !h.is_empty())
+                .map(|h| (c.clone(), h.clone()))
+        })
+        .collect();
+
+    for (crate_cfg, hooks) in pending {
+        let crate_name = crate_cfg.name.clone();
+        crate::crate_scope::with_crate_scope(ctx, &crate_cfg, resolve_tag, |ctx| {
+            let base_vars = ctx.template_vars().clone();
+            // Only this crate's artifacts — a per-crate hook must not see a
+            // sibling crate's packages (the `ids:` / `artifacts:` filters
+            // still apply on top).
+            let artifacts: Vec<Artifact> = ctx
+                .artifacts
+                .all()
+                .iter()
+                .filter(|a| a.crate_name == crate_name)
+                .cloned()
+                .collect();
+            for entry in &hooks {
+                run_before_publish_entry(entry, &artifacts, dry_run, log, &base_vars)?;
+            }
+            Ok(())
+        })?;
+    }
+    Ok(())
 }
 
 /// Iterate `artifacts` for a single `before_publish[*]` entry, executing
@@ -734,5 +972,462 @@ mod tests {
             summarized,
             "at normal verbosity the [hook output] summary must carry the hook's stdout"
         );
+    }
+
+    // ── per-crate before_publish ────────────────────────────────────────
+
+    use crate::artifact::{Artifact, ArtifactKind};
+    use crate::config::{Config, CrateConfig, HooksConfig};
+    use crate::context::{Context, ContextOptions};
+
+    /// A crate config carrying a per-crate `before_publish` hook that writes
+    /// the rendered `{{ Version }}` and each `{{ ArtifactName }}` it sees to
+    /// `out_file` — so a test can assert which version-scope and which
+    /// artifacts the hook observed.
+    fn crate_with_before_publish(name: &str, out_file: &str) -> CrateConfig {
+        let probe = format!("echo {name}:{{{{ Version }}}}:{{{{ ArtifactName }}}} >> {out_file}");
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            before_publish: Some(HooksConfig {
+                hooks: Some(vec![HookEntry::Simple(probe)]),
+                post: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn pkg_artifact(crate_name: &str, file_name: &str) -> Artifact {
+        Artifact {
+            kind: ArtifactKind::LinuxPackage,
+            path: std::path::PathBuf::from(file_name),
+            name: file_name.to_string(),
+            target: None,
+            crate_name: crate_name.to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        }
+    }
+
+    /// Fixed-tag resolver: each crate gets a distinct version so the test can
+    /// prove the per-crate scope re-anchors `Version` per crate.
+    fn fixed_tag(_ctx: &Context, c: &CrateConfig) -> Option<String> {
+        match c.name.as_str() {
+            "foo" => Some("v1.2.3".to_string()),
+            "bar" => Some("v9.9.9".to_string()),
+            _ => Some("v0.0.0".to_string()),
+        }
+    }
+
+    /// Per-crate `before_publish` fires once per crate, scoped to that crate's
+    /// own `Version` and restricted to that crate's artifacts. The global
+    /// `before_publish` (absent here) does not fire.
+    #[test]
+    fn per_crate_before_publish_scopes_version_and_artifacts() {
+        let dir = std::env::temp_dir().join(format!("anodizer-pcbp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("scoped.txt");
+        let _ = std::fs::remove_file(&out);
+        let out_s = out.display().to_string().replace('\\', "/");
+
+        let config = Config {
+            crates: vec![
+                crate_with_before_publish("foo", &out_s),
+                crate_with_before_publish("bar", &out_s),
+            ],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.artifacts.add(pkg_artifact("foo", "foo_1.2.3.deb"));
+        ctx.artifacts.add(pkg_artifact("bar", "bar_9.9.9.deb"));
+
+        let log = ctx.logger("before-publish");
+        run_per_crate_before_publish_with_resolver(&mut ctx, false, &log, &fixed_tag)
+            .expect("per-crate before_publish must run");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        // foo's hook ran with foo's version, seeing only foo's artifact.
+        assert!(
+            contents.contains("foo:1.2.3:foo_1.2.3.deb"),
+            "foo hook must be scoped to foo's version + artifact; got: {contents:?}"
+        );
+        // bar's hook ran with bar's version, seeing only bar's artifact.
+        assert!(
+            contents.contains("bar:9.9.9:bar_9.9.9.deb"),
+            "bar hook must be scoped to bar's version + artifact; got: {contents:?}"
+        );
+        // No cross-contamination: foo's hook never saw bar's artifact.
+        assert!(
+            !contents.contains("foo:1.2.3:bar_9.9.9.deb"),
+            "foo hook must NOT see bar's artifact; got: {contents:?}"
+        );
+        assert!(
+            !contents.contains("bar:9.9.9:foo_1.2.3.deb"),
+            "bar hook must NOT see foo's artifact; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// With a non-empty `selected_crates`, only the selected crate's per-crate
+    /// `before_publish` fires — the publish-only per-crate loop sets a single
+    /// selected crate, so a sibling's hooks must not leak into that iteration.
+    #[test]
+    fn per_crate_before_publish_honors_selected_crates() {
+        let dir = std::env::temp_dir().join(format!("anodizer-pcbp-sel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("selected.txt");
+        let _ = std::fs::remove_file(&out);
+        let out_s = out.display().to_string().replace('\\', "/");
+
+        let config = Config {
+            crates: vec![
+                crate_with_before_publish("foo", &out_s),
+                crate_with_before_publish("bar", &out_s),
+            ],
+            ..Default::default()
+        };
+        let opts = ContextOptions {
+            selected_crates: vec!["foo".to_string()],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        ctx.artifacts.add(pkg_artifact("foo", "foo_1.2.3.deb"));
+        ctx.artifacts.add(pkg_artifact("bar", "bar_9.9.9.deb"));
+
+        let log = ctx.logger("before-publish");
+        run_per_crate_before_publish_with_resolver(&mut ctx, false, &log, &fixed_tag)
+            .expect("selected per-crate before_publish must run");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            contents.contains("foo:1.2.3:foo_1.2.3.deb"),
+            "selected crate foo's hook must fire; got: {contents:?}"
+        );
+        assert!(
+            !contents.contains("bar:"),
+            "unselected crate bar's hook must NOT fire; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// A config with NO per-crate `before_publish` block is a no-op (single
+    /// crate / lockstep parity — the global block, if any, still fires
+    /// separately in `run`).
+    #[test]
+    fn per_crate_before_publish_noop_without_block() {
+        let config = Config {
+            crates: vec![CrateConfig {
+                name: "foo".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.artifacts.add(pkg_artifact("foo", "foo.deb"));
+        let log = ctx.logger("before-publish");
+        // No hooks → must succeed without spawning anything.
+        run_per_crate_before_publish_with_resolver(&mut ctx, false, &log, &fixed_tag)
+            .expect("absent per-crate before_publish must be a no-op");
+    }
+
+    /// Full `BeforePublishStage::run` path (via the resolver-injectable inner)
+    /// with an EMPTY `selected_crates`: every configured crate's per-crate
+    /// `before_publish` must fire, each scoped to its own version and
+    /// artifacts. This is the full-release path — no `--crate` subset, so the
+    /// implicit-all selection iterates every crate.
+    #[test]
+    fn before_publish_stage_empty_selection_fires_every_crate() {
+        let dir = std::env::temp_dir().join(format!("anodizer-bps-all-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("all.txt");
+        let _ = std::fs::remove_file(&out);
+        let out_s = out.display().to_string().replace('\\', "/");
+
+        let config = Config {
+            crates: vec![
+                crate_with_before_publish("foo", &out_s),
+                crate_with_before_publish("bar", &out_s),
+            ],
+            ..Default::default()
+        };
+        // ContextOptions::default() leaves selected_crates empty → implicit-all.
+        let mut ctx = Context::new(config, ContextOptions::default());
+        assert!(
+            ctx.options.selected_crates.is_empty(),
+            "this test exercises the empty-selection (full-release) path"
+        );
+        ctx.artifacts.add(pkg_artifact("foo", "foo_1.2.3.deb"));
+        ctx.artifacts.add(pkg_artifact("bar", "bar_9.9.9.deb"));
+
+        let log = ctx.logger("before-publish");
+        before_publish_stage_inner(&mut ctx, false, &log, &fixed_tag)
+            .expect("full before-publish stage must run with empty selection");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            contents.contains("foo:1.2.3:foo_1.2.3.deb"),
+            "every crate's before_publish must fire on the full-release path; \
+             foo missing in: {contents:?}"
+        );
+        assert!(
+            contents.contains("bar:9.9.9:bar_9.9.9.deb"),
+            "every crate's before_publish must fire on the full-release path; \
+             bar missing in: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    // ── per-crate before / after lifecycle stages ───────────────────────────
+
+    /// A crate config carrying a per-crate `before` (or `after`) lifecycle
+    /// hook that appends `<phase>:<name>:{{ Version }}` to `out_file`, so a
+    /// test can assert which phase fired, for which crate, under which
+    /// version scope. `phase` is the label written by the hook ("before" /
+    /// "after"); whether it lands in `.before` or `.after` is the caller's
+    /// choice via `set_before`.
+    fn crate_with_lifecycle(name: &str, out_file: &str, set_before: bool) -> CrateConfig {
+        let phase = if set_before { "before" } else { "after" };
+        let probe = format!("echo {phase}:{name}:{{{{ Version }}}} >> {out_file}");
+        let hooks = Some(HooksConfig {
+            hooks: Some(vec![HookEntry::Simple(probe)]),
+            post: None,
+        });
+        let mut c = CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        };
+        if set_before {
+            c.before = hooks;
+        } else {
+            c.after = hooks;
+        }
+        c
+    }
+
+    /// `crates[].before` fires once per crate on the full-release path (empty
+    /// selection), each scoped to that crate's own `Version`. This is the gap
+    /// the new stage closes: a workspace-per-crate / lockstep-multi-crate full
+    /// release previously no-op'd these hooks.
+    #[test]
+    fn per_crate_before_fires_once_per_crate_full_release() {
+        let dir = std::env::temp_dir().join(format!("anodizer-pcb-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("before.txt");
+        let _ = std::fs::remove_file(&out);
+        let out_s = out.display().to_string().replace('\\', "/");
+
+        let config = Config {
+            crates: vec![
+                crate_with_lifecycle("foo", &out_s, true),
+                crate_with_lifecycle("bar", &out_s, true),
+            ],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let log = ctx.logger("before");
+        run_per_crate_lifecycle_with_resolver(
+            &mut ctx,
+            CrateLifecycleKind::Before,
+            false,
+            &log,
+            &fixed_tag,
+        )
+        .expect("per-crate before must run");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        // Exactly two firings — one per crate, no double-fire.
+        assert_eq!(
+            contents.matches("before:").count(),
+            2,
+            "before must fire exactly once per crate (no double-fire); got: {contents:?}"
+        );
+        assert!(
+            contents.contains("before:foo:1.2.3"),
+            "foo's before must render under foo's version; got: {contents:?}"
+        );
+        assert!(
+            contents.contains("before:bar:9.9.9"),
+            "bar's before must render under bar's version; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// `crates[].after` fires once per crate on the full-release path, scoped
+    /// per crate — the tail counterpart of the before test.
+    #[test]
+    fn per_crate_after_fires_once_per_crate_full_release() {
+        let dir = std::env::temp_dir().join(format!("anodizer-pca-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("after.txt");
+        let _ = std::fs::remove_file(&out);
+        let out_s = out.display().to_string().replace('\\', "/");
+
+        let config = Config {
+            crates: vec![
+                crate_with_lifecycle("foo", &out_s, false),
+                crate_with_lifecycle("bar", &out_s, false),
+            ],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let log = ctx.logger("after");
+        run_per_crate_lifecycle_with_resolver(
+            &mut ctx,
+            CrateLifecycleKind::After,
+            false,
+            &log,
+            &fixed_tag,
+        )
+        .expect("per-crate after must run");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(
+            contents.matches("after:").count(),
+            2,
+            "after must fire exactly once per crate; got: {contents:?}"
+        );
+        assert!(
+            contents.contains("after:foo:1.2.3") && contents.contains("after:bar:9.9.9"),
+            "each crate's after must render under its own version; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// Lockstep-with-multiple-publisher-crates: every crate shares one version
+    /// (the `fixed_lockstep` resolver hands all crates the same tag), and
+    /// `before` still fires once per crate — parity with `before_publish` /
+    /// the publishers, which iterate per crate in lockstep too.
+    #[test]
+    fn per_crate_before_fires_per_crate_in_lockstep() {
+        fn fixed_lockstep(_ctx: &Context, _c: &CrateConfig) -> Option<String> {
+            Some("v2.0.0".to_string())
+        }
+        let dir = std::env::temp_dir().join(format!("anodizer-pcl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("lockstep.txt");
+        let _ = std::fs::remove_file(&out);
+        let out_s = out.display().to_string().replace('\\', "/");
+
+        let config = Config {
+            crates: vec![
+                crate_with_lifecycle("foo", &out_s, true),
+                crate_with_lifecycle("bar", &out_s, true),
+            ],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let log = ctx.logger("before");
+        run_per_crate_lifecycle_with_resolver(
+            &mut ctx,
+            CrateLifecycleKind::Before,
+            false,
+            &log,
+            &fixed_lockstep,
+        )
+        .expect("per-crate before must run in lockstep");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(
+            contents.matches("before:").count(),
+            2,
+            "lockstep multi-crate must still fire before once per crate; got: {contents:?}"
+        );
+        assert!(
+            contents.contains("before:foo:2.0.0") && contents.contains("before:bar:2.0.0"),
+            "both crates share the lockstep version; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// With a non-empty `selected_crates` (the publish-only per-crate loop's
+    /// single entry, or an explicit `--crate` subset), only the selected
+    /// crate's per-crate `before` fires — proving no sibling leak AND that
+    /// firing exactly the single selected crate's hook once is what
+    /// publish-only's per-crate loop would produce (one stage invocation per
+    /// crate, each with `selected_crates=[one]`).
+    #[test]
+    fn per_crate_before_honors_selected_crates_single_fire() {
+        let dir = std::env::temp_dir().join(format!("anodizer-pcb-sel-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("selected.txt");
+        let _ = std::fs::remove_file(&out);
+        let out_s = out.display().to_string().replace('\\', "/");
+
+        let config = Config {
+            crates: vec![
+                crate_with_lifecycle("foo", &out_s, true),
+                crate_with_lifecycle("bar", &out_s, true),
+            ],
+            ..Default::default()
+        };
+        let opts = ContextOptions {
+            selected_crates: vec!["foo".to_string()],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, opts);
+        let log = ctx.logger("before");
+        run_per_crate_lifecycle_with_resolver(
+            &mut ctx,
+            CrateLifecycleKind::Before,
+            false,
+            &log,
+            &fixed_tag,
+        )
+        .expect("selected per-crate before must run");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(
+            contents.matches("before:").count(),
+            1,
+            "exactly the single selected crate's hook fires once; got: {contents:?}"
+        );
+        assert!(
+            contents.contains("before:foo:1.2.3"),
+            "selected crate foo's before must fire; got: {contents:?}"
+        );
+        assert!(
+            !contents.contains("bar"),
+            "unselected crate bar's before must NOT fire; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// A config with NO per-crate `before` / `after` block is a no-op
+    /// (single-crate / lockstep parity — the top-level `before:` / `after:`
+    /// fire separately in the dispatcher).
+    #[test]
+    fn per_crate_lifecycle_noop_without_block() {
+        let config = Config {
+            crates: vec![CrateConfig {
+                name: "foo".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let log = ctx.logger("before");
+        run_per_crate_lifecycle_with_resolver(
+            &mut ctx,
+            CrateLifecycleKind::Before,
+            false,
+            &log,
+            &fixed_tag,
+        )
+        .expect("absent per-crate before must be a no-op");
+        run_per_crate_lifecycle_with_resolver(
+            &mut ctx,
+            CrateLifecycleKind::After,
+            false,
+            &log,
+            &fixed_tag,
+        )
+        .expect("absent per-crate after must be a no-op");
     }
 }

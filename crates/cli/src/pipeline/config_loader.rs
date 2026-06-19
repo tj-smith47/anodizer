@@ -300,19 +300,42 @@ pub fn load_config(path: &Path) -> Result<Config> {
 /// appear only under `--verbose`. Route every command's PRIMARY config load
 /// through this (best-effort secondary `.ok()` loads keep using
 /// [`load_config`]) so the advisory surfaces uniformly, exactly once per run.
+///
+/// Emits EVERY advisory: this load runs before any publisher-selection
+/// surface (`Context`) exists, so it cannot deselect. Commands with a real
+/// selection surface (release / publish) load via plain [`load_config`] and
+/// call [`emit_config_advisories_filtered`] once `Context` is built, passing
+/// `Context::publisher_deselected` so an advisory for a deselected publisher
+/// (e.g. `chocolatey` under `--publishers npm`) is suppressed.
 pub fn load_config_logged(path: &Path, log: &StageLogger) -> Result<Config> {
     let config = load_config(path)?;
     emit_config_advisories(&config, log);
     Ok(config)
 }
 
-/// Emit the verbose-only config advisories for an already-loaded config.
-/// Separated so command paths that load through [`load_repo_config`] (which
-/// finds + loads internally) can surface the same advisories without a second
-/// parse.
+/// Emit the verbose-only config advisories for an already-loaded config,
+/// with no deselection (every advisory surfaces). Used by command paths with
+/// no publisher-selection surface — `tag`, `bump`, `changelog`, `check`.
 pub fn emit_config_advisories(config: &anodizer_core::config::Config, log: &StageLogger) {
-    for msg in anodizer_core::config::submitter_required_warnings(config) {
-        log.verbose(&msg);
+    emit_config_advisories_filtered(config, log, |_| false);
+}
+
+/// Emit the verbose-only config advisories, skipping any whose publisher is
+/// deselected by `is_deselected`. Release / publish paths pass
+/// `|name| ctx.publisher_deselected(name)` so a moderation-queue advisory for
+/// a publisher excluded via `--skip` / `--publishers` is suppressed (it would
+/// never dispatch). `is_deselected` is keyed on the advisory's dispatch
+/// publisher identity (`chocolatey` / `winget` / `upstream-aur`).
+pub fn emit_config_advisories_filtered(
+    config: &anodizer_core::config::Config,
+    log: &StageLogger,
+    is_deselected: impl Fn(&str) -> bool,
+) {
+    for advisory in anodizer_core::config::submitter_required_warnings(config) {
+        if is_deselected(&advisory.publisher) {
+            continue;
+        }
+        log.verbose(&advisory.message);
     }
 }
 
@@ -852,6 +875,93 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::TempDir;
+
+    fn config_with_two_submitters() -> anodizer_core::config::Config {
+        serde_yaml_ng::from_str(
+            r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      chocolatey:
+        required: true
+      winget:
+        required: true
+"#,
+        )
+        .unwrap()
+    }
+
+    /// With no deselection, every submitter advisory surfaces (verbose). This
+    /// is the `tag` / `bump` / `changelog` / `check` behavior — no selection
+    /// surface, emit all.
+    #[test]
+    fn emit_config_advisories_emits_all_without_deselection() {
+        use anodizer_core::log::{StageLogger, Verbosity};
+        let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+        let config = config_with_two_submitters();
+        emit_config_advisories(&config, &log);
+        let msgs = cap.all_messages();
+        assert!(
+            msgs.iter().any(|(_, m)| m.contains("chocolatey")),
+            "chocolatey advisory must surface, got: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|(_, m)| m.contains("winget")),
+            "winget advisory must surface, got: {msgs:?}"
+        );
+    }
+
+    /// A deselected publisher's advisory is suppressed — modeling
+    /// `--publishers npm` which deselects chocolatey but keeps winget here.
+    #[test]
+    fn emit_config_advisories_filtered_skips_deselected_publisher() {
+        use anodizer_core::log::{StageLogger, Verbosity};
+        let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+        let config = config_with_two_submitters();
+        // Deselect chocolatey only (keyed on the dispatch publisher identity).
+        emit_config_advisories_filtered(&config, &log, |name| name == "chocolatey");
+        let msgs = cap.all_messages();
+        assert!(
+            !msgs.iter().any(|(_, m)| m.contains("chocolatey")),
+            "deselected chocolatey advisory must be suppressed, got: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|(_, m)| m.contains("winget")),
+            "selected winget advisory must still surface, got: {msgs:?}"
+        );
+    }
+
+    /// The advisories are emitted through the VERBOSE register (tagged
+    /// `LogLevel::Verbose`), so they print only under `-v` and stay hidden at
+    /// the default level — never `status` / `warn`. Pins the "hidden at
+    /// default" contract by asserting every advisory line carries the Verbose
+    /// level (the capture records the level regardless of console gating).
+    #[test]
+    fn emit_config_advisories_use_verbose_register() {
+        use anodizer_core::log::{LogLevel, StageLogger, Verbosity};
+        let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
+        let config = config_with_two_submitters();
+        emit_config_advisories(&config, &log);
+        let advisory_lines: Vec<_> = cap
+            .all_messages()
+            .into_iter()
+            .filter(|(_, m)| m.contains("moderation queue"))
+            .collect();
+        assert!(
+            !advisory_lines.is_empty(),
+            "expected the submitter advisories to be recorded"
+        );
+        assert!(
+            advisory_lines
+                .iter()
+                .all(|(lvl, _)| *lvl == LogLevel::Verbose),
+            "submitter advisories must use the verbose register (hidden at \
+             default), got: {advisory_lines:?}"
+        );
+    }
 
     #[test]
     fn test_find_config_with_override_existing() {

@@ -29,8 +29,8 @@ pub use builders::{
     build_split_pipeline,
 };
 pub use config_loader::{
-    emit_config_advisories, find_config, find_config_with_logger, load_config, load_config_logged,
-    load_repo_config,
+    emit_config_advisories, emit_config_advisories_filtered, find_config, find_config_with_logger,
+    load_config, load_config_logged, load_repo_config,
 };
 
 pub struct Pipeline {

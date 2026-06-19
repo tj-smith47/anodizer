@@ -1701,8 +1701,26 @@ where
     }
 }
 
-/// One advisory string per publisher configured with `required: true` whose
-/// group is Submitter (chocolatey, winget, aur_source).
+/// A submitter moderation-queue advisory paired with the dispatch publisher
+/// identity that produced it. The CLI filters by [`SubmitterAdvisory::publisher`]
+/// so an advisory for a publisher deselected by `--skip` / `--publishers`
+/// (e.g. `chocolatey` under a `--publishers npm` run) is suppressed instead of
+/// emitted as noise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubmitterAdvisory {
+    /// Dispatch publisher name, matching the string
+    /// [`crate::context::Context::publisher_deselected`] tests: `chocolatey`,
+    /// `winget`, or `upstream-aur` (the AUR-source publisher's dispatch name).
+    /// The CLI keys its deselection predicate on this value.
+    pub publisher: String,
+    /// The verbose advisory line surfaced to the operator.
+    pub message: String,
+}
+
+/// One advisory per publisher configured with `required: true` whose group is
+/// Submitter (chocolatey, winget, aur_source), each tagged with its dispatch
+/// publisher identity so the CLI can suppress advisories for deselected
+/// publishers.
 ///
 /// `required: true` on a submitter still fails the release when the submission
 /// itself fails (it feeds `required_failures()`), but the external moderation
@@ -1715,17 +1733,21 @@ where
 /// `workspaces[].crates[].publish`, and `defaults.publish` (via
 /// [`for_each_crate_publish`]) — plus the top-level `aur_sources:` list.
 ///
-/// Pure: this returns the strings without emitting them. The CLI surfaces them
-/// through `StageLogger::verbose` (the `--verbose`-gated register), so they stay
-/// hidden at the default log level — see `pipeline::load_config_logged`.
-pub fn submitter_required_warnings(config: &Config) -> Vec<String> {
-    fn submitter_warning(location: &str, name: &str) -> String {
-        format!(
-            "{location}: publisher '{name}' submits to an external moderation queue; \
-             `required: true` fails the release when the submission itself fails, \
-             but the eventual moderation outcome happens outside the release run \
-             and cannot be gated."
-        )
+/// Pure: this returns the advisories without emitting them. The CLI surfaces
+/// them through `StageLogger::verbose` (the `--verbose`-gated register), so
+/// they stay hidden at the default log level — see
+/// `pipeline::load_config_logged`.
+pub fn submitter_required_warnings(config: &Config) -> Vec<SubmitterAdvisory> {
+    fn advisory(location: &str, name: &str, publisher: &str) -> SubmitterAdvisory {
+        SubmitterAdvisory {
+            publisher: publisher.to_string(),
+            message: format!(
+                "{location}: publisher '{name}' submits to an external moderation queue; \
+                 `required: true` fails the release when the submission itself fails, \
+                 but the eventual moderation outcome happens outside the release run \
+                 and cannot be gated."
+            ),
+        }
     }
 
     let mut warnings = Vec::new();
@@ -1733,13 +1755,16 @@ pub fn submitter_required_warnings(config: &Config) -> Vec<String> {
     for_each_crate_publish(config, |axis, publish| {
         let loc = axis.location();
         if publish.chocolatey().and_then(|c| c.required) == Some(true) {
-            warnings.push(submitter_warning(&loc, "chocolatey"));
+            warnings.push(advisory(&loc, "chocolatey", "chocolatey"));
         }
         if publish.winget().and_then(|w| w.required) == Some(true) {
-            warnings.push(submitter_warning(&loc, "winget"));
+            warnings.push(advisory(&loc, "winget", "winget"));
         }
         if publish.aur_source().and_then(|a| a.required) == Some(true) {
-            warnings.push(submitter_warning(&loc, "aur_source"));
+            // The AUR-source publisher dispatches under the name `upstream-aur`
+            // (`AurSourcePublisher::PUBLISHER_NAME`); key the advisory on that so
+            // the CLI's `publisher_deselected("upstream-aur")` filter matches.
+            warnings.push(advisory(&loc, "aur_source", "upstream-aur"));
         }
     });
 
@@ -1749,7 +1774,7 @@ pub fn submitter_required_warnings(config: &Config) -> Vec<String> {
         for (idx, src) in sources.iter().enumerate() {
             if src.required == Some(true) {
                 let loc = format!("top-level aur_sources[{idx}]");
-                warnings.push(submitter_warning(&loc, "aur_source"));
+                warnings.push(advisory(&loc, "aur_source", "upstream-aur"));
             }
         }
     }

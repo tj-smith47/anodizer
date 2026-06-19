@@ -7900,8 +7900,13 @@ crates:
         "expected a warning for chocolatey required: true"
     );
     assert!(
-        warnings.iter().any(|w| w.contains("chocolatey")),
+        warnings.iter().any(|w| w.message.contains("chocolatey")),
         "expected chocolatey in warning, got: {:?}",
+        warnings
+    );
+    assert!(
+        warnings.iter().any(|w| w.publisher == "chocolatey"),
+        "advisory must carry the chocolatey dispatch publisher identity, got: {:?}",
         warnings
     );
 }
@@ -7991,11 +7996,11 @@ crates:
         warnings
     );
     assert!(
-        warnings.iter().any(|w| w.contains("chocolatey")),
+        warnings.iter().any(|w| w.message.contains("chocolatey")),
         "missing chocolatey warning"
     );
     assert!(
-        warnings.iter().any(|w| w.contains("winget")),
+        warnings.iter().any(|w| w.message.contains("winget")),
         "missing winget warning"
     );
 }
@@ -8021,14 +8026,18 @@ crates:
         warnings
     );
     assert!(
-        warnings[0].contains("aur_source"),
+        warnings[0].message.contains("aur_source"),
         "expected aur_source in warning, got: {}",
-        warnings[0]
+        warnings[0].message
     );
     assert!(
-        warnings[0].contains("crate 'a'"),
+        warnings[0].message.contains("crate 'a'"),
         "expected crate-name prefix in warning, got: {}",
-        warnings[0]
+        warnings[0].message
+    );
+    assert_eq!(
+        warnings[0].publisher, "upstream-aur",
+        "aur_source advisory must key on the dispatch publisher name 'upstream-aur'"
     );
 }
 
@@ -8053,14 +8062,14 @@ aur_sources:
         warnings
     );
     assert!(
-        warnings[0].contains("aur_source"),
+        warnings[0].message.contains("aur_source"),
         "expected aur_source in warning, got: {}",
-        warnings[0]
+        warnings[0].message
     );
     assert!(
-        warnings[0].contains("top-level aur_sources"),
+        warnings[0].message.contains("top-level aur_sources"),
         "expected top-level prefix in warning, got: {}",
-        warnings[0]
+        warnings[0].message
     );
 }
 
@@ -8079,7 +8088,7 @@ crates:
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     let warnings = super::submitter_required_warnings(&config);
     assert_eq!(warnings.len(), 1, "expected exactly one warning");
-    let msg = &warnings[0];
+    let msg = &warnings[0].message;
     for clause in [
         "chocolatey",
         "submits to an external moderation queue",
@@ -8121,14 +8130,14 @@ defaults:
         warnings
     );
     assert!(
-        warnings[0].contains("chocolatey"),
+        warnings[0].message.contains("chocolatey"),
         "expected chocolatey in warning, got: {}",
-        warnings[0]
+        warnings[0].message
     );
     assert!(
-        warnings[0].contains("defaults.publish"),
+        warnings[0].message.contains("defaults.publish"),
         "expected defaults.publish location in warning, got: {}",
-        warnings[0]
+        warnings[0].message
     );
 }
 
@@ -8158,14 +8167,112 @@ workspaces:
         warnings
     );
     assert!(
-        warnings[0].contains("winget"),
+        warnings[0].message.contains("winget"),
         "expected winget in warning, got: {}",
-        warnings[0]
+        warnings[0].message
     );
     assert!(
-        warnings[0].contains("workspaces[ws1].crates[a]"),
+        warnings[0].message.contains("workspaces[ws1].crates[a]"),
         "expected workspace crate location in warning, got: {}",
-        warnings[0]
+        warnings[0].message
+    );
+}
+
+#[test]
+fn submitter_advisory_publisher_identities_are_dispatch_names() {
+    // The advisory's `publisher` field must match the publisher's DISPATCH
+    // name so the CLI's `publisher_deselected(name)` filter (keyed on the same
+    // dispatch names) can suppress an advisory for a deselected publisher.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      chocolatey:
+        required: true
+      winget:
+        required: true
+      aur_source:
+        required: true
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let warnings = super::submitter_required_warnings(&config);
+    let publishers: std::collections::BTreeSet<&str> =
+        warnings.iter().map(|w| w.publisher.as_str()).collect();
+    assert!(
+        publishers.contains("chocolatey"),
+        "chocolatey advisory must key on dispatch name 'chocolatey', got: {publishers:?}"
+    );
+    assert!(
+        publishers.contains("winget"),
+        "winget advisory must key on dispatch name 'winget', got: {publishers:?}"
+    );
+    assert!(
+        publishers.contains("upstream-aur"),
+        "aur_source advisory must key on the AUR-source dispatch name 'upstream-aur', got: {publishers:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// per-crate hooks (before / after / before_publish on CrateConfig)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn crate_config_parses_per_crate_hooks() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    before:
+      hooks: ["echo crate-before"]
+    after:
+      hooks: ["echo crate-after"]
+    before_publish:
+      hooks:
+        - cmd: "echo crate-bp"
+          artifacts: package
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let c = &config.crates[0];
+    assert!(
+        c.before.as_ref().and_then(|h| h.hooks.as_ref()).is_some(),
+        "per-crate before: must parse onto CrateConfig"
+    );
+    assert!(
+        c.after.as_ref().and_then(|h| h.hooks.as_ref()).is_some(),
+        "per-crate after: must parse onto CrateConfig"
+    );
+    let bp = c
+        .before_publish
+        .as_ref()
+        .and_then(|h| h.hooks.as_ref())
+        .expect("per-crate before_publish: must parse onto CrateConfig");
+    assert_eq!(bp.len(), 1, "one before_publish entry expected");
+}
+
+#[test]
+fn crate_config_per_crate_hooks_default_none() {
+    // Single-crate / lockstep configs that omit per-crate hooks leave the
+    // fields unset — the global before/after/before_publish remain the only
+    // surface there.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let c = &config.crates[0];
+    assert!(c.before.is_none(), "before: must default to None");
+    assert!(c.after.is_none(), "after: must default to None");
+    assert!(
+        c.before_publish.is_none(),
+        "before_publish: must default to None"
     );
 }
 

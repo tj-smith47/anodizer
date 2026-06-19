@@ -240,7 +240,13 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
 
     let config_path =
         pipeline::find_config_with_logger(opts.config_override.as_deref(), Some(&log))?;
-    let mut config = pipeline::load_config_logged(&config_path, &log)?;
+    // Load WITHOUT emitting advisories here: the submitter moderation-queue
+    // advisories are deselection-aware and `Context` (which carries the
+    // `--skip` / `--publishers` surface) does not exist yet. They are emitted
+    // once below via `emit_config_advisories_filtered` after `ctx` is built,
+    // so an advisory for a publisher the run deselected (e.g. chocolatey under
+    // `--publishers npm`) is suppressed rather than printed as noise.
+    let mut config = pipeline::load_config(&config_path)?;
 
     let workspace_skip = apply_workspace_overlay_for_opts(&mut config, &opts, &log)?;
 
@@ -322,6 +328,14 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             project_root,
         );
         ctx = Context::new(config.clone(), ctx_opts);
+        // Surface the submitter moderation-queue advisories now that `ctx`
+        // carries the resolved `--skip` / `--publishers` selection surface,
+        // skipping any whose publisher this run deselected (a `--publishers npm`
+        // run must not print chocolatey/winget advisories). Verbose-only, once
+        // per command — matching `load_config_logged`'s register/cardinality.
+        pipeline::emit_config_advisories_filtered(&config, &log, |name| {
+            ctx.publisher_deselected(name)
+        });
         helpers::resolve_scm_token_type(&mut ctx, &config);
         ctx.populate_time_vars();
         ctx.populate_runtime_vars();
