@@ -447,10 +447,13 @@ fn publish_only_signing_free_surface_passes_credential_gate() {
 }
 
 /// Counterpart to the signing-free case: a publish-only surface that DOES
-/// keep a `signs:` consumer selected (github-release) must STILL abort on
-/// a missing production signing key — the guard is scoped, not removed.
-/// Zero-mutation: no rollback, no revert commit, tags intact on both ends,
-/// no `failure_policy` record written.
+/// keep a `signs:` consumer selected (github-release) must STILL abort on the
+/// signing requirement — the guard is scoped, not removed. Zero-mutation: no
+/// rollback, no revert commit, tags intact on both ends, no `failure_policy`
+/// record written. The credential-gate scoping itself (skip the sign-key check
+/// for a signing-free surface, enforce it otherwise) is unit-tested in
+/// `publish_only.rs` (`preflight_credentials_*` / `signing_required_*`); this
+/// case proves the end-to-end abort.
 #[test]
 fn publish_only_signing_surface_still_requires_sign_key() {
     if !tool_on_path("git") {
@@ -499,9 +502,14 @@ crates:
         !output.status.success(),
         "missing sign key must abort a signing surface; stderr: {stderr}"
     );
+    // Gate ordering: where the cosign tool is absent (CI runners), the
+    // config-derived preflight is the front line and aborts naming
+    // `stage:sign`; where cosign IS on PATH the credential gate's "missing
+    // production signing key" fires instead. Either proves a signing surface
+    // cannot silently proceed without signing material.
     assert!(
-        stderr.contains("missing production signing key"),
-        "the credential gate must name the gap for a signing surface; got: {stderr}"
+        stderr.contains("stage:sign") || stderr.contains("missing production signing key"),
+        "a signing surface must abort naming the signing requirement; got: {stderr}"
     );
     assert!(
         !stderr.contains("on_failure") && !stderr.contains("rolling back"),
