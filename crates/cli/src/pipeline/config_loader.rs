@@ -239,6 +239,11 @@ pub fn load_config(path: &Path) -> Result<Config> {
     // Validate winget.upgrade_behavior is a winget-recognized value (else the
     // generated installer manifest fails winget's own validator at PR time).
     anodizer_core::config::validate_winget_upgrade_behavior(&config).map_err(anyhow::Error::msg)?;
+    // Validate every winget.dependencies[].architectures scope names a known
+    // winget arch — a typo (amd64/X64/aarch64) matches no installer and would
+    // silently drop the dependency from the generated manifest.
+    anodizer_core::config::validate_winget_dependency_architectures(&config)
+        .map_err(anyhow::Error::msg)?;
     // Validate archives[].id and universal_binaries[].id uniqueness.
     anodizer_core::config::validate_id_uniqueness(&config).map_err(anyhow::Error::msg)?;
     // Validate `builder: prebuilt` builds carry a `prebuilt.path`,

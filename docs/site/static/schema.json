@@ -15557,6 +15557,17 @@
       "description": "WinGet package dependency.",
       "type": "object",
       "properties": {
+        "architectures": {
+          "description": "Architecture scope: attach this dependency only to installers whose architecture matches one of these WinGet architecture names (`x64`, `arm64`, `x86`). When unset or empty the dependency applies to every installer (the default — preserves the manifest-wide behavior).\n\nUse this when a runtime dependency is architecture-specific: e.g. an `x64` build needs the x64 VC++ runtime while the native `arm64` build needs the arm64 one, so each must be scoped to its own installer rather than attached to all of them.\n\nExample: ```yaml dependencies: - package_identifier: \"Microsoft.VCRedist.2015+.x64\" architectures: [\"x64\"] - package_identifier: \"Microsoft.VCRedist.2015+.arm64\" architectures: [\"arm64\"] # unscoped — applies to every installer: - package_identifier: \"Acme.CommonRuntime\" ```",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "minimum_version": {
           "description": "Minimum required version of the dependency.",
           "default": null,

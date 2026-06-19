@@ -188,8 +188,6 @@ struct InstallerManifest {
     product_code: Option<String>,
     installers: Vec<InstallerEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    dependencies: Option<DependenciesBlock>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     release_date: Option<String>,
     manifest_type: String,
     manifest_version: String,
@@ -209,6 +207,12 @@ struct InstallerEntry {
     nested_installer_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     nested_installer_files: Option<Vec<NestedInstallerFile>>,
+    /// Dependencies scoped to this installer's architecture. winget allows a
+    /// `Dependencies` block per installer; emitting it here (not only at the
+    /// manifest root) lets an architecture-specific runtime attach to just the
+    /// matching installer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    dependencies: Option<DependenciesBlock>,
 }
 
 #[derive(Serialize)]
@@ -313,6 +317,39 @@ fn resolve_installer_switches(
     })
 }
 
+/// Build the per-installer `Dependencies` block for an installer of the given
+/// WinGet architecture (`x64`/`arm64`/`x86`).
+///
+/// A dependency with no `architectures` scope (or an empty list) applies to
+/// every installer — preserving the historical manifest-wide behavior. A
+/// scoped dependency is included only when `arch` is one of its listed
+/// architectures, so an `x64`-scoped VC++ runtime never attaches to the native
+/// `arm64` installer. Returns `None` when no dependency matches, so the
+/// `Dependencies` key is omitted entirely for that installer.
+fn dependencies_for_arch(
+    deps: &[anodizer_core::config::WingetDependency],
+    arch: &str,
+) -> Option<DependenciesBlock> {
+    let matched: Vec<PkgDep> = deps
+        .iter()
+        .filter(|d| match d.architectures.as_deref() {
+            None | Some([]) => true,
+            Some(scopes) => scopes.iter().any(|s| s == arch),
+        })
+        .map(|d| PkgDep {
+            package_identifier: d.package_identifier.clone(),
+            minimum_version: d.minimum_version.clone(),
+        })
+        .collect();
+    if matched.is_empty() {
+        None
+    } else {
+        Some(DependenciesBlock {
+            package_dependencies: matched,
+        })
+    }
+}
+
 /// Generate the 3-file WinGet manifest set: (version, installer, locale).
 pub(crate) fn generate_manifests(
     params: &WingetManifestParams<'_>,
@@ -323,21 +360,6 @@ pub(crate) fn generate_manifests(
         default_locale: "en-US".to_string(),
         manifest_type: "version".to_string(),
         manifest_version: "1.12.0".to_string(),
-    };
-
-    let deps = if params.dependencies.is_empty() {
-        None
-    } else {
-        Some(DependenciesBlock {
-            package_dependencies: params
-                .dependencies
-                .iter()
-                .map(|d| PkgDep {
-                    package_identifier: d.package_identifier.clone(),
-                    minimum_version: d.minimum_version.clone(),
-                })
-                .collect(),
-        })
     };
 
     // Determine the top-level installer type from the first item.
@@ -407,10 +429,10 @@ pub(crate) fn generate_manifests(
                     ),
                     nested_installer_type: nested_type,
                     nested_installer_files: nested_files,
+                    dependencies: dependencies_for_arch(params.dependencies, &i.architecture),
                 }
             })
             .collect(),
-        dependencies: deps,
         release_date: params.release_date.map(|s| s.to_string()),
         manifest_type: "installer".to_string(),
         manifest_version: "1.12.0".to_string(),
@@ -2786,6 +2808,7 @@ mod tests {
         let deps = vec![anodizer_core::config::WingetDependency {
             package_identifier: "Foo.Bar".to_string(),
             minimum_version: Some("1.0.0".to_string()),
+            ..Default::default()
         }];
         let mut params = default_params();
         params.dependencies = &deps;
@@ -2793,6 +2816,208 @@ mod tests {
         assert!(inst.contains("PackageDependencies:"));
         assert!(inst.contains("PackageIdentifier: Foo.Bar"));
         assert!(inst.contains("MinimumVersion: 1.0.0"));
+    }
+
+    /// A `default_params()` clone carrying both an `x64` and an `arm64`
+    /// portable installer, so per-installer dependency scoping can be asserted.
+    fn dual_arch_installers() -> Vec<WingetInstallerItem> {
+        vec![
+            WingetInstallerItem {
+                architecture: "x64".to_string(),
+                url: "https://example.com/mytool-1.0.0-windows-amd64.zip".to_string(),
+                sha256: "deadbeefx64".to_string(),
+                installer_type: "zip".to_string(),
+                binaries: vec![],
+                wrap_in_directory: None,
+                commands: vec![],
+                silent_switch_override: None,
+            },
+            WingetInstallerItem {
+                architecture: "arm64".to_string(),
+                url: "https://example.com/mytool-1.0.0-windows-arm64.zip".to_string(),
+                sha256: "deadbeefarm64".to_string(),
+                installer_type: "zip".to_string(),
+                binaries: vec![],
+                wrap_in_directory: None,
+                commands: vec![],
+                silent_switch_override: None,
+            },
+        ]
+    }
+
+    /// Count how many times `needle` appears in `haystack`.
+    fn count_occurrences(haystack: &str, needle: &str) -> usize {
+        haystack.matches(needle).count()
+    }
+
+    /// An unscoped dependency (no `architectures`) attaches to EVERY installer.
+    #[test]
+    fn winget_unscoped_dependency_attaches_to_all_installers() {
+        let deps = vec![anodizer_core::config::WingetDependency {
+            package_identifier: "Acme.CommonRuntime".to_string(),
+            minimum_version: None,
+            architectures: None,
+        }];
+        let mut params = default_params();
+        params.installers = dual_arch_installers();
+        params.dependencies = &deps;
+        let (_, inst, _) = generate_manifests(&params).unwrap();
+        // Both the x64 and arm64 installers carry the dependency → two blocks.
+        assert_eq!(count_occurrences(&inst, "PackageDependencies:"), 2);
+        assert_eq!(
+            count_occurrences(&inst, "PackageIdentifier: Acme.CommonRuntime"),
+            2
+        );
+    }
+
+    /// An empty `architectures: []` is treated identically to unset — applies
+    /// to all installers (an empty scope is not "scope to nothing").
+    #[test]
+    fn winget_empty_arch_scope_attaches_to_all_installers() {
+        let deps = vec![anodizer_core::config::WingetDependency {
+            package_identifier: "Acme.CommonRuntime".to_string(),
+            minimum_version: None,
+            architectures: Some(vec![]),
+        }];
+        let mut params = default_params();
+        params.installers = dual_arch_installers();
+        params.dependencies = &deps;
+        let (_, inst, _) = generate_manifests(&params).unwrap();
+        assert_eq!(
+            count_occurrences(&inst, "PackageIdentifier: Acme.CommonRuntime"),
+            2
+        );
+    }
+
+    /// A scoped dependency attaches ONLY to the matching-architecture installer.
+    #[test]
+    fn winget_scoped_dependency_attaches_only_to_matching_installer() {
+        let deps = vec![anodizer_core::config::WingetDependency {
+            package_identifier: "Microsoft.VCRedist.2015+.x64".to_string(),
+            minimum_version: Some("14.0.0".to_string()),
+            architectures: Some(vec!["x64".to_string()]),
+        }];
+        let mut params = default_params();
+        params.installers = dual_arch_installers();
+        params.dependencies = &deps;
+        let (_, inst, _) = generate_manifests(&params).unwrap();
+        // Exactly one installer (x64) carries the dependency.
+        assert_eq!(count_occurrences(&inst, "PackageDependencies:"), 1);
+        assert_eq!(
+            count_occurrences(&inst, "PackageIdentifier: Microsoft.VCRedist.2015+.x64"),
+            1
+        );
+    }
+
+    /// Regression for the original bug: an `x64`-scoped VCRedist must NOT
+    /// attach to the native `arm64` installer (which would pull the wrong
+    /// runtime → STATUS_DLL_NOT_FOUND on a clean arm64 box). We assert the
+    /// dependency lands under the x64 installer entry and that the arm64 entry
+    /// carries no Dependencies block.
+    #[test]
+    fn winget_arm64_installer_does_not_get_x64_scoped_dependency() {
+        let deps = vec![anodizer_core::config::WingetDependency {
+            package_identifier: "Microsoft.VCRedist.2015+.x64".to_string(),
+            minimum_version: None,
+            architectures: Some(vec!["x64".to_string()]),
+        }];
+        let mut params = default_params();
+        params.installers = dual_arch_installers();
+        params.dependencies = &deps;
+        let (_, inst, _) = generate_manifests(&params).unwrap();
+
+        // Split the rendered Installers[] on the arm64 entry's Architecture key
+        // and confirm the x64-scoped dep does not appear after it.
+        let arm64_pos = inst
+            .find("Architecture: arm64")
+            .expect("arm64 installer entry present");
+        let after_arm64 = &inst[arm64_pos..];
+        assert!(
+            !after_arm64.contains("Microsoft.VCRedist.2015+.x64"),
+            "x64-scoped VCRedist leaked onto the arm64 installer:\n{inst}"
+        );
+        // And it IS present overall (attached to the x64 installer).
+        assert!(inst.contains("Microsoft.VCRedist.2015+.x64"));
+        assert_eq!(count_occurrences(&inst, "PackageDependencies:"), 1);
+    }
+
+    /// Mixed scoped + unscoped: the unscoped dep is on both installers, the
+    /// arm64-scoped dep only on arm64. Proves multiple deps compose per arch.
+    #[test]
+    fn winget_mixed_scoped_and_unscoped_dependencies_compose_per_installer() {
+        let deps = vec![
+            anodizer_core::config::WingetDependency {
+                package_identifier: "Microsoft.VCRedist.2015+.arm64".to_string(),
+                minimum_version: None,
+                architectures: Some(vec!["arm64".to_string()]),
+            },
+            anodizer_core::config::WingetDependency {
+                package_identifier: "Acme.CommonRuntime".to_string(),
+                minimum_version: None,
+                architectures: None,
+            },
+        ];
+        let mut params = default_params();
+        params.installers = dual_arch_installers();
+        params.dependencies = &deps;
+        let (_, inst, _) = generate_manifests(&params).unwrap();
+
+        // Common runtime on both installers.
+        assert_eq!(
+            count_occurrences(&inst, "PackageIdentifier: Acme.CommonRuntime"),
+            2
+        );
+        // arm64 VCRedist only once, and only after the arm64 entry.
+        assert_eq!(
+            count_occurrences(&inst, "PackageIdentifier: Microsoft.VCRedist.2015+.arm64"),
+            1
+        );
+        let x64_pos = inst.find("Architecture: x64").unwrap();
+        let arm64_pos = inst.find("Architecture: arm64").unwrap();
+        let x64_segment = if x64_pos < arm64_pos {
+            &inst[x64_pos..arm64_pos]
+        } else {
+            &inst[x64_pos..]
+        };
+        assert!(
+            !x64_segment.contains("Microsoft.VCRedist.2015+.arm64"),
+            "arm64-scoped dep leaked onto the x64 installer"
+        );
+    }
+
+    /// A dependency scoped to an architecture absent from the installer set
+    /// (`x86` when only x64+arm64 installers exist) matches no installer, so
+    /// NO `Dependencies` block is emitted anywhere and the other installers are
+    /// unaffected (the `skip_serializing_if`/None path on each installer entry).
+    /// Locks the current behavior; config validation rejects unknown arch names
+    /// (`amd64`/`X64`/…), but a valid-but-absent arch like `x86` is legitimate
+    /// (e.g. a future x86 installer) and must simply attach to nothing here.
+    #[test]
+    fn winget_dependency_scoped_to_absent_arch_emits_no_block() {
+        let deps = vec![anodizer_core::config::WingetDependency {
+            package_identifier: "Acme.X86Runtime".to_string(),
+            minimum_version: None,
+            architectures: Some(vec!["x86".to_string()]),
+        }];
+        let mut params = default_params();
+        params.installers = dual_arch_installers();
+        params.dependencies = &deps;
+        let (_, inst, _) = generate_manifests(&params).unwrap();
+
+        // No installer matches x86 → no Dependencies block at all, and the
+        // dependency identifier never appears in the rendered manifest.
+        assert_eq!(
+            count_occurrences(&inst, "PackageDependencies:"),
+            0,
+            "x86-scoped dep must not emit a Dependencies block on x64/arm64 installers:\n{inst}"
+        );
+        assert!(
+            !inst.contains("Acme.X86Runtime"),
+            "x86-scoped dep leaked into the manifest:\n{inst}"
+        );
+        // Both installers are still present and unaffected.
+        assert!(inst.contains("Architecture: x64"));
+        assert!(inst.contains("Architecture: arm64"));
     }
 
     #[test]
@@ -2880,6 +3105,7 @@ mod tests {
         let deps = vec![anodizer_core::config::WingetDependency {
             package_identifier: "Microsoft.VCRedist.2015+.x64".to_string(),
             minimum_version: Some("14.0.0".to_string()),
+            ..Default::default()
         }];
         let tags = vec!["CLI".to_string(), "DevOps".to_string()];
         let params = WingetManifestParams {

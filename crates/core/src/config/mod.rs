@@ -1053,6 +1053,49 @@ pub fn validate_winget_upgrade_behavior(config: &Config) -> Result<(), String> {
     })
 }
 
+/// Validate that every `winget.dependencies[].architectures` entry names a
+/// recognized WinGet architecture ([`WINGET_ARCHITECTURES`]). Walks the
+/// per-crate, per-workspace, and `defaults.publish` axes.
+///
+/// The per-installer dependency emitter matches a scope value against each
+/// installer's WinGet architecture by exact, case-sensitive equality. A value
+/// outside the canonical set (`amd64`, `X64`, `aarch64`, …) therefore matches
+/// no installer, so the dependency would silently disappear from the generated
+/// manifest. Reject it at config-validate instead of shipping a manifest that
+/// quietly omits a declared dependency. An empty list (or absent
+/// `architectures`) means "all installers" and is valid.
+pub fn validate_winget_dependency_architectures(config: &Config) -> Result<(), String> {
+    let check = |location: &str, winget: &WingetConfig| -> Result<(), String> {
+        let Some(ref deps) = winget.dependencies else {
+            return Ok(());
+        };
+        for (i, dep) in deps.iter().enumerate() {
+            let Some(ref scopes) = dep.architectures else {
+                continue;
+            };
+            for scope in scopes {
+                if !WINGET_ARCHITECTURES.contains(&scope.as_str()) {
+                    return Err(format!(
+                        "{location}: dependencies[{i}].architectures contains `{scope}`, \
+                         which is not a valid winget architecture. Use one of: {} \
+                         (or leave architectures empty/unset to apply the dependency \
+                         to every installer).",
+                        WINGET_ARCHITECTURES.join(", ")
+                    ));
+                }
+            }
+        }
+        Ok(())
+    };
+
+    try_for_each_crate_publish(config, |axis, publish| {
+        if let Some(winget) = publish.winget() {
+            check(&axis.winget_location(), winget)?;
+        }
+        Ok(())
+    })
+}
+
 /// Validate that `archives[].id` and `universal_binaries[].id` are unique
 /// within their respective lists.
 ///

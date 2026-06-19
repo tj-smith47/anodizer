@@ -162,6 +162,7 @@ mod tests {
             dependencies: Some(vec![WingetDependency {
                 package_identifier: "Acme.Runtime".to_string(),
                 minimum_version: Some("1.0.0".to_string()),
+                ..Default::default()
             }]),
             repository: Some(RepositoryConfig {
                 owner: Some("acme".to_string()),

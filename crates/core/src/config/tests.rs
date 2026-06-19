@@ -9,7 +9,8 @@ use super::{Config, ERR_DEFAULTS_AXIS_MISMATCH, IncludeFilePath, IncludeSpec, In
 use super::{
     validate_changelog_groups_depth, validate_changelog_paths, validate_defaults_axis,
     validate_format_overrides, validate_homebrew_cask_url_template, validate_on_failure_root_only,
-    validate_tag_sort, validate_version, validate_winget_upgrade_behavior,
+    validate_tag_sort, validate_version, validate_winget_dependency_architectures,
+    validate_winget_upgrade_behavior,
 };
 
 // Items re-exported from config submodules (all reachable as super::ItemName
@@ -4769,6 +4770,198 @@ workspaces:
     let err = validate_winget_upgrade_behavior(&config).unwrap_err();
     assert!(
         err.contains("workspaces[ws1].crates[myapp].publish.winget") && err.contains("nope"),
+        "error should identify the workspace axis + bad value: {err}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// validate_winget_dependency_architectures tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_validate_winget_dependency_architectures_rejects_unknown_value() {
+    // A non-winget arch name (the common `amd64` cargo/Go spelling) matches no
+    // installer and would silently drop the dependency from the manifest.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      winget:
+        publisher: AcmeCo
+        dependencies:
+          - package_identifier: Microsoft.VCRedist.2015+.x64
+            architectures: ["amd64"]
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_winget_dependency_architectures(&config).unwrap_err();
+    assert!(
+        err.contains("crates[myapp].publish.winget")
+            && err.contains("dependencies[0]")
+            && err.contains("amd64"),
+        "error should identify the location, index, and bad value: {err}"
+    );
+    assert!(
+        err.contains("x64") && err.contains("arm64") && err.contains("x86"),
+        "error should list the allowed values: {err}"
+    );
+}
+
+#[test]
+fn test_validate_winget_dependency_architectures_rejects_wrong_case() {
+    // Matching is exact + case-sensitive, so `X64` is as invalid as `amd64`.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      winget:
+        publisher: AcmeCo
+        dependencies:
+          - package_identifier: Acme.Runtime
+            architectures: ["X64"]
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_winget_dependency_architectures(&config).unwrap_err();
+    assert!(
+        err.contains("X64"),
+        "error should name the mis-cased value: {err}"
+    );
+}
+
+#[test]
+fn test_validate_winget_dependency_architectures_accepts_each_valid_value() {
+    for value in ["x64", "arm64", "x86"] {
+        let yaml = format!(
+            r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{{{ .Version }}}}"
+    publish:
+      winget:
+        publisher: AcmeCo
+        dependencies:
+          - package_identifier: Acme.Runtime
+            architectures: ["{value}"]
+"#
+        );
+        let config: Config = serde_yaml_ng::from_str(&yaml).unwrap();
+        assert!(
+            validate_winget_dependency_architectures(&config).is_ok(),
+            "`{value}` is a valid winget architecture and must pass"
+        );
+    }
+}
+
+#[test]
+fn test_validate_winget_dependency_architectures_empty_list_is_ok() {
+    // An empty `architectures: []` means "all installers" and is valid.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      winget:
+        publisher: AcmeCo
+        dependencies:
+          - package_identifier: Acme.Runtime
+            architectures: []
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(validate_winget_dependency_architectures(&config).is_ok());
+}
+
+#[test]
+fn test_validate_winget_dependency_architectures_unset_is_ok() {
+    // Absent `architectures` means "all installers" and is valid.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      winget:
+        publisher: AcmeCo
+        dependencies:
+          - package_identifier: Acme.Runtime
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(validate_winget_dependency_architectures(&config).is_ok());
+}
+
+#[test]
+fn test_validate_winget_dependency_architectures_no_deps_is_ok() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      winget:
+        publisher: AcmeCo
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    assert!(validate_winget_dependency_architectures(&config).is_ok());
+}
+
+#[test]
+fn test_validate_winget_dependency_architectures_defaults_axis() {
+    // defaults.publish.winget axis must be covered — config-mode parity.
+    let yaml = r#"
+project_name: test
+crates:
+  - name: myapp
+    path: "."
+    tag_template: "v{{ .Version }}"
+defaults:
+  publish:
+    winget:
+      publisher: AcmeCo
+      dependencies:
+        - package_identifier: Acme.Runtime
+          architectures: ["aarch64"]
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_winget_dependency_architectures(&config).unwrap_err();
+    assert!(
+        err.contains("defaults.publish.winget") && err.contains("aarch64"),
+        "error should identify the defaults axis + bad value: {err}"
+    );
+}
+
+#[test]
+fn test_validate_winget_dependency_architectures_workspace_axis() {
+    // workspaces[].crates[].publish.winget axis — workspace per-crate parity.
+    let yaml = r#"
+project_name: test
+crates: []
+workspaces:
+  - name: ws1
+    crates:
+      - name: myapp
+        path: "."
+        tag_template: "v{{ .Version }}"
+        publish:
+          winget:
+            publisher: AcmeCo
+            dependencies:
+              - package_identifier: Acme.Runtime
+                architectures: ["i386"]
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_winget_dependency_architectures(&config).unwrap_err();
+    assert!(
+        err.contains("workspaces[ws1].crates[myapp].publish.winget") && err.contains("i386"),
         "error should identify the workspace axis + bad value: {err}"
     );
 }

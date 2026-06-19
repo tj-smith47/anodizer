@@ -140,6 +140,14 @@ pub struct WingetConfig {
     pub retain_on_rollback: Option<bool>,
 }
 
+/// The WinGet architecture vocabulary an installer manifest may carry, and the
+/// only values a `WingetDependency.architectures` scope may name. Mirrors the
+/// output domain of the publisher's raw-arch → WinGet-arch mapping (`amd64`→
+/// `x64`, `386`/`i686`→`x86`, `arm64`→`arm64`). A scope value outside this set
+/// matches no installer, so the dependency would silently vanish from the
+/// manifest — config validation rejects it up front.
+pub const WINGET_ARCHITECTURES: [&str; 3] = ["x64", "arm64", "x86"];
+
 /// A single documentation link rendered into the winget locale manifest's
 /// `Documentations[]` block as `{ DocumentLabel, DocumentUrl }`.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -159,4 +167,25 @@ pub struct WingetDependency {
     pub package_identifier: String,
     /// Minimum required version of the dependency.
     pub minimum_version: Option<String>,
+    /// Architecture scope: attach this dependency only to installers whose
+    /// architecture matches one of these WinGet architecture names (`x64`,
+    /// `arm64`, `x86`). When unset or empty the dependency applies to every
+    /// installer (the default — preserves the manifest-wide behavior).
+    ///
+    /// Use this when a runtime dependency is architecture-specific: e.g. an
+    /// `x64` build needs the x64 VC++ runtime while the native `arm64` build
+    /// needs the arm64 one, so each must be scoped to its own installer rather
+    /// than attached to all of them.
+    ///
+    /// Example:
+    /// ```yaml
+    /// dependencies:
+    ///   - package_identifier: "Microsoft.VCRedist.2015+.x64"
+    ///     architectures: ["x64"]
+    ///   - package_identifier: "Microsoft.VCRedist.2015+.arm64"
+    ///     architectures: ["arm64"]
+    ///   # unscoped — applies to every installer:
+    ///   - package_identifier: "Acme.CommonRuntime"
+    /// ```
+    pub architectures: Option<Vec<String>>,
 }
