@@ -50,6 +50,7 @@ Run the full release pipeline
 | `--workspace` | — | — | Release a specific workspace in a monorepo config |
 | `--preflight` | — | — | Run pre-flight publisher-state check and exit (don't start the pipeline) |
 | `--no-preflight` | — | — | Skip the automatic pre-flight publisher-state check |
+| `--preflight-secrets` | — | — | Validate that all required publish secrets / credentials are present (and key material is well-formed) without checking host-local tools — for a central pre-release gate across decoupled CI runners. Checks and exits; does not start the pipeline. |
 | `--strict-preflight` | — | — | Alias for --strict (also treats Unknown publisher state as a blocker during pre-flight) |
 | `--draft` | — | — | Set the release as a draft |
 | `--release-header` | — | — | Path to a file containing custom release header text |

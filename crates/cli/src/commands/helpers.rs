@@ -411,6 +411,11 @@ pub fn resolve_git_context(
                     } else if ctx.options.dry_run {
                         log.warn("no git tags found, defaulting to v0.0.0 (dry-run mode).");
                         "v0.0.0".to_string()
+                    } else if ctx.options.preflight_secrets {
+                        // The pre-tag secrets gate runs before a tag exists at
+                        // HEAD; it validates only secret presence, so a synthetic
+                        // v0.0.0 suffices to render any `{{ .Env.* }}` refs.
+                        "v0.0.0".to_string()
                     } else {
                         anyhow::bail!("no git tag found; create a tag or use --snapshot");
                     }
@@ -429,6 +434,7 @@ pub fn resolve_git_context(
             && !ctx.options.snapshot
             && !ctx.options.nightly
             && !ctx.options.changelog_preview
+            && !ctx.options.preflight_secrets
         {
             let head = git::get_short_commit().unwrap_or_else(|_| "unknown".to_string());
             anyhow::bail!(
@@ -447,6 +453,7 @@ pub fn resolve_git_context(
                     && !ctx.options.snapshot
                     && !ctx.options.nightly
                     && !ctx.options.changelog_preview
+                    && !ctx.options.preflight_secrets
                 {
                     if ctx.options.dry_run {
                         log.warn("git is in a dirty state; run `git status` to see what changed.");
@@ -781,18 +788,19 @@ pub fn setup_env(
     // Error early if no SCM token and the pipeline needs one.
     // Snapshot mode, dry-run, and release.skip can proceed without a token.
     //
-    // `--publish-only` defers the token check to
-    // `publish_only::credential_preflight_gate`, which combines the
-    // token check with the production sign-key check (the spec wants
-    // both validated together before the publish-only branch runs). If
-    // setup_env bailed here first, publish-only would never get a
-    // chance to emit its combined preflight error or honor
-    // `--no-preflight`. The dispatcher enforces the same gate
+    // `--publish-only` defers the token check to the config-derived
+    // environment preflight (the github-release publisher's token ladder
+    // plus the sign stage's `KeyEnv` requirements), which validates token
+    // and sign-key material together and self-gates per resolved publisher
+    // surface. If setup_env bailed here first, publish-only would never get
+    // a chance to emit that richer per-publisher error or honor
+    // `--no-preflight`. The dispatcher enforces the env preflight
     // downstream so dropping it here doesn't widen the hole.
     if ctx.options.token.is_none()
         && !ctx.is_snapshot()
         && !ctx.is_dry_run()
         && !ctx.options.publish_only
+        && !ctx.options.preflight_secrets
     {
         let release_skipped = match config
             .crates

@@ -101,6 +101,14 @@ pub struct ReleaseOpts {
     /// `--no-preflight`: skip the automatic pre-flight check that normally
     /// runs as the first step of `release`.
     pub no_preflight: bool,
+    /// `--preflight-secrets`: a check-only mode that validates the
+    /// runner-agnostic publish secrets / credentials (env vars and
+    /// env-borne key material) across the full release surface WITHOUT
+    /// checking host-local tools, then exits with zero mutations. Intended
+    /// as a central pre-tag gate ahead of decoupled CI runners that all
+    /// carry the same injected secrets but different host-local tools.
+    /// Short-circuits before the publisher-state probe and mode dispatch.
+    pub preflight_secrets: bool,
     /// `--strict-preflight`: treat `PublisherState::Unknown` results as
     /// blockers too. Useful in CI where any uncertainty should fail-fast.
     pub strict_preflight: bool,
@@ -173,12 +181,12 @@ pub struct ReleaseOpts {
 ///
 /// - `--no-preflight` always wins → false.
 /// - `--snapshot` / `--dry-run` / `--split` skip → no upstream side effects.
-/// - `--publish-only` skips → that mode has its own credential gate
-///   (`publish_only::credential_preflight_gate`, run by the dispatcher
-///   right after this check); running the publisher-state preflight
-///   implicitly would make network calls (chocolatey/winget/cargo/aur
-///   state probes) before the credential gate, defeating the "fail
-///   before any mutation" property the spec requires.
+/// - `--publish-only` skips → the config-derived env preflight (run by
+///   the dispatcher just before this check) already validated the
+///   release token + signing-key material; running the publisher-state
+///   preflight implicitly would make network calls (chocolatey/winget/
+///   cargo/aur state probes) before any mutation, which the env preflight
+///   has no need to gate on, so it stays off in this mode.
 /// - `publish` in `skip` → caller opted out of one-way doors.
 /// - otherwise → true.
 ///
@@ -277,6 +285,10 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         && !opts.rollback_only
         && !opts.split
         && !opts.merge
+        // `--preflight-secrets` is a PRE-tag gate: by design it runs before
+        // any tag exists at HEAD, so the tags-at-HEAD short-circuit must not
+        // pre-empt it (it would otherwise exit 0 without checking secrets).
+        && !opts.preflight_secrets
     {
         log.status("no release tags at HEAD — nothing to do");
         return Ok(());
@@ -370,6 +382,36 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         helpers::setup_env(&mut ctx, &config, &log)?;
         helpers::resolve_git_context(&mut ctx, &config, &log)?;
 
+        // `--preflight-secrets`: a central pre-tag gate for decoupled CI
+        // runners (build / determinism shards on many hosts plus a publish
+        // runner) that all carry the SAME injected secrets but different
+        // host-local tools. Validate every runner-agnostic credential across
+        // the full release surface — env vars and env-borne key material,
+        // dropping tools / docker daemon / endpoints / on-disk key files — and
+        // exit with zero mutations. Placed AFTER env / git context resolution
+        // (so `{{ .Env.* }}` refs render) but BEFORE `before:` hooks, the
+        // dirty-tree gate, the publisher-state probe, and mode dispatch, so
+        // the gate runs no hook, makes no network call, and starts no
+        // pipeline. Returns from inside the setup group — the guard drops on
+        // the early return, balancing the section.
+        if ctx.options.preflight_secrets {
+            let report = crate::commands::preflight::run_env_preflight(
+                &ctx,
+                crate::commands::preflight::PreflightScope::SecretsOnly,
+                &log,
+            );
+            if !report.ok() {
+                anyhow::bail!(
+                    "preflight-secrets: {} secret/credential failure(s) across {} check(s); \
+                     set the missing secrets above before tagging the release",
+                    report.failures.len(),
+                    report.checks
+                );
+            }
+            log.status("preflight-secrets: all required publish secrets / credentials present");
+            return Ok(());
+        }
+
         run_before_hooks(&ctx, &config, &opts, &log)?;
         render_release_notes_tmpl(&mut ctx, &config, &opts, release_notes_path, &log)?;
         enforce_dirty_repo_gate(&ctx)?;
@@ -422,18 +464,15 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
                 report.checks
             );
         }
+    } else if opts.no_preflight {
+        log.warn(
+            "preflight skipped via --no-preflight; missing tools / secrets / key material \
+             will surface mid-pipeline (no idempotent recovery)",
+        );
     }
 
     if run_publisher_preflight(&mut ctx, &opts, &log)? {
         return Ok(());
-    }
-
-    // Third zero-mutation gate, publish-only specific: the release token
-    // + production signing key check. Hoisted here (out of the
-    // publish_only module) for the same reason as the two preflights
-    // above — a credential miss must never reach the failure policy.
-    if opts.publish_only {
-        publish_only::credential_preflight_gate(&ctx, opts.dry_run, opts.no_preflight, &log)?;
     }
 
     // Every mode below routes its outcome through the in-process failure
@@ -681,7 +720,9 @@ fn apply_release_meta_overrides(config: &mut Config, opts: &ReleaseOpts) -> Resu
 /// Enforce the dist directory state: `--clean` removes it (logs in dry-run);
 /// otherwise a populated dist is a hard error.
 /// `--merge` / `--publish-only` / `--rollback-only` skip the non-empty check
-/// because each of those modes requires preserved dist content.
+/// because each of those modes requires preserved dist content;
+/// `--preflight-secrets` skips it because the secrets gate is a
+/// zero-mutation check that never reads or writes dist.
 fn enforce_dist_state(config: &Config, opts: &ReleaseOpts, log: &StageLogger) -> Result<()> {
     if opts.clean && !opts.dry_run {
         let dist = &config.dist;
@@ -697,6 +738,7 @@ fn enforce_dist_state(config: &Config, opts: &ReleaseOpts, log: &StageLogger) ->
         && !opts.publish_only
         && !opts.rollback_only
         && !opts.announce_only
+        && !opts.preflight_secrets
     {
         let dist = &config.dist;
         if dist.exists()
@@ -1139,6 +1181,7 @@ fn build_context_options(
             .map(anodizer_core::partial::PartialTarget::Targets),
         merge: opts.merge,
         publish_only: opts.publish_only,
+        preflight_secrets: opts.preflight_secrets,
         project_root,
         strict: opts.strict,
         resume_release: opts.resume_release || opts.publish_only,
@@ -1972,6 +2015,7 @@ mod tests {
             replace_existing: false,
             preflight: false,
             no_preflight: false,
+            preflight_secrets: false,
             strict_preflight: false,
             no_post_publish_poll: false,
             no_gate_submitter: false,
@@ -2685,10 +2729,11 @@ mod tests {
 
     #[test]
     fn should_run_preflight_auto_publish_only_skips() {
-        // `--publish-only` must skip the publisher-state preflight so
-        // the credential gate (`publish_only::credential_preflight_gate`,
-        // run by the dispatcher right after this check) gets first crack
-        // at bailing before any network call.
+        // `--publish-only` must skip the publisher-state preflight: its
+        // network state probes (chocolatey/winget/cargo/aur) would run
+        // before the config-derived env preflight has confirmed the
+        // credentials those probes need, so the env preflight (which
+        // aborts before any network call) gets first crack at bailing.
         assert!(!should_run_preflight_auto(
             false, false, false, false, true, false
         ));

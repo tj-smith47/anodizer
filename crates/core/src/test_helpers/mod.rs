@@ -508,6 +508,7 @@ impl TestContextBuilder {
             partial_target: None,
             merge: false,
             publish_only: self.publish_only,
+            preflight_secrets: false,
             project_root: self.project_root,
             strict: false,
             resume_release: false,

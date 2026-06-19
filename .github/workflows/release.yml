@@ -37,9 +37,84 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Central pre-tag secret gate. Built FROM THE CHECKOUT (not the published
+  # anodizer-action@v1 binary) because --preflight-secrets does not exist in
+  # the published action until this release ships — chicken-and-egg. Validates
+  # that every runner-agnostic publish secret / credential the downstream
+  # `release` + `publish-npm` jobs need is present (and key material is
+  # well-formed) WITHOUT checking host-local tools, so a missing CI secret
+  # aborts before a tag is ever minted. Carries the full secret env block the
+  # `release` job uses so the check is meaningful.
+  preflight:
+    name: Preflight secrets
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    # id-token: write so the OIDC request vars (ACTIONS_ID_TOKEN_REQUEST_URL /
+    # _TOKEN) the npm/mcp provenance surfaces require are injected and the
+    # gate sees them present — mirroring the publish-npm job's permission.
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.event.workflow_run.head_sha || github.sha }}
+      - uses: ./.github/actions/setup-rust
+        with:
+          cache-key: preflight-secrets
+      - name: Materialize key-file secrets
+        # The nfpm rpm/deb and apk signatures reference key material by FILE
+        # PATH (GPG_KEY_PATH / APK_PRIVATE_KEY_PATH) — the publish runner's
+        # anodizer-action materializes these from the GPG_PRIVATE_KEY /
+        # APK_PRIVATE_KEY secrets at runtime. Reproduce that here so the
+        # secret-presence check validates the actual key material, not just a
+        # path string: write the keys to disk and export the same path vars.
+        run: |
+          set -euo pipefail
+          install -d -m 700 "${RUNNER_TEMP}/keys"
+          printf '%s' "${GPG_PRIVATE_KEY}" > "${RUNNER_TEMP}/keys/gpg.asc"
+          printf '%s' "${APK_PRIVATE_KEY}" > "${RUNNER_TEMP}/keys/apk.rsa"
+          chmod 600 "${RUNNER_TEMP}/keys/gpg.asc" "${RUNNER_TEMP}/keys/apk.rsa"
+          {
+            echo "GPG_KEY_PATH=${RUNNER_TEMP}/keys/gpg.asc"
+            echo "APK_PRIVATE_KEY_PATH=${RUNNER_TEMP}/keys/apk.rsa"
+          } >> "${GITHUB_ENV}"
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          APK_PRIVATE_KEY: ${{ secrets.APK_PRIVATE_KEY }}
+      - name: Validate publish secrets
+        # --skip=blob: the blob stage's S3/MinIO creds (AWS_ACCESS_KEY_ID /
+        # AWS_SECRET_ACCESS_KEY) are AMBIENT on the self-hosted arc-anodizer
+        # runner, not GitHub repo secrets — so this github-hosted gate cannot
+        # see them and must not demand them (it would false-fail and block
+        # every release). Blob's creds are validated in-pipeline on arc, where
+        # they live. Every OTHER publish secret IS a registered repo secret and
+        # is validated here, before the tag is minted.
+        run: cargo run -q --release -p anodizer -- release --preflight-secrets --skip=blob
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+          CLOUDSMITH_TOKEN: ${{ secrets.CLOUDSMITH_TOKEN }}
+          COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.COSIGN_PASSWORD }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          FURY_API_TOKEN: ${{ secrets.FURY_API_TOKEN }}
+          FURY_PUSH_TOKEN: ${{ secrets.FURY_PUSH_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
+          UPLOAD_JARVISPRO_SECRET: ${{ secrets.UPLOAD_JARVISPRO_SECRET }}
+          UPLOAD_JARVISPRO_USERNAME: ${{ secrets.UPLOAD_JARVISPRO_USERNAME }}
+
   tag:
     name: Auto-tag
-    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    needs: [preflight]
+    if: ${{ needs.preflight.result == 'success' && (github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

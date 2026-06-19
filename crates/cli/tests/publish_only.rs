@@ -398,22 +398,14 @@ fn publish_only_conflicts_with_merge_at_clap_level() {
 // ---------------------------------------------------------------------------
 
 /// Without `--dry-run`, `--publish-only` must bail on missing
-/// credentials BEFORE any state mutation (load, strip, sign). Two
-/// layers guard this, in firing order:
+/// credentials BEFORE any state mutation (load, strip, sign). The
+/// config-derived environment preflight in `commands/release/mod.rs`
+/// is the sole gate: it collects the github-release token ladder from
+/// the fixture's `release:` block and aborts citing the missing env
+/// var NAMES plus the surfaces that demand them.
 ///
-/// 1. the config-derived environment preflight in
-///    `commands/release/mod.rs`, which collects the github-release
-///    token ladder from the fixture's `release:` block and aborts
-///    citing the missing env var NAMES plus the surfaces that demand
-///    them;
-/// 2. `preflight_credentials` at the top of `publish_only::run`, the
-///    coarser unconditional gate that layer 1 pre-empts for the
-///    missing-token case.
-///
-/// The assertions pin layer 1's exact output — the var list, the
-/// needed-by attribution, and the abort bail — and that layer 2's
-/// message does NOT appear: seeing "missing release token" would mean
-/// the env preflight failed to fire first.
+/// The assertions pin its exact output — the var list, the needed-by
+/// attribution, and the abort bail.
 #[test]
 fn publish_only_preflight_credentials_required_in_non_dry_run() {
     if !tool_on_path("git") {
@@ -504,19 +496,19 @@ fn publish_only_no_preflight_suppresses_credential_check() {
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let merged = format!("{stdout}\n{stderr}");
 
-    // The credential warn-line must fire (so the operator sees they
-    // dropped the safety net) and the run must proceed past the
-    // credential gate. Run will fail later when the actual sign /
-    // release stages try to use the missing creds — we only assert
-    // the bypass log line here.
+    // The preflight warn-line must fire (so the operator sees they
+    // dropped the safety net) and the run must proceed past the env
+    // preflight. Run will fail later when the actual sign / release
+    // stages try to use the missing creds — we only assert the bypass
+    // log line here.
     assert!(
-        merged.contains("credential preflight skipped via --no-preflight"),
+        merged.contains("preflight skipped via --no-preflight"),
         "expected --no-preflight warn line; output was:\n{merged}"
     );
-    // And the run must NOT bail with the credential-preflight error.
+    // And the run must NOT bail with the env-preflight failure.
     assert!(
-        !merged.contains("publish-only: missing release token"),
-        "credential preflight should be suppressed by --no-preflight; output was:\n{merged}"
+        !merged.contains("environment failure(s)"),
+        "env preflight should be suppressed by --no-preflight; output was:\n{merged}"
     );
 }
 

@@ -131,6 +131,12 @@ pub enum Commands {
         )]
         no_preflight: bool,
         #[arg(
+            long = "preflight-secrets",
+            conflicts_with = "no_preflight",
+            help = "Validate that all required publish secrets / credentials are present (and key material is well-formed) without checking host-local tools — for a central pre-release gate across decoupled CI runners. Checks and exits; does not start the pipeline."
+        )]
+        preflight_secrets: bool,
+        #[arg(
             long,
             help = "Alias for --strict (also treats Unknown publisher state as a blocker during pre-flight)"
         )]

@@ -43,13 +43,29 @@ pub enum PreflightScope {
     /// prior run's report — announce is the only stage that runs, so only
     /// its requirements apply.
     AnnounceOnly,
+    /// `anodizer release --preflight-secrets`: a central pre-tag gate for
+    /// decoupled CI runners (build / determinism shards on many hosts plus
+    /// a publish runner) that all carry the SAME injected secrets but
+    /// different host-local tools. Collects the FULL surface (like
+    /// [`PreflightScope::Full`]) then retains only the runner-agnostic
+    /// credential requirements — `EnvAllOf` / `EnvAnyOf` / `KeyEnv` — and
+    /// drops `Tool` / `ToolAnyOf` / `DockerDaemon` / `Endpoint` / `KeyFile`,
+    /// none of which is guaranteed present on the gate runner. Structural
+    /// validation still applies to env-borne `KeyEnv` material, so a malformed
+    /// secret key is caught up front; on-disk `KeyFile` material is dropped
+    /// (the path may not be materialized on the gate runner) and so is not
+    /// validated by this scope.
+    SecretsOnly,
 }
 
 impl PreflightScope {
     /// Whether `stage` participates in a pipeline of this scope.
     fn includes(self, stage: &str) -> bool {
         match self {
-            PreflightScope::Full => true,
+            // `SecretsOnly` walks the full stage surface (the credential
+            // retention happens in the post-collection `retains` filter);
+            // only the env/key-env requirements survive that filter.
+            PreflightScope::Full | PreflightScope::SecretsOnly => true,
             PreflightScope::PublishOnly => matches!(
                 stage,
                 "sign"
@@ -63,6 +79,24 @@ impl PreflightScope {
                     | "verify-release"
             ),
             PreflightScope::AnnounceOnly => stage == "announce",
+        }
+    }
+
+    /// Whether `req` survives this scope's post-collection filter.
+    ///
+    /// Every scope except [`PreflightScope::SecretsOnly`] keeps the full
+    /// requirement set the stage/publisher derivations produced.
+    /// `SecretsOnly` retains only the runner-agnostic credential kinds —
+    /// the CI secrets injected into every decoupled job — and drops the
+    /// host-local kinds (tools, docker daemon, endpoints, and on-disk key
+    /// files, which may not be materialized on the gate runner).
+    fn retains(self, req: &anodizer_core::EnvRequirement) -> bool {
+        use anodizer_core::EnvRequirement::{EnvAllOf, EnvAnyOf, KeyEnv};
+        match self {
+            PreflightScope::SecretsOnly => {
+                matches!(req, EnvAllOf { .. } | EnvAnyOf { .. } | KeyEnv { .. })
+            }
+            _ => true,
         }
     }
 }
@@ -285,6 +319,7 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
         }
     }
 
+    out.retain(|sr| scope.retains(&sr.requirement));
     out
 }
 
@@ -1070,5 +1105,197 @@ publish:
             )),
             "enabled telegram announcer must demand its token: {reqs:?}"
         );
+    }
+
+    /// A config exercising every requirement KIND across the full surface:
+    /// a github release token ladder (`EnvAnyOf`), an env-borne cosign key
+    /// (`KeyEnv`) plus the cosign tool (`Tool`), an nfpm rpm signature with
+    /// a literal `key_file` (`KeyFile`) plus the nfpm tool, a blob endpoint
+    /// (`Endpoint`) plus its provider tooling, and a docker image
+    /// (`DockerDaemon`). Used by the `SecretsOnly` tests below.
+    fn mixed_surface_ctx() -> Context {
+        let top = crate_from_yaml(
+            r#"
+name: top
+release: { github: { owner: o, name: r } }
+dockers_v2:
+  - images: [ghcr.io/o/top]
+nfpms:
+  - formats: [rpm]
+    rpm:
+      signature:
+        key_file: /etc/anodizer/rpm-signing.gpg
+blobs:
+  - provider: s3
+    bucket: releases
+    endpoint: "https://minio.example.com"
+"#,
+        );
+        TestContextBuilder::new()
+            .crates(vec![top])
+            .signs(vec![anodizer_core::config::SignConfig {
+                artifacts: Some("all".to_string()),
+                cmd: Some("cosign".to_string()),
+                args: Some(vec!["--key".to_string(), "env://COSIGN_KEY".to_string()]),
+                ..Default::default()
+            }])
+            .build()
+    }
+
+    /// `SecretsOnly` collects the FULL surface (so it sees every credential a
+    /// real release would need) then retains ONLY the runner-agnostic
+    /// credential kinds — `EnvAllOf` / `EnvAnyOf` / `KeyEnv`. Host-local
+    /// kinds (`Tool` / `ToolAnyOf` / `DockerDaemon` / `Endpoint` / `KeyFile`)
+    /// are dropped: a decoupled gate runner may not carry the tools, daemon,
+    /// network reachability, or on-disk key file that the eventual publish
+    /// host does.
+    #[test]
+    fn secrets_only_retains_credentials_drops_host_local_requirements() {
+        let ctx = mixed_surface_ctx();
+
+        // Sanity: the FULL scope over the same config DOES surface the
+        // host-local kinds, so the SecretsOnly drop below is meaningful.
+        let full = collect_requirements(&ctx, PreflightScope::Full);
+        assert!(
+            full.iter().any(|r| matches!(
+                &r.requirement,
+                EnvRequirement::Tool { name } if name == "cosign"
+            )),
+            "full scope must surface the cosign tool requirement: {full:?}"
+        );
+        assert!(
+            full.iter()
+                .any(|r| matches!(&r.requirement, EnvRequirement::DockerDaemon)),
+            "full scope must surface the docker daemon requirement: {full:?}"
+        );
+        assert!(
+            full.iter()
+                .any(|r| matches!(&r.requirement, EnvRequirement::Endpoint { .. })),
+            "full scope must surface the blob endpoint requirement: {full:?}"
+        );
+        assert!(
+            full.iter()
+                .any(|r| matches!(&r.requirement, EnvRequirement::KeyFile { .. })),
+            "full scope must surface the nfpm key_file requirement: {full:?}"
+        );
+
+        let secrets = collect_requirements(&ctx, PreflightScope::SecretsOnly);
+        assert!(
+            !secrets.is_empty(),
+            "secrets-only scope must retain the credential requirements: {secrets:?}"
+        );
+        // Every retained requirement is a runner-agnostic credential kind.
+        for sr in &secrets {
+            assert!(
+                matches!(
+                    &sr.requirement,
+                    EnvRequirement::EnvAllOf { .. }
+                        | EnvRequirement::EnvAnyOf { .. }
+                        | EnvRequirement::KeyEnv { .. }
+                ),
+                "secrets-only retained a non-credential requirement: {:?}",
+                sr
+            );
+        }
+        // The github token ladder (EnvAnyOf) and the env-borne cosign key
+        // (KeyEnv) survive — these ARE injected into every decoupled job.
+        assert!(
+            secrets.iter().any(|r| matches!(
+                &r.requirement,
+                EnvRequirement::EnvAnyOf { vars }
+                    if vars.contains(&"GITHUB_TOKEN".to_string())
+            )),
+            "secrets-only must retain the github token ladder: {secrets:?}"
+        );
+        assert!(
+            secrets.iter().any(|r| matches!(
+                &r.requirement,
+                EnvRequirement::KeyEnv { var, .. } if var == "COSIGN_KEY"
+            )),
+            "secrets-only must retain the env-borne cosign key: {secrets:?}"
+        );
+        // The host-local kinds are gone.
+        assert!(
+            !secrets
+                .iter()
+                .any(|r| matches!(&r.requirement, EnvRequirement::Tool { .. })),
+            "secrets-only must drop Tool requirements: {secrets:?}"
+        );
+        assert!(
+            !secrets
+                .iter()
+                .any(|r| matches!(&r.requirement, EnvRequirement::DockerDaemon)),
+            "secrets-only must drop the docker daemon requirement: {secrets:?}"
+        );
+        assert!(
+            !secrets
+                .iter()
+                .any(|r| matches!(&r.requirement, EnvRequirement::Endpoint { .. })),
+            "secrets-only must drop endpoint requirements: {secrets:?}"
+        );
+        assert!(
+            !secrets
+                .iter()
+                .any(|r| matches!(&r.requirement, EnvRequirement::KeyFile { .. })),
+            "secrets-only must drop on-disk key-file requirements: {secrets:?}"
+        );
+    }
+
+    /// Per-crate workspace mode: a publisher configured ONLY on a workspace
+    /// crate still contributes its credential requirement under `SecretsOnly`
+    /// (the self-gating publisher derivations walk the full crate universe),
+    /// and the host-local AUR tooling is dropped while the env-borne private
+    /// key (`KeyEnv` via `env://`) is retained.
+    #[test]
+    fn secrets_only_unions_workspace_crates() {
+        let top = crate_from_yaml(
+            r#"
+name: top
+release: { github: { owner: o, name: r } }
+"#,
+        );
+        let ws_crate = crate_from_yaml(
+            r#"
+name: wscrate
+publish:
+  aur:
+    private_key: "{{ .Env.PF_TEST_AUR_KEY }}"
+"#,
+        );
+        let ws = anodizer_core::config::WorkspaceConfig {
+            crates: vec![ws_crate],
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new().crates(vec![top]).build();
+        ctx.config.workspaces = Some(vec![ws]);
+
+        let secrets = collect_requirements(&ctx, PreflightScope::SecretsOnly);
+        // The AUR private key reference survives as a retained credential
+        // requirement — an env-borne SSH key, which the AUR publisher declares
+        // as a structurally-validated `KeyEnv` (not a bare presence check).
+        assert!(
+            secrets.iter().any(|r| {
+                r.source == "publish:aur"
+                    && matches!(
+                        &r.requirement,
+                        EnvRequirement::KeyEnv { var, .. } if var == "PF_TEST_AUR_KEY"
+                    )
+            }),
+            "secrets-only must union the workspace crate's AUR key requirement: {secrets:?}"
+        );
+        // Every retained requirement is still a credential kind even across
+        // the workspace union.
+        for sr in &secrets {
+            assert!(
+                matches!(
+                    &sr.requirement,
+                    EnvRequirement::EnvAllOf { .. }
+                        | EnvRequirement::EnvAnyOf { .. }
+                        | EnvRequirement::KeyEnv { .. }
+                ),
+                "secrets-only retained a non-credential requirement under workspace union: {:?}",
+                sr
+            );
+        }
     }
 }

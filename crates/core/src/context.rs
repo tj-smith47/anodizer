@@ -146,13 +146,22 @@ pub struct ContextOptions {
     /// `--publish-only`: load artifacts from a preserved dist (written
     /// by `anodize check determinism --preserve-dist=...`) and run
     /// only the sign + publish pipeline. The CLI dispatcher uses this
-    /// flag in `setup_env` to defer the GitHub-token check to
-    /// `publish_only::preflight_credentials`, which owns the
-    /// combined token + sign-key check and bails fail-closed on
-    /// missing values. Without this gate, `setup_env`'s token check
-    /// would fire FIRST and pre-empt publish-only's own preflight
-    /// (which validates BOTH token AND sign key in one shot).
+    /// flag in `setup_env` to defer the GitHub-token check to the
+    /// config-derived environment preflight (the github-release
+    /// publisher's token ladder plus the sign stage's `KeyEnv`
+    /// requirements), which validates token and sign-key material in
+    /// one collect-all pass and bails fail-closed on missing values.
+    /// Without this deferral, `setup_env`'s token check would fire FIRST
+    /// and pre-empt that richer, per-publisher preflight.
     pub publish_only: bool,
+    /// `--preflight-secrets`: a check-only secrets gate. Like
+    /// [`Self::publish_only`], it defers `setup_env`'s GitHub-token hard
+    /// error to the config-derived environment preflight (run in
+    /// `SecretsOnly` scope), which validates the token ladder alongside
+    /// every other runner-agnostic credential and then exits with zero
+    /// mutations. Without this deferral, `setup_env` would bail on the
+    /// missing token before the secrets gate could report the full set.
+    pub preflight_secrets: bool,
     /// Explicit project root directory. When set, stages use this instead of
     /// discovering the repo root via `git rev-parse --show-toplevel`.
     pub project_root: Option<PathBuf>,
@@ -323,6 +332,7 @@ impl Default for ContextOptions {
             partial_target: None,
             merge: false,
             publish_only: false,
+            preflight_secrets: false,
             project_root: None,
             strict: false,
             resume_release: false,

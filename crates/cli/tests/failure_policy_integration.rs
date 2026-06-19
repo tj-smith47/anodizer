@@ -450,10 +450,10 @@ fn publish_only_signing_free_surface_passes_credential_gate() {
 /// keep a `signs:` consumer selected (github-release) must STILL abort on the
 /// signing requirement — the guard is scoped, not removed. Zero-mutation: no
 /// rollback, no revert commit, tags intact on both ends, no `failure_policy`
-/// record written. The credential-gate scoping itself (skip the sign-key check
-/// for a signing-free surface, enforce it otherwise) is unit-tested in
-/// `publish_only.rs` (`preflight_credentials_*` / `signing_required_*`); this
-/// case proves the end-to-end abort.
+/// record written. The scoping itself (the sign stage's `signs:` loop
+/// self-skips for a signing-free surface so no `KeyEnv` requirement is
+/// collected, but stands otherwise) is unit-tested via `collect_requirements`
+/// in `preflight.rs`; this case proves the end-to-end abort.
 #[test]
 fn publish_only_signing_surface_still_requires_sign_key() {
     if !tool_on_path("git") {
@@ -469,6 +469,7 @@ project_name: test-project
 signs:
   - artifacts: all
     cmd: cosign
+    args: ["sign-blob", "--key=env://COSIGN_KEY", "--output-signature=${signature}", "${artifact}"]
 crates:
   - name: test-project
     path: "."
@@ -502,13 +503,13 @@ crates:
         !output.status.success(),
         "missing sign key must abort a signing surface; stderr: {stderr}"
     );
-    // Gate ordering: where the cosign tool is absent (CI runners), the
-    // config-derived preflight is the front line and aborts naming
-    // `stage:sign`; where cosign IS on PATH the credential gate's "missing
-    // production signing key" fires instead. Either proves a signing surface
-    // cannot silently proceed without signing material.
+    // The config-derived env preflight is the single front line: the sign
+    // stage's `signs:` loop is live (a signs consumer is selected), so it
+    // contributes a `KeyEnv` requirement for the missing cosign key, and the
+    // report attributes the failure to `stage:sign`. This proves a signing
+    // surface cannot silently proceed without signing material.
     assert!(
-        stderr.contains("stage:sign") || stderr.contains("missing production signing key"),
+        stderr.contains("stage:sign"),
         "a signing surface must abort naming the signing requirement; got: {stderr}"
     );
     assert!(

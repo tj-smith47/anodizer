@@ -322,6 +322,7 @@ mod tests {
             replace_existing: false,
             preflight: false,
             no_preflight: true,
+            preflight_secrets: false,
             strict_preflight: false,
             no_post_publish_poll: false,
             no_gate_submitter: false,

@@ -57,6 +57,71 @@ The exit code is non-zero when anything is missing, and the JSON report
 carries a `kind` per failure (`missing_tool`, `missing_env`,
 `endpoint_unreachable`, `docker_unavailable`, `bad_key_material`).
 
+## Secrets-only pre-tag gate
+
+Decoupled CI pipelines split a release across many runners — build and
+determinism shards on different hosts, plus a dedicated publish runner —
+that carry **different host-local tools** but the **same injected
+secrets** (CI secrets are exported into every job). For those pipelines, a
+single up-front gate should answer "are all the publish credentials
+present and well-formed?" *without* false-failing on a tool that only the
+eventual publish host has.
+
+`anodizer release --preflight-secrets` is that gate. It collects the full
+release surface, then keeps only the **runner-agnostic credential**
+requirements — env vars and env-borne key material (`COSIGN_KEY`,
+`GITHUB_TOKEN` ladders, `env://` SSH/PGP keys, …) — and drops every
+host-local requirement (CLI tools, the docker daemon, endpoint
+reachability, and on-disk key *files*, which may not be materialized on
+the gate runner). Env-borne key material is still structurally validated,
+so a malformed secret key is caught before a tag is minted; on-disk key
+*files* are not checked by this gate. The check runs zero mutations: no
+`before:` hooks, no network probes, no pipeline.
+
+```bash
+$ anodizer release --preflight-secrets
+• preflight-secrets: all required publish secrets / credentials present
+```
+
+Wire it as the **root job a release depends on**, so a missing CI secret
+aborts before the tag is created (and before the expensive determinism
+matrix runs):
+
+```yaml
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # so OIDC-provenance request vars are present to check
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup-rust
+      # Build from the checkout (not a published anodizer) so a brand-new
+      # release that adds a publisher's secret is gated by THIS commit.
+      # --skip=<stage> any stage whose secret is RUNNER-AMBIENT rather than a
+      # registered CI secret (e.g. a self-hosted runner's ambient cloud creds):
+      # this github-hosted gate cannot see those, so demanding them here would
+      # false-fail and block every release. They are validated in-pipeline on
+      # the runner that holds them.
+      - run: cargo run -q --release -p anodizer -- release --preflight-secrets --skip=blob
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+          COSIGN_KEY: ${{ secrets.COSIGN_KEY }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # …every secret the downstream publish jobs consume as REGISTERED CI
+          # secrets (exclude runner-ambient ones via --skip above)…
+
+  tag:
+    needs: [preflight]
+    if: needs.preflight.result == 'success'
+    # …auto-tag only once the secret gate is green…
+```
+
+`--preflight-secrets` and `--no-preflight` are mutually exclusive. The
+gate runs even when HEAD carries no release tag (it is a *pre-tag* check)
+and ignores dirty-tree / dist state, since it never reads or writes
+either.
+
 ## What gets derived
 
 | Surface | Derived requirements |
