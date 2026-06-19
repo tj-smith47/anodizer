@@ -1989,11 +1989,12 @@ fn ctx_with_derived(crates: &[(&str, MetadataConfig)]) -> anodizer_core::context
     anodizer_core::context::Context::new(config, anodizer_core::context::ContextOptions::default())
 }
 
-fn meta(desc: &str, home: &str, license: &str, author: &str) -> MetadataConfig {
+fn meta(desc: &str, home: &str, license: &str, author: &str, repo: &str) -> MetadataConfig {
     MetadataConfig {
         description: Some(desc.to_string()),
         homepage: Some(home.to_string()),
         license: Some(license.to_string()),
+        repository: Some(repo.to_string()),
         maintainers: Some(vec![author.to_string()]),
         ..Default::default()
     }
@@ -2010,6 +2011,7 @@ fn postinstall_metadata_falls_back_to_cargo_toml_per_crate() {
             "https://demo.example",
             "MIT",
             "Demo Dev <dev@demo.example>",
+            "https://github.com/demo/demo",
         ),
     )]);
     let cfg = NpmConfig {
@@ -2023,6 +2025,10 @@ fn postinstall_metadata_falls_back_to_cargo_toml_per_crate() {
     assert_eq!(j["homepage"], "https://demo.example");
     assert_eq!(j["license"], "MIT");
     assert_eq!(j["author"], "Demo Dev <dev@demo.example>");
+    // repository.url is derived from Cargo.toml [package].repository with no
+    // publisher config — required for npm provenance validation to pass.
+    assert_eq!(j["repository"]["type"], "git");
+    assert_eq!(j["repository"]["url"], "https://github.com/demo/demo");
 }
 
 #[test]
@@ -2039,6 +2045,7 @@ fn optional_deps_metadata_per_crate_isolated_in_per_crate_workspace() {
                 "https://alpha.example",
                 "MIT",
                 "Alpha A <a@x>",
+                "https://github.com/acme/alpha",
             ),
         ),
         (
@@ -2048,6 +2055,7 @@ fn optional_deps_metadata_per_crate_isolated_in_per_crate_workspace() {
                 "https://beta.example",
                 "Apache-2.0",
                 "Beta B <b@x>",
+                "https://github.com/acme/beta",
             ),
         ),
     ]);
@@ -2081,16 +2089,20 @@ fn optional_deps_metadata_per_crate_isolated_in_per_crate_workspace() {
     assert_eq!(meta_j["homepage"], "https://alpha.example");
     assert_eq!(meta_j["license"], "MIT");
     assert_eq!(meta_j["author"], "Alpha A <a@x>");
+    assert_eq!(meta_j["repository"]["url"], "https://github.com/acme/alpha");
     // Categorically NOT beta's values.
     let s = layout.metapackage_json.clone();
     assert!(!s.contains("Beta tool"), "must not leak beta metadata");
     assert!(!s.contains("Apache-2.0"), "must not leak beta license");
+    assert!(!s.contains("acme/beta"), "must not leak beta repository");
 
-    // The per-platform package carries alpha's metadata too.
+    // The per-platform package carries alpha's metadata too — including the
+    // repository.url that npm provenance validates against the OIDC repo.
     let plat_j: serde_json::Value =
         serde_json::from_str(&layout.platforms[0].package_json).expect("plat json");
     assert_eq!(plat_j["description"], "Alpha tool");
     assert_eq!(plat_j["license"], "MIT");
+    assert_eq!(plat_j["repository"]["url"], "https://github.com/acme/alpha");
 }
 
 #[test]

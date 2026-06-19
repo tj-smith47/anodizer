@@ -1356,8 +1356,8 @@ impl Context {
     ///
     /// Exposes the project metadata block as a nested map with PascalCase keys
     /// the `.Metadata.*` namespace:
-    /// `Description`, `Homepage`, `Documentation`, `License`, `Maintainers`,
-    /// `ModTimestamp`, `FullDescription` (resolved),
+    /// `Description`, `Homepage`, `Documentation`, `License`, `Repository`,
+    /// `Maintainers`, `ModTimestamp`, `FullDescription` (resolved),
     /// `CommitAuthor.{Name,Email}`.
     /// Missing fields default to empty strings / empty arrays.
     ///
@@ -1373,6 +1373,7 @@ impl Context {
             homepage,
             documentation,
             license,
+            repository,
             maintainers,
             mod_timestamp,
             full_desc_src,
@@ -1401,6 +1402,11 @@ impl Context {
                 .unwrap_or("")
                 .to_string();
             let license = self.config.meta_license_project().unwrap_or("").to_string();
+            let repository = self
+                .config
+                .meta_repository_project()
+                .unwrap_or("")
+                .to_string();
             let maintainers: Vec<String> = meta
                 .and_then(|m| m.maintainers.as_ref())
                 .cloned()
@@ -1416,6 +1422,7 @@ impl Context {
                 homepage,
                 documentation,
                 license,
+                repository,
                 maintainers,
                 mod_timestamp,
                 full_desc_src,
@@ -1443,6 +1450,7 @@ impl Context {
             "Homepage": homepage,
             "Documentation": documentation,
             "License": license,
+            "Repository": repository,
             "Maintainers": maintainers,
             "ModTimestamp": mod_timestamp,
             "FullDescription": full_description,
@@ -2522,6 +2530,7 @@ mod tests {
             homepage: Some("https://example.com".to_string()),
             documentation: Some("https://docs.example.com".to_string()),
             license: Some("MIT".to_string()),
+            repository: Some("https://github.com/example/test".to_string()),
             maintainers: Some(vec!["Alice".to_string(), "Bob".to_string()]),
             mod_timestamp: Some("1234567890".to_string()),
             ..Default::default()
@@ -2534,6 +2543,9 @@ mod tests {
 
         let home = ctx.render_template("{{ Metadata.Homepage }}").unwrap();
         assert_eq!(home, "https://example.com");
+
+        let repo = ctx.render_template("{{ Metadata.Repository }}").unwrap();
+        assert_eq!(repo, "https://github.com/example/test");
 
         let docs = ctx.render_template("{{ Metadata.Documentation }}").unwrap();
         assert_eq!(docs, "https://docs.example.com");

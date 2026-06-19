@@ -573,6 +573,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 | `license` | string | — | Project license identifier, e.g. "MIT" or "Apache-2.0" (exposed as `{{ Metadata.License }}`). |
 | `maintainers` | list of string | — | List of project maintainers (exposed as `{{ Metadata.Maintainers }}`). |
 | `mod_timestamp` | string | — | Global modification timestamp for metadata output files (metadata.json and artifacts.json). Template string (e.g. "{{ CommitTimestamp }}") or unix timestamp. When set, rendered late in the pipeline and applied as file mtime. Exposed as `{{ Metadata.ModTimestamp }}`. |
+| `repository` | string | — | Project source-repository URL, e.g. a GitHub URL (exposed as `{{ Metadata.Repository }}`). Derived from `Cargo.toml [package].repository` when unset; feeds the npm `package.json` `repository` field, which npm provenance validates against the OIDC-claimed repository. |
 
 ## `milestones`
 | Field | Type | Default | Description |

@@ -35,6 +35,7 @@ use super::MetadataConfig;
 ///   `license-file` instead, no SPDX id can be synthesised, so `license`
 ///   is left unset rather than fabricated.
 /// - `homepage` ← `package.homepage`, falling back to `package.repository`.
+/// - `repository` ← `package.repository`.
 /// - `documentation` ← `package.documentation`.
 /// - `maintainers` ← `package.authors`.
 ///
@@ -70,8 +71,9 @@ pub fn derive_metadata_from_cargo_toml(crate_dir: &Path) -> MetadataConfig {
     // `license` slot. Leave empty when only `license-file` is present.
     let license = string_field(package, &workspace_pkg, "license");
 
-    let homepage = string_field(package, &workspace_pkg, "homepage")
-        .or_else(|| string_field(package, &workspace_pkg, "repository"));
+    let repository = string_field(package, &workspace_pkg, "repository");
+
+    let homepage = string_field(package, &workspace_pkg, "homepage").or_else(|| repository.clone());
 
     let documentation = string_field(package, &workspace_pkg, "documentation");
 
@@ -82,6 +84,7 @@ pub fn derive_metadata_from_cargo_toml(crate_dir: &Path) -> MetadataConfig {
         homepage,
         documentation,
         license,
+        repository,
         maintainers,
         mod_timestamp: None,
         full_description: None,
