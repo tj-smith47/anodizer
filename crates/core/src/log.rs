@@ -1090,7 +1090,17 @@ impl StageLogger {
             let stderr_tail = if stderr_raw.is_empty() {
                 String::from("<no stderr>")
             } else {
-                let redacted = self.redact(&stderr_raw);
+                // Strip the child's terminal color codes BEFORE redaction and
+                // truncation: this tail is bubbled up the anyhow chain and ends
+                // up in non-terminal sinks (failure-notification emails, the
+                // on_error hook's $ANODIZER_ERROR, JSON run summaries) where raw
+                // ANSI renders as garbage around every styled token. Color is
+                // forced on for child processes so the live CI log stays
+                // colorized; the persisted error must not inherit it. Stripping
+                // first also makes the byte cap below count visible content, not
+                // escape bytes.
+                let stripped = strip_ansi(&stderr_raw);
+                let redacted = self.redact(&stripped);
                 let trimmed = redacted.trim();
                 // Cap at 2 KiB to keep error chains scannable.
                 const MAX: usize = 2048;
@@ -1167,6 +1177,35 @@ impl StageLogger {
         };
         (stderr_line, stdout_line)
     }
+}
+
+/// Strip ANSI CSI escape sequences (SGR color codes, cursor moves) from `s`.
+///
+/// Captured subprocess output (cargo, gpg, …) carries terminal color codes
+/// when color is forced for the live CI log. Those bytes must never leak into
+/// a propagated error message that reaches a non-terminal sink — a failure
+/// email, the `on_error` hook's `$ANODIZER_ERROR`, a JSON run summary — where
+/// they render as garbage around every styled token.
+pub(crate) fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // Only a CSI introducer (`ESC [`) starts a parameterized sequence
+            // we must consume to its final byte (0x40–0x7E); any other escape
+            // form (a lone ESC, a two-char sequence) drops just the introducer.
+            if chars.next() == Some('[') {
+                for ec in chars.by_ref() {
+                    if ('\u{40}'..='\u{7e}').contains(&ec) {
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -1277,26 +1316,6 @@ mod tests {
             }
         }
         assert!(PENDING.lock().unwrap().is_empty());
-    }
-
-    /// Strip ANSI SGR escapes so a colorized header can be compared on its
-    /// plain-text layout (leading indent + gutter) alone.
-    fn strip_ansi(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        let mut chars = s.chars();
-        while let Some(c) = chars.next() {
-            if c == '\u{1b}' {
-                // Skip the CSI sequence up to and including its final byte.
-                for ec in chars.by_ref() {
-                    if ec.is_ascii_alphabetic() {
-                        break;
-                    }
-                }
-            } else {
-                out.push(c);
-            }
-        }
-        out
     }
 
     /// Run `f` with the process stderr fd (2) redirected to a temp file, then
@@ -1861,6 +1880,33 @@ mod tests {
         assert!(
             msg.contains("stderr:") && msg.contains("401 Unauthorized"),
             "bail message should embed redacted stderr tail: {msg}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_check_output_bail_message_strips_ansi_color_codes() {
+        // Color is forced on for child processes so the live CI log stays
+        // colorized; cargo (and friends) then emit SGR escapes around versions,
+        // paths, and numbers. The bubbled tail flows into failure-notification
+        // emails and the on_error hook's $ANODIZER_ERROR, which render raw ANSI
+        // as garbage — so the persisted error must carry plain text only.
+        let log = StageLogger::new("test", Verbosity::Normal);
+        // cargo-shaped colorized stderr: bold version, dimmed path, red error.
+        let colorized =
+            b"\x1b[1mPackaging\x1b[0m foo \x1b[2mv\x1b[1m0.11.3\x1b[0m\n\x1b[31merror\x1b[0m: exit \x1b[33m101\x1b[0m\n";
+        let output = fake_output(b"", colorized, 101);
+        let err = log
+            .check_output(output, "cargo publish")
+            .expect_err("non-zero exit should bail");
+        let msg = format!("{err:#}");
+        assert!(
+            !msg.contains('\u{1b}'),
+            "bail message must contain no ANSI escape bytes: {msg:?}"
+        );
+        assert!(
+            msg.contains("Packaging") && msg.contains("0.11.3") && msg.contains("101"),
+            "plain-text content must survive ANSI stripping: {msg}"
         );
     }
 
