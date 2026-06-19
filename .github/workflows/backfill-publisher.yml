@@ -38,6 +38,18 @@ on:
         description: Branch of tj-smith47/anodizer to build the publishing binary from (carries publish-path fixes; separate from `tag`).
         required: false
         default: master
+      skip:
+        description: >-
+          Comma-separated stages to pass to `--skip=` (empty = skip nothing).
+          Defaults to `verify-release`: a backfill re-publishes one publisher
+          for an already-released, already-verified tag and produces no new
+          release assets, while verify-release re-runs whole-release install
+          smoke-tests that pull cross-arch (e.g. arm64) packages — these cannot
+          execute on an amd64 github-hosted runner without qemu/binfmt and would
+          spuriously fail the run after the publish already landed. Override to
+          `""` on a runner with emulation, or to widen the skip set.
+        required: false
+        default: verify-release
       dry_run:
         description: >-
           Resolve and stage the publish without writing to the registry. Leave
@@ -77,7 +89,7 @@ jobs:
         with:
           from-branch: ${{ inputs.from_branch }}
           install: node
-          args: release --publish-only --publishers ${{ inputs.publishers }}${{ inputs.dry_run && ' --dry-run' || '' }}
+          args: release --publish-only --publishers ${{ inputs.publishers }}${{ inputs.skip && format(' --skip={0}', inputs.skip) || '' }}${{ inputs.dry_run && ' --dry-run' || '' }}
         env:
           # The publish binary is built from `from_branch`, so its compiled
           # version (e.g. master's 0.11.2) drives the HEAD-points-at-tag guard —
