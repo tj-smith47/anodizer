@@ -452,14 +452,6 @@ impl Config {
             .or_else(|| self.meta_description_for(self.primary_crate_name()?))
     }
 
-    /// Project source-repository URL: top-level `metadata.repository` wins, else
-    /// the primary crate's `Cargo.toml`-derived repository. Backs the
-    /// `{{ Metadata.Repository }}` template var.
-    pub fn meta_repository_project(&self) -> Option<&str> {
-        self.meta_repository()
-            .or_else(|| self.meta_repository_for(self.primary_crate_name()?))
-    }
-
     /// Project license: top-level `metadata.license` wins, else the primary
     /// crate's `Cargo.toml`-derived license. For the `{{ Metadata.License }}`
     /// template var and project-level publishers with no owning crate.
@@ -483,11 +475,6 @@ impl Config {
     /// Project license from `metadata.license` (top-level YAML only).
     pub fn meta_license(&self) -> Option<&str> {
         self.metadata.as_ref().and_then(|m| m.license.as_deref())
-    }
-
-    /// Project source-repository URL from `metadata.repository` (top-level YAML only).
-    pub fn meta_repository(&self) -> Option<&str> {
-        self.metadata.as_ref().and_then(|m| m.repository.as_deref())
     }
 
     /// Project description from `metadata.description` (top-level YAML only).
@@ -531,16 +518,6 @@ impl Config {
     pub fn meta_license_for(&self, crate_name: &str) -> Option<&str> {
         self.meta_license()
             .or_else(|| self.derived_for(crate_name)?.license.as_deref())
-    }
-
-    /// Source-repository URL for `crate_name`: top-level `metadata.repository`
-    /// wins, else the crate's `Cargo.toml [package].repository`. Feeds the npm
-    /// `package.json` `repository` field so npm provenance validation (which
-    /// matches it against the OIDC-claimed repository) passes without requiring
-    /// the operator to restate the URL in the publisher config.
-    pub fn meta_repository_for(&self, crate_name: &str) -> Option<&str> {
-        self.meta_repository()
-            .or_else(|| self.derived_for(crate_name)?.repository.as_deref())
     }
 
     /// Description for `crate_name`: top-level `metadata.description` wins, else

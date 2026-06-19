@@ -152,11 +152,6 @@ pub struct MetadataConfig {
     pub documentation: Option<String>,
     /// Project license identifier, e.g. "MIT" or "Apache-2.0" (exposed as `{{ Metadata.License }}`).
     pub license: Option<String>,
-    /// Project source-repository URL, e.g. a GitHub URL (exposed as
-    /// `{{ Metadata.Repository }}`). Derived from `Cargo.toml [package].repository`
-    /// when unset; feeds the npm `package.json` `repository` field, which npm
-    /// provenance validates against the OIDC-claimed repository.
-    pub repository: Option<String>,
     /// List of project maintainers (exposed as `{{ Metadata.Maintainers }}`).
     pub maintainers: Option<Vec<String>>,
     /// Global modification timestamp for metadata output files (metadata.json and artifacts.json).

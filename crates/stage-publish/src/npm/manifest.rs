@@ -360,20 +360,10 @@ pub(crate) fn insert_common_metadata(
         );
     }
 
-    // Repository URL feeds npm provenance validation: when `provenance: true`,
-    // npm rejects (E422) any package whose `repository.url` does not match the
-    // OIDC-claimed repository. Fall back to the crate's
-    // `Cargo.toml [package].repository` so the field is correct by default and
-    // never requires the operator to restate it in the publisher config.
-    let repository = cfg.repository.as_deref().map(&render).or_else(|| {
-        ctx.config
-            .meta_repository_for(crate_name)
-            .map(str::to_string)
-    });
-    if let Some(repo_url) = repository {
+    if let Some(repo_url) = cfg.repository.as_deref() {
         let mut obj = serde_json::Map::new();
         obj.insert("type".into(), serde_json::Value::String("git".into()));
-        obj.insert("url".into(), serde_json::Value::String(repo_url));
+        obj.insert("url".into(), serde_json::Value::String(render(repo_url)));
         root.insert("repository".into(), serde_json::Value::Object(obj));
     }
 
