@@ -1,7 +1,13 @@
 //! Per-run artifact discovery, hashing, and drift-bin dump/prune.
 //!
 //! - [`discover_artifacts`] walks `<worktree>/dist` and surfaces the
-//!   raw cargo binaries under `<worktree>/.det-tmp/target/`.
+//!   shipped raw cargo binaries under `<worktree>/.det-tmp/target/`. The
+//!   per-triple `<triple>/release/<bin>` outputs are always surfaced; the
+//!   bare host `release/<bin>` is surfaced only when no per-triple build
+//!   is present (a host-native consumer with no `--target`). When any
+//!   `<triple>/release/` exists the bare host binary is a non-shipped
+//!   tooling byproduct (the man-page `before:` hook's `cargo run` output)
+//!   and is excluded from the comparison set.
 //! - [`hash_artifacts`] SHA256s every artifact and returns
 //!   `{name -> ArtifactInfo}` (hash + size + path + stage
 //!   attribution + head/tail samples).
@@ -81,18 +87,29 @@ pub(super) const TAIL_SAMPLE_BYTES: usize = 16 * 1024;
 /// Walk `<worktree>/dist` and collect every regular file. Sorted by path
 /// for deterministic iteration order in tests.
 ///
-/// Also surfaces the **raw cargo build outputs** at
-/// `<worktree>/.det-tmp/target/<triple>/release/<bin>` (or
-/// `<worktree>/.det-tmp/target/release/<bin>` when the build wasn't
-/// `--target`-pinned). These are the SOURCE of any RUSTFLAGS / mtime /
-/// build-script drift that later propagates into every wrapped archive
-/// (`.tar.gz`, `.tar.xz`, `.zip`, ...). Hashing them directly lets the
-/// report point a finger at the raw binary instead of the operator
-/// having to peel six layers of containers to find that the underlying
-/// `target/release/anodize` was nondeterministic. Path-remapping
-/// (`--remap-path-prefix`) is already applied via the env block, so on
-/// a healthy run these hashes will match; if they ever drift, we want
-/// the diagnostic chain to start here.
+/// Also surfaces the **shipped raw cargo build outputs** under
+/// `<worktree>/.det-tmp/target/`. These are the SOURCE of any RUSTFLAGS /
+/// mtime / build-script drift that later propagates into every wrapped
+/// archive (`.tar.gz`, `.tar.xz`, `.zip`, ...). Hashing them directly
+/// lets the report point a finger at the raw binary instead of the
+/// operator having to peel six layers of containers to find that the
+/// underlying `target/release/anodize` was nondeterministic.
+/// Path-remapping (`--remap-path-prefix`) is already applied via the env
+/// block, so on a healthy run these hashes will match; if they ever
+/// drift, the diagnostic chain starts here.
+///
+/// Which binaries count as shipped depends on the build layout:
+///   - `<cargo_target>/<triple>/release/<bin>` — always surfaced; these
+///     are the pre-package binaries that land in archives.
+///   - `<cargo_target>/release/<bin>` (bare host, no triple) — surfaced
+///     ONLY when no `<triple>/release/` directory exists (a host-native
+///     consumer building with no `--target`). When any per-triple build
+///     is present, the bare host binary is a non-shipped tooling
+///     byproduct — e.g. the man-page `before:` hook runs
+///     `cargo run --release --bin anodizer -- man` to emit `dist/anodizer.1`,
+///     leaving a throwaway host binary that never ships and that has hit
+///     intermittent codegen non-determinism on windows-msvc — so it is
+///     excluded from the comparison set.
 ///
 /// The function only walks the immediate `release/` directory (not
 /// `deps/`, `build/`, `.fingerprint/`, etc.) and filters to files
@@ -132,15 +149,26 @@ fn visit_dir(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 
 /// Collect raw cargo release binaries from `<cargo_target>/[<triple>/]release/`.
 ///
-/// Two layouts to support:
+/// Two layouts, with different shipping semantics:
 ///
-/// - `<cargo_target>/release/<bin>` — host build, no `--target` flag.
 /// - `<cargo_target>/<triple>/release/<bin>` — cross-target build.
+///   ALWAYS collected: these are the pre-package shipped binaries.
+/// - `<cargo_target>/release/<bin>` — bare host build, no `--target`.
+///   Collected ONLY when no `<triple>/release/` directory is present (a
+///   host-native consumer building with no `--target`). The exclusion is
+///   keyed on the presence of any per-triple build, not on inspecting the
+///   binary's provenance. It is sound because anodizer's build stage always
+///   pins `--target`, so a shipped binary never lands at the bare
+///   `release/<bin>` path — when a per-triple build exists, anything at that
+///   path is a host `cargo run` hook byproduct (e.g. the man-page `before:`
+///   hook running `cargo run --release --bin anodizer -- man` to emit
+///   `dist/anodizer.1`), which has hit intermittent windows-msvc codegen
+///   non-determinism. Gating the release on a throwaway hook binary is a
+///   false positive, so it is excluded.
 ///
-/// We only emit the top-level files inside each `release/` directory.
+/// Only the top-level files inside each `release/` directory are emitted.
 /// `release/deps`, `release/build`, `release/.fingerprint`, etc. are
-/// cargo's internal scratch and not what we want to fingerprint for
-/// drift detection.
+/// cargo's internal scratch and not fingerprinted for drift detection.
 ///
 /// File filter: regular files whose extension is empty (`anodize`) or
 /// `.exe` (`anodize.exe`). Excludes `.d` (depfiles), `.pdb` (debug
@@ -152,6 +180,12 @@ fn collect_raw_binaries(target_root: &Path, out: &mut Vec<PathBuf>) -> Result<()
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(e).with_context(|| format!("reading {}", target_root.display())),
     };
+    // First pass: collect every per-triple `<triple>/release/` binary and
+    // note whether any per-triple build is present. The bare host
+    // `release/` directory's shipping status depends on that answer, so it
+    // is deferred to a second decision below.
+    let mut host_release: Option<PathBuf> = None;
+    let mut any_triple_release = false;
     for entry in entries {
         let entry = entry?;
         let name = entry.file_name();
@@ -160,7 +194,7 @@ fn collect_raw_binaries(target_root: &Path, out: &mut Vec<PathBuf>) -> Result<()
             continue;
         }
         if name_s == "release" {
-            push_release_dir_files(&entry.path(), out)?;
+            host_release = Some(entry.path());
         } else if name_s == "debug"
             || name_s == ".rustc_info.json"
             || name_s == "CACHEDIR.TAG"
@@ -170,8 +204,20 @@ fn collect_raw_binaries(target_root: &Path, out: &mut Vec<PathBuf>) -> Result<()
         } else {
             let release_dir = entry.path().join("release");
             if release_dir.is_dir() {
+                any_triple_release = true;
                 push_release_dir_files(&release_dir, out)?;
             }
+        }
+    }
+    // The decision keys on whether any per-triple build is present, not on
+    // the bare binary's provenance. That is sound because anodizer's build
+    // stage always pins `--target`, so a shipped binary never lands at the
+    // bare `release/<bin>` path — when a per-triple build exists, anything
+    // there is only ever a host `cargo run` hook byproduct (the man-page
+    // emitter), never a shipped artifact, so it is excluded.
+    if let Some(host_release) = host_release {
+        if !any_triple_release {
+            push_release_dir_files(&host_release, out)?;
         }
     }
     Ok(())
@@ -596,14 +642,19 @@ mod tests {
         );
     }
 
-    /// `discover_artifacts` MUST surface raw cargo binaries from
-    /// `<worktree>/.det-tmp/target/<triple>/release/<bin>` AND
-    /// `<worktree>/.det-tmp/target/release/<bin>`, alongside `dist/`
-    /// artifacts, with the raw binaries getting a `target/...` map key
-    /// prefix so the report distinguishes them from any same-basename
+    /// `discover_artifacts` MUST surface the per-triple raw cargo binaries
+    /// from `<worktree>/.det-tmp/target/<triple>/release/<bin>` alongside
+    /// `dist/` artifacts, with the raw binaries getting a `target/...` map
+    /// key prefix so the report distinguishes them from any same-basename
     /// `dist/` files. Closes the diagnostic gap where binary-level
-    /// RUSTFLAGS / mtime drift was only observable through six layers
-    /// of wrapper archives.
+    /// RUSTFLAGS / mtime drift was only observable through six layers of
+    /// wrapper archives.
+    ///
+    /// When per-triple builds are present, the bare host
+    /// `target/release/<bin>` is a non-shipped tooling byproduct (the
+    /// man-page hook's `cargo run` output) and MUST be excluded — it hit
+    /// intermittent windows-msvc codegen non-determinism and gating the
+    /// release on it is a false positive.
     #[test]
     fn discover_artifacts_includes_raw_cargo_binaries() {
         let tmp = tempfile::tempdir().unwrap();
@@ -639,7 +690,9 @@ mod tests {
         // .pdb debug symbols must NOT be surfaced.
         std::fs::write(win_release.join("anodize.pdb"), b"pdb").unwrap();
 
-        // Host build (no triple): target/release/anodize.
+        // Host build (no triple): target/release/anodize. With per-triple
+        // builds present this is the non-shipped man-page-hook byproduct
+        // and MUST be excluded.
         let host_release = wt.join(".det-tmp").join("target").join("release");
         std::fs::create_dir_all(&host_release).unwrap();
         std::fs::write(host_release.join("anodize"), b"raw-bin-host").unwrap();
@@ -656,11 +709,13 @@ mod tests {
                 .any(|n| n == "anodize_0.3.0_linux_amd64.tar.gz"),
             "dist artifact missing: {names:?}"
         );
-        // Three raw binaries: linux triple, windows triple, host release.
+        // Only the per-triple `anodize` (linux) is shipped; the bare host
+        // `target/release/anodize` is the man-page-hook byproduct and is
+        // excluded when any per-triple build exists.
         assert_eq!(
             names.iter().filter(|n| n.as_str() == "anodize").count(),
-            2,
-            "expected 2 `anodize` raw binaries (linux + host), got: {names:?}"
+            1,
+            "expected 1 `anodize` raw binary (linux triple only; host excluded), got: {names:?}"
         );
         assert!(
             names.iter().any(|n| n == "anodize.exe"),
@@ -676,13 +731,20 @@ mod tests {
         }
 
         // hash_artifacts must label the raw binaries with a `target/...`
-        // map key so the report distinguishes them from `dist/`.
+        // map key so the report distinguishes them from `dist/`. Two
+        // per-triple keys (linux + windows); the host binary is excluded.
         let map = hash_artifacts(wt, &artifacts).expect("hash");
         let target_keys: Vec<&String> = map.keys().filter(|k| k.starts_with("target/")).collect();
         assert_eq!(
             target_keys.len(),
-            3,
-            "expected 3 `target/...`-prefixed map keys, got: {:?}",
+            2,
+            "expected 2 `target/...`-prefixed map keys (per-triple only), got: {:?}",
+            map.keys().collect::<Vec<_>>()
+        );
+        // The bare host `target/release/anodize` byproduct must NOT appear.
+        assert!(
+            !map.contains_key("target/release/anodize"),
+            "non-shipped host byproduct `target/release/anodize` leaked into the comparison set: {:?}",
             map.keys().collect::<Vec<_>>()
         );
         // Forward slashes regardless of host platform.
@@ -708,6 +770,64 @@ mod tests {
                 "raw binary `{k}` must be attributed to `build` stage"
             );
         }
+    }
+
+    /// When NO per-triple `<triple>/release/` directory exists, the bare
+    /// host `target/release/<bin>` IS the shipped deliverable (a
+    /// host-native consumer building with no `--target`) and MUST be
+    /// surfaced. Complements `discover_artifacts_includes_raw_cargo_binaries`,
+    /// which proves the byproduct is excluded once any per-triple build
+    /// is present.
+    #[test]
+    fn discover_artifacts_includes_host_release_when_no_triple_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let wt = tmp.path();
+
+        // dist artifact (existing surface)
+        let dist = wt.join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        std::fs::write(dist.join("anodize_0.3.0_linux_amd64.tar.gz"), b"archive").unwrap();
+
+        // Host build only — no `<triple>/release/` directory anywhere.
+        let host_release = wt.join(".det-tmp").join("target").join("release");
+        std::fs::create_dir_all(&host_release).unwrap();
+        std::fs::write(host_release.join("anodize"), b"raw-bin-host").unwrap();
+        // Scratch beside it must still be excluded.
+        std::fs::write(host_release.join("anodize.d"), b"depfile").unwrap();
+        std::fs::create_dir_all(host_release.join("deps")).unwrap();
+        std::fs::write(host_release.join("deps").join("libfoo.rlib"), b"rlib").unwrap();
+
+        let artifacts = discover_artifacts(wt).expect("discover");
+        let names: Vec<String> = artifacts
+            .iter()
+            .map(|p| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+
+        assert!(
+            names
+                .iter()
+                .any(|n| n == "anodize_0.3.0_linux_amd64.tar.gz"),
+            "dist artifact missing: {names:?}"
+        );
+        // The host binary is the shipped deliverable here and must appear.
+        assert_eq!(
+            names.iter().filter(|n| n.as_str() == "anodize").count(),
+            1,
+            "host-native `target/release/anodize` must be surfaced when no triple build exists, got: {names:?}"
+        );
+        for forbidden in ["anodize.d", "libfoo.rlib"] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "cargo scratch `{forbidden}` leaked into discovery: {names:?}"
+            );
+        }
+
+        let map = hash_artifacts(wt, &artifacts).expect("hash");
+        assert!(
+            map.contains_key("target/release/anodize"),
+            "expected `target/release/anodize` key (host-native deliverable), got: {:?}",
+            map.keys().collect::<Vec<_>>()
+        );
     }
 
     /// `prune_dump_to_drifted` MUST keep dumped bytes whose BASENAME

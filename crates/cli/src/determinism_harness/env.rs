@@ -245,13 +245,24 @@ pub(super) fn allow_listed_path() -> String {
 /// through the injected [`EnvSource`].
 ///
 /// Production wires this with [`ProcessEnvSource`] (which delegates to
-/// `std::env::var` / `std::env::vars`) via [`build_subprocess_env`].
-/// Tests pass a closed `MapEnvSource` to drive every branch — credential
-/// leak, identity propagation, Windows namespace gate — without
-/// mutating process env.
+/// `std::env::var` / `std::env::vars`) and a runtime
+/// [`anodizer_core::determinism::host_is_windows_msvc`] probe via
+/// [`build_subprocess_env`]. Tests pass a closed `MapEnvSource` and an
+/// explicit `host_is_windows_msvc` to drive every branch — credential leak,
+/// identity propagation, Windows namespace gate, the global-RUSTFLAGS MSVC
+/// injection — on any host, without mutating process env.
+///
+/// `host_is_windows_msvc` is the injected host-OS decision: when `true`, the
+/// global RUSTFLAGS gains the [`MSVC_DETERMINISM_RUSTFLAGS`] set so the
+/// host (`--target`-less) build is reproducible. It is a parameter — not a
+/// `cfg!(windows)` check — so a cross-built harness binary keys off the OS
+/// it RUNS on, not the one it was BUILT on.
+///
+/// [`MSVC_DETERMINISM_RUSTFLAGS`]: anodizer_core::determinism::MSVC_DETERMINISM_RUSTFLAGS
 pub(crate) fn build_subprocess_env_with_env(
     inputs: &BuildSubprocessEnv<'_>,
     host_env: &dyn EnvSource,
+    host_is_windows_msvc: bool,
 ) -> HashMap<String, String> {
     let mut env = HashMap::new();
     env.insert(
@@ -341,39 +352,15 @@ pub(crate) fn build_subprocess_env_with_env(
         env.insert("RUSTFLAGS".into(), rustflags.clone());
     }
 
-    // Windows MSVC determinism flags. See [target.*] rustflags in
-    // `.cargo/config.toml` for the non-harness path. This per-target
-    // env var path is required because the harness sets RUSTFLAGS for
-    // `--remap-path-prefix`, which (per cargo precedence) suppresses
-    // the `[target.<triple>] rustflags` config entry.
-    //
-    // The flag set:
-    //   - `-C codegen-units=1` — single codegen unit so cross-CU
-    //     function-ordering non-determinism doesn't shuffle the
-    //     resulting object's symbol/section layout.
-    //   - `-C link-arg=/Brepro` — substitute PE `TimeDateStamp` with a
-    //     content hash.
-    //   - `-C link-arg=/OPT:NOICF` — disable Identical COMDAT Folding.
-    //   - `-C link-arg=/INCREMENTAL:NO` — disable incremental linking.
-    //   - `-C link-arg=/DEBUG:NONE` — do not emit PDB or CodeView
-    //     records.
-    //   - `-C strip=symbols` — drop the COFF symbol table.
-    let msvc_flags = [
-        "-C codegen-units=1",
-        "-C link-arg=/Brepro",
-        "-C link-arg=/OPT:NOICF",
-        "-C link-arg=/INCREMENTAL:NO",
-        "-C link-arg=/DEBUG:NONE",
-        "-C strip=symbols",
-    ];
+    // Windows MSVC determinism flags. The canonical flag set lives in
+    // `anodizer_core::determinism::MSVC_DETERMINISM_RUSTFLAGS` (also
+    // mirrored in `[target.*] rustflags` in `.cargo/config.toml`). This
+    // per-target env var path is required because the harness sets RUSTFLAGS
+    // for `--remap-path-prefix`, which (per cargo precedence) suppresses the
+    // `[target.<triple>] rustflags` config entry. `merge_*` deduplicates so
+    // an inherited token (host RUSTFLAGS carrying `/Brepro`) is not doubled.
     for triple in ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"] {
-        let mut per_target = rustflags.clone();
-        for flag in msvc_flags {
-            if !per_target.is_empty() {
-                per_target.push(' ');
-            }
-            per_target.push_str(flag);
-        }
+        let per_target = anodizer_core::determinism::merge_msvc_determinism_rustflags(&rustflags);
         let key = format!(
             "CARGO_TARGET_{}_RUSTFLAGS",
             triple.replace('-', "_").to_uppercase()
@@ -381,20 +368,22 @@ pub(crate) fn build_subprocess_env_with_env(
         env.insert(key, per_target);
     }
 
-    // On Windows, the host build (e.g. `cargo run --release` invoked
-    // by a `before:` hook) lands at `target/release/anodizer.exe`.
-    // Cargo's host build reads global `RUSTFLAGS` (not the per-target
-    // `CARGO_TARGET_<HOST>_RUSTFLAGS`, which only applies when
-    // `--target=<HOST>` is explicit). Safe on Windows runners because
-    // the host triple IS msvc, so the link.exe-specific flags are
-    // valid for every build (proc-macros, build scripts, etc.).
-    if cfg!(windows) {
-        for flag in msvc_flags {
-            if !rustflags.is_empty() {
-                rustflags.push(' ');
-            }
-            rustflags.push_str(flag);
-        }
+    // When the host running this harness is itself windows-msvc, the host
+    // build (e.g. `cargo run --release` invoked by a `before:` hook) lands at
+    // `target/release/anodizer.exe`. Cargo's host build reads global
+    // `RUSTFLAGS` (not the per-target `CARGO_TARGET_<HOST>_RUSTFLAGS`, which
+    // only applies when `--target=<HOST>` is explicit), so the global set
+    // must also carry `/Brepro` or the host .exe drifts at PE offset 0x108.
+    //
+    // RUNTIME host detection, not `cfg!(windows)`: the harness binary may be
+    // built on a different OS than it runs on (and consumers run
+    // `anodizer check determinism` locally on Windows from binaries built
+    // anywhere). A compile-time check reads the BUILD os, not the RUN os, and
+    // would silently skip the injection on a cross-built binary — the exact
+    // failure class this guards. The MSVC link.exe flags are only valid on a
+    // windows-msvc host, so they must NOT be added on any other host.
+    if host_is_windows_msvc {
+        rustflags = anodizer_core::determinism::merge_msvc_determinism_rustflags(&rustflags);
         env.insert("RUSTFLAGS".into(), rustflags.clone());
     }
 
@@ -510,9 +499,16 @@ pub(crate) fn build_subprocess_env_with_env(
 ///
 /// The harness drives this from a single-threaded orchestrator, so the
 /// `std::env::vars()` snapshot inside [`ProcessEnvSource`] is consistent
-/// for the lifetime of the call.
+/// for the lifetime of the call. The host-OS decision is resolved at
+/// RUNTIME via [`anodizer_core::determinism::host_is_windows_msvc`]
+/// (a `rustc -vV` probe) so it reflects the machine the harness is running
+/// on, even for a cross-built binary.
 pub(crate) fn build_subprocess_env(inputs: &BuildSubprocessEnv<'_>) -> HashMap<String, String> {
-    build_subprocess_env_with_env(inputs, &ProcessEnvSource)
+    build_subprocess_env_with_env(
+        inputs,
+        &ProcessEnvSource,
+        anodizer_core::determinism::host_is_windows_msvc(),
+    )
 }
 
 #[cfg(test)]
@@ -533,13 +529,25 @@ mod tests {
     }
 
     /// Drive `build_subprocess_env_with_env` against a closed `MapEnvSource`
-    /// seeded from the supplied `(key, value)` fixtures.
+    /// seeded from the supplied `(key, value)` fixtures, with a NON-windows
+    /// host (the common case for the env-policy assertions below).
     fn build_with(scratch: &Path, host: &[(&str, &str)]) -> HashMap<String, String> {
+        build_with_host(scratch, host, false)
+    }
+
+    /// `build_with` with an explicit host-windows-msvc decision so the
+    /// global-RUSTFLAGS MSVC injection can be exercised on any host (the
+    /// injectable seam that lets the Windows regression run on Linux CI).
+    fn build_with_host(
+        scratch: &Path,
+        host: &[(&str, &str)],
+        host_is_windows_msvc: bool,
+    ) -> HashMap<String, String> {
         let mut map = MapEnvSource::new();
         for (k, v) in host {
             map.set(*k, *v);
         }
-        build_subprocess_env_with_env(&inputs(scratch), &map)
+        build_subprocess_env_with_env(&inputs(scratch), &map, host_is_windows_msvc)
     }
 
     #[test]
@@ -996,28 +1004,67 @@ mod tests {
         }
     }
 
-    /// Regression: on Windows, global RUSTFLAGS must ALSO carry the
-    /// MSVC determinism flags so the host build (e.g.
-    /// `cargo run --release` invoked by a `before:` hook, which has
-    /// no `--target` and therefore reads global RUSTFLAGS) lands a
-    /// byte-stable `target/release/anodizer.exe`.
+    /// Regression (the v0.11.3 PE TimeDateStamp drift): when the host is
+    /// windows-msvc, global RUSTFLAGS must ALSO carry the MSVC determinism
+    /// flags so the host build (e.g. `cargo run --release` invoked by a
+    /// `before:` hook, which has no `--target` and therefore reads global
+    /// RUSTFLAGS) lands a byte-stable `target/release/anodizer.exe`.
+    ///
+    /// Linux-runnable: the host-windows decision is INJECTED, not read from
+    /// `cfg!(windows)`. The original guard was `#[cfg(windows)]`-gated and
+    /// so never ran on Linux CI — which is precisely why the regression
+    /// shipped undetected. This now runs on every host.
     #[test]
-    #[cfg(windows)]
-    fn harness_env_windows_injects_msvc_flags_into_global_rustflags() {
+    fn harness_env_injects_msvc_flags_into_global_rustflags_for_windows_host() {
         let tmp = tempfile::tempdir().unwrap();
-        let env = build_with(tmp.path(), &[]);
+        let env = build_with_host(tmp.path(), &[], true);
         let rf = env.get("RUSTFLAGS").expect(
-            "RUSTFLAGS must be set on Windows so host builds (no --target) are reproducible",
+            "RUSTFLAGS must be set for a windows-msvc host so host builds (no --target) are reproducible",
         );
-        for needle in ["-C link-arg=/Brepro", "-C link-arg=/DEBUG:NONE"] {
+        for needle in [
+            "-C codegen-units=1",
+            "-C link-arg=/Brepro",
+            "-C link-arg=/OPT:NOICF",
+            "-C link-arg=/INCREMENTAL:NO",
+            "-C link-arg=/DEBUG:NONE",
+            "-C strip=symbols",
+        ] {
             assert!(
                 rf.contains(needle),
-                "global RUSTFLAGS must carry `{needle}` on Windows. got={rf}"
+                "global RUSTFLAGS must carry `{needle}` for a windows host. got={rf}"
             );
         }
         assert!(
             rf.contains("--remap-path-prefix="),
             "global RUSTFLAGS must also carry --remap-path-prefix. got={rf}"
+        );
+        assert_eq!(
+            rf.matches("/Brepro").count(),
+            1,
+            "/Brepro must appear exactly once in global RUSTFLAGS. got={rf}"
+        );
+    }
+
+    /// Mirror of the above: a NON-windows host must NOT get the
+    /// MSVC-linker-only flags injected into global RUSTFLAGS — `/Brepro`
+    /// makes lld / ld error, so a Linux/macOS host build would break.
+    #[test]
+    fn harness_env_omits_global_msvc_flags_for_non_windows_host() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = build_with_host(tmp.path(), &[], false);
+        // Global RUSTFLAGS is only set when a base existed (remap rules), and
+        // must never carry /Brepro on a non-windows host.
+        if let Some(rf) = env.get("RUSTFLAGS") {
+            assert!(
+                !rf.contains("/Brepro"),
+                "non-windows host must NOT carry MSVC-only /Brepro in global RUSTFLAGS. got={rf}"
+            );
+        }
+        // The per-target windows entries still exist (they're target-keyed,
+        // valid for cross-building Windows from this host).
+        assert!(
+            env.contains_key("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS"),
+            "per-target windows-msvc RUSTFLAGS must still be injected regardless of host"
         );
     }
 

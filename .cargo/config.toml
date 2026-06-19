@@ -9,6 +9,12 @@ xtask = "run --package xtask --"
 # precedence) suppresses these per-target entries — see
 # `build_subprocess_env` in `crates/cli/src/determinism_harness.rs`.
 #
+# Single source of truth: this list MUST stay byte-identical to
+# `anodizer_core::determinism::MSVC_DETERMINISM_RUSTFLAGS` (a cargo config
+# file cannot import a Rust const). The const's unit test
+# `msvc_rustflags_const_matches_cargo_config` reads this file via
+# `include_str!` and fails the build if the two drift.
+#
 # Flags:
 #   - `codegen-units=1` — single codegen unit so cross-CU function
 #     ordering doesn't shuffle the resulting symbol/section layout

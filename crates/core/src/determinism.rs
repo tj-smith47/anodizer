@@ -21,6 +21,101 @@ use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::process::Command;
 
+/// MSVC-only RUSTFLAGS tokens that make a `*-pc-windows-msvc` binary
+/// byte-reproducible across rebuilds.
+///
+/// This is the single source of truth for the Windows-MSVC determinism flag
+/// set. It is referenced by both the build stage (per-target RUSTFLAGS for
+/// every `anodizer release --reproducible` Windows build) and the
+/// determinism harness's child-subprocess env construction. The static
+/// `[target.*-pc-windows-msvc] rustflags` block in `.cargo/config.toml`
+/// duplicates this list verbatim (a cargo config file cannot import a Rust
+/// const); a comment there points back here so the two cannot silently drift.
+///
+/// Each token:
+/// - `-C codegen-units=1` — single codegen unit so cross-CU function
+///   ordering does not shuffle the object's symbol/section layout.
+/// - `-C link-arg=/Brepro` — substitute the PE COFF `TimeDateStamp`
+///   (offset 0x108) with a content hash instead of wall-clock time.
+/// - `-C link-arg=/OPT:NOICF` — disable Identical COMDAT Folding, whose
+///   fold decisions depend on input-file presentation order.
+/// - `-C link-arg=/INCREMENTAL:NO` — disable incremental linking
+///   (`/Brepro` is incompatible with it).
+/// - `-C link-arg=/DEBUG:NONE` — emit no PDB / CodeView debug record.
+/// - `-C strip=symbols` — drop the COFF symbol table.
+///
+/// `/Brepro` and the `/...` link args are MSVC-linker-only; applying them to
+/// a non-MSVC target makes lld / ld error, so callers gate on
+/// [`crate::target::is_windows_msvc`] (target-keyed) or
+/// [`host_is_windows_msvc`] (host-keyed) before merging these in.
+pub const MSVC_DETERMINISM_RUSTFLAGS: &[&str] = &[
+    "-C codegen-units=1",
+    "-C link-arg=/Brepro",
+    "-C link-arg=/OPT:NOICF",
+    "-C link-arg=/INCREMENTAL:NO",
+    "-C link-arg=/DEBUG:NONE",
+    "-C strip=symbols",
+];
+
+/// Merge [`MSVC_DETERMINISM_RUSTFLAGS`] into an existing space-delimited
+/// RUSTFLAGS string, skipping any token already present so a value
+/// inherited from config or a prior merge is not duplicated.
+///
+/// Returns the merged string. `base` may be empty.
+pub fn merge_msvc_determinism_rustflags(base: &str) -> String {
+    // Token-window comparison rather than a raw `contains`: each flag is a
+    // multi-token unit (`-C link-arg=/Brepro`), and a substring test would
+    // both false-positive on an unrelated prefix and miss the token-boundary
+    // a real RUSTFLAGS split obeys.
+    let mut out = base.trim().to_string();
+    for &flag in MSVC_DETERMINISM_RUSTFLAGS {
+        let flag_tokens: Vec<&str> = flag.split_whitespace().collect();
+        let present = out
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .windows(flag_tokens.len())
+            .any(|w| w == flag_tokens.as_slice());
+        if present {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push_str(flag);
+    }
+    out
+}
+
+/// `true` when the detected host target triple is a Windows-MSVC triple.
+///
+/// Runtime host detection (via `rustc -vV` in
+/// [`crate::partial::detect_host_target`]) — NOT a compile-time
+/// `cfg!(windows)` check. The determinism harness binary may be built on a
+/// different OS than the one it runs on (and a consumer may run
+/// `anodizer check determinism` locally on Windows from any binary), so the
+/// global-RUSTFLAGS `/Brepro` injection that keeps the host (`--target`-less)
+/// build reproducible must key off the real running host, not the compile
+/// target. A detection failure conservatively returns `false` (no MSVC flags
+/// injected — correct for the overwhelmingly-common non-Windows host), and is
+/// logged at `warn` so a swallowed `rustc` failure on a genuine windows-msvc
+/// host (where skipping the flags silently regresses determinism) is auditable
+/// rather than invisible.
+pub fn host_is_windows_msvc() -> bool {
+    match crate::partial::detect_host_target() {
+        Ok(h) => crate::target::is_windows_msvc(&h),
+        Err(e) => {
+            // A bare `rustc` failure here is benign on the common non-Windows
+            // host, but on windows-msvc it silently drops the reproducibility
+            // flags — surface it so the skipped-determinism decision is traceable.
+            tracing::warn!(
+                error = %e,
+                "host-target detection failed; treating host as non-windows-msvc and skipping MSVC determinism flags"
+            );
+            false
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeterminismState {
     pub sde: i64,
@@ -229,6 +324,81 @@ fn matches_artifact_pattern(pattern: &str, artifact: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn msvc_rustflags_const_matches_cargo_config() {
+        // The static `.cargo/config.toml` block is the only other home for
+        // this flag set (it can't import a Rust const). Keep them aligned:
+        // the config writes each `-C <arg>` as a two-element TOML array pair,
+        // so the joined form must equal this const verbatim.
+        let cargo_config = include_str!("../../../.cargo/config.toml");
+        for &flag in MSVC_DETERMINISM_RUSTFLAGS {
+            // `-C codegen-units=1` -> `"-C", "codegen-units=1"`
+            let (lead, rest) = flag.split_once(' ').expect("each flag is two tokens");
+            let toml_pair = format!("\"{lead}\", \"{rest}\"");
+            assert!(
+                cargo_config.contains(&toml_pair),
+                ".cargo/config.toml must carry `{toml_pair}` to stay aligned with \
+                 MSVC_DETERMINISM_RUSTFLAGS; the two drifted"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_msvc_into_empty_yields_full_set() {
+        let merged = merge_msvc_determinism_rustflags("");
+        for &flag in MSVC_DETERMINISM_RUSTFLAGS {
+            assert!(
+                merged.contains(flag),
+                "merged set must contain `{flag}`. got={merged}"
+            );
+        }
+        assert!(
+            merged.contains("/Brepro"),
+            "the COFF TimeDateStamp fix must be present"
+        );
+    }
+
+    #[test]
+    fn merge_msvc_preserves_existing_flags_and_appends() {
+        let base = "-C linker=link.exe --remap-path-prefix=/w=/build";
+        let merged = merge_msvc_determinism_rustflags(base);
+        assert!(
+            merged.starts_with(base),
+            "existing flags must be preserved verbatim. got={merged}"
+        );
+        assert!(
+            merged.contains("-C link-arg=/Brepro"),
+            "MSVC flags must be appended. got={merged}"
+        );
+    }
+
+    #[test]
+    fn merge_msvc_is_idempotent_no_duplicate_brepro() {
+        let once = merge_msvc_determinism_rustflags("");
+        let twice = merge_msvc_determinism_rustflags(&once);
+        assert_eq!(
+            once, twice,
+            "merging an already-merged set must not duplicate flags"
+        );
+        assert_eq!(
+            twice.matches("/Brepro").count(),
+            1,
+            "/Brepro must appear exactly once after a double merge. got={twice}"
+        );
+    }
+
+    #[test]
+    fn host_is_windows_msvc_matches_real_host() {
+        // On this Linux CI box the real host triple is non-MSVC, so the
+        // runtime probe must report false (the bug class this guards is a
+        // compile-time check that would report the wrong answer on a
+        // cross-built binary).
+        let expected = crate::partial::detect_host_target()
+            .map(|h| crate::target::is_windows_msvc(&h))
+            .unwrap_or(false);
+        assert_eq!(host_is_windows_msvc(), expected);
+    }
 
     #[test]
     fn sde_from_commit_timestamp_is_idempotent() {
