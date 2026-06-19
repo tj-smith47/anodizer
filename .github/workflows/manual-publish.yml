@@ -1,4 +1,4 @@
-# One-shot publisher backfill — manual, determinism-free.
+# Manual one-shot publish of a single publisher — determinism-free.
 #
 # Re-publishes a single publisher (default npm) for an ALREADY-RELEASED tag
 # whose other publishers landed but this one did not (e.g. npm fell behind
@@ -19,13 +19,13 @@
 # The artifact download is inlined (not the `./.github/actions/...` composite)
 # because older tags predate that composite and `./` actions resolve from the
 # checked-out tag tree.
-name: Backfill publisher
+name: Manual Publish
 
 on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Released tag to backfill, e.g. v0.10.0 (its Cargo.toml version + the preserved dist must agree).
+        description: Released tag to publish, e.g. v0.10.0 (its Cargo.toml version + the preserved dist must agree).
         required: true
       publishers:
         description: Publisher allowlist passed to `--publishers` (comma-separated).
@@ -41,8 +41,8 @@ on:
       skip:
         description: >-
           Comma-separated stages to pass to `--skip=` (empty = skip nothing).
-          Defaults to `verify-release`: a backfill re-publishes one publisher
-          for an already-released, already-verified tag and produces no new
+          Defaults to `verify-release`: a manual publish re-publishes one
+          publisher for an already-released, already-verified tag and produces no new
           release assets, while verify-release re-runs whole-release install
           smoke-tests that pull cross-arch (e.g. arm64) packages — these cannot
           execute on an amd64 github-hosted runner without qemu/binfmt and would
@@ -53,17 +53,17 @@ on:
       dry_run:
         description: >-
           Resolve and stage the publish without writing to the registry. Leave
-          on while iterating; turn off for the real backfill.
+          on while iterating; turn off for the real publish.
         type: boolean
         default: true
 
 concurrency:
-  group: backfill-${{ inputs.publishers }}-${{ inputs.tag }}
+  group: manual-publish-${{ inputs.publishers }}-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
-  backfill:
-    name: Backfill ${{ inputs.publishers }} @ ${{ inputs.tag }}${{ inputs.dry_run && ' (dry-run)' || '' }}
+  manual-publish:
+    name: Manual publish ${{ inputs.publishers }} @ ${{ inputs.tag }}${{ inputs.dry_run && ' (dry-run)' || '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
