@@ -1021,18 +1021,67 @@ fn is_index_propagation_failure(stderr: &str) -> bool {
         || stderr.contains("failed to load source for dependency")
 }
 
-/// Run `cargo publish` with bounded retry on sparse-index propagation
-/// failures only.
+/// Whether `cargo publish` failed with a transient network/transport fault a
+/// retry can plausibly recover from.
 ///
-/// This is defense-in-depth on top of [`poll_crates_io_index`]: even after
-/// our wait sees the just-published dep on the crates.io sparse index, the
-/// dependent crate's own `cargo publish` may race against Fastly's
-/// inter-edge fan-out and land on a stale edge. The wait function alone
-/// cannot guarantee cargo's HTTP client sees the same edge state we
-/// observed. By retrying exclusively on the narrow set of error signatures
-/// matched by [`is_index_propagation_failure`], we recover from the
-/// edge-skew window without masking real failures (auth, packaging,
-/// network).
+/// Distinct from [`is_index_propagation_failure`] (sparse-index edge skew):
+/// these are TCP/TLS/HTTP transport faults talking to crates.io or its CDN.
+/// `cargo publish` makes live network calls mid-run — the registry index
+/// update and the verification dep-download — and cargo retries "spurious"
+/// transport errors a few times internally, but that budget is exhaustible.
+/// A v0.11.3 release cut died with `[16] Error in the HTTP2 framing layer`
+/// after cargo's own retries ran out, aborting the sequential workspace
+/// publish 12 crates in and burning the re-cut attempt. An outer bounded
+/// retry with backoff recovers from a momentary blip without masking real
+/// failures: auth, packaging, and validation errors do NOT match here and
+/// fast-fail unchanged on the first attempt.
+///
+/// Matched case-insensitively because curl and cargo vary the casing of the
+/// same underlying fault across versions and platforms.
+fn is_transient_network_failure(stderr: &str) -> bool {
+    const NEEDLES: &[&str] = &[
+        // libcurl transport faults surfaced verbatim by cargo's HTTP stack.
+        "error in the http2 framing layer", // the v0.11.3 makeself failure
+        "connection reset by peer",
+        "connection refused",
+        "could not resolve host",
+        "couldn't resolve host",
+        "resolving timed out",
+        "operation timed out",
+        "transfer closed",
+        // cargo's own transport-layer wording. Deliberately NOT the bare
+        // "failed to download": cargo emits it for a non-transient missing/
+        // yanked dependency too (paired with "no matching package", which the
+        // propagation class already handles), so matching it here would burn
+        // retries on a hard resolution error. The curl faults above and the
+        // request-send phrases below cover genuine transport download failures.
+        "spurious network error",
+        "failed to get successful http response",
+        "failed to send http request",
+        "error sending request",
+        // 5xx / rate-limit from the registry or its CDN edge.
+        "502 bad gateway",
+        "503 service unavailable",
+        "504 gateway timeout",
+        "429 too many requests",
+    ];
+    let lower = stderr.to_ascii_lowercase();
+    NEEDLES.iter().any(|n| lower.contains(n))
+}
+
+/// Run `cargo publish` with bounded retry on the two recoverable failure
+/// classes: sparse-index propagation lag ([`is_index_propagation_failure`])
+/// and transient network/transport faults ([`is_transient_network_failure`]).
+///
+/// This is defense-in-depth on top of [`poll_crates_io_index`] and cargo's
+/// own internal transport retries. Even after our wait sees the just-published
+/// dep on the crates.io sparse index, the dependent crate's own `cargo publish`
+/// may race against Fastly's inter-edge fan-out and land on a stale edge; and a
+/// momentary TCP/TLS/HTTP blip can exhaust cargo's bounded internal retries
+/// mid-publish (the v0.11.3 `HTTP2 framing layer` abort). Retrying exclusively
+/// on those two narrow signature sets recovers both windows without masking
+/// real failures (auth, packaging, validation) — which match neither
+/// discriminator and fast-fail on the first attempt.
 ///
 /// `backoff` is the sleep between retry attempts. Production callers pass
 /// [`PUBLISH_PROPAGATION_BACKOFF`]; tests pass a short `Duration` so the
@@ -1058,23 +1107,33 @@ fn run_cargo_publish_with_retry(
         }
 
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        if !is_index_propagation_failure(&stderr) {
-            // Non-propagation failure — surface immediately. check_output
+        let propagation = is_index_propagation_failure(&stderr);
+        let transient_net = is_transient_network_failure(&stderr);
+        if !propagation && !transient_net {
+            // Neither recoverable class — surface immediately. check_output
             // performs redaction + error formatting consistently with the
             // single-attempt path.
             return log.check_output(output, label);
         }
 
+        // Name which recoverable class fired so the operator can tell an
+        // edge-skew retry from a network-blip retry in the run log.
+        let kind = if propagation {
+            "sparse-index propagation lag"
+        } else {
+            "transient network error"
+        };
+
         if attempt >= PUBLISH_PROPAGATION_RETRIES {
             log.warn(&format!(
-                "propagation-style failure for {label} persists after {attempt} attempts; surfacing"
+                "{kind} for {label} persists after {attempt} attempts; surfacing"
             ));
             last_output = Some(output);
             break;
         }
 
         log.status(&format!(
-            "sparse-index propagation lag detected for {label} (attempt {}/{}); retrying in {}s",
+            "{kind} detected for {label} (attempt {}/{}); retrying in {}s",
             attempt,
             PUBLISH_PROPAGATION_RETRIES,
             backoff.as_secs()
@@ -2800,6 +2859,59 @@ mod tests {
         assert!(!is_index_propagation_failure(""));
     }
 
+    #[test]
+    fn is_transient_network_failure_matches_known_signatures() {
+        // The exact v0.11.3 makeself abort, verbatim from the run log.
+        assert!(is_transient_network_failure(
+            "    Updating crates.io index\nerror: download of ti/ny/tinystr failed\n\
+             Caused by:\n  [16] Error in the HTTP2 framing layer"
+        ));
+        // libcurl transport faults.
+        assert!(is_transient_network_failure(
+            "error: failed to send HTTP request: connection refused"
+        ));
+        assert!(is_transient_network_failure("Connection reset by peer"));
+        assert!(is_transient_network_failure(
+            "error: could not resolve host: static.crates.io"
+        ));
+        // cargo's own wording + CDN 5xx / rate-limit.
+        assert!(is_transient_network_failure(
+            "warning: spurious network error (3 tries remaining)"
+        ));
+        assert!(is_transient_network_failure(
+            "error: failed to get successful HTTP response: 503 Service Unavailable"
+        ));
+        assert!(is_transient_network_failure("429 Too Many Requests"));
+        // Case-insensitive: curl/cargo vary casing across versions.
+        assert!(is_transient_network_failure(
+            "ERROR IN THE HTTP2 FRAMING LAYER"
+        ));
+    }
+
+    #[test]
+    fn is_transient_network_failure_rejects_unrelated_errors() {
+        // Auth — a retry will not conjure a token. Must fast-fail.
+        assert!(!is_transient_network_failure(
+            "error: failed to publish to registry: 401 Unauthorized"
+        ));
+        // Packaging/validation — a broken Cargo.toml stays broken.
+        assert!(!is_transient_network_failure(
+            "error: invalid character `_` in crate name `bad_name`"
+        ));
+        // Already-published is handled upstream (idempotent skip), not by retry.
+        assert!(!is_transient_network_failure(
+            "error: crate version `0.11.3` is already uploaded"
+        ));
+        // A missing/yanked dependency surfaces "failed to download" too, but it
+        // is NOT transient — retrying cannot conjure the version. The bare
+        // phrase is deliberately excluded so this hard error fast-fails.
+        assert!(!is_transient_network_failure(
+            "error: failed to download `foo v1.2.3`\n  no matching package named `foo` found"
+        ));
+        // Empty stderr — don't retry.
+        assert!(!is_transient_network_failure(""));
+    }
+
     /// Pin the cargo major.minor version against which the discriminator
     /// substrings in [`is_index_propagation_failure`] were last verified.
     ///
@@ -2905,6 +3017,60 @@ mod tests {
 
         // Counter file confirms the harness invoked the stub 3 times
         // (initial + 2 retries).
+        let n: u32 = std::fs::read_to_string(&counter)
+            .expect("counter")
+            .trim()
+            .parse()
+            .expect("u32");
+        assert_eq!(n, 3, "expected 3 invocations (initial + 2 retries)");
+    }
+
+    /// End-to-end retry on a transient network fault: the v0.11.3 regression.
+    /// The stub fails twice with the exact `HTTP2 framing layer` stderr cargo
+    /// emitted when makeself's publish died, then succeeds. The harness must
+    /// persist through the transport blips rather than burning the re-cut.
+    #[cfg(unix)]
+    #[test]
+    fn run_cargo_publish_with_retry_recovers_from_transient_network() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let counter = tmp.path().join("counter");
+        let stub = tmp.path().join("cargo");
+        let script = format!(
+            "#!/bin/sh\n\
+             n=$(cat {counter} 2>/dev/null || echo 0)\n\
+             n=$((n+1))\n\
+             echo $n > {counter}\n\
+             if [ $n -lt 3 ]; then\n\
+             echo '    Updating crates.io index' >&2\n\
+             echo 'error: [16] Error in the HTTP2 framing layer' >&2\n\
+             exit 101\n\
+             fi\n\
+             echo 'published ok'\n\
+             exit 0\n",
+            counter = counter.display(),
+        );
+        std::fs::write(&stub, script).expect("write stub");
+
+        // Route through `sh` to dodge the ETXTBSY race exec'ing a
+        // freshly-written stub under parallel tests (see the propagation test).
+        let cmd = vec![
+            "sh".to_string(),
+            stub.display().to_string(),
+            "publish".to_string(),
+        ];
+        let log = anodizer_core::log::StageLogger::new(
+            "publish-test",
+            anodizer_core::log::Verbosity::Normal,
+        );
+        let result = run_cargo_publish_with_retry(
+            &cmd,
+            "stub publish",
+            &log,
+            std::time::Duration::from_millis(1),
+        )
+        .expect("retry harness must recover from a transient network blip");
+        assert!(result.status.success(), "final attempt must succeed");
+
         let n: u32 = std::fs::read_to_string(&counter)
             .expect("counter")
             .trim()
