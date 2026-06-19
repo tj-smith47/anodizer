@@ -79,5 +79,11 @@ jobs:
           install: node
           args: release --publish-only --publishers ${{ inputs.publishers }}${{ inputs.dry_run && ' --dry-run' || '' }}
         env:
+          # The publish binary is built from `from_branch`, so its compiled
+          # version (e.g. master's 0.11.2) drives the HEAD-points-at-tag guard —
+          # which would demand v0.11.2 even though the workdir is the v0.10.0
+          # tag. Pin the guard to the tag actually being published; the per-crate
+          # publish version still comes from the preserved dist context.
+          ANODIZER_CURRENT_TAG: ${{ inputs.tag }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
