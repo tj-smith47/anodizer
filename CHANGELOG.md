@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.3] - 2026-06-19
+
+### Bug Fixes
+
+* 21462094b585 scope schema validation to the selected publisher surface #none ([@tj-smith47](https://github.com/tj-smith47))
+* 542717fa7a81 gate signing-key preflight on resolved publisher surface #none ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.11.2] - 2026-06-18
 
 ### Bug Fixes
@@ -364,7 +371,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/tj-smith47/anodizer/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/tj-smith47/anodizer/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/tj-smith47/anodizer/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/tj-smith47/anodizer/compare/v0.10.0...v0.11.0
