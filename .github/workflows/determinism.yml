@@ -34,6 +34,18 @@ jobs:
         # listed before dmg/pkg so their `use: appbundle` finds a source
         # artifact. The macOS/Windows shards build only their native binaries
         # + archives, so they keep the empty (OS-default) stage list.
+        #
+        # What this harness does NOT cover: the NATIVE installer tools
+        # (hdiutil .dmg, pkgbuild .pkg, WiX .msi) are non-reproducible by nature
+        # — hdiutil writes a fresh UDIF koly SegmentID GUID, pkgbuild stamps a
+        # wall-clock xar TOC and ignores SOURCE_DATE_EPOCH, and WiX regenerates a
+        # random PackageCode GUID + Created/LastModified (wixtoolset/issues#8978)
+        # — and anodizer does not normalize the native tools' output. Their
+        # reproducibility verdict is proven on the matching OS shard of ci.yml's
+        # `test` job by the two-build unit tests {msi,dmg,native_pkgbuild}_pkg_*
+        # _is_byte_reproducible_across_time, not here. This harness byte-verifies
+        # the LINUX-FALLBACK installer builds (wixl/xar+mkbom/genisoimage), which
+        # anodizer DOES normalize to byte-stability, on the ubuntu shard.
         # auto_install installs the installer fallback tools from .anodizer.yaml
         # on the ubuntu shard (auto-detect is OS-guarded, so enabling it on the
         # native shards would not pull the Linux-only installer toolchain).

@@ -6243,6 +6243,79 @@ fn test_rpm_and_archlinux_only_empty_maintainer_succeeds() {
 }
 
 // ---------------------------------------------------------------------------
+// Byte-reproducibility (two-build cmp at a fixed SOURCE_DATE_EPOCH)
+// ---------------------------------------------------------------------------
+
+/// Build one nfpm package twice with a wall-clock gap, both at a fixed
+/// `SOURCE_DATE_EPOCH`, and return the two byte streams. Hermetic: returns
+/// `None` (skip-with-pass) when the `nfpm` binary is absent.
+#[cfg(test)]
+fn build_nfpm_twice(format: &str, ext: &str) -> Option<(Vec<u8>, Vec<u8>)> {
+    use std::process::Command;
+    if !anodizer_core::util::find_binary("nfpm") {
+        eprintln!("nfpm absent; {format} reproducibility test skipped hermetically");
+        return None;
+    }
+    let dir = TempDir::new().unwrap();
+    let payload = dir.path().join("payload");
+    std::fs::write(&payload, b"#!/bin/sh\necho hi\n").unwrap();
+    let cfg = dir.path().join("nfpm.yaml");
+    std::fs::write(
+        &cfg,
+        format!(
+            "name: probe-pkg\narch: amd64\nversion: 1.2.3\n\
+             maintainer: test <test@example.com>\ndescription: probe\n\
+             contents:\n  - src: {}\n    dst: /usr/local/bin/probe\n",
+            payload.display()
+        ),
+    )
+    .unwrap();
+    // The determinism harness exports SOURCE_DATE_EPOCH into every stage's
+    // subprocess env; pin it here to reproduce that condition. nfpm uses it
+    // for the ar/cpio member mtimes that would otherwise carry wall-clock.
+    let sde = "1704067200";
+    let build = |out: &std::path::Path| {
+        let args = nfpm_command(cfg.to_str().unwrap(), format, out.to_str().unwrap());
+        let status = Command::new(&args[0])
+            .args(&args[1..])
+            .env("SOURCE_DATE_EPOCH", sde)
+            .status()
+            .expect("spawn nfpm");
+        assert!(
+            status.success(),
+            "nfpm pkg --packager {format} must succeed"
+        );
+        std::fs::read(out).unwrap()
+    };
+    let a = build(&dir.path().join(format!("a{ext}")));
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let b = build(&dir.path().join(format!("b{ext}")));
+    Some((a, b))
+}
+
+#[test]
+fn deb_is_byte_reproducible_across_time() {
+    let Some((a, b)) = build_nfpm_twice("deb", ".deb") else {
+        return;
+    };
+    assert_eq!(
+        a, b,
+        ".deb must be byte-identical across two builds at a fixed SOURCE_DATE_EPOCH"
+    );
+}
+
+#[test]
+fn rpm_is_byte_reproducible_across_time() {
+    let Some((a, b)) = build_nfpm_twice("rpm", ".rpm") else {
+        return;
+    };
+    assert_eq!(
+        a, b,
+        ".rpm must be byte-identical across two builds at a fixed SOURCE_DATE_EPOCH"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // nfpm vendor derivation
 // ---------------------------------------------------------------------------
 

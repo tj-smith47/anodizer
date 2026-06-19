@@ -88,6 +88,18 @@ jobs:
           task: "true"
           tools: cargo-nextest
           github-token: ${{ secrets.GITHUB_TOKEN }}
+      # Make the WiX toolchain reachable so the Windows test shard actually
+      # executes msi_is_byte_reproducible_across_time (the MSI determinism
+      # verdict) instead of hermetically skipping. v3 ships preinstalled on the
+      # hosted image but its bin dir is off PATH (actions/runner-images#9551);
+      # add it, and install the v4 `wix` dotnet tool so either WiX dialect the
+      # test resolves is present.
+      - name: Set up WiX (MSI determinism test)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          printf '%s\n' 'C:\Program Files (x86)\WiX Toolset v3.14\bin' >> "$GITHUB_PATH"
+          dotnet tool install --global wix || true
       - name: Tests
         run: task test
       - name: Build release binary

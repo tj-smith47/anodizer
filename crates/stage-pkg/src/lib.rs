@@ -1591,6 +1591,66 @@ mod tests {
         assert_eq!(a, b, "flat .pkg must be byte-identical across builds");
     }
 
+    /// Two native `pkgbuild` runs over identical content are NOT byte-identical,
+    /// and this records WHY so the verdict is observable before a release rather
+    /// than hidden behind a determinism allowlist.
+    ///
+    /// pkgbuild does not honor `SOURCE_DATE_EPOCH` and has no deterministic
+    /// mode: its xar TOC carries an archive creation-time, per-file
+    /// ctime/mtime/atime, and the live inode — the exact fields the Linux
+    /// flat-package fallback must normalize (`normalize_xar_toc`) to reach
+    /// byte-stability. The native `PkgBuilder::Pkgbuild` path invokes pkgbuild
+    /// directly with no such normalization, so its `.pkg` drifts every build.
+    /// The assertion proves the drift is real (not a flake) and pins the root
+    /// cause; flipping it to byte-equality is the regression signal if the
+    /// native path gains the same TOC normalization the Linux path already has.
+    /// Runs on the macOS CI test shard only (pkgbuild is macOS-native).
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn native_pkgbuild_pkg_is_byte_reproducible_across_time() {
+        if !anodizer_core::util::find_binary("pkgbuild") {
+            eprintln!("pkgbuild unavailable; test skipped hermetically");
+            return;
+        }
+        let build = || -> Option<Vec<u8>> {
+            let staging = TempDir::new().unwrap();
+            fs::write(staging.path().join("myapp"), b"#!/bin/sh\necho hi\n").unwrap();
+            let out = TempDir::new().unwrap();
+            let pkg_path = out.path().join("repro.pkg");
+            let argv = pkgbuild_command(
+                &staging.path().to_string_lossy(),
+                "com.example.repro",
+                "1.2.3",
+                "/usr/local/bin",
+                None,
+                Some("11.0"),
+                &pkg_path.to_string_lossy(),
+            );
+            let output = Command::new(&argv[0])
+                .args(&argv[1..])
+                .env("SOURCE_DATE_EPOCH", "1700000000")
+                .output()
+                .ok()?;
+            output.status.success().then(|| fs::read(&pkg_path).ok())?
+        };
+        let (Some(a), Some(b)) = (build(), {
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+            build()
+        }) else {
+            eprintln!("pkgbuild failed; test skipped hermetically");
+            return;
+        };
+        assert_ne!(
+            a, b,
+            "native pkgbuild stamps a wall-clock xar TOC creation-time + per-file \
+             c/m/atime + live inode every run and ignores SOURCE_DATE_EPOCH; the \
+             native .pkg is NOT byte-reproducible and anodizer does not normalize \
+             the native tool's TOC (only the Linux fallback does). If this now \
+             matches, the native path gained TOC normalization — keep it and flip \
+             this assertion."
+        );
+    }
+
     #[test]
     fn test_build_flat_pkg_linux_emits_xar_layout() {
         // Hermetic: skip-with-pass if the Linux toolchain is absent. This box

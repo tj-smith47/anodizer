@@ -1154,15 +1154,18 @@ mod tests {
     #[test]
     fn harness_excludes_allowlisted_artifacts_from_drift() {
         let mut h = empty_harness();
+        // `.flatpak` is genuinely allow-listed (intrinsically non-reproducible
+        // OSTree commit metadata); use it as the example so the fixture does
+        // not model a now-gated format as non-deterministic.
         h.allowlist.compile_time.push(AllowListEntry {
-            artifact: "*.crate".into(),
-            reason: "cargo package non-determinism".into(),
+            artifact: "*.flatpak".into(),
+            reason: "flatpak build-bundle OSTree commit metadata not byte-stable".into(),
         });
         let runs = run_with_files(
             &h,
             vec![
-                vec![("anodizer-0.2.1.crate", b"crate-bytes-A")],
-                vec![("anodizer-0.2.1.crate", b"crate-bytes-B")],
+                vec![("anodizer_0.2.1_linux_amd64.flatpak", b"flatpak-bytes-A")],
+                vec![("anodizer_0.2.1_linux_amd64.flatpak", b"flatpak-bytes-B")],
             ],
         );
         let report = h.build_report(runs);
@@ -1171,11 +1174,11 @@ mod tests {
             "allowlisted artifact must not bump drift_count"
         );
         let row = &report.artifacts[0];
-        assert_eq!(row.name, "anodizer-0.2.1.crate");
+        assert_eq!(row.name, "anodizer_0.2.1_linux_amd64.flatpak");
         assert!(!row.deterministic);
         assert_eq!(
             row.nondeterministic_reason.as_deref(),
-            Some("cargo package non-determinism")
+            Some("flatpak build-bundle OSTree commit metadata not byte-stable")
         );
         assert_eq!(row.hashes.len(), 2);
     }

@@ -2622,4 +2622,66 @@ crates:
             "symlink target must be preserved"
         );
     }
+
+    /// Two `hdiutil create -format UDZO` runs over identical source content are
+    /// NOT byte-identical, and this records WHY so the verdict is observable
+    /// before a release rather than hidden behind a determinism allowlist.
+    ///
+    /// The UDIF "koly" trailer hdiutil writes embeds a per-segment 128-bit GUID
+    /// (`SegmentID`) generated fresh per `hdiutil create`, so the same source
+    /// folder yields a different image every run. hdiutil exposes no
+    /// reproducible/deterministic flag and does not consult `SOURCE_DATE_EPOCH`,
+    /// and anodizer invokes it directly with no post-build koly normalization —
+    /// so the native `.dmg` is non-reproducible. The assertion below proves the
+    /// drift is real (not a flake) and pins the root cause; flipping it to
+    /// byte-equality is the regression signal if hdiutil ever ships
+    /// deterministic output or anodizer adds koly-trailer normalization. Runs on
+    /// the macOS CI test shard only.
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn dmg_is_byte_reproducible_across_time() {
+        if !anodizer_core::util::find_binary("hdiutil") {
+            eprintln!("hdiutil unavailable; test skipped hermetically");
+            return;
+        }
+        let staging = tempfile::tempdir().unwrap();
+        std::fs::write(
+            staging.path().join("payload.txt"),
+            b"deterministic payload\n",
+        )
+        .unwrap();
+
+        let build = || -> Option<Vec<u8>> {
+            let out = tempfile::tempdir().unwrap();
+            let dmg_path = out.path().join("repro.dmg");
+            let argv = dmg_command(
+                DmgTool::Hdiutil,
+                "ReproProbe",
+                &staging.path().to_string_lossy(),
+                &dmg_path.to_string_lossy(),
+            );
+            let status = Command::new(&argv[0])
+                .args(&argv[1..])
+                .env("SOURCE_DATE_EPOCH", "1700000000")
+                .output()
+                .ok()?;
+            status
+                .status
+                .success()
+                .then(|| std::fs::read(&dmg_path).ok())?
+        };
+
+        let (Some(a), Some(b)) = (build(), build()) else {
+            eprintln!("hdiutil create failed; test skipped hermetically");
+            return;
+        };
+        assert_ne!(
+            a, b,
+            "hdiutil writes a fresh per-segment SegmentID GUID into the UDIF koly \
+             trailer every run; the native .dmg is NOT byte-reproducible and \
+             anodizer does not normalize it. If this now matches, hdiutil gained \
+             deterministic output or anodizer added koly-trailer normalization — \
+             make the .dmg byte-stable and flip this assertion."
+        );
+    }
 }

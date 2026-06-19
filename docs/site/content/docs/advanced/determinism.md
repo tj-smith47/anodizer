@@ -14,10 +14,12 @@ corrupted upload from an expected build-tooling drift.
 This guide covers:
 
 - The byte-stability contract.
-- The compile-time allow-list (what is currently exempt and why).
+- The gated installer formats (proven reproducible) versus the compile-time
+  allow-list (genuinely exempt) — what each is and why.
 - The `anodizer check determinism` harness CLI.
 - `--allow-nondeterministic <name>=<reason>`, the operator escape, and its
   three audit surfaces.
+- The CI `skip_determinism` re-publish path and its integrity contract.
 - Snapshot-mode `SOURCE_DATE_EPOCH` resolution.
 - A worked example.
 
@@ -46,22 +48,42 @@ Every per-publisher receipt (`PublishEvidence`) carries a
 
 ## Compile-time allow-list
 
-Some artifacts are exempt out of the box because the relevant tooling does
-not yet honor SDE or because byte-stability has been deferred to a
-follow-up.
+An artifact is allow-listed **only** when it is non-deterministic by nature
+— a spec-mandated unique id or a tool's wall-clock that the producing tool
+will not pin to `SOURCE_DATE_EPOCH` — and that is proven by a two-build
+`cmp` test, AND anodizer cannot fix it. A format that anodizer can make
+byte-reproducible at a fixed SDE is **not** allow-listed; it is gated so a
+real regression is caught. (Reproducible-but-allow-listed would silently
+disable drift detection — the opposite of the harness's job.)
 
 The allow-list is seeded in
-[`crates/core/src/determinism.rs::seed_from_commit`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/determinism.rs)
-and contains exactly six glob patterns at HEAD:
+[`crates/core/src/determinism.rs::seed_from_commit`](https://github.com/tj-smith47/anodizer/blob/master/crates/core/src/determinism.rs).
+The installer formats below are **gated, not allow-listed** — each is
+byte-identical across two builds at a fixed SDE (the value the harness
+exports), proven by the cited test:
 
-| Artifact pattern | Reason | Mitigation |
+| Artifact | Proven reproducible by | Why it is gated |
 |---|---|---|
-| `*.crate` | `cargo package` is non-deterministic by default | consumers verify via the crates.io index, not anodizer-published checksums |
-| `*.rpm` | `rpmbuild` reproducibility deferred to determinism-installers follow-up | consumers verify post-tool signatures (signtool, productsign, codesign) |
-| `*.msi` | wix/candle/light reproducibility deferred to determinism-installers follow-up | consumers verify post-tool signatures |
-| `*.dmg` | `hdiutil` reproducibility deferred to determinism-installers follow-up | consumers verify post-tool signatures |
-| `*.pkg` | `pkgbuild` reproducibility deferred to determinism-installers follow-up | consumers verify post-tool signatures |
-| `*.deb` | `dpkg-deb` reproducibility varies by version, follow-up | cloudsmith publisher byte-mismatch detection already loud-fails on retry |
+| `*.crate` | `cargo package` source-tarball normalization (sorted paths, mtime pinned to SDE) | cargo emits byte-identical `.crate` across two builds at a fixed SDE |
+| `*.rpm` | `stage-nfpm::rpm_is_byte_reproducible_across_time` | nfpm pins package mtimes to SDE; two builds `cmp`-identical |
+| `*.deb` | `stage-nfpm::deb_is_byte_reproducible_across_time` | nfpm pins the `ar`/`cpio` member mtimes to SDE; two builds `cmp`-identical |
+| `*.snap` | `stage-snapcraft::snap_is_byte_reproducible_across_time` | `snapcraft pack` (mksquashfs) honors SDE for the squashfs `mod_time`; two builds `cmp`-identical |
+| `*.pkg` (Linux xar/mkbom/cpio) | `stage-pkg::test_flat_pkg_is_byte_reproducible_across_time` | cpio dev/ino zeroed, payload mtime-pinned, xar TOC normalized and re-sealed |
+
+The remaining entries are genuinely allow-listed (intrinsic
+non-determinism, excluded from `drift_count`):
+
+| Artifact pattern | Reason it cannot be gated |
+|---|---|
+| `*.msi` | WiX candle/light embeds a non-pinnable build timestamp in the MSI summary-information stream; pending proof by `msi_is_byte_reproducible_across_time` on the windows determinism shard |
+| `*.dmg` | `hdiutil` writes a wall-clock volume creation date the macOS host will not pin to SDE; pending proof by `dmg_is_byte_reproducible_across_time` on the macos determinism shard |
+| `*.pkg` (macOS-host only) | the macOS-native `pkgbuild` path is not yet proven reproducible; pending proof by `native_pkgbuild_pkg_is_byte_reproducible_across_time` on the macos shard. **Host-keyed**: on a Linux host the `.pkg` is the proven xar path above and is gated, never allow-listed |
+| `*.flatpak` | `flatpak build-bundle` wraps an OSTree commit whose metadata (commit object timestamp + per-object headers) is not byte-stable even at a fixed SDE; empirically confirmed non-reproducible via two-build `cmp` |
+| `*.cdx.json` / `*.spdx.json` / `*.sbom.json` | SBOMs carry a spec-mandated per-document unique id (CycloneDX `serialNumber` UUID / SPDX `documentNamespace` UUID) plus a generation timestamp syft does not pin to SDE |
+| `artifacts.json` | the dist manifest aggregates every artifact's size+digest (including allow-listed non-deterministic SBOMs); a derivative signal — each indexed artifact is drift-checked independently |
+
+Each allow-listed pattern also carries its `.sha256` sidecar (the sidecar
+hashes a non-deterministic source, so it is itself non-deterministic).
 
 Notably absent from the table (intentional, post-M10 cleanup): Docker
 image manifest descriptors, Docker image blobs, NSIS-emitted `.exe`
@@ -168,6 +190,59 @@ Semantics:
   Production releases that need an exemption must drop `--strict`, which
   already surfaces the elevated risk.
 
+## The CI re-publish path: `skip_determinism`
+
+The Release workflow's `determinism-check` job is the byte-for-byte gate
+that every fresh release passes before any publisher fires. The
+`skip_determinism` `workflow_dispatch` boolean (default `false`) and its
+paired `dist_run_id` input let an operator **re-publish a prior run's
+already-byte-proven dist** instead of rebuilding and re-proving it.
+
+It does **not** mean "publish without determinism proof." When set, the
+workflow reuses the preserved `dist-*` artifacts from an earlier Release run
+— bytes that already passed the determinism gate — and re-runs only the
+publish stage against them. The artifacts winget, Homebrew, and Scoop hash
+are byte-identical to the ones the gate already validated, so those manifest
+checksums stay valid across the re-cut.
+
+Wiring: `skip_determinism` feeds the `resolve-release-target` action, which
+sets `should_run_determinism=false`. The `determinism-check` job is then
+skipped via its `if: ... should_run_determinism == 'true'` guard, and the
+`release` job proceeds because it accepts a `skipped` determinism result
+(`determinism-check.result == 'success' || determinism-check.result == 'skipped'`).
+
+`dist_run_id` names the Release run whose preserved `dist-*` artifacts to
+reuse. Leave it empty to auto-resolve to the latest Release run for the
+target commit.
+
+```bash
+# Re-publish v0.9.0 from a prior run's proven dist, naming the run explicitly:
+gh workflow run release.yml \
+  -f tag=v0.9.0 \
+  -f skip_determinism=true \
+  -f dist_run_id=18273645
+
+# Or let dist_run_id auto-resolve to the latest Release run for the tag:
+gh workflow run release.yml \
+  -f tag=v0.9.0 \
+  -f skip_determinism=true
+```
+
+**Retention limit.** This path works only while the prior run's `dist-*`
+artifacts survive GitHub's 90-day artifact retention. A tag older than that
+has no preserved dist to reuse, so it cannot be re-published this way — re-run
+the full pipeline (which rebuilds and re-proves) instead.
+
+**Integrity contract.** `skip_determinism` trusts the prior run's proof and
+does **not** re-prove the current source. Its only honest use is re-publishing
+an *unchanged*, already-proven dist — for example, recovering a release whose
+determinism gate went green but whose publish failed downstream (a transient
+registry error, an expired token). It must **never** be used to dodge a
+determinism *failure* on changed source: doing so re-publishes bytes that no
+gate ever validated and breaks the verification contract this page exists to
+uphold. If the source changed, the gate must run. If the gate failed, fix the
+drift — do not skip it.
+
 ## Three audit surfaces
 
 Every allow-listed artifact (compile-time or runtime) shows up in three
@@ -186,8 +261,8 @@ places so a consumer cannot miss it:
 
    ```
    Non-deterministic exemptions:
-   - foo.rpm: tool-bug-1234
-   - anodizer-0.2.1.crate: cargo package non-determinism, tracked in determinism-followups
+   - anodizer_0.2.1_linux_amd64.flatpak: flatpak build-bundle OSTree commit metadata not byte-stable
+   - my-vendored-blob.bin: tool-bug-1234 (operator --allow-nondeterministic)
 
    SHA256SUMS:
    ...
@@ -208,10 +283,10 @@ shared with the failure-handling run report). Shape:
   "stages_under_test": ["build", "archive", "sbom", "sign", "checksum"],
   "allowlist": {
     "compile_time": [
-      { "artifact": "anodizer-0.2.1.crate", "reason": "cargo package non-determinism, tracked in determinism-followups" }
+      { "artifact": "*.flatpak", "reason": "flatpak build-bundle OSTree commit metadata not byte-stable" }
     ],
     "runtime": [
-      { "artifact": "foo.rpm", "reason": "tool-bug-1234" }
+      { "artifact": "my-vendored-blob.bin", "reason": "tool-bug-1234" }
     ]
   },
   "artifacts": [
@@ -224,12 +299,12 @@ shared with the failure-handling run report). Shape:
       "hash": "sha256:..."
     },
     {
-      "name": "anodizer-0.2.1.crate",
-      "path": "dist/anodizer-0.2.1.crate",
+      "name": "anodizer_0.2.1_linux_amd64.flatpak",
+      "path": "dist/anodizer_0.2.1_linux_amd64.flatpak",
       "size_bytes": 1048576,
-      "stage": "cargo-package",
+      "stage": "flatpak",
       "deterministic": false,
-      "nondeterministic_reason": "cargo package non-determinism, tracked in determinism-followups",
+      "nondeterministic_reason": "flatpak build-bundle OSTree commit metadata not byte-stable",
       "hashes": ["sha256:...", "sha256:..."]
     }
   ],
@@ -277,7 +352,7 @@ anodizer check determinism: runs=2 stages=build,archive,sbom,sign,checksum
   run 2: 17.9s  (4 artifacts emitted)
   diff:  0 artifacts drifted
   allow-list:
-    compile_time: anodizer-0.2.1.crate (cargo package non-determinism, tracked in determinism-followups)
+    compile_time: *.flatpak (flatpak build-bundle OSTree commit metadata not byte-stable)
     runtime:      (none)
   report: dist/run-20260514T142301Z/determinism.json
 PASS

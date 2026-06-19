@@ -1011,37 +1011,40 @@ mod tests {
 
     #[test]
     fn compile_time_wins_on_collision_in_report() {
-        // Operator passes `--allow-nondeterministic foo.crate=local-override`,
-        // but the compile-time list also covers `*.crate`. Both entries
+        // Operator passes `--allow-nondeterministic foo.flatpak=local-override`,
+        // but the compile-time list also covers `*.flatpak`. Both entries
         // must appear in the run-summary allow-list arrays so the audit
         // trail is complete; the per-artifact precedence is verified
-        // separately via `DeterminismState::resolve_reason`.
+        // separately via `DeterminismState::resolve_reason`. `*.flatpak` is
+        // the stable anchor: it is intrinsically non-reproducible (OSTree
+        // commit metadata) and thus permanently compile-time allow-listed,
+        // unlike `.crate`/`.rpm`/`.deb`/`.snap` which are now gated.
         let mut ctx = anodizer_core::context::Context::test_fixture();
         let mut state =
             anodizer_core::DeterminismState::seed_from_commit(1_715_000_000).expect("non-negative");
-        state.append_runtime("foo.crate".to_string(), "local-override".to_string());
+        state.append_runtime("foo.flatpak".to_string(), "local-override".to_string());
         ctx.determinism = Some(state.clone());
         let s = RunSummary::from_context(&ctx);
-        // Compile-time list has the `*.crate` glob.
+        // Compile-time list has the `*.flatpak` glob.
         assert!(
             s.determinism_allowlist
                 .compile_time
                 .iter()
-                .any(|e| e.artifact == "*.crate"),
-            "compile-time `*.crate` entry must appear in the summary",
+                .any(|e| e.artifact == "*.flatpak"),
+            "compile-time `*.flatpak` entry must appear in the summary",
         );
         // Runtime list has the operator's overlapping entry.
         assert!(
             s.determinism_allowlist
                 .runtime
                 .iter()
-                .any(|e| e.artifact == "foo.crate" && e.reason == "local-override"),
+                .any(|e| e.artifact == "foo.flatpak" && e.reason == "local-override"),
             "runtime override must appear in the summary alongside the compile-time entry",
         );
         // Per-artifact precedence: compile-time wins.
-        let reason = state.resolve_reason("foo.crate").unwrap();
+        let reason = state.resolve_reason("foo.flatpak").unwrap();
         assert!(
-            reason.contains("cargo package non-determinism"),
+            reason.contains("OSTree"),
             "compile-time reason must win on collision, got: {reason}",
         );
     }

@@ -761,6 +761,60 @@ fn test_snapcraft_command_no_destructive_mode() {
 }
 
 #[test]
+fn snap_is_byte_reproducible_across_time() {
+    use std::process::Command;
+    // `snapcraft pack <prime_dir>` packs a pre-assembled prime directory via
+    // mksquashfs — no LXD/multipass VM is needed (there is no build step), so
+    // this runs on any linux host with the snapcraft binary. Hermetic:
+    // skip-with-pass when snapcraft is absent. mksquashfs honors
+    // SOURCE_DATE_EPOCH for the squashfs superblock mod_time and per-inode
+    // mtimes — the value the determinism harness exports into every stage's
+    // subprocess env — so two builds with a wall-clock gap are byte-identical.
+    if !anodizer_core::util::find_binary("snapcraft") {
+        eprintln!("snapcraft absent; .snap reproducibility test skipped hermetically");
+        return;
+    }
+    let dir = TempDir::new().unwrap();
+    let prime = dir.path().join("prime");
+    std::fs::create_dir_all(prime.join("meta")).unwrap();
+    std::fs::create_dir_all(prime.join("bin")).unwrap();
+    std::fs::write(
+        prime.join("meta/snap.yaml"),
+        "name: probe-snap\nversion: '1.2.3'\nsummary: probe\n\
+         description: probe snap\narchitectures:\n  - amd64\n\
+         confinement: strict\ngrade: stable\n\
+         apps:\n  probe:\n    command: bin/probe\n",
+    )
+    .unwrap();
+    let probe_bin = prime.join("bin/probe");
+    std::fs::write(&probe_bin, b"#!/bin/sh\necho hi\n").unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        // snapcraft rejects a prime tree whose apps are not world-readable +
+        // executable; the real build stage stages binaries 0755.
+        std::fs::set_permissions(&probe_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    let build = |out: &std::path::Path| -> Vec<u8> {
+        let args = snapcraft_command(prime.to_str().unwrap(), out.to_str().unwrap());
+        let status = Command::new(&args[0])
+            .args(&args[1..])
+            .env("SOURCE_DATE_EPOCH", "1704067200")
+            .status()
+            .expect("spawn snapcraft pack");
+        assert!(status.success(), "snapcraft pack must succeed");
+        std::fs::read(out).unwrap()
+    };
+    let a = build(&dir.path().join("a.snap"));
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let b = build(&dir.path().join("b.snap"));
+    assert_eq!(
+        a, b,
+        ".snap must be byte-identical across two builds at a fixed SOURCE_DATE_EPOCH"
+    );
+}
+
+#[test]
 fn test_snapcraft_upload_command_no_channels() {
     let cmd = snapcraft_upload_command("/tmp/out.snap", None);
     assert_eq!(cmd[0], "snapcraft");

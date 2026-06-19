@@ -5,8 +5,11 @@
 //!   stage exports into subprocess env so artifacts have deterministic
 //!   timestamps.
 //! - `compile_time_allowlist`: artifact-name -> reason pairs known at
-//!   build time (tool-bug allow-lists for cargo .crate, docker manifest
-//!   descriptors, etc.).
+//!   build time for artifacts that are non-deterministic BY NATURE (a
+//!   spec-mandated unique id or a tool's un-pinnable wall-clock anodizer
+//!   cannot fix) — e.g. SBOM serial/namespace UUIDs, the flatpak OSTree
+//!   commit. Formats proven byte-reproducible at a fixed SOURCE_DATE_EPOCH
+//!   are NOT listed here; they are gated so a real regression is caught.
 //! - `runtime_allowlist`: operator-supplied opt-outs via the
 //!   `--allow-nondeterministic <name>=<reason>` CLI flag.
 //!
@@ -116,6 +119,36 @@ pub fn host_is_windows_msvc() -> bool {
     }
 }
 
+/// `true` when the detected host target triple is a macOS (Darwin) triple.
+///
+/// Runtime host detection (via `rustc -vV` in
+/// [`crate::partial::detect_host_target`]) — NOT a compile-time
+/// `cfg!(target_os = "macos")` check, for the same cross-host reason as
+/// [`host_is_windows_msvc`]. Used by [`DeterminismState::seed_from_commit`]
+/// to gate the `*.pkg` allow-list entry: only the macOS-native `pkgbuild`
+/// path (which runs on the macOS determinism shard) is not yet proven
+/// reproducible, whereas the Linux flat-package path (xar/mkbom/cpio) is
+/// proven byte-stable and must stay gated. A detection failure
+/// conservatively returns `false` — the overwhelmingly-common host is
+/// Linux, where the `.pkg` is the proven xar path and must NOT be
+/// allow-listed.
+pub fn host_is_macos() -> bool {
+    match crate::partial::detect_host_target() {
+        Ok(h) => crate::target::is_darwin(&h),
+        Err(e) => {
+            // On a non-macOS host this is the right answer; on a genuine
+            // macOS host a swallowed `rustc` failure would un-gate the
+            // unproven pkgbuild `.pkg` and risk a false drift finding —
+            // surface it so the decision is auditable.
+            tracing::warn!(
+                error = %e,
+                "host-target detection failed; treating host as non-macOS (Linux xar .pkg path is gated, not allow-listed)"
+            );
+            false
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeterminismState {
     pub sde: i64,
@@ -170,57 +203,46 @@ impl DeterminismState {
                 commit_ts
             );
         }
-        // Per spec contract table: these are the artifacts whose
-        // deeper reproducibility work is deferred. Listed up-front so
-        // every stage that consumes them sees the same allow-list.
-        // Allow-listed installer formats AND their `.sha256` sidecars —
-        // the sidecar hashes a non-deterministic source so the sidecar
-        // itself is non-deterministic, but it's not an independent
-        // determinism finding worth surfacing.
-        let installer_allow: &[(&str, &str)] = &[
-            (
-                "*.crate",
-                "cargo package non-determinism, tracked in determinism-followups",
-            ),
-            (
-                "*.rpm",
-                "rpmbuild reproducibility deferred to determinism-installers follow-up",
-            ),
+        // Installer formats whose non-determinism is intrinsic (a tool's
+        // wall-clock or spec-mandated unique id anodizer cannot pin) AND
+        // empirically proven by a two-build `cmp` test. Reproducible formats
+        // are NOT here — they are gated so a real regression is caught.
+        // Each entry carries its `.sha256` sidecar: the sidecar hashes a
+        // non-deterministic source so it is itself non-deterministic, but
+        // not an independent finding worth surfacing.
+        //
+        // Conspicuously gated (REMOVED after proof, no longer allow-listed):
+        // `.crate`, `.rpm`, `.deb`, `.snap`, and the Linux xar `.pkg` — each
+        // is byte-identical across two builds at a fixed SOURCE_DATE_EPOCH
+        // (the value the harness exports), so the harness must count any
+        // drift as a real regression. See the gating tests cited per format
+        // below in the unit-test module.
+        let mut installer_allow: Vec<(&str, &str)> = vec![
             (
                 "*.msi",
-                "wix/candle/light reproducibility deferred to determinism-installers follow-up",
+                "WiX candle/light embeds a non-pinnable build timestamp in the MSI summary-information stream; pending proof by msi_is_byte_reproducible_across_time on the windows determinism shard",
             ),
             (
                 "*.dmg",
-                "hdiutil reproducibility deferred to determinism-installers follow-up",
-            ),
-            // The Linux flat-package path (xar/mkbom/cpio) IS byte-reproducible
-            // — cpio dev/ino zeroed, payload mtime-pinned, xar TOC times/inode
-            // normalized and the archive re-sealed (proven by
-            // stage-pkg::test_flat_pkg_is_byte_reproducible_across_time). This
-            // entry remains because the allowlist matches on artifact name, not
-            // on producing tool, and the macOS-native `pkgbuild` path (used on
-            // the macos determinism shard) is not yet proven reproducible;
-            // narrowing the gate to per-tool is the determinism-installers
-            // follow-up. Removing this outright would gate anodizer's release on
-            // an unproven macOS path.
-            (
-                "*.pkg",
-                "Linux flat-pkg path (xar/mkbom/cpio) is byte-reproducible (test_flat_pkg_is_byte_reproducible_across_time), but the allowlist matches on artifact name not producing tool, and the macOS-native pkgbuild path on the macos shard is not yet proven reproducible; per-tool narrowing is the determinism-installers follow-up",
-            ),
-            (
-                "*.deb",
-                "dpkg-deb reproducibility varies by version; tracked in determinism-installers",
-            ),
-            (
-                "*.snap",
-                "snapcraft pack runs deterministically when SOURCE_DATE_EPOCH propagates (harness env exports it; mksquashfs respects it via craft-parts); allowlisted as defense-in-depth in case snapcraft introduces non-mtime variance",
+                "hdiutil writes a wall-clock HFS+/APFS volume creation date the macOS host will not pin to SOURCE_DATE_EPOCH; pending proof by dmg_is_byte_reproducible_across_time on the macos determinism shard",
             ),
             (
                 "*.flatpak",
                 "flatpak build-bundle wraps an OSTree commit whose metadata (commit object timestamp + per-object headers) is not byte-stable across runs even at a fixed SOURCE_DATE_EPOCH; empirically confirmed non-reproducible via two-build cmp",
             ),
         ];
+        // `*.pkg` is host-keyed. Only one producer runs per determinism
+        // shard: Linux runs the xar/mkbom/cpio flat-package path, proven
+        // byte-reproducible (stage-pkg::test_flat_pkg_is_byte_reproducible_across_time)
+        // — so on Linux the `.pkg` is GATED, never allow-listed. macOS runs
+        // the native `pkgbuild` path, not yet proven; on a macOS host the
+        // `.pkg` is allow-listed pending the macos-shard proof.
+        if host_is_macos() {
+            installer_allow.push((
+                "*.pkg",
+                "macOS-native pkgbuild emits a non-pinnable build timestamp; pending proof by native_pkgbuild_pkg_is_byte_reproducible_across_time on the macos determinism shard (the Linux xar/mkbom/cpio .pkg path is proven reproducible and gated, never allow-listed)",
+            ));
+        }
         // SBOMs embed identifiers that are non-reproducible by nature:
         // CycloneDX carries a random `serialNumber` UUID plus a generation
         // `metadata.timestamp`, and SPDX carries a `documentNamespace` UUID
@@ -409,18 +431,43 @@ mod tests {
     }
 
     #[test]
-    fn compile_time_allowlist_resolves_for_cargo_crate() {
+    fn cargo_crate_is_gated_not_allowlisted() {
         let s = DeterminismState::seed_from_commit(0).expect("non-negative");
-        let reason = s
-            .resolve_reason("anodizer-0.2.1.crate")
-            .expect("matches *.crate");
-        assert!(reason.contains("cargo package"));
+        // `cargo package` is byte-identical across two builds at a fixed
+        // SOURCE_DATE_EPOCH (the harness exports it; cargo normalizes the
+        // source tarball — sorted paths, pinned mtime). The `.crate` must be
+        // gated so a real regression is caught, NOT allow-listed. The
+        // per-crate-rendered name must not resolve in any of the three modes.
+        assert!(s.resolve_reason("anodizer-0.2.1.crate").is_none());
+        assert!(s.resolve_reason("anodizer-core-0.11.3.crate").is_none());
+        // And its sidecar must not be allow-listed as a derivative either.
+        assert!(
+            s.resolve_reason("anodizer-core-0.11.3.crate.sha256")
+                .is_none()
+        );
     }
 
     #[test]
-    fn compile_time_allowlist_resolves_for_rpm() {
+    fn rpm_and_deb_are_gated_not_allowlisted() {
         let s = DeterminismState::seed_from_commit(0).expect("non-negative");
-        assert!(s.resolve_reason("foo-1.0.rpm").is_some());
+        // nfpm emits byte-identical .rpm/.deb across two builds at a fixed
+        // SOURCE_DATE_EPOCH (proven by stage-nfpm::rpm_is_byte_reproducible_across_time
+        // and ::deb_is_byte_reproducible_across_time). Both are gated.
+        assert!(s.resolve_reason("foo-1.0.rpm").is_none());
+        assert!(s.resolve_reason("foo_1.0_amd64.deb").is_none());
+        assert!(s.resolve_reason("foo-1.0.rpm.sha256").is_none());
+        assert!(s.resolve_reason("foo_1.0_amd64.deb.sha256").is_none());
+    }
+
+    #[test]
+    fn snap_is_gated_not_allowlisted() {
+        let s = DeterminismState::seed_from_commit(0).expect("non-negative");
+        // snapcraft pack (mksquashfs) honors SOURCE_DATE_EPOCH for the
+        // squashfs mod_time, so .snap is byte-identical across two builds
+        // (proven by stage-snapcraft::snap_is_byte_reproducible_across_time).
+        // Gated, never allow-listed as "defense-in-depth".
+        assert!(s.resolve_reason("probe_1.2.3_amd64.snap").is_none());
+        assert!(s.resolve_reason("probe_1.2.3_amd64.snap.sha256").is_none());
     }
 
     #[test]
@@ -441,11 +488,49 @@ mod tests {
     }
 
     #[test]
-    fn compile_time_allowlist_resolves_for_pkg() {
+    fn pkg_allowlist_is_host_keyed() {
         let s = DeterminismState::seed_from_commit(0).expect("non-negative");
-        // The macOS-native pkgbuild path on the macos shard is not yet proven
-        // reproducible; the harness must not count its `.pkg` as drift.
-        assert!(s.resolve_reason("anodizer-0.2.1.pkg").is_some());
+        // `.pkg` is allow-listed ONLY on a macOS host (the unproven native
+        // pkgbuild path); on a Linux host the `.pkg` is the proven xar/mkbom/
+        // cpio flat-package path and must be gated. The seed reflects the
+        // running host, so the resolved verdict must match it.
+        let resolved = s.resolve_reason("anodizer-0.2.1.pkg").is_some();
+        assert_eq!(
+            resolved,
+            host_is_macos(),
+            "`.pkg` must be allow-listed iff the host is macOS (Linux xar path is gated)"
+        );
+        // This CI box is Linux, so confirm the gated direction concretely:
+        // the proven Linux path must NOT be excused.
+        if !host_is_macos() {
+            assert!(
+                s.resolve_reason("anodizer-0.2.1.pkg").is_none(),
+                "Linux xar .pkg path is proven reproducible and must be gated"
+            );
+            assert!(s.resolve_reason("anodizer-0.2.1.pkg.sha256").is_none());
+        }
+    }
+
+    #[test]
+    fn msi_and_dmg_reasons_cite_pending_shard_proof() {
+        let s = DeterminismState::seed_from_commit(0).expect("non-negative");
+        // These run on the windows/macos shards (not provable on this Linux
+        // box); their reasons must cite the sibling pending shard tests
+        // rather than a "deferred to follow-up" hedge.
+        let msi = s
+            .resolve_reason("anodizer-0.2.1.msi")
+            .expect("matches *.msi");
+        assert!(
+            msi.contains("msi_is_byte_reproducible_across_time"),
+            "msi reason must cite the pending shard test: {msi}"
+        );
+        let dmg = s
+            .resolve_reason("anodizer-0.2.1.dmg")
+            .expect("matches *.dmg");
+        assert!(
+            dmg.contains("dmg_is_byte_reproducible_across_time"),
+            "dmg reason must cite the pending shard test: {dmg}"
+        );
     }
 
     #[test]
@@ -493,14 +578,19 @@ mod tests {
     fn nondeterministic_allowlist_compile_time_wins_on_collision() {
         let mut s = DeterminismState::seed_from_commit(0).expect("non-negative");
         // Runtime entry shadowing a compile-time pattern. Compile-time
-        // wins so the report shows the deeper rationale.
+        // wins so the report shows the deeper rationale. `*.flatpak` is a
+        // permanently-allow-listed compile-time pattern (intrinsically
+        // non-reproducible OSTree commit), so it is the stable collision
+        // anchor regardless of host.
         s.append_runtime(
-            "*.crate".into(),
+            "*.flatpak".into(),
             "operator escape (wrong runtime reason)".into(),
         );
-        let reason = s.resolve_reason("anodizer-0.2.1.crate").unwrap();
+        let reason = s
+            .resolve_reason("anodizer_0.9.1_linux_amd64.flatpak")
+            .unwrap();
         assert!(
-            reason.contains("cargo package"),
+            reason.contains("OSTree"),
             "compile-time reason takes precedence"
         );
     }

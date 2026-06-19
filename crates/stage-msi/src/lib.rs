@@ -2289,4 +2289,112 @@ crates:
             "default name must not inject version"
         );
     }
+
+    /// Resolve a runnable WiX build path on a Windows runner, returning the
+    /// commands that turn `wxs_path` into `out_path`. WiX v3 ships preinstalled
+    /// on the hosted image but is not on PATH, so `candle`/`light` are reached
+    /// by absolute path under the toolset bin dir when a bare lookup fails. v4's
+    /// `wix` (a dotnet global tool) is honored when present. `None` means no WiX
+    /// toolchain is reachable and the caller skips hermetically.
+    #[cfg(target_os = "windows")]
+    fn resolve_windows_wix_build(wxs_path: &str, out_path: &str) -> Option<MsiCommands> {
+        if anodizer_core::util::find_binary("wix") {
+            return Some(msi_command(WixVersion::V4, wxs_path, out_path, &[]));
+        }
+        let mut cmds = msi_command(WixVersion::V3, wxs_path, out_path, &[]);
+        let resolve_v3 = |bare: &str| -> Option<String> {
+            if anodizer_core::util::find_binary(bare) {
+                return Some(bare.to_string());
+            }
+            // The hosted windows image installs WiX v3.14 but leaves its bin dir
+            // off PATH (actions/runner-images#9551); reach the tools directly.
+            let abs = format!("C:\\Program Files (x86)\\WiX Toolset v3.14\\bin\\{bare}.exe");
+            std::path::Path::new(&abs).exists().then_some(abs)
+        };
+        cmds.primary[0] = resolve_v3("candle")?;
+        if let Some(link) = cmds.link.as_mut() {
+            link[0] = resolve_v3("light")?;
+        }
+        Some(cmds)
+    }
+
+    /// Two `wix build` runs over an identical `.wxs` at a pinned timestamp are
+    /// NOT byte-identical, and this records WHY so the verdict is observable
+    /// before a release rather than hidden behind a determinism allowlist.
+    ///
+    /// WiX has no reproducible-build mode (wixtoolset/issues#8978, open): every
+    /// build regenerates a random `SummaryInformation.PackageCode` GUID and
+    /// stamps wall-clock `Created`/`LastModified` into the MSI summary stream —
+    /// independent of any timestamp flag. anodizer invokes WiX directly with no
+    /// post-build summary-stream normalization, so the native `.msi` inherits
+    /// that non-determinism. The assertion below proves the drift is real (not a
+    /// flake) and pins the root cause; flipping it to byte-equality is the
+    /// regression signal if WiX ever ships deterministic output or anodizer adds
+    /// summary-stream normalization. Runs on the Windows CI test shard only.
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn msi_is_byte_reproducible_across_time() {
+        let tmp = TempDir::new().unwrap();
+        // WiX v4-dialect package (also accepted by v3 candle/light via the v3
+        // namespace fallback path). A minimal single-file component is enough to
+        // exercise the summary-information stream that carries the drift.
+        let wxs = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="ReproProbe" Manufacturer="anodizer" Version="1.2.3"
+           UpgradeCode="11111111-1111-1111-1111-111111111111">
+    <MediaTemplate EmbedCab="yes" />
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="ReproProbe">
+        <Component Id="MainExe" Guid="22222222-2222-2222-2222-222222222222">
+          <File Id="MainExe" Source="payload.txt" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+    <Feature Id="Main">
+      <ComponentRef Id="MainExe" />
+    </Feature>
+  </Package>
+</Wix>"#;
+        let wxs_path = tmp.path().join("repro.wxs");
+        fs::write(&wxs_path, wxs).unwrap();
+        fs::write(tmp.path().join("payload.txt"), b"deterministic payload\n").unwrap();
+
+        let build = |out_name: &str| -> Option<Vec<u8>> {
+            let out_path = tmp.path().join(out_name);
+            let cmds = resolve_windows_wix_build(
+                &wxs_path.to_string_lossy(),
+                &out_path.to_string_lossy(),
+            )?;
+            let run = |argv: &[String]| {
+                std::process::Command::new(&argv[0])
+                    .args(&argv[1..])
+                    .current_dir(tmp.path())
+                    // Pin the bind timestamp; WiX ignores it for the summary
+                    // stream but it removes one extra source of variance.
+                    .env("SOURCE_DATE_EPOCH", "1700000000")
+                    .output()
+                    .ok()
+                    .filter(|o| o.status.success())
+            };
+            run(&cmds.primary)?;
+            if let Some(link) = &cmds.link {
+                run(link)?;
+            }
+            fs::read(&out_path).ok()
+        };
+
+        let (Some(a), Some(b)) = (build("a.msi"), build("b.msi")) else {
+            eprintln!("WiX toolchain unavailable or build failed; test skipped hermetically");
+            return;
+        };
+        assert_ne!(
+            a, b,
+            "WiX emits a random PackageCode GUID + wall-clock Created/LastModified \
+             into the MSI summary stream every build (wixtoolset/issues#8978); the \
+             native .msi is NOT byte-reproducible and anodizer does not normalize \
+             it. If this now matches, WiX gained deterministic output or anodizer \
+             added summary-stream normalization — make the .msi byte-stable and \
+             flip this assertion."
+        );
+    }
 }

@@ -160,8 +160,8 @@ mod tests {
             stages_under_test: vec!["archive".into(), "checksum".into()],
             allowlist: AllowList {
                 compile_time: vec![AllowListEntry {
-                    artifact: "anodizer-0.2.1.crate".into(),
-                    reason: "cargo package non-determinism".into(),
+                    artifact: "*.flatpak".into(),
+                    reason: "flatpak build-bundle OSTree commit metadata not byte-stable".into(),
                 }],
                 runtime: vec![],
             },
@@ -177,12 +177,14 @@ mod tests {
                     hashes: vec![],
                 },
                 ArtifactRow {
-                    name: "anodizer-0.2.1.crate".into(),
-                    path: "dist/anodizer-0.2.1.crate".into(),
+                    name: "anodizer_0.2.1_linux_amd64.flatpak".into(),
+                    path: "dist/anodizer_0.2.1_linux_amd64.flatpak".into(),
                     size_bytes: 1_048_576,
-                    stage: "cargo-package".into(),
+                    stage: "flatpak".into(),
                     deterministic: false,
-                    nondeterministic_reason: Some("cargo package non-determinism".into()),
+                    nondeterministic_reason: Some(
+                        "flatpak build-bundle OSTree commit metadata not byte-stable".into(),
+                    ),
                     hash: None,
                     hashes: vec!["sha256:a".into(), "sha256:b".into()],
                 },
@@ -229,7 +231,10 @@ mod tests {
         let s = serde_json::to_string(&r).unwrap();
         // The `hash` key must not appear with a null value on the second
         // artifact.
-        let second_segment = s.split("anodizer-0.2.1.crate").nth(1).unwrap();
+        let second_segment = s
+            .split("anodizer_0.2.1_linux_amd64.flatpak")
+            .nth(1)
+            .unwrap();
         assert!(
             !second_segment.contains("\"hash\":null"),
             "nondeterministic rows must omit null hash field, got: {}",
