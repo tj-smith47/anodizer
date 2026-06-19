@@ -313,6 +313,28 @@ fn one_malformed_option_fails_loud_naming_publisher_and_field() {
     );
 }
 
+/// Scoping: the same poisoned winget config, but `--publishers` selects only
+/// `homebrew`. A deselected publisher never dispatches, so the guard must not
+/// validate its artifacts — the pass returns `Ok(())` despite the malformed
+/// winget option (and the selected homebrew still validates clean), instead of
+/// blocking a scoped publish on out-of-surface config.
+#[test]
+fn deselected_publisher_is_not_validated() {
+    let mut ctx = TestContextBuilder::new()
+        .snapshot(true)
+        .project_name("widget")
+        .crates(vec![multi_publisher_crate("not-a-url")])
+        .publisher_allowlist(vec!["homebrew".to_string()])
+        .build();
+    scope_version(&mut ctx, VERSION);
+    add_all_artifacts(&mut ctx);
+    let log = ctx.logger("publish");
+
+    let resolver = |_: &Context, _: &CrateConfig| Some(VERSION.to_string());
+    validate_publisher_schemas(&mut ctx, &log, &resolver)
+        .expect("a malformed winget config must be skipped when winget is not in --publishers");
+}
+
 /// Wiring-regression guard: every publisher the suite is meant to cover must
 /// have a registered validator. If a future publisher is added without one (or
 /// a validator is dropped), this fails until the expected set is updated

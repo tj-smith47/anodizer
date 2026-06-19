@@ -312,6 +312,16 @@ pub fn validate_publisher_schemas(
     let mut findings: Vec<SchemaFinding> = Vec::new();
     for validator in validators() {
         let publisher = validator.publisher();
+        // A publisher excluded by `--skip` / `--publishers` never dispatches, so
+        // its artifact schema is irrelevant to this run. Validating it anyway
+        // would block a scoped publish (e.g. `--publishers npm`) on an unselected
+        // publisher's config — the guard must mirror the dispatch's deselection.
+        if ctx.publisher_deselected(publisher) {
+            log.verbose(&format!(
+                "publisher '{publisher}' deselected; skipping schema validation"
+            ));
+            continue;
+        }
         let result = validator
             .validate(ctx, resolve_tag)
             .with_context(|| format!("schema-validate publisher '{publisher}' artifacts"))?;
