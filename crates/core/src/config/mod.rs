@@ -2386,7 +2386,7 @@ pub use changelog::*;
 // `anodizer_core::config::{SignConfig, DockerSignConfig}` import paths
 // used by every stage that consumes a sign config.
 
-pub use crate::signing::{DockerSignConfig, SignConfig};
+pub use crate::signing::{AuthenticodeConfig, DockerSignConfig, SignConfig};
 
 // ---------------------------------------------------------------------------
 // UpxConfig

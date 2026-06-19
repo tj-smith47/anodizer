@@ -35,6 +35,7 @@ pub const VALID_SIGN_ARTIFACT_FILTERS: &[&str] = &[
     "snap",
     "macos_package",
     "checksum",
+    "windows",
 ];
 
 /// Returns `true` if an artifact of `kind` should be signed given the `filter`
@@ -98,8 +99,154 @@ pub(crate) fn should_sign_artifact(kind: ArtifactKind, filter: &str) -> Result<b
         "snap" => Ok(kind == ArtifactKind::Snap),
         "macos_package" => Ok(kind == ArtifactKind::MacOsPackage),
         "checksum" => Ok(kind == ArtifactKind::Checksum),
+        // The "windows" selector (Authenticode backend) is a two-step filter:
+        // the kind pre-filter here admits the container kinds that a Windows
+        // PE/MSI/DLL can land in (.exe → Binary, .msi/NSIS → Installer,
+        // .dll → Library), and the EXTENSION refinement happens in
+        // `process_sign_configs` where the artifact path is in scope. The kind
+        // alone is insufficient (a Linux ELF is also Binary), so this MUST be
+        // paired with `windows_artifact_extension_matches` on the path.
+        "windows" => Ok(matches!(
+            kind,
+            ArtifactKind::Binary | ArtifactKind::Installer | ArtifactKind::Library
+        )),
         other => anyhow::bail!("invalid sign artifacts filter: {other}"),
     }
+}
+
+/// File extensions an Authenticode (`artifacts: windows`) signer can sign.
+///
+/// The `"windows"` kind pre-filter ([`should_sign_artifact`]) admits
+/// Binary/Installer/Library — but a Linux ELF is also `Binary`, so the
+/// final say is this extension check against the artifact's on-disk path.
+pub(crate) const WINDOWS_SIGNABLE_EXTENSIONS: &[&str] = &["exe", "msi", "dll"];
+
+/// `true` when `path` ends in a Windows-signable extension
+/// (`.exe`, `.msi`, `.dll`, case-insensitive).
+///
+/// Paired with the `"windows"` kind pre-filter so the Authenticode backend
+/// signs a Windows `.exe` Binary but skips a Linux ELF Binary that shares the
+/// `ArtifactKind::Binary` kind but carries no signable extension.
+pub(crate) fn windows_artifact_extension_matches(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|ext| {
+            let lower = ext.to_ascii_lowercase();
+            WINDOWS_SIGNABLE_EXTENSIONS.contains(&lower.as_str())
+        })
+        .unwrap_or(false)
+}
+
+/// Build the derived signer argv for an Authenticode sign job.
+///
+/// Pure function — no I/O, no `Context` — so the exact argv is unit-testable.
+/// Two shapes depending on `tool`:
+///
+/// - **osslsigncode** (Linux/cross): `sign -pkcs12 <cert> [-pass <pw>]
+///   [-n <name>] [-i <url>] -ts <ts_url> -in <artifact> -out <out_tmp>`.
+///   osslsigncode requires distinct `-in`/`-out`, so the caller writes to a
+///   sibling temp then atomically renames it over the original on success.
+/// - **signtool** (Windows-native): `sign /f <cert> [/p <pw>] /fd sha256
+///   /tr <ts_url> /td sha256 [/d <name>] [/du <url>] <artifact>` — signs in
+///   place, so `out_tmp` is unused.
+///
+/// `password` is passed in argv (`-pass` / `/p`); the caller is responsible
+/// for redacting it from any echoed command line and spawn output.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_authenticode_argv(
+    tool: &str,
+    cert_path: &str,
+    password: Option<&str>,
+    timestamp_url: &str,
+    name: Option<&str>,
+    url: Option<&str>,
+    artifact_path: &str,
+    out_tmp: &str,
+) -> Vec<String> {
+    let tool_base = std::path::Path::new(tool)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(tool);
+    let mut args: Vec<String> = Vec::new();
+    if tool_base.starts_with("signtool") {
+        args.push("sign".to_string());
+        args.push("/f".to_string());
+        args.push(cert_path.to_string());
+        if let Some(pw) = password {
+            args.push("/p".to_string());
+            args.push(pw.to_string());
+        }
+        args.push("/fd".to_string());
+        args.push("sha256".to_string());
+        args.push("/tr".to_string());
+        args.push(timestamp_url.to_string());
+        args.push("/td".to_string());
+        args.push("sha256".to_string());
+        if let Some(n) = name {
+            args.push("/d".to_string());
+            args.push(n.to_string());
+        }
+        if let Some(u) = url {
+            args.push("/du".to_string());
+            args.push(u.to_string());
+        }
+        args.push(artifact_path.to_string());
+    } else {
+        // osslsigncode (the cross/Linux default and any other tool name).
+        args.push("sign".to_string());
+        args.push("-pkcs12".to_string());
+        args.push(cert_path.to_string());
+        if let Some(pw) = password {
+            args.push("-pass".to_string());
+            args.push(pw.to_string());
+        }
+        if let Some(n) = name {
+            args.push("-n".to_string());
+            args.push(n.to_string());
+        }
+        if let Some(u) = url {
+            args.push("-i".to_string());
+            args.push(u.to_string());
+        }
+        args.push("-ts".to_string());
+        args.push(timestamp_url.to_string());
+        args.push("-in".to_string());
+        args.push(artifact_path.to_string());
+        args.push("-out".to_string());
+        args.push(out_tmp.to_string());
+    }
+    args
+}
+
+/// Render an Authenticode signer argv to a single space-joined echo line with
+/// the cert-password SLOT masked as `***`.
+///
+/// Masks at the argv-element level: the token immediately following a `-pass`
+/// (osslsigncode) or `/p` (signtool) flag is replaced with `***`. A blind
+/// `str::replace(password, "***")` would corrupt unrelated tokens whenever the
+/// password is a common substring (e.g. a password of `sign` would mangle the
+/// `sign` subcommand), so the slot-based approach is both exact and password-
+/// value-independent.
+///
+/// Used by the dry-run `(dry-run) would run:` echo so the password never lands
+/// in logs verbatim. The spawn path relies on `redact::string` (fed the
+/// password via `SignJob::redact_extra`) instead; this helper covers the
+/// dry-run path where no process runs.
+pub(crate) fn redact_password_in_argv(args: &[String]) -> String {
+    let mut out: Vec<String> = Vec::with_capacity(args.len());
+    let mut mask_next = false;
+    for arg in args {
+        if mask_next {
+            out.push("***".to_string());
+            mask_next = false;
+            continue;
+        }
+        out.push(arg.clone());
+        if arg == "-pass" || arg == "/p" {
+            mask_next = true;
+        }
+    }
+    out.join(" ")
 }
 
 /// Validate a sign-config list's ids: unique, and never colliding with the

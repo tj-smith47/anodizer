@@ -2295,6 +2295,85 @@
       },
       "additionalProperties": false
     },
+    "AuthenticodeConfig": {
+      "description": "Authenticode (Windows PE/MSI/DLL) signing backend for a [`SignConfig`].\n\nUnlike the generic cosign/gpg `signs:` path — which produces a *detached* `.sig` next to the artifact — Authenticode signing **embeds** the signature into the PE/MSI container, mutating the artifact in place. Downstream checksums and archives then pick up the signed bytes; no separate signature artifact is registered.\n\nEverything is derived so the opt-in is minimal — `authenticode: {}` plus a `WINDOWS_CERT_FILE` (and optional `WINDOWS_CERT_PASSWORD`) env var is enough:\n\n```yaml signs: - authenticode: {}   # signs every .exe/.msi/.dll via osslsigncode/signtool ```\n\nA fully-specified config overrides the derived defaults:\n\n```yaml signs: - id: authenticode authenticode: cert_file: \"{{ .Env.MY_CERT }}\"     # or cert_env: MY_CERT_PATH password_env: MY_CERT_PASSWORD timestamp_url: \"http://timestamp.sectigo.com\" name: \"Acme Corp\" url: \"https://acme.example\" tool: osslsigncode artifacts: windows required: true ```",
+      "type": "object",
+      "properties": {
+        "artifacts": {
+          "description": "Artifact selector. Defaults to `\"windows\"` — Binary/Installer/Library artifacts whose path ends in `.exe`, `.msi`, or `.dll`.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cert_env": {
+          "description": "Name of the env var holding the **path** to the PKCS#12 cert file (never the cert bytes). Defaults to `WINDOWS_CERT_FILE` when neither this nor [`cert_file`](Self::cert_file) is set.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "cert_file": {
+          "description": "Literal path to the PKCS#12 (`.p12` / `.pfx`) cert file. May be a template (e.g. `\"{{ .Env.MY_CERT }}\"`). For a non-secret cert path checked into config; for a secret path prefer [`cert_env`](Self::cert_env).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "Product / publisher name embedded in the signature (osslsigncode `-n`, signtool `/d`). Templated. Derived from the project name when unset.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "password_env": {
+          "description": "Name of the env var holding the cert password. Defaults to `WINDOWS_CERT_PASSWORD`. The value is read at execution time, passed to the signer, and redacted from all logs.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "required": {
+          "description": "When `true`, a missing cert HARD-FAILS the sign stage. When `false` (the default), a missing cert SKIPS gracefully (mirrors the keyless-cosign-under-harness skip).",
+          "default": null,
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "timestamp_url": {
+          "description": "RFC 3161 timestamp server URL. Defaults to [`DEFAULT_TIMESTAMP_URL`](AuthenticodeConfig::DEFAULT_TIMESTAMP_URL).",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "tool": {
+          "description": "Override the signer binary. Defaults to `signtool` on a Windows host, `osslsigncode` elsewhere.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "description": "Info URL embedded in the signature (osslsigncode `-i`, signtool `/du`). Omitted when unset.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
     "BeforePublishArtifactFilter": {
       "description": "Artifact-type filter for `before_publish[*].artifacts`.\n\nThe `before_publish[*].artifacts` enum (`checksum` / `source` / `package` / `installer` / `diskimage` / `archive` / `binary` / `sbom` / `image` / `all`). Maps each variant to a predicate over [`ArtifactKind`]:\n\n| Variant | Matched [`ArtifactKind`] values | |---|---| | `Checksum` | `Checksum` | | `Source` | `SourceArchive`, `SourcePkgBuild`, `SourceSrcInfo`, `SourceRpm` | | `Package` | `LinuxPackage`, `Snap`, `PublishableSnapcraft`, `Flatpak` | | `Installer` | `Installer`, `MacOsPackage` | | `DiskImage` | `DiskImage` | | `Archive` | `Archive`, `Makeself` | | `Binary` | `Binary`, `UploadableBinary`, `UniversalBinary` | | `Sbom` | `Sbom` | | `Image` | `DockerImage`, `DockerImageV2`, `PublishableDockerImage` (multi-arch `DockerManifest` excluded — covers individual images only) | | `All` | every kind |\n\nMapping notes: - `Source` includes RPM-source variants since all source-derived artifacts under one bucket. - `Installer` covers macOS `.pkg` (`MacOsPackage`) alongside Windows MSI/NSIS — \"installer\" is used without OS qualification. - `Image` deliberately excludes [`ArtifactKind::DockerManifest`] / [`ArtifactKind::DockerDigest`]; those are multi-arch index entries and don't correspond to a scannable image blob. The per-image hook semantics (the multi-arch manifest is published separately and isn't a vulnerability scan target).",
       "type": "string",
@@ -12940,6 +13019,18 @@
           "type": [
             "string",
             "null"
+          ]
+        },
+        "authenticode": {
+          "description": "Authenticode (Windows PE/MSI) signing backend. When set, this sign config signs Windows artifacts in place via osslsigncode (Linux/cross) or signtool (Windows) instead of producing a detached cosign/gpg signature. The signing command, argv, timestamp URL, and artifact selector are all derived; supply only the cert (a secret).",
+          "default": null,
+          "anyOf": [
+            {
+              "$ref": "#/definitions/AuthenticodeConfig"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "certificate": {

@@ -284,6 +284,7 @@ fn all_and_checksum_filters_sign_every_checksum_kind_without_recursion() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     };
 
@@ -427,6 +428,7 @@ fn signs_loop_skips_only_when_every_consumer_is_deselected() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     };
 
@@ -551,6 +553,7 @@ fn binary_signs_loop_skips_only_in_publish_only_mode() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     };
 
@@ -719,6 +722,7 @@ fn test_multiple_sign_configs_run_independently() {
             env: None,
             certificate: None,
             output: None,
+            authenticode: None,
             if_condition: None,
         },
         SignConfig {
@@ -733,6 +737,7 @@ fn test_multiple_sign_configs_run_independently() {
             env: None,
             certificate: None,
             output: None,
+            authenticode: None,
             if_condition: None,
         },
     ];
@@ -863,6 +868,7 @@ fn test_ids_filter_restricts_signed_artifacts() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     };
 
@@ -1000,6 +1006,7 @@ fn test_dry_run_logs_without_executing() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     }];
 
@@ -1086,6 +1093,7 @@ fn test_sign_none_filter_skips_entirely() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     }];
 
@@ -1131,6 +1139,7 @@ fn test_sign_if_false_records_skip_memento() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: Some("false".to_string()),
     }];
 
@@ -1166,6 +1175,7 @@ fn test_sign_positional_label_when_id_missing() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     }];
 
@@ -1201,6 +1211,7 @@ fn test_missing_signing_binary_errors_with_command_name() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     }];
 
@@ -1245,6 +1256,7 @@ fn test_signing_command_nonzero_exit_errors_with_details() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     }];
 
@@ -1307,6 +1319,7 @@ fn test_stdin_file_missing_errors_with_path() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     };
 
@@ -1410,6 +1423,7 @@ fn test_sign_env_vars_passed_to_command() {
         env: Some(vec!["ANODIZER_TEST_SIGN_ENV=hello_from_sign".to_string()]),
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     }];
 
@@ -1561,6 +1575,7 @@ fn test_sign_with_certificate_dry_run() {
         env: None,
         certificate: Some("{{ .Artifact }}.pem".to_string()),
         output: None,
+        authenticode: None,
         if_condition: None,
     }];
 
@@ -1623,6 +1638,7 @@ fn test_sign_stage_registers_signature_artifacts_dry_run() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     }];
 
@@ -1669,6 +1685,7 @@ fn test_sign_stage_registers_certificate_artifacts_dry_run() {
         env: None,
         certificate: Some("{{ .Artifact }}.pem".to_string()),
         output: None,
+        authenticode: None,
         if_condition: None,
     }];
 
@@ -2001,6 +2018,7 @@ fn test_if_condition_false_skips_sign() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: Some("false".to_string()),
     }];
 
@@ -2044,6 +2062,7 @@ fn test_if_condition_true_proceeds() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: Some("true".to_string()),
     }];
 
@@ -2099,6 +2118,7 @@ fn test_if_condition_template_renders_to_empty_skips_sign() {
         // {{ ... }} braces render as nothing in Tera's strict mode would
         // error — use a literal " " that trims to empty instead so we exercise
         // the trimmed-empty branch).
+        authenticode: None,
         if_condition: Some(" ".to_string()),
     }];
 
@@ -2202,6 +2222,7 @@ fn keyless_cosign_is_skipped_under_harness() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     };
     // dry_run=false: prove the config never spawns real cosign even in the
@@ -2243,6 +2264,7 @@ fn keyed_cosign_is_not_skipped_under_harness() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     };
     let (_result, skips) = run_signs_capture_skips(sign, true, true);
@@ -2275,6 +2297,7 @@ fn keyless_cosign_is_not_skipped_outside_harness() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     };
     let (_result, skips) = run_signs_capture_skips(sign, false, true);
@@ -2305,6 +2328,7 @@ fn gpg_is_not_skipped_under_harness() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     };
     let (_result, skips) = run_signs_capture_skips(sign, true, true);
@@ -2335,6 +2359,7 @@ fn test_if_condition_snapshot_template() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: Some("{{ IsSnapshot }}".to_string()),
     }];
 
@@ -2403,6 +2428,7 @@ fn test_binary_signs_only_signs_binaries() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     }];
 
@@ -2469,6 +2495,7 @@ fn test_binary_signs_if_condition_works() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: Some("false".to_string()),
     }];
 
@@ -2752,6 +2779,7 @@ fn test_output_capture_with_real_command() {
         env: None,
         certificate: None,
         output: Some(anodizer_core::config::StringOrBool::Bool(true)),
+        authenticode: None,
         if_condition: None,
     }];
 
@@ -2857,6 +2885,7 @@ fn test_binary_signs_signature_default_adds_dot_sig() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     };
     let _log = ctx.logger("test");
@@ -2893,6 +2922,7 @@ fn test_binary_signs_signature_arm_artifact_gets_dot_sig() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     };
     let _log = ctx.logger("test");
@@ -2929,6 +2959,7 @@ fn test_binary_signs_signature_amd64v2_artifact_gets_dot_sig() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     };
     let _log = ctx.logger("test");
@@ -2958,6 +2989,7 @@ fn test_normal_signs_uses_simple_default() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     };
     let _log = ctx.logger("test");
@@ -3033,6 +3065,7 @@ fn test_binary_signs_sets_os_arch_from_target_triple() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     };
     let mut ctx = TestContextBuilder::new()
@@ -3101,6 +3134,7 @@ fn test_binary_signs_arm_target_splits_arch_correctly() {
         env: None,
         certificate: None,
         output: None,
+        authenticode: None,
         if_condition: None,
     };
     let mut ctx = TestContextBuilder::new()
@@ -3163,6 +3197,7 @@ fn test_binary_signs_register_target_qualified_names_per_target() {
         env: None,
         certificate: Some("{{ .Artifact }}.pem".to_string()),
         output: None,
+        authenticode: None,
         if_condition: None,
     };
     let mut ctx = TestContextBuilder::new()
@@ -3655,4 +3690,911 @@ fn docker_sign_zero_match_ids_filter_warns_loudly() {
         "zero-match docker ids filter must warn: {:?}",
         capture.all_messages()
     );
+}
+
+// ---------------------------------------------------------------------------
+// Authenticode (Windows PE/MSI/DLL) signing backend
+// ---------------------------------------------------------------------------
+
+mod authenticode {
+    use super::*;
+    use anodizer_core::artifact::Artifact;
+    use anodizer_core::config::AuthenticodeConfig;
+    use anodizer_core::log::LogCapture;
+    use std::collections::HashMap;
+    use std::path::PathBuf;
+
+    use crate::helpers::{
+        build_authenticode_argv, redact_password_in_argv, windows_artifact_extension_matches,
+    };
+
+    /// A sign config carrying an Authenticode block (everything else default).
+    fn authenticode_sign(authenticode: AuthenticodeConfig) -> SignConfig {
+        SignConfig {
+            id: Some("authenticode".to_string()),
+            authenticode: Some(authenticode),
+            ..Default::default()
+        }
+    }
+
+    fn add_artifact(
+        ctx: &mut anodizer_core::context::Context,
+        kind: ArtifactKind,
+        rel_path: &str,
+        crate_name: &str,
+        target: Option<&str>,
+    ) {
+        let path = ctx.config.dist.join(rel_path);
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        ctx.artifacts.add(Artifact {
+            kind,
+            name,
+            path,
+            target: target.map(str::to_string),
+            crate_name: crate_name.to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+    }
+
+    // ---- pure argv builder ----
+
+    #[test]
+    fn osslsigncode_argv_is_exact() {
+        let argv = build_authenticode_argv(
+            "osslsigncode",
+            "/certs/win.p12",
+            Some("hunter2"),
+            "http://timestamp.digicert.com",
+            Some("Acme Corp"),
+            Some("https://acme.example"),
+            "/dist/myapp.exe",
+            "/dist/myapp.exe.authenticode-tmp",
+        );
+        assert_eq!(
+            argv,
+            vec![
+                "sign",
+                "-pkcs12",
+                "/certs/win.p12",
+                "-pass",
+                "hunter2",
+                "-n",
+                "Acme Corp",
+                "-i",
+                "https://acme.example",
+                "-ts",
+                "http://timestamp.digicert.com",
+                "-in",
+                "/dist/myapp.exe",
+                "-out",
+                "/dist/myapp.exe.authenticode-tmp",
+            ]
+        );
+    }
+
+    #[test]
+    fn osslsigncode_argv_omits_optional_flags() {
+        // No password, name, or url → those flags vanish, but -ts/-in/-out
+        // remain.
+        let argv = build_authenticode_argv(
+            "osslsigncode",
+            "/c.pfx",
+            None,
+            "http://timestamp.digicert.com",
+            None,
+            None,
+            "/d/x.msi",
+            "/d/x.msi.authenticode-tmp",
+        );
+        assert_eq!(
+            argv,
+            vec![
+                "sign",
+                "-pkcs12",
+                "/c.pfx",
+                "-ts",
+                "http://timestamp.digicert.com",
+                "-in",
+                "/d/x.msi",
+                "-out",
+                "/d/x.msi.authenticode-tmp",
+            ]
+        );
+    }
+
+    #[test]
+    fn signtool_argv_is_exact() {
+        // signtool signs in place — `out_tmp` is ignored, no -out token.
+        let argv = build_authenticode_argv(
+            "signtool",
+            "C:\\certs\\win.pfx",
+            Some("hunter2"),
+            "http://timestamp.digicert.com",
+            Some("Acme Corp"),
+            Some("https://acme.example"),
+            "C:\\dist\\myapp.exe",
+            "C:\\dist\\myapp.exe.authenticode-tmp",
+        );
+        assert_eq!(
+            argv,
+            vec![
+                "sign",
+                "/f",
+                "C:\\certs\\win.pfx",
+                "/p",
+                "hunter2",
+                "/fd",
+                "sha256",
+                "/tr",
+                "http://timestamp.digicert.com",
+                "/td",
+                "sha256",
+                "/d",
+                "Acme Corp",
+                "/du",
+                "https://acme.example",
+                "C:\\dist\\myapp.exe",
+            ]
+        );
+        assert!(
+            !argv.iter().any(|a| a == "-out" || a == "/out"),
+            "signtool signs in place; no -out token"
+        );
+    }
+
+    #[test]
+    fn default_timestamp_url_is_the_documented_constant() {
+        assert_eq!(
+            AuthenticodeConfig::default().resolved_timestamp_url(),
+            "http://timestamp.digicert.com"
+        );
+        let overridden = AuthenticodeConfig {
+            timestamp_url: Some("http://timestamp.sectigo.com".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            overridden.resolved_timestamp_url(),
+            "http://timestamp.sectigo.com"
+        );
+    }
+
+    #[test]
+    fn password_is_masked_in_dry_run_echo() {
+        let argv = build_authenticode_argv(
+            "osslsigncode",
+            "/c.p12",
+            Some("s3cr3t-pw"),
+            "http://timestamp.digicert.com",
+            None,
+            None,
+            "/d/app.exe",
+            "/d/app.exe.authenticode-tmp",
+        );
+        let echo = redact_password_in_argv(&argv);
+        assert!(
+            !echo.contains("s3cr3t-pw"),
+            "password must not leak: {echo}"
+        );
+        assert!(echo.contains("***"), "masked form must appear: {echo}");
+        assert!(
+            echo.contains("-pkcs12 /c.p12"),
+            "non-secret args survive: {echo}"
+        );
+    }
+
+    #[test]
+    fn redact_password_in_argv_does_not_mangle_unrelated_tokens() {
+        // A password equal to the `sign` subcommand token (W1): slot-level
+        // masking replaces ONLY the `-pass` value, never the matching subcommand
+        // or any other token that happens to equal the password string.
+        let argv = build_authenticode_argv(
+            "osslsigncode",
+            "/c.p12",
+            Some("sign"),
+            "http://timestamp.digicert.com",
+            None,
+            None,
+            "/d/sign.exe",
+            "/d/sign.exe.authenticode-tmp",
+        );
+        let echo = redact_password_in_argv(&argv);
+        assert!(
+            echo.starts_with("sign -pkcs12 /c.p12 -pass ***"),
+            "subcommand + cert survive, only the -pass slot is masked: {echo}"
+        );
+        assert!(
+            echo.contains("-in /d/sign.exe"),
+            "the artifact path token equal to the password is not corrupted: {echo}"
+        );
+        // Exactly one masked slot — the blind replace would have produced three.
+        assert_eq!(
+            echo.matches("***").count(),
+            1,
+            "only the password slot is masked: {echo}"
+        );
+    }
+
+    #[test]
+    fn redact_password_in_argv_masks_signtool_slash_p_slot() {
+        let argv = build_authenticode_argv(
+            "signtool",
+            "C:\\c.pfx",
+            Some("p"),
+            "http://timestamp.digicert.com",
+            None,
+            None,
+            "C:\\app.exe",
+            "C:\\app.exe.authenticode-tmp",
+        );
+        let echo = redact_password_in_argv(&argv);
+        assert!(echo.contains("/p ***"), "signtool /p slot masked: {echo}");
+        assert_eq!(echo.matches("***").count(), 1, "only the /p slot: {echo}");
+    }
+
+    // ---- extension filter ----
+
+    #[test]
+    fn windows_extension_filter_selects_pe_msi_dll_only() {
+        assert!(windows_artifact_extension_matches(std::path::Path::new(
+            "/d/app.exe"
+        )));
+        assert!(windows_artifact_extension_matches(std::path::Path::new(
+            "/d/app.EXE"
+        )));
+        assert!(windows_artifact_extension_matches(std::path::Path::new(
+            "/d/inst.msi"
+        )));
+        assert!(windows_artifact_extension_matches(std::path::Path::new(
+            "/d/lib.dll"
+        )));
+        // Linux ELF binary (no extension) and a tarball are rejected.
+        assert!(!windows_artifact_extension_matches(std::path::Path::new(
+            "/d/myapp_linux_amd64"
+        )));
+        assert!(!windows_artifact_extension_matches(std::path::Path::new(
+            "/d/app.tar.gz"
+        )));
+    }
+
+    #[test]
+    fn windows_kind_prefilter_admits_binary_installer_library() {
+        // The kind pre-filter admits the container kinds; extension refines.
+        assert!(should_sign(ArtifactKind::Binary, "windows").unwrap());
+        assert!(should_sign(ArtifactKind::Installer, "windows").unwrap());
+        assert!(should_sign(ArtifactKind::Library, "windows").unwrap());
+        assert!(!should_sign(ArtifactKind::Archive, "windows").unwrap());
+        assert!(!should_sign(ArtifactKind::Checksum, "windows").unwrap());
+    }
+
+    // ---- end-to-end selection (dry-run) ----
+
+    /// Run the sign stage in dry-run with an Authenticode config + a cert env
+    /// var, returning the captured log lines.
+    fn run_dry(ctx: &mut anodizer_core::context::Context) -> LogCapture {
+        let capture = LogCapture::new();
+        ctx.with_log_capture(capture.clone());
+        SignStage.run(ctx).expect("sign stage run");
+        capture
+    }
+
+    #[test]
+    fn selects_exe_msi_dll_and_skips_non_windows() {
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .signs(vec![authenticode_sign(AuthenticodeConfig::default())])
+            .env("WINDOWS_CERT_FILE", "/certs/win.p12")
+            .env("WINDOWS_CERT_PASSWORD", "pw")
+            .build();
+        add_artifact(
+            &mut ctx,
+            ArtifactKind::Binary,
+            "myapp.exe",
+            "myapp",
+            Some("x86_64-pc-windows-msvc"),
+        );
+        add_artifact(
+            &mut ctx,
+            ArtifactKind::Installer,
+            "myapp.msi",
+            "myapp",
+            None,
+        );
+        add_artifact(&mut ctx, ArtifactKind::Library, "plugin.dll", "myapp", None);
+        // Non-windows artifacts that must be skipped.
+        add_artifact(
+            &mut ctx,
+            ArtifactKind::Binary,
+            "myapp_linux_amd64",
+            "myapp",
+            Some("x86_64-unknown-linux-gnu"),
+        );
+        add_artifact(
+            &mut ctx,
+            ArtifactKind::Archive,
+            "myapp.tar.gz",
+            "myapp",
+            None,
+        );
+
+        let cap = run_dry(&mut ctx);
+        let msgs = cap.all_messages();
+        let signed: Vec<&String> = msgs
+            .iter()
+            .map(|(_, m)| m)
+            .filter(|m| m.starts_with("authenticode-signed "))
+            .collect();
+        assert!(
+            signed.iter().any(|m| m.ends_with("myapp.exe")),
+            "exe signed: {signed:?}"
+        );
+        assert!(
+            signed.iter().any(|m| m.ends_with("myapp.msi")),
+            "msi signed: {signed:?}"
+        );
+        assert!(
+            signed.iter().any(|m| m.ends_with("plugin.dll")),
+            "dll signed: {signed:?}"
+        );
+        assert!(
+            !signed.iter().any(|m| m.contains("linux")),
+            "linux ELF skipped: {signed:?}"
+        );
+        assert!(
+            !signed.iter().any(|m| m.contains("tar.gz")),
+            "archive skipped: {signed:?}"
+        );
+        assert_eq!(
+            signed.len(),
+            3,
+            "exactly the three windows artifacts: {signed:?}"
+        );
+    }
+
+    #[test]
+    fn missing_cert_not_required_skips_gracefully() {
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .signs(vec![authenticode_sign(AuthenticodeConfig::default())])
+            .sealed_env()
+            .build();
+        add_artifact(&mut ctx, ArtifactKind::Binary, "myapp.exe", "myapp", None);
+
+        let before = ctx.artifacts.all().len();
+        let cap = run_dry(&mut ctx);
+        // No error, no signature artifact registered, artifact count unchanged.
+        assert_eq!(ctx.artifacts.all().len(), before, "no new artifact on skip");
+        assert_eq!(
+            ctx.artifacts.by_kind(ArtifactKind::Signature).len(),
+            0,
+            "authenticode never registers a detached signature"
+        );
+        assert!(
+            cap.all_messages()
+                .iter()
+                .any(|(_, m)| m.contains("no Authenticode cert")),
+            "graceful-skip note logged: {:?}",
+            cap.all_messages()
+        );
+    }
+
+    #[test]
+    fn missing_cert_required_hard_fails_naming_env_var() {
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .signs(vec![authenticode_sign(AuthenticodeConfig {
+                required: Some(true),
+                ..Default::default()
+            })])
+            .sealed_env()
+            .build();
+        add_artifact(&mut ctx, ArtifactKind::Binary, "myapp.exe", "myapp", None);
+
+        let err = SignStage
+            .run(&mut ctx)
+            .expect_err("required cert missing must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("WINDOWS_CERT_FILE"),
+            "error names the cert env var: {msg}"
+        );
+        assert!(
+            msg.contains("required"),
+            "error states the requirement: {msg}"
+        );
+    }
+
+    #[test]
+    fn cert_resolves_from_literal_cert_file() {
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .signs(vec![authenticode_sign(AuthenticodeConfig {
+                cert_file: Some("/explicit/cert.pfx".to_string()),
+                ..Default::default()
+            })])
+            .sealed_env()
+            .build();
+        add_artifact(&mut ctx, ArtifactKind::Binary, "myapp.exe", "myapp", None);
+
+        let cap = run_dry(&mut ctx);
+        let echo = cap
+            .all_messages()
+            .into_iter()
+            .map(|(_, m)| m)
+            .find(|m| m.contains("(dry-run) would run:"))
+            .expect("dry-run echo present");
+        assert!(
+            echo.contains("/explicit/cert.pfx"),
+            "literal cert path used: {echo}"
+        );
+    }
+
+    #[test]
+    fn cert_resolves_from_cert_env_var() {
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .signs(vec![authenticode_sign(AuthenticodeConfig {
+                cert_env: Some("MY_CERT_PATH".to_string()),
+                ..Default::default()
+            })])
+            .env("MY_CERT_PATH", "/env/cert.p12")
+            .build();
+        add_artifact(&mut ctx, ArtifactKind::Binary, "myapp.exe", "myapp", None);
+
+        let cap = run_dry(&mut ctx);
+        let echo = cap
+            .all_messages()
+            .into_iter()
+            .map(|(_, m)| m)
+            .find(|m| m.contains("(dry-run) would run:"))
+            .expect("dry-run echo present");
+        assert!(
+            echo.contains("/env/cert.p12"),
+            "cert path from env var used: {echo}"
+        );
+    }
+
+    #[test]
+    fn password_masked_in_stage_dry_run_echo() {
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .signs(vec![authenticode_sign(AuthenticodeConfig::default())])
+            .env("WINDOWS_CERT_FILE", "/certs/win.p12")
+            .env("WINDOWS_CERT_PASSWORD", "topsecret-pw")
+            .build();
+        add_artifact(&mut ctx, ArtifactKind::Binary, "myapp.exe", "myapp", None);
+
+        let cap = run_dry(&mut ctx);
+        let echo = cap
+            .all_messages()
+            .into_iter()
+            .map(|(_, m)| m)
+            .find(|m| m.contains("(dry-run) would run:"))
+            .expect("dry-run echo present");
+        assert!(
+            !echo.contains("topsecret-pw"),
+            "password must not appear in echo: {echo}"
+        );
+        assert!(
+            echo.contains("***"),
+            "masked password marker present: {echo}"
+        );
+    }
+
+    #[test]
+    fn no_detached_signature_artifact_registered() {
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .signs(vec![authenticode_sign(AuthenticodeConfig::default())])
+            .env("WINDOWS_CERT_FILE", "/certs/win.p12")
+            .build();
+        add_artifact(&mut ctx, ArtifactKind::Binary, "myapp.exe", "myapp", None);
+        let before = ctx.artifacts.all().len();
+
+        run_dry(&mut ctx);
+
+        assert_eq!(
+            ctx.artifacts.all().len(),
+            before,
+            "authenticode mutates in place — registers no new artifact"
+        );
+        assert_eq!(ctx.artifacts.by_kind(ArtifactKind::Signature).len(), 0);
+        assert_eq!(ctx.artifacts.by_kind(ArtifactKind::Certificate).len(), 0);
+    }
+
+    #[test]
+    fn per_crate_mode_windows_binary_selected_and_signed() {
+        // Workspace per-crate axis: the iterated artifact carries a crate_name
+        // and target; the authenticode branch must still select + sign it.
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .signs(vec![authenticode_sign(AuthenticodeConfig::default())])
+            .env("WINDOWS_CERT_FILE", "/certs/win.p12")
+            .build();
+        add_artifact(
+            &mut ctx,
+            ArtifactKind::Binary,
+            "toolkit.exe",
+            "toolkit-crate",
+            Some("x86_64-pc-windows-msvc"),
+        );
+
+        let cap = run_dry(&mut ctx);
+        assert!(
+            cap.all_messages()
+                .iter()
+                .any(|(_, m)| m == "authenticode-signed toolkit.exe"),
+            "per-crate windows binary signed: {:?}",
+            cap.all_messages()
+        );
+    }
+
+    // ---- preflight env requirements (W2/W3/W4) ----
+
+    use anodizer_core::EnvRequirement;
+
+    fn reqs_for(signs: Vec<SignConfig>) -> Vec<EnvRequirement> {
+        let ctx = TestContextBuilder::new().signs(signs).build();
+        crate::sign_env_requirements(&ctx)
+    }
+
+    fn declares_tool(reqs: &[EnvRequirement], tool: &str) -> bool {
+        reqs.iter()
+            .any(|r| matches!(r, EnvRequirement::Tool { name } if name == tool))
+    }
+
+    fn declares_env_var(reqs: &[EnvRequirement], var: &str) -> bool {
+        reqs.iter().any(
+            |r| matches!(r, EnvRequirement::EnvAllOf { vars } if vars.iter().any(|v| v == var)),
+        )
+    }
+
+    #[test]
+    fn preflight_not_required_declares_nothing() {
+        // W2: a non-required authenticode config may skip when the tool/cert are
+        // absent, so preflight must declare NOTHING — not even the tool.
+        let reqs = reqs_for(vec![authenticode_sign(AuthenticodeConfig::default())]);
+        assert!(reqs.is_empty(), "non-required declares nothing: {reqs:?}");
+    }
+
+    #[test]
+    fn preflight_required_with_cert_env_requires_tool_and_cert_env_only() {
+        // W3: the password env var is NEVER required (passwordless .p12 is
+        // valid). W2: the tool IS required when the config will run.
+        let reqs = reqs_for(vec![authenticode_sign(AuthenticodeConfig {
+            required: Some(true),
+            ..Default::default()
+        })]);
+        assert!(
+            declares_tool(&reqs, AuthenticodeConfig::default().resolved_tool()),
+            "required declares the tool: {reqs:?}"
+        );
+        assert!(
+            declares_env_var(&reqs, "WINDOWS_CERT_FILE"),
+            "required (no cert_file) declares the cert env var: {reqs:?}"
+        );
+        assert!(
+            !declares_env_var(&reqs, "WINDOWS_CERT_PASSWORD"),
+            "the password env var is optional and must NOT be required: {reqs:?}"
+        );
+    }
+
+    #[test]
+    fn preflight_required_with_cert_file_omits_cert_env() {
+        // W4: a literal cert_file supplies the cert directly, so requiring the
+        // cert ENV VAR would be a false-positive preflight failure.
+        let reqs = reqs_for(vec![authenticode_sign(AuthenticodeConfig {
+            required: Some(true),
+            cert_file: Some("/explicit/cert.pfx".to_string()),
+            ..Default::default()
+        })]);
+        assert!(
+            declares_tool(&reqs, AuthenticodeConfig::default().resolved_tool()),
+            "required declares the tool: {reqs:?}"
+        );
+        assert!(
+            !declares_env_var(&reqs, "WINDOWS_CERT_FILE"),
+            "cert_file present → cert env var must NOT be required: {reqs:?}"
+        );
+        assert!(
+            !declares_env_var(&reqs, "WINDOWS_CERT_PASSWORD"),
+            "password env var never required: {reqs:?}"
+        );
+    }
+
+    // ---- non-dry-run rename lifecycle (S1/S2) ----
+
+    /// Write an executable shell script to `dir/name` and return its path.
+    #[cfg(unix)]
+    fn write_script(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, body).expect("write script");
+        let mut perms = std::fs::metadata(&path).expect("stat").permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).expect("chmod");
+        path
+    }
+
+    #[cfg(unix)]
+    fn run_authenticode_live(
+        tool: PathBuf,
+        dist: &std::path::Path,
+        artifact_rel: &str,
+    ) -> (anodizer_core::context::Context, anyhow::Result<()>) {
+        let mut ctx = TestContextBuilder::new()
+            .dist(dist.to_path_buf())
+            .signs(vec![authenticode_sign(AuthenticodeConfig {
+                // The fake signer is not named `signtool*`, so it takes the
+                // osslsigncode (`-in`/`-out` + rename-after) lifecycle.
+                tool: Some(tool.to_string_lossy().to_string()),
+                cert_file: Some(dist.join("dummy.p12").to_string_lossy().to_string()),
+                ..Default::default()
+            })])
+            .build();
+        add_artifact(
+            &mut ctx,
+            ArtifactKind::Binary,
+            artifact_rel,
+            "myapp",
+            Some("x86_64-pc-windows-msvc"),
+        );
+        let result = SignStage.run(&mut ctx);
+        (ctx, result)
+    }
+
+    /// No `.authenticode-tmp` sibling remains under `dist` after a run.
+    #[cfg(unix)]
+    fn no_temp_litter(dist: &std::path::Path) -> bool {
+        std::fs::read_dir(dist)
+            .expect("read dist")
+            .filter_map(Result::ok)
+            .all(|e| {
+                !e.file_name()
+                    .to_string_lossy()
+                    .contains(".authenticode-tmp")
+            })
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn rename_after_success_replaces_original_with_signed_bytes() {
+        // S1 success path: a fake signer that writes the `-out` temp and exits 0
+        // must have its temp atomically renamed over the original artifact.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dist = tmp.path();
+        std::fs::write(dist.join("dummy.p12"), b"cert").expect("cert");
+        std::fs::write(dist.join("myapp.exe"), b"ORIGINAL").expect("artifact");
+
+        // osslsigncode-shaped fake: the `-out` path is the last argv element.
+        let signer = write_script(
+            dist,
+            "fakesigner.sh",
+            "#!/bin/sh\nout=\"\"\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"-out\" ]; then out=\"$2\"; fi\n  shift\ndone\nprintf 'SIGNED' > \"$out\"\nexit 0\n",
+        );
+
+        let (_ctx, result) = run_authenticode_live(signer, dist, "myapp.exe");
+        result.expect("live authenticode sign succeeds");
+
+        let signed = std::fs::read(dist.join("myapp.exe")).expect("read signed");
+        assert_eq!(signed, b"SIGNED", "original replaced with signed bytes");
+        assert!(
+            no_temp_litter(dist),
+            "no .authenticode-tmp remains on success"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn failed_sign_leaves_original_untouched_and_no_litter() {
+        // S1 failure path + S2: a fake signer that writes a PARTIAL `-out` then
+        // exits non-zero must (a) leave the ORIGINAL unclobbered and (b) leave
+        // no `.authenticode-tmp` litter behind.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dist = tmp.path();
+        std::fs::write(dist.join("dummy.p12"), b"cert").expect("cert");
+        std::fs::write(dist.join("myapp.exe"), b"ORIGINAL").expect("artifact");
+
+        let signer = write_script(
+            dist,
+            "failsigner.sh",
+            "#!/bin/sh\nout=\"\"\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"-out\" ]; then out=\"$2\"; fi\n  shift\ndone\nprintf 'PARTIAL' > \"$out\"\necho 'signer error' 1>&2\nexit 3\n",
+        );
+
+        let (_ctx, result) = run_authenticode_live(signer, dist, "myapp.exe");
+        assert!(result.is_err(), "non-zero signer exit propagates an error");
+
+        let original = std::fs::read(dist.join("myapp.exe")).expect("read original");
+        assert_eq!(
+            original, b"ORIGINAL",
+            "original is NOT clobbered on failure"
+        );
+        assert!(
+            no_temp_litter(dist),
+            "partial .authenticode-tmp is cleaned up"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cert_file_not_found_not_required_skips_in_live_mode() {
+        // A configured-but-absent cert FILE is the same "no usable signing
+        // material" condition as an absent cert env var, so in live (non-dry-run)
+        // mode with `required: false` it must skip gracefully — NOT fall through
+        // and hard-error on the signer failing to open the path.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dist = tmp.path();
+        let missing = dist.join("does-not-exist.p12");
+        let mut ctx = TestContextBuilder::new()
+            .dist(dist.to_path_buf())
+            .signs(vec![authenticode_sign(AuthenticodeConfig {
+                cert_file: Some(missing.to_string_lossy().to_string()),
+                ..Default::default()
+            })])
+            .build();
+        add_artifact(
+            &mut ctx,
+            ArtifactKind::Binary,
+            "myapp.exe",
+            "myapp",
+            Some("x86_64-pc-windows-msvc"),
+        );
+
+        let before = ctx.artifacts.all().len();
+        SignStage
+            .run(&mut ctx)
+            .expect("absent cert file (not required) skips without error");
+        assert_eq!(
+            ctx.artifacts.all().len(),
+            before,
+            "no artifact mutated on skip"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cert_file_not_found_required_hard_fails_naming_path() {
+        // The mirror of the skip above: `required: true` with an absent cert
+        // FILE must hard-fail with a clear message naming the missing path,
+        // rather than a generic non-zero-exit from the signer.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dist = tmp.path();
+        let missing = dist.join("does-not-exist.p12");
+        let mut ctx = TestContextBuilder::new()
+            .dist(dist.to_path_buf())
+            .signs(vec![authenticode_sign(AuthenticodeConfig {
+                cert_file: Some(missing.to_string_lossy().to_string()),
+                required: Some(true),
+                ..Default::default()
+            })])
+            .build();
+        add_artifact(
+            &mut ctx,
+            ArtifactKind::Binary,
+            "myapp.exe",
+            "myapp",
+            Some("x86_64-pc-windows-msvc"),
+        );
+
+        let err = SignStage
+            .run(&mut ctx)
+            .expect_err("absent cert file (required) must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("does-not-exist.p12") && msg.contains("does not exist"),
+            "error names the missing cert path: {msg}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn password_env_var_is_stripped_from_signer_child_env() {
+        // Defense-in-depth: the cert password reaches the signer ONLY via argv
+        // (`-pass`/`/p`), never as an inherited env var. `Command` does not
+        // `env_clear`, so a password present in the real parent env would
+        // otherwise be inherited by the child; `env_remove` strips it. Prove the
+        // child cannot read the configured `password_env` from its environment
+        // even though it is set in the real parent env — while signing still
+        // succeeds (the signer gets the password from argv).
+        //
+        // A uniquely-named real env var keeps this from colliding with any other
+        // test; precedent for `unsafe set_var` in tests: stage-makeself.
+        const PW_ENV: &str = "ANODIZER_TEST_AUTHENTICODE_PW_STRIP";
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let dist = tmp.path();
+        std::fs::write(dist.join("dummy.p12"), b"cert").expect("cert");
+        std::fs::write(dist.join("myapp.exe"), b"ORIGINAL").expect("artifact");
+
+        // osslsigncode-shaped fake that dumps its environment to a sentinel file
+        // before writing the `-out` temp.
+        let env_dump = dist.join("child-env.txt");
+        let signer = write_script(
+            dist,
+            "envdumpsigner.sh",
+            &format!(
+                "#!/bin/sh\nenv > \"{}\"\nout=\"\"\nwhile [ $# -gt 0 ]; do\n  if [ \"$1\" = \"-out\" ]; then out=\"$2\"; fi\n  shift\ndone\nprintf 'SIGNED' > \"$out\"\nexit 0\n",
+                env_dump.display()
+            ),
+        );
+
+        let mut ctx = TestContextBuilder::new()
+            .dist(dist.to_path_buf())
+            .signs(vec![authenticode_sign(AuthenticodeConfig {
+                tool: Some(signer.to_string_lossy().to_string()),
+                cert_file: Some(dist.join("dummy.p12").to_string_lossy().to_string()),
+                password_env: Some(PW_ENV.to_string()),
+                ..Default::default()
+            })])
+            // ctx reads the password through the injected env source so the
+            // job records `password.is_some()` and populates `env_remove`.
+            .env(PW_ENV, "child-must-not-see-this")
+            .build();
+        add_artifact(
+            &mut ctx,
+            ArtifactKind::Binary,
+            "myapp.exe",
+            "myapp",
+            Some("x86_64-pc-windows-msvc"),
+        );
+
+        // The child inherits the REAL parent env, not ctx's injected source, so
+        // the var must exist in the real env for the strip to be observable.
+        unsafe { std::env::set_var(PW_ENV, "child-must-not-see-this") };
+        let result = SignStage.run(&mut ctx);
+        unsafe { std::env::remove_var(PW_ENV) };
+
+        result.expect("signing succeeds (password supplied via argv)");
+        let child_env = std::fs::read_to_string(&env_dump).expect("read child env dump");
+        assert!(
+            !child_env.contains(PW_ENV),
+            "password env var must be stripped from the signer's child env:\n{child_env}"
+        );
+        assert_eq!(
+            std::fs::read(dist.join("myapp.exe")).expect("read signed"),
+            b"SIGNED",
+            "artifact still signed despite env strip"
+        );
+    }
+
+    #[test]
+    fn password_redacted_via_synthetic_key_independent_of_env_name() {
+        // B1: `execute_sign_job` builds its redaction set from
+        // `env + redact_extra + process-env`. The Authenticode path puts the
+        // password into `redact_extra` under the synthetic guaranteed-secret key
+        // `AUTHENTICODE_PASSWORD`, so `redact::string` masks it REGARDLESS of the
+        // user's `password_env` name — even one with no secret suffix. This is
+        // the exact composition the live spawn path feeds; proving it here
+        // pins the decoupling without depending on per-thread log capture.
+        //
+        // Contrast the OLD behavior: the password was scrubbed only when the
+        // user's `password_env` key (e.g. `WINDOWS_CERT_PASSWORD`) ended in a
+        // secret suffix; a key like `MY_CERT_PW` would have leaked it.
+        let pw = "leaky-secret-pw";
+        let redact_extra = vec![("AUTHENTICODE_PASSWORD".to_string(), pw.to_string())];
+        // No child env, but the user named the password under a NON-secret key.
+        let env_pairs: Vec<(String, String)> = redact_extra.clone();
+        let echoed = format!("osslsigncode: error reading -pass {pw}");
+        let masked = anodizer_core::redact::string(&echoed, &env_pairs);
+        assert!(
+            !masked.contains(pw),
+            "password masked under synthetic key regardless of env name: {masked}"
+        );
+        assert_eq!(
+            masked,
+            "osslsigncode: error reading -pass $AUTHENTICODE_PASSWORD"
+        );
+
+        // Sanity floor: the non-secret env KEY alone would NOT have masked it —
+        // this is precisely the leak B1 closed.
+        let leaky_env = vec![("MY_CERT_PW".to_string(), pw.to_string())];
+        let unmasked = anodizer_core::redact::string(&echoed, &leaky_env);
+        assert!(
+            unmasked.contains(pw),
+            "the non-secret env key does NOT mask — `redact_extra` is what saves us: {unmasked}"
+        );
+    }
 }

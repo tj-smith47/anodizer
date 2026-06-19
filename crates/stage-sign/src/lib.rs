@@ -620,6 +620,34 @@ fn sign_slice_requirements(
 ) -> Vec<anodizer_core::EnvRequirement> {
     let mut out = Vec::new();
     for cfg in configs {
+        // An `authenticode:` config has its own derived signer + cert lifecycle
+        // and never invokes the cosign/gpg cmd, so its requirements are derived
+        // separately. Preflight must match RUNTIME exactly:
+        //
+        // - When NOT required, the runtime skips gracefully if no cert resolves
+        //   (`process_authenticode_config`), so the config may legitimately run
+        //   nothing — declare NOTHING, including the tool (requiring an absent
+        //   osslsigncode/signtool would falsely fail a permitted skip).
+        // - When required, the runtime hard-fails on a missing cert AND a
+        //   missing tool, so both become preflight requirements. But the cert
+        //   env var is only the cert source when `cert_file` is unset; a
+        //   literal/templated `cert_file` supplies the cert directly, so
+        //   requiring the env var then would be a false positive.
+        // - The password is OPTIONAL at runtime even when required (a
+        //   passwordless .p12 is valid), so it is never a preflight requirement.
+        if let Some(authenticode) = &cfg.authenticode {
+            if authenticode.is_required() {
+                out.push(anodizer_core::EnvRequirement::Tool {
+                    name: authenticode.resolved_tool().to_string(),
+                });
+                if authenticode.cert_file.is_none() {
+                    out.push(anodizer_core::EnvRequirement::EnvAllOf {
+                        vars: vec![authenticode.resolved_cert_env().to_string()],
+                    });
+                }
+            }
+            continue;
+        }
         if cfg.resolved_artifacts(fallback_artifacts) == "none" {
             continue;
         }

@@ -107,9 +107,149 @@ pub struct SignConfig {
     /// Accepts bool or template string (e.g., "{{ IsSnapshot }}").
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub output: Option<StringOrBool>,
+    /// Authenticode (Windows PE/MSI) signing backend. When set, this sign
+    /// config signs Windows artifacts in place via osslsigncode (Linux/cross)
+    /// or signtool (Windows) instead of producing a detached cosign/gpg
+    /// signature. The signing command, argv, timestamp URL, and artifact
+    /// selector are all derived; supply only the cert (a secret).
+    pub authenticode: Option<AuthenticodeConfig>,
     /// Template-conditional: skip this sign config if rendered result is "false" or empty.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
+}
+
+/// Authenticode (Windows PE/MSI/DLL) signing backend for a [`SignConfig`].
+///
+/// Unlike the generic cosign/gpg `signs:` path — which produces a *detached*
+/// `.sig` next to the artifact — Authenticode signing **embeds** the signature
+/// into the PE/MSI container, mutating the artifact in place. Downstream
+/// checksums and archives then pick up the signed bytes; no separate signature
+/// artifact is registered.
+///
+/// Everything is derived so the opt-in is minimal — `authenticode: {}` plus a
+/// `WINDOWS_CERT_FILE` (and optional `WINDOWS_CERT_PASSWORD`) env var is enough:
+///
+/// ```yaml
+/// signs:
+///   - authenticode: {}   # signs every .exe/.msi/.dll via osslsigncode/signtool
+/// ```
+///
+/// A fully-specified config overrides the derived defaults:
+///
+/// ```yaml
+/// signs:
+///   - id: authenticode
+///     authenticode:
+///       cert_file: "{{ .Env.MY_CERT }}"     # or cert_env: MY_CERT_PATH
+///       password_env: MY_CERT_PASSWORD
+///       timestamp_url: "http://timestamp.sectigo.com"
+///       name: "Acme Corp"
+///       url: "https://acme.example"
+///       tool: osslsigncode
+///       artifacts: windows
+///       required: true
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct AuthenticodeConfig {
+    /// Literal path to the PKCS#12 (`.p12` / `.pfx`) cert file. May be a
+    /// template (e.g. `"{{ .Env.MY_CERT }}"`). For a non-secret cert path
+    /// checked into config; for a secret path prefer [`cert_env`](Self::cert_env).
+    pub cert_file: Option<String>,
+    /// Name of the env var holding the **path** to the PKCS#12 cert file (never
+    /// the cert bytes). Defaults to `WINDOWS_CERT_FILE` when neither this nor
+    /// [`cert_file`](Self::cert_file) is set.
+    pub cert_env: Option<String>,
+    /// Name of the env var holding the cert password. Defaults to
+    /// `WINDOWS_CERT_PASSWORD`. The value is read at execution time, passed to
+    /// the signer, and redacted from all logs.
+    pub password_env: Option<String>,
+    /// RFC 3161 timestamp server URL. Defaults to
+    /// [`DEFAULT_TIMESTAMP_URL`](AuthenticodeConfig::DEFAULT_TIMESTAMP_URL).
+    pub timestamp_url: Option<String>,
+    /// Product / publisher name embedded in the signature (osslsigncode `-n`,
+    /// signtool `/d`). Templated. Derived from the project name when unset.
+    pub name: Option<String>,
+    /// Info URL embedded in the signature (osslsigncode `-i`, signtool `/du`).
+    /// Omitted when unset.
+    pub url: Option<String>,
+    /// Override the signer binary. Defaults to `signtool` on a Windows host,
+    /// `osslsigncode` elsewhere.
+    pub tool: Option<String>,
+    /// Artifact selector. Defaults to `"windows"` — Binary/Installer/Library
+    /// artifacts whose path ends in `.exe`, `.msi`, or `.dll`.
+    pub artifacts: Option<String>,
+    /// When `true`, a missing cert HARD-FAILS the sign stage. When `false`
+    /// (the default), a missing cert SKIPS gracefully (mirrors the
+    /// keyless-cosign-under-harness skip).
+    pub required: Option<bool>,
+}
+
+impl AuthenticodeConfig {
+    /// Default env var naming the cert **path** when neither `cert_file` nor
+    /// `cert_env` is set (`"WINDOWS_CERT_FILE"`).
+    pub const DEFAULT_CERT_ENV: &'static str = "WINDOWS_CERT_FILE";
+
+    /// Default env var holding the cert password (`"WINDOWS_CERT_PASSWORD"`).
+    pub const DEFAULT_PASSWORD_ENV: &'static str = "WINDOWS_CERT_PASSWORD";
+
+    /// Default RFC 3161 timestamp server (`"http://timestamp.digicert.com"`).
+    pub const DEFAULT_TIMESTAMP_URL: &'static str = "http://timestamp.digicert.com";
+
+    /// Default artifact selector (`"windows"`).
+    pub const DEFAULT_ARTIFACTS: &'static str = "windows";
+
+    /// Signer binary on a Windows host (`"signtool"`).
+    pub const DEFAULT_TOOL_WINDOWS: &'static str = "signtool";
+
+    /// Signer binary on a non-Windows host (`"osslsigncode"`).
+    pub const DEFAULT_TOOL_UNIX: &'static str = "osslsigncode";
+
+    /// Resolve the env var naming the cert path, falling back to
+    /// [`DEFAULT_CERT_ENV`](Self::DEFAULT_CERT_ENV).
+    pub fn resolved_cert_env(&self) -> &str {
+        self.cert_env.as_deref().unwrap_or(Self::DEFAULT_CERT_ENV)
+    }
+
+    /// Resolve the env var holding the cert password, falling back to
+    /// [`DEFAULT_PASSWORD_ENV`](Self::DEFAULT_PASSWORD_ENV).
+    pub fn resolved_password_env(&self) -> &str {
+        self.password_env
+            .as_deref()
+            .unwrap_or(Self::DEFAULT_PASSWORD_ENV)
+    }
+
+    /// Resolve the RFC 3161 timestamp URL, falling back to
+    /// [`DEFAULT_TIMESTAMP_URL`](Self::DEFAULT_TIMESTAMP_URL).
+    pub fn resolved_timestamp_url(&self) -> &str {
+        self.timestamp_url
+            .as_deref()
+            .unwrap_or(Self::DEFAULT_TIMESTAMP_URL)
+    }
+
+    /// Resolve the artifact selector, falling back to
+    /// [`DEFAULT_ARTIFACTS`](Self::DEFAULT_ARTIFACTS).
+    pub fn resolved_artifacts(&self) -> &str {
+        self.artifacts.as_deref().unwrap_or(Self::DEFAULT_ARTIFACTS)
+    }
+
+    /// Resolve the signer binary, falling back to the host-appropriate default
+    /// (`signtool` on Windows, `osslsigncode` elsewhere).
+    pub fn resolved_tool(&self) -> &str {
+        self.tool.as_deref().unwrap_or({
+            if cfg!(windows) {
+                Self::DEFAULT_TOOL_WINDOWS
+            } else {
+                Self::DEFAULT_TOOL_UNIX
+            }
+        })
+    }
+
+    /// Whether a missing cert HARD-FAILS (`true`) versus skips gracefully
+    /// (`false`, the default).
+    pub fn is_required(&self) -> bool {
+        self.required.unwrap_or(false)
+    }
 }
 
 impl SignConfig {
@@ -598,5 +738,120 @@ mod tests {
             ..Default::default()
         };
         assert!(cfg.is_gpg());
+    }
+
+    // ---- AuthenticodeConfig::resolved_*() (lazy-defaults policy) ----
+
+    #[test]
+    fn authenticode_resolved_cert_env_default() {
+        assert_eq!(
+            AuthenticodeConfig::default().resolved_cert_env(),
+            "WINDOWS_CERT_FILE"
+        );
+        assert_eq!(AuthenticodeConfig::DEFAULT_CERT_ENV, "WINDOWS_CERT_FILE");
+    }
+
+    #[test]
+    fn authenticode_resolved_cert_env_user_value_wins() {
+        let cfg = AuthenticodeConfig {
+            cert_env: Some("MY_CERT_PATH".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_cert_env(), "MY_CERT_PATH");
+    }
+
+    #[test]
+    fn authenticode_resolved_password_env_default() {
+        assert_eq!(
+            AuthenticodeConfig::default().resolved_password_env(),
+            "WINDOWS_CERT_PASSWORD"
+        );
+        assert_eq!(
+            AuthenticodeConfig::DEFAULT_PASSWORD_ENV,
+            "WINDOWS_CERT_PASSWORD"
+        );
+    }
+
+    #[test]
+    fn authenticode_resolved_password_env_user_value_wins() {
+        let cfg = AuthenticodeConfig {
+            password_env: Some("CERT_PW".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_password_env(), "CERT_PW");
+    }
+
+    #[test]
+    fn authenticode_resolved_timestamp_url_default() {
+        assert_eq!(
+            AuthenticodeConfig::default().resolved_timestamp_url(),
+            "http://timestamp.digicert.com"
+        );
+        assert_eq!(
+            AuthenticodeConfig::DEFAULT_TIMESTAMP_URL,
+            "http://timestamp.digicert.com"
+        );
+    }
+
+    #[test]
+    fn authenticode_resolved_timestamp_url_user_value_wins() {
+        let cfg = AuthenticodeConfig {
+            timestamp_url: Some("http://timestamp.sectigo.com".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_timestamp_url(), "http://timestamp.sectigo.com");
+    }
+
+    #[test]
+    fn authenticode_resolved_artifacts_default() {
+        assert_eq!(
+            AuthenticodeConfig::default().resolved_artifacts(),
+            "windows"
+        );
+        assert_eq!(AuthenticodeConfig::DEFAULT_ARTIFACTS, "windows");
+    }
+
+    #[test]
+    fn authenticode_resolved_artifacts_user_value_wins() {
+        let cfg = AuthenticodeConfig {
+            artifacts: Some("binary".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_artifacts(), "binary");
+    }
+
+    #[test]
+    fn authenticode_resolved_tool_host_default() {
+        // The host-derived default is signtool on Windows, osslsigncode
+        // elsewhere — assert whichever this build targets.
+        let expected = if cfg!(windows) {
+            "signtool"
+        } else {
+            "osslsigncode"
+        };
+        assert_eq!(AuthenticodeConfig::default().resolved_tool(), expected);
+    }
+
+    #[test]
+    fn authenticode_resolved_tool_user_value_wins() {
+        let cfg = AuthenticodeConfig {
+            tool: Some("osslsigncode".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(cfg.resolved_tool(), "osslsigncode");
+    }
+
+    #[test]
+    fn authenticode_is_required_default_false() {
+        assert!(!AuthenticodeConfig::default().is_required());
+    }
+
+    #[test]
+    fn authenticode_is_required_user_value_wins() {
+        let cfg = AuthenticodeConfig {
+            required: Some(true),
+            ..Default::default()
+        };
+        assert!(cfg.is_required());
     }
 }

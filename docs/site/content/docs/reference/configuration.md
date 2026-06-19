@@ -248,6 +248,7 @@ The canonical key is `hooks:` for both `before:` and `after:` to the conventiona
 |-------|------|---------|-------------|
 | `args` | list of string | — | Arguments passed to the signing command (supports templates with ${artifact} and ${signature}). |
 | `artifacts` | string | — | Artifact types to sign: "all", "archive", "binary", "checksum", "package", "sbom" (default: "none"). |
+| `authenticode` | AuthenticodeConfig | — | Authenticode (Windows PE/MSI) signing backend. When set, this sign config signs Windows artifacts in place via osslsigncode (Linux/cross) or signtool (Windows) instead of producing a detached cosign/gpg signature. The signing command, argv, timestamp URL, and artifact selector are all derived; supply only the cert (a secret). |
 | `certificate` | string | — | Certificate file to embed in the signature (Cosign bundle signing). |
 | `cmd` | string | — | Signing command to invoke (default: "cosign" or "gpg"). |
 | `env` | list of string | — | Environment variables passed to the signing command. |
@@ -784,6 +785,7 @@ Top-level `schemastore:` block. Shared fields here are defaults for every entry 
 |-------|------|---------|-------------|
 | `args` | list of string | — | Arguments passed to the signing command (supports templates with ${artifact} and ${signature}). |
 | `artifacts` | string | — | Artifact types to sign: "all", "archive", "binary", "checksum", "package", "sbom" (default: "none"). |
+| `authenticode` | AuthenticodeConfig | — | Authenticode (Windows PE/MSI) signing backend. When set, this sign config signs Windows artifacts in place via osslsigncode (Linux/cross) or signtool (Windows) instead of producing a detached cosign/gpg signature. The signing command, argv, timestamp URL, and artifact selector are all derived; supply only the cert (a secret). |
 | `certificate` | string | — | Certificate file to embed in the signature (Cosign bundle signing). |
 | `cmd` | string | — | Signing command to invoke (default: "cosign" or "gpg"). |
 | `env` | list of string | — | Environment variables passed to the signing command. |
