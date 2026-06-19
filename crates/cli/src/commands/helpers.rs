@@ -1177,7 +1177,7 @@ pub fn init_publish_stage_ctx(
     log: &StageLogger,
 ) -> Result<(Config, Context, std::path::PathBuf)> {
     let config_path = crate::pipeline::find_config_with_logger(config_override, Some(log))?;
-    let mut config = crate::pipeline::load_config(&config_path)?;
+    let mut config = crate::pipeline::load_config_logged(&config_path, log)?;
     if infer_project {
         infer_project_name(&mut config, log);
     }
@@ -1214,7 +1214,7 @@ pub fn init_merge_stage_ctx(
     log: &StageLogger,
 ) -> Result<(Config, Context)> {
     let config_path = crate::pipeline::find_config_with_logger(config_override, Some(log))?;
-    let mut config = crate::pipeline::load_config(&config_path)?;
+    let mut config = crate::pipeline::load_config_logged(&config_path, log)?;
     infer_project_name(&mut config, log);
     auto_detect_github(&mut config, log);
     let mut ctx = Context::new(config.clone(), ctx_opts);

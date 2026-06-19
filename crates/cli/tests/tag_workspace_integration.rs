@@ -708,9 +708,10 @@ fn version_override_rejected_in_per_crate_mode() {
     assert!(!git_tag_exists(root, "cli-v5.0.0"));
 }
 
-/// Static config-load warnings (submitter moderation queue) must print
-/// exactly once per invocation on BOTH tag paths. The `--crate` path used
-/// to re-load the config inside the crate lookup, doubling every warning.
+/// The submitter moderation-queue advisory is verbose-only: hidden at the
+/// default log level, and printed exactly once per invocation under `--verbose`
+/// on BOTH tag paths. The `--crate` path used to re-load the config inside the
+/// crate lookup, which would double the advisory if it re-emitted per load.
 #[test]
 fn tag_crate_path_emits_static_config_warnings_once() {
     let tmp = TempDir::new().unwrap();
@@ -725,14 +726,36 @@ fn tag_crate_path_emits_static_config_warnings_once() {
     fs::write(root.join("crates/core/src/lib.rs"), "// touched\n").unwrap();
     git_add_commit(root, "feat: core change");
 
-    for args in [
+    for base in [
         vec!["tag", "--dry-run"],
         vec!["tag", "--crate", "core", "--dry-run"],
     ] {
-        let out = anodizer().current_dir(root).args(&args).output().unwrap();
+        // Default log level: the advisory is hidden.
+        let out = anodizer().current_dir(root).args(&base).output().unwrap();
         assert!(
             out.status.success(),
-            "{args:?} failed: stdout={} stderr={}",
+            "{base:?} failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(
+            stderr.matches("publisher 'chocolatey'").count(),
+            0,
+            "moderation-queue advisory must be hidden at the default level for {base:?}: {stderr}"
+        );
+
+        // `--verbose`: the advisory surfaces exactly once (no per-load doubling).
+        let mut verbose_args = base.clone();
+        verbose_args.push("--verbose");
+        let out = anodizer()
+            .current_dir(root)
+            .args(&verbose_args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{verbose_args:?} failed: stdout={} stderr={}",
             String::from_utf8_lossy(&out.stdout),
             String::from_utf8_lossy(&out.stderr)
         );
@@ -740,7 +763,7 @@ fn tag_crate_path_emits_static_config_warnings_once() {
         assert_eq!(
             stderr.matches("publisher 'chocolatey'").count(),
             1,
-            "moderation-queue warning must print exactly once for {args:?}: {stderr}"
+            "moderation-queue advisory must print exactly once under --verbose for {verbose_args:?}: {stderr}"
         );
     }
 }

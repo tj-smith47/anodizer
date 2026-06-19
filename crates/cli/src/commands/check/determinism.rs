@@ -94,12 +94,15 @@ pub fn run(args: CheckDeterminismArgs, verbose: bool, debug: bool, quiet: bool) 
 
     // One config load for every best-effort probe below (signature
     // allow-list, all-prebuilt short-circuit, docker-backend hint).
-    // Besides the obvious DRY, the load is the emission point for
-    // static-config warnings (legacy aliases, submitter `required: true`)
-    // — loading once means they print once per invocation instead of
-    // once per probe. Best-effort: a missing/unparseable config yields
-    // `None` and the real error surfaces from the pipeline itself.
+    // Loading once means the load-time legacy-alias warnings print once per
+    // invocation instead of once per probe. Best-effort: a missing/unparseable
+    // config yields `None` and the real error surfaces from the pipeline itself.
     let repo_config = crate::pipeline::load_repo_config(&repo_root).ok();
+    // Submitter moderation-queue advisories are verbose-only; emit them once
+    // here off the single load (hidden at the default log level).
+    if let Some(ref cfg) = repo_config {
+        crate::pipeline::emit_config_advisories(cfg, &log);
+    }
 
     // Seed the compile-time allow-list from the centralized
     // DeterminismState (single source of truth); the runtime allow-list

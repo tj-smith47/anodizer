@@ -248,7 +248,6 @@ pub fn load_config(path: &Path) -> Result<Config> {
     anodizer_core::config::validate_changelog_groups_depth(&config).map_err(anyhow::Error::msg)?;
     // Validate changelog.paths[] syntax (reject leading `/` and empty entries).
     anodizer_core::config::validate_changelog_paths(&config).map_err(anyhow::Error::msg)?;
-    anodizer_core::config::warn_on_submitter_required(&config);
     anodizer_core::config::warn_on_legacy_homebrew_formula(&config);
     // The deprecated nested `dockers_v2[].retry:` / `docker_manifests[].retry:`
     // in favour of the top-level `retry:` block.
@@ -287,6 +286,29 @@ pub fn load_config(path: &Path) -> Result<Config> {
     config.populate_derived_metadata(Path::new("."));
 
     Ok(config)
+}
+
+/// [`load_config`] plus emission of verbose-only config advisories through
+/// `log`. Currently surfaces the submitter moderation-queue notices
+/// ([`anodizer_core::config::submitter_required_warnings`]) at
+/// `StageLogger::verbose` so they stay hidden at the default log level and
+/// appear only under `--verbose`. Route every command's PRIMARY config load
+/// through this (best-effort secondary `.ok()` loads keep using
+/// [`load_config`]) so the advisory surfaces uniformly, exactly once per run.
+pub fn load_config_logged(path: &Path, log: &StageLogger) -> Result<Config> {
+    let config = load_config(path)?;
+    emit_config_advisories(&config, log);
+    Ok(config)
+}
+
+/// Emit the verbose-only config advisories for an already-loaded config.
+/// Separated so command paths that load through [`load_repo_config`] (which
+/// finds + loads internally) can surface the same advisories without a second
+/// parse.
+pub fn emit_config_advisories(config: &anodizer_core::config::Config, log: &StageLogger) {
+    for msg in anodizer_core::config::submitter_required_warnings(config) {
+        log.verbose(&msg);
+    }
 }
 
 /// Walk the loaded config and fill in commit_author defaults on every

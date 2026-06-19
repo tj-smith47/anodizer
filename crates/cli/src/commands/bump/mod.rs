@@ -69,9 +69,14 @@ pub fn run(opts: BumpOpts) -> Result<()> {
 
     // The command's ONLY config load — threaded into the coherence guard,
     // the plan builder, and the pin enforcement below. Loading per consumer
-    // would re-emit the static-config warnings (legacy aliases, submitter
-    // `required: true`) once per load in a single invocation.
+    // would re-emit the load-time legacy-alias warnings once per load in a
+    // single invocation.
     let bump_config = load_bump_config(&workspace_root, &opts)?;
+    // Submitter moderation-queue advisories are verbose-only; emit them once
+    // off this single load (hidden at the default log level).
+    if let Some(ref cfg) = bump_config {
+        crate::pipeline::emit_config_advisories(cfg, &log);
+    }
 
     // Reject an incoherent flat-aggregate config (members sharing one tag prefix
     // but disagreeing on `[package].version`) before any work, identically to

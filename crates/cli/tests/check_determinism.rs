@@ -292,9 +292,10 @@ fn inject_drift_archive_reports_drift_on_minimal_workspace() {
 /// Also pins the console contract:
 /// - the `Checking determinism` header + parameter block print exactly once
 ///   (one formatter — the binary's; wrappers must not echo their own), and
-/// - the static-config moderation-queue warnings print exactly once per
-///   invocation (not once per config probe × replica build — they printed
-///   4× in the live run).
+/// - the submitter moderation-queue advisory is HIDDEN at the default log
+///   level (verbose-only): it must not appear in this default-verbosity run
+///   for either configured submitter (it would have printed 4× in the
+///   pre-fix live run).
 #[test]
 fn harness_skips_env_preflight_and_prints_header_and_config_warnings_once() {
     if !tool_on_path("cargo") || !tool_on_path("git") {
@@ -408,13 +409,15 @@ fn harness_skips_env_preflight_and_prints_header_and_config_warnings_once() {
         "`Checking determinism` header must print exactly once, got {header_count}:\n{stderr}"
     );
 
+    // The submitter moderation-queue advisory is verbose-only; this run uses
+    // the default log level, so it must not surface for either submitter.
     for publisher in ["chocolatey", "winget"] {
         let needle = format!("publisher '{publisher}' submits to an external moderation queue");
         let count = stderr.matches(needle.as_str()).count();
         assert_eq!(
-            count, 1,
-            "moderation-queue warning for {publisher} must print exactly once \
-             per invocation, got {count}:\n{stderr}"
+            count, 0,
+            "moderation-queue advisory for {publisher} must be hidden at the \
+             default log level, got {count}:\n{stderr}"
         );
     }
 }

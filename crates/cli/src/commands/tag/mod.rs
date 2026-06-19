@@ -328,6 +328,11 @@ pub fn run(opts: TagOpts) -> Result<()> {
                 "tag",
                 Verbosity::from_flags(opts.quiet, effective_verbose, opts.debug),
             );
+            // Submitter moderation-queue advisories are verbose-only; emit them
+            // once off the single load (hidden at the default log level).
+            if let Some(c) = loaded_config.as_ref() {
+                crate::pipeline::emit_config_advisories(c, &log);
+            }
             log.status(&format!(
                 "running auto-tag (per-crate){}",
                 if opts.dry_run { " (dry-run)" } else { "" }
@@ -372,6 +377,11 @@ pub fn run(opts: TagOpts) -> Result<()> {
         "tag",
         Verbosity::from_flags(opts.quiet, effective_verbose, opts.debug),
     );
+    // Submitter moderation-queue advisories are verbose-only; emit them once
+    // off the single load (hidden at the default log level).
+    if let Some(c) = loaded_config.as_ref() {
+        crate::pipeline::emit_config_advisories(c, &log);
+    }
 
     log.status(&format!(
         "running auto-tag{}",
@@ -1970,9 +1980,8 @@ struct CrateTagInfo {
 /// crate's `path` so change detection can be scoped to that directory.
 ///
 /// Takes the command's single shared config load rather than re-loading:
-/// every `load_config_at` re-emits the static config-load warnings
-/// (moderation queue, legacy aliases), so a second load doubled them on
-/// the `--crate` path.
+/// every `load_config` re-emits the load-time legacy-alias warnings, so a
+/// second load doubled them on the `--crate` path.
 fn load_crate_tag_info(
     config: &anodizer_core::config::Config,
     crate_name: &str,

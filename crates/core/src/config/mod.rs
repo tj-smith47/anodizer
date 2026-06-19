@@ -1658,28 +1658,24 @@ where
     }
 }
 
-/// Emit a `tracing::warn!` for each publisher configured with `required: true`
-/// whose group is Submitter (chocolatey, winget, aur_source).
+/// One advisory string per publisher configured with `required: true` whose
+/// group is Submitter (chocolatey, winget, aur_source).
 ///
-/// `required: true` on a submitter still fails the release when the
-/// submission itself fails (it feeds `required_failures()`), but the
-/// external moderation outcome resolves after the release run and cannot
-/// be gated on. The warning is non-fatal and clarifies which half of the
-/// semantics applies. Cargo is excluded: its default is already
-/// `required: true` and the warning would be noise.
+/// `required: true` on a submitter still fails the release when the submission
+/// itself fails (it feeds `required_failures()`), but the external moderation
+/// outcome resolves after the release run and cannot be gated on. The advisory
+/// is non-fatal and clarifies which half of the semantics applies. Cargo is
+/// excluded: its default is already `required: true` and the message would be
+/// noise.
 ///
 /// Covers all three publish axes — `crates[].publish`,
 /// `workspaces[].crates[].publish`, and `defaults.publish` (via
 /// [`for_each_crate_publish`]) — plus the top-level `aur_sources:` list.
-pub fn warn_on_submitter_required(config: &Config) {
-    for msg in submitter_required_warnings(config) {
-        tracing::warn!("{}", msg);
-    }
-}
-
-/// Pure helper: returns the warning strings without emitting them. Exposed
-/// for tests; production callers use [`warn_on_submitter_required`].
-pub(crate) fn submitter_required_warnings(config: &Config) -> Vec<String> {
+///
+/// Pure: this returns the strings without emitting them. The CLI surfaces them
+/// through `StageLogger::verbose` (the `--verbose`-gated register), so they stay
+/// hidden at the default log level — see `pipeline::load_config_logged`.
+pub fn submitter_required_warnings(config: &Config) -> Vec<String> {
     fn submitter_warning(location: &str, name: &str) -> String {
         format!(
             "{location}: publisher '{name}' submits to an external moderation queue; \

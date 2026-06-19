@@ -92,7 +92,7 @@ pub fn run(opts: ChangelogOpts) -> Result<()> {
     }
 
     let path = pipeline::find_config_with_logger(config_override.as_deref(), Some(&log))?;
-    let config = pipeline::load_config(&path)?;
+    let config = pipeline::load_config_logged(&path, &log)?;
 
     let workspace_root =
         crate::commands::helpers::discover_workspace_root(config_override.as_deref())?;

@@ -240,7 +240,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
 
     let config_path =
         pipeline::find_config_with_logger(opts.config_override.as_deref(), Some(&log))?;
-    let mut config = pipeline::load_config(&config_path)?;
+    let mut config = pipeline::load_config_logged(&config_path, &log)?;
 
     let workspace_skip = apply_workspace_overlay_for_opts(&mut config, &opts, &log)?;
 

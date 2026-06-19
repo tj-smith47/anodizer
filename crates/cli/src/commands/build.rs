@@ -28,7 +28,7 @@ pub fn run(opts: BuildOpts) -> Result<()> {
 
     let config_path =
         pipeline::find_config_with_logger(opts.config_override.as_deref(), Some(&log))?;
-    let mut config = pipeline::load_config(&config_path)?;
+    let mut config = pipeline::load_config_logged(&config_path, &log)?;
 
     // Resolve workspace if specified
     if let Some(ref ws_name) = opts.workspace {
