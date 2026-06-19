@@ -156,6 +156,12 @@ pub struct MetadataConfig {
     /// `{{ Metadata.Repository }}`). Derived from `Cargo.toml [package].repository`
     /// when unset; feeds the npm `package.json` `repository` field, which npm
     /// provenance validates against the OIDC-claimed repository.
+    // Omit-when-None so adding this field leaves `dist/config.yaml` byte-identical
+    // for configs that don't set it — a republish/backfill of an older tag's
+    // preserved dist re-renders config.yaml and hash-verifies it against the
+    // determinism shards, which a new always-emitted `repository: null` line would
+    // break. The sibling fields predate this invariant and stay as-is.
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub repository: Option<String>,
     /// List of project maintainers (exposed as `{{ Metadata.Maintainers }}`).
     pub maintainers: Option<Vec<String>>,
@@ -259,5 +265,32 @@ mod tests {
                 "expected {bad:?} to be rejected"
             );
         }
+    }
+
+    #[test]
+    fn metadata_repository_omitted_when_none_keeps_config_yaml_byte_stable() {
+        // A metadata block that does NOT set repository must serialize WITHOUT a
+        // `repository` key, so introducing the field leaves dist/config.yaml
+        // byte-identical and a backfill's hash-verify against older preserved
+        // determinism shards still passes.
+        let m = MetadataConfig {
+            homepage: Some("https://example.com".into()),
+            ..Default::default()
+        };
+        let yaml = serde_yaml_ng::to_string(&m).expect("serialize");
+        assert!(
+            !yaml.contains("repository"),
+            "unset repository must be omitted, got:\n{yaml}"
+        );
+        // When set, it is emitted (npm provenance / template var still work).
+        let m2 = MetadataConfig {
+            repository: Some("https://github.com/x/y".into()),
+            ..Default::default()
+        };
+        assert!(
+            serde_yaml_ng::to_string(&m2)
+                .expect("serialize")
+                .contains("repository: https://github.com/x/y"),
+        );
     }
 }

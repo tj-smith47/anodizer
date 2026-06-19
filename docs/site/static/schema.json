@@ -9035,7 +9035,6 @@
         },
         "repository": {
           "description": "Project source-repository URL, e.g. a GitHub URL (exposed as `{{ Metadata.Repository }}`). Derived from `Cargo.toml [package].repository` when unset; feeds the npm `package.json` `repository` field, which npm provenance validates against the OIDC-claimed repository.",
-          "default": null,
           "type": [
             "string",
             "null"
