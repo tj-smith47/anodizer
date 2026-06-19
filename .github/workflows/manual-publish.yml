@@ -67,7 +67,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # npm provenance is OIDC-minted on this github-hosted runner
+      id-token: write # npm Trusted Publishing: OIDC mints both auth + provenance
     steps:
       - name: Check out the released tag (workdir = published version)
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
@@ -98,4 +98,8 @@ jobs:
           # publish version still comes from the preserved dist context.
           ANODIZER_CURRENT_TAG: ${{ inputs.tag }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # No NPM_TOKEN: npm auth is Trusted Publishing (OIDC). With id-token:
+          # write present and no token, the npm publisher's `auth: auto` resolves
+          # to OIDC for the already-existing package and has no token to fall back
+          # to — so any OIDC/trusted-publisher gap surfaces loudly instead of
+          # silently degrading to a token publish without provenance.
