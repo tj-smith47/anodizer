@@ -124,6 +124,50 @@ fn bootstrap_preserved_dist(
     (archive_name, target.to_string())
 }
 
+/// Bytes the current binary would never reproduce for `dist/config.yaml`
+/// (it serializes the effective `Config`, never this literal). A
+/// publish-only run that left these bytes untouched proves it did not
+/// re-render config.yaml; a run that overwrote them changes the sha256
+/// and trips hash-verify.
+const SENTINEL_CONFIG_YAML: &[u8] =
+    b"# SENTINEL preserved config.yaml \xe2\x80\x94 must survive publish-only untouched\nproject_name: anodize-publish-only-fixture\n__sentinel__: do-not-regenerate\n";
+
+/// Drop a sentinel `dist/config.yaml` into the preserved tree and append
+/// its `config.yaml` entry (with the matching sha256) to the existing
+/// `context.json`, so `hash_verify_preserved_dist` covers it. Mirrors
+/// production: the determinism harness records `dist/config.yaml`'s hash
+/// across shards, and publish-only verifies the on-disk bytes against it.
+fn inject_preserved_config_yaml(repo: &Path) -> Vec<u8> {
+    let dist = repo.join("dist");
+    let config_path = dist.join("config.yaml");
+    fs::write(&config_path, SENTINEL_CONFIG_YAML).unwrap();
+
+    // sha256 of SENTINEL_CONFIG_YAML (pinned literal; recomputing in-test
+    // would mask a divergence between the bytes and the recorded hash).
+    let config_sha256 = "76874b4862b3be0bfcb23289f4c6dc68a0d425e5f687207ce9eedb58a1b82278";
+
+    let context_path = dist.join("context.json");
+    let raw = fs::read_to_string(&context_path).unwrap();
+    let mut context: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    let artifacts = context
+        .get_mut("artifacts")
+        .and_then(|a| a.as_array_mut())
+        .expect("context.json artifacts array");
+    artifacts.push(serde_json::json!({
+        "name": "config.yaml",
+        "path": "config.yaml",
+        "sha256": format!("sha256:{config_sha256}"),
+        "size": SENTINEL_CONFIG_YAML.len() as u64,
+    }));
+    fs::write(
+        &context_path,
+        serde_json::to_string_pretty(&context).unwrap(),
+    )
+    .unwrap();
+
+    SENTINEL_CONFIG_YAML.to_vec()
+}
+
 /// Rewrite `.anodizer.yaml` with a `tag_template: "v{{ .Version }}"`
 /// entry. The minimal fixture from `bootstrap_minimal_cargo_repo`
 /// omits the template, which leaves it as the empty-string default
@@ -303,6 +347,85 @@ fn publish_only_dry_run_consumes_context_json_and_runs_publish_pipeline() {
         merged.contains(&tag),
         "expected resolved tag {tag} in CLI output (release stage dry-run summary); \
          output was:\n{merged}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 3a-bis: publish-only must NOT re-render the preserved config.yaml
+// ---------------------------------------------------------------------------
+
+/// Regression: `--publish-only` must leave the preserved
+/// `dist/config.yaml` byte-identical. The release setup block calls
+/// `write_effective_config` (which re-renders config.yaml from the
+/// current binary's serialization); in publish-only that overwrite makes
+/// the on-disk bytes diverge from the determinism-recorded sha256 and
+/// `hash_verify_preserved_dist` aborts the publish. A binary newer than
+/// the one that preserved the dist serializes config differently, so the
+/// cross-version backfill workflow can never publish without the guard.
+///
+/// Stages a sentinel `dist/config.yaml` the current binary would never
+/// reproduce, records its hash in `context.json`, runs the binary, and
+/// asserts the bytes are unchanged AND the run does not fail hash-verify
+/// on config.yaml.
+#[test]
+fn publish_only_does_not_overwrite_preserved_config_yaml() {
+    if !tool_on_path("git") {
+        eprintln!("SKIP publish_only_does_not_overwrite_preserved_config_yaml: git missing");
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path();
+    bootstrap_minimal_cargo_repo(repo, FIXTURE_CRATE_NAME);
+    configure_tag_template(repo);
+
+    let version = "0.1.0";
+    let commit = head_commit(repo);
+    bootstrap_preserved_dist(repo, version, &commit);
+    let sentinel = inject_preserved_config_yaml(repo);
+    tag_head(repo, version);
+
+    let config_path = repo.join("dist/config.yaml");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--publish-only",
+            "--dry-run",
+            "--no-preflight",
+            "--skip",
+            "announce",
+        ])
+        .env_remove("COSIGN_KEY")
+        .env_remove("GPG_PRIVATE_KEY")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("ANODIZER_GITHUB_TOKEN")
+        .current_dir(repo)
+        .output()
+        .expect("invoking anodize release --publish-only --dry-run");
+
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let merged = format!("{stdout}\n{stderr}");
+
+    // (b) The run must not fail hash-verify on config.yaml.
+    assert!(
+        !merged.contains("config.yaml")
+            || !merged.contains("hash-verify")
+            || !merged.contains("diverge"),
+        "publish-only must not trip hash-verify on the preserved config.yaml; output was:\n{merged}"
+    );
+    assert!(
+        output.status.success(),
+        "expected zero exit (preserved config.yaml left intact); stdout=\n{stdout}\nstderr=\n{stderr}"
+    );
+
+    // (a) The sentinel bytes must be unchanged after the run.
+    let after = fs::read(&config_path).expect("preserved config.yaml must still exist");
+    assert_eq!(
+        after, sentinel,
+        "publish-only overwrote the preserved dist/config.yaml; \
+         write_effective_config must be skipped in publish-only mode"
     );
 }
 

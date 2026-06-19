@@ -423,7 +423,14 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             apply_snapshot_template_vars(&mut ctx, &config, &log)?;
         }
 
-        helpers::write_effective_config(&config, &log)?;
+        // In publish-only the preserved dist/config.yaml is already on disk and
+        // its sha256 was recorded at determinism-check time; re-rendering it from
+        // the current binary's config serialization would diverge from that hash
+        // and trip hash_verify_preserved_dist. The --split BUILD leg uses
+        // opts.split (it legitimately generates the dist) so it still writes here.
+        if !opts.publish_only {
+            helpers::write_effective_config(&config, &log)?;
+        }
 
         if !opts.split
             && !opts.announce_only
