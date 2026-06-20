@@ -700,9 +700,16 @@ mod tests {
     fn harness_env_derives_docker_config_from_host_home() {
         let tmp = tempfile::tempdir().unwrap();
         let env = build_with(tmp.path(), &[("HOME", "/home/runner")]);
+        // Mirror the production `Path::join` so the expectation is
+        // separator-portable: `/home/runner/.docker` on Unix,
+        // `/home/runner\.docker` on the Windows test shard.
+        let expected = std::path::Path::new("/home/runner")
+            .join(".docker")
+            .to_string_lossy()
+            .into_owned();
         assert_eq!(
             env.get("DOCKER_CONFIG").map(String::as_str),
-            Some("/home/runner/.docker"),
+            Some(expected.as_str()),
             "DOCKER_CONFIG must derive from the real host HOME, not the sealed child HOME"
         );
     }
