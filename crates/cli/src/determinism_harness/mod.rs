@@ -292,6 +292,121 @@ fn matches_artifact_pattern(pattern: &str, artifact: &str) -> bool {
     pattern == artifact
 }
 
+/// Stage a docker build context that mirrors the production `docker`
+/// stage's layout so a `docker buildx build` against it resolves the
+/// repo Dockerfile's `COPY ${TARGETOS}/${TARGETARCH}/${BIN}`.
+///
+/// Reference layout: `anodizer_stage_docker`'s `stage_artifacts_v2`
+/// (`<context>/<os>/<arch>/<name>`) + `copy_dockerfile`
+/// (`<context>/Dockerfile`). The real stage stages from a loaded
+/// `Context`'s artifacts; the harness has no `Context` (it ran the
+/// release as a subprocess), so it stages from the per-triple binaries
+/// it discovered on disk, mapping each triple → `(os, arch)` via the
+/// same [`anodizer_core::target::map_target`] helper the real stage uses.
+///
+/// Returns the number of binaries staged. Zero means the build produced
+/// no per-triple binaries — the caller forks on `explicitly_requested`
+/// rather than spawn a build whose `COPY` is guaranteed to fail.
+///
+/// `context_dir` is wiped first (mirroring the defensive cleanup in
+/// [`anodizer_core::docker_build::oci_build_fixture`]) so a re-run can't
+/// carry stale bytes from a prior run's staging.
+fn stage_docker_context(
+    worktree_path: &Path,
+    context_dir: &Path,
+    dockerfile: &Path,
+    log: &StageLogger,
+) -> Result<usize> {
+    use anodizer_core::target::map_target;
+
+    let _ = std::fs::remove_dir_all(context_dir);
+    std::fs::create_dir_all(context_dir)
+        .with_context(|| format!("creating docker staging dir {}", context_dir.display()))?;
+
+    let mut staged = 0usize;
+    for (triple, bin_path) in discover_per_triple_binaries(worktree_path)? {
+        let (os, arch) = map_target(&triple);
+        let file_name = bin_path
+            .file_name()
+            .map(std::ffi::OsStr::to_os_string)
+            .unwrap_or_else(|| std::ffi::OsString::from("anodizer"));
+        let dest_dir = context_dir.join(&os).join(&arch);
+        std::fs::create_dir_all(&dest_dir)
+            .with_context(|| format!("creating staging platform dir {}", dest_dir.display()))?;
+        let dest = dest_dir.join(&file_name);
+        std::fs::copy(&bin_path, &dest)
+            .with_context(|| format!("staging {} → {}", bin_path.display(), dest.display()))?;
+        log.verbose(&format!(
+            "staged {} → {}",
+            bin_path.display(),
+            dest.display()
+        ));
+        staged += 1;
+    }
+
+    let dockerfile_dest = context_dir.join("Dockerfile");
+    std::fs::copy(dockerfile, &dockerfile_dest).with_context(|| {
+        format!(
+            "staging Dockerfile {} → {}",
+            dockerfile.display(),
+            dockerfile_dest.display()
+        )
+    })?;
+
+    Ok(staged)
+}
+
+/// Discover the per-triple release binaries under
+/// `<worktree>/.det-tmp/target/<triple>/release/<bin>` as
+/// `(triple, binary_path)` pairs.
+///
+/// Only the per-triple builds are surfaced — the bare host
+/// `release/<bin>` is a non-shipped tooling byproduct (the man-page
+/// `before:` hook's `cargo run`) and never lands in an image. The file
+/// filter matches [`artifacts::discover_artifacts`]: regular files with
+/// an empty extension (`anodizer`) or `.exe` (`anodizer.exe`).
+fn discover_per_triple_binaries(worktree_path: &Path) -> Result<Vec<(String, PathBuf)>> {
+    let target_root = worktree_path.join(".det-tmp").join("target");
+    let entries = match std::fs::read_dir(&target_root) {
+        Ok(e) => e,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", target_root.display())),
+    };
+    let mut out = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let triple = name.to_string_lossy();
+        // Skip the bare host `release/` dir and cargo's scratch dirs;
+        // only `<triple>/release/` directories ship into images.
+        if triple == "release" || triple == "debug" || triple.starts_with('.') {
+            continue;
+        }
+        let release_dir = entry.path().join("release");
+        if !release_dir.is_dir() {
+            continue;
+        }
+        for bin in std::fs::read_dir(&release_dir)
+            .with_context(|| format!("reading {}", release_dir.display()))?
+        {
+            let bin = bin?;
+            if !bin.file_type()?.is_file() {
+                continue;
+            }
+            let path = bin.path();
+            match path.extension().and_then(|s| s.to_str()) {
+                None | Some("exe") => out.push((triple.to_string(), path)),
+                _ => continue,
+            }
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
 /// Harness configuration. Constructed by the CLI dispatcher
 /// (`crate::commands::check::determinism::run`) and consumed once via
 /// [`Harness::run`].
@@ -801,10 +916,16 @@ impl Harness {
     /// Delegates to [`anodizer_core::docker_build::oci_build_fixture`]
     /// (the allow-listed subprocess entry point), which runs
     /// `docker buildx build --output=type=oci,rewrite-timestamp=true,dest=…`
-    /// against `<worktree>/Dockerfile`. The emitted OCI tarball is copied
-    /// into `<worktree>/dist/docker/` so the existing
-    /// [`discover_artifacts`] walker picks it up under the normal
-    /// `dist/` surface.
+    /// against a staged build context (see [`stage_docker_context`]) whose
+    /// layout mirrors what the production `docker` stage produces:
+    /// `<context>/<os>/<arch>/<bin>` plus a `<context>/Dockerfile` copy.
+    /// The repo `Dockerfile` does
+    /// `COPY ${TARGETOS}/${TARGETARCH}/${BIN} …`, so building against the
+    /// bare worktree (which has no `<os>/<arch>/<bin>` tree) fails the
+    /// `COPY`; the harness must replicate the real stage's staging step.
+    /// The emitted OCI tarball is copied into `<worktree>/dist/docker/` so
+    /// the existing [`discover_artifacts`] walker picks it up under the
+    /// normal `dist/` surface.
     ///
     /// Skipped (Ok no-op) when `<worktree>/Dockerfile` does not exist —
     /// the harness must stay harmless for repos whose docker config
@@ -883,11 +1004,37 @@ impl Harness {
                 return Ok(());
             }
         }
+        // The repo Dockerfile does `COPY ${TARGETOS}/${TARGETARCH}/${BIN}`,
+        // so the build context must hold each binary at `<os>/<arch>/<bin>`.
+        // Stage a dedicated context that mirrors the production `docker`
+        // stage's layout (`stage-docker`'s `stage_artifacts_v2`) before
+        // building against it; the bare worktree has no such tree.
+        let context_dir = worktree_path.join(".det-tmp").join("docker-context");
+        let staged = stage_docker_context(worktree_path, &context_dir, &dockerfile, &log)?;
+        if staged == 0 {
+            // No per-triple binaries discovered means the build pipeline
+            // produced nothing the Dockerfile's COPY could resolve. Honour
+            // the explicit-vs-auto fork rather than spawn a build that is
+            // guaranteed to fail the COPY with a cryptic BuildKit error.
+            if explicitly_requested {
+                anyhow::bail!(
+                    "docker stage requested via --stages but the build produced no \
+                     per-triple binaries to stage under <os>/<arch>/; the COPY in \
+                     `Dockerfile` cannot resolve. Check that the requested --targets \
+                     built successfully."
+                );
+            }
+            log.warn(
+                "skipped docker stage for this run — no per-triple binaries to stage \
+                 under <os>/<arch>/ (no artifacts emitted)",
+            );
+            return Ok(());
+        }
         // Pin the image tag to a deterministic constant so the manifest's
         // `org.opencontainers.image.ref.name` annotation does not itself
         // drift between runs based on time-derived names.
         let output = anodizer_core::docker_build::oci_build_fixture(
-            worktree_path,
+            &context_dir,
             "anodize/det:harness",
             env,
         )?;
@@ -1403,6 +1550,72 @@ mod tests {
         assert!(
             msg.contains("podman") && msg.contains("Refusing"),
             "error must explain the false-coverage refusal: {msg}"
+        );
+    }
+
+    /// The docker staging step must lay each discovered per-triple binary
+    /// out at `<os>/<arch>/<bin>` (matching the repo Dockerfile's
+    /// `COPY ${TARGETOS}/${TARGETARCH}/${BIN}`) and drop the Dockerfile at
+    /// the staging root, BEFORE any `docker buildx build` spawns. This
+    /// exercises the staging logic in isolation — no docker required.
+    #[test]
+    fn docker_context_staging_lays_out_os_arch_bin_and_dockerfile() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let worktree = tmp.path();
+
+        // Simulate the harness's discovered per-triple binaries: a linux
+        // amd64 and an arm64 build under `.det-tmp/target/<triple>/release/`.
+        for triple in ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"] {
+            let release = worktree
+                .join(".det-tmp")
+                .join("target")
+                .join(triple)
+                .join("release");
+            std::fs::create_dir_all(&release).unwrap();
+            std::fs::write(release.join("anodizer"), b"fake-binary").unwrap();
+            // A bare host build + scratch dirs must be ignored by staging.
+        }
+        let host_release = worktree.join(".det-tmp").join("target").join("release");
+        std::fs::create_dir_all(&host_release).unwrap();
+        std::fs::write(host_release.join("anodizer"), b"host-byproduct").unwrap();
+
+        let dockerfile = worktree.join("Dockerfile");
+        std::fs::write(&dockerfile, "FROM scratch\nCOPY x x\n").unwrap();
+
+        let context_dir = worktree.join(".det-tmp").join("docker-context");
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let staged = stage_docker_context(worktree, &context_dir, &dockerfile, &log).unwrap();
+
+        // Both per-triple binaries staged; the bare host byproduct excluded.
+        assert_eq!(staged, 2, "only per-triple binaries should be staged");
+        assert!(
+            context_dir
+                .join("linux")
+                .join("amd64")
+                .join("anodizer")
+                .is_file(),
+            "amd64 binary must land at <context>/linux/amd64/anodizer"
+        );
+        assert!(
+            context_dir
+                .join("linux")
+                .join("arm64")
+                .join("anodizer")
+                .is_file(),
+            "arm64 binary must land at <context>/linux/arm64/anodizer"
+        );
+        assert!(
+            context_dir.join("Dockerfile").is_file(),
+            "Dockerfile must be copied to the staging root"
+        );
+
+        // Re-running wipes stale bytes: stale content must not survive.
+        std::fs::write(context_dir.join("stale.txt"), b"old").unwrap();
+        let staged2 = stage_docker_context(worktree, &context_dir, &dockerfile, &log).unwrap();
+        assert_eq!(staged2, 2);
+        assert!(
+            !context_dir.join("stale.txt").exists(),
+            "re-run must wipe the prior staging dir so no bytes carry over"
         );
     }
 
