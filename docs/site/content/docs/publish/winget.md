@@ -239,6 +239,70 @@ Each entry in the `dependencies` list has:
 |-------|------|-------------|
 | `package_identifier` | string | WinGet package identifier of the dependency |
 | `minimum_version` | string | Minimum required version (optional) |
+| `architectures` | list of strings | Architecture scope (optional). When set, attaches the dependency **only** to installers whose architecture matches; values: `x64`, `arm64`, `x86`. Unset or empty = applies to every installer. |
+
+A package built for several Windows architectures produces one installer entry
+per architecture inside the installer manifest. By default a dependency is
+manifest-wide: it lands on *every* installer entry. `architectures` scopes a
+dependency to specific installers so an architecture-specific runtime only
+attaches where it belongs.
+
+The scope match is exact and case-sensitive against each installer's WinGet
+architecture (`x64`/`arm64`/`x86`). A value outside that set matches no
+installer, so config validation rejects it up front rather than silently
+dropping the dependency from the generated manifest.
+
+### Per-architecture runtime dependencies
+
+The canonical case is the Microsoft Visual C++ redistributable, which ships as
+separate `x64` and `arm64` packages. An MSVC/Rust binary that publishes both an
+x64 and a native arm64 installer must scope each redistributable to its own
+architecture:
+
+```yaml
+crates:
+  - name: myapp
+    publish:
+      winget:
+        dependencies:
+          - package_identifier: "Microsoft.VCRedist.2015+.x64"
+            architectures: ["x64"]
+          - package_identifier: "Microsoft.VCRedist.2015+.arm64"
+            architectures: ["arm64"]
+          # Unscoped — attaches to every installer:
+          - package_identifier: "Acme.CommonRuntime"
+```
+
+Without the `architectures:` scopes, the x64 redistributable would also be
+declared as a dependency of the **arm64** installer (and vice versa), which is
+wrong: an Apple-Silicon-class Arm device cannot satisfy a dependency on the x64
+redistributable, and WinGet validation rejects (or, post-install, fails to
+resolve) the cross-architecture dependency.
+
+The per-installer `Dependencies` block is emitted into the installer manifest
+(`PackageId.installer.yaml`). With the scoping above, each installer entry
+declares only the dependencies that match its architecture:
+
+```yaml
+Installers:
+- Architecture: x64
+  InstallerUrl: https://.../myapp-x64.zip
+  InstallerSha256: ...
+  Dependencies:
+    PackageDependencies:
+    - PackageIdentifier: Microsoft.VCRedist.2015+.x64
+    - PackageIdentifier: Acme.CommonRuntime
+- Architecture: arm64
+  InstallerUrl: https://.../myapp-arm64.zip
+  InstallerSha256: ...
+  Dependencies:
+    PackageDependencies:
+    - PackageIdentifier: Microsoft.VCRedist.2015+.arm64
+    - PackageIdentifier: Acme.CommonRuntime
+```
+
+When no dependency matches a given installer's architecture, the
+`Dependencies` key is omitted from that installer entry entirely.
 
 ## Documentation links
 
