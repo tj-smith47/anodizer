@@ -54,8 +54,10 @@ impl ArchPathGuard {
             "{stage}: name template '{name_template}' rendered the same {artifact} \
              '{rendered}' more than once for crate '{crate_name}', so one build target \
              would silently overwrite another. Add '{{{{ .Arch }}}}' to the `name` \
-             (e.g. \"{{{{ .ProjectName }}}}_{{{{ .Arch }}}}\") so each build target's \
-             {artifact} gets a distinct path."
+             (e.g. \"{{{{ .ProjectName }}}}_{{{{ .Arch }}}}\") — or, when the collision \
+             is between same-arch micro-architecture variants, '{{{{ .Amd64 }}}}' \
+             (e.g. \"{{{{ .ProjectName }}}}_{{{{ .Arch }}}}{{{{ .Amd64 }}}}\") — so each \
+             build target's {artifact} gets a distinct path."
         );
     }
 }

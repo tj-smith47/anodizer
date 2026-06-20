@@ -78,11 +78,24 @@ fn os_arch_from_target(target: Option<&str>) -> (String, String) {
     anodizer_core::target::os_arch_with_default(target, "darwin")
 }
 
-/// Default output bundle name template: `{ProjectName}_{Arch}.app`
+/// Stem of the default output bundle name template, before the amd64 variant
+/// suffix and the `.app` extension: `{ProjectName}_{Arch}`.
 ///
-/// Includes `Arch` to prevent silent overwrites when multiple architectures
-/// are built (e.g. arm64 + amd64).
-const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Arch }}.app";
+/// Includes `Arch` to prevent silent overwrites when multiple architectures are
+/// built (e.g. arm64 + amd64). The amd64 micro-architecture variant suffix is
+/// appended by [`default_name_template`] from the single source of truth in
+/// core, since two amd64 builds share one target triple and `Arch` alone cannot
+/// tell them apart.
+const DEFAULT_NAME_PREFIX: &str = "{{ ProjectName }}_{{ Arch }}";
+
+/// Compose the default bundle name template: the [`DEFAULT_NAME_PREFIX`], the
+/// shared amd64 variant suffix, then the `.app` extension.
+fn default_name_template() -> String {
+    format!(
+        "{DEFAULT_NAME_PREFIX}{}.app",
+        anodizer_core::archive_name::INSTALLER_AMD64_VARIANT_SUFFIX
+    )
+}
 
 /// Copy extra files specified by `ArchiveFileSpec` entries into the app bundle.
 ///
@@ -445,17 +458,26 @@ impl Stage for AppBundleStage {
                         continue;
                     }
 
-                    let effective_binaries: Vec<(Option<String>, PathBuf)> = filtered
-                        .iter()
-                        .map(|b| (b.target.clone(), b.path.clone()))
-                        .collect();
+                    let effective_binaries: Vec<(Option<String>, Option<String>, PathBuf)> =
+                        filtered
+                            .iter()
+                            .map(|b| {
+                                (
+                                    b.target.clone(),
+                                    b.metadata.get("amd64_variant").cloned(),
+                                    b.path.clone(),
+                                )
+                            })
+                            .collect();
 
                     // Reject a `name` lacking `{{ .Arch }}` that would render the
                     // same dist/macos/<name>.app for two arches (silent clobber,
                     // and `dmgs.use: appbundle` would then wrap the survivor twice).
                     let mut arch_guard = ArchPathGuard::new();
 
-                    for (target, binary_path) in &effective_binaries {
+                    let default_name = default_name_template();
+
+                    for (target, amd64_variant, binary_path) in &effective_binaries {
                         // Derive Os/Arch from the target triple for template rendering
                         let (os, arch) = os_arch_from_target(target.as_deref());
 
@@ -464,10 +486,15 @@ impl Stage for AppBundleStage {
                         ctx.template_vars_mut().set("Arch", &arch);
                         ctx.template_vars_mut()
                             .set("Target", target.as_deref().unwrap_or(""));
+                        // Seed the amd64 variant so the default (or a custom) name
+                        // template disambiguates two amd64 builds of one target.
+                        anodizer_core::archive_name::seed_amd64_variant_var(
+                            ctx.template_vars_mut(),
+                            amd64_variant.as_deref(),
+                        );
 
                         // Determine output bundle name from name template or default
-                        let name_template =
-                            bundle_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);
+                        let name_template = bundle_cfg.name.as_deref().unwrap_or(&default_name);
 
                         let app_name = ctx.render_template(name_template).with_context(|| {
                             format!(
@@ -552,6 +579,9 @@ impl Stage for AppBundleStage {
                                     )]);
                                     if let Some(id) = &bundle_cfg.id {
                                         m.insert("id".to_string(), id.clone());
+                                    }
+                                    if let Some(v) = amd64_variant {
+                                        m.insert("amd64_variant".to_string(), v.clone());
                                     }
                                     m
                                 },
@@ -691,6 +721,9 @@ impl Stage for AppBundleStage {
                                 )]);
                                 if let Some(id) = &bundle_cfg.id {
                                     m.insert("id".to_string(), id.clone());
+                                }
+                                if let Some(v) = amd64_variant {
+                                    m.insert("amd64_variant".to_string(), v.clone());
                                 }
                                 m
                             },
@@ -1761,11 +1794,107 @@ crates:
 
     #[test]
     fn test_default_name_template_includes_arch() {
-        // Verify the constant itself contains Arch to prevent multi-arch overwrites
+        // Verify the composed default contains Arch to prevent multi-arch overwrites
+        let tmpl = default_name_template();
         assert!(
-            DEFAULT_NAME_TEMPLATE.contains("Arch"),
-            "default name template should include Arch to prevent overwrites: {DEFAULT_NAME_TEMPLATE}"
+            tmpl.contains("Arch"),
+            "default name template should include Arch to prevent overwrites: {tmpl}"
         );
+    }
+
+    #[test]
+    fn test_default_name_template_contains_amd64_variant_suffix() {
+        assert!(
+            default_name_template()
+                .contains(anodizer_core::archive_name::INSTALLER_AMD64_VARIANT_SUFFIX),
+            "default name template must reuse the shared amd64 variant suffix"
+        );
+    }
+
+    #[test]
+    fn test_appbundle_same_arch_variants_get_distinct_names_with_metadata() {
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        // Three darwin/amd64 builds tagged amd64_variant v1/v2/v3 plus one
+        // arm64 build must each render a distinct `.app` (default name appends
+        // the amd64 micro-arch suffix: v1 baseline → none, v2/v3 → suffix), and
+        // each produced installer must carry its `amd64_variant` metadata back —
+        // the regression test for the F1 missing-metadata fix.
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let bundle_cfg = AppBundleConfig {
+            bundle: Some("com.example.myapp".to_string()),
+            ..Default::default()
+        };
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            app_bundles: Some(vec![bundle_cfg]),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        for variant in ["v1", "v2", "v3"] {
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from(format!("dist/myapp_{variant}")),
+                target: Some("x86_64-apple-darwin".to_string()),
+                crate_name: "myapp".to_string(),
+                metadata: HashMap::from([("amd64_variant".to_string(), variant.to_string())]),
+                size: None,
+            });
+        }
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp_arm"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        AppBundleStage.run(&mut ctx).unwrap();
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        assert_eq!(installers.len(), 4, "{installers:?}");
+
+        let names: Vec<String> = installers
+            .iter()
+            .map(|a| a.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        let distinct: std::collections::HashSet<&String> = names.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            names.len(),
+            "all rendered app bundle names must be distinct: {names:?}"
+        );
+
+        // F1 regression: each amd64 installer's metadata must echo its variant.
+        for variant in ["v1", "v2", "v3"] {
+            let found = installers.iter().any(|a| {
+                a.target.as_deref() == Some("x86_64-apple-darwin")
+                    && a.metadata.get("amd64_variant").map(String::as_str) == Some(variant)
+            });
+            assert!(
+                found,
+                "expected an x86_64 installer with amd64_variant={variant}: {installers:?}"
+            );
+        }
     }
 
     #[test]

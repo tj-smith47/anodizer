@@ -108,11 +108,23 @@ fn os_arch_from_target(target: Option<&str>) -> (String, String) {
     anodizer_core::target::os_arch_with_default(target, "darwin")
 }
 
-/// Default output filename template `{{ ProjectName }}_{{ Arch }}` (the `.dmg`
-/// extension is appended automatically). In workspace per-crate mode the
-/// `ProjectName` var is rebound to each crate's name so the rendered filename
-/// is distinct per crate.
-const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Arch }}";
+/// Stem of the default output filename template `{{ ProjectName }}_{{ Arch }}`
+/// (the `.dmg` extension is appended automatically). In workspace per-crate mode
+/// the `ProjectName` var is rebound to each crate's name so the rendered
+/// filename is distinct per crate. The amd64 micro-architecture variant suffix
+/// is appended by [`default_name_template`] from the single source of truth in
+/// core, since two amd64 builds share one target triple and `Arch` alone cannot
+/// tell them apart.
+const DEFAULT_NAME_PREFIX: &str = "{{ ProjectName }}_{{ Arch }}";
+
+/// Compose the default dmg name template: [`DEFAULT_NAME_PREFIX`] plus the
+/// shared amd64 variant suffix from core (no clause re-embedded here).
+fn default_name_template() -> String {
+    format!(
+        "{DEFAULT_NAME_PREFIX}{}",
+        anodizer_core::archive_name::INSTALLER_AMD64_VARIANT_SUFFIX
+    )
+}
 
 /// Stage the DMG payload for one source into `staging_dir`, dispatching on
 /// `use_mode`, and return the staged path (`staging_dir.join(binary_name)`).
@@ -410,15 +422,20 @@ impl Stage for DmgStage {
                         continue;
                     }
 
-                    // Group binaries by target so a multi-binary crate (e.g. CLI
-                    // with several `bin = ` entries) produces ONE DMG per target
-                    // containing all binaries — the per-target
-                    // DMG layout, not per-binary.
-                    let mut by_target: std::collections::BTreeMap<Option<String>, Vec<PathBuf>> =
-                        std::collections::BTreeMap::new();
+                    // Group binaries by (target, amd64 variant) so a multi-binary
+                    // crate (e.g. a CLI with several `bin = ` entries) produces ONE
+                    // DMG per target containing all binaries — the per-target DMG
+                    // layout, not per-binary — while two amd64 builds of the same
+                    // target (e.g. a baseline `v1` and a `-Ctarget-cpu=x86-64-v3`
+                    // `v3`) split into distinct DMGs instead of being bundled into
+                    // one image with both variant binaries.
+                    let mut by_target: std::collections::BTreeMap<
+                        (Option<String>, Option<String>),
+                        Vec<PathBuf>,
+                    > = std::collections::BTreeMap::new();
                     for b in &filtered {
                         by_target
-                            .entry(b.target.clone())
+                            .entry((b.target.clone(), b.metadata.get("amd64_variant").cloned()))
                             .or_default()
                             .push(b.path.clone());
                     }
@@ -427,7 +444,9 @@ impl Stage for DmgStage {
                     // same dist/macos/<name>.dmg for two arches (silent clobber).
                     let mut arch_guard = ArchPathGuard::new();
 
-                    for (target, binary_paths) in &by_target {
+                    let default_name = default_name_template();
+
+                    for ((target, amd64_variant), binary_paths) in &by_target {
                         // Derive Os/Arch from the target triple for template rendering
                         let (os, arch) = os_arch_from_target(target.as_deref());
 
@@ -436,10 +455,15 @@ impl Stage for DmgStage {
                         ctx.template_vars_mut().set("Arch", &arch);
                         ctx.template_vars_mut()
                             .set("Target", target.as_deref().unwrap_or(""));
+                        // Seed the amd64 variant so the default (or a custom) name
+                        // template disambiguates two amd64 builds of one target.
+                        anodizer_core::archive_name::seed_amd64_variant_var(
+                            ctx.template_vars_mut(),
+                            amd64_variant.as_deref(),
+                        );
 
                         // Determine output filename from name template or default
-                        let name_template =
-                            dmg_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);
+                        let name_template = dmg_cfg.name.as_deref().unwrap_or(&default_name);
 
                         let dmg_filename =
                             ctx.render_template(name_template).with_context(|| {
@@ -524,6 +548,9 @@ impl Stage for DmgStage {
                                         HashMap::from([("format".to_string(), "dmg".to_string())]);
                                     if let Some(id) = &dmg_cfg.id {
                                         m.insert("id".to_string(), id.clone());
+                                    }
+                                    if let Some(v) = amd64_variant {
+                                        m.insert("amd64_variant".to_string(), v.clone());
                                     }
                                     m
                                 },
@@ -662,6 +689,9 @@ impl Stage for DmgStage {
                                     HashMap::from([("format".to_string(), "dmg".to_string())]);
                                 if let Some(id) = &dmg_cfg.id {
                                     m.insert("id".to_string(), id.clone());
+                                }
+                                if let Some(v) = amd64_variant {
+                                    m.insert("amd64_variant".to_string(), v.clone());
                                 }
                                 m
                             },
@@ -2185,13 +2215,24 @@ crates:
     fn test_dmg_amd64_variant_unset_passes_all_amd64_variants() {
         let mut ctx = dmg_amd64_variant_test_ctx(None);
         DmgStage.run(&mut ctx).unwrap();
-        // 3 amd64 variants share one target -> grouped into ONE DMG;
-        // 1 arm64 -> one DMG. Total: 2 DMGs.
+        // Grouping key is `(target, amd64_variant)`, so the 3 same-triple amd64
+        // builds form 3 groups (distinct names via the amd64 suffix) + 1 arm64.
+        // Total: 4 DMGs, all distinctly named (v1 baseline renders no suffix).
         let dmgs = ctx.artifacts.by_kind(ArtifactKind::DiskImage);
         assert_eq!(
             dmgs.len(),
-            2,
-            "unset amd64_variant should pass every variant; one DMG per target"
+            4,
+            "unset amd64_variant should pass every variant as its own DMG"
+        );
+        let names: Vec<&str> = dmgs
+            .iter()
+            .map(|a| a.path.file_name().unwrap().to_str().unwrap())
+            .collect();
+        let distinct: std::collections::HashSet<&&str> = names.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            names.len(),
+            "all rendered DMG names must be distinct: {names:?}"
         );
     }
 
@@ -2223,6 +2264,15 @@ crates:
     // -------------------------------------------------------------------
     // Default name template shape
     // -------------------------------------------------------------------
+
+    #[test]
+    fn test_default_name_template_contains_amd64_variant_suffix() {
+        assert!(
+            default_name_template()
+                .contains(anodizer_core::archive_name::INSTALLER_AMD64_VARIANT_SUFFIX),
+            "default name template must reuse the shared amd64 variant suffix"
+        );
+    }
 
     #[test]
     fn test_default_name_template_matches_gr_shape() {

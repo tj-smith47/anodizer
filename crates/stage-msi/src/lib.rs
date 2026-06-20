@@ -1865,17 +1865,26 @@ crates:
     }
 
     #[test]
-    fn test_msi_unfiltered_same_arch_variants_bail_on_name_clobber() {
+    fn test_msi_unfiltered_same_arch_variants_get_distinct_names() {
         // amd64_variant unset passes all three x86_64 variants through the
-        // filter — but the default name `{{ ProjectName }}_{{ MsiArch }}` has
-        // no per-variant discriminator, so all three render `myapp_x64.msi`.
-        // The collision guard turns that silent overwrite into a hard error
-        // instead of registering 4 artifacts backed by only 2 files on disk.
+        // filter. The default name appends the amd64 micro-arch suffix, so the
+        // three same-triple builds render `myapp_x64.msi` / `myapp_x64v2.msi` /
+        // `myapp_x64v3.msi` (v1 baseline renders no suffix) and arm64 renders
+        // `myapp_arm64.msi` — 4 distinct installers, no clobber.
         let mut ctx = msi_amd64_variant_test_ctx(None);
-        let err = MsiStage.run(&mut ctx).unwrap_err().to_string();
-        assert!(err.contains("msis:"), "{err}");
-        assert!(err.contains("{{ .Arch }}"), "{err}");
-        assert!(err.contains("crate 'myapp'"), "{err}");
+        MsiStage.run(&mut ctx).unwrap();
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        assert_eq!(installers.len(), 4, "{installers:?}");
+        let names: Vec<&str> = installers
+            .iter()
+            .map(|a| a.path.file_name().unwrap().to_str().unwrap())
+            .collect();
+        let distinct: std::collections::HashSet<&&str> = names.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            names.len(),
+            "all rendered installer names must be distinct: {names:?}"
+        );
     }
 
     #[test]
@@ -2233,6 +2242,15 @@ crates:
     // -----------------------------------------------------------------------
     // default name shape
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_default_name_template_contains_amd64_variant_suffix() {
+        assert!(
+            crate::template::default_msi_name_template()
+                .contains(anodizer_core::archive_name::INSTALLER_AMD64_VARIANT_SUFFIX),
+            "default name template must reuse the shared amd64 variant suffix"
+        );
+    }
 
     #[test]
     fn test_default_name_matches_goreleaser_shape() {

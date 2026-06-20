@@ -698,7 +698,18 @@ fn sha1_digest(data: &[u8]) -> [u8; 20] {
 /// macOS Installer.app and breaks the homebrew-cask pkg stanza + checksum
 /// naming. A user-supplied `name:` ending in `.pkg` is used verbatim (not
 /// doubled).
-const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Arch }}";
+const DEFAULT_NAME_PREFIX: &str = "{{ ProjectName }}_{{ Arch }}";
+
+/// Compose the default pkg name template: [`DEFAULT_NAME_PREFIX`] plus the
+/// shared amd64 variant suffix from core. Two amd64 builds share one target
+/// triple, so `Arch` alone cannot disambiguate them; the suffix keeps their
+/// filenames distinct without re-embedding the clause literal here.
+fn default_name_template() -> String {
+    format!(
+        "{DEFAULT_NAME_PREFIX}{}",
+        anodizer_core::archive_name::INSTALLER_AMD64_VARIANT_SUFFIX
+    )
+}
 
 /// Rendered per-binary field values resolved from a [`PkgConfig`].
 ///
@@ -955,10 +966,17 @@ impl Stage for PkgStage {
                         continue;
                     }
 
-                    let effective_binaries: Vec<(Option<String>, PathBuf)> = filtered
-                        .iter()
-                        .map(|b| (b.target.clone(), b.path.clone()))
-                        .collect();
+                    let effective_binaries: Vec<(Option<String>, Option<String>, PathBuf)> =
+                        filtered
+                            .iter()
+                            .map(|b| {
+                                (
+                                    b.target.clone(),
+                                    b.metadata.get("amd64_variant").cloned(),
+                                    b.path.clone(),
+                                )
+                            })
+                            .collect();
 
                     // Validate identifier is present (template render happens inside the
                     // per-binary loop below so Os/Arch vars are set first).
@@ -993,7 +1011,9 @@ impl Stage for PkgStage {
                     // dist/macos/<name>.pkg for two build targets (silent clobber).
                     let mut arch_guard = ArchPathGuard::new();
 
-                    for (target, binary_path) in &effective_binaries {
+                    let default_name = default_name_template();
+
+                    for (target, amd64_variant, binary_path) in &effective_binaries {
                         // Derive Os/Arch from the target triple for template rendering
                         let (os, arch) = target
                             .as_deref()
@@ -1005,6 +1025,12 @@ impl Stage for PkgStage {
                         ctx.template_vars_mut().set("Arch", &arch);
                         ctx.template_vars_mut()
                             .set("Target", target.as_deref().unwrap_or(""));
+                        // Seed the amd64 variant so the default (or a custom) name
+                        // template disambiguates two amd64 builds of one target.
+                        anodizer_core::archive_name::seed_amd64_variant_var(
+                            ctx.template_vars_mut(),
+                            amd64_variant.as_deref(),
+                        );
 
                         let rendered = render_pkg_fields(
                             ctx,
@@ -1019,8 +1045,7 @@ impl Stage for PkgStage {
                         let mod_timestamp_rendered = rendered.mod_timestamp;
 
                         // Determine output filename
-                        let name_template =
-                            pkg_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);
+                        let name_template = pkg_cfg.name.as_deref().unwrap_or(&default_name);
 
                         let pkg_filename =
                             ctx.render_template(name_template).with_context(|| {
@@ -1073,6 +1098,9 @@ impl Stage for PkgStage {
                                     )]);
                                     if let Some(id) = &pkg_cfg.id {
                                         m.insert("id".to_string(), id.clone());
+                                    }
+                                    if let Some(v) = amd64_variant {
+                                        m.insert("amd64_variant".to_string(), v.clone());
                                     }
                                     m
                                 },
@@ -1257,6 +1285,9 @@ impl Stage for PkgStage {
                                 )]);
                                 if let Some(id) = &pkg_cfg.id {
                                     m.insert("id".to_string(), id.clone());
+                                }
+                                if let Some(v) = amd64_variant {
+                                    m.insert("amd64_variant".to_string(), v.clone());
                                 }
                                 m
                             },
@@ -1935,6 +1966,76 @@ mod tests {
             ctx.template_vars().get("ProjectName").map(String::as_str),
             Some("workspace"),
             "ProjectName not restored after per-crate rebind"
+        );
+    }
+
+    #[test]
+    fn test_pkg_same_arch_variants_get_distinct_names() {
+        // Three darwin/amd64 builds tagged amd64_variant v1/v2/v3 plus one
+        // arm64 build must each render a distinct `.pkg`: the default name
+        // appends the amd64 micro-arch suffix (v1 baseline → none, v2/v3 →
+        // suffix), so the same triple no longer clobbers itself.
+        let tmp = TempDir::new().unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            pkgs: Some(vec![PkgConfig {
+                identifier: Some("com.example.myapp".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        for variant in ["v1", "v2", "v3"] {
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from(format!("/build/myapp_{variant}")),
+                target: Some("x86_64-apple-darwin".to_string()),
+                crate_name: "myapp".to_string(),
+                metadata: HashMap::from([("amd64_variant".to_string(), variant.to_string())]),
+                size: None,
+            });
+        }
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("/build/myapp_arm"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        PkgStage.run(&mut ctx).unwrap();
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::MacOsPackage);
+        assert_eq!(pkgs.len(), 4, "{pkgs:?}");
+
+        let names: Vec<String> = pkgs
+            .iter()
+            .map(|p| p.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        let distinct: std::collections::HashSet<&String> = names.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            names.len(),
+            "all rendered PKG names must be distinct: {names:?}"
         );
     }
 
@@ -3254,6 +3355,15 @@ crates:
             rendered.mod_timestamp.as_deref(),
             Some("{{ CommitTimestamp }}"),
             "literal template string must not reach apply_mod_timestamp"
+        );
+    }
+
+    #[test]
+    fn test_default_name_template_contains_amd64_variant_suffix() {
+        assert!(
+            default_name_template()
+                .contains(anodizer_core::archive_name::INSTALLER_AMD64_VARIANT_SUFFIX),
+            "default name template must reuse the shared amd64 variant suffix"
         );
     }
 

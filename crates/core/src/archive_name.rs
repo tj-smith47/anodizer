@@ -36,6 +36,43 @@ pub const DEFAULT_NAME_TEMPLATE_MULTI_CRATE: &str = DEFAULT_NAME_TEMPLATE;
 /// rather than `{{ .ProjectName }}` so each binary is named individually).
 pub const DEFAULT_BINARY_NAME_TEMPLATE: &str = "{{ .Binary }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}";
 
+/// The full micro-architecture variant suffix — the `Arm` / `Mips` / `Amd64`
+/// tail shared by the Linux-capable asset namers: the archive stage's
+/// [`DEFAULT_NAME_TEMPLATE`] / [`DEFAULT_BINARY_NAME_TEMPLATE`] and the
+/// `makeself` `.run` default.
+///
+/// Those namers can target Linux/embedded triples, so all three dimensions can
+/// occur: 32-bit ARM (`armv7`/`armv6`, carried in `Arm`), MIPS variants
+/// (carried in `Mips`), and the x86-64 micro-architecture level (`Amd64`).
+/// Centralising the clause keeps the *suffix* byte-identical across every
+/// default that appends it — only the suffix is shared, not the whole template:
+/// the archive defaults prefix it with the dotted `{{ .ProjectName }}…` stem
+/// while the makeself default uses the bare `{{ ProjectName }}…` form, so the
+/// prefixes differ by design. Each consumer carries a drift test pinning its own
+/// default to this const so the shared tail cannot drift between them.
+pub const MICRO_ARCH_VARIANT_SUFFIX: &str = "{% if Arm %}v{{ Arm }}{% endif %}{% if Mips %}_{{ Mips }}{% endif %}{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}";
+
+/// The amd64-only subset of [`MICRO_ARCH_VARIANT_SUFFIX`] — the suffix the
+/// macOS/Windows OS-installer family (`app_bundles`, `dmgs`, `pkgs`, `msis`,
+/// `nsis`) default name templates append.
+///
+/// That amd64 is the lone micro-architecture dimension this family
+/// disambiguates is structural to Rust, not arbitrary special-casing: 32-bit
+/// ARM and MIPS variants are encoded in the **target triple** (`armv7-…` vs
+/// `armv6-…`, `mips-…` vs `mipsel-…`), so they already render a distinct
+/// `Arch`; only the x86-64 micro-architecture levels share one triple
+/// (`x86_64-…`, differing solely by `-Ctarget-cpu=x86-64-v{2,3}`) and therefore
+/// one `Arch`. The build stage consequently only detects `amd64_variant`
+/// (stored in `Artifact.metadata["amd64_variant"]`), and these OSes have no
+/// 32-bit-ARM/MIPS targets at all — so amd64 is the only clause this family
+/// needs. Appending it lets two amd64 builds of the same target (a baseline
+/// `v1` and a `v3` tuned with `-Ctarget-cpu=x86-64-v3`) render distinct
+/// installer names instead of one silently clobbering the other; `v1` (the
+/// baseline) renders no suffix so the common single-variant build keeps its
+/// historical name.
+pub const INSTALLER_AMD64_VARIANT_SUFFIX: &str =
+    "{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}";
+
 /// Seed the per-target template variables a `name_template` reads.
 ///
 /// Sets `Os`, `Arch`, and `Target` from [`map_target`], plus the
@@ -79,6 +116,27 @@ pub fn seed_target_vars(ctx: &mut Context, target: &str) {
     } else {
         vars.set("Arch", &arch);
     }
+}
+
+/// Seed the `Amd64` micro-architecture variant template var from a built
+/// binary's `amd64_variant` metadata.
+///
+/// Installer stages call this per `(target, variant)` so a `name` template —
+/// the stage default (which appends [`INSTALLER_AMD64_VARIANT_SUFFIX`]) or a
+/// user override referencing `{{ Amd64 }}` — can disambiguate two amd64 builds
+/// of the same target. `None` (an untagged binary) or the `v1` baseline leaves
+/// the suffix empty, preserving the single-variant historical name.
+///
+/// Takes the [`TemplateVars`](crate::template::TemplateVars) directly rather
+/// than a [`Context`] so both the ctx-render installer stages
+/// (appbundle/pkg/msi/dmg, which pass `ctx.template_vars_mut()`) and the
+/// clone-render stage (nsis, which renders against a cloned `name_vars`) share
+/// one helper.
+pub fn seed_amd64_variant_var(
+    vars: &mut crate::template::TemplateVars,
+    amd64_variant: Option<&str>,
+) {
+    vars.set("Amd64", amd64_variant.unwrap_or(""));
 }
 
 /// Render an archive's *stem* (filename without the format extension) for a
@@ -314,6 +372,24 @@ mod tests {
                 "new seed_target_vars must be byte-identical to HEAD for {target}"
             );
         }
+    }
+
+    #[test]
+    fn archive_defaults_end_with_full_micro_arch_suffix() {
+        // The Linux-capable archive defaults carry the FULL Arm/Mips/Amd64
+        // suffix; both must keep it as their literal trailing clause so the
+        // makeself stage (which composes from the same const) stays
+        // byte-identical to them.
+        assert!(DEFAULT_NAME_TEMPLATE.ends_with(MICRO_ARCH_VARIANT_SUFFIX));
+        assert!(DEFAULT_BINARY_NAME_TEMPLATE.ends_with(MICRO_ARCH_VARIANT_SUFFIX));
+    }
+
+    #[test]
+    fn installer_amd64_suffix_is_the_tail_of_the_full_suffix() {
+        // The macOS/Windows installer family appends only the amd64 clause; it
+        // must remain a true subset of the full suffix so the two families
+        // disambiguate amd64 identically.
+        assert!(MICRO_ARCH_VARIANT_SUFFIX.ends_with(INSTALLER_AMD64_VARIANT_SUFFIX));
     }
 
     #[test]

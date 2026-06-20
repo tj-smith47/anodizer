@@ -15,17 +15,24 @@ use anodizer_core::context::Context;
 use anodizer_core::util::{parse_mod_timestamp, set_file_mtime};
 
 use super::template::{
-    DEFAULT_MSI_NAME_TEMPLATE, build_post_hook_template_vars, compute_msi_filename,
+    build_post_hook_template_vars, compute_msi_filename, default_msi_name_template,
     render_wxs_template, set_msi_template_vars,
 };
 use super::wix::{
     WixVersion, map_arch_to_msi, msi_command, render_msi_extensions, resolve_wix_version,
 };
 
+/// One MSI build selection: `(target, amd64_variant, binary_path)`. The
+/// `amd64_variant` is the binary's build-metadata tag (e.g. `v3`) that
+/// disambiguates two amd64 builds of one target in the rendered name.
+type MsiBinarySelection = (Option<String>, Option<String>, String);
+
 /// Build an MSI `Artifact` and collect archive paths to remove when `replace` is set.
+#[allow(clippy::too_many_arguments)]
 fn make_msi_artifact(
     msi_path: PathBuf,
     target: &Option<String>,
+    amd64_variant: Option<&str>,
     crate_name: &str,
     wix_version: WixVersion,
     msi_cfg: &anodizer_core::config::MsiConfig,
@@ -46,6 +53,9 @@ fn make_msi_artifact(
     ]);
     if let Some(id) = &msi_cfg.id {
         metadata.insert("id".to_string(), id.clone());
+    }
+    if let Some(v) = amd64_variant {
+        metadata.insert("amd64_variant".to_string(), v.to_string());
     }
 
     // Handle replace option — collect matching archives for removal
@@ -131,13 +141,16 @@ pub(super) fn process_msi_crate(
         // (silent clobber).
         let mut arch_guard = ArchPathGuard::new();
 
-        for (target, binary_path) in &effective_binaries {
+        let default_name = default_msi_name_template();
+
+        for (target, amd64_variant, binary_path) in &effective_binaries {
             let msi_path = build_msi_target(
                 ctx,
                 log,
                 msi_cfg,
                 &krate.name,
                 target,
+                amd64_variant.as_deref(),
                 binary_path,
                 &wxs_path_rendered,
                 dist,
@@ -145,6 +158,7 @@ pub(super) fn process_msi_crate(
                 new_artifacts,
                 archives_to_remove,
                 &mut arch_guard,
+                &default_name,
             )?;
 
             // Post-hook runs per-target so it has access to the per-artifact
@@ -177,6 +191,7 @@ fn build_msi_target(
     msi_cfg: &anodizer_core::config::MsiConfig,
     crate_name: &str,
     target: &Option<String>,
+    amd64_variant: Option<&str>,
     binary_path: &str,
     wxs_path: &str,
     dist: &std::path::Path,
@@ -184,6 +199,7 @@ fn build_msi_target(
     new_artifacts: &mut Vec<Artifact>,
     archives_to_remove: &mut Vec<PathBuf>,
     arch_guard: &mut ArchPathGuard,
+    default_name: &str,
 ) -> Result<PathBuf> {
     let (_os, arch) = target
         .as_deref()
@@ -192,6 +208,9 @@ fn build_msi_target(
     let msi_arch = map_arch_to_msi(&arch).to_string();
 
     set_msi_template_vars(ctx, target.as_deref(), &arch, &msi_arch, binary_path);
+    // Seed the amd64 variant so the default (or a custom) name template
+    // disambiguates two amd64 builds of one target.
+    anodizer_core::archive_name::seed_amd64_variant_var(ctx.template_vars_mut(), amd64_variant);
 
     let wix_version = resolve_wix_version(msi_cfg, wxs_path, log);
 
@@ -203,7 +222,7 @@ fn build_msi_target(
         &msi_path,
         "msis",
         "installer",
-        msi_cfg.name.as_deref().unwrap_or(DEFAULT_MSI_NAME_TEMPLATE),
+        msi_cfg.name.as_deref().unwrap_or(default_name),
         &msi_filename,
         crate_name,
     )?;
@@ -235,6 +254,7 @@ fn build_msi_target(
         new_artifacts.push(make_msi_artifact(
             msi_path.clone(),
             target,
+            amd64_variant,
             crate_name,
             wix_version,
             msi_cfg,
@@ -270,6 +290,7 @@ fn build_msi_target(
     new_artifacts.push(make_msi_artifact(
         msi_path.clone(),
         target,
+        amd64_variant,
         crate_name,
         wix_version,
         msi_cfg,
@@ -331,15 +352,18 @@ fn should_skip_msi_config(
 }
 
 /// Apply the ids + amd64_variant filters to the collected Windows binaries.
-/// Returns `Some` with `(target, binary_path)` pairs to drive the per-target
-/// build, or `None` when the caller should `continue` (no matching binaries).
+/// Returns `Some` with `(target, amd64_variant, binary_path)` tuples to drive
+/// the per-target build, or `None` when the caller should `continue` (no
+/// matching binaries). The `amd64_variant` is the binary's build-metadata tag
+/// (e.g. `v3`), seeded into the `name` template so two amd64 variants of one
+/// target render distinct installer names.
 fn filter_msi_binaries(
     msi_cfg: &anodizer_core::config::MsiConfig,
     windows_binaries: &[Artifact],
     crate_name: &str,
     log: &anodizer_core::log::StageLogger,
     show_skipped: bool,
-) -> Option<Vec<(Option<String>, String)>> {
+) -> Option<Vec<MsiBinarySelection>> {
     let mut filtered: Vec<&Artifact> = windows_binaries.iter().collect();
 
     if let Some(ref filter_ids) = msi_cfg.ids
@@ -394,7 +418,13 @@ fn filter_msi_binaries(
     Some(
         filtered
             .into_iter()
-            .map(|b| (b.target.clone(), b.path.to_string_lossy().into_owned()))
+            .map(|b| {
+                (
+                    b.target.clone(),
+                    b.metadata.get("amd64_variant").cloned(),
+                    b.path.to_string_lossy().into_owned(),
+                )
+            })
             .collect(),
     )
 }

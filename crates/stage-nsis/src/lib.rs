@@ -118,11 +118,25 @@ pub(crate) fn program_files_for_arch(nsis_arch: &str) -> &str {
     }
 }
 
-/// Default output filename template.
+/// Stem of the default output filename template, before the amd64 variant
+/// suffix and the `_setup` tail.
 ///
 /// `Arch` here is the NSIS-native arch (`x86`, `x64`, `arm64`) injected
-/// per-target before the name is rendered.
-const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Arch }}_setup";
+/// per-target before the name is rendered. The amd64 micro-architecture variant
+/// suffix is inserted by [`default_name_template`] from the single source of
+/// truth in core, since two amd64 builds share one target triple and `Arch`
+/// alone cannot tell them apart.
+const DEFAULT_NAME_PREFIX: &str = "{{ ProjectName }}_{{ Arch }}";
+
+/// Compose the default nsis name template: [`DEFAULT_NAME_PREFIX`], the shared
+/// amd64 variant suffix from core, then the `_setup` tail (no clause re-embedded
+/// here).
+fn default_name_template() -> String {
+    format!(
+        "{DEFAULT_NAME_PREFIX}{}_setup",
+        anodizer_core::archive_name::INSTALLER_AMD64_VARIANT_SUFFIX
+    )
+}
 
 impl Stage for NsisStage {
     fn name(&self) -> &str {
@@ -281,10 +295,17 @@ impl Stage for NsisStage {
                         continue;
                     }
 
-                    let effective_binaries: Vec<(Option<String>, PathBuf)> = filtered
-                        .iter()
-                        .map(|b| (b.target.clone(), b.path.clone()))
-                        .collect();
+                    let effective_binaries: Vec<(Option<String>, Option<String>, PathBuf)> =
+                        filtered
+                            .iter()
+                            .map(|b| {
+                                (
+                                    b.target.clone(),
+                                    b.metadata.get("amd64_variant").cloned(),
+                                    b.path.clone(),
+                                )
+                            })
+                            .collect();
 
                     // Validate extra_files shape up-front so misconfiguration fails
                     // before any subprocess spawn and surfaces in dry-run too.
@@ -308,7 +329,9 @@ impl Stage for NsisStage {
                     // dist/windows/<name>.exe for two build targets (silent clobber).
                     let mut arch_guard = ArchPathGuard::new();
 
-                    for (target, binary_path) in &effective_binaries {
+                    let default_name = default_name_template();
+
+                    for (target, amd64_variant, binary_path) in &effective_binaries {
                         // Derive Os/Arch from the target triple for template rendering
                         let (os, arch) = os_arch_from_target(target.as_deref());
 
@@ -334,13 +357,19 @@ impl Stage for NsisStage {
 
                         // Determine output filename using the one-shot vars so `Arch`
                         // inside `name` sees NSIS-native values (`x64`, `x86`, `arm64`).
-                        let name_template =
-                            nsis_cfg.name.as_deref().unwrap_or(DEFAULT_NAME_TEMPLATE);
+                        let name_template = nsis_cfg.name.as_deref().unwrap_or(&default_name);
 
                         let mut name_vars = ctx.template_vars().clone();
                         name_vars.set("Arch", nsis_arch);
                         name_vars.set("ProgramFiles", program_files);
                         name_vars.set("Binary", &binary_val);
+                        // Seed the amd64 variant against the cloned name vars so the
+                        // default (or a custom) name template disambiguates two amd64
+                        // builds of one target.
+                        anodizer_core::archive_name::seed_amd64_variant_var(
+                            &mut name_vars,
+                            amd64_variant.as_deref(),
+                        );
 
                         // Render the name first so it can be re-injected as `Name`
                         // for the script context.
@@ -411,6 +440,9 @@ impl Stage for NsisStage {
                                         HashMap::from([("format".to_string(), "nsis".to_string())]);
                                     if let Some(id) = &nsis_cfg.id {
                                         m.insert("id".to_string(), id.clone());
+                                    }
+                                    if let Some(v) = amd64_variant {
+                                        m.insert("amd64_variant".to_string(), v.clone());
                                     }
                                     m
                                 },
@@ -581,6 +613,9 @@ impl Stage for NsisStage {
                                     HashMap::from([("format".to_string(), "nsis".to_string())]);
                                 if let Some(id) = &nsis_cfg.id {
                                     m.insert("id".to_string(), id.clone());
+                                }
+                                if let Some(v) = amd64_variant {
+                                    m.insert("amd64_variant".to_string(), v.clone());
                                 }
                                 m
                             },
@@ -760,6 +795,15 @@ mod tests {
     // -----------------------------------------------------------------------
     // Default name template renders with NSIS-native arch
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_default_name_template_contains_amd64_variant_suffix() {
+        assert!(
+            default_name_template()
+                .contains(anodizer_core::archive_name::INSTALLER_AMD64_VARIANT_SUFFIX),
+            "default name template must reuse the shared amd64 variant suffix"
+        );
+    }
 
     #[test]
     fn test_default_name_template_uses_nsis_arch() {
@@ -1660,17 +1704,27 @@ crates:
     }
 
     #[test]
-    fn test_nsis_unfiltered_same_arch_variants_bail_on_name_clobber() {
+    fn test_nsis_unfiltered_same_arch_variants_get_distinct_names() {
         // amd64_variant unset passes all three x86_64 variants through the
-        // filter — but the default name `{{ ProjectName }}_{{ Arch }}-setup`
-        // has no per-variant discriminator, so all three render
-        // `myapp_x64-setup.exe`. The collision guard turns that silent
-        // overwrite into a hard error.
+        // filter. The default name appends the amd64 micro-arch suffix before
+        // `_setup`, so the three same-triple builds render `myapp_x64_setup.exe`
+        // / `myapp_x64v2_setup.exe` / `myapp_x64v3_setup.exe` (v1 baseline
+        // renders no suffix) and arm64 renders `myapp_arm64_setup.exe` — 4
+        // distinct installers, no clobber.
         let mut ctx = nsis_amd64_variant_test_ctx(None);
-        let err = NsisStage.run(&mut ctx).unwrap_err().to_string();
-        assert!(err.contains("nsis:"), "{err}");
-        assert!(err.contains("{{ .Arch }}"), "{err}");
-        assert!(err.contains("crate 'myapp'"), "{err}");
+        NsisStage.run(&mut ctx).unwrap();
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        assert_eq!(installers.len(), 4, "{installers:?}");
+        let names: Vec<&str> = installers
+            .iter()
+            .map(|a| a.path.file_name().unwrap().to_str().unwrap())
+            .collect();
+        let distinct: std::collections::HashSet<&&str> = names.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            names.len(),
+            "all rendered installer names must be distinct: {names:?}"
+        );
     }
 
     #[test]
@@ -1699,6 +1753,63 @@ crates:
             installers[0].target.as_deref(),
             Some("aarch64-pc-windows-msvc")
         );
+    }
+
+    #[test]
+    fn test_nsis_name_override_renders_amd64_variant() {
+        // A user `name:` override referencing `{{ Amd64 }}` must see the
+        // binary's variant. NSIS renders against a CLONED `name_vars` (not the
+        // global ctx vars), so this pins that the variant is seeded on the clone
+        // a custom template reads. A v3 x86_64 build renders the suffix.
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let script_path = tmp.path().join("installer.nsi");
+        std::fs::write(&script_path, "OutFile \"out.exe\"\nSection\nSectionEnd\n").unwrap();
+
+        let nsis_cfg = NsisConfig {
+            script: Some(script_path.to_string_lossy().into_owned()),
+            name: Some("{{ ProjectName }}_{{ Arch }}{{ Amd64 }}_setup".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&config.dist).unwrap();
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nsis: Some(vec![nsis_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp_v3.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::from([("amd64_variant".to_string(), "v3".to_string())]),
+            size: None,
+        });
+
+        NsisStage.run(&mut ctx).unwrap();
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        assert_eq!(installers.len(), 1, "{installers:?}");
+        let name = installers[0].path.file_name().unwrap().to_str().unwrap();
+        // NSIS-native Arch for x86_64 is `x64`; the v3 variant suffix follows.
+        assert_eq!(name, "myapp_x64v3_setup.exe", "{installers:?}");
     }
 
     /// Core invariant: the `OutFile` literal in the rendered default script

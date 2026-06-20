@@ -52,6 +52,20 @@ impl Lsm {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Default `.run` filename template when a config sets no `filename:`.
+///
+/// `makeself` is a Linux-capable namer, so it appends the FULL
+/// [`MICRO_ARCH_VARIANT_SUFFIX`](anodizer_core::archive_name::MICRO_ARCH_VARIANT_SUFFIX)
+/// (Arm/Mips/Amd64) — the same suffix the archive defaults carry — rather than
+/// the amd64-only installer subset, composed from the shared const so it cannot
+/// drift from the archive stage's naming.
+fn default_name_template() -> String {
+    format!(
+        "{{{{ ProjectName }}}}_{{{{ Version }}}}_{{{{ Os }}}}_{{{{ Arch }}}}{}.run",
+        anodizer_core::archive_name::MICRO_ARCH_VARIANT_SUFFIX
+    )
+}
+
 /// Build the makeself command arguments.
 fn make_args(
     name: &str,
@@ -231,7 +245,19 @@ fn collect_matching_binaries(
 /// Seed Os / Arch / Target plus the per-target variant template vars (Arm,
 /// Arm64, Amd64, Mips, I386) so the default name_template renders correctly.
 /// Mirrors stage-build's per-target var seeding.
-fn set_per_target_template_vars(ctx: &mut Context, target: Option<&str>, os: &str, arch: &str) {
+///
+/// `amd64_variant` is the built binary's `amd64_variant` metadata: it overrides
+/// the triple-derived `Amd64` so two amd64 builds of one target (a baseline and
+/// a `-Ctarget-cpu=x86-64-v3` tune) render distinct `.run` names. `None` /
+/// `Some("v1")` leave the suffix empty, preserving the single-variant name; the
+/// Arm/Mips triple derivation is untouched.
+fn set_per_target_template_vars(
+    ctx: &mut Context,
+    target: Option<&str>,
+    os: &str,
+    arch: &str,
+    amd64_variant: Option<&str>,
+) {
     ctx.template_vars_mut().set("Os", os);
     ctx.template_vars_mut().set("Arch", arch);
     ctx.template_vars_mut().set("Target", target.unwrap_or(""));
@@ -253,6 +279,10 @@ fn set_per_target_template_vars(ctx: &mut Context, target: Option<&str>, os: &st
         }
         _ => {}
     }
+
+    // Override the triple's placeholder `Amd64` with the binary's actual variant
+    // metadata so v1/v2/v3 builds of the same x86_64 triple render distinctly.
+    anodizer_core::archive_name::seed_amd64_variant_var(ctx.template_vars_mut(), amd64_variant);
 }
 
 /// Render the makeself output filename for a single (target, platform) combo.
@@ -407,16 +437,22 @@ fn execute_makeself_job(
     })
 }
 
-/// Group artifacts by platform string (e.g. "linux_amd64").
+/// Group artifacts by `(platform, amd64_variant)` — e.g.
+/// `("linux_amd64", Some("v3"))`.
+///
+/// The key carries the binary's `amd64_variant` metadata alongside the os/arch
+/// platform string so two amd64 builds of one target (a baseline `v1` and a
+/// `-Ctarget-cpu=x86-64-v3` tune) land in separate groups and produce two
+/// distinct `.run` files instead of one silently clobbering the other.
 ///
 /// `BTreeMap` (not `HashMap`) so iteration order is deterministic across
 /// runs — callers iterate the result to register one makeself Artifact per
-/// platform, and `HashMap` iteration order is randomised per process. The
+/// group, and `HashMap` iteration order is randomised per process. The
 /// matching `stage-archive` regression shipped per-run drift into
 /// `dist/artifacts.json`; this stage uses the same pattern so it gets the
 /// same fix preemptively.
-fn group_by_platform(artifacts: &[Artifact]) -> BTreeMap<String, Vec<&Artifact>> {
-    let mut groups: BTreeMap<String, Vec<&Artifact>> = BTreeMap::new();
+fn group_by_platform(artifacts: &[Artifact]) -> BTreeMap<(String, Option<String>), Vec<&Artifact>> {
+    let mut groups: BTreeMap<(String, Option<String>), Vec<&Artifact>> = BTreeMap::new();
     for a in artifacts {
         let platform = match &a.target {
             Some(t) => {
@@ -425,7 +461,8 @@ fn group_by_platform(artifacts: &[Artifact]) -> BTreeMap<String, Vec<&Artifact>>
             }
             None => "unknown".to_string(),
         };
-        groups.entry(platform).or_default().push(a);
+        let variant = a.metadata.get("amd64_variant").cloned();
+        groups.entry((platform, variant)).or_default().push(a);
     }
     groups
 }
@@ -568,13 +605,11 @@ fn collect_makeself_config_jobs(
 
     let id = cfg.id.as_deref().unwrap_or("default");
     let name = cfg.name.as_deref().unwrap_or(project_name);
-    let default_name_template = concat!(
-        "{{ ProjectName }}_{{ Version }}_{{ Os }}_{{ Arch }}",
-        "{% if Arm %}v{{ Arm }}{% endif %}",
-        "{% if Mips %}_{{ Mips }}{% endif %}",
-        "{% if Amd64 and Amd64 != \"v1\" %}{{ Amd64 }}{% endif %}.run",
-    );
-    let name_template = cfg.filename.as_deref().unwrap_or(default_name_template);
+    let default_name_template = default_name_template();
+    let name_template = cfg
+        .filename
+        .as_deref()
+        .unwrap_or(default_name_template.as_str());
 
     let script = cfg.script.as_deref().unwrap_or("");
     if script.is_empty() {
@@ -619,7 +654,7 @@ fn collect_makeself_config_jobs(
 
     let groups = group_by_platform(&all_binaries);
 
-    for (platform, binaries) in &groups {
+    for ((platform, amd64_variant), binaries) in &groups {
         build_makeself_platform_job(
             ctx,
             log,
@@ -632,6 +667,7 @@ fn collect_makeself_config_jobs(
             version,
             project_name,
             platform,
+            amd64_variant.as_deref(),
             binaries,
             dry_run,
             jobs,
@@ -656,6 +692,7 @@ fn build_makeself_platform_job(
     version: &str,
     project_name: &str,
     platform: &str,
+    amd64_variant: Option<&str>,
     binaries: &[&Artifact],
     dry_run: bool,
     jobs: &mut Vec<MakeselfJob>,
@@ -667,7 +704,7 @@ fn build_makeself_platform_job(
         .map(anodizer_core::target::map_target)
         .unwrap_or_else(|| ("unknown".to_string(), "unknown".to_string()));
 
-    set_per_target_template_vars(ctx, primary.target.as_deref(), &os, &arch);
+    set_per_target_template_vars(ctx, primary.target.as_deref(), &os, &arch, amd64_variant);
 
     let rendered_name = if cfg.name.is_some() {
         ctx.render_template(name)?
@@ -736,7 +773,13 @@ fn build_makeself_platform_job(
         copying_policy: rendered_license,
     };
 
-    let work_dir = dist.join("makeself").join(id).join(platform);
+    // Disambiguate the staging dir per amd64 variant so two non-baseline
+    // variants of one platform don't stage into (and clobber) the same dir.
+    let work_subdir = match amd64_variant {
+        Some(v) if v != "v1" => format!("{platform}_{v}"),
+        _ => platform.to_string(),
+    };
+    let work_dir = dist.join("makeself").join(id).join(work_subdir);
 
     if dry_run {
         log.status(&format!(
@@ -839,6 +882,18 @@ mod tests {
     use super::*;
     use anodizer_core::config::MakeselfConfig;
     use std::path::PathBuf;
+
+    #[test]
+    fn default_name_template_contains_full_micro_arch_suffix() {
+        // Guard the de-smell: the makeself default must compose from the shared
+        // full-suffix const, not re-embed the Arm/Mips/Amd64 clause literal.
+        assert!(
+            default_name_template()
+                .contains(anodizer_core::archive_name::MICRO_ARCH_VARIANT_SUFFIX),
+            "makeself default must reuse MICRO_ARCH_VARIANT_SUFFIX: {}",
+            default_name_template()
+        );
+    }
 
     #[test]
     fn test_lsm_render() {
@@ -991,8 +1046,10 @@ mod tests {
         let artifacts = vec![a1, a2];
         let groups = group_by_platform(&artifacts);
         assert_eq!(groups.len(), 2);
-        assert!(groups.contains_key("linux_amd64"));
-        assert!(groups.contains_key("darwin_arm64"));
+        // Neither binary carries amd64_variant metadata, so the variant half of
+        // the key is None for both.
+        assert!(groups.contains_key(&("linux_amd64".to_string(), None)));
+        assert!(groups.contains_key(&("darwin_arm64".to_string(), None)));
     }
 
     #[test]
@@ -1162,7 +1219,7 @@ crates:
         };
         let inputs = [a];
         let groups = group_by_platform(&inputs);
-        assert!(groups.contains_key("unknown"));
+        assert!(groups.contains_key(&("unknown".to_string(), None)));
     }
 
     #[test]
@@ -1190,7 +1247,95 @@ crates:
         let inputs = [a1, a2];
         let groups = group_by_platform(&inputs);
         let keys: Vec<_> = groups.keys().cloned().collect();
-        assert_eq!(keys, vec!["darwin_arm64".to_string(), "linux_amd64".into()]);
+        assert_eq!(
+            keys,
+            vec![
+                ("darwin_arm64".to_string(), None),
+                ("linux_amd64".to_string(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_makeself_same_arch_variants_get_distinct_run_names() {
+        // Three x86_64 builds tagged amd64_variant v1/v2/v3 plus one aarch64
+        // build must each produce a distinct `.run` job: the default filename
+        // appends the amd64 micro-arch suffix (v1 baseline → no suffix, v2 →
+        // `…v2…`, v3 → `…v3…`), so the same triple no longer clobbers itself.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ctx = Context::new(
+            anodizer_core::config::Config::default(),
+            anodizer_core::context::ContextOptions::default(),
+        );
+        ctx.config.project_name = "myapp".to_string();
+        ctx.config.dist = tmp.path().to_path_buf();
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        for variant in ["v1", "v2", "v3"] {
+            let p = tmp.path().join(format!("myapp_{variant}"));
+            std::fs::write(&p, b"x").unwrap();
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: "myapp".to_string(),
+                path: p,
+                target: Some("x86_64-unknown-linux-gnu".to_string()),
+                crate_name: "myapp".to_string(),
+                metadata: HashMap::from([("amd64_variant".to_string(), variant.to_string())]),
+                size: None,
+            });
+        }
+        let arm = tmp.path().join("myapp_arm");
+        std::fs::write(&arm, b"x").unwrap();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "myapp".to_string(),
+            path: arm,
+            target: Some("aarch64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let script = tmp.path().join("install.sh");
+        std::fs::write(&script, b"#!/bin/sh\n").unwrap();
+
+        let cfg = MakeselfConfig {
+            id: Some("default".to_string()),
+            script: Some(script.to_string_lossy().into_owned()),
+            os: Some(vec!["linux".to_string()]),
+            ..Default::default()
+        };
+
+        let log =
+            anodizer_core::log::StageLogger::new("makeself", anodizer_core::log::Verbosity::Normal);
+        let mut jobs: Vec<MakeselfJob> = Vec::new();
+        collect_makeself_config_jobs(
+            &mut ctx,
+            &log,
+            &cfg,
+            tmp.path(),
+            "1.0.0",
+            "myapp",
+            false,
+            &mut jobs,
+        )
+        .unwrap();
+
+        assert_eq!(jobs.len(), 4, "expected one job per variant + arm64");
+        let names: Vec<&str> = jobs.iter().map(|j| j.filename.as_str()).collect();
+        let distinct: std::collections::HashSet<&&str> = names.iter().collect();
+        assert_eq!(
+            distinct.len(),
+            names.len(),
+            "all .run filenames must be distinct: {names:?}"
+        );
+        // The v1 baseline keeps the historical unsuffixed name; v2/v3 carry the
+        // variant; arm64 renders its own arch with no amd64 suffix.
+        assert!(names.contains(&"myapp_1.0.0_linux_amd64.run"));
+        assert!(names.contains(&"myapp_1.0.0_linux_amd64v2.run"));
+        assert!(names.contains(&"myapp_1.0.0_linux_amd64v3.run"));
+        assert!(names.contains(&"myapp_1.0.0_linux_arm64.run"));
     }
 
     #[test]

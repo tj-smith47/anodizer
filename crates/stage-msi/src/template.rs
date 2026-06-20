@@ -2,7 +2,7 @@
 //!
 //! Hosts the `.wxs` file render, the per-binary / post-hook template-var
 //! population + teardown, and the output-filename resolution
-//! ([`compute_msi_filename`] + [`DEFAULT_MSI_NAME_TEMPLATE`]).
+//! ([`compute_msi_filename`] + [`default_msi_name_template`]).
 
 use std::fs;
 use std::path::PathBuf;
@@ -49,20 +49,33 @@ pub(super) fn set_msi_template_vars(
 /// Default output filename template.
 ///
 /// `MsiArch` is the WiX-native arch (`x86`, `x64`, `arm64`) injected
-/// per-target before the name is rendered. The user controls the extension;
-/// `.msi` is appended only when absent.
-pub(super) const DEFAULT_MSI_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ MsiArch }}";
+/// per-target before the name is rendered. The amd64 micro-architecture
+/// variant suffix disambiguates two amd64 builds of one target (e.g. `v1` +
+/// `v3`). The user controls the extension; `.msi` is appended only when absent.
+pub(super) const DEFAULT_MSI_NAME_PREFIX: &str = "{{ ProjectName }}_{{ MsiArch }}";
+
+/// Compose the default msi name template: [`DEFAULT_MSI_NAME_PREFIX`] plus the
+/// shared amd64 variant suffix from core. Two amd64 builds share one target
+/// triple, so `MsiArch` alone cannot disambiguate them; the suffix keeps their
+/// filenames distinct without re-embedding the clause literal here.
+pub(super) fn default_msi_name_template() -> String {
+    format!(
+        "{DEFAULT_MSI_NAME_PREFIX}{}",
+        anodizer_core::archive_name::INSTALLER_AMD64_VARIANT_SUFFIX
+    )
+}
 
 /// Resolve the output `.msi` filename: rendered `name:` template wins
 /// (auto-appending `.msi` when absent), otherwise the default
-/// `<ProjectName>_<MsiArch>.msi` (rendered from `DEFAULT_MSI_NAME_TEMPLATE`).
+/// `<ProjectName>_<MsiArch>.msi` (rendered from [`default_msi_name_template`]).
 pub(super) fn compute_msi_filename(
     ctx: &mut Context,
     msi_cfg: &anodizer_core::config::MsiConfig,
     crate_name: &str,
     target: Option<&str>,
 ) -> Result<String> {
-    let name_tmpl = msi_cfg.name.as_deref().unwrap_or(DEFAULT_MSI_NAME_TEMPLATE);
+    let default_name = default_msi_name_template();
+    let name_tmpl = msi_cfg.name.as_deref().unwrap_or(&default_name);
     let rendered = ctx.render_template(name_tmpl).with_context(|| {
         format!(
             "msi: render name template for crate {} target {:?}",
