@@ -303,6 +303,23 @@ impl Stage for SrpmStage {
             .arg("--define")
             .arg(format!("_topdir {}", rpmbuild_dir.display()));
 
+        // Pin BUILDTIME + every packaged file's mtime to SOURCE_DATE_EPOCH so
+        // two builds of the same commit emit a byte-identical .src.rpm. Modern
+        // rpm reads SOURCE_DATE_EPOCH from the env but only *applies* it to the
+        // RPM header's BUILDTIME / clamps payload mtimes when these macros are
+        // explicitly enabled — Fedora's redhat-rpm-config sets them by default,
+        // the Ubuntu/CI rpm does not, so without them rpmbuild stamps wall-clock
+        // and the determinism gate sees drift. Gated on SDE being present so
+        // non-harness production runs keep rpmbuild's wall-clock default,
+        // mirroring stage-makeself's `--packaging-date`.
+        if anodizer_core::sde::source_date_epoch_with_env(ctx.env_source()).is_some() {
+            rpmbuild_cmd
+                .arg("--define")
+                .arg("use_source_date_epoch_as_buildtime 1")
+                .arg("--define")
+                .arg("clamp_mtime_to_source_date_epoch 1");
+        }
+
         // Wire signing options when signature config is present
         if let Some(sig) = effective_signature
             && let Some(ref key_file) = sig.key_file
@@ -1732,6 +1749,68 @@ crates:
         assert!(
             !argv.iter().any(|a| a.starts_with("_gpg_name")),
             "unconfigured signing must not pass _gpg_name; got {argv:?}"
+        );
+    }
+
+    /// Under `SOURCE_DATE_EPOCH` the stage passes the reproducible-build macros
+    /// so rpmbuild pins BUILDTIME + payload mtimes to SDE (without them the
+    /// Ubuntu/CI rpm stamps wall-clock and the determinism gate sees drift).
+    /// They must be absent when SDE is unset (production wall-clock default).
+    #[cfg(all(test, unix))]
+    #[test]
+    #[serial_test::serial]
+    fn test_srpm_live_run_pins_buildtime_to_sde_when_set() {
+        let fx = SrpmFixture::new();
+        let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
+        ctx.config.srpms = Some(SrpmConfig {
+            enabled: Some(true),
+            ..Default::default()
+        });
+        ctx.set_env_source(
+            anodizer_core::env_source::MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1715000000"),
+        );
+
+        let tools = stub_rpmbuild_ok(&fx, "myapp-1.0.0-1.src.rpm");
+        let _g = tools.activate();
+
+        SrpmStage.run(&mut ctx).expect("run should succeed");
+
+        let argv = &tools.calls("rpmbuild")[0];
+        assert!(
+            argv.iter()
+                .any(|a| a == "use_source_date_epoch_as_buildtime 1"),
+            "missing buildtime macro under SDE; got {argv:?}"
+        );
+        assert!(
+            argv.iter()
+                .any(|a| a == "clamp_mtime_to_source_date_epoch 1"),
+            "missing mtime-clamp macro under SDE; got {argv:?}"
+        );
+    }
+
+    /// Without `SOURCE_DATE_EPOCH` the reproducible-build macros are not passed,
+    /// preserving rpmbuild's default (non-harness production) behavior.
+    #[cfg(all(test, unix))]
+    #[test]
+    #[serial_test::serial]
+    fn test_srpm_live_run_omits_sde_macros_without_sde() {
+        let fx = SrpmFixture::new();
+        let mut ctx = fx.ctx("myapp", "1.0.0", "myapp-1.0.0-source.tar.gz");
+        ctx.config.srpms = Some(SrpmConfig {
+            enabled: Some(true),
+            ..Default::default()
+        });
+        ctx.set_env_source(anodizer_core::env_source::MapEnvSource::new());
+
+        let tools = stub_rpmbuild_ok(&fx, "myapp-1.0.0-1.src.rpm");
+        let _g = tools.activate();
+
+        SrpmStage.run(&mut ctx).expect("run should succeed");
+
+        let argv = &tools.calls("rpmbuild")[0];
+        assert!(
+            !argv.iter().any(|a| a.contains("source_date_epoch")),
+            "SDE macros must be absent without SDE; got {argv:?}"
         );
     }
 

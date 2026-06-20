@@ -787,6 +787,7 @@ pub(crate) fn render_and_generate_nfpm_yaml(
 
     let mut rendered_cfg =
         render_nfpm_config_fields(nfpm_cfg, &ctx.config, ctx.template_vars(), crate_name)?;
+    default_nfpm_mtime_to_sde(&mut rendered_cfg, ctx.env_source());
 
     process_templated_contents(&mut rendered_cfg, nfpm_cfg, ctx, dist, crate_name, dry_run)?;
     process_templated_scripts(&mut rendered_cfg, nfpm_cfg, ctx, dist, crate_name, dry_run)?;
@@ -925,6 +926,32 @@ pub(crate) fn render_nfpm_config_fields(
     }
 
     Ok(rendered_cfg)
+}
+
+/// Default the package `mtime` to `SOURCE_DATE_EPOCH` when the user leaves it
+/// unset, so nfpm stamps reproducible archive-entry timestamps into the
+/// .deb/.rpm payload instead of wall-clock.
+///
+/// Setting the top-level `mtime:` is the one knob that fixes the in-payload
+/// bytes: it governs every content entry's mtime AND the RPM header's
+/// BUILDTIME (verified empirically — an explicit `mtime` alone makes nfpm's
+/// .rpm byte-identical across builds with no `SOURCE_DATE_EPOCH` in the
+/// subprocess env). The post-build `set_file_mtime` only touches the outer
+/// file's filesystem mtime, never the bytes. Doing it in anodizer (rather
+/// than relying on nfpm's own env-`SOURCE_DATE_EPOCH` support) makes the
+/// pin version-independent across nfpm releases.
+///
+/// Gated on SDE being present so non-harness production runs keep nfpm's
+/// default behavior, mirroring the srpm stage's BUILDTIME clamp.
+pub(crate) fn default_nfpm_mtime_to_sde(
+    cfg: &mut anodizer_core::config::NfpmConfig,
+    env: &dyn anodizer_core::env_source::EnvSource,
+) {
+    if cfg.mtime.is_none()
+        && let Some(sde) = anodizer_core::sde::source_date_epoch_with_env(env)
+    {
+        cfg.mtime = Some(sde.to_rfc3339());
+    }
 }
 
 /// `templated_contents`: render each entry's body through
@@ -1479,6 +1506,7 @@ fn render_offline_nfpm_yaml(
     );
 
     let mut rendered_cfg = render_nfpm_config_fields(nfpm_cfg, &ctx.config, &vars, crate_name)?;
+    default_nfpm_mtime_to_sde(&mut rendered_cfg, ctx.env_source());
     fill_deb_arch_variant(&mut rendered_cfg, linux_binaries, render_target.target);
 
     generate_nfpm_yaml_with_env(
