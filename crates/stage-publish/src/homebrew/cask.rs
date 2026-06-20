@@ -650,6 +650,168 @@ pub(crate) struct CaskGenResult {
     pub(crate) versioned_files: Vec<(String, String)>,
 }
 
+/// Artifact-enumeration scope for [`build_cask_platform_blocks`].
+///
+/// The per-crate cask publisher gathers only the owning crate's artifacts
+/// ([`Self::Crate`]); the top-level `homebrew_casks:` publisher gathers darwin
+/// and linux artifacts across the whole release, optionally narrowed by an
+/// `ids:` filter ([`Self::TopLevel`]). Both then map each artifact's target to
+/// an `on_macos`/`on_linux` × `on_intel`/`on_arm` slot — that mapping is shared.
+pub(super) enum CaskArtifactScope<'a> {
+    /// Per-crate scope: only `crate_name`'s artifacts of the given kind.
+    Crate { crate_name: &'a str },
+    /// Top-level scope: every crate's artifacts of the given kind, narrowed by
+    /// the optional `ids:` filter (mirrors [`find_top_level_cask_artifact`]).
+    TopLevel { ids: Option<&'a [String]> },
+}
+
+impl CaskArtifactScope<'_> {
+    /// The artifacts of `kind` in this scope, with the universal-binary
+    /// filter ([`Artifact::only_replacing_unibins`]) applied — identical to
+    /// what the per-crate and top-level single-artifact lookups use, so a
+    /// `universal_binaries.replace: false` release keeps both the universal
+    /// and per-arch entries.
+    fn artifacts_of_kind<'c>(
+        &self,
+        ctx: &'c Context,
+        kind: anodizer_core::artifact::ArtifactKind,
+    ) -> Vec<&'c anodizer_core::artifact::Artifact> {
+        match self {
+            CaskArtifactScope::Crate { crate_name } => ctx
+                .artifacts
+                .by_kind_and_crate(kind, crate_name)
+                .into_iter()
+                .filter(|a| a.only_replacing_unibins())
+                .collect(),
+            CaskArtifactScope::TopLevel { ids } => ctx
+                .artifacts
+                .by_kind(kind)
+                .into_iter()
+                .filter(|a| a.only_replacing_unibins())
+                .filter(|a| anodizer_core::artifact::matches_id_filter(a, *ids))
+                .collect(),
+        }
+    }
+}
+
+/// Build the per-platform `on_macos` / `on_linux` cask blocks — each carrying
+/// one `on_intel` / `on_arm` entry per architecture present in the release —
+/// from the artifacts in `scope`.
+///
+/// This is the single source of truth for multi-arch cask emission, shared by
+/// the per-crate publisher ([`generate_cask_from_context`]) and the top-level
+/// `homebrew_casks:` publisher. Each architecture gets its OWN url + sha256 so
+/// `brew install` serves every Mac (and Linux) host the binary built for its
+/// architecture — emitting a single flat url for a multi-arch release would
+/// ship one architecture's binary to all hosts.
+///
+/// Kind precedence is `DiskImage` > `Archive` > `UploadableBinary`; the first
+/// kind that supplies a given OS×arch slot wins. `url_template`, when set,
+/// renders each artifact's url; otherwise the artifact's `metadata["url"]` is
+/// used. The version substring in each url is rewritten to `#{version}` for
+/// Homebrew auto-update. A multi-platform block with an empty `sha256 ""` line
+/// fails `brew install`, so a missing sha256 is a hard error.
+pub(super) fn build_cask_platform_blocks(
+    ctx: &Context,
+    scope: &CaskArtifactScope<'_>,
+    version: &str,
+    url_template: Option<&str>,
+    error_scope_label: &str,
+) -> Result<Vec<CaskPlatformBlock>> {
+    use std::collections::BTreeMap;
+    let kinds = [
+        anodizer_core::artifact::ArtifactKind::DiskImage,
+        anodizer_core::artifact::ArtifactKind::Archive,
+        anodizer_core::artifact::ArtifactKind::UploadableBinary,
+    ];
+    let mut os_map: BTreeMap<String, Vec<CaskArchEntry>> = BTreeMap::new();
+    for kind in &kinds {
+        for art in scope.artifacts_of_kind(ctx, *kind) {
+            let target = art.target.as_deref().unwrap_or("");
+            let (os, arch) = anodizer_core::target::map_target(target);
+            let os_block = if os == "darwin" {
+                "macos"
+            } else if os == "linux" {
+                "linux"
+            } else {
+                continue;
+            };
+            let arch_block = if arch == "amd64" || arch == "386" {
+                "intel"
+            } else if arch == "arm64" {
+                "arm"
+            } else {
+                continue;
+            };
+            // Dedup is per-OS: a darwin `intel` entry must not suppress a
+            // linux `intel` entry. Only skip when THIS os_block already
+            // holds an entry for THIS arch_block (the first-kind-wins
+            // precedence: DiskImage > Archive > UploadableBinary).
+            if os_map
+                .get(os_block)
+                .is_some_and(|arches| arches.iter().any(|e| e.arch_block == arch_block))
+            {
+                continue;
+            }
+            let url = if let Some(tmpl) = url_template {
+                crate::util::render_url_template_with_ctx(
+                    ctx,
+                    tmpl,
+                    art.name(),
+                    version,
+                    &arch,
+                    &os,
+                )
+            } else if let Some(u) = art.metadata.get("url") {
+                u.clone()
+            } else {
+                continue;
+            };
+            let url = url.replace(version, "#{version}");
+            let sha256 = art
+                .metadata
+                .get("sha256")
+                .cloned()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "homebrew cask: artifact '{}' (os={}, arch={}) for {} \
+                         is missing required sha256 metadata. A multi-platform cask \
+                         block with an empty `sha256 \"\"` line fails `brew style` and \
+                         aborts `brew install` (Homebrew verifies the SHA before \
+                         extracting). This indicates the artifacts.json catalog dropped \
+                         the entry's sha256 before the publish stage. Re-run with \
+                         `task release` from a clean dist/ and verify dist/artifacts.json \
+                         carries metadata.sha256 for every macOS/Linux artifact.",
+                        art.name(),
+                        os_block,
+                        arch_block,
+                        error_scope_label,
+                    )
+                })?;
+            os_map
+                .entry(os_block.to_string())
+                .or_default()
+                .push(CaskArchEntry {
+                    arch_block: arch_block.to_string(),
+                    url,
+                    sha256,
+                });
+        }
+    }
+    Ok(os_map
+        .into_iter()
+        .map(|(os_block, mut arches)| {
+            // Pin per-arch order by `arch_block` so emission is byte-stable
+            // regardless of the upstream artifact catalog's insertion order
+            // (BTreeMap groups Archive targets but DiskImage / UploadableBinary
+            // kinds carry no such guarantee). Ascending: "arm" precedes "intel".
+            arches.sort_by(|a, b| a.arch_block.cmp(&b.arch_block));
+            CaskPlatformBlock { os_block, arches }
+        })
+        .collect())
+}
+
 /// Generate a Homebrew Cask `.rb` file string from the project context.
 ///
 /// This is the shared logic used by both [`publish_to_homebrew`] (when formula
@@ -664,106 +826,20 @@ pub(super) fn generate_cask_from_context(
     let version = ctx.version();
     let cask_name = cask_cfg.name.as_deref().unwrap_or(crate_name);
 
-    // Collect all platform artifacts: DiskImage and Archive types for macOS/Linux.
-    // multi-platform casks with on_macos/on_linux + on_intel/on_arm nesting.
     let url_template = cask_cfg
         .url_template
         .as_deref()
         .or(hb_cfg.url_template.as_deref());
 
-    let kinds = [
-        anodizer_core::artifact::ArtifactKind::DiskImage,
-        anodizer_core::artifact::ArtifactKind::Archive,
-        anodizer_core::artifact::ArtifactKind::UploadableBinary,
-    ];
-
     // Build per-platform `on_macos` / `on_linux` blocks, each carrying one
     // `on_arm` / `on_intel` entry per architecture present in the release.
-    let mut platform_blocks: Vec<CaskPlatformBlock> = Vec::new();
-    {
-        use std::collections::BTreeMap;
-        let mut os_map: BTreeMap<String, Vec<CaskArchEntry>> = BTreeMap::new();
-        for kind in &kinds {
-            for art in ctx.artifacts.by_kind_and_crate(*kind, crate_name) {
-                if !art.only_replacing_unibins() {
-                    continue;
-                }
-                let target = art.target.as_deref().unwrap_or("");
-                let (os, arch) = anodizer_core::target::map_target(target);
-                let os_block = if os == "darwin" {
-                    "macos"
-                } else if os == "linux" {
-                    "linux"
-                } else {
-                    continue;
-                };
-                let arch_block = if arch == "amd64" || arch == "386" {
-                    "intel"
-                } else if arch == "arm64" {
-                    "arm"
-                } else {
-                    continue;
-                };
-                // Dedup is per-OS: a darwin `intel` entry must not suppress a
-                // linux `intel` entry. Only skip when THIS os_block already
-                // holds an entry for THIS arch_block (the first-kind-wins
-                // precedence: DiskImage > Archive > UploadableBinary).
-                if os_map
-                    .get(os_block)
-                    .is_some_and(|arches| arches.iter().any(|e| e.arch_block == arch_block))
-                {
-                    continue;
-                }
-                let url = if let Some(tmpl) = url_template {
-                    crate::util::render_url_template_with_ctx(
-                        ctx,
-                        tmpl,
-                        art.name(),
-                        &version,
-                        &arch,
-                        &os,
-                    )
-                } else if let Some(u) = art.metadata.get("url") {
-                    u.clone()
-                } else {
-                    continue;
-                };
-                let url = url.replace(&version, "#{version}");
-                let sha256 = art
-                    .metadata
-                    .get("sha256")
-                    .cloned()
-                    .filter(|s| !s.is_empty())
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "homebrew cask: artifact '{}' (os={}, arch={}) for crate '{}' \
-                             is missing required sha256 metadata. A multi-platform cask \
-                             block with an empty `sha256 \"\"` line fails `brew style` and \
-                             aborts `brew install` (Homebrew verifies the SHA before \
-                             extracting). This indicates the artifacts.json catalog dropped \
-                             the entry's sha256 before the publish stage. Re-run with \
-                             `task release` from a clean dist/ and verify dist/artifacts.json \
-                             carries metadata.sha256 for every macOS/Linux artifact.",
-                            art.name(),
-                            os_block,
-                            arch_block,
-                            crate_name,
-                        )
-                    })?;
-                os_map
-                    .entry(os_block.to_string())
-                    .or_default()
-                    .push(CaskArchEntry {
-                        arch_block: arch_block.to_string(),
-                        url,
-                        sha256,
-                    });
-            }
-        }
-        for (os_block, arches) in os_map {
-            platform_blocks.push(CaskPlatformBlock { os_block, arches });
-        }
-    }
+    let platform_blocks = build_cask_platform_blocks(
+        ctx,
+        &CaskArtifactScope::Crate { crate_name },
+        &version,
+        url_template,
+        &format!("crate '{}'", crate_name),
+    )?;
 
     // Find primary artifact for fallback single-platform behavior
     let primary_artifact = ctx

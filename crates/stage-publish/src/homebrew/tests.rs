@@ -4271,3 +4271,293 @@ fn top_level_cask_string_fields_are_template_rendered() {
         "top-level cask carries an unrendered template delimiter:\n{c}"
     );
 }
+
+/// Top-level `homebrew_casks:` with BOTH `darwin/amd64` and `darwin/arm64`
+/// artifacts must emit a per-arch `on_intel` / `on_arm` cask body so each
+/// Mac architecture downloads its own binary. A single flat `url` would ship
+/// one architecture's binary to all Mac users (the other arch's `brew install`
+/// then yields a binary that won't run).
+#[test]
+fn top_level_cask_dual_darwin_arch_emits_per_arch_blocks() {
+    use anodizer_core::config::HomebrewCaskConfig;
+    let cask_cfg = HomebrewCaskConfig {
+        name: Some("mytool".to_string()),
+        ..Default::default()
+    };
+    let config = Config {
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }],
+        homebrew_casks: Some(vec![cask_cfg.clone()]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
+    ctx.template_vars_mut().set("Version", "1.2.3");
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-darwin-amd64.tar.gz",
+        "x86_64-apple-darwin",
+        "https://e.com/mytool-1.2.3-darwin-amd64.tar.gz",
+        "sha_darwin_amd64",
+    ));
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-darwin-arm64.tar.gz",
+        "aarch64-apple-darwin",
+        "https://e.com/mytool-1.2.3-darwin-arm64.tar.gz",
+        "sha_darwin_arm64",
+    ));
+    let rendered = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+        .expect("top-level cask render")
+        .expect("top-level cask applicable");
+    let c = rendered.content;
+    assert!(
+        c.contains("on_intel do") && c.contains("on_arm do"),
+        "dual-arch top-level cask must emit on_intel + on_arm blocks:\n{c}"
+    );
+    // Each arch's URL must be present (each Mac downloads its own binary).
+    assert!(
+        c.contains("mytool-#{version}-darwin-amd64.tar.gz")
+            || c.contains("mytool-1.2.3-darwin-amd64.tar.gz"),
+        "intel arch URL missing from dual-arch cask:\n{c}"
+    );
+    assert!(
+        c.contains("mytool-#{version}-darwin-arm64.tar.gz")
+            || c.contains("mytool-1.2.3-darwin-arm64.tar.gz"),
+        "arm arch URL missing from dual-arch cask:\n{c}"
+    );
+    // Each arch's own sha256 must be present.
+    assert!(
+        c.contains("sha_darwin_amd64"),
+        "intel sha256 missing from dual-arch cask:\n{c}"
+    );
+    assert!(
+        c.contains("sha_darwin_arm64"),
+        "arm sha256 missing from dual-arch cask:\n{c}"
+    );
+    // The flat single-url stanza must NOT appear once per-arch blocks are used.
+    assert!(
+        !c.contains("\n  url \""),
+        "dual-arch cask must not also emit a flat top-level url stanza:\n{c}"
+    );
+}
+
+/// A genuinely single-arch top-level cask (only one macOS artifact) must keep
+/// the flat single-`url` body — no empty `on_arm` / `on_intel` wrappers.
+#[test]
+fn top_level_cask_single_darwin_arch_keeps_flat_url() {
+    use anodizer_core::config::HomebrewCaskConfig;
+    let cask_cfg = HomebrewCaskConfig {
+        name: Some("mytool".to_string()),
+        ..Default::default()
+    };
+    let config = Config {
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }],
+        homebrew_casks: Some(vec![cask_cfg.clone()]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
+    ctx.template_vars_mut().set("Version", "1.2.3");
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-darwin-arm64.tar.gz",
+        "aarch64-apple-darwin",
+        "https://e.com/mytool-1.2.3-darwin-arm64.tar.gz",
+        "sha_darwin_arm64",
+    ));
+    let rendered = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+        .expect("top-level cask render")
+        .expect("top-level cask applicable");
+    let c = rendered.content;
+    assert!(
+        !c.contains("on_intel do") && !c.contains("on_arm do"),
+        "single-arch top-level cask must NOT emit on_intel/on_arm wrappers:\n{c}"
+    );
+    assert!(
+        c.contains("  url \""),
+        "single-arch top-level cask must emit a flat url stanza:\n{c}"
+    );
+    assert!(
+        c.contains("sha_darwin_arm64"),
+        "single-arch cask must carry its sha256:\n{c}"
+    );
+}
+
+/// `universal_binaries.replace: true` removes the per-arch darwin Archives
+/// from the catalog, leaving only the lipo'd `darwin-universal` Archive. That
+/// synthetic target has architecture `all`, which fills neither the `intel`
+/// nor the `arm` slot, so the top-level cask falls back to a FLAT `url` /
+/// `sha256` pointing at the universal binary — with no `on_arm` / `on_intel`
+/// wrappers (and no `on_macos` arch-split block).
+#[test]
+fn top_level_cask_universal_replace_falls_back_to_flat_url() {
+    use anodizer_core::config::HomebrewCaskConfig;
+    let cask_cfg = HomebrewCaskConfig {
+        name: Some("mytool".to_string()),
+        ..Default::default()
+    };
+    let config = Config {
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }],
+        homebrew_casks: Some(vec![cask_cfg.clone()]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
+    ctx.template_vars_mut().set("Version", "1.2.3");
+    // Only the universal Archive remains — `replace: true` dropped the
+    // per-arch `darwin-amd64` / `darwin-arm64` Archives from the catalog.
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-darwin-universal.tar.gz",
+        "darwin-universal",
+        "https://e.com/mytool-1.2.3-darwin-universal.tar.gz",
+        "sha_darwin_universal",
+    ));
+    let rendered = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+        .expect("top-level cask render")
+        .expect("top-level cask applicable");
+    let c = rendered.content;
+    assert!(
+        !c.contains("on_arm do") && !c.contains("on_intel do"),
+        "universal-only cask must NOT emit per-arch on_arm/on_intel blocks:\n{c}"
+    );
+    assert!(
+        !c.contains("on_macos do"),
+        "universal-only cask must NOT emit an arch-split on_macos block:\n{c}"
+    );
+    assert!(
+        c.contains("  url \"https://e.com/mytool-#{version}-darwin-universal.tar.gz\""),
+        "universal-only cask must emit a flat url pointing at the universal binary:\n{c}"
+    );
+    assert!(
+        c.contains("  sha256 \"sha_darwin_universal\""),
+        "universal-only cask must emit the universal binary's flat sha256:\n{c}"
+    );
+}
+
+/// A release carrying BOTH darwin (amd64 + arm64) AND linux (amd64 + arm64)
+/// archives renders an `on_macos` block and an `on_linux` block, each with its
+/// own `on_arm` / `on_intel` sub-blocks carrying per-arch url + sha256. The OS
+/// block order is deterministic (`on_linux` before `on_macos`, BTreeMap key
+/// order) and the per-arch order matches the `arch_block` sort (`on_arm`
+/// before `on_intel`).
+#[test]
+fn top_level_cask_darwin_and_linux_coexist_with_deterministic_order() {
+    use anodizer_core::config::HomebrewCaskConfig;
+    let cask_cfg = HomebrewCaskConfig {
+        name: Some("mytool".to_string()),
+        ..Default::default()
+    };
+    let config = Config {
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }],
+        homebrew_casks: Some(vec![cask_cfg.clone()]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
+    ctx.template_vars_mut().set("Version", "1.2.3");
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-darwin-amd64.tar.gz",
+        "x86_64-apple-darwin",
+        "https://e.com/mytool-1.2.3-darwin-amd64.tar.gz",
+        "sha_darwin_amd64",
+    ));
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-darwin-arm64.tar.gz",
+        "aarch64-apple-darwin",
+        "https://e.com/mytool-1.2.3-darwin-arm64.tar.gz",
+        "sha_darwin_arm64",
+    ));
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-linux-amd64.tar.gz",
+        "x86_64-unknown-linux-gnu",
+        "https://e.com/mytool-1.2.3-linux-amd64.tar.gz",
+        "sha_linux_amd64",
+    ));
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-linux-arm64.tar.gz",
+        "aarch64-unknown-linux-gnu",
+        "https://e.com/mytool-1.2.3-linux-arm64.tar.gz",
+        "sha_linux_arm64",
+    ));
+    let rendered = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+        .expect("top-level cask render")
+        .expect("top-level cask applicable");
+    let c = rendered.content;
+
+    // Both OS blocks present, each exactly once.
+    assert_eq!(
+        c.matches("on_macos do").count(),
+        1,
+        "expected exactly one on_macos block:\n{c}"
+    );
+    assert_eq!(
+        c.matches("on_linux do").count(),
+        1,
+        "expected exactly one on_linux block:\n{c}"
+    );
+    // Each OS carries both arch sub-blocks (so on_arm/on_intel each appear twice).
+    assert_eq!(
+        c.matches("on_arm do").count(),
+        2,
+        "expected on_arm under both on_macos and on_linux:\n{c}"
+    );
+    assert_eq!(
+        c.matches("on_intel do").count(),
+        2,
+        "expected on_intel under both on_macos and on_linux:\n{c}"
+    );
+    // Every arch carries its own url + sha256.
+    for sha in [
+        "sha_darwin_amd64",
+        "sha_darwin_arm64",
+        "sha_linux_amd64",
+        "sha_linux_arm64",
+    ] {
+        assert!(c.contains(sha), "cask dropped the {sha} arch entry:\n{c}");
+    }
+
+    // OS-block order is deterministic: on_linux precedes on_macos (BTreeMap
+    // key order over "linux" < "macos").
+    let linux_pos = c.find("on_linux do").expect("on_linux present");
+    let macos_pos = c.find("on_macos do").expect("on_macos present");
+    assert!(
+        linux_pos < macos_pos,
+        "on_linux must precede on_macos (deterministic OS order):\n{c}"
+    );
+
+    // Within each OS block, per-arch order matches the arch_block sort:
+    // on_arm precedes on_intel ("arm" < "intel"). The on_macos block is the
+    // tail (it follows on_linux), so its arch sub-blocks live after macos_pos.
+    let macos_block = &c[macos_pos..];
+    let arm_in_macos = macos_block.find("on_arm do").expect("on_arm in macos");
+    let intel_in_macos = macos_block.find("on_intel do").expect("on_intel in macos");
+    assert!(
+        arm_in_macos < intel_in_macos,
+        "within on_macos, on_arm must precede on_intel (arch_block sort):\n{c}"
+    );
+}

@@ -257,14 +257,110 @@ renders into the cask:
 `url` accepts a Ruby symbol shorthand (`url` / `stable` / `head` / `homepage` →
 `url :url`) or a literal URL string. Setting `skip: false` without any of
 `strategy`/`url`/`regex` falls back to `skip` with a warning — an empty
-`livecheck do … end` is invalid. Unlike GoReleaser (whose cask template
-hard-codes `skip`), anodizer's cask `livecheck` is fully configurable, matching
-how the overwhelming majority of real Homebrew casks declare version detection.
+`livecheck do … end` is invalid. anodizer's cask `livecheck` is fully
+configurable (`strategy`, `url`, `regex`, `skip`), matching how the
+overwhelming majority of real Homebrew casks declare version detection.
+
+## Multi-architecture casks
+
+When a release builds more than one macOS architecture (typically
+`darwin/amd64` for Intel Macs plus `darwin/arm64` for Apple Silicon), anodizer
+emits a cask body with per-architecture `on_intel` / `on_arm` stanzas. Each
+stanza carries its own `url` and `sha256`, so `brew install` serves every Mac
+host the binary built for its CPU:
+
+```ruby
+cask "myapp" do
+  version "1.2.3"
+
+  name "myapp"
+
+  livecheck do
+    skip "Auto-generated on release."
+  end
+
+  on_macos do
+    on_arm do
+      sha256 "2222222222222222222222222222222222222222222222222222222222222222"
+      url "https://github.com/myorg/myapp/releases/download/v#{version}/myapp-darwin-arm64.tar.gz"
+    end
+    on_intel do
+      sha256 "1111111111111111111111111111111111111111111111111111111111111111"
+      url "https://github.com/myorg/myapp/releases/download/v#{version}/myapp-darwin-amd64.tar.gz"
+    end
+  end
+
+  binary "myapp"
+end
+```
+
+The version substring in each URL is rewritten to `#{version}` so Homebrew
+auto-updates the download on the next release. The `url`/`verified`/`using` and
+other [URL config](#url-config-url) values you set apply inside every per-arch
+block.
+
+This emission is automatic — there is no flag to enable it. anodizer decides the
+shape from the artifacts present in the release:
+
+- **Multiple macOS architectures** → per-arch `on_intel` / `on_arm` blocks (the
+  shape above). The same mechanism handles Linux casks: a `darwin/amd64` +
+  `darwin/arm64` + `linux/amd64` release produces an `on_macos` block (with two
+  arch entries) *and* an `on_linux` block.
+- **One macOS architecture** → a flat top-level `url` / `sha256`, with no
+  `on_intel` / `on_arm` wrappers:
+
+  ```ruby
+  cask "myapp" do
+    version "1.2.3"
+    sha256 "1111111111111111111111111111111111111111111111111111111111111111"
+
+    url "https://github.com/myorg/myapp/releases/download/v#{version}/myapp-darwin-arm64.tar.gz"
+
+    name "myapp"
+    # ...
+    binary "myapp"
+  end
+  ```
+
+Each OS×arch slot is filled by the first artifact found in **kind precedence
+order**: `disk_image` (`.dmg`) > `archive` (`.tar.gz`/`.zip`) > uploadable
+binary. The first kind that supplies a given slot wins, so a release that
+produces both a `.dmg` and a `.tar.gz` per arch fills the cask from the `.dmg`.
+Dedup is per-OS, so a macOS `intel` entry never suppresses a Linux `intel`
+entry.
+
+Every artifact filling a slot **must** carry `sha256` metadata: a cask block
+with an empty `sha256 ""` line fails `brew style` and aborts `brew install`
+(Homebrew verifies the digest before extracting), so a missing checksum is a
+hard error rather than a degraded cask.
+
+### Interaction with `universal_binaries`
+
+The per-arch slots are always filled from the **real per-architecture** macOS
+artifacts (`darwin/amd64` and `darwin/arm64`), never from a lipo'd universal
+binary — a universal artifact has the synthetic `darwin-universal` target
+(architecture `all`), which matches neither the `intel` nor the `arm` slot and
+is skipped by the cask builder. What changes is whether the per-arch artifacts
+still exist:
+
+- **`universal_binaries.replace: false`** (or unset) → the per-arch `amd64` and
+  `arm64` artifacts remain in the catalog alongside the universal binary, so the
+  cask renders the full `on_intel` + `on_arm` multi-arch body above.
+- **`universal_binaries.replace: true`** → the per-arch source artifacts are
+  removed from the catalog once the universal binary is built. With both
+  per-arch macOS slots gone, the cask falls back to the single-arch flat
+  `url` / `sha256` shape, served from whatever single non-universal macOS
+  artifact remains.
+
+So if you want a multi-arch cask with explicit `on_intel` / `on_arm` blocks,
+keep `replace: false`; the universal binary then ships through other channels
+while the cask serves each Mac its native slice.
 
 ## Behavior
 
 - Looks for macOS artifacts (`disk_image` or `archive` kind)
 - Requires SHA256 checksum metadata on the artifact
+- Emits per-arch `on_intel` / `on_arm` blocks for multi-arch macOS releases; a single macOS arch renders a flat `url` / `sha256`
 - Clones the tap repository, writes the cask file, commits, and pushes
 - Default commit message: `"Brew cask update for {{ ProjectName }} version {{ Tag }}"`
 

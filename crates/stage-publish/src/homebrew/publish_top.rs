@@ -257,6 +257,33 @@ fn render_top_level_cask_inner(
             )
         })?;
 
+    // Build per-platform `on_macos` / `on_linux` blocks across the whole
+    // release (scoped by the same `ids:` filter as the single-artifact
+    // lookup above), each carrying one `on_arm` / `on_intel` entry per
+    // architecture. A release that builds both `darwin/amd64` and
+    // `darwin/arm64` must emit a per-arch body so each Mac downloads the
+    // binary built for its architecture; a single flat `url` would ship one
+    // architecture's binary to every Mac. The single-arch flat `url`/`sha256`
+    // above stays the fallback for genuinely single-platform projects.
+    let url_template = cask_cfg.url.as_ref().and_then(|u| u.template.as_deref());
+    let platform_blocks = super::cask::build_cask_platform_blocks(
+        ctx,
+        &super::cask::CaskArtifactScope::TopLevel {
+            ids: cask_cfg.ids.as_deref(),
+        },
+        &version,
+        url_template,
+        &format!("cask '{}'", cask_name),
+    )?;
+    // Use the per-arch blocks only when more than one OS×arch slot is present;
+    // a single slot keeps the flat single-`url` body so single-arch projects
+    // don't get pointless `on_arm` / `on_intel` wrappers.
+    let use_platforms = platform_blocks
+        .iter()
+        .map(|p| p.arches.len())
+        .sum::<usize>()
+        > 1;
+
     // Pre-render multi-key uninstall + zap blocks (see
     // `cask::render_zap_block` doc-comment).
     let uninstall_block = render_uninstall_block(cask_cfg.uninstall.as_ref());
@@ -417,7 +444,11 @@ fn render_top_level_cask_inner(
         postflight,
         uninstall_preflight,
         uninstall_postflight,
-        platforms: Vec::new(), // Top-level cask uses single artifact
+        platforms: if use_platforms {
+            platform_blocks
+        } else {
+            Vec::new()
+        },
         generate_completions: cask_cfg
             .generate_completions_from_executable
             .as_ref()
