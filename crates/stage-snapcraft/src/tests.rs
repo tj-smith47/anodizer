@@ -788,6 +788,7 @@ fn snap_is_byte_reproducible_across_time() {
     .unwrap();
     let probe_bin = prime.join("bin/probe");
     std::fs::write(&probe_bin, b"#!/bin/sh\necho hi\n").unwrap();
+    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         // snapcraft rejects a prime tree whose apps are not world-readable +
