@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result};
 
+use anodizer_core::arch_path_guard::ArchPathGuard;
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::ArchiveFileSpec;
 use anodizer_core::context::Context;
@@ -449,6 +450,11 @@ impl Stage for AppBundleStage {
                         .map(|b| (b.target.clone(), b.path.clone()))
                         .collect();
 
+                    // Reject a `name` lacking `{{ .Arch }}` that would render the
+                    // same dist/macos/<name>.app for two arches (silent clobber,
+                    // and `dmgs.use: appbundle` would then wrap the survivor twice).
+                    let mut arch_guard = ArchPathGuard::new();
+
                     for (target, binary_path) in &effective_binaries {
                         // Derive Os/Arch from the target triple for template rendering
                         let (os, arch) = os_arch_from_target(target.as_deref());
@@ -480,6 +486,15 @@ impl Stage for AppBundleStage {
                         // Output goes in dist/macos/
                         let output_dir = dist.join("macos");
                         let app_dir = output_dir.join(&app_name);
+
+                        arch_guard.check(
+                            &app_dir,
+                            "app_bundles",
+                            "bundle",
+                            name_template,
+                            &app_name,
+                            &krate.name,
+                        )?;
 
                         // Derive the binary name from the file path
                         let binary_name = binary_path
@@ -1037,6 +1052,62 @@ mod tests {
             installer_path.ends_with("myapp-2.0.0-arm64.app"),
             "expected template-rendered name, got: {installer_path}"
         );
+    }
+
+    #[test]
+    fn test_name_without_arch_bails_on_multi_arch_clobber() {
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // `name` lacks `{{ .Arch }}`: both darwin arches render `myapp.app`
+        // and the second would silently overwrite the first. The guard must
+        // turn that into a hard error before any bundle is written.
+        let bundle_cfg = AppBundleConfig {
+            name: Some("{{ ProjectName }}".to_string()),
+            bundle: Some("com.example.myapp".to_string()),
+            ..Default::default()
+        };
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            app_bundles: Some(vec![bundle_cfg]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "2.0.0");
+
+        for target in ["aarch64-apple-darwin", "x86_64-apple-darwin"] {
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from("dist/myapp"),
+                target: Some(target.to_string()),
+                crate_name: "myapp".to_string(),
+                metadata: Default::default(),
+                size: None,
+            });
+        }
+
+        let err = AppBundleStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("app_bundles:"), "{err}");
+        assert!(err.contains("{{ .Arch }}"), "{err}");
+        assert!(err.contains("crate 'myapp'"), "{err}");
     }
 
     #[test]

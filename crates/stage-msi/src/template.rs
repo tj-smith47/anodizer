@@ -51,7 +51,7 @@ pub(super) fn set_msi_template_vars(
 /// `MsiArch` is the WiX-native arch (`x86`, `x64`, `arm64`) injected
 /// per-target before the name is rendered. The user controls the extension;
 /// `.msi` is appended only when absent.
-const DEFAULT_MSI_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ MsiArch }}";
+pub(super) const DEFAULT_MSI_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ MsiArch }}";
 
 /// Resolve the output `.msi` filename: rendered `name:` template wins
 /// (auto-appending `.msi` when absent), otherwise the default

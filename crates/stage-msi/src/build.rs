@@ -9,12 +9,14 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
+use anodizer_core::arch_path_guard::ArchPathGuard;
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
 use anodizer_core::util::{parse_mod_timestamp, set_file_mtime};
 
 use super::template::{
-    build_post_hook_template_vars, compute_msi_filename, render_wxs_template, set_msi_template_vars,
+    DEFAULT_MSI_NAME_TEMPLATE, build_post_hook_template_vars, compute_msi_filename,
+    render_wxs_template, set_msi_template_vars,
 };
 use super::wix::{
     WixVersion, map_arch_to_msi, msi_command, render_msi_extensions, resolve_wix_version,
@@ -124,6 +126,11 @@ pub(super) fn process_msi_crate(
             .render_template(wxs_path_raw)
             .with_context(|| format!("msi: render wxs path template for crate {}", krate.name))?;
 
+        // Reject a `name` lacking `{{ .Arch }}`/`{{ .MsiArch }}` that would
+        // render the same dist/windows/<name>.msi for two build targets
+        // (silent clobber).
+        let mut arch_guard = ArchPathGuard::new();
+
         for (target, binary_path) in &effective_binaries {
             let msi_path = build_msi_target(
                 ctx,
@@ -137,6 +144,7 @@ pub(super) fn process_msi_crate(
                 dry_run,
                 new_artifacts,
                 archives_to_remove,
+                &mut arch_guard,
             )?;
 
             // Post-hook runs per-target so it has access to the per-artifact
@@ -175,6 +183,7 @@ fn build_msi_target(
     dry_run: bool,
     new_artifacts: &mut Vec<Artifact>,
     archives_to_remove: &mut Vec<PathBuf>,
+    arch_guard: &mut ArchPathGuard,
 ) -> Result<PathBuf> {
     let (_os, arch) = target
         .as_deref()
@@ -189,6 +198,15 @@ fn build_msi_target(
     let output_dir = dist.join("windows");
     let msi_filename = compute_msi_filename(ctx, msi_cfg, crate_name, target.as_deref())?;
     let msi_path = output_dir.join(&msi_filename);
+
+    arch_guard.check(
+        &msi_path,
+        "msis",
+        "installer",
+        msi_cfg.name.as_deref().unwrap_or(DEFAULT_MSI_NAME_TEMPLATE),
+        &msi_filename,
+        crate_name,
+    )?;
 
     let rendered_extensions = render_msi_extensions(ctx, msi_cfg, log);
 

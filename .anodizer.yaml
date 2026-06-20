@@ -778,15 +778,15 @@ crates:
     app_bundles:
       - id: anodizer
         ids: [anodizer]
-        name: "{{ .ProjectName }}"
+        name: "{{ .ProjectName }}_{{ .Arch }}"
         bundle: io.github.tj-smith47.anodizer
         icon: assets/logo.png
         min_os_version: "10.13"
         replace: false
         mod_timestamp: "{{ CommitTimestamp }}"
     # macOS .dmg disk image — uses hdiutil on macOS, falls back to genisoimage on
-    # Linux CI (preinstalled in the base image). Images the universal .app so the
-    # DMG carries a drag-to-Applications layout.
+    # Linux CI (preinstalled in the base image). Images the matching per-arch .app
+    # so the DMG carries a drag-to-Applications layout.
     dmgs:
       - id: anodizer
         ids: [anodizer]

@@ -1865,16 +1865,17 @@ crates:
     }
 
     #[test]
-    fn test_msi_amd64_variant_unset_passes_all_amd64_variants() {
+    fn test_msi_unfiltered_same_arch_variants_bail_on_name_clobber() {
+        // amd64_variant unset passes all three x86_64 variants through the
+        // filter — but the default name `{{ ProjectName }}_{{ MsiArch }}` has
+        // no per-variant discriminator, so all three render `myapp_x64.msi`.
+        // The collision guard turns that silent overwrite into a hard error
+        // instead of registering 4 artifacts backed by only 2 files on disk.
         let mut ctx = msi_amd64_variant_test_ctx(None);
-        MsiStage.run(&mut ctx).unwrap();
-        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
-        // 3 amd64 binaries + 1 arm64 binary -> 4 MSIs (one per binary path).
-        assert_eq!(
-            installers.len(),
-            4,
-            "unset amd64_variant should pass every amd64 variant + non-amd64"
-        );
+        let err = MsiStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("msis:"), "{err}");
+        assert!(err.contains("{{ .Arch }}"), "{err}");
+        assert!(err.contains("crate 'myapp'"), "{err}");
     }
 
     #[test]

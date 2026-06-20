@@ -1,3 +1,4 @@
+pub mod arch_path_guard;
 pub mod archive_name;
 pub mod artifact;
 pub mod binary_artifact_guard;

@@ -5,6 +5,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
+use anodizer_core::arch_path_guard::ArchPathGuard;
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
@@ -987,6 +988,11 @@ impl Stage for PkgStage {
                     // Homebrew formula installers and macOS Installer.app each target a
                     // discrete, independently versionable package. Multi-binary crates
                     // therefore emit N packages per target triple.
+                    //
+                    // Reject a `name` lacking `{{ .Arch }}` that would render the same
+                    // dist/macos/<name>.pkg for two build targets (silent clobber).
+                    let mut arch_guard = ArchPathGuard::new();
+
                     for (target, binary_path) in &effective_binaries {
                         // Derive Os/Arch from the target triple for template rendering
                         let (os, arch) = target
@@ -1037,6 +1043,15 @@ impl Stage for PkgStage {
 
                         let output_dir = dist.join("macos");
                         let pkg_path = output_dir.join(&pkg_filename);
+
+                        arch_guard.check(
+                            &pkg_path,
+                            "pkgs",
+                            "package",
+                            name_template,
+                            &pkg_filename,
+                            &krate.name,
+                        )?;
 
                         if dry_run {
                             log.status(&format!(

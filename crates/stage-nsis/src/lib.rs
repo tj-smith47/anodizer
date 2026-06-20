@@ -5,6 +5,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
+use anodizer_core::arch_path_guard::ArchPathGuard;
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
@@ -303,6 +304,10 @@ impl Stage for NsisStage {
                         );
                     }
 
+                    // Reject a `name` lacking `{{ .Arch }}` that would render the same
+                    // dist/windows/<name>.exe for two build targets (silent clobber).
+                    let mut arch_guard = ArchPathGuard::new();
+
                     for (target, binary_path) in &effective_binaries {
                         // Derive Os/Arch from the target triple for template rendering
                         let (os, arch) = os_arch_from_target(target.as_deref());
@@ -373,6 +378,15 @@ impl Stage for NsisStage {
                         // absolute path is cwd-independent and points makensis at the
                         // real `dist/windows/` location regardless of its chdir.
                         let exe_path = absolutize_output_path(exe_path);
+
+                        arch_guard.check(
+                            &exe_path,
+                            "nsis",
+                            "installer",
+                            name_template,
+                            &exe_filename,
+                            &krate.name,
+                        )?;
 
                         let binary_name = binary_name_raw;
 
@@ -1646,12 +1660,17 @@ crates:
     }
 
     #[test]
-    fn test_nsis_amd64_variant_unset_passes_all_amd64_variants() {
+    fn test_nsis_unfiltered_same_arch_variants_bail_on_name_clobber() {
+        // amd64_variant unset passes all three x86_64 variants through the
+        // filter — but the default name `{{ ProjectName }}_{{ Arch }}-setup`
+        // has no per-variant discriminator, so all three render
+        // `myapp_x64-setup.exe`. The collision guard turns that silent
+        // overwrite into a hard error.
         let mut ctx = nsis_amd64_variant_test_ctx(None);
-        NsisStage.run(&mut ctx).unwrap();
-        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
-        // 3 amd64 variants + 1 arm64 -> 4 NSIS installers.
-        assert_eq!(installers.len(), 4);
+        let err = NsisStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("nsis:"), "{err}");
+        assert!(err.contains("{{ .Arch }}"), "{err}");
+        assert!(err.contains("crate 'myapp'"), "{err}");
     }
 
     #[test]

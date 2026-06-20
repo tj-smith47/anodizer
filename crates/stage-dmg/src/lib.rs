@@ -5,6 +5,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
+use anodizer_core::arch_path_guard::ArchPathGuard;
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
@@ -422,6 +423,10 @@ impl Stage for DmgStage {
                             .push(b.path.clone());
                     }
 
+                    // Reject a `name` lacking `{{ .Arch }}` that would render the
+                    // same dist/macos/<name>.dmg for two arches (silent clobber).
+                    let mut arch_guard = ArchPathGuard::new();
+
                     for (target, binary_paths) in &by_target {
                         // Derive Os/Arch from the target triple for template rendering
                         let (os, arch) = os_arch_from_target(target.as_deref());
@@ -454,6 +459,15 @@ impl Stage for DmgStage {
                         // Output goes in dist/macos/
                         let output_dir = dist.join("macos");
                         let dmg_path = output_dir.join(&dmg_filename);
+
+                        arch_guard.check(
+                            &dmg_path,
+                            "dmgs",
+                            "image",
+                            name_template,
+                            &dmg_filename,
+                            &krate.name,
+                        )?;
 
                         let vol_name = resolve_volume_name(ctx, dmg_cfg, &crate_project_name)?;
 
