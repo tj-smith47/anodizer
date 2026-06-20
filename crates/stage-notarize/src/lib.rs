@@ -1534,6 +1534,49 @@ crates: []
         assert!(!result.status.success());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_run_status_with_retry_surfaces_child_output_only_at_verbose() {
+        use crate::retry::run_status_with_retry;
+        let no_delay = |_d: std::time::Duration| {};
+        let args = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "echo NOTARYCHATTER".to_string(),
+        ];
+
+        // Default verbosity: the child's stdout is captured (never inherited)
+        // and surfaced nowhere — no leak into the default log register.
+        let (quiet_log, quiet_cap) = anodizer_core::log::StageLogger::with_capture(
+            "notarize-test",
+            anodizer_core::log::Verbosity::Normal,
+        );
+        let status = run_status_with_retry(&args, "echo-cmd", &quiet_log, &no_delay).unwrap();
+        assert!(status.success());
+        assert!(
+            quiet_cap
+                .all_messages()
+                .into_iter()
+                .all(|(_, m)| !m.contains("NOTARYCHATTER")),
+            "default-verbosity run must NOT surface the child's stdout"
+        );
+
+        // Verbose: the captured stdout is streamed through the logger.
+        let (verbose_log, verbose_cap) = anodizer_core::log::StageLogger::with_capture(
+            "notarize-test",
+            anodizer_core::log::Verbosity::Verbose,
+        );
+        let status = run_status_with_retry(&args, "echo-cmd", &verbose_log, &no_delay).unwrap();
+        assert!(status.success());
+        assert!(
+            verbose_cap
+                .all_messages()
+                .into_iter()
+                .any(|(_, m)| m.contains("NOTARYCHATTER")),
+            "verbose run must surface the captured child stdout"
+        );
+    }
+
     /// `refresh_artifact_checksums` must cover signed DMG and PKG artifacts
     /// in addition to binaries — productsign and stapler rewrite bytes
     /// in place, so any cached `sha256` metadata is stale unless we

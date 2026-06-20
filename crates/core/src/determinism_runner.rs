@@ -14,7 +14,7 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 /// Stage names the determinism harness must NOT run.
 ///
@@ -237,6 +237,14 @@ fn build_subprocess_command(spec: &ChildInvocation<'_>) -> Command {
     for (k, v) in env {
         cmd.env(k, v);
     }
+    // anodizer's stdout is a machine-readable data channel (GHA step
+    // outputs, JSON payloads); the harness consumes none of the child's —
+    // it reads artifacts from disk and gates on the exit status alone. Null
+    // the child's stdout so its data channel never pollutes the harness's
+    // own stdout. The child's *stderr* (its logger's status/verbose lines)
+    // stays inherited so the operator's verbosity choice, forwarded above,
+    // still surfaces the inner run's progress.
+    cmd.stdout(Stdio::null());
     // The child's stderr is inherited, so its lines interleave straight
     // into the harness's stream. Export the parent's nesting depth (+2)
     // so the child's section headers render beneath the harness's

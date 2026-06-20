@@ -433,19 +433,10 @@ fn run_native_dmg(
         if dry_run {
             log.status(&format!("(dry-run) would run: {}", codesign_args.join(" ")));
         } else {
-            let status = Command::new(&codesign_args[0])
-                .args(&codesign_args[1..])
-                .status()
-                .with_context(|| {
-                    format!("notarize: failed to execute codesign for {}", bundle.name())
-                })?;
-            if !status.success() {
-                bail!(
-                    "notarize: codesign failed for {} (exit code: {:?})",
-                    bundle.name(),
-                    status.code()
-                );
-            }
+            let label = format!("codesign for {}", bundle.name());
+            let mut cmd = Command::new(&codesign_args[0]);
+            cmd.args(&codesign_args[1..]);
+            anodizer_core::run::run_checked(&mut cmd, log, &label)?;
         }
     }
 
@@ -541,22 +532,10 @@ fn run_native_dmg(
 
                 log.status(&format!("stapling {}", dmg.name()));
 
-                let status = Command::new(staple_args[0])
-                    .args(&staple_args[1..])
-                    .status()
-                    .with_context(|| {
-                        format!(
-                            "notarize: failed to execute xcrun stapler staple for {}",
-                            dmg.name()
-                        )
-                    })?;
-                if !status.success() {
-                    bail!(
-                        "notarize: xcrun stapler staple failed for {} (exit code: {:?})",
-                        dmg.name(),
-                        status.code()
-                    );
-                }
+                let staple_label = format!("xcrun stapler staple for {}", dmg.name());
+                let mut cmd = Command::new(staple_args[0]);
+                cmd.args(&staple_args[1..]);
+                anodizer_core::run::run_checked(&mut cmd, log, &staple_label)?;
             }
         }
     }
@@ -625,19 +604,10 @@ fn run_native_pkg(
         if dry_run {
             log.status(&format!("(dry-run) would run: {}", sign_args.join(" ")));
         } else {
-            let status = Command::new(&sign_args[0])
-                .args(&sign_args[1..])
-                .status()
-                .with_context(|| {
-                    format!("notarize: failed to execute productsign for {}", pkg.name())
-                })?;
-            if !status.success() {
-                bail!(
-                    "notarize: productsign failed for {} (exit code: {:?})",
-                    pkg.name(),
-                    status.code()
-                );
-            }
+            let label = format!("productsign for {}", pkg.name());
+            let mut cmd = Command::new(&sign_args[0]);
+            cmd.args(&sign_args[1..]);
+            anodizer_core::run::run_checked(&mut cmd, log, &label)?;
 
             // Replace the original with the signed version
             std::fs::rename(&signed_path, pkg_path.as_ref()).with_context(|| {
@@ -701,22 +671,10 @@ fn run_native_pkg(
 
                 log.status(&format!("stapling {}", pkg.name()));
 
-                let status = Command::new(staple_args[0])
-                    .args(&staple_args[1..])
-                    .status()
-                    .with_context(|| {
-                        format!(
-                            "notarize: failed to execute xcrun stapler staple for {}",
-                            pkg.name()
-                        )
-                    })?;
-                if !status.success() {
-                    bail!(
-                        "notarize: xcrun stapler staple failed for {} (exit code: {:?})",
-                        pkg.name(),
-                        status.code()
-                    );
-                }
+                let staple_label = format!("xcrun stapler staple for {}", pkg.name());
+                let mut cmd = Command::new(staple_args[0]);
+                cmd.args(&staple_args[1..]);
+                anodizer_core::run::run_checked(&mut cmd, log, &staple_label)?;
             }
         }
     }
@@ -1057,7 +1015,11 @@ mod tests {
         let err = NotarizeStage.run(&mut ctx).unwrap_err();
         drop(_g);
 
-        assert!(err.to_string().contains("codesign failed"), "got: {err}");
+        assert!(err.to_string().contains("codesign for"), "got: {err}");
+        assert!(
+            err.to_string().contains("failed with exit code"),
+            "got: {err}"
+        );
         // notarytool must not run after a codesign failure.
         assert!(
             !tools.was_called("xcrun"),
@@ -1116,7 +1078,11 @@ mod tests {
         drop(_g);
 
         assert!(
-            err.to_string().contains("stapler staple failed"),
+            err.to_string().contains("xcrun stapler staple for"),
+            "got: {err}"
+        );
+        assert!(
+            err.to_string().contains("failed with exit code"),
             "got: {err}"
         );
         assert_eq!(tools.call_count("xcrun"), 2, "submit then staple both ran");
@@ -1232,7 +1198,11 @@ mod tests {
         let err = NotarizeStage.run(&mut ctx).unwrap_err();
         drop(_g);
 
-        assert!(err.to_string().contains("productsign failed"), "got: {err}");
+        assert!(err.to_string().contains("productsign for"), "got: {err}");
+        assert!(
+            err.to_string().contains("failed with exit code"),
+            "got: {err}"
+        );
         assert!(
             !tools.was_called("xcrun"),
             "notarytool must not run after sign failure"

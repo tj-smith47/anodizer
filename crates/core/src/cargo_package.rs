@@ -33,6 +33,8 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::Path;
+
+use crate::log::StageLogger;
 use std::process::Command;
 
 /// Run `cargo package --workspace --no-verify --allow-dirty
@@ -70,9 +72,18 @@ use std::process::Command;
 /// etc. The function `env_clear`s the child first so host env vars
 /// cannot perturb the packaging step.
 ///
+/// `log` governs cargo's packaging chatter: at default verbosity the
+/// `Packaging`/`Archiving` lines are captured silently (surfaced only on
+/// failure), and at `-v` they stream live — the same `status` vs `verbose`
+/// register every other subprocess obeys.
+///
 /// Returns `Ok(())` on cargo exit 0; bubbles a context-wrapped error
 /// otherwise so the harness's per-run loop can attach the run number.
-pub fn package_workspace(manifest_dir: &Path, env: &HashMap<String, String>) -> Result<()> {
+pub fn package_workspace(
+    manifest_dir: &Path,
+    env: &HashMap<String, String>,
+    log: &StageLogger,
+) -> Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.arg("package")
         .arg("--workspace")
@@ -84,15 +95,8 @@ pub fn package_workspace(manifest_dir: &Path, env: &HashMap<String, String>) -> 
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let status = cmd
-        .status()
-        .with_context(|| format!("spawning `cargo package` in {}", manifest_dir.display()))?;
-    anyhow::ensure!(
-        status.success(),
-        "`cargo package` failed in {} (exit {:?})",
-        manifest_dir.display(),
-        status.code()
-    );
+    crate::run::run_checked(&mut cmd, log, "cargo package")
+        .with_context(|| format!("`cargo package` failed in {}", manifest_dir.display()))?;
     Ok(())
 }
 
@@ -104,7 +108,8 @@ mod tests {
     fn package_workspace_fails_when_manifest_missing() {
         let tmp = tempfile::tempdir().unwrap();
         let env: HashMap<String, String> = HashMap::new();
-        let res = package_workspace(tmp.path(), &env);
+        let (log, _cap) = StageLogger::with_capture("test", crate::log::Verbosity::Normal);
+        let res = package_workspace(tmp.path(), &env, &log);
         assert!(
             res.is_err(),
             "cargo package against a directory without Cargo.toml should error"

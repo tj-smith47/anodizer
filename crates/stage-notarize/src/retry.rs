@@ -178,7 +178,21 @@ pub(super) fn run_status_with_retry(
     let mut last_err: Option<anyhow::Error> = None;
     for attempt in 0..NOTARIZE_RETRY_ATTEMPTS {
         let try_n = attempt + 1;
-        match build_command_from_args(args).status() {
+        // `.output()` pipes both streams (no inherited stdio), so rcodesign's
+        // chatter never leaks to the default log; surface it only at `-v`,
+        // matching the `status` vs `verbose` register every subprocess obeys.
+        let captured = build_command_from_args(args).output().map(|out| {
+            if log.is_verbose() {
+                for line in String::from_utf8_lossy(&out.stdout).lines() {
+                    log.stream_child_stdout(line);
+                }
+                for line in String::from_utf8_lossy(&out.stderr).lines() {
+                    log.stream_child_stderr(line);
+                }
+            }
+            out.status
+        });
+        match captured {
             Ok(status) if status.success() => return Ok(status),
             Ok(status) => {
                 last_err = Some(anyhow::anyhow!(

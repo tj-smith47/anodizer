@@ -871,7 +871,8 @@ impl Harness {
     /// future cargo regressions) will appear in the report's `drift`
     /// section instead of silently passing.
     fn run_cargo_package(&self, worktree_path: &Path, env: &HashMap<String, String>) -> Result<()> {
-        anodizer_core::cargo_package::package_workspace(worktree_path, env)?;
+        let log = StageLogger::new("check-determinism", self.verbosity);
+        anodizer_core::cargo_package::package_workspace(worktree_path, env, &log)?;
         // cargo writes to `<cargo_target>/package/<name>-<version>.crate`
         // where `cargo_target` came from `CARGO_TARGET_DIR` in the env
         // block. The env block sets `CARGO_TARGET_DIR=<worktree>/.det-tmp/target`
@@ -969,8 +970,8 @@ impl Harness {
         // covers a binary they will never actually publish.
         // These warnings go through the harness logger so `-q` governs
         // them like every other harness line; the docker-buildx child's
-        // own output below is inherited stderr and is NOT governed by
-        // the flag (BuildKit has no equivalent quiet passthrough here).
+        // own output below is captured by `run_checked` and surfaced only
+        // at `-v` (or on failure), so it honours the same verbosity flag.
         let log = StageLogger::new("check-determinism", self.verbosity);
         if self.docker_backend_hint.as_deref() == Some("podman") {
             let msg = "docker stage requested but project config has `use: podman` \
@@ -1037,6 +1038,7 @@ impl Harness {
             &context_dir,
             "anodize/det:harness",
             env,
+            &log,
         )?;
         let dest_dir = worktree_path.join("dist").join("docker");
         std::fs::create_dir_all(&dest_dir)

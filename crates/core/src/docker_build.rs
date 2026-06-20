@@ -63,6 +63,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::log::StageLogger;
+
 /// Result of a single `oci_build_fixture` invocation.
 #[derive(Debug, Clone)]
 pub struct OciBuildOutput {
@@ -93,12 +95,18 @@ pub struct OciBuildOutput {
 /// `HOME`, `PATH`, etc.). The function `env_clear`s the child first so
 /// host env vars cannot perturb the build.
 ///
+/// `log` governs the buildx child's output: at default verbosity BuildKit's
+/// wall-clock-stamped progress stream is captured silently (surfaced only if
+/// the build fails), and at `-v` it is streamed live — matching the
+/// `status` vs `verbose` log register every other subprocess obeys.
+///
 /// Returns `Ok(OciBuildOutput)` on `docker buildx build` exit 0; bubbles
 /// a context-wrapped error otherwise.
 pub fn oci_build_fixture(
     context_dir: &Path,
     image_tag: &str,
     env: &HashMap<String, String>,
+    log: &StageLogger,
 ) -> Result<OciBuildOutput> {
     let oci_tar = context_dir.join(".det-out.tar");
     let iidfile = context_dir.join(".det-iidfile.txt");
@@ -134,21 +142,13 @@ pub fn oci_build_fixture(
     for (k, v) in env {
         cmd.env(k, v);
     }
-    // `docker buildx build` writes a wall-clock-stamped progress stream to
-    // stderr by default; suppressing it would silence build errors too.
-    // Inherit stdio so failures land in the harness's per-run log.
-    let status = cmd.status().with_context(|| {
-        format!(
-            "spawning `docker buildx build` in {}",
-            context_dir.display()
-        )
-    })?;
-    anyhow::ensure!(
-        status.success(),
-        "`docker buildx build` failed in {} (exit {:?})",
-        context_dir.display(),
-        status.code()
-    );
+    // `docker buildx build` writes a wall-clock-stamped progress stream by
+    // default; at default verbosity it must not flood the harness log.
+    // `run_checked` captures both streams (surfacing the tail on failure) and
+    // tees them live only under `-v`, so build errors still reach the operator
+    // without leaking BuildKit chatter into every green run.
+    crate::run::run_checked(&mut cmd, log, "docker buildx build")
+        .with_context(|| format!("`docker buildx build` failed in {}", context_dir.display()))?;
 
     anyhow::ensure!(
         oci_tar.exists(),
@@ -183,7 +183,8 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let nonexistent = tmp.path().join("does-not-exist");
         let env: HashMap<String, String> = HashMap::new();
-        let res = oci_build_fixture(&nonexistent, "anodize/det:test", &env);
+        let (log, _cap) = StageLogger::with_capture("test", crate::log::Verbosity::Normal);
+        let res = oci_build_fixture(&nonexistent, "anodize/det:test", &env, &log);
         assert!(
             res.is_err(),
             "buildx against a nonexistent context dir must error"
