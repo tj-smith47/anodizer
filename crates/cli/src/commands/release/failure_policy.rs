@@ -64,22 +64,27 @@ pub(super) enum FailureAction {
 /// release run and are already permanent (the build artifacts and GitHub
 /// release shipped with it). The `Rollback` path reverts the source-repo
 /// bump commit and deletes the released tag — destroying history that
-/// publish-only never owns. So publish-only collapses to a non-degraded
-/// `Hold` regardless of `on_failure`; reversible publisher-level
-/// reversals (cargo yank, npm unpublish) are recovered out-of-band via
-/// `release --rollback-only --from-run=<id>`, which never touches the
-/// source repo.
+/// publish-only never owns. So the only case that would roll back
+/// (`rollback` configured, no one-way door burned) holds instead; every
+/// other outcome is identical to a normal run — a one-way door that burned
+/// still degrades the hold so the operator sees the burned publisher, and an
+/// explicit `hold` stays a clean hold. Reversible publisher-level reversals
+/// (cargo yank, npm unpublish) recover out-of-band via
+/// `release --rollback-only --from-run=<id>`, which never touches the source
+/// repo.
 pub(super) fn decide(
     configured: OnFailureConfig,
     irreversible_landed: bool,
     publish_only: bool,
 ) -> FailureAction {
-    if publish_only {
-        return FailureAction::Hold { degraded: false };
-    }
     match (configured, irreversible_landed) {
         (OnFailureConfig::Hold, _) => FailureAction::Hold { degraded: false },
         (OnFailureConfig::Rollback, true) => FailureAction::Hold { degraded: true },
+        // The only publish-only divergence: a clean rollback would delete the
+        // already-released tag, so publish-only holds instead.
+        (OnFailureConfig::Rollback, false) if publish_only => {
+            FailureAction::Hold { degraded: false }
+        }
         (OnFailureConfig::Rollback, false) => FailureAction::Rollback,
     }
 }
@@ -183,15 +188,7 @@ pub(super) fn finish(
     let record = match decide(configured, evidence.burned(), publish_only) {
         FailureAction::Rollback => execute_rollback(opts, configured, &log),
         FailureAction::Hold { degraded } => {
-            if publish_only {
-                log.status(
-                    "publish-only run failed — holding the already-released tag and \
-                     version-bump commit in place (they were created by a prior release \
-                     run and are permanent; reverting them is never correct here). Recover \
-                     reversible publishers with `anodizer release --rollback-only \
-                     --from-run=<id>`, then re-run the publish-only backfill once fixed.",
-                );
-            } else if degraded {
+            if degraded {
                 log.warn(&format!(
                     "on_failure=rollback DEGRADED to hold — one-way-door publisher(s) already \
                      accepted this version: {}. Those registries never accept the same version \
@@ -201,6 +198,14 @@ pub(super) fn finish(
                      needed, repair the failure, and cut the NEXT version.",
                     evidence.names.join(", ")
                 ));
+            } else if publish_only {
+                log.status(
+                    "publish-only run failed — holding the already-released tag and \
+                     version-bump commit in place (they were created by a prior release \
+                     run and are permanent; reverting them is never correct here). Recover \
+                     reversible publishers with `anodizer release --rollback-only \
+                     --from-run=<id>`, then re-run the publish-only backfill once fixed.",
+                );
             } else {
                 log.status(
                     "holding tags, commits, and published state in place for forensics \
@@ -411,20 +416,34 @@ mod tests {
     }
 
     /// In publish-only mode the source-repo tag + bump commit are already
-    /// permanent (a prior release created them). `decide` must therefore
-    /// NEVER return `Rollback` — that path reverts the bump and deletes the
-    /// released tag. Every policy × burn combination collapses to a
-    /// non-degraded `Hold`, so the destructive source-repo rollback is
-    /// unrepresentable for publish-only.
+    /// permanent (a prior release created them), so `decide` must NEVER
+    /// return `Rollback` — that path reverts the bump and deletes the
+    /// released tag. It still surfaces a burned one-way door as a *degraded*
+    /// hold (the operator must see what burned); the only publish-only
+    /// divergence from a normal run is that a would-be clean rollback (no
+    /// burn) holds instead of deleting the tag.
     #[test]
     fn decide_publish_only_never_rolls_back() {
         for configured in [OnFailureConfig::Rollback, OnFailureConfig::Hold] {
             for burned in [false, true] {
-                assert_eq!(
-                    decide(configured, burned, true),
-                    FailureAction::Hold { degraded: false },
+                let action = decide(configured, burned, true);
+                assert_ne!(
+                    action,
+                    FailureAction::Rollback,
                     "publish-only decide({configured:?}, irreversible_landed={burned}) \
-                     must hold, never roll back the released tag/bump"
+                     must never roll back the released tag/bump"
+                );
+                // Degraded only when a one-way door burned under a rollback
+                // policy — identical to a normal run; publish-only changes
+                // only that the non-burned rollback case holds.
+                let expected_degraded = configured == OnFailureConfig::Rollback && burned;
+                assert_eq!(
+                    action,
+                    FailureAction::Hold {
+                        degraded: expected_degraded
+                    },
+                    "publish-only decide({configured:?}, irreversible_landed={burned}) \
+                     must hold, degraded iff a one-way door burned"
                 );
             }
         }
