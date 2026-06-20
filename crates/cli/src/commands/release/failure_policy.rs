@@ -10,6 +10,9 @@
 //! - `hold`: leave everything in place for forensics; the operator
 //!   recovers with `release --rollback-only --from-run=<id>` or fixes
 //!   forward.
+//! - `--publish-only`: the tag and bump commit are permanent (a prior
+//!   release created them), so this mode collapses to `hold` regardless
+//!   of `on_failure` — see `decide`'s `publish_only` parameter.
 //!
 //! `rollback` auto-degrades to `hold` the moment any one-way-door
 //! (Submitter-group) publisher has landed: crates.io, chocolatey,
@@ -54,8 +57,26 @@ pub(super) enum FailureAction {
 }
 
 /// Pure policy decision: configured policy × whether any irreversible
-/// publisher landed.
-pub(super) fn decide(configured: OnFailureConfig, irreversible_landed: bool) -> FailureAction {
+/// publisher landed × whether this is a publish-only run.
+///
+/// `publish_only` forces `Hold` unconditionally: in `--publish-only` the
+/// tag and version-bump commit were created and pushed by a *prior*
+/// release run and are already permanent (the build artifacts and GitHub
+/// release shipped with it). The `Rollback` path reverts the source-repo
+/// bump commit and deletes the released tag — destroying history that
+/// publish-only never owns. So publish-only collapses to a non-degraded
+/// `Hold` regardless of `on_failure`; reversible publisher-level
+/// reversals (cargo yank, npm unpublish) are recovered out-of-band via
+/// `release --rollback-only --from-run=<id>`, which never touches the
+/// source repo.
+pub(super) fn decide(
+    configured: OnFailureConfig,
+    irreversible_landed: bool,
+    publish_only: bool,
+) -> FailureAction {
+    if publish_only {
+        return FailureAction::Hold { degraded: false };
+    }
     match (configured, irreversible_landed) {
         (OnFailureConfig::Hold, _) => FailureAction::Hold { degraded: false },
         (OnFailureConfig::Rollback, true) => FailureAction::Hold { degraded: true },
@@ -158,10 +179,19 @@ pub(super) fn finish(
         .map(|r| r.resolved_on_failure())
         .unwrap_or_default();
     let evidence = gather_burn_evidence(ctx, &log);
-    let record = match decide(configured, evidence.burned()) {
+    let publish_only = ctx.is_publish_only();
+    let record = match decide(configured, evidence.burned(), publish_only) {
         FailureAction::Rollback => execute_rollback(opts, configured, &log),
         FailureAction::Hold { degraded } => {
-            if degraded {
+            if publish_only {
+                log.status(
+                    "publish-only run failed — holding the already-released tag and \
+                     version-bump commit in place (they were created by a prior release \
+                     run and are permanent; reverting them is never correct here). Recover \
+                     reversible publishers with `anodizer release --rollback-only \
+                     --from-run=<id>`, then re-run the publish-only backfill once fixed.",
+                );
+            } else if degraded {
                 log.warn(&format!(
                     "on_failure=rollback DEGRADED to hold — one-way-door publisher(s) already \
                      accepted this version: {}. Those registries never accept the same version \
@@ -352,6 +382,7 @@ mod tests {
     /// The full decision table: configured policy × irreversible-landed.
     #[test]
     fn decide_covers_every_policy_and_burn_combination() {
+        // publish_only=false: the normal (full-pipeline) decision table.
         let cases = [
             (OnFailureConfig::Rollback, false, FailureAction::Rollback),
             (
@@ -372,10 +403,30 @@ mod tests {
         ];
         for (configured, burned, expected) in cases {
             assert_eq!(
-                decide(configured, burned),
+                decide(configured, burned, false),
                 expected,
-                "decide({configured:?}, irreversible_landed={burned})"
+                "decide({configured:?}, irreversible_landed={burned}, publish_only=false)"
             );
+        }
+    }
+
+    /// In publish-only mode the source-repo tag + bump commit are already
+    /// permanent (a prior release created them). `decide` must therefore
+    /// NEVER return `Rollback` — that path reverts the bump and deletes the
+    /// released tag. Every policy × burn combination collapses to a
+    /// non-degraded `Hold`, so the destructive source-repo rollback is
+    /// unrepresentable for publish-only.
+    #[test]
+    fn decide_publish_only_never_rolls_back() {
+        for configured in [OnFailureConfig::Rollback, OnFailureConfig::Hold] {
+            for burned in [false, true] {
+                assert_eq!(
+                    decide(configured, burned, true),
+                    FailureAction::Hold { degraded: false },
+                    "publish-only decide({configured:?}, irreversible_landed={burned}) \
+                     must hold, never roll back the released tag/bump"
+                );
+            }
         }
     }
 
@@ -469,7 +520,7 @@ mod tests {
         assert!(evidence.burned(), "disk-only burn must be seen");
         assert_eq!(evidence.names, vec!["cargo".to_string()]);
         assert_eq!(
-            decide(OnFailureConfig::Rollback, evidence.burned()),
+            decide(OnFailureConfig::Rollback, evidence.burned(), false),
             FailureAction::Hold { degraded: true }
         );
     }
