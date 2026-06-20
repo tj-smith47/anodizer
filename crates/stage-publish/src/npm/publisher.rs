@@ -31,6 +31,22 @@ simple_publisher!(
 /// slot to land in.
 pub(crate) type NpmTarget = anodizer_core::publish_evidence::NpmTargetSnapshot;
 
+/// The GitHub Actions OIDC request pair, as an all-of preflight requirement.
+/// Both vars are injected by GitHub only when the workflow grants
+/// `id-token: write`; the npm publish exchanges them for a registry id-token.
+fn oidc_requirement() -> anodizer_core::EnvRequirement {
+    anodizer_core::EnvRequirement::EnvAllOf { vars: oidc_vars() }
+}
+
+/// The two GitHub Actions OIDC request vars as an owned `Vec`. Single source of
+/// truth shared by [`oidc_requirement`] and the `Auto`-mode any-of gate.
+fn oidc_vars() -> Vec<String> {
+    super::publish::OIDC_ENV_VARS
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+}
+
 /// Decode the `npm_targets` array from
 /// [`anodizer_core::PublishEvidence::extra`]. Rollback treats an empty decode
 /// the same as no-evidence.
@@ -66,9 +82,21 @@ impl anodizer_core::Publisher for NpmPublisher {
         Self::resolved_retain_on_rollback(self)
     }
 
+    /// Preflight credentials per active `npms[]` entry, gated on each entry's
+    /// [`NpmAuthMode`](anodizer_core::config::NpmAuthMode) (the same field
+    /// `resolve_auth_for_package` reads at publish time):
+    ///
+    /// * `Token` — the token is mandatory: a templated `cfg.token`'s env refs,
+    ///   else the `NPM_TOKEN` fallback.
+    /// * `Oidc` — strictly the GitHub Actions OIDC request pair
+    ///   (`ACTIONS_ID_TOKEN_REQUEST_URL` + `_TOKEN`); `NPM_TOKEN` is *not*
+    ///   required, mirroring the resolver's refusal to fall back to a token.
+    /// * `Auto` — satisfied by **either** a token **or** an OIDC context, so
+    ///   preflight only fails the genuinely-credential-less case.
+    ///
+    /// The npm CLI is always required.
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        // Mirrors `resolve_token`: templated `token` from config, else the
-        // NPM_TOKEN env var. The publish spawns the npm CLI.
+        use anodizer_core::config::NpmAuthMode;
         let active: Vec<_> = ctx
             .config
             .npms
@@ -90,11 +118,34 @@ impl anodizer_core::Publisher for NpmPublisher {
             name: "npm".to_string(),
         }];
         for entry in active {
-            if let Some(req) = crate::publisher_helpers::secret_requirement(
+            let token_req = crate::publisher_helpers::secret_requirement(
                 entry.token.as_deref(),
                 crate::npm::manifest::token_env_var(entry),
-            ) {
-                out.push(req);
+            );
+            match entry.auth {
+                // Token-only: the token is mandatory, exactly as before.
+                NpmAuthMode::Token => out.extend(token_req),
+                // Strict OIDC: the run path errors if the Actions request pair
+                // is absent and never falls back to a token, so NPM_TOKEN is
+                // deliberately NOT required here.
+                NpmAuthMode::Oidc => out.push(oidc_requirement()),
+                // Auto resolves per-package at publish time (existing package +
+                // OIDC context → OIDC; brand-new package → token). Preflight
+                // can only apply a COARSE token-OR-OIDC gate: it catches the
+                // zero-credential (anonymous) case without false-failing the
+                // valid OIDC-only existing-package path. The precise decision —
+                // including the brand-new-package-needs-token error — stays in
+                // `resolve_auth_for_package`, the runtime authority.
+                NpmAuthMode::Auto => match token_req {
+                    // Literal `cfg.token` → the credential is always inline.
+                    None => {}
+                    Some(anodizer_core::EnvRequirement::EnvAllOf { vars }) => {
+                        let mut any = vars;
+                        any.extend(oidc_vars());
+                        out.push(anodizer_core::EnvRequirement::EnvAnyOf { vars: any });
+                    }
+                    Some(_) => unreachable!("secret_requirement yields EnvAllOf or None"),
+                },
             }
         }
         out

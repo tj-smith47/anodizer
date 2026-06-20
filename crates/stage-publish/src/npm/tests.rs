@@ -2620,3 +2620,212 @@ require(scriptPath);
         stderr
     );
 }
+
+// ---------------------------------------------------------------------------
+// Preflight requirements — auth-mode awareness (npm Trusted Publishing / OIDC)
+// ---------------------------------------------------------------------------
+
+const OIDC_URL: &str = "ACTIONS_ID_TOKEN_REQUEST_URL";
+const OIDC_TOKEN: &str = "ACTIONS_ID_TOKEN_REQUEST_TOKEN";
+
+/// Build a `Context` carrying a single `npms[]` entry with the given auth mode.
+fn requirements_ctx(mode: NpmAuthMode) -> anodizer_core::context::Context {
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .crates(vec![demo_crate()])
+        .build();
+    ctx.config.npms = Some(vec![opt_cfg_auth(mode)]);
+    ctx
+}
+
+/// Run the preflight engine over a publisher's requirements against a fake env
+/// (all tools/endpoints/docker pass), returning the report.
+fn evaluate_requirements(
+    reqs: &[anodizer_core::EnvRequirement],
+    env_present: &[&str],
+) -> anodizer_core::env_preflight::EnvPreflightReport {
+    let sourced: Vec<anodizer_core::env_preflight::SourcedRequirement> = reqs
+        .iter()
+        .map(|r| anodizer_core::env_preflight::SourcedRequirement::new("publish:npm", r.clone()))
+        .collect();
+    let present: Vec<String> = env_present.iter().map(|s| s.to_string()).collect();
+    let env = |k: &str| present.iter().any(|p| p == k).then(|| "v".to_string());
+    let probes = anodizer_core::env_preflight::EnvProbes {
+        tool: &|_| true,
+        endpoint: &|_| Ok(()),
+        docker: &|| true,
+    };
+    anodizer_core::env_preflight::evaluate(&sourced, &env, &probes)
+}
+
+/// Does any requirement name `NPM_TOKEN`?
+fn mentions_npm_token(reqs: &[anodizer_core::EnvRequirement]) -> bool {
+    reqs.iter().any(|r| match r {
+        anodizer_core::EnvRequirement::EnvAllOf { vars }
+        | anodizer_core::EnvRequirement::EnvAnyOf { vars } => vars.iter().any(|v| v == "NPM_TOKEN"),
+        _ => false,
+    })
+}
+
+#[test]
+fn requirements_oidc_mode_demands_oidc_pair_not_npm_token() {
+    let publisher = NpmPublisher::new();
+    let ctx = requirements_ctx(NpmAuthMode::Oidc);
+    let reqs = publisher.requirements(&ctx);
+
+    assert!(
+        reqs.contains(&anodizer_core::EnvRequirement::EnvAllOf {
+            vars: vec![OIDC_URL.to_string(), OIDC_TOKEN.to_string()],
+        }),
+        "oidc mode must require the OIDC request pair: {reqs:?}"
+    );
+    assert!(
+        !mentions_npm_token(&reqs),
+        "oidc mode must NOT require NPM_TOKEN: {reqs:?}"
+    );
+
+    // Preflight passes when both OIDC vars are present and no NPM_TOKEN exists.
+    let report = evaluate_requirements(&reqs, &[OIDC_URL, OIDC_TOKEN]);
+    assert!(report.ok(), "oidc preflight should pass: {report}");
+}
+
+#[test]
+fn requirements_oidc_mode_fails_naming_oidc_vars_when_absent() {
+    let publisher = NpmPublisher::new();
+    let ctx = requirements_ctx(NpmAuthMode::Oidc);
+    let reqs = publisher.requirements(&ctx);
+
+    // No OIDC vars in the env → preflight fails, and the failure names the OIDC
+    // request vars, never NPM_TOKEN.
+    let report = evaluate_requirements(&reqs, &[]);
+    assert!(!report.ok(), "oidc preflight must fail with no OIDC env");
+    let msg = report
+        .failures
+        .iter()
+        .map(|f| &f.message)
+        .fold(String::new(), |mut acc, m| {
+            acc.push_str(m);
+            acc.push('\n');
+            acc
+        });
+    assert!(
+        msg.contains(OIDC_URL) && msg.contains(OIDC_TOKEN),
+        "failure must name the OIDC vars: {msg}"
+    );
+    assert!(
+        !msg.contains("NPM_TOKEN"),
+        "oidc failure must not mention NPM_TOKEN: {msg}"
+    );
+}
+
+#[test]
+fn requirements_auto_mode_emits_token_or_oidc_any_of() {
+    let publisher = NpmPublisher::new();
+    let ctx = requirements_ctx(NpmAuthMode::Auto);
+    let reqs = publisher.requirements(&ctx);
+
+    // The coarse gate is an any-of over NPM_TOKEN + the two OIDC vars.
+    assert!(
+        reqs.contains(&anodizer_core::EnvRequirement::EnvAnyOf {
+            vars: vec![
+                "NPM_TOKEN".to_string(),
+                OIDC_URL.to_string(),
+                OIDC_TOKEN.to_string(),
+            ],
+        }),
+        "auto mode must emit a token-or-OIDC any-of: {reqs:?}"
+    );
+
+    // OIDC pair present, no NPM_TOKEN → passes (no hard NPM_TOKEN demand).
+    let report = evaluate_requirements(&reqs, &[OIDC_URL, OIDC_TOKEN]);
+    assert!(
+        report.ok(),
+        "auto preflight should pass on OIDC-only: {report}"
+    );
+
+    // A token alone also satisfies the any-of.
+    let report = evaluate_requirements(&reqs, &["NPM_TOKEN"]);
+    assert!(
+        report.ok(),
+        "auto preflight should pass on token-only: {report}"
+    );
+}
+
+#[test]
+fn requirements_auto_mode_fails_when_no_credential_at_all() {
+    let publisher = NpmPublisher::new();
+    let ctx = requirements_ctx(NpmAuthMode::Auto);
+    let reqs = publisher.requirements(&ctx);
+
+    // Neither a token nor an OIDC context → anonymous publish, caught here.
+    let report = evaluate_requirements(&reqs, &[]);
+    assert!(
+        !report.ok(),
+        "auto preflight must fail when no credential is present"
+    );
+}
+
+#[test]
+fn requirements_auto_mode_literal_token_needs_no_credential_check() {
+    // `auth: auto` with a LITERAL (non-templated) `cfg.token` → the credential
+    // is always inline, so `secret_requirement` yields `None` and the coarse
+    // any-of gate emits nothing. The only requirement is the npm tool itself.
+    let publisher = NpmPublisher::new();
+    let mut ctx = requirements_ctx(NpmAuthMode::Auto);
+    ctx.config.npms = Some(vec![NpmConfig {
+        token: Some("npm_literalsecretvalue".into()),
+        ..opt_cfg_auth(NpmAuthMode::Auto)
+    }]);
+    let reqs = publisher.requirements(&ctx);
+
+    assert!(
+        !mentions_npm_token(&reqs),
+        "literal-token auto mode must NOT require NPM_TOKEN: {reqs:?}"
+    );
+    assert!(
+        reqs.iter().all(|r| match r {
+            anodizer_core::EnvRequirement::EnvAllOf { vars }
+            | anodizer_core::EnvRequirement::EnvAnyOf { vars } =>
+                !vars.iter().any(|v| v == OIDC_URL || v == OIDC_TOKEN),
+            _ => true,
+        }),
+        "literal-token auto mode must NOT name the OIDC vars: {reqs:?}"
+    );
+    assert_eq!(
+        reqs,
+        vec![anodizer_core::EnvRequirement::Tool {
+            name: "npm".to_string(),
+        }],
+        "the only requirement is the npm tool: {reqs:?}"
+    );
+
+    // Preflight passes with an empty env — no credential var is demanded.
+    let report = evaluate_requirements(&reqs, &[]);
+    assert!(
+        report.ok(),
+        "literal-token auto preflight should pass with no env: {report}"
+    );
+}
+
+#[test]
+fn requirements_token_mode_still_requires_npm_token() {
+    let publisher = NpmPublisher::new();
+    let ctx = requirements_ctx(NpmAuthMode::Token);
+    let reqs = publisher.requirements(&ctx);
+
+    // Unchanged behaviour: NPM_TOKEN is mandatory.
+    assert!(
+        reqs.contains(&anodizer_core::EnvRequirement::EnvAllOf {
+            vars: vec!["NPM_TOKEN".to_string()],
+        }),
+        "token mode must require NPM_TOKEN: {reqs:?}"
+    );
+
+    // No token in the env → preflight fails.
+    let report = evaluate_requirements(&reqs, &[OIDC_URL, OIDC_TOKEN]);
+    assert!(
+        !report.ok(),
+        "token mode must fail without NPM_TOKEN even if OIDC env is present"
+    );
+}
