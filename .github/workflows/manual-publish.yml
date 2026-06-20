@@ -67,7 +67,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # npm Trusted Publishing: OIDC mints both auth + provenance
+      id-token: write # OIDC for any publisher using Trusted Publishing / SLSA provenance (npm, cargo, mcp)
+      attestations: write # anodizer-action's build-provenance step writes artifact attestations to the GH attestations API
     steps:
       - name: Check out the released tag (workdir = published version)
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
