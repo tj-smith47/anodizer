@@ -281,6 +281,36 @@ pub(crate) fn build_subprocess_env_with_env(
         "HOME".into(),
         inputs.home_dir.to_string_lossy().into_owned(),
     );
+
+    // Restore docker-buildx builder reachability for the `docker` stage's OCI
+    // exporter. The HOME override above hermetically seals the child away from
+    // the runner's real `~/.docker`, where the workflow-provisioned
+    // `docker-container` builder is recorded (`<DOCKER_CONFIG>/buildx/current`).
+    // Without it the child `docker buildx build` falls back to the default
+    // `docker` driver, which cannot serve `--output=type=oci`, and the docker
+    // stage aborts. Point DOCKER_CONFIG at the runner's real docker config dir
+    // so the current builder is found despite the sealed HOME:
+    //   - an explicit host DOCKER_CONFIG wins (operator override / non-default
+    //     config dir),
+    //   - otherwise derive `<real HOME>/.docker` from the host's pre-override
+    //     HOME (the GH Actions default location).
+    // Reproducibility-neutral: OCI output bytes are fixed by the Dockerfile +
+    // build context + SOURCE_DATE_EPOCH / --rewrite-timestamp, never by which
+    // builder runs or where its config lives. Safe to set whenever derivable —
+    // if no builder is provisioned there, buildx behaves exactly as before
+    // (default-driver fallback), so there is no regression on hosts without a
+    // `docker-container` builder.
+    if let Some(docker_config) = host_env.var("DOCKER_CONFIG").or_else(|| {
+        host_env.var("HOME").map(|home| {
+            Path::new(&home)
+                .join(".docker")
+                .to_string_lossy()
+                .into_owned()
+        })
+    }) {
+        env.insert("DOCKER_CONFIG".into(), docker_config);
+    }
+
     env.insert("SOURCE_DATE_EPOCH".into(), inputs.sde.to_string());
     env.insert("PATH".into(), allow_listed_path_with_env(host_env));
 
@@ -661,6 +691,52 @@ mod tests {
                 "{k} is identity and must propagate (value `{v}`)"
             );
         }
+    }
+
+    /// With no explicit host `DOCKER_CONFIG`, the harness derives it from the
+    /// host's pre-override HOME so the HOME-sealed child still finds the
+    /// runner-provisioned `docker-container` builder for the OCI exporter.
+    #[test]
+    fn harness_env_derives_docker_config_from_host_home() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = build_with(tmp.path(), &[("HOME", "/home/runner")]);
+        assert_eq!(
+            env.get("DOCKER_CONFIG").map(String::as_str),
+            Some("/home/runner/.docker"),
+            "DOCKER_CONFIG must derive from the real host HOME, not the sealed child HOME"
+        );
+    }
+
+    /// An explicit host `DOCKER_CONFIG` (operator override / non-default config
+    /// dir) wins over the HOME-derived default.
+    #[test]
+    fn harness_env_passes_through_explicit_docker_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = build_with(
+            tmp.path(),
+            &[
+                ("HOME", "/home/runner"),
+                ("DOCKER_CONFIG", "/custom/docker"),
+            ],
+        );
+        assert_eq!(
+            env.get("DOCKER_CONFIG").map(String::as_str),
+            Some("/custom/docker"),
+            "explicit host DOCKER_CONFIG must pass through, overriding the HOME-derived default"
+        );
+    }
+
+    /// With neither host HOME nor host `DOCKER_CONFIG` there is nothing to
+    /// derive from, so the child carries no `DOCKER_CONFIG` (no empty-string
+    /// default that would mis-point buildx).
+    #[test]
+    fn harness_env_omits_docker_config_when_underivable() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = build_with(tmp.path(), &[]);
+        assert!(
+            !env.contains_key("DOCKER_CONFIG"),
+            "DOCKER_CONFIG must be absent when neither HOME nor DOCKER_CONFIG is set on the host"
+        );
     }
 
     #[test]
