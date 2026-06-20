@@ -795,11 +795,28 @@ fn snap_is_byte_reproducible_across_time() {
         std::fs::set_permissions(&probe_bin, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
+    // snapcraft persists per-user state under $XDG_CACHE_HOME/snapcraft
+    // (default ~/.cache); xdg's save_cache_path is not race-safe, so two
+    // snapcraft processes from parallel tests creating that shared dir collide
+    // (Errno 17 File exists). Pin every XDG base to this test's tempdir so the
+    // invocation is hermetic and cannot race a concurrent test.
+    let xdg_cache = dir.path().join("xdg-cache");
+    let xdg_data = dir.path().join("xdg-data");
+    let xdg_config = dir.path().join("xdg-config");
+    // snapcraft's import-time `save_cache_path("snapcraft", "download")` is a
+    // non-atomic check-then-makedirs; snapcraft's internal worker subprocesses
+    // re-import and race it (Errno 17) under load. Pre-creating the tree makes
+    // xdg's isdir check short-circuit so no makedirs — and therefore no race —
+    // ever runs, regardless of worker concurrency.
+    std::fs::create_dir_all(xdg_cache.join("snapcraft").join("download")).unwrap();
     let build = |out: &std::path::Path| -> Vec<u8> {
         let args = snapcraft_command(prime.to_str().unwrap(), out.to_str().unwrap());
         let status = Command::new(&args[0])
             .args(&args[1..])
             .env("SOURCE_DATE_EPOCH", "1704067200")
+            .env("XDG_CACHE_HOME", &xdg_cache)
+            .env("XDG_DATA_HOME", &xdg_data)
+            .env("XDG_CONFIG_HOME", &xdg_config)
             .status()
             .expect("spawn snapcraft pack");
         assert!(status.success(), "snapcraft pack must succeed");
