@@ -914,6 +914,25 @@ fn auth_token_mode_writes_authtoken_line() {
         body.contains("_authToken=npm_secretvalue"),
         "token .npmrc must carry _authToken: {body:?}"
     );
+    // Full body shape for the Token path: registry, per-registry _authToken,
+    // and access — and NO deprecated `always-auth` key (npm 11 warns on it; the
+    // per-registry _authToken carries auth on its own).
+    assert!(
+        body.contains("registry=https://registry.npmjs.org"),
+        "token .npmrc must carry registry line: {body:?}"
+    );
+    assert!(
+        body.contains("//registry.npmjs.org/:_authToken=npm_secretvalue"),
+        "token .npmrc must carry per-registry _authToken line: {body:?}"
+    );
+    assert!(
+        body.contains("access=public"),
+        "token .npmrc must carry access line: {body:?}"
+    );
+    assert!(
+        !body.contains("always-auth"),
+        "token .npmrc must NOT carry deprecated always-auth key: {body:?}"
+    );
 }
 
 #[test]
@@ -955,6 +974,21 @@ fn auth_oidc_mode_writes_no_token_and_threads_env() {
     assert!(
         !body.contains("_authToken"),
         "OIDC .npmrc must NOT carry _authToken: {body:?}"
+    );
+    // Full body shape for the OIDC path: registry + access only — no token line
+    // (npm mints a short-lived credential via the OIDC exchange) and NO
+    // deprecated `always-auth` key.
+    assert!(
+        body.contains("registry=https://registry.npmjs.org"),
+        "OIDC .npmrc must carry registry line: {body:?}"
+    );
+    assert!(
+        body.contains("access=public"),
+        "OIDC .npmrc must carry access line: {body:?}"
+    );
+    assert!(
+        !body.contains("always-auth"),
+        "OIDC .npmrc must NOT carry deprecated always-auth key: {body:?}"
     );
 
     // The publish subprocess must inherit the OIDC request vars.

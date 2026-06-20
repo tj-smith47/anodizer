@@ -829,7 +829,6 @@ pub(crate) fn write_npmrc(
     if let Some(a) = access {
         body.push_str(&format!("access={}\n", a));
     }
-    body.push_str("always-auth=true\n");
     write_deterministic(&path, body.as_bytes())?;
     #[cfg(unix)]
     {
