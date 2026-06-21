@@ -26,14 +26,52 @@ jobs:
       matrix:
         # det_stages: the harness `--stages=` list is ALSO the build filter —
         # any produce-stage not named lands in the child release's `--skip=`
-        # complement and never builds. The ubuntu shard cross-builds every
-        # target and owns the Linux-native installer fallback toolchain
-        # (wixl/makensis/xar+mkbom/genisoimage), so it is the only shard that
-        # byte-verifies the macOS+Windows installer formats; it requests the
-        # full set explicitly (empty default omits installers). appbundle is
-        # listed before dmg/pkg so their `use: appbundle` finds a source
-        # artifact. The macOS/Windows shards build only their native binaries
-        # + archives, so they keep the empty (OS-default) stage list.
+        # complement and never builds. Each installer is therefore routed to
+        # the shard that already holds its payload binary, because Linux cannot
+        # cross-compile a darwin/windows-msvc binary (the very reason this
+        # harness is sharded):
+        #
+        #   appbundle / dmg / pkg  -> macOS shard   (needs the darwin binary)
+        #   msi / nsis             -> Windows shards (need the windows binary)
+        #
+        # A stage that runs on a shard without its payload binary no-ops
+        # silently — exactly how these five formats shipped in NO release for
+        # so long (they were listed on the linux-only ubuntu shard, which
+        # produces no darwin/windows binary to package). So each shard lists
+        # the core produce set PLUS only the installers whose payload it
+        # natively builds. On the macOS shard appbundle precedes dmg/pkg so
+        # their `use: appbundle` finds a source `.app` artifact.
+        #
+        # Reproducibility verdict per format (the harness byte-compares the
+        # GATED ones and counts any drift as a regression; the ALLOWLISTED
+        # ones are intrinsically non-reproducible — see crates/core/src/
+        # determinism.rs seed_from_commit — and the harness excludes them from
+        # drift_count while still surfacing them in the report):
+        #
+        #   appbundle  GATED       pure file assembly, byte-reproducible
+        #                          (appbundle_is_byte_reproducible_across_time)
+        #   nsis       GATED       makensis honors SOURCE_DATE_EPOCH, byte-
+        #                          reproducible (nsis_setup_is_byte_-
+        #                          reproducible_across_time)
+        #   dmg        ALLOWLISTED hdiutil writes a fresh UDIF koly SegmentID
+        #                          GUID per run; native, non-reproducible
+        #   pkg        ALLOWLISTED macOS-native pkgbuild stamps a wall-clock
+        #                          xar TOC and ignores SOURCE_DATE_EPOCH
+        #   msi        ALLOWLISTED WiX regenerates a random PackageCode GUID +
+        #                          Created/LastModified (wixtoolset/issues#8978)
+        #
+        # Installer-tool provisioning is by-shard, driven by the action's
+        # `auto-install` (which reads .anodizer.yaml and installs each
+        # configured stage's tools). macOS runners ship hdiutil + pkgbuild
+        # built-in and appbundle needs no external tool, so the macOS shard
+        # keeps auto_install off — no install is needed and skipping it avoids
+        # unnecessary install risk. The Windows shards enable auto_install so
+        # the action provisions the msi + nsis tools: WiX v3 (candle+light, via
+        # the action's dialect-aware install — anodizer's packaging/anodizer.wxs
+        # is v3-dialect) and makensis. Because each installer stage is
+        # EXPLICITLY named in det_stages, the harness HARD-FAILS (not
+        # warn-skips) if its tool is missing — a silent skip is the exact
+        # false coverage that hid these formats.
         #
         # `docker` is Linux-only and present ONLY on the ubuntu shard. It
         # drives the `--output=type=oci,rewrite-timestamp=true` BuildKit
@@ -44,30 +82,15 @@ jobs:
         # before the harness runs. Because docker is explicitly requested
         # here, the harness HARD-FAILS (not warn-skips) if buildx is
         # unreachable — a silent skip would be false coverage.
-        #
-        # What this harness does NOT cover: the NATIVE installer tools
-        # (hdiutil .dmg, pkgbuild .pkg, WiX .msi) are non-reproducible by nature
-        # — hdiutil writes a fresh UDIF koly SegmentID GUID, pkgbuild stamps a
-        # wall-clock xar TOC and ignores SOURCE_DATE_EPOCH, and WiX regenerates a
-        # random PackageCode GUID + Created/LastModified (wixtoolset/issues#8978)
-        # — and anodizer does not normalize the native tools' output. Their
-        # reproducibility verdict is proven on the matching OS shard of ci.yml's
-        # `test` job by the two-build unit tests {msi,dmg,native_pkgbuild}_pkg_*
-        # _is_byte_reproducible_across_time, not here. This harness byte-verifies
-        # the LINUX-FALLBACK installer builds (wixl/xar+mkbom/genisoimage), which
-        # anodizer DOES normalize to byte-stability, on the ubuntu shard.
-        # auto_install installs the installer fallback tools from .anodizer.yaml
-        # on the ubuntu shard (auto-detect is OS-guarded, so enabling it on the
-        # native shards would not pull the Linux-only installer toolchain).
         include:
           - os: ubuntu-latest
             shard: ubuntu-latest
             targets: ''
-            det_stages: 'build,source,upx,archive,nfpm,makeself,snapcraft,srpm,sbom,sign,checksum,appbundle,dmg,pkg,msi,nsis,docker'
+            det_stages: 'build,source,upx,archive,nfpm,makeself,snapcraft,srpm,sbom,sign,checksum,docker'
             auto_install: 'true'
-          - { os: macos-latest,   shard: macos-latest,     targets: '', det_stages: '', auto_install: 'false' }
-          - { os: windows-latest, shard: windows-x86_64,   targets: 'x86_64-pc-windows-msvc',  det_stages: '', auto_install: 'false' }
-          - { os: windows-latest, shard: windows-aarch64,  targets: 'aarch64-pc-windows-msvc', det_stages: '', auto_install: 'false' }
+          - { os: macos-latest,   shard: macos-latest,     targets: '', det_stages: 'build,source,upx,archive,sbom,sign,checksum,appbundle,dmg,pkg', auto_install: 'false' }
+          - { os: windows-latest, shard: windows-x86_64,   targets: 'x86_64-pc-windows-msvc',  det_stages: 'build,source,upx,archive,sbom,sign,checksum,msi,nsis', auto_install: 'true' }
+          - { os: windows-latest, shard: windows-aarch64,  targets: 'aarch64-pc-windows-msvc', det_stages: 'build,source,upx,archive,sbom,sign,checksum,msi,nsis', auto_install: 'true' }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3

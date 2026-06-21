@@ -808,22 +808,30 @@ crates:
         min_os_version: "10.13"
         replace: false
         mod_timestamp: "{{ CommitTimestamp }}"
-    # Windows .msi installer — WiX is Windows-only/EULA-gated, so CI builds via the
-    # Linux-native wixl (msitools, preinstalled in the base image) which consumes
-    # the v3-dialect .wxs below. UNSIGNED: a signed MSI needs a Windows
-    # Authenticode code-signing cert (signtool); that cert is paid.
+    # Windows .msi installer — built natively on the Windows determinism shard
+    # (the shard that holds the windows-msvc payload binary) with WiX v3
+    # (candle + light). The .wxs below is WiX v3 dialect (2006/wi namespace);
+    # the explicit `version: v3` makes that toolchain choice unambiguous to both
+    # stage-msi (which would otherwise derive v3 by sniffing the .wxs namespace)
+    # and the action's dialect-aware auto-install (which provisions candle+light
+    # via the wixtoolset choco package on the Windows shard). UNSIGNED: a signed
+    # MSI needs a Windows Authenticode code-signing cert (signtool); that cert
+    # is paid.
     msis:
       - id: anodizer
         ids: [anodizer]
         wxs: packaging/anodizer.wxs
+        version: v3
         name: "{{ .ProjectName }}_{{ .Arch }}"
-        version: wixl
         replace: false
         mod_timestamp: "{{ CommitTimestamp }}"
-    # Windows .exe installer (NSIS) — makensis is cross-platform (apt: nsis,
-    # preinstalled in the base image), so this builds on Linux CI. Uses the
-    # authored script below (Start Menu shortcut + Add/Remove Programs entry).
-    # UNSIGNED: a signed installer needs a Windows Authenticode cert (signtool).
+    # Windows .exe installer (NSIS) — built natively on the Windows determinism
+    # shard via makensis (provisioned by the action's auto-install). makensis is
+    # cross-platform and
+    # honors SOURCE_DATE_EPOCH, so the installer is byte-reproducible (GATED in
+    # the determinism harness). Uses the authored script below (Start Menu
+    # shortcut + Add/Remove Programs entry). UNSIGNED: a signed installer needs
+    # a Windows Authenticode cert (signtool).
     nsis:
       - id: anodizer
         ids: [anodizer]

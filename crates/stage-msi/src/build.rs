@@ -35,12 +35,14 @@ fn make_msi_artifact(
     amd64_variant: Option<&str>,
     crate_name: &str,
     wix_version: WixVersion,
+    product_code: &str,
     msi_cfg: &anodizer_core::config::MsiConfig,
     ctx: &Context,
     archives_to_remove: &mut Vec<PathBuf>,
 ) -> Artifact {
     let mut metadata = HashMap::from([
         ("format".to_string(), "msi".to_string()),
+        ("product_code".to_string(), product_code.to_string()),
         (
             "wix_version".to_string(),
             match wix_version {
@@ -209,7 +211,26 @@ fn build_msi_target(
         .unwrap_or_else(|| ("windows".to_string(), "amd64".to_string()));
     let msi_arch = map_arch_to_msi(&arch).to_string();
 
-    set_msi_template_vars(ctx, target.as_deref(), &arch, &msi_arch, binary_path);
+    // Derive the deterministic ProductCode from the same ProjectName the .wxs
+    // will render (the template var is rebound to the crate name in workspace
+    // per-crate mode), the release version, and the WiX arch. Stable per
+    // version+arch, rotating across versions — see `product_code`.
+    let project_name = ctx
+        .template_vars()
+        .get("ProjectName")
+        .cloned()
+        .unwrap_or_else(|| ctx.config.project_name.clone());
+    let product_code =
+        super::product_code::derive_product_code(&project_name, &ctx.version(), &msi_arch);
+
+    set_msi_template_vars(
+        ctx,
+        target.as_deref(),
+        &arch,
+        &msi_arch,
+        binary_path,
+        &product_code,
+    );
     // Seed the amd64 variant so the default (or a custom) name template
     // disambiguates two amd64 builds of one target.
     anodizer_core::archive_name::seed_amd64_variant_var(ctx.template_vars_mut(), amd64_variant);
@@ -259,6 +280,7 @@ fn build_msi_target(
             amd64_variant,
             crate_name,
             wix_version,
+            &product_code,
             msi_cfg,
             ctx,
             archives_to_remove,
@@ -295,6 +317,7 @@ fn build_msi_target(
         amd64_variant,
         crate_name,
         wix_version,
+        &product_code,
         msi_cfg,
         ctx,
         archives_to_remove,

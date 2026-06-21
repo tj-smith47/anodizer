@@ -178,6 +178,17 @@ pub fn run(args: CheckDeterminismArgs, verbose: bool, debug: bool, quiet: bool) 
     // soft: the docker stage falls through to its existing buildx path.
     let docker_backend_hint = repo_config.as_ref().and_then(detect_docker_backend_hint);
 
+    // Resolve the WiX tool requirement for the `msi` stage from config (the
+    // SAME policy the build runs, via the helper env-preflight consults) so
+    // the harness gate's MSI tool probe can never drift from the version the
+    // build would use — a `version: v3` config needs candle+light, not the v4
+    // `wix` CLI. Only resolved when `msi` is actually in the stage set.
+    let msi_tools = if stages.contains(&StageId::Msi) {
+        resolve_msi_tools(repo_config.as_ref())
+    } else {
+        Vec::new()
+    };
+
     let harness = Harness {
         repo_root: repo_root.clone(),
         commit: commit.clone(),
@@ -194,6 +205,7 @@ pub fn run(args: CheckDeterminismArgs, verbose: bool, debug: bool, quiet: bool) 
         docker_backend_hint,
         crate_name: args.crate_name.clone(),
         verbosity,
+        msi_tools,
     };
 
     let report = harness.run()?;
@@ -557,6 +569,29 @@ fn detect_docker_backend_hint(cfg: &anodizer_core::config::Config) -> Option<Str
     }
 }
 
+/// Resolve the WiX binaries the `msi` stage requires from the loaded config
+/// via [`anodizer_stage_msi::required_msi_tools`] — the SAME helper
+/// env-preflight consults, so the determinism gate's MSI tool requirement
+/// can never drift from the version the build runs (WiX v3 → candle+light,
+/// v4 → wix, the Linux path → wixl). Resolution covers all config modes
+/// (single / lockstep / per-crate) because `required_msi_tools` iterates the
+/// full `crate_universe` and resolves each crate's `msis:` entry under the
+/// project Context.
+///
+/// A missing/unparseable config (`None`) yields an empty list: the gate then
+/// treats `msi` as carrying no tool requirement and the real config error
+/// surfaces from the pipeline itself.
+fn resolve_msi_tools(repo_config: Option<&anodizer_core::config::Config>) -> Vec<String> {
+    let Some(cfg) = repo_config else {
+        return Vec::new();
+    };
+    let ctx = anodizer_core::context::Context::new(
+        cfg.clone(),
+        anodizer_core::context::ContextOptions::default(),
+    );
+    anodizer_stage_msi::required_msi_tools(&ctx)
+}
+
 /// Read the target project's release version from `<repo>/Cargo.toml`.
 ///
 /// Resolves `[workspace.package].version` first (workspace inheritance,
@@ -583,6 +618,41 @@ fn read_project_version(repo_root: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn resolve_msi_tools_threads_resolved_wix_tool_from_config() {
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+
+        // The dispatcher must thread the WiX tool requirement resolved from
+        // config into the harness gate — not a host-static guess. A `version:
+        // v4` config resolves deterministically to the single `wix` CLI
+        // (V4 is never downgraded), so this proves the config→tools wiring
+        // independent of which WiX binaries the test host happens to carry.
+        // (The host-aware v3 → candle+light path — the actual release-blocker
+        // — is pinned by `anodizer_stage_msi`'s `required_msi_tools` tests.)
+        let msi_cfg = MsiConfig {
+            wxs: Some("app.wxs".to_string()),
+            version: Some("v4".to_string()),
+            ..Default::default()
+        };
+        let config = Config {
+            project_name: "myapp".to_string(),
+            crates: vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                msis: Some(vec![msi_cfg]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(resolve_msi_tools(Some(&config)), vec!["wix".to_string()]);
+    }
+
+    #[test]
+    fn resolve_msi_tools_none_config_is_empty() {
+        assert!(resolve_msi_tools(None).is_empty());
+    }
 
     #[test]
     fn parse_stages_default_returns_full_build_side_set() {

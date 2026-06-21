@@ -31,19 +31,23 @@ pub fn render_wxs_template(ctx: &Context, wxs_path: &str) -> Result<String> {
 // ---------------------------------------------------------------------------
 
 /// Populate per-binary template variables. `BinaryPath` exposes the path
-/// to user `.wxs` templates.
+/// to user `.wxs` templates; `MsiProductCode` exposes the deterministic
+/// per-version ProductCode so a `.wxs` can pin `Product Id="{{ MsiProductCode }}"`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn set_msi_template_vars(
     ctx: &mut Context,
     target: Option<&str>,
     arch: &str,
     msi_arch: &str,
     binary_path: &str,
+    product_code: &str,
 ) {
     ctx.template_vars_mut().set("Os", "windows");
     ctx.template_vars_mut().set("Arch", arch);
     ctx.template_vars_mut().set("Target", target.unwrap_or(""));
     ctx.template_vars_mut().set("MsiArch", msi_arch);
     ctx.template_vars_mut().set("BinaryPath", binary_path);
+    ctx.template_vars_mut().set("MsiProductCode", product_code);
 }
 
 /// Default output filename template.
@@ -128,4 +132,5 @@ pub(super) fn clear_msi_template_vars(ctx: &mut Context) {
     ctx.template_vars_mut().set("Target", "");
     ctx.template_vars_mut().set("MsiArch", "");
     ctx.template_vars_mut().set("BinaryPath", "");
+    ctx.template_vars_mut().set("MsiProductCode", "");
 }

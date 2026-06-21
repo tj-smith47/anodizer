@@ -17,6 +17,7 @@ description = "Windows MSI installer stage for anodizer release automation"
 anodizer-core.workspace = true
 anyhow.workspace = true
 tempfile.workspace = true
+uuid.workspace = true
 
 [dev-dependencies]
 anodizer-core = { workspace = true, features = ["test-helpers"] }

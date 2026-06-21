@@ -829,6 +829,78 @@ fn build_archive_installer(
     })
 }
 
+/// Map an installer artifact's `format` metadata (as stamped by the installer
+/// stages — `msi` from stage-msi, `nsis` from stage-nsis) to the winget
+/// `InstallerType`. The `use` selector disambiguates `msi` vs `wix` (both are
+/// Windows Installer packages with `/quiet` switches, but winget distinguishes
+/// the authoring toolchain): `use: wix` keeps the `wix` type while every other
+/// MSI maps to `msi`. An `exe`-format installer (a non-NSIS self-extractor)
+/// maps to the generic `exe` type. Falls back to the `use` selector when the
+/// artifact carries no `format` stamp.
+fn installer_type_for(format: Option<&str>, use_artifact: Option<&str>) -> &'static str {
+    match format {
+        Some("msi") => {
+            if use_artifact == Some("wix") {
+                "wix"
+            } else {
+                "msi"
+            }
+        }
+        Some("nsis") => "nsis",
+        Some("exe") => "exe",
+        // No format stamp: trust the `use` selector that routed this artifact
+        // (it is `ArtifactKind::Installer`, so it is one of these kinds).
+        _ => match use_artifact {
+            Some("wix") => "wix",
+            Some("nsis") => "nsis",
+            Some("exe") => "exe",
+            _ => "msi",
+        },
+    }
+}
+
+/// Build an actual-installer [`WingetInstallerItem`] (msi/wix/nsis/exe) from a
+/// matching `Installer` artifact. Unlike the zip path, winget runs the
+/// installer directly, so the entry carries no `NestedInstallerFile` block; the
+/// silent switch is derived from `installer_type` (or the config override) by
+/// [`resolve_installer_switches`] downstream. Errors when sha256 metadata is
+/// missing (a manifest with `InstallerSha256: ''` is rejected by winget).
+fn build_executable_installer(
+    ctx: &Context,
+    a: &anodizer_core::artifact::Artifact,
+    url_template: Option<&str>,
+    name: &str,
+    version: &str,
+    installer_type: &str,
+    silent_switch: Option<&str>,
+) -> Result<WingetInstallerItem> {
+    let target = a.target.as_deref().unwrap_or("");
+    let (_, raw_arch) = anodizer_core::target::map_target(target);
+    let arch = map_winget_arch(raw_arch.as_str());
+    let resolved_url = resolve_installer_url(ctx, a, url_template, name, version, &raw_arch);
+    let sha256 = a.metadata.get("sha256").cloned().unwrap_or_default();
+    if sha256.is_empty() {
+        anyhow::bail!(
+            "winget: installer '{}' has no sha256 metadata; \
+             the manifest would publish with InstallerSha256: '' \
+             and be rejected by winget validation. \
+             Ensure the checksum stage runs before winget, or that \
+             the publish flow seeds sha256 onto downloaded assets.",
+            a.path.display()
+        );
+    }
+    Ok(WingetInstallerItem {
+        architecture: arch.to_string(),
+        url: resolved_url,
+        sha256,
+        installer_type: installer_type.to_string(),
+        binaries: Vec::new(),
+        wrap_in_directory: None,
+        commands: Vec::new(),
+        silent_switch_override: silent_switch.map(str::to_string),
+    })
+}
+
 /// Build a portable-binary [`WingetInstallerItem`] from a matching
 /// UploadableBinary artifact. Errors when sha256 metadata is missing.
 fn build_portable_installer(
@@ -884,62 +956,90 @@ fn collect_winget_installers(
 ) -> Result<Vec<WingetInstallerItem>> {
     let url_template = winget_cfg.url_template.as_deref();
     let artifact_kind = util::resolve_artifact_kind(winget_cfg.use_artifact.as_deref());
+    let use_artifact = winget_cfg.use_artifact.as_deref();
 
     let binary_names_by_target = collect_windows_binary_names_by_target(ctx, crate_name);
-
-    let archive_artifacts = ctx.artifacts.by_kind_and_crate(artifact_kind, crate_name);
-    let binary_artifacts = ctx.artifacts.by_kind_and_crate(
-        anodizer_core::artifact::ArtifactKind::UploadableBinary,
-        crate_name,
-    );
 
     let filters = WingetArtifactFilters::from_config(winget_cfg);
     let silent_switch = winget_cfg.silent_switch.as_deref();
 
     let mut installers: Vec<WingetInstallerItem> = Vec::new();
-    let mut zip_count = 0u32;
-    let mut binary_count = 0u32;
 
-    for a in archive_artifacts.iter() {
-        if !filters.matches(a) {
-            continue;
+    // `use: msi`/`nsis` (and `wix`/`exe`) resolve to `ArtifactKind::Installer`:
+    // winget runs the real installer, so select those artifacts directly and
+    // derive the `InstallerType` from each artifact's `format` stamp. The
+    // zip/portable archive path below is for the default (archive) config only.
+    if artifact_kind == anodizer_core::artifact::ArtifactKind::Installer {
+        let installer_artifacts = ctx
+            .artifacts
+            .by_kind_and_crate(anodizer_core::artifact::ArtifactKind::Installer, crate_name);
+        for a in installer_artifacts.iter() {
+            if !filters.matches(a) {
+                continue;
+            }
+            let installer_type =
+                installer_type_for(a.metadata.get("format").map(String::as_str), use_artifact);
+            installers.push(build_executable_installer(
+                ctx,
+                a,
+                url_template,
+                name,
+                version,
+                installer_type,
+                silent_switch,
+            )?);
         }
-        if !is_winget_zip_archive(a) {
-            continue;
-        }
-        zip_count += 1;
-        installers.push(build_archive_installer(
-            ctx,
-            a,
-            url_template,
-            name,
-            version,
-            &binary_names_by_target,
-            silent_switch,
-        )?);
-    }
-
-    for a in binary_artifacts.iter() {
-        if !filters.matches(a) {
-            continue;
-        }
-        binary_count += 1;
-        installers.push(build_portable_installer(
-            ctx,
-            a,
-            url_template,
-            name,
-            version,
-            silent_switch,
-        )?);
-    }
-
-    if binary_count > 0 && zip_count > 0 {
-        anyhow::bail!(
-            "winget: found archives with multiple formats (.exe and .zip) for '{}'; \
-             use either portable binaries or zip archives, not both",
-            crate_name
+    } else {
+        let archive_artifacts = ctx.artifacts.by_kind_and_crate(artifact_kind, crate_name);
+        let binary_artifacts = ctx.artifacts.by_kind_and_crate(
+            anodizer_core::artifact::ArtifactKind::UploadableBinary,
+            crate_name,
         );
+
+        let mut zip_count = 0u32;
+        let mut binary_count = 0u32;
+
+        for a in archive_artifacts.iter() {
+            if !filters.matches(a) {
+                continue;
+            }
+            if !is_winget_zip_archive(a) {
+                continue;
+            }
+            zip_count += 1;
+            installers.push(build_archive_installer(
+                ctx,
+                a,
+                url_template,
+                name,
+                version,
+                &binary_names_by_target,
+                silent_switch,
+            )?);
+        }
+
+        for a in binary_artifacts.iter() {
+            if !filters.matches(a) {
+                continue;
+            }
+            binary_count += 1;
+            installers.push(build_portable_installer(
+                ctx,
+                a,
+                url_template,
+                name,
+                version,
+                silent_switch,
+            )?);
+        }
+
+        if binary_count > 0 && zip_count > 0 {
+            anyhow::bail!(
+                "winget: found archives with multiple formats (.exe and .zip) for '{}'; \
+                 use either portable binaries or zip archives, not both",
+                crate_name
+            );
+        }
     }
 
     let mut arch_counts: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
@@ -977,6 +1077,30 @@ fn collect_winget_installers(
     Ok(installers)
 }
 
+/// Resolve the winget manifest `ProductCode`: explicit `winget.product_code`
+/// config wins (it is the author's authoritative override); otherwise fall back
+/// to the deterministic `product_code` anodizer's MSI stage stamped onto the
+/// selected `.msi` installer artifact, so the manifest's AppsAndFeaturesEntries
+/// can detect upgrades without the author hand-copying a GUID. Returns `None`
+/// when neither source supplies one (e.g. a zip/portable-only winget config).
+fn resolve_winget_product_code(
+    ctx: &Context,
+    crate_name: &str,
+    winget_cfg: &anodizer_core::config::WingetConfig,
+) -> Option<String> {
+    if let Some(pc) = winget_cfg.product_code.as_deref().filter(|s| !s.is_empty()) {
+        return Some(pc.to_string());
+    }
+    let filters = WingetArtifactFilters::from_config(winget_cfg);
+    ctx.artifacts
+        .by_kind_and_crate(anodizer_core::artifact::ArtifactKind::Installer, crate_name)
+        .into_iter()
+        .filter(|a| filters.matches(a))
+        .filter(|a| a.metadata.get("format").map(String::as_str) == Some("msi"))
+        .find_map(|a| a.metadata.get("product_code").cloned())
+        .filter(|s| !s.is_empty())
+}
+
 /// True for winget `InstallerType` values that name an actual installer
 /// program (one that `InstallerSwitches.Silent` is passed to), as opposed to
 /// `zip`/`portable`, which winget unpacks itself without running an installer.
@@ -1001,6 +1125,17 @@ pub(crate) fn crate_has_winget_installer_artifacts(
 ) -> bool {
     let filters = WingetArtifactFilters::from_config(winget_cfg);
     let artifact_kind = util::resolve_artifact_kind(winget_cfg.use_artifact.as_deref());
+
+    // `use: msi`/`nsis` selects real `Installer` artifacts directly (no zip
+    // gate); mirror the collector's branch so the shard guard and the live
+    // path agree on what a winget Windows installer is.
+    if artifact_kind == anodizer_core::artifact::ArtifactKind::Installer {
+        return ctx
+            .artifacts
+            .by_kind_and_crate(anodizer_core::artifact::ArtifactKind::Installer, crate_name)
+            .iter()
+            .any(|a| filters.matches(a));
+    }
 
     let has_zip = ctx
         .artifacts
@@ -1372,6 +1507,7 @@ fn render_winget_manifests_with_identity(
     let license = resolve_winget_license(ctx, winget_cfg, crate_name)?;
 
     let installers = collect_winget_installers(ctx, crate_name, winget_cfg, name, &version, log)?;
+    let product_code = resolve_winget_product_code(ctx, crate_name, winget_cfg);
 
     let deps = winget_cfg.dependencies.as_deref().unwrap_or(&[]);
     let release_date = resolve_winget_release_date(ctx);
@@ -1421,7 +1557,7 @@ fn render_winget_manifests_with_identity(
         tags: winget_cfg.tags.as_deref(),
         dependencies: deps,
         installers,
-        product_code: winget_cfg.product_code.as_deref(),
+        product_code: product_code.as_deref(),
         release_date: release_date_ref,
         moniker: moniker.as_deref(),
         upgrade_behavior,
@@ -2031,6 +2167,284 @@ mod publisher_tests {
             metadata: bin_meta,
             size: None,
         });
+    }
+
+    /// Add a Windows `Installer` artifact (the `use: msi` / `use: nsis`
+    /// source) for `crate_name` on `target`, carrying the `format`, `sha256`,
+    /// and `url` metadata winget's installer manifest reads. `format` is the
+    /// installer-stage stamp (`msi` from stage-msi, `nsis` from stage-nsis);
+    /// `ext` is the on-disk artifact extension (`msi` / `exe`).
+    fn add_windows_installer(
+        ctx: &mut Context,
+        crate_name: &str,
+        target: &str,
+        format: &str,
+        ext: &str,
+    ) {
+        let mut meta = std::collections::HashMap::new();
+        meta.insert(
+            "url".to_string(),
+            format!(
+                "https://github.com/acme/widget/releases/download/v1.0.0/{crate_name}-{target}.{ext}"
+            ),
+        );
+        meta.insert("sha256".to_string(), "b".repeat(64));
+        meta.insert("format".to_string(), format.to_string());
+        ctx.artifacts.add(anodizer_core::artifact::Artifact {
+            kind: anodizer_core::artifact::ArtifactKind::Installer,
+            path: std::path::PathBuf::from(format!("/dist/{crate_name}-{target}.{ext}")),
+            name: format!("{crate_name}-{target}.{ext}"),
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: meta,
+            size: None,
+        });
+    }
+
+    /// Add a Windows MSI `Installer` artifact that also carries the
+    /// deterministic `product_code` metadata stamp the MSI stage emits.
+    fn add_windows_msi_with_product_code(
+        ctx: &mut Context,
+        crate_name: &str,
+        target: &str,
+        product_code: &str,
+    ) {
+        let mut meta = std::collections::HashMap::new();
+        meta.insert(
+            "url".to_string(),
+            format!(
+                "https://github.com/acme/widget/releases/download/v1.0.0/{crate_name}-{target}.msi"
+            ),
+        );
+        meta.insert("sha256".to_string(), "b".repeat(64));
+        meta.insert("format".to_string(), "msi".to_string());
+        meta.insert("product_code".to_string(), product_code.to_string());
+        ctx.artifacts.add(anodizer_core::artifact::Artifact {
+            kind: anodizer_core::artifact::ArtifactKind::Installer,
+            path: std::path::PathBuf::from(format!("/dist/{crate_name}-{target}.msi")),
+            name: format!("{crate_name}-{target}.msi"),
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: meta,
+            size: None,
+        });
+    }
+
+    /// derive-don't-require: with no `winget.product_code` configured, the
+    /// resolver falls back to the MSI artifact's stamped `product_code`.
+    #[test]
+    fn resolve_winget_product_code_derives_from_msi_metadata() {
+        let cfg = WingetConfig {
+            publisher: Some("AcmeCo".to_string()),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![winget_crate("widget")])
+            .build();
+        add_windows_msi_with_product_code(
+            &mut ctx,
+            "widget",
+            "x86_64-pc-windows-msvc",
+            "{DERIVED-1234}",
+        );
+
+        assert_eq!(
+            resolve_winget_product_code(&ctx, "widget", &cfg),
+            Some("{DERIVED-1234}".to_string()),
+        );
+    }
+
+    /// Explicit `winget.product_code` always wins over the derived MSI stamp.
+    #[test]
+    fn resolve_winget_product_code_explicit_config_wins() {
+        let cfg = WingetConfig {
+            publisher: Some("AcmeCo".to_string()),
+            product_code: Some("{EXPLICIT-9999}".to_string()),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![winget_crate("widget")])
+            .build();
+        add_windows_msi_with_product_code(
+            &mut ctx,
+            "widget",
+            "x86_64-pc-windows-msvc",
+            "{DERIVED-1234}",
+        );
+
+        assert_eq!(
+            resolve_winget_product_code(&ctx, "widget", &cfg),
+            Some("{EXPLICIT-9999}".to_string()),
+        );
+    }
+
+    /// No config and no MSI artifact (e.g. a zip/portable winget config) yields
+    /// no ProductCode rather than a fabricated one.
+    #[test]
+    fn resolve_winget_product_code_none_without_msi_or_config() {
+        let cfg = WingetConfig {
+            publisher: Some("AcmeCo".to_string()),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .crates(vec![winget_crate("widget")])
+            .build();
+
+        assert_eq!(resolve_winget_product_code(&ctx, "widget", &cfg), None);
+    }
+
+    /// `use: msi` must select the real `.msi` `Installer` artifacts, assign
+    /// `installer_type: msi`, map the arch, and emit them — NOT bail on "no
+    /// Windows archive". Regression guard for the dead-code installer path
+    /// (the zip-only filter previously discarded every Installer artifact).
+    #[test]
+    fn collect_winget_installers_selects_msi_installer() {
+        let mut cfg = WingetConfig {
+            publisher: Some("AcmeCo".to_string()),
+            ..Default::default()
+        };
+        cfg.use_artifact = Some("msi".to_string());
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![winget_crate("widget")])
+            .build();
+        add_windows_installer(&mut ctx, "widget", "x86_64-pc-windows-msvc", "msi", "msi");
+
+        let installers = collect_winget_installers(
+            &ctx,
+            "widget",
+            &cfg,
+            "widget",
+            "1.0.0",
+            &ctx.logger("publish"),
+        )
+        .expect("use: msi must collect the real installer artifact");
+
+        assert_eq!(installers.len(), 1, "exactly one installer for one arch");
+        assert_eq!(installers[0].installer_type, "msi");
+        assert_eq!(installers[0].architecture, "x64");
+        assert!(installers[0].url.ends_with(".msi"));
+        assert_eq!(installers[0].sha256, "b".repeat(64));
+    }
+
+    /// `use: msi` over both x64 and arm64 installers emits a per-arch entry for
+    /// each, reusing `map_winget_arch`, with no spurious duplicate-arch bail.
+    #[test]
+    fn collect_winget_installers_msi_per_arch_x64_and_arm64() {
+        let mut cfg = WingetConfig {
+            publisher: Some("AcmeCo".to_string()),
+            ..Default::default()
+        };
+        cfg.use_artifact = Some("msi".to_string());
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![winget_crate("widget")])
+            .build();
+        add_windows_installer(&mut ctx, "widget", "x86_64-pc-windows-msvc", "msi", "msi");
+        add_windows_installer(&mut ctx, "widget", "aarch64-pc-windows-msvc", "msi", "msi");
+
+        let installers = collect_winget_installers(
+            &ctx,
+            "widget",
+            &cfg,
+            "widget",
+            "1.0.0",
+            &ctx.logger("publish"),
+        )
+        .expect("two-arch msi must collect both");
+
+        let mut arches: Vec<&str> = installers.iter().map(|i| i.architecture.as_str()).collect();
+        arches.sort_unstable();
+        assert_eq!(arches, vec!["arm64", "x64"]);
+        assert!(installers.iter().all(|i| i.installer_type == "msi"));
+    }
+
+    /// `use: nsis` selects the `.exe` NSIS `Installer` artifacts and assigns
+    /// `installer_type: nsis` (so the silent switch resolves to `/S`).
+    #[test]
+    fn collect_winget_installers_selects_nsis_installer() {
+        let mut cfg = WingetConfig {
+            publisher: Some("AcmeCo".to_string()),
+            ..Default::default()
+        };
+        cfg.use_artifact = Some("nsis".to_string());
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![winget_crate("widget")])
+            .build();
+        add_windows_installer(&mut ctx, "widget", "x86_64-pc-windows-msvc", "nsis", "exe");
+
+        let installers = collect_winget_installers(
+            &ctx,
+            "widget",
+            &cfg,
+            "widget",
+            "1.0.0",
+            &ctx.logger("publish"),
+        )
+        .expect("use: nsis must collect the real installer artifact");
+
+        assert_eq!(installers.len(), 1);
+        assert_eq!(installers[0].installer_type, "nsis");
+        assert_eq!(installers[0].architecture, "x64");
+        assert!(installers[0].url.ends_with(".exe"));
+    }
+
+    /// The selected msi installer feeds an end-to-end manifest carrying the
+    /// derived silent switch (`/quiet`) — the install logic that was reachable
+    /// only via synthetic test data before FIX 1.
+    #[test]
+    fn msi_installer_manifest_emits_silent_switch() {
+        let mut cfg = WingetConfig {
+            publisher: Some("AcmeCo".to_string()),
+            ..Default::default()
+        };
+        cfg.use_artifact = Some("msi".to_string());
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![winget_crate("widget")])
+            .build();
+        add_windows_installer(&mut ctx, "widget", "x86_64-pc-windows-msvc", "msi", "msi");
+
+        let installers = collect_winget_installers(
+            &ctx,
+            "widget",
+            &cfg,
+            "widget",
+            "1.0.0",
+            &ctx.logger("publish"),
+        )
+        .expect("collect ok");
+
+        let params = WingetManifestParams {
+            package_id: "AcmeCo.Widget",
+            name: "widget",
+            package_name: None,
+            version: "1.0.0",
+            description: "An app",
+            short_description: "An app",
+            license: "MIT",
+            license_url: None,
+            publisher: "AcmeCo",
+            publisher_url: None,
+            publisher_support_url: None,
+            privacy_url: None,
+            author: None,
+            copyright: None,
+            copyright_url: None,
+            homepage: None,
+            release_notes: None,
+            release_notes_url: None,
+            installation_notes: None,
+            tags: None,
+            dependencies: &[],
+            installers,
+            product_code: None,
+            release_date: None,
+            moniker: None,
+            upgrade_behavior: "install",
+            documentations: &[],
+        };
+        let (_ver, inst, _locale) = generate_manifests(&params).unwrap();
+        assert!(inst.contains("InstallerType: msi"), "got:\n{inst}");
+        assert!(inst.contains("Silent: /quiet"), "got:\n{inst}");
+        assert!(!inst.contains("NestedInstallerType"), "msi is not nested");
     }
 
     /// A `silent_switch` is only meaningful for an actual installer

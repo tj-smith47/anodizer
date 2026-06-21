@@ -505,9 +505,64 @@ pub struct Harness {
     ///
     /// When `preserve_dist` is `None`, this field has no effect.
     pub crate_name: Option<String>,
+    /// WiX binaries the `msi` stage needs on `PATH`, resolved from the
+    /// project's `msis:` config by the SAME policy the build runs
+    /// (`anodizer_stage_msi::required_msi_tools`): WiX v3 → `candle`+`light`,
+    /// v4 → `wix`, the Linux path → `wixl`. Threaded into
+    /// [`Harness::gate_installer_stages`] so the gate's MSI tool requirement
+    /// can never drift from the version the build would use — the canonical
+    /// case being a `version: v3` config (candle+light) whose Windows shard a
+    /// hardcoded `wix` probe would have wrongly skipped.
+    ///
+    /// Empty when no active MSI config exists (the stage emits nothing, so it
+    /// carries no requirement). The dispatcher resolves it once from the
+    /// loaded config; tests inject the list directly.
+    pub msi_tools: Vec<String>,
 }
 
 impl Harness {
+    /// Apply the installer-tool availability gate to `effective_stages`,
+    /// returning the stages whose backing tool is reachable.
+    ///
+    /// The pipeline would otherwise fail mid-run at `Command::new("wix")`
+    /// / `Command::new("rpmbuild")`, surfacing a confusing build error
+    /// instead of an honest "tool absent". An explicitly-requested
+    /// installer stage whose tool is missing is a HARD ERROR (a silent
+    /// skip would be false determinism coverage). A non-explicit missing
+    /// tool warns and drops the stage. Non-installer stages pass through.
+    ///
+    /// `probe` is injected so the hard-fail wiring is unit-testable
+    /// without depending on which tools the host has installed.
+    fn gate_installer_stages<P>(
+        &self,
+        effective_stages: &[StageId],
+        probe: P,
+    ) -> Result<Vec<StageId>>
+    where
+        P: Fn(&str) -> bool,
+    {
+        let gate =
+            installer_detect::filter_available_with_probe(effective_stages, &self.msi_tools, probe);
+        let explicitly_skipped = gate.explicitly_skipped(&self.stages);
+        if !explicitly_skipped.is_empty() {
+            anyhow::bail!(installer_detect::missing_tool_error(&explicitly_skipped));
+        }
+        // Routed through the harness logger (not a bare eprintln) so
+        // `-q` silences these like every other harness line. Only
+        // auto-included / non-explicit installer skips reach here now;
+        // an explicitly-requested missing tool already hard-failed above.
+        let warn_log = StageLogger::new("check-determinism", self.verbosity);
+        for (stage, tool) in &gate.skipped {
+            warn_log.warn(&format!(
+                "skipped installer stage `{}` for this run — `{}` is not on PATH \
+                 (no artifacts emitted)",
+                stage.as_str(),
+                tool
+            ));
+        }
+        Ok(gate.available)
+    }
+
     /// Drive the harness end-to-end and return the populated report.
     ///
     /// Does NOT write the report — the CLI dispatcher is responsible for
@@ -545,26 +600,8 @@ impl Harness {
             self.stages.clone()
         };
 
-        // Installer-tool availability gate: drop any installer-family
-        // stage whose primary tool is not on PATH. The pipeline would
-        // otherwise fail at `Command::new("wix")` / `Command::new("rpmbuild")`
-        // mid-run, surfacing as a confusing build error instead of an
-        // honest "tool absent → stage skipped". Non-installer stages
-        // pass through unmodified (sign / docker / cargo-package have
-        // their own gates downstream).
-        let gate = installer_detect::filter_available_installer_stages(&effective_stages);
-        let effective_stages = gate.available;
-        // Routed through the harness logger (not a bare eprintln) so
-        // `-q` silences these like every other harness line.
-        let warn_log = StageLogger::new("check-determinism", self.verbosity);
-        for (stage, tool) in &gate.skipped {
-            warn_log.warn(&format!(
-                "skipped installer stage `{}` for this run — `{}` is not on PATH \
-                 (no artifacts emitted)",
-                stage.as_str(),
-                tool
-            ));
-        }
+        let effective_stages =
+            self.gate_installer_stages(&effective_stages, installer_detect::host_tool_probe)?;
 
         // Provision once: both runs must sign with identical key
         // material, otherwise even byte-deterministic GPG signatures
@@ -1221,6 +1258,7 @@ mod tests {
             docker_backend_hint: None,
             crate_name: None,
             verbosity: Verbosity::Normal,
+            msi_tools: Vec::new(),
         }
     }
 
@@ -1552,6 +1590,97 @@ mod tests {
         assert!(
             msg.contains("podman") && msg.contains("Refusing"),
             "error must explain the false-coverage refusal: {msg}"
+        );
+    }
+
+    /// An installer stage the operator explicitly typed into `--stages`
+    /// whose tool is absent must HARD ERROR at the harness gate, mirroring
+    /// the docker contract above. Silently warn-skipping a stage the
+    /// caller asked it to byte-verify is false coverage — a
+    /// non-reproducible installer could ship while the gate reports green.
+    ///
+    /// Drives the real [`Harness::gate_installer_stages`] (the smallest
+    /// entry that invokes the gate `run()` itself calls) with an
+    /// always-absent probe, so the assertion holds regardless of which
+    /// installer tools the host has installed.
+    #[test]
+    fn installer_explicit_request_missing_tool_is_hard_error() {
+        let mut h = empty_harness();
+        h.stages = vec![StageId::Build, StageId::Nsis];
+        let err = h
+            .gate_installer_stages(&h.stages.clone(), |_tool| false)
+            .expect_err(
+                "explicit installer request with a missing tool must fail the run, not skip",
+            );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("nsis") && msg.contains("makensis"),
+            "error must name the missing stage and its tool: {msg}"
+        );
+        assert!(
+            msg.contains("--stages"),
+            "error must tell the operator how to opt out: {msg}"
+        );
+    }
+
+    /// A non-explicit (auto-included) installer stage with a missing tool
+    /// must warn-and-drop, not error, so the gate's available set still
+    /// returns the non-installer stages. Pins the fork the hard-error
+    /// test's sibling branch depends on.
+    #[test]
+    fn installer_non_explicit_missing_tool_warns_and_drops() {
+        // `stages` (the operator's explicit set) holds only Build, so the
+        // Nsis stage reaching the gate is treated as non-explicit.
+        let h = empty_harness();
+        let effective = vec![StageId::Build, StageId::Nsis];
+        let available = h
+            .gate_installer_stages(&effective, |_tool| false)
+            .expect("non-explicit missing tool must warn-and-drop, not error");
+        assert_eq!(
+            available,
+            vec![StageId::Build],
+            "missing-tool installer must be dropped; non-installer stages pass through"
+        );
+    }
+
+    /// Release-blocker regression: a `version: v3` MSI (candle+light) on a
+    /// Windows shard that HAS candle+light must NOT skip/hard-fail. Before
+    /// the fix the gate hardcoded `wix` (the v4 CLI) for `msi` on Windows, so
+    /// it probed an absent binary and hard-failed the whole Windows shard on
+    /// every release even though the build runs candle+light. Drives the real
+    /// gate with the resolved v3 tools present.
+    #[test]
+    fn msi_v3_gate_passes_when_candle_and_light_present() {
+        let mut h = empty_harness();
+        h.stages = vec![StageId::Build, StageId::Msi];
+        // Resolved v3 tool set; both probe as present.
+        h.msi_tools = vec!["candle".to_string(), "light".to_string()];
+        let available = h
+            .gate_installer_stages(&h.stages.clone(), |tool| matches!(tool, "candle" | "light"))
+            .expect("v3 msi with candle+light present must pass the gate");
+        assert_eq!(
+            available,
+            vec![StageId::Build, StageId::Msi],
+            "msi must stay in the effective set when its resolved tools are present"
+        );
+    }
+
+    /// The flip side: when the resolved WiX tool is genuinely absent the gate
+    /// must still hard-fail an explicitly-requested msi stage, and name the
+    /// first missing tool — so a v3 shard missing `light` is caught.
+    #[test]
+    fn msi_v3_gate_hard_fails_when_a_resolved_tool_absent() {
+        let mut h = empty_harness();
+        h.stages = vec![StageId::Build, StageId::Msi];
+        h.msi_tools = vec!["candle".to_string(), "light".to_string()];
+        // `candle` present, `light` missing — v3 needs both, so msi skips.
+        let err = h
+            .gate_installer_stages(&h.stages.clone(), |tool| tool == "candle")
+            .expect_err("v3 msi missing `light` must hard-fail the run");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("msi") && msg.contains("light"),
+            "error must name msi and the first missing tool: {msg}"
         );
     }
 

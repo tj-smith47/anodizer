@@ -5,17 +5,26 @@
   Linux-native `wixl` (msitools) builder used on CI and a real WiX v3 toolchain
   on Windows, so one source file covers every host. anodizer renders this through
   its template engine first: {{ ProjectName }}, {{ Version }}, {{ MsiArch }}
-  (x64/x86/arm64) and {{ BinaryPath }} (absolute path to the built .exe) are
-  substituted per published crate/target before the MSI is built.
+  (x64/x86/arm64), {{ BinaryPath }} (absolute path to the built .exe) and
+  {{ MsiProductCode }} (deterministic ProductCode GUID) are substituted per
+  published crate/target before the MSI is built.
 
   UpgradeCode is a FIXED GUID: it must stay stable across releases so Windows
-  Installer recognises a new .msi as an upgrade of the prior install. The
-  per-build Product Id is auto-generated (Id="*"), which is the WiX idiom for a
-  product whose package GUID rotates each version while UpgradeCode anchors the
-  upgrade lineage.
+  Installer recognises a new .msi as an upgrade of the prior install.
+  Product Id is the deterministic MsiProductCode var: a UUIDv5 over
+  {ProjectName}\0{Version}\0{MsiArch} (namespace = this UpgradeCode), stable for
+  a given version+arch but rotating per version — Windows treats each version as
+  a distinct product that UpgradeCode + MajorUpgrade relate. This replaces the
+  former Id="*" (random per build) so winget's AppsAndFeaturesEntries can detect
+  upgrades.
+
+  Determinism note: a pinned ProductCode does NOT make the .msi byte-reproducible
+  — wixl/WiX rotate the PackageCode and the summary-information stream timestamps
+  on every build (msitools/WiX #8978), so the MSI stays in the non-reproducible
+  classification of the determinism allowlist regardless of this change.
 -->
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
-  <Product Id="*"
+  <Product Id="{{ MsiProductCode }}"
            Name="{{ ProjectName }}"
            Language="1033"
            Version="{{ Version }}.0"

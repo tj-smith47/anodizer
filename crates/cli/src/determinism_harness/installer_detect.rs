@@ -2,7 +2,7 @@
 //!
 //! Pure-CLI helper module: holds the static map from each installer
 //! [`super::StageId`] to the list of tool binaries it depends on, plus
-//! the [`filter_available_installer_stages`] function that drops any
+//! the [`filter_available_with_probe`] function that drops any
 //! installer stage whose backing tool(s) are not reachable on `PATH`.
 //!
 //! Why a separate module: the `crates/cli/**` forbid-list bans direct
@@ -11,13 +11,19 @@
 //! consults that allow-listed probe and decides which installer stages
 //! the child release subprocess can usefully run.
 //!
-//! Behavioral contract: when an operator requests
-//! `--stages=installers` (or any single installer stage) and the
-//! corresponding tool is missing, the harness must NOT fail. The
-//! pipeline would error out at the stage's `Command::new("wix")` (or
-//! similar), and a harness that fails to detect that ahead of time
-//! would surface as a confusing "stage failed" instead of an honest
-//! "tool not installed, stage skipped".
+//! Behavioral contract: this module only PARTITIONS requested stages
+//! into available vs missing-tool. The decision of what to do with a
+//! missing-tool stage lives at the harness call site
+//! ([`super::Harness::run`]): an EXPLICITLY-requested installer stage
+//! (one the operator typed into `--stages`, which is the only way an
+//! installer stage enters the set — none are in the default set or
+//! auto-included) whose tool is missing is a HARD ERROR, mirroring the
+//! docker stage's contract. A silent warn-skip there would be false
+//! coverage: a determinism shard claiming it byte-verified a format it
+//! then produced nothing for — the exact failure mode that hid the
+//! macOS/Windows installer formats from every release. The warn-skip
+//! path remains only for any future auto-included installer stage that
+//! the operator did NOT explicitly request.
 
 use super::StageId;
 use anodizer_core::tool_detect::tool_available;
@@ -31,7 +37,7 @@ use anodizer_core::tool_detect::tool_available;
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(super) struct InstallerToolGate {
     pub available: Vec<StageId>,
-    pub skipped: Vec<(StageId, &'static str)>,
+    pub skipped: Vec<(StageId, String)>,
 }
 
 /// Tool binaries each installer stage needs reachable on `PATH` to
@@ -40,12 +46,15 @@ pub(super) struct InstallerToolGate {
 /// here treats its primary tool as load-bearing.
 ///
 /// `nfpm` / `makeself` / `rpmbuild` / `makensis` are single-binary
-/// stages, so the list has one entry each. `msi` / `dmg` / `pkg` have
+/// stages, so the list has one entry each. `dmg` / `pkg` have
 /// platform-conditional primaries, picked to match the binary the
-/// stage's spawn surface actually invokes on the current host:
+/// stage's spawn surface actually invokes on the current host. (The
+/// `msi` stage is NOT in this table: its required tool depends on the
+/// resolved WiX *version* — v3 runs `candle`+`light`, v4 runs `wix`,
+/// the Linux path runs `wixl` — so a host-static guess would drift
+/// from the version the build runs. The gate resolves it from config
+/// instead; see [`filter_available_with_probe`]'s `msi_tools`.)
 ///
-/// - `msi`: `wix` on Windows, `wixl` (msitools) elsewhere — WiX is
-///   Windows-only/EULA-gated and the Linux MSI path is wixl.
 /// - `dmg`: `hdiutil` on macOS, `genisoimage` elsewhere (stage-dmg's
 ///   non-macOS preference is genisoimage > mkisofs).
 /// - `pkg`: `pkgbuild` on macOS, `xar` elsewhere (the flat-XAR
@@ -60,16 +69,6 @@ fn stage_primary_tool(stage: StageId) -> Option<&'static str> {
         StageId::Nfpm => Some("nfpm"),
         StageId::Makeself => Some("makeself"),
         StageId::Srpm => Some("rpmbuild"),
-        StageId::Msi => Some(if cfg!(target_os = "windows") {
-            "wix"
-        } else {
-            // WiX itself is Windows-only and EULA-gated; stage-msi's
-            // non-Windows path is `wixl` (msitools), which anodizer's config
-            // forces via `version: wixl` and the action's auto-install
-            // provides. Probing `wix` here would wrongly skip the stage on
-            // the Linux shard that actually builds the MSI.
-            "wixl"
-        }),
         StageId::Nsis => Some("makensis"),
         StageId::Dmg => Some(if cfg!(target_os = "macos") {
             "hdiutil"
@@ -94,6 +93,23 @@ fn stage_primary_tool(stage: StageId) -> Option<&'static str> {
     }
 }
 
+/// The WiX tool requirement for the `msi` stage, resolved from config by
+/// the same policy the build runs (explicit `version:` > `.wxs` namespace
+/// sniff > installed-tool probe). Distinct from the host-static
+/// [`stage_primary_tool`] entries: WiX v3 spawns `candle`+`light`, v4
+/// spawns `wix`, the Linux path spawns `wixl`, so the required binary
+/// follows the resolved version, never the host OS. The dispatcher
+/// resolves this via `anodizer_stage_msi::required_msi_tools` (the same
+/// helper env-preflight consults) and threads it into the gate.
+///
+/// Returned as owned `String`s rather than `&'static str` because the
+/// values originate from runtime config resolution. An empty slice means
+/// no active MSI config — the stage is then treated as having no tool
+/// requirement (it would emit nothing anyway).
+fn msi_required_tools(msi_tools: &[String]) -> Vec<&str> {
+    msi_tools.iter().map(String::as_str).collect()
+}
+
 /// Every installer-family stage the harness recognises. Order matches
 /// the surface defined in the module docstring (nfpm before makeself
 /// before msi etc.) so the umbrella `--stages=installers` selection
@@ -114,44 +130,99 @@ pub fn installer_stages() -> Vec<StageId> {
     ]
 }
 
-/// True iff `stage` is one of the installer-family stages. Used by
-/// the unit tests covering [`installer_stages`] to verify every
-/// returned entry has a registered primary-tool binary.
+/// True iff `stage` is one of the installer-family stages. `Msi` is
+/// covered explicitly because its tool requirement is resolved from
+/// config (not present in the host-static [`stage_primary_tool`] table).
 #[cfg(test)]
 pub(super) fn is_installer_stage(stage: StageId) -> bool {
-    stage_primary_tool(stage).is_some()
+    stage == StageId::Msi || stage_primary_tool(stage).is_some()
 }
 
-/// Probe each installer stage in `requested` and partition into
-/// available vs skipped. Non-installer stages pass through to
-/// `available` unmodified.
+impl InstallerToolGate {
+    /// The subset of `skipped` entries whose stage the operator EXPLICITLY
+    /// requested (present in `explicit`). Installer stages enter the harness's
+    /// stage set only by an explicit `--stages` token — either named directly
+    /// (`--stages=msi`) or via the `installers` umbrella, which the parser
+    /// expands to the concrete installer `StageId`s before they reach the gate
+    /// (see `parse_stages`). Both forms land in `self.stages` as explicit IDs,
+    /// so a hit here means a shard claimed it would byte-verify a format whose
+    /// tool is missing — false coverage that must hard-fail. Mirrors the docker
+    /// stage's hard-fail-when-explicit contract.
+    pub(super) fn explicitly_skipped(&self, explicit: &[StageId]) -> Vec<(StageId, String)> {
+        self.skipped
+            .iter()
+            .filter(|(stage, _)| explicit.contains(stage))
+            .cloned()
+            .collect()
+    }
+}
+
+/// Build the hard-fail message for explicitly-requested installer stages
+/// whose tool is missing. Pure (no I/O) so the message contract is unit-
+/// testable without constructing a full [`super::Harness`].
+pub(super) fn missing_tool_error(skipped: &[(StageId, String)]) -> String {
+    let detail = skipped
+        .iter()
+        .map(|(stage, tool)| format!("`{}` (needs `{}`)", stage.as_str(), tool))
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "installer stage(s) requested via --stages but their tool is not on PATH: {detail}. \
+         The determinism gate cannot byte-verify these formats, and a silent skip would be \
+         false coverage (the exact failure mode that hid the macOS/Windows installers from \
+         every release). Provision the missing tool on this shard (e.g. choco install \
+         wixtoolset nsis on Windows) or remove the stage from --stages."
+    )
+}
+
+/// The production tool probe: [`anodizer_core::tool_detect::tool_available`]
+/// runs `<tool> --version` with stdout/stderr silenced. A spawn error
+/// (`NotFound`) and a non-zero exit both fold to "tool not available" —
+/// the stage's backing `Command::new` would have hit the same outcome at
+/// pipeline-execution time. [`super::Harness::run`] injects this into
+/// [`super::Harness::gate_installer_stages`]; tests inject a stub.
+pub(super) fn host_tool_probe(tool: &str) -> bool {
+    tool_available(tool).unwrap_or(false)
+}
+
+/// Probe each installer stage in `requested` with `probe` and partition
+/// into available vs skipped. Non-installer stages pass through to
+/// `available` unmodified. Behavioral tests pass a stub probe to verify
+/// the "tool missing => stage lands in `skipped`" contract without
+/// depending on what's installed on the runner.
 ///
-/// The probe path is [`anodizer_core::tool_detect::tool_available`],
-/// which runs `<tool> --version` with stdout/stderr silenced. A spawn
-/// error (`NotFound`) and a non-zero exit both fold to "tool not
-/// available" — the stage's backing `Command::new` would have hit
-/// the same outcome at pipeline-execution time.
-pub(super) fn filter_available_installer_stages(requested: &[StageId]) -> InstallerToolGate {
-    filter_available_with_probe(requested, |tool| tool_available(tool).unwrap_or(false))
-}
-
-/// Inner partition function with an injectable probe. Behavioral tests
-/// pass a stub to verify the "tool missing => stage lands in
-/// `skipped`" contract without depending on what's installed on the
-/// runner.
-fn filter_available_with_probe<P>(requested: &[StageId], probe: P) -> InstallerToolGate
+/// `msi_tools` carries the WiX binaries the `msi` stage needs, resolved
+/// from config by the dispatcher (see [`msi_required_tools`]). The MSI
+/// stage is available only when EVERY one is reachable — WiX v3 spawns
+/// both `candle` and `light`, so either one missing must skip the stage.
+/// The skipped entry reports the first missing tool. An empty `msi_tools`
+/// means no active MSI config: the stage carries no requirement and passes
+/// through.
+pub(super) fn filter_available_with_probe<P>(
+    requested: &[StageId],
+    msi_tools: &[String],
+    probe: P,
+) -> InstallerToolGate
 where
     P: Fn(&str) -> bool,
 {
     let mut gate = InstallerToolGate::default();
     for &stage in requested {
+        if stage == StageId::Msi {
+            let required = msi_required_tools(msi_tools);
+            match required.iter().find(|tool| !probe(tool)) {
+                None => gate.available.push(stage),
+                Some(missing) => gate.skipped.push((stage, missing.to_string())),
+            }
+            continue;
+        }
         match stage_primary_tool(stage) {
             None => gate.available.push(stage),
             Some(tool) => {
                 if probe(tool) {
                     gate.available.push(stage);
                 } else {
-                    gate.skipped.push((stage, tool));
+                    gate.skipped.push((stage, tool.to_string()));
                 }
             }
         }
@@ -168,8 +239,11 @@ mod tests {
         let stages = installer_stages();
         assert_eq!(stages.len(), 7);
         for stage in stages {
+            // `Msi`'s tool requirement is config-resolved (not in the
+            // host-static `stage_primary_tool` table), so assert via the
+            // installer-family predicate that recognises it.
             assert!(
-                stage_primary_tool(stage).is_some(),
+                is_installer_stage(stage),
                 "installer_stages() emitted non-installer stage {:?}",
                 stage
             );
@@ -179,7 +253,7 @@ mod tests {
     #[test]
     fn non_installer_stages_pass_through() {
         let req = vec![StageId::Build, StageId::Archive, StageId::Checksum];
-        let gate = filter_available_installer_stages(&req);
+        let gate = filter_available_with_probe(&req, &[], host_tool_probe);
         assert_eq!(gate.available, req);
         assert!(gate.skipped.is_empty());
     }
@@ -188,9 +262,11 @@ mod tests {
     fn well_formed_partition_on_every_requested_stage() {
         // Structural invariant: every requested stage must land in
         // exactly one of `available` or `skipped`. Independent of host
-        // tool set.
+        // tool set. A resolved v3 msi tool set is supplied so the msi
+        // stage carries a concrete requirement.
         let req = installer_stages();
-        let gate = filter_available_installer_stages(&req);
+        let msi_tools = vec!["candle".to_string(), "light".to_string()];
+        let gate = filter_available_with_probe(&req, &msi_tools, host_tool_probe);
         assert_eq!(
             gate.available.len() + gate.skipped.len(),
             req.len(),
@@ -221,7 +297,10 @@ mod tests {
             StageId::Pkg,
             StageId::Archive, // pass-through
         ];
-        let gate = filter_available_with_probe(&req, |_| false);
+        // Config resolved msi to WiX v3 (candle+light); with every tool
+        // missing the first one (`candle`) is reported.
+        let msi_tools = vec!["candle".to_string(), "light".to_string()];
+        let gate = filter_available_with_probe(&req, &msi_tools, |_| false);
         assert_eq!(
             gate.available,
             vec![StageId::Build, StageId::Archive],
@@ -239,15 +318,10 @@ mod tests {
             ],
             "installer stages must land in `skipped` when their tool is missing"
         );
-        // msi/dmg/pkg resolve their primary tool per host so the Linux
+        // dmg/pkg resolve their primary tool per host so the Linux
         // determinism shard (which actually builds these installers via the
-        // wixl/genisoimage/xar fallbacks) probes the binary it installs, not
-        // the macOS/Windows-native one.
-        let msi_tool = if cfg!(target_os = "windows") {
-            "wix"
-        } else {
-            "wixl"
-        };
+        // genisoimage/xar fallbacks) probes the binary it installs, not the
+        // macOS-native one. msi's tool comes from the resolved WiX version.
         let dmg_tool = if cfg!(target_os = "macos") {
             "hdiutil"
         } else {
@@ -259,26 +333,33 @@ mod tests {
             "xar"
         };
         assert_eq!(
-            gate.skipped.iter().map(|(_, t)| *t).collect::<Vec<_>>(),
-            vec!["nfpm", "makeself", msi_tool, dmg_tool, pkg_tool],
-            "each skipped entry must carry its primary-tool name"
+            gate.skipped
+                .iter()
+                .map(|(_, t)| t.as_str())
+                .collect::<Vec<_>>(),
+            vec!["nfpm", "makeself", "candle", dmg_tool, pkg_tool],
+            "each skipped entry must carry its missing-tool name"
         );
     }
 
     #[test]
     fn linux_installer_gate_probes_the_linux_fallback_tools() {
-        // The determinism installer shard runs on Linux. The gate must probe
-        // the Linux-native fallback binaries (wixl/genisoimage/xar), never the
-        // macOS/Windows-native ones (wix/hdiutil/pkgbuild) that the shard does
-        // not install — otherwise these stages silently route to `skipped` and
-        // never get byte-verified. This pins that mapping on the Linux build.
+        // The determinism installer shard runs on Linux. The host-static gate
+        // entries must probe the Linux-native fallback binaries
+        // (genisoimage/xar), never the macOS-native ones (hdiutil/pkgbuild)
+        // that the shard does not install — otherwise these stages silently
+        // route to `skipped` and never get byte-verified. (msi is config-
+        // resolved, not host-static — see the WiX-version gate tests.) This
+        // pins the host-static mapping on the Linux build.
         #[cfg(target_os = "linux")]
         {
-            assert_eq!(stage_primary_tool(StageId::Msi), Some("wixl"));
             assert_eq!(stage_primary_tool(StageId::Dmg), Some("genisoimage"));
             assert_eq!(stage_primary_tool(StageId::Pkg), Some("xar"));
             assert_eq!(stage_primary_tool(StageId::Srpm), Some("rpmbuild"));
             assert_eq!(stage_primary_tool(StageId::Nsis), Some("makensis"));
+            // msi has no host-static entry; its tool follows the resolved
+            // WiX version threaded in from config.
+            assert_eq!(stage_primary_tool(StageId::Msi), None);
         }
     }
 
@@ -287,9 +368,107 @@ mod tests {
         // Behavioral contract: with an always-true probe (every tool
         // installed), every installer stage must land in `available`.
         let req = installer_stages();
-        let gate = filter_available_with_probe(&req, |_| true);
+        let msi_tools = vec!["candle".to_string(), "light".to_string()];
+        let gate = filter_available_with_probe(&req, &msi_tools, |_| true);
         assert_eq!(gate.available, req);
         assert!(gate.skipped.is_empty());
+    }
+
+    #[test]
+    fn msi_v3_available_when_candle_and_light_present() {
+        // Release-blocker regression: config pins WiX v3 (candle+light) and
+        // both are on PATH (the real Windows shard). The gate must NOT skip
+        // msi. Before the fix it hardcoded the v4 `wix` CLI on Windows, found
+        // it absent, and hard-failed the shard on every release.
+        let msi_tools = vec!["candle".to_string(), "light".to_string()];
+        let gate = filter_available_with_probe(&[StageId::Build, StageId::Msi], &msi_tools, |t| {
+            matches!(t, "candle" | "light")
+        });
+        assert_eq!(
+            gate.available,
+            vec![StageId::Build, StageId::Msi],
+            "v3 msi must stay available when candle+light are present"
+        );
+        assert!(gate.skipped.is_empty(), "no tool is missing");
+    }
+
+    #[test]
+    fn msi_v3_skips_when_one_resolved_tool_absent() {
+        // WiX v3 spawns BOTH candle and light — either one missing must skip
+        // the stage, and the skipped entry reports the first missing tool.
+        let msi_tools = vec!["candle".to_string(), "light".to_string()];
+        let gate = filter_available_with_probe(&[StageId::Msi], &msi_tools, |t| t == "candle");
+        assert!(gate.available.is_empty());
+        assert_eq!(
+            gate.skipped,
+            vec![(StageId::Msi, "light".to_string())],
+            "the first missing resolved tool (`light`) must be reported"
+        );
+    }
+
+    #[test]
+    fn msi_v4_skips_when_wix_absent() {
+        // A v4 config resolves to the single `wix` CLI; absent → skip.
+        let msi_tools = vec!["wix".to_string()];
+        let gate = filter_available_with_probe(&[StageId::Msi], &msi_tools, |_| false);
+        assert_eq!(gate.skipped, vec![(StageId::Msi, "wix".to_string())]);
+    }
+
+    #[test]
+    fn msi_available_when_no_active_config_yields_empty_tools() {
+        // Empty `msi_tools` means no active MSI config: the stage carries no
+        // requirement and must pass through to `available` even under an
+        // always-false probe (there is nothing to be missing).
+        let gate = filter_available_with_probe(&[StageId::Msi], &[], |_| false);
+        assert_eq!(gate.available, vec![StageId::Msi]);
+        assert!(gate.skipped.is_empty());
+    }
+
+    #[test]
+    fn explicitly_skipped_filters_to_operator_requested_stages() {
+        // Two installers skipped (tool missing), but only `msi` was in the
+        // operator's explicit `--stages`. The hard-fail set must contain msi
+        // and NOT dmg — a missing tool for a stage the operator did not type
+        // is a warn-skip, not a release-blocking hard error.
+        let msi_tools = vec!["wixl".to_string()];
+        let gate =
+            filter_available_with_probe(&[StageId::Msi, StageId::Dmg], &msi_tools, |_| false);
+        let explicit = vec![StageId::Msi, StageId::Build];
+        let hard = gate.explicitly_skipped(&explicit);
+        let stages: Vec<StageId> = hard.iter().map(|(s, _)| *s).collect();
+        assert_eq!(
+            stages,
+            vec![StageId::Msi],
+            "only the explicitly-requested missing-tool stage hard-fails"
+        );
+    }
+
+    #[test]
+    fn explicitly_skipped_empty_when_nothing_requested() {
+        let msi_tools = vec!["wixl".to_string()];
+        let gate =
+            filter_available_with_probe(&[StageId::Msi, StageId::Nsis], &msi_tools, |_| false);
+        assert!(
+            gate.explicitly_skipped(&[]).is_empty(),
+            "no explicit request => no hard-fail even when tools are missing"
+        );
+    }
+
+    #[test]
+    fn missing_tool_error_names_every_stage_and_tool() {
+        let msg = missing_tool_error(&[
+            (StageId::Msi, "candle".to_string()),
+            (StageId::Nsis, "makensis".to_string()),
+        ]);
+        assert!(msg.contains("msi") && msg.contains("candle"), "msg: {msg}");
+        assert!(
+            msg.contains("nsis") && msg.contains("makensis"),
+            "msg: {msg}"
+        );
+        assert!(
+            msg.contains("--stages"),
+            "message must tell the operator how to opt out: {msg}"
+        );
     }
 
     #[test]

@@ -17,7 +17,8 @@ use super::{
     PublisherSchemaValidator, SchemaFinding, TagResolver, validate_json, with_validated_crate_scope,
 };
 use crate::scoop::{
-    crate_has_scoop_artifacts, is_scoop_per_crate_configured, render_scoop_manifest_for_crate,
+    crate_has_scoop_artifacts, is_scoop_per_crate_configured, reject_unsupported_use,
+    render_scoop_manifest_for_crate,
 };
 
 /// The Scoop project's vendored app-manifest schema (draft-07). Pinned and
@@ -64,6 +65,14 @@ impl PublisherSchemaValidator for ScoopSchemaValidator {
             else {
                 continue;
             };
+            // Reject an installer `use:` here, BEFORE the artifact-presence skip
+            // below: a single-target / sharded snapshot may produce no matching
+            // artifact, in which case the crate would be skipped and the publish-
+            // time `reject_unsupported_use` in the render path would never run —
+            // letting an unshippable `use: msi/nsis/wix/exe` config slip past
+            // `check`. Surfacing it here makes the config error fail validation
+            // independent of which artifacts this run built.
+            reject_unsupported_use(scoop_cfg.use_artifact.as_deref(), crate_name)?;
             if !crate_has_scoop_artifacts(ctx, crate_name, &scoop_cfg) {
                 log.verbose(&format!(
                     "skipped scoop schema validation for crate '{}' — produced no Windows \
@@ -656,5 +665,99 @@ mod tests {
             bin_strs.contains(&"widget.exe"),
             "the admitted artifact's binary must be present, got: {bin_strs:?}"
         );
+    }
+
+    /// `check`-level validation must reject an unshippable `use: msi` scoop
+    /// config EVEN WHEN this run produced no matching artifact. A linux-only /
+    /// sharded snapshot builds no MSI, so `crate_has_scoop_artifacts` would
+    /// otherwise short-circuit the validator before the render path's
+    /// `reject_unsupported_use` ever ran — letting the bad config reach a bucket
+    /// commit. The reject now fires from `validate` ahead of that skip-gate.
+    /// Covers all three config modes (single / lockstep / per-crate) since the
+    /// reject is keyed only on the per-crate `use:` value.
+    #[test]
+    fn check_rejects_use_msi_for_scoop_across_config_modes() {
+        let msi_cfg = || ScoopConfig {
+            use_artifact: Some("msi".to_string()),
+            ..every_option_scoop_cfg()
+        };
+
+        let assert_rejects = |ctx: &mut Context, mode: &str| {
+            let err = ScoopSchemaValidator
+                .validate(
+                    ctx,
+                    &crate::schema_validation::test_current_version_resolver(),
+                )
+                .expect_err(&format!(
+                    "{mode}: check-time validation must reject `use: msi` for scoop"
+                ));
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("use: msi") && msg.contains("scoop"),
+                "{mode}: the rejection must name the unsupported scoop `use`, got: {msg}"
+            );
+        };
+
+        // (a) Single-crate, with NO artifact of any kind produced — the case the
+        // old skip-gate swallowed.
+        let mut ctx_single = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![scoop_crate("widget", "v{{ .Version }}", msi_cfg())])
+            .build();
+        scope_version(&mut ctx_single, "1.0.0");
+        assert_rejects(&mut ctx_single, "single-crate");
+
+        // (b) Workspace-lockstep: one bad crate among several must still bite.
+        let mut ctx_lockstep = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![
+                scoop_crate(
+                    "alpha",
+                    "v{{ .Version }}",
+                    ScoopConfig {
+                        name: Some("alpha".to_string()),
+                        ..every_option_scoop_cfg()
+                    },
+                ),
+                scoop_crate(
+                    "beta",
+                    "v{{ .Version }}",
+                    ScoopConfig {
+                        name: Some("beta".to_string()),
+                        ..msi_cfg()
+                    },
+                ),
+            ])
+            .build();
+        scope_version(&mut ctx_lockstep, "1.0.0");
+        add_windows_zip(&mut ctx_lockstep, "alpha", "alpha");
+        assert_rejects(&mut ctx_lockstep, "workspace-lockstep");
+
+        // (c) Workspace per-crate: the offending crate is the `--crate`-selected
+        // one and renders under its own version/tag.
+        let mut ctx_per_crate = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![
+                scoop_crate(
+                    "alpha",
+                    "alpha-v{{ .Version }}",
+                    ScoopConfig {
+                        name: Some("alpha".to_string()),
+                        ..every_option_scoop_cfg()
+                    },
+                ),
+                scoop_crate(
+                    "beta",
+                    "beta-v{{ .Version }}",
+                    ScoopConfig {
+                        name: Some("beta".to_string()),
+                        ..msi_cfg()
+                    },
+                ),
+            ])
+            .selected_crates(vec!["beta".to_string()])
+            .build();
+        scope_version(&mut ctx_per_crate, "3.1.0");
+        assert_rejects(&mut ctx_per_crate, "workspace-per-crate");
     }
 }

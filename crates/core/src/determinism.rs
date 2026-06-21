@@ -188,12 +188,24 @@ impl DeterminismState {
     /// - `apple-notarization-receipt`: the notarize stage mutates
     ///   existing artifacts in-place (staples) rather than emitting new
     ///   files; no separate "receipt" artifact lands in `dist/`.
-    /// - `*.exe-nsis`: makensis writes plain `.exe` files into
-    ///   `dist/windows/`; the suffix `.exe-nsis` matches nothing the
-    ///   harness ever sees. NSIS-built `.exe` files only appear when
-    ///   running on Windows (or under Wine), and operators can use the
-    ///   runtime `--allow-nondeterministic <name>=<reason>` flag on
-    ///   those releases rather than hard-coding a dead sentinel here.
+    /// - The NSIS installer (`*-setup.exe` / `*_setup.exe`) is GATED, not
+    ///   allow-listed. makensis honors `SOURCE_DATE_EPOCH` for the embedded
+    ///   build timestamp, so two builds over identical inputs are
+    ///   byte-identical — proven by
+    ///   stage-nsis::nsis_setup_is_byte_reproducible_across_time. Under the
+    ///   A′ shard routing the installer now lands in `dist/windows/` on the
+    ///   Windows determinism shard (it builds the windows-msvc payload
+    ///   binary), so the harness DOES see and byte-compare it. The classifier
+    ///   keys on the `setup.exe` name tail so the installer is attributed to
+    ///   `nsis` while the raw `anodize.exe` binary is not (see
+    ///   `determinism_harness::artifacts::infer_stage_from_path`). A real
+    ///   drift here is a regression, not an excused non-determinism.
+    /// - The macOS `.app` bundle is GATED, not allow-listed. It is pure
+    ///   file assembly (Info.plist + binary copy) at a fixed mtime /
+    ///   `SOURCE_DATE_EPOCH`, so it is byte-reproducible — proven by
+    ///   stage-appbundle::appbundle_is_byte_reproducible_across_time. Under
+    ///   A′ it is produced on the macOS determinism shard (which holds the
+    ///   darwin payload binary), so the harness byte-compares it directly.
     pub fn seed_from_commit(commit_ts: i64) -> Result<Self> {
         if commit_ts < 0 {
             anyhow::bail!(
@@ -238,11 +250,11 @@ impl DeterminismState {
         let mut installer_allow: Vec<(&str, &str)> = vec![
             (
                 "*.msi",
-                "WiX candle/light embeds a non-pinnable build timestamp in the MSI summary-information stream; pending proof by msi_is_byte_reproducible_across_time on the windows determinism shard",
+                "WiX candle/light regenerates a random SummaryInformation PackageCode GUID and stamps wall-clock Created/LastModified into the MSI summary-information stream, independent of SOURCE_DATE_EPOCH (wixtoolset/issues#8978); not byte-reproducible — proven by stage-msi::msi_is_byte_reproducible_across_time. Built natively on the windows determinism shard under A′.",
             ),
             (
                 "*.dmg",
-                "hdiutil writes a wall-clock HFS+/APFS volume creation date the macOS host will not pin to SOURCE_DATE_EPOCH; pending proof by dmg_is_byte_reproducible_across_time on the macos determinism shard",
+                "hdiutil writes a fresh per-segment SegmentID GUID into the UDIF koly trailer every run and pins no SOURCE_DATE_EPOCH; not byte-reproducible — proven by stage-dmg::dmg_is_byte_reproducible_across_time. Built natively on the macos determinism shard under A′.",
             ),
             (
                 "*.flatpak",
@@ -266,7 +278,7 @@ impl DeterminismState {
         if host_is_macos() {
             installer_allow.push((
                 "*.pkg",
-                "macOS-native pkgbuild emits a non-pinnable build timestamp; pending proof by native_pkgbuild_pkg_is_byte_reproducible_across_time on the macos determinism shard (the Linux xar/mkbom/cpio .pkg path is proven reproducible and gated, never allow-listed)",
+                "macOS-native pkgbuild stamps a wall-clock xar TOC and ignores SOURCE_DATE_EPOCH; not byte-reproducible — proven by stage-pkg::native_pkgbuild_pkg_is_byte_reproducible_across_time. Built natively on the macos determinism shard under A′ (the Linux xar/mkbom/cpio .pkg path is proven reproducible and gated, never allow-listed)",
             ));
         }
         // SBOMs embed identifiers that are non-reproducible by nature:
@@ -559,6 +571,51 @@ mod tests {
             );
             assert!(s.resolve_reason("anodizer-0.2.1.pkg.sha256").is_none());
         }
+    }
+
+    #[test]
+    fn appbundle_is_gated_not_allowlisted() {
+        let s = DeterminismState::seed_from_commit(0).expect("non-negative");
+        // The macOS `.app` bundle is pure file assembly at a fixed mtime /
+        // SOURCE_DATE_EPOCH, so it is byte-reproducible — proven by
+        // stage-appbundle::appbundle_is_byte_reproducible_across_time. Under A′
+        // it is produced on the macOS determinism shard and byte-compared, so
+        // it must be GATED (real drift = regression), NEVER allow-listed.
+        assert!(s.resolve_reason("anodizer_arm64.app").is_none());
+        assert!(s.resolve_reason("anodizer_amd64.app").is_none());
+        // A `.app` is a directory, but a `.sha256` over it (if one is ever
+        // emitted) must likewise not be excused as a derivative.
+        assert!(s.resolve_reason("anodizer_arm64.app.sha256").is_none());
+    }
+
+    #[test]
+    fn nsis_installer_is_gated_not_allowlisted() {
+        let s = DeterminismState::seed_from_commit(0).expect("non-negative");
+        // makensis honors SOURCE_DATE_EPOCH, so the NSIS installer is byte-
+        // reproducible — proven by
+        // stage-nsis::nsis_setup_is_byte_reproducible_across_time. Under A′ it
+        // lands in dist/windows/ on the Windows determinism shard and is byte-
+        // compared, so it must be GATED, NEVER allow-listed. Neither the
+        // configured `-setup.exe` name nor the stage-default `_setup.exe` tail
+        // may resolve to an allow-list reason.
+        assert!(s.resolve_reason("anodizer_x64-setup.exe").is_none());
+        assert!(s.resolve_reason("anodizer_x64_setup.exe").is_none());
+        assert!(
+            s.resolve_reason("anodizer_arm64-setup.exe.sha256")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn raw_windows_binary_is_not_allowlisted_or_misclassified() {
+        let s = DeterminismState::seed_from_commit(0).expect("non-negative");
+        // The raw windows binary `anodizer.exe` is the load-bearing build
+        // output — it must be byte-reproducible (the /Brepro RUSTFLAGS make it
+        // so) and is therefore GATED. It must never be swept into an installer
+        // allow-list class by a bare `*.exe` pattern (there is none; only the
+        // intrinsically-non-reproducible native installers are allow-listed).
+        assert!(s.resolve_reason("anodizer.exe").is_none());
+        assert!(s.resolve_reason("anodizer.exe.sha256").is_none());
     }
 
     #[test]

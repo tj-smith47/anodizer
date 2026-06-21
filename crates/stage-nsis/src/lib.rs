@@ -776,6 +776,77 @@ mod tests {
         );
     }
 
+    /// Two `makensis` runs over the same script + payload at a fixed
+    /// SOURCE_DATE_EPOCH produce a byte-identical installer, so the NSIS
+    /// installer is GATED in the determinism harness (not allow-listed).
+    /// NSIS 3.x honors SOURCE_DATE_EPOCH for the installer's embedded build
+    /// timestamp, so the `.exe` is byte-reproducible — this is the proof
+    /// backing the GATED verdict in `anodizer_core::determinism::
+    /// DeterminismState::seed_from_commit`. makensis is cross-platform, so this
+    /// runs on Linux CI (where the determinism Windows shards build the real
+    /// installer it also runs). If it ever fails, makensis stopped honoring
+    /// SOURCE_DATE_EPOCH or a new variance source crept in — investigate the
+    /// regression; do NOT allow-list the installer. Hermetic: skips when
+    /// makensis is absent.
+    #[test]
+    fn nsis_setup_is_byte_reproducible_across_time() {
+        if !anodizer_core::util::find_binary("makensis") {
+            eprintln!("makensis unavailable; test skipped hermetically");
+            return;
+        }
+
+        // A minimal self-contained script (no MUI includes, which can pull
+        // host-path-dependent resources): a single Section that bundles one
+        // payload file. OutFile is set per-build to an absolute path.
+        let script_tmpl = |out_path: &str, payload: &str| {
+            format!(
+                "Name \"ReproProbe\"\n\
+                 OutFile \"{out_path}\"\n\
+                 InstallDir \"$PROGRAMFILES64\\ReproProbe\"\n\
+                 RequestExecutionLevel admin\n\
+                 Section \"Install\"\n\
+                 SetOutPath \"$INSTDIR\"\n\
+                 File \"{payload}\"\n\
+                 SectionEnd\n"
+            )
+        };
+
+        let build = || -> Option<Vec<u8>> {
+            let dir = tempfile::tempdir().unwrap();
+            let payload = dir.path().join("payload.txt");
+            std::fs::write(&payload, b"deterministic payload\n").unwrap();
+            let out = dir.path().join("ReproProbe_setup.exe");
+            let script = dir.path().join("repro.nsi");
+            std::fs::write(
+                &script,
+                script_tmpl(&out.to_string_lossy(), &payload.to_string_lossy()),
+            )
+            .unwrap();
+
+            let argv = nsis_command(&script.to_string_lossy());
+            let status = Command::new(&argv[0])
+                .args(&argv[1..])
+                // NSIS 3.x reads SOURCE_DATE_EPOCH for the embedded build
+                // timestamp; pin it so the two builds share one clock.
+                .env("SOURCE_DATE_EPOCH", "1700000000")
+                .output()
+                .ok()?;
+            status.status.success().then(|| std::fs::read(&out).ok())?
+        };
+
+        let (Some(a), Some(b)) = (build(), build()) else {
+            eprintln!("makensis failed to produce an installer; test skipped hermetically");
+            return;
+        };
+        assert_eq!(
+            a, b,
+            "two makensis builds at a fixed SOURCE_DATE_EPOCH must be byte- \
+             identical; the NSIS installer is GATED in the determinism harness. \
+             A mismatch means makensis stopped honoring SOURCE_DATE_EPOCH or a \
+             new variance source appeared — fix it, do NOT allow-list the .exe."
+        );
+    }
+
     #[test]
     fn test_map_arch_to_nsis() {
         assert_eq!(map_arch_to_nsis("amd64"), "x64");

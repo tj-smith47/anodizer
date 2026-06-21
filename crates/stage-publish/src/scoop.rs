@@ -58,6 +58,25 @@ pub(crate) enum AutoupdateHash {
     ChecksumsRegex { url_template: String },
 }
 
+/// Reject a `use:` value scoop cannot honor. Scoop installs by unpacking an
+/// archive (`.zip`/`.tar.gz`/`.tgz`); it has no mechanism to run an installer,
+/// so `use: msi`/`nsis`/`wix`/`exe` would render a structurally-valid bucket
+/// manifest whose `architecture.<arch>.url` points at a payload `scoop install`
+/// cannot execute. Fail loud at selection rather than ship that broken-silent
+/// manifest. `archive` (and any unrecognized/`None` value, which defaults to
+/// archive) is accepted.
+pub(crate) fn reject_unsupported_use(use_artifact: Option<&str>, crate_name: &str) -> Result<()> {
+    if let Some(value @ ("msi" | "nsis" | "wix" | "exe")) = use_artifact {
+        anyhow::bail!(
+            "scoop: `use: {value}` is unsupported for crate '{crate_name}' — scoop installs \
+             from archives only (it unzips, it cannot run an installer). Ship the windows \
+             `.zip` archive and use the default `use: archive`, or publish the {value} \
+             installer through a publisher that runs it (winget / chocolatey).",
+        );
+    }
+    Ok(())
+}
+
 /// Replace every occurrence of the concrete `version` in `s` with scoop's
 /// `$version` placeholder, producing an autoupdate-ready template. The version
 /// appears in both the release tag path and the asset filename, so all
@@ -682,6 +701,11 @@ pub(crate) fn render_scoop_manifest_for_crate(
     let manifest_name_raw = scoop_cfg.name.as_deref().unwrap_or(crate_name);
     let manifest_name_rendered = util::render_or_warn(ctx, log, "scoop.name", manifest_name_raw)?;
     let manifest_name = manifest_name_rendered.as_str();
+
+    // scoop is archive-only: reject an installer `use:` before selecting any
+    // artifact so the operator gets an actionable config error, not a manifest
+    // that points scoop at a payload it cannot run.
+    reject_unsupported_use(scoop_cfg.use_artifact.as_deref(), crate_name)?;
 
     // Find all Windows Archive artifacts, applying IDs + amd64_variant filter.
     let url_template = scoop_cfg.url_template.as_deref();
@@ -3095,6 +3119,100 @@ mod publish_flow_tests {
             metadata: meta,
             size: None,
         });
+    }
+
+    /// scoop installs by unzipping an archive — it cannot run an installer. A
+    /// `use: msi`/`nsis`/`wix`/`exe` config must therefore be rejected with a
+    /// clear, actionable error at selection rather than emit a manifest whose
+    /// `architecture.<arch>.url` points at an installer scoop cannot execute.
+    #[test]
+    fn scoop_rejects_msi_use_artifact() {
+        let mut crate_cfg = scoop_crate_for_bucket("widget", "file:///tmp/unused");
+        crate_cfg
+            .publish
+            .as_mut()
+            .unwrap()
+            .scoop
+            .as_mut()
+            .unwrap()
+            .use_artifact = Some("msi".to_string());
+        let mut ctx = build_ctx(vec![crate_cfg], "1.0.0");
+        add_windows_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-pc-windows-msvc",
+            "x64",
+            "widget",
+            &"a".repeat(64),
+        );
+
+        let err = render_scoop_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect_err("scoop must reject use: msi");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("scoop") && msg.contains("msi") && msg.contains("archive"),
+            "error must name scoop + the bad use value + that scoop is archive-only; got: {msg}"
+        );
+    }
+
+    /// The `nsis` arm of the archive-only gate, ensuring every installer `use:`
+    /// value (not just `msi`) is rejected.
+    #[test]
+    fn scoop_rejects_nsis_use_artifact() {
+        let mut crate_cfg = scoop_crate_for_bucket("widget", "file:///tmp/unused");
+        crate_cfg
+            .publish
+            .as_mut()
+            .unwrap()
+            .scoop
+            .as_mut()
+            .unwrap()
+            .use_artifact = Some("nsis".to_string());
+        let mut ctx = build_ctx(vec![crate_cfg], "1.0.0");
+        add_windows_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-pc-windows-msvc",
+            "x64",
+            "widget",
+            &"a".repeat(64),
+        );
+
+        let err = render_scoop_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect_err("scoop must reject use: nsis");
+        assert!(
+            format!("{err:#}").contains("nsis"),
+            "error must name the bad use value; got: {err:#}"
+        );
+    }
+
+    /// The default (archive) config and an explicit `use: archive` both stay on
+    /// the working zip path — the gate must not regress valid configs.
+    #[test]
+    fn scoop_accepts_archive_use_artifact() {
+        let mut crate_cfg = scoop_crate_for_bucket("widget", "file:///tmp/unused");
+        crate_cfg
+            .publish
+            .as_mut()
+            .unwrap()
+            .scoop
+            .as_mut()
+            .unwrap()
+            .use_artifact = Some("archive".to_string());
+        let mut ctx = build_ctx(vec![crate_cfg], "1.0.0");
+        add_windows_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-pc-windows-msvc",
+            "x64",
+            "widget",
+            &"a".repeat(64),
+        );
+
+        let manifest = render_scoop_manifest_for_crate(&ctx, "widget", &quiet())
+            .expect("use: archive must render")
+            .expect("not skipped");
+        assert!(manifest.contains("\"64bit\""), "got:\n{manifest}");
     }
 
     /// Register a Windows `.tar.gz` archive on `target`/`arch` — the non-`.zip`

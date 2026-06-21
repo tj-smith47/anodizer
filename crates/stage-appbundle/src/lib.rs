@@ -793,6 +793,118 @@ mod tests {
     // Info.plist generation
     // -----------------------------------------------------------------------
 
+    /// Two assemblies of the same `.app` bundle at a fixed mtime /
+    /// SOURCE_DATE_EPOCH are byte-identical, so the bundle is GATED in the
+    /// determinism harness (not allow-listed). Unlike the native `.dmg`/`.pkg`
+    /// (whose tools stamp a fresh GUID / wall-clock the harness cannot pin), an
+    /// `.app` is pure file assembly: Info.plist text + a binary copy +
+    /// Resources, every entry mtime forced to the pinned timestamp. So two runs
+    /// over identical inputs produce identical trees. This is the proof backing
+    /// the GATED verdict in `anodizer_core::determinism::DeterminismState::
+    /// seed_from_commit`; if it ever fails, an mtime / content leak was
+    /// introduced and the harness will (correctly) flag the drift — fix the
+    /// leak, do not allow-list the `.app`. Hermetic: needs no external tool, so
+    /// it runs on every host (the stage itself is tool-free file assembly).
+    #[test]
+    fn appbundle_is_byte_reproducible_across_time() {
+        const PINNED_MTIME: i64 = 1_700_000_000;
+
+        // Assemble a minimal but representative bundle the way the stage's
+        // `run` does: Contents/MacOS/<bin>, Contents/Info.plist, and a
+        // Contents/Resources/ icon, then sweep every entry's mtime to the
+        // pinned SOURCE_DATE_EPOCH. Returns the bundle root.
+        let assemble = |root: &Path| {
+            let contents = root.join("Contents");
+            let macos = contents.join("MacOS");
+            let resources = contents.join("Resources");
+            std::fs::create_dir_all(&macos).unwrap();
+            std::fs::create_dir_all(&resources).unwrap();
+
+            std::fs::write(macos.join("myapp"), b"\x7fELF deterministic payload").unwrap();
+            std::fs::write(resources.join("logo.png"), b"\x89PNG deterministic icon").unwrap();
+            let plist = generate_info_plist(
+                "myapp",
+                "io.github.example.myapp",
+                "MyApp",
+                "1.2.3",
+                Some("logo.png"),
+                Some("10.13"),
+            );
+            std::fs::write(contents.join("Info.plist"), plist).unwrap();
+
+            // Force every file mtime to the pinned epoch, depth-first, exactly
+            // as the stage's mod_timestamp sweep does.
+            fn sweep(dir: &Path, epoch: i64) {
+                for entry in std::fs::read_dir(dir).unwrap() {
+                    let entry = entry.unwrap();
+                    let ft = entry.file_type().unwrap();
+                    if ft.is_dir() {
+                        sweep(&entry.path(), epoch);
+                    } else if ft.is_file() {
+                        anodizer_core::util::set_file_mtime_epoch(&entry.path(), epoch).unwrap();
+                    }
+                }
+            }
+            sweep(&contents, PINNED_MTIME);
+        };
+
+        // Collect (relative-path, bytes, mtime-secs) for every file in a
+        // bundle, sorted, so two trees can be compared deterministically.
+        fn fingerprint(root: &Path) -> Vec<(String, Vec<u8>, i64)> {
+            fn walk(dir: &Path, base: &Path, out: &mut Vec<(String, Vec<u8>, i64)>) {
+                let mut entries: Vec<_> = std::fs::read_dir(dir)
+                    .unwrap()
+                    .map(|e| e.unwrap())
+                    .collect();
+                entries.sort_by_key(|e| e.path());
+                for entry in entries {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        walk(&path, base, out);
+                    } else {
+                        let rel = path
+                            .strip_prefix(base)
+                            .unwrap()
+                            .to_string_lossy()
+                            .into_owned();
+                        let bytes = std::fs::read(&path).unwrap();
+                        let mtime = std::fs::metadata(&path)
+                            .unwrap()
+                            .modified()
+                            .unwrap()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap()
+                            .as_secs() as i64;
+                        out.push((rel, bytes, mtime));
+                    }
+                }
+            }
+            let mut out = Vec::new();
+            walk(root, root, &mut out);
+            out
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let a = tmp.path().join("MyApp_a.app");
+        let b = tmp.path().join("MyApp_b.app");
+        assemble(&a);
+        assemble(&b);
+
+        assert_eq!(
+            fingerprint(&a),
+            fingerprint(&b),
+            "two `.app` assemblies at a fixed SOURCE_DATE_EPOCH must be byte- \
+             and mtime-identical; the bundle is GATED in the determinism \
+             harness. A mismatch means an mtime / content leak — fix the leak, \
+             do NOT allow-list the `.app`."
+        );
+        // And confirm the mtime was actually pinned (guards a silent no-op
+        // sweep that would make the equality vacuous).
+        for (rel, _, mtime) in fingerprint(&a) {
+            assert_eq!(mtime, PINNED_MTIME, "{rel} mtime must be the pinned epoch");
+        }
+    }
+
     #[test]
     fn test_info_plist_generation() {
         let plist = generate_info_plist(

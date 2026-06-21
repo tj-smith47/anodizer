@@ -514,6 +514,11 @@ pub(super) fn infer_stage_from_path(rel: &str) -> String {
         // Surfaced via the `dist/nfpm/` prefix above for canonical
         // layouts; this branch catches paths that bypass that prefix.
         "nfpm".into()
+    } else if lower.ends_with("-setup.exe") || lower.ends_with("_setup.exe") {
+        // Only the `setup`-suffixed `.exe` is the NSIS installer; a bare
+        // `*.exe` is the raw build binary, so it must not be swept into an
+        // installer class.
+        "nsis".into()
     } else if lower.ends_with(".msi") {
         "msi".into()
     } else if lower.ends_with(".dmg") {
@@ -624,6 +629,47 @@ mod tests {
             "nfpm"
         );
         assert_eq!(infer_stage_from_path("dist/anodize-0.4.0.apk"), "nfpm");
+    }
+
+    /// The loose-`.exe` collision: stage-nsis writes its installer into
+    /// `dist/windows/` as a plain `*.exe` (no `dist/nsis/` prefix), and the
+    /// raw windows binary `anodize.exe` lives under the cargo target dir. Both
+    /// are `.exe`, so the classifier must tell them apart by the installer's
+    /// `setup.exe` name tail — never sweep a raw binary into an installer
+    /// class, never leave the installer in `unknown` (which would drop it from
+    /// the per-stage drift attribution and re-hide the nsis format).
+    #[test]
+    fn stage_inference_distinguishes_nsis_installer_from_raw_windows_binary() {
+        // The repo config renders `{{ .ProjectName }}_{{ .Arch }}-setup`, and
+        // the stage default tails `_setup`; both spellings classify as nsis.
+        assert_eq!(
+            infer_stage_from_path("dist/windows/anodizer_x64-setup.exe"),
+            "nsis"
+        );
+        assert_eq!(
+            infer_stage_from_path("dist/windows/anodizer_x64_setup.exe"),
+            "nsis"
+        );
+        assert_eq!(
+            infer_stage_from_path("dist\\windows\\anodizer_arm64-setup.exe"),
+            "nsis"
+        );
+        // The raw windows binary must NOT be misclassified as an installer.
+        // Under the cargo target dir it attributes to `build`; a bare loose
+        // `anodize.exe` with no installer tail is `unknown`, never `nsis`.
+        assert_eq!(
+            infer_stage_from_path(".det-tmp/target/x86_64-pc-windows-msvc/release/anodizer.exe"),
+            "build"
+        );
+        assert_eq!(
+            infer_stage_from_path("dist/windows/anodizer.exe"),
+            "unknown"
+        );
+        // The MSI sibling in the same dir keeps its own classification.
+        assert_eq!(
+            infer_stage_from_path("dist/windows/anodizer_x64.msi"),
+            "msi"
+        );
     }
 
     /// `.src.rpm` must beat the generic `.rpm` rule — they're

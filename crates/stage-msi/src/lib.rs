@@ -19,9 +19,11 @@ use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
 
 mod build;
+mod product_code;
 mod template;
 mod wix;
 
+pub use product_code::derive_product_code;
 pub use template::render_wxs_template;
 pub use wix::{MsiCommands, WixVersion, map_arch_to_msi, msi_command};
 
@@ -120,21 +122,30 @@ impl Stage for MsiStage {
     }
 }
 
-/// Environment requirements for the msi stage: when any active `msis:`
-/// entry exists and the configured build targets include Windows, the WiX
-/// toolchain resolved by the same policy the build uses (explicit
-/// `version:` > `.wxs` namespace sniff > installed-tool probe) — `wix` for
-/// v4, `candle` + `light` for v3, `wixl` for the Linux-native msitools path.
-pub fn env_requirements(
-    ctx: &anodizer_core::context::Context,
-) -> Vec<anodizer_core::EnvRequirement> {
-    if !anodizer_core::env_preflight::configured_build_targets(ctx)
-        .iter()
-        .any(|t| anodizer_core::target::is_windows(t))
-    {
-        return Vec::new();
+/// The WiX CLI binaries a resolved [`WixVersion`] requires on `PATH`:
+/// v4 → `wix`; v3 → `candle` + `light`; wixl → `wixl`. Single source of
+/// truth so every consumer (env-preflight, the determinism gate) maps a
+/// resolved version to tools identically — a hand-rolled second mapping
+/// would drift from the version the build actually runs.
+pub fn wix_version_tools(version: WixVersion) -> Vec<&'static str> {
+    match version {
+        WixVersion::V4 => vec!["wix"],
+        WixVersion::V3 => vec!["candle", "light"],
+        WixVersion::Wixl => vec!["wixl"],
     }
-    let mut out = Vec::new();
+}
+
+/// The WiX binaries every active `msis:` entry needs on `PATH`, resolved by
+/// the same policy the build uses (explicit `version:` > `.wxs` namespace
+/// sniff > installed-tool probe). Order-preserving and de-duplicated.
+///
+/// Unlike [`env_requirements`], this does NOT gate on the configured build
+/// targets including Windows: the determinism gate calls it only once the
+/// `msi` stage is already in the effective stage set, and the gate's job is
+/// purely "which tools must this stage's host carry". Returns an empty list
+/// when no active MSI config exists.
+pub fn required_msi_tools(ctx: &anodizer_core::context::Context) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
     for krate in anodizer_core::env_preflight::crate_universe(&ctx.config) {
         for cfg in krate.msis.iter().flatten() {
             if anodizer_core::env_preflight::entry_inactive(
@@ -152,25 +163,34 @@ pub fn env_requirements(
                 .as_deref()
                 .map(|raw| ctx.render_template(raw).unwrap_or_else(|_| raw.to_string()))
                 .unwrap_or_default();
-            match wix::resolve_wix_version_quiet(cfg, &wxs) {
-                WixVersion::V4 => out.push(anodizer_core::EnvRequirement::Tool {
-                    name: "wix".to_string(),
-                }),
-                WixVersion::V3 => {
-                    out.push(anodizer_core::EnvRequirement::Tool {
-                        name: "candle".to_string(),
-                    });
-                    out.push(anodizer_core::EnvRequirement::Tool {
-                        name: "light".to_string(),
-                    });
+            for tool in wix_version_tools(wix::resolve_wix_version_quiet(cfg, &wxs)) {
+                if !out.iter().any(|t| t == tool) {
+                    out.push(tool.to_string());
                 }
-                WixVersion::Wixl => out.push(anodizer_core::EnvRequirement::Tool {
-                    name: "wixl".to_string(),
-                }),
             }
         }
     }
     out
+}
+
+/// Environment requirements for the msi stage: when any active `msis:`
+/// entry exists and the configured build targets include Windows, the WiX
+/// toolchain resolved by the same policy the build uses (explicit
+/// `version:` > `.wxs` namespace sniff > installed-tool probe) — `wix` for
+/// v4, `candle` + `light` for v3, `wixl` for the Linux-native msitools path.
+pub fn env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    if !anodizer_core::env_preflight::configured_build_targets(ctx)
+        .iter()
+        .any(|t| anodizer_core::target::is_windows(t))
+    {
+        return Vec::new();
+    }
+    required_msi_tools(ctx)
+        .into_iter()
+        .map(|name| anodizer_core::EnvRequirement::Tool { name })
+        .collect()
 }
 
 #[cfg(test)]
@@ -430,6 +450,91 @@ mod tests {
         assert_eq!(
             installers[0].target,
             Some("x86_64-pc-windows-msvc".to_string())
+        );
+    }
+
+    #[test]
+    fn test_stage_stamps_deterministic_product_code_metadata() {
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let wxs_path = tmp.path().join("app.wxs");
+        fs::write(&wxs_path, "<Wix/>").unwrap();
+
+        let msi_cfg = MsiConfig {
+            wxs: Some(wxs_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            msis: Some(vec![msi_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let stage = MsiStage;
+        stage.run(&mut ctx).unwrap();
+
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        assert_eq!(installers.len(), 1);
+        // The stamped metadata equals the standalone derivation for this
+        // (project, version, msi_arch) triple — the same value the wxs renders.
+        let expected = derive_product_code("myapp", "1.0.0", "x64");
+        assert_eq!(
+            installers[0].metadata.get("product_code"),
+            Some(&expected),
+            "MSI artifact must carry the derived product_code"
+        );
+    }
+
+    #[test]
+    fn test_render_wxs_exposes_msi_product_code_var() {
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let wxs_path = tmp.path().join("app.wxs");
+        fs::write(
+            &wxs_path,
+            r#"<Product Id="{{ MsiProductCode }}" Name="{{ ProjectName }}"/>"#,
+        )
+        .unwrap();
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let pc = derive_product_code("myapp", "1.0.0", "x64");
+        ctx.template_vars_mut().set("MsiProductCode", &pc);
+
+        let rendered = render_wxs_template(&ctx, &wxs_path.to_string_lossy()).unwrap();
+        assert!(
+            rendered.contains(&format!(r#"Product Id="{pc}""#)),
+            "rendered wxs must substitute MsiProductCode: {rendered}"
         );
     }
 
@@ -2535,5 +2640,145 @@ crates:
             2,
             "expected one installer per distinct-named config"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // required_msi_tools — the determinism gate's single source of truth for
+    // the WiX tool requirement (same resolution preflight uses).
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_wix_version_tools_maps_each_version() {
+        assert_eq!(wix_version_tools(WixVersion::V4), vec!["wix"]);
+        assert_eq!(wix_version_tools(WixVersion::V3), vec!["candle", "light"]);
+        assert_eq!(wix_version_tools(WixVersion::Wixl), vec!["wixl"]);
+    }
+
+    #[test]
+    fn test_required_msi_tools_v3_config_resolves_host_aware() {
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        // Explicit `version: v3` resolves host-aware (the SAME policy the
+        // build runs): a host with candle+light keeps V3 → candle+light (the
+        // Windows-shard release case — a hardcoded `wix` probe would have
+        // wrongly demanded the v4 binary there); a host with only wixl and no
+        // candle/light downgrades to the Linux-native wixl path. Asserting
+        // against the host's real toolset proves the gate consults the same
+        // resolution rather than a static guess.
+        let msi_cfg = MsiConfig {
+            wxs: Some("app.wxs".to_string()),
+            version: Some("v3".to_string()),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            msis: Some(vec![msi_cfg]),
+            ..Default::default()
+        }];
+        let ctx = Context::new(config, ContextOptions::default());
+
+        let has_v3 =
+            anodizer_core::util::find_binary("candle") && anodizer_core::util::find_binary("light");
+        let expected = if has_v3 {
+            vec!["candle".to_string(), "light".to_string()]
+        } else if anodizer_core::util::find_binary("wixl") {
+            vec!["wixl".to_string()]
+        } else {
+            // Neither candle+light nor wixl installed: V3 stays V3 (the build
+            // would then surface a real candle/light-missing error).
+            vec!["candle".to_string(), "light".to_string()]
+        };
+        assert_eq!(required_msi_tools(&ctx), expected);
+    }
+
+    #[test]
+    fn test_required_msi_tools_v4_config_needs_wix() {
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let msi_cfg = MsiConfig {
+            wxs: Some("app.wxs".to_string()),
+            version: Some("v4".to_string()),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            msis: Some(vec![msi_cfg]),
+            ..Default::default()
+        }];
+        let ctx = Context::new(config, ContextOptions::default());
+        assert_eq!(required_msi_tools(&ctx), vec!["wix".to_string()]);
+    }
+
+    #[test]
+    fn test_required_msi_tools_skips_inactive_and_dedupes() {
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig, StringOrBool};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        // One skipped v4 config (must contribute nothing) plus two active v3
+        // configs (the candle/light requirement must appear once, not twice).
+        let skipped = MsiConfig {
+            wxs: Some("a.wxs".to_string()),
+            version: Some("v4".to_string()),
+            skip: Some(StringOrBool::Bool(true)),
+            ..Default::default()
+        };
+        let v3_a = MsiConfig {
+            wxs: Some("b.wxs".to_string()),
+            version: Some("v3".to_string()),
+            ..Default::default()
+        };
+        let v3_b = MsiConfig {
+            wxs: Some("c.wxs".to_string()),
+            version: Some("v3".to_string()),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            msis: Some(vec![skipped, v3_a, v3_b]),
+            ..Default::default()
+        }];
+        let ctx = Context::new(config, ContextOptions::default());
+        // Both active configs resolve to the same host-aware v3 tool set, so
+        // the requirement appears once regardless of which it is; the skipped
+        // config contributes nothing.
+        let has_v3 =
+            anodizer_core::util::find_binary("candle") && anodizer_core::util::find_binary("light");
+        let expected = if has_v3 {
+            vec!["candle".to_string(), "light".to_string()]
+        } else if anodizer_core::util::find_binary("wixl") {
+            vec!["wixl".to_string()]
+        } else {
+            vec!["candle".to_string(), "light".to_string()]
+        };
+        assert_eq!(
+            required_msi_tools(&ctx),
+            expected,
+            "inactive config skipped; duplicate v3 tools de-duplicated"
+        );
+    }
+
+    #[test]
+    fn test_required_msi_tools_empty_without_active_config() {
+        use anodizer_core::config::Config;
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        let ctx = Context::new(config, ContextOptions::default());
+        assert!(required_msi_tools(&ctx).is_empty());
     }
 }
