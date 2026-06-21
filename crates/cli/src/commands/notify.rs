@@ -161,7 +161,6 @@ fn inject_message(announce: &mut anodizer_core::config::AnnounceConfig, msg: &st
     set_msg!(announce.discord);
     set_msg!(announce.discourse);
     set_msg!(announce.slack);
-    set_msg!(announce.webhook);
     set_msg!(announce.telegram);
     set_msg!(announce.teams);
     set_msg!(announce.mattermost);
@@ -173,6 +172,40 @@ fn inject_message(announce: &mut anodizer_core::config::AnnounceConfig, msg: &st
     set_msg!(announce.bluesky);
     set_msg!(announce.linkedin);
     set_msg!(announce.opencollective);
+
+    // The webhook provider is NOT a plain set_msg!: its `message_template` is
+    // the ENTIRE request body, sent verbatim with the configured content_type.
+    // The chat providers above serde-wrap the text into their own JSON envelope,
+    // so a bare message is safe there; injecting a bare message as the webhook's
+    // whole body would ship a non-JSON payload under the JSON-default
+    // content_type, which receivers reject (HTTP 400). Build a body that matches
+    // the content_type instead.
+    if let Some(ref mut cfg) = announce.webhook {
+        cfg.message_template = Some(webhook_notify_body(cfg.content_type.as_deref(), msg));
+    }
+}
+
+/// Build the webhook request body for `anodizer notify`.
+///
+/// For a JSON content_type (the default, or any `*json*` value) the message is
+/// wrapped in a serde-built `{"message": …}` envelope — serde escapes quotes,
+/// newlines, and control characters, so an arbitrary operator/error message
+/// always yields a valid JSON document. For a non-JSON content_type (e.g.
+/// `text/plain`) the message is sent verbatim. The envelope key matches the
+/// stage's `WEBHOOK_DEFAULT_MESSAGE_TEMPLATE` so a receiver wired for anodizer's
+/// release announcements consumes notify messages unchanged.
+fn webhook_notify_body(content_type: Option<&str>, msg: &str) -> String {
+    // `None`/empty content_type resolves to application/json at send time
+    // (see WebhookAnnouncer::send), so both are treated as JSON here.
+    let is_json = match content_type {
+        None => true,
+        Some(ct) => ct.trim().is_empty() || ct.to_ascii_lowercase().contains("json"),
+    };
+    if is_json {
+        serde_json::json!({ "message": msg }).to_string()
+    } else {
+        msg.to_owned()
+    }
 }
 
 #[cfg(test)]
@@ -282,6 +315,59 @@ mod tests {
         );
         // reddit is intentionally skipped — no message_template field.
         assert!(announce.reddit.is_none());
+    }
+
+    #[test]
+    fn webhook_json_default_wraps_message_in_valid_json_envelope() {
+        use anodizer_core::config::{AnnounceConfig, WebhookConfig};
+        let mut announce = AnnounceConfig {
+            webhook: Some(WebhookConfig::default()), // content_type None → JSON
+            ..Default::default()
+        };
+        inject_message(&mut announce, "build failed");
+        let body = announce.webhook.unwrap().message_template.unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&body).expect("webhook body must be valid JSON");
+        assert_eq!(v["message"], "build failed");
+    }
+
+    #[test]
+    fn webhook_json_escapes_quotes_and_newlines_in_message() {
+        // Error text routinely carries quotes/newlines (HTTP error bodies, git
+        // stderr) — a naive plain-text body would produce invalid JSON (the
+        // 400-invalid-payload bug). serde-wrapping must keep it parseable.
+        use anodizer_core::config::{AnnounceConfig, WebhookConfig};
+        let untrusted = "tap push rejected: \"abort\"\nremote: denied";
+        let mut announce = AnnounceConfig {
+            webhook: Some(WebhookConfig::default()),
+            ..Default::default()
+        };
+        inject_message(&mut announce, untrusted);
+        let body = announce.webhook.unwrap().message_template.unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&body).expect("escaped webhook body must be valid JSON");
+        assert_eq!(
+            v["message"], untrusted,
+            "the round-tripped message must equal the original, quotes/newlines intact"
+        );
+    }
+
+    #[test]
+    fn webhook_non_json_content_type_sends_message_verbatim() {
+        use anodizer_core::config::{AnnounceConfig, WebhookConfig};
+        let mut announce = AnnounceConfig {
+            webhook: Some(WebhookConfig {
+                content_type: Some("text/plain".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        inject_message(&mut announce, "build failed");
+        assert_eq!(
+            announce.webhook.unwrap().message_template.unwrap(),
+            "build failed",
+            "a non-JSON content_type must receive the raw message, not a JSON envelope"
+        );
     }
 
     #[test]
