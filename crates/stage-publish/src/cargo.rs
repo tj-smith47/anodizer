@@ -443,16 +443,21 @@ enum CargoSkipDecision {
 /// - local == index → byte-identical re-cut → [`CargoSkipDecision::Skip`].
 /// - local != index → SILENT POISON (content drifted but the version was not
 ///   bumped) → HARD FAIL with an actionable bump-the-version message.
-/// - index cksum is empty (malformed index line) → cannot compare → skip with
-///   a verbose note; the version is immutable on crates.io so re-publishing
-///   would be rejected anyway, and the missing cksum is a registry-side data
-///   gap, not local drift.
-/// - `local_cksum_check` returns `Ok(None)` → guard inapplicable
-///   (non-crates.io); skip (the caller already excluded non-crates.io targets,
-///   so this is a defensive belt-and-braces path).
+/// - index cksum is empty → cannot verify content identity → FAIL CLOSED. An
+///   empty cksum on an index entry the parser DID return signals a
+///   malformed/unparsed index line, not a benign registry gap (crates.io
+///   always records a cksum). Silently skipping it would reopen the poison
+///   hole this guard exists to close.
+/// - `local_cksum_check` returns `Ok(None)` → no local digest was produced for
+///   a crates.io-targeting crate (the caller already routes non-crates.io
+///   targets to `Publish`, so reaching here is unexpected) → FAIL CLOSED
+///   rather than skip an unverifiable version.
 /// - `local_cksum_check` returns `Err` → FAIL CLOSED: an uncomputable local
 ///   digest cannot prove content identity against an immutable published
 ///   version, so refuse to skip.
+///
+/// `Skip` is therefore reachable ONLY via a confirmed byte-identical match;
+/// every other ("cannot verify") outcome fails closed.
 #[allow(clippy::too_many_arguments)]
 fn decide_already_published(
     name: &str,
@@ -468,16 +473,21 @@ fn decide_already_published(
     log: &StageLogger,
 ) -> Result<CargoSkipDecision> {
     if index_cksum.is_empty() {
-        log.verbose(&format!(
-            "crates.io index entry for '{name}-{version}' carries no cksum; \
-             cannot verify content identity — treating the immutable published \
-             version as a safe skip"
-        ));
-        return Ok(CargoSkipDecision::Skip);
+        anyhow::bail!(
+            "publish: crates.io index entry for '{name}-{version}' carries no cksum, so its \
+             content identity cannot be verified. Refusing to skip — an empty cksum on an \
+             existing index entry signals a malformed/unparsed index line, not a safe re-cut, \
+             and silently skipping it would reopen the content-drift poison hole this guard \
+             closes. Re-run once the crates.io index is fully reachable, or bump the version."
+        );
     }
 
     match local_cksum_check(name, crate_cfg, cargo_cfg) {
-        Ok(None) => Ok(CargoSkipDecision::Skip),
+        Ok(None) => anyhow::bail!(
+            "publish: '{name}-{version}' is published on crates.io but no local .crate checksum \
+             was produced to compare against (the crate targets crates.io, so a digest was \
+             expected). Refusing to skip a version whose content identity is unverifiable."
+        ),
         Ok(Some(local)) if local.eq_ignore_ascii_case(index_cksum) => {
             log.verbose(&format!(
                 "'{name}-{version}' local .crate checksum matches the crates.io \
@@ -3025,19 +3035,41 @@ mod tests {
     }
 
     #[test]
-    fn decide_already_published_empty_index_cksum_skips() {
-        // A published-but-cksum-less index line cannot be compared; the
-        // version is immutable on crates.io, so skip without invoking the
-        // local computer at all.
+    fn decide_already_published_empty_index_cksum_fails_closed() {
+        // An empty cksum on a returned index entry cannot prove content
+        // identity. Skipping it would reopen the poison hole, so the guard
+        // fails closed WITHOUT invoking the local computer at all.
         let cfg = CrateConfig::default();
         let log = StageLogger::new("t", anodizer_core::log::Verbosity::Normal);
         let local_panics =
             |_: &str, _: &CrateConfig, _: Option<&CargoPublishConfig>| -> Result<Option<String>> {
                 panic!("local cksum must not run when index cksum is empty")
             };
-        let d = decide_already_published("c", "1.0.0", "", &cfg, None, local_panics, &log)
-            .expect("empty cksum ⇒ Ok(Skip)");
-        assert_eq!(d, CargoSkipDecision::Skip);
+        let err = decide_already_published("c", "1.0.0", "", &cfg, None, local_panics, &log)
+            .expect_err("empty cksum ⇒ fail closed, never skip");
+        assert!(
+            err.to_string().contains("carries no cksum"),
+            "actionable empty-cksum error: {err}"
+        );
+    }
+
+    #[test]
+    fn decide_already_published_local_none_fails_closed() {
+        // Ok(None) means no local digest for a crates.io-targeting crate — an
+        // unverifiable state the main loop should never reach, so the guard
+        // refuses to skip rather than silently pass a possibly-drifted version.
+        let cfg = CrateConfig::default();
+        let log = StageLogger::new("t", anodizer_core::log::Verbosity::Normal);
+        let local_none = |_: &str,
+                          _: &CrateConfig,
+                          _: Option<&CargoPublishConfig>|
+         -> Result<Option<String>> { Ok(None) };
+        let err = decide_already_published("c", "1.0.0", "abcd", &cfg, None, local_none, &log)
+            .expect_err("local None ⇒ fail closed, never skip");
+        assert!(
+            err.to_string().contains("content identity is unverifiable"),
+            "actionable local-None error: {err}"
+        );
     }
 
     #[test]
