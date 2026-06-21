@@ -547,6 +547,12 @@ impl Stage for MakeselfStage {
         // ----------------------------------------------------------------
         let mut jobs: Vec<MakeselfJob> = Vec::new();
 
+        // One guard spans every `makeselfs:` config of the project: two configs
+        // with the default (or identical) `filename:` render the same `.run`
+        // path for one platform — error loudly across configs instead of letting
+        // the second silently clobber the first.
+        let mut arch_guard = ArchPathGuard::new();
+
         for cfg in &configs {
             collect_makeself_config_jobs(
                 ctx,
@@ -556,6 +562,7 @@ impl Stage for MakeselfStage {
                 &version,
                 &project_name,
                 dry_run,
+                &mut arch_guard,
                 &mut jobs,
             )?;
         }
@@ -607,6 +614,7 @@ fn collect_makeself_config_jobs(
     version: &str,
     project_name: &str,
     dry_run: bool,
+    arch_guard: &mut ArchPathGuard,
     jobs: &mut Vec<MakeselfJob>,
 ) -> Result<()> {
     if let Some(ref d) = cfg.skip {
@@ -670,12 +678,6 @@ fn collect_makeself_config_jobs(
 
     let groups = group_by_platform(&all_binaries);
 
-    // One guard per (crate, config) scope: a constant user `filename:` lacking
-    // an `{{ .Arch }}` / `{{ .Amd64 }}` discriminator renders the same `.run`
-    // path for two platforms or two amd64 variants — the guard turns that
-    // silent clobber into an actionable error instead of a survivor.
-    let mut arch_guard = ArchPathGuard::new();
-
     for ((platform, amd64_variant), binaries) in &groups {
         build_makeself_platform_job(
             ctx,
@@ -692,7 +694,7 @@ fn collect_makeself_config_jobs(
             amd64_variant.as_deref(),
             binaries,
             dry_run,
-            &mut arch_guard,
+            arch_guard,
             jobs,
         )?;
     }
@@ -1347,6 +1349,7 @@ crates:
         let log =
             anodizer_core::log::StageLogger::new("makeself", anodizer_core::log::Verbosity::Normal);
         let mut jobs: Vec<MakeselfJob> = Vec::new();
+        let mut arch_guard = ArchPathGuard::new();
         collect_makeself_config_jobs(
             &mut ctx,
             &log,
@@ -1355,6 +1358,7 @@ crates:
             "1.0.0",
             "myapp",
             false,
+            &mut arch_guard,
             &mut jobs,
         )
         .unwrap();
@@ -1456,6 +1460,7 @@ crates:
         let log =
             anodizer_core::log::StageLogger::new("makeself", anodizer_core::log::Verbosity::Normal);
         let mut jobs: Vec<MakeselfJob> = Vec::new();
+        let mut arch_guard = ArchPathGuard::new();
         let err = collect_makeself_config_jobs(
             &mut ctx,
             &log,
@@ -1464,6 +1469,7 @@ crates:
             "1.0.0",
             "myapp",
             false,
+            &mut arch_guard,
             &mut jobs,
         )
         .unwrap_err()
@@ -1514,6 +1520,56 @@ crates:
                 .all(|a| a.kind != ArtifactKind::Makeself),
             "dry-run must not register a Makeself artifact"
         );
+    }
+
+    /// Two `makeselfs:` configs (distinct `id`, both the default filename)
+    /// render the same `.run` path for one platform. The guard now spans every
+    /// config of the project, so the second config bails loudly instead of
+    /// silently clobbering the first config's installer.
+    #[test]
+    fn test_makeself_two_configs_same_default_name_bail_across_configs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let binary_path = tmp.path().join("bin");
+        std::fs::write(&binary_path, b"x").unwrap();
+        let mut ctx = Context::new(
+            anodizer_core::config::Config::default(),
+            anodizer_core::context::ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.config.project_name = "proj".to_string();
+        ctx.config.dist = tmp.path().to_path_buf();
+        ctx.config.makeselfs = vec![
+            MakeselfConfig {
+                id: Some("first".into()),
+                script: Some("install.sh".into()),
+                os: Some(vec!["linux".into()]),
+                ..Default::default()
+            },
+            MakeselfConfig {
+                id: Some("second".into()),
+                script: Some("install.sh".into()),
+                os: Some(vec!["linux".into()]),
+                ..Default::default()
+            },
+        ];
+        ctx.template_vars_mut().set("ProjectName", "proj");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "bin".into(),
+            path: binary_path,
+            target: Some("x86_64-unknown-linux-gnu".into()),
+            crate_name: "proj".into(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let err = MakeselfStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("makeself:"), "{err}");
+        assert!(err.contains("crate 'proj'"), "{err}");
+        assert!(err.contains("{{ .Arch }}"), "{err}");
     }
 
     #[test]
@@ -2258,29 +2314,34 @@ crates:
     #[test]
     #[serial_test::serial(path_env)]
     fn test_makeself_live_run_two_configs_distinct_ids() {
-        // Two configs (distinct ids) each emit their own .run with the id in
-        // the work-dir path and the artifact metadata. Two invocations.
+        // Two configs (distinct ids AND distinct filenames) each emit their own
+        // .run with the id in the work-dir path and the artifact metadata. Two
+        // invocations. Distinct filenames are required: a per-project guard now
+        // spans every config, so two configs rendering the same default name for
+        // one platform would (correctly) bail rather than silently clobber.
         let fx = MakeselfFixture::new();
         let mut ctx = fx.ctx(&[("x86_64-unknown-linux-gnu", "proj")]);
         ctx.config.makeselfs = vec![
             MakeselfConfig {
                 id: Some("alpha".into()),
                 script: Some(fx.script_path.to_string_lossy().into_owned()),
+                filename: Some("alpha_{{ .Arch }}".into()),
                 ..Default::default()
             },
             MakeselfConfig {
                 id: Some("beta".into()),
                 script: Some(fx.script_path.to_string_lossy().into_owned()),
+                filename: Some("beta_{{ .Arch }}".into()),
                 ..Default::default()
             },
         ];
 
         let tools = FakeToolDir::new();
-        // Both configs render the same default filename (same project/version/
-        // platform) but run in id-scoped work dirs.
+        // Each config renders a distinct filename, so both coexist.
         tools
             .tool("makeself")
-            .creates(linux_amd64_run_name(), "#!installer")
+            .creates("alpha_amd64.run", "#!installer")
+            .creates("beta_amd64.run", "#!installer")
             .install();
         let _g = tools.activate();
 

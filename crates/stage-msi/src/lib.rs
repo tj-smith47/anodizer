@@ -2416,4 +2416,124 @@ crates:
              flip this assertion."
         );
     }
+
+    #[test]
+    fn test_two_configs_same_crate_same_arch_default_name_bails() {
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let wxs_path = tmp.path().join("app.wxs");
+        fs::write(&wxs_path, "<Wix/>").unwrap();
+
+        // Two msi configs for ONE crate, both the DEFAULT name template. With a
+        // single Windows target present, both render `myapp_x64.msi` — the same
+        // path. A per-config guard would reset between them and let the second
+        // silently clobber the first; a per-crate guard must bail.
+        let make_cfg = || MsiConfig {
+            wxs: Some(wxs_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            msis: Some(vec![make_cfg(), make_cfg()]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let err = MsiStage
+            .run(&mut ctx)
+            .expect_err("two configs rendering the same path must bail");
+        let msg = err.to_string();
+        assert!(msg.contains("msis:"), "{msg}");
+        assert!(msg.contains("crate 'myapp'"), "{msg}");
+        assert!(msg.contains("{{ .Arch }}"), "{msg}");
+    }
+
+    #[test]
+    fn test_two_configs_same_crate_distinct_names_pass() {
+        use anodizer_core::artifact::Artifact;
+        use anodizer_core::config::{Config, CrateConfig, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = TempDir::new().unwrap();
+        let wxs_path = tmp.path().join("app.wxs");
+        fs::write(&wxs_path, "<Wix/>").unwrap();
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            msis: Some(vec![
+                MsiConfig {
+                    wxs: Some(wxs_path.to_string_lossy().into_owned()),
+                    name: Some("{{ ProjectName }}-one_{{ MsiArch }}.msi".to_string()),
+                    ..Default::default()
+                },
+                MsiConfig {
+                    wxs: Some(wxs_path.to_string_lossy().into_owned()),
+                    name: Some("{{ ProjectName }}-two_{{ MsiArch }}.msi".to_string()),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        MsiStage
+            .run(&mut ctx)
+            .expect("distinct names across configs must not collide");
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        assert_eq!(
+            installers.len(),
+            2,
+            "expected one installer per distinct-named config"
+        );
+    }
 }

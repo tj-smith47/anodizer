@@ -5483,6 +5483,62 @@ fn test_nfpm_amd64_variant_empty_vec_is_no_op() {
     );
 }
 
+/// Two `nfpms:` configs on one crate share the same `package_name`, the same
+/// format + arch, and the conventional default filename (no
+/// `file_name_template`), so they render the same `.deb` path. The guard now
+/// spans every config of the crate, so the second config bails loudly via the
+/// conventional-default path instead of silently clobbering the first config's
+/// package.
+#[test]
+fn test_nfpm_two_configs_same_default_name_bail_across_configs() {
+    use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let make_cfg = |id: &str| NfpmConfig {
+        id: Some(id.to_string()),
+        package_name: Some("myapp".to_string()),
+        formats: vec!["deb".to_string()],
+        maintainer: Some("test@example.com".to_string()),
+        ..Default::default()
+    };
+
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        nfpms: Some(vec![make_cfg("first"), make_cfg("second")]),
+        ..Default::default()
+    }];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: std::path::PathBuf::from("dist/myapp_baseline"),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+
+    let err = NfpmStage.run(&mut ctx).unwrap_err().to_string();
+    assert!(err.contains("nfpms:"), "{err}");
+    assert!(err.contains("crate 'myapp'"), "{err}");
+    assert!(err.contains("conventional default filename"), "{err}");
+    assert!(err.contains("{{ .Amd64 }}"), "{err}");
+}
+
 /// With no top-level `metadata:` block and a bare `nfpm:` config (no
 /// `maintainer`), the maintainer must resolve from the crate's
 /// `Cargo.toml [package].authors` so the deb path no longer hits the empty

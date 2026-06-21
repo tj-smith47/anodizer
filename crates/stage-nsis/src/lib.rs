@@ -205,6 +205,12 @@ impl Stage for NsisStage {
                     .cloned()
                     .collect();
 
+                // One guard spans every config of this crate so two configs that
+                // render the same dist/windows/<name>.exe (same target, default/
+                // identical name) collide loudly instead of the second silently
+                // clobbering the first; it resets per crate, so distinct crates are
+                // unaffected.
+                let mut arch_guard = ArchPathGuard::new();
                 for nsis_cfg in nsis_configs {
                     let nsis_id_for_log = nsis_cfg.id.as_deref().unwrap_or("default").to_string();
 
@@ -327,8 +333,6 @@ impl Stage for NsisStage {
 
                     // Reject a `name` lacking `{{ .Arch }}` that would render the same
                     // dist/windows/<name>.exe for two build targets (silent clobber).
-                    let mut arch_guard = ArchPathGuard::new();
-
                     let default_name = default_name_template();
 
                     for (target, amd64_variant, binary_path) in &effective_binaries {
@@ -2300,5 +2304,116 @@ SectionEnd
         // bail logic is exercised by the prior test. Here we just assert that
         // a single-match glob with name_template doesn't trigger any error.
         NsisStage.run(&mut ctx).unwrap();
+    }
+
+    #[test]
+    fn test_two_configs_same_crate_same_arch_default_name_bails() {
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Two nsis configs for ONE crate, both the DEFAULT name template. With a
+        // single Windows target present, both render the same .exe path. A
+        // per-config guard would reset between them and let the second silently
+        // clobber the first; a per-crate guard must bail.
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nsis: Some(vec![NsisConfig::default(), NsisConfig::default()]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let err = NsisStage
+            .run(&mut ctx)
+            .expect_err("two configs rendering the same path must bail");
+        let msg = err.to_string();
+        assert!(msg.contains("nsis:"), "{msg}");
+        assert!(msg.contains("crate 'myapp'"), "{msg}");
+        assert!(msg.contains("{{ .Arch }}"), "{msg}");
+    }
+
+    #[test]
+    fn test_two_configs_same_crate_distinct_names_pass() {
+        use anodizer_core::config::{Config, CrateConfig, NsisConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nsis: Some(vec![
+                NsisConfig {
+                    name: Some("{{ ProjectName }}-one_{{ Arch }}_setup".to_string()),
+                    ..Default::default()
+                },
+                NsisConfig {
+                    name: Some("{{ ProjectName }}-two_{{ Arch }}_setup".to_string()),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp.exe"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        NsisStage
+            .run(&mut ctx)
+            .expect("distinct names across configs must not collide");
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        assert_eq!(
+            installers.len(),
+            2,
+            "expected one installer per distinct-named config"
+        );
     }
 }

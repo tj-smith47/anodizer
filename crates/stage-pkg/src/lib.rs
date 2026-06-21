@@ -864,6 +864,12 @@ impl Stage for PkgStage {
                     .cloned()
                     .collect();
 
+                // One guard spans every config of this crate so two configs that
+                // render the same dist/macos/<name>.pkg (same target, default/
+                // identical name) collide loudly instead of the second silently
+                // clobbering the first; it resets per crate, so distinct crates are
+                // unaffected.
+                let mut arch_guard = ArchPathGuard::new();
                 for pkg_cfg in pkg_configs {
                     let pkg_id_for_log = pkg_cfg.id.as_deref().unwrap_or("default").to_string();
 
@@ -1009,8 +1015,6 @@ impl Stage for PkgStage {
                     //
                     // Reject a `name` lacking `{{ .Arch }}` that would render the same
                     // dist/macos/<name>.pkg for two build targets (silent clobber).
-                    let mut arch_guard = ArchPathGuard::new();
-
                     let default_name = default_name_template();
 
                     for (target, amd64_variant, binary_path) in &effective_binaries {
@@ -3470,5 +3474,109 @@ crates:
             filename, "custom_arm64.PKG",
             "a user name already ending in .pkg (any case) must not get a second .pkg"
         );
+    }
+
+    #[test]
+    fn test_two_configs_same_crate_same_arch_default_name_bails() {
+        let tmp = TempDir::new().unwrap();
+
+        // Two pkg configs for ONE crate, both the DEFAULT name template. With a
+        // single darwin target present, both render `myapp_arm64.pkg` — the same
+        // path. A per-config guard would reset between them and let the second
+        // silently clobber the first; a per-crate guard must bail.
+        let make_cfg = || PkgConfig {
+            identifier: Some("com.example.myapp".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            pkgs: Some(vec![make_cfg(), make_cfg()]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("/build/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let err = PkgStage
+            .run(&mut ctx)
+            .expect_err("two configs rendering the same path must bail");
+        let msg = err.to_string();
+        assert!(msg.contains("pkgs:"), "{msg}");
+        assert!(msg.contains("crate 'myapp'"), "{msg}");
+        assert!(msg.contains("{{ .Arch }}"), "{msg}");
+    }
+
+    #[test]
+    fn test_two_configs_same_crate_distinct_names_pass() {
+        let tmp = TempDir::new().unwrap();
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            pkgs: Some(vec![
+                PkgConfig {
+                    identifier: Some("com.example.myapp".to_string()),
+                    name: Some("{{ ProjectName }}-one_{{ Arch }}.pkg".to_string()),
+                    ..Default::default()
+                },
+                PkgConfig {
+                    identifier: Some("com.example.myapp".to_string()),
+                    name: Some("{{ ProjectName }}-two_{{ Arch }}.pkg".to_string()),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("/build/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        PkgStage
+            .run(&mut ctx)
+            .expect("distinct names across configs must not collide");
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::MacOsPackage);
+        assert_eq!(pkgs.len(), 2, "expected one PKG per distinct-named config");
     }
 }

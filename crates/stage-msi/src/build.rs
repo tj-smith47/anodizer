@@ -107,6 +107,15 @@ pub(super) fn process_msi_crate(
         .cloned()
         .collect();
 
+    // One guard spans every config of this crate so two configs that render the
+    // same dist/windows/<name>.msi (same target, default/identical name) collide
+    // loudly instead of the second silently clobbering the first; it resets per
+    // crate (this function is called once per crate), so distinct crates are
+    // unaffected.
+    let mut arch_guard = ArchPathGuard::new();
+
+    let default_name = default_msi_name_template();
+
     for msi_cfg in msi_configs {
         let msi_id_for_log = msi_cfg.id.as_deref().unwrap_or("default").to_string();
 
@@ -135,13 +144,6 @@ pub(super) fn process_msi_crate(
         let wxs_path_rendered = ctx
             .render_template(wxs_path_raw)
             .with_context(|| format!("msi: render wxs path template for crate {}", krate.name))?;
-
-        // Reject a `name` lacking `{{ .Arch }}`/`{{ .MsiArch }}` that would
-        // render the same dist/windows/<name>.msi for two build targets
-        // (silent clobber).
-        let mut arch_guard = ArchPathGuard::new();
-
-        let default_name = default_msi_name_template();
 
         for (target, amd64_variant, binary_path) in &effective_binaries {
             let msi_path = build_msi_target(

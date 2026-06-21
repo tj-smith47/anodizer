@@ -727,6 +727,12 @@ impl Stage for AppImageStage {
             .env_var("SOURCE_DATE_EPOCH")
             .and_then(|s| s.parse::<i64>().ok());
 
+        // One guard spans every `appimages:` config of the project: two configs
+        // with the default (or identical) `filename:` render the same `.AppImage`
+        // path for one arch — error loudly across configs instead of letting the
+        // second silently clobber the first.
+        let mut arch_guard = ArchPathGuard::new();
+
         let mut jobs: Vec<AppImageJob> = Vec::new();
         for cfg in &configs {
             collect_config_jobs(
@@ -738,6 +744,7 @@ impl Stage for AppImageStage {
                 &project_name,
                 sde_epoch,
                 dry_run,
+                &mut arch_guard,
                 &mut jobs,
             )?;
         }
@@ -775,6 +782,7 @@ fn collect_config_jobs(
     project_name: &str,
     sde_epoch: Option<i64>,
     dry_run: bool,
+    arch_guard: &mut ArchPathGuard,
     jobs: &mut Vec<AppImageJob>,
 ) -> Result<()> {
     let id = cfg.id.as_deref().unwrap_or("default").to_string();
@@ -862,12 +870,6 @@ fn collect_config_jobs(
     // Group by (platform, amd64_variant) so each (os, arch) AND micro-arch
     // variant produces exactly one AppImage.
     let groups = group_by_platform(&binaries);
-
-    // One guard per (crate, config) scope: a `filename:` lacking an
-    // `{{ .Arch }}` / `{{ .Amd64 }}` discriminator renders the same
-    // `.AppImage` path for two targets / variants — error loudly instead of
-    // clobbering.
-    let mut arch_guard = ArchPathGuard::new();
 
     for ((_, amd64_variant), group) in &groups {
         let Some(primary) = group.first() else {

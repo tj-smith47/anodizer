@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
 
+use anodizer_core::arch_path_guard::ArchPathGuard;
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::{AppImageConfig, RuntimeHarvest};
 use anodizer_core::context::Context;
@@ -524,8 +525,18 @@ fn multi_arch_produces_distinct_filenames() {
 
     let log = ctx.logger("appimage");
     let mut jobs = Vec::new();
+    let mut arch_guard = ArchPathGuard::new();
     collect_config_jobs(
-        &mut ctx, &log, &cfg, &dist, "1.2.3", "myapp", None, false, &mut jobs,
+        &mut ctx,
+        &log,
+        &cfg,
+        &dist,
+        "1.2.3",
+        "myapp",
+        None,
+        false,
+        &mut arch_guard,
+        &mut jobs,
     )
     .unwrap();
 
@@ -596,8 +607,18 @@ fn same_triple_multi_variant_produces_distinct_filenames() {
     let cfg = appimage_fixture(tmp.path());
     let log = ctx.logger("appimage");
     let mut jobs = Vec::new();
+    let mut arch_guard = ArchPathGuard::new();
     collect_config_jobs(
-        &mut ctx, &log, &cfg, &dist, "1.2.3", "myapp", None, false, &mut jobs,
+        &mut ctx,
+        &log,
+        &cfg,
+        &dist,
+        "1.2.3",
+        "myapp",
+        None,
+        false,
+        &mut arch_guard,
+        &mut jobs,
     )
     .expect("multi-variant build must not clobber");
 
@@ -668,8 +689,18 @@ fn constant_filename_bails_across_variants() {
 
     let log = ctx.logger("appimage");
     let mut jobs = Vec::new();
+    let mut arch_guard = ArchPathGuard::new();
     let err = collect_config_jobs(
-        &mut ctx, &log, &cfg, &dist, "1.2.3", "myapp", None, false, &mut jobs,
+        &mut ctx,
+        &log,
+        &cfg,
+        &dist,
+        "1.2.3",
+        "myapp",
+        None,
+        false,
+        &mut arch_guard,
+        &mut jobs,
     )
     .unwrap_err()
     .to_string();
@@ -677,6 +708,79 @@ fn constant_filename_bails_across_variants() {
     assert!(err.contains("appimage:"), "{err}");
     assert!(err.contains("crate 'myapp'"), "{err}");
     assert!(err.contains("{{ .Amd64 }}"), "{err}");
+}
+
+/// Two `appimages:` configs (distinct `id`, both the default filename) render
+/// the same `.AppImage` path for one arch. The guard now spans both configs of
+/// the project, so the second config bails loudly instead of silently
+/// clobbering the first config's artifact.
+#[test]
+fn two_configs_same_default_name_bail_across_configs() {
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.2.3")
+        .populate_git_vars(true)
+        .dist(dist.clone())
+        .build();
+    fs::create_dir_all(&dist).unwrap();
+
+    let p = dist.join("myapp-x86_64-unknown-linux-gnu");
+    fs::write(&p, b"bin").unwrap();
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert("binary".to_string(), "myapp".to_string());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: "myapp-x86_64-unknown-linux-gnu".to_string(),
+        path: p,
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata,
+        size: None,
+    });
+
+    let mut cfg_a = appimage_fixture(tmp.path());
+    cfg_a.id = Some("first".to_string());
+    let mut cfg_b = appimage_fixture(tmp.path());
+    cfg_b.id = Some("second".to_string());
+
+    let log = ctx.logger("appimage");
+    let mut jobs = Vec::new();
+    // One guard threaded across both configs, exactly as `run()` does.
+    let mut arch_guard = ArchPathGuard::new();
+    collect_config_jobs(
+        &mut ctx,
+        &log,
+        &cfg_a,
+        &dist,
+        "1.2.3",
+        "myapp",
+        None,
+        false,
+        &mut arch_guard,
+        &mut jobs,
+    )
+    .expect("first config must pass");
+
+    let err = collect_config_jobs(
+        &mut ctx,
+        &log,
+        &cfg_b,
+        &dist,
+        "1.2.3",
+        "myapp",
+        None,
+        false,
+        &mut arch_guard,
+        &mut jobs,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(err.contains("appimage:"), "{err}");
+    assert!(err.contains("crate 'myapp'"), "{err}");
+    assert!(err.contains("{{ .Arch }}"), "{err}");
 }
 
 #[test]
@@ -729,8 +833,18 @@ fn update_information_threads_into_job() {
 
     let log = ctx.logger("appimage");
     let mut jobs = Vec::new();
+    let mut arch_guard = ArchPathGuard::new();
     collect_config_jobs(
-        &mut ctx, &log, &cfg, &dist, "1.2.3", "myapp", None, false, &mut jobs,
+        &mut ctx,
+        &log,
+        &cfg,
+        &dist,
+        "1.2.3",
+        "myapp",
+        None,
+        false,
+        &mut arch_guard,
+        &mut jobs,
     )
     .unwrap();
     assert_eq!(jobs.len(), 1);
@@ -759,6 +873,7 @@ fn sde_epoch_threads_into_job() {
     let cfg = appimage_fixture(tmp.path());
     let log = ctx.logger("appimage");
     let mut jobs = Vec::new();
+    let mut arch_guard = ArchPathGuard::new();
     collect_config_jobs(
         &mut ctx,
         &log,
@@ -768,6 +883,7 @@ fn sde_epoch_threads_into_job() {
         "myapp",
         Some(1_577_836_800),
         false,
+        &mut arch_guard,
         &mut jobs,
     )
     .unwrap();

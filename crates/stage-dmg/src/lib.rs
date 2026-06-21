@@ -277,6 +277,11 @@ impl Stage for DmgStage {
                 } else {
                     project_name.clone()
                 };
+                // One guard spans every config of this crate so two configs that
+                // render the same dist/macos/<name>.dmg (same arch, default/identical
+                // name) collide loudly instead of the second silently clobbering the
+                // first; it resets per crate, so distinct crates are unaffected.
+                let mut arch_guard = ArchPathGuard::new();
                 for dmg_cfg in dmgs {
                     let dmg_id_for_log = dmg_cfg.id.as_deref().unwrap_or("default").to_string();
 
@@ -442,8 +447,6 @@ impl Stage for DmgStage {
 
                     // Reject a `name` lacking `{{ .Arch }}` that would render the
                     // same dist/macos/<name>.dmg for two arches (silent clobber).
-                    let mut arch_guard = ArchPathGuard::new();
-
                     let default_name = default_name_template();
 
                     for ((target, amd64_variant), binary_paths) in &by_target {
@@ -2747,5 +2750,115 @@ crates:
              deterministic output or anodizer added koly-trailer normalization — \
              make the .dmg byte-stable and flip this assertion."
         );
+    }
+
+    #[test]
+    fn test_two_configs_same_crate_same_arch_default_name_bails() {
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Two dmg configs for ONE crate, both the DEFAULT name template
+        // (`{{ ProjectName }}_{{ Arch }}`). With a single darwin arch present,
+        // both configs render `myapp_arm64.dmg` — the same path. A per-config
+        // guard would reset between them and let the second silently clobber
+        // the first; a per-crate guard must bail on the second.
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![DmgConfig::default(), DmgConfig::default()]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let err = DmgStage
+            .run(&mut ctx)
+            .expect_err("two configs rendering the same path must bail");
+        let msg = err.to_string();
+        assert!(msg.contains("dmgs:"), "{msg}");
+        assert!(msg.contains("crate 'myapp'"), "{msg}");
+        assert!(msg.contains("{{ .Arch }}"), "{msg}");
+    }
+
+    #[test]
+    fn test_two_configs_same_crate_distinct_names_pass() {
+        use anodizer_core::config::{Config, CrateConfig, DmgConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Two dmg configs for ONE crate with DISTINCT names render distinct
+        // paths, so the per-crate guard must NOT flag a false collision.
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            dmgs: Some(vec![
+                DmgConfig {
+                    name: Some("{{ ProjectName }}-installer_{{ Arch }}.dmg".to_string()),
+                    ..Default::default()
+                },
+                DmgConfig {
+                    name: Some("{{ ProjectName }}-portable_{{ Arch }}.dmg".to_string()),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        DmgStage
+            .run(&mut ctx)
+            .expect("distinct names across configs must not collide");
+        let dmgs = ctx.artifacts.by_kind(ArtifactKind::DiskImage);
+        assert_eq!(dmgs.len(), 2, "expected one DMG per distinct-named config");
     }
 }

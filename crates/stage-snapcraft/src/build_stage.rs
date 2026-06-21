@@ -185,6 +185,12 @@ impl Stage for SnapcraftStage {
                 .cloned()
                 .collect();
 
+            // One guard per crate spans every `snapcrafts:` config of that crate:
+            // two configs with the default (or identical) `name:` render the same
+            // `.snap` path for one arch — error loudly across configs instead of
+            // letting the second silently clobber the first.
+            let mut name_guard = anodizer_core::arch_path_guard::ArchPathGuard::new();
+
             for snap_cfg in snap_configs {
                 if validate_and_check_skip(ctx, &log, snap_cfg, &krate.name)? {
                     continue;
@@ -211,7 +217,6 @@ impl Stage for SnapcraftStage {
 
                 let by_target = group_binaries_by_target(&filtered_binaries);
 
-                let mut name_guard = anodizer_core::arch_path_guard::ArchPathGuard::new();
                 for ((target_key, amd64_variant), target_binaries) in &by_target {
                     process_snap_target(
                         ctx,

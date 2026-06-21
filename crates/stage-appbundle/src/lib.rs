@@ -383,6 +383,12 @@ impl Stage for AppBundleStage {
                     .cloned()
                     .collect();
 
+                // One guard spans every config of this crate so two configs that
+                // render the same dist/macos/<name>.app (same arch, default/identical
+                // name) collide loudly instead of the second silently clobbering the
+                // first (and `dmgs.use: appbundle` wrapping the survivor twice); it
+                // resets per crate, so distinct crates are unaffected.
+                let mut arch_guard = ArchPathGuard::new();
                 for bundle_cfg in bundle_configs {
                     let bundle_id_for_log =
                         bundle_cfg.id.as_deref().unwrap_or("default").to_string();
@@ -473,8 +479,6 @@ impl Stage for AppBundleStage {
                     // Reject a `name` lacking `{{ .Arch }}` that would render the
                     // same dist/macos/<name>.app for two arches (silent clobber,
                     // and `dmgs.use: appbundle` would then wrap the survivor twice).
-                    let mut arch_guard = ArchPathGuard::new();
-
                     let default_name = default_name_template();
 
                     for (target, amd64_variant, binary_path) in &effective_binaries {
@@ -2430,6 +2434,123 @@ crates:
         assert_ne!(
             actual, bundle_level,
             "regression guard: per-file mtime must not equal bundle-level value"
+        );
+    }
+
+    #[test]
+    fn test_two_configs_same_crate_same_arch_default_name_bails() {
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        // Two app_bundle configs for ONE crate, both the DEFAULT name template.
+        // With a single darwin arch present, both render `myapp_arm64.app` — the
+        // same path. A per-config guard would reset between them and let the
+        // second silently clobber the first; a per-crate guard must bail.
+        let make_cfg = || AppBundleConfig {
+            bundle: Some("com.example.myapp".to_string()),
+            ..Default::default()
+        };
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            app_bundles: Some(vec![make_cfg(), make_cfg()]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let err = AppBundleStage
+            .run(&mut ctx)
+            .expect_err("two configs rendering the same path must bail");
+        let msg = err.to_string();
+        assert!(msg.contains("app_bundles:"), "{msg}");
+        assert!(msg.contains("crate 'myapp'"), "{msg}");
+        assert!(msg.contains("{{ .Arch }}"), "{msg}");
+    }
+
+    #[test]
+    fn test_two_configs_same_crate_distinct_names_pass() {
+        use anodizer_core::config::{AppBundleConfig, Config, CrateConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            app_bundles: Some(vec![
+                AppBundleConfig {
+                    bundle: Some("com.example.myapp".to_string()),
+                    name: Some("{{ ProjectName }}-one_{{ Arch }}.app".to_string()),
+                    ..Default::default()
+                },
+                AppBundleConfig {
+                    bundle: Some("com.example.myapp".to_string()),
+                    name: Some("{{ ProjectName }}-two_{{ Arch }}.app".to_string()),
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: PathBuf::from("dist/myapp"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        AppBundleStage
+            .run(&mut ctx)
+            .expect("distinct names across configs must not collide");
+        let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
+        assert_eq!(
+            installers.len(),
+            2,
+            "expected one bundle per distinct-named config"
         );
     }
 }

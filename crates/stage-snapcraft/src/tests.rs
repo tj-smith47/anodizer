@@ -2905,6 +2905,49 @@ fn test_multiple_binaries_same_target_produce_single_snap() {
 }
 
 #[test]
+fn test_two_configs_same_default_name_bail_across_configs() {
+    // Two `snapcrafts:` configs on one crate share the same `name` and the
+    // default name template, so they render the same `.snap` path for one arch.
+    // The guard now spans every config of the crate, so the second config bails
+    // loudly instead of silently clobbering the first config's snap.
+    let tmp = TempDir::new().unwrap();
+    let make_cfg = |id: &str| SnapcraftConfig {
+        id: Some(id.to_string()),
+        name: Some("mysnap".to_string()),
+        summary: Some("Test snap".to_string()),
+        description: Some("A test snap package".to_string()),
+        ..Default::default()
+    };
+    let crate_cfg = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        snapcrafts: Some(vec![make_cfg("first"), make_cfg("second")]),
+        ..Default::default()
+    };
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![crate_cfg];
+
+    let mut ctx = Context::new(
+        config,
+        ContextOptions {
+            dry_run: true,
+            ..Default::default()
+        },
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts
+        .add(linux_bin("myapp", "x86_64-unknown-linux-gnu"));
+
+    let err = SnapcraftStage.run(&mut ctx).unwrap_err().to_string();
+    assert!(err.contains("snapcrafts:"), "{err}");
+    assert!(err.contains("crate 'myapp'"), "{err}");
+    assert!(err.contains("{{ .Arch }}"), "{err}");
+}
+
+#[test]
 fn test_ids_filter_matches_none_skips_with_warning() {
     // When linux_binaries is non-empty but the ids filter matches zero of
     // them, the stage logs a warn-and-skip distinct from the no-linux-

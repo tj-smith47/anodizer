@@ -827,6 +827,7 @@ fn process_flatpak_cfg(
     linux_binaries: &[Artifact],
     version: &str,
     dry_run: bool,
+    arch_guard: &mut ArchPathGuard,
     acc: &mut FlatpakAccumulators<'_>,
 ) -> Result<()> {
     if let Some(ref d) = flatpak_cfg.skip {
@@ -876,11 +877,6 @@ fn process_flatpak_cfg(
         return Ok(());
     }
 
-    // One guard per (crate, config) scope: a `name_template` lacking an
-    // `{{ .Arch }}` / `{{ .Amd64 }}` discriminator renders the same `.flatpak`
-    // path for two targets / variants — error loudly instead of clobbering.
-    let mut arch_guard = ArchPathGuard::new();
-
     for (target, amd64_variant, binary_path, flatpak_arch) in &effective_binaries {
         let outcome = process_binary_iteration(
             ctx,
@@ -895,7 +891,7 @@ fn process_flatpak_cfg(
             binary_path,
             flatpak_arch,
             dry_run,
-            &mut arch_guard,
+            arch_guard,
             acc.archives_to_remove,
         )?;
         match outcome {
@@ -945,6 +941,12 @@ impl Stage for FlatpakStage {
 
             let linux_binaries = collect_linux_binaries(ctx, &krate.name);
 
+            // One guard per crate spans every `flatpaks:` config of that crate:
+            // two configs with the default (or identical) `name_template` render
+            // the same `.flatpak` path for one arch — error loudly across configs
+            // instead of letting the second silently clobber the first.
+            let mut arch_guard = ArchPathGuard::new();
+
             for flatpak_cfg in flatpak_configs {
                 let mut acc = FlatpakAccumulators {
                     new_artifacts: &mut new_artifacts,
@@ -960,6 +962,7 @@ impl Stage for FlatpakStage {
                     &linux_binaries,
                     &version,
                     dry_run,
+                    &mut arch_guard,
                     &mut acc,
                 )?;
             }
@@ -1882,6 +1885,62 @@ finish_args:
         assert!(names.contains("myapp_1.0.0_linux_amd64v2.flatpak"));
         assert!(names.contains("myapp_1.0.0_linux_amd64v3.flatpak"));
         assert!(names.contains("myapp_1.0.0_linux_arm64.flatpak"));
+    }
+
+    /// Two `flatpaks:` configs on one crate, both rendering the default name,
+    /// produce the same `.flatpak` path for one arch. The guard now spans every
+    /// config of the crate, so the second config bails loudly instead of
+    /// silently clobbering the first config's bundle.
+    #[test]
+    fn test_flatpak_two_configs_same_default_name_bail_across_configs() {
+        use anodizer_core::config::{Config, CrateConfig, FlatpakConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let make_cfg = |id: &str| FlatpakConfig {
+            id: Some(id.to_string()),
+            app_id: Some("org.example.MyApp".to_string()),
+            runtime: Some("org.freedesktop.Platform".to_string()),
+            runtime_version: Some("24.08".to_string()),
+            sdk: Some("org.freedesktop.Sdk".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            flatpaks: Some(vec![make_cfg("first"), make_cfg("second")]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: tmp.path().join("myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let err = FlatpakStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("flatpak:"), "{err}");
+        assert!(err.contains("crate 'myapp'"), "{err}");
+        assert!(err.contains("{{ .Arch }}"), "{err}");
     }
 
     // -----------------------------------------------------------------------

@@ -11,22 +11,27 @@
 //! all carry `{{ .Arch }}`, so this only fires on a bad override; it makes
 //! the mistake impossible to ship silently.
 //!
-//! Construct one [`ArchPathGuard`] per (crate, config) scope and call
-//! [`ArchPathGuard::check`] with each rendered output path. The first
-//! duplicate returns an error naming the offending template and crate.
+//! Construct one [`ArchPathGuard`] per crate — shared across all of that
+//! crate's configs (a stage's config is a `Vec`, so one crate can have many) —
+//! and call [`ArchPathGuard::check`] with each rendered output path. The first
+//! duplicate returns an error naming the offending template and crate. A
+//! per-crate (not per-config) scope is required so two configs of the same
+//! crate that render the same path collide loudly instead of the second
+//! silently clobbering the first.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-/// Tracks the output paths a single per-architecture artifact loop has
-/// produced, erroring on the first collision.
+/// Tracks the output paths one crate's installer configs have produced across
+/// every per-architecture artifact loop, erroring on the first collision.
 #[derive(Debug, Default)]
 pub struct ArchPathGuard {
     seen: HashSet<PathBuf>,
 }
 
 impl ArchPathGuard {
-    /// A fresh guard with no recorded paths. One per (crate, config) scope.
+    /// A fresh guard with no recorded paths. One per crate, shared across all
+    /// of that crate's configs.
     pub fn new() -> Self {
         Self::default()
     }

@@ -146,6 +146,12 @@ fn collect_nfpm_jobs_for_crate(
 
     let linux_binaries = nfpm_eligible_artifacts(ctx, &krate.name);
 
+    // One guard per crate spans every `nfpms:` config of that crate: two configs
+    // with the same format + arch and the default (or identical) filename render
+    // the same package path — error loudly across configs instead of letting the
+    // second silently clobber the first.
+    let mut name_guard = anodizer_core::arch_path_guard::ArchPathGuard::new();
+
     for nfpm_cfg in nfpm_configs {
         let nfpm_id_for_log = nfpm_cfg.id.as_deref().unwrap_or("default").to_string();
 
@@ -161,7 +167,6 @@ fn collect_nfpm_jobs_for_crate(
             continue;
         };
 
-        let mut name_guard = anodizer_core::arch_path_guard::ArchPathGuard::new();
         for (target, amd64_variant, binary_paths, lib_paths) in &platform_groups {
             let (base_os, base_arch) = target
                 .as_deref()
