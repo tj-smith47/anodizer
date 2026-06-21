@@ -93,6 +93,19 @@ pub fn git_status_porcelain_in(cwd: &Path) -> String {
     git_output_in(cwd, &["status", "--porcelain"]).unwrap_or_default()
 }
 
+/// Return the `git status --porcelain` output from a repository at `cwd`,
+/// surfacing the underlying git failure instead of swallowing it.
+///
+/// `Ok(String)` carries the porcelain output (empty = clean tree); `Err`
+/// signals that the `git status` invocation itself could not run or determine
+/// cleanliness (cwd is not a git repository, git is absent, the index is
+/// locked, …). Use this — not [`git_status_porcelain_in`] — for any guard that
+/// must FAIL when it cannot prove the tree is clean, rather than treating an
+/// indeterminate result as clean.
+pub fn git_status_porcelain_result_in(cwd: &Path) -> Result<String> {
+    git_output_in(cwd, &["status", "--porcelain"])
+}
+
 /// List the repository's tracked files (`git ls-files`) as repo-relative paths.
 ///
 /// Drives the `anodizer init --version-files` enrollment discovery: the
@@ -250,5 +263,36 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         init_repo(tmp.path());
         assert!(!is_shallow_clone_in(tmp.path()));
+    }
+
+    #[test]
+    fn porcelain_result_is_ok_empty_for_clean_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        let out = git_status_porcelain_result_in(tmp.path())
+            .expect("a clean git repo must yield Ok(empty)");
+        assert!(
+            out.trim().is_empty(),
+            "clean tree has no porcelain: {out:?}"
+        );
+    }
+
+    #[test]
+    fn porcelain_result_is_ok_with_paths_for_dirty_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_repo(tmp.path());
+        std::fs::write(tmp.path().join("dirty.txt"), "x").unwrap();
+        let out = git_status_porcelain_result_in(tmp.path())
+            .expect("a reachable repo yields Ok even when dirty");
+        assert!(out.contains("dirty.txt"), "dirty path listed: {out:?}");
+    }
+
+    #[test]
+    fn porcelain_result_is_err_for_non_git_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(
+            git_status_porcelain_result_in(tmp.path()).is_err(),
+            "a non-git dir cannot prove cleanliness — must surface Err, not fail open"
+        );
     }
 }

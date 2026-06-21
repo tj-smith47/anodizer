@@ -100,6 +100,52 @@ pub fn package_workspace(
     Ok(())
 }
 
+/// Run `cargo package -p <crate_name> --no-verify --allow-dirty
+/// --no-metadata` against `manifest_dir` with the supplied isolated env.
+///
+/// Same flag rationale as [`package_workspace`], but scoped to a single
+/// crate via `-p` so the publish path's content-vs-version poison guard can
+/// reproduce the exact `.crate` tarball one crate's `cargo publish` would
+/// upload (the guard sha256s it and compares against crates.io's recorded
+/// `cksum`). `--workspace` cannot be used here: a per-crate publish in a
+/// mixed-cadence workspace must package only the crate being published, at
+/// its own version, into `<CARGO_TARGET_DIR>/package/<name>-<version>.crate`.
+///
+/// `env` carries the hermetic block (`CARGO_TARGET_DIR`, `PATH`, `HOME`,
+/// `CARGO_HOME`, ...); the child is `env_clear`ed first so host env vars cannot
+/// perturb the packaged bytes. The poison guard deliberately does NOT pass
+/// `SOURCE_DATE_EPOCH`: cargo does not consult it for the `.crate` tarball, so
+/// identical source at the same commit reproduces the published bytes without
+/// it (the determinism-harness path [`package_workspace`] sets it for its own
+/// hermetic env block, which is harmless but not what makes the `.crate`
+/// reproducible).
+pub fn package_one(
+    crate_name: &str,
+    manifest_dir: &Path,
+    env: &HashMap<String, String>,
+    log: &StageLogger,
+) -> Result<()> {
+    let mut cmd = Command::new("cargo");
+    cmd.arg("package")
+        .arg("-p")
+        .arg(crate_name)
+        .arg("--no-verify")
+        .arg("--allow-dirty")
+        .arg("--no-metadata");
+    cmd.current_dir(manifest_dir);
+    cmd.env_clear();
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    crate::run::run_checked(&mut cmd, log, "cargo package").with_context(|| {
+        format!(
+            "`cargo package -p {crate_name}` failed in {}",
+            manifest_dir.display()
+        )
+    })?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,6 +159,18 @@ mod tests {
         assert!(
             res.is_err(),
             "cargo package against a directory without Cargo.toml should error"
+        );
+    }
+
+    #[test]
+    fn package_one_fails_when_manifest_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let env: HashMap<String, String> = HashMap::new();
+        let (log, _cap) = StageLogger::with_capture("test", crate::log::Verbosity::Normal);
+        let res = package_one("ghost", tmp.path(), &env, &log);
+        assert!(
+            res.is_err(),
+            "cargo package -p against a directory without Cargo.toml should error"
         );
     }
 }

@@ -70,11 +70,14 @@ fn expand_with_transitive_deps(all_crates: &[CrateConfig], seed: &[String]) -> V
 
 /// Build the argument list for `cargo publish` with the given config flags.
 ///
-/// `--allow-dirty` is implicit: the pipeline runs after the tag step, which
-/// ALWAYS leaves a dirty tree (Cargo.lock + version bump), so requiring a
-/// clean tree would block every release. Users can still set
-/// `cargo.allow_dirty: false` to opt out, but that's surprising enough we
-/// always force-on by default.
+/// `--allow-dirty` is implicit. The release (Publish) job checks out the
+/// committed release tag — a CLEAN tree (version bump + Cargo.lock were
+/// committed at tag time). The only thing that dirties the tree before publish
+/// is anodizer's own `[package.metadata.binstall]` write (an idempotent,
+/// uncommitted refresh emitted just before `cargo publish`). `--allow-dirty`
+/// lets that uncommitted write through; without it `cargo publish` would reject
+/// the binstall-enabled crate. Users can still set `cargo.allow_dirty: false`
+/// to opt out, but that's surprising enough we force-on by default.
 pub fn publish_command(crate_name: &str, cfg: Option<&CargoPublishConfig>) -> Vec<String> {
     let mut cmd = vec![
         "cargo".to_string(),
@@ -103,9 +106,10 @@ pub fn publish_command(crate_name: &str, cfg: Option<&CargoPublishConfig>) -> Ve
     if c.no_verify == Some(true) {
         cmd.push("--no-verify".to_string());
     }
-    // allow_dirty defaults to ON when unset (anodize tag bumps Cargo.toml +
-    // updates Cargo.lock, so the tree is always dirty by the time publish
-    // runs). Setting `allow_dirty: false` explicitly disables it.
+    // allow_dirty defaults to ON when unset: the publish runs from a clean tag
+    // checkout, but anodizer's own binstall metadata write dirties the tree
+    // just before publish, and `cargo publish` would otherwise reject it.
+    // Setting `allow_dirty: false` explicitly disables it.
     if c.allow_dirty != Some(false) {
         cmd.push("--allow-dirty".to_string());
     }
@@ -290,6 +294,217 @@ fn parse_index_cksum_for_version(body: &str, version: &str) -> Option<String> {
                 .to_string(),
         )
     })
+}
+
+/// Whether a crate's resolved `publish.cargo` block targets the default
+/// crates.io registry, where the sparse-index cksum the content-vs-version
+/// guard compares against is authoritative.
+///
+/// A custom `registry =`/`index =` points cargo at a different index, so the
+/// crates.io cksum the guard fetched describes a DIFFERENT artifact (or none).
+/// The content guard — and the already-published idempotency skip itself —
+/// only hold against the registry actually being published to, so both are
+/// disabled for non-crates.io targets and the publish is attempted (the
+/// target registry's own server-side conflict handling governs idempotency).
+fn targets_crates_io(cfg: Option<&CargoPublishConfig>) -> bool {
+    match cfg {
+        None => true,
+        Some(c) => c.registry.is_none() && c.index.is_none(),
+    }
+}
+
+/// Package `crate_name` locally and return the lowercase-hex sha256 of the
+/// produced `.crate` tarball — the same digest crates.io records as a
+/// version's `cksum`. Used by the content-vs-version guard to prove a
+/// re-cut of an already-published version is byte-identical to what shipped.
+///
+/// Returns `Ok(None)` when the crate does not target crates.io (the guard is
+/// inapplicable — see [`targets_crates_io`]). Returns `Err` when packaging or
+/// hashing fails: the caller treats that as a fail-closed condition, never a
+/// safe skip, because an uncomputable local digest cannot prove content
+/// identity against an immutable published version.
+///
+/// No `SOURCE_DATE_EPOCH` is set: `cargo package` does not consult it for the
+/// `.crate` tarball's bytes (the mtimes it writes are cargo's own canonical
+/// constant, independent of the env var), so the local `.crate` reproduces the
+/// bytes the original `cargo publish` uploaded purely from identical source at
+/// the same commit. The `.cargo_vcs_info.json` git sha (carried in the tarball)
+/// is what ties content to commit, so a re-cut from a different commit is
+/// correctly flagged. Seeding the var would be a no-op that misleads a reader
+/// into thinking it is load-bearing.
+fn local_crate_cksum(
+    crate_name: &str,
+    crate_cfg: &CrateConfig,
+    cargo_cfg: Option<&CargoPublishConfig>,
+    log: &StageLogger,
+) -> Result<Option<String>> {
+    if !targets_crates_io(cargo_cfg) {
+        return Ok(None);
+    }
+
+    let manifest_dir = std::path::Path::new(&crate_cfg.path);
+    // Hermetic target dir so the produced `.crate` is isolated from any
+    // workspace `target/` and trivially discoverable.
+    let pkg_target = tempfile::tempdir().context("publish: tempdir for local .crate package")?;
+
+    let mut env: HashMap<String, String> = HashMap::new();
+    // Inherit PATH (cargo + toolchain lookup), HOME/CARGO_HOME (registry
+    // config), and RUSTUP_HOME (toolchain resolution) so the packaging step
+    // resolves the registry and toolchain the same way the real publish does.
+    // env_clear in package_one wipes the rest.
+    for key in ["PATH", "HOME", "CARGO_HOME", "RUSTUP_HOME"] {
+        if let Ok(v) = std::env::var(key) {
+            env.insert(key.to_string(), v);
+        }
+    }
+    env.insert(
+        "CARGO_TARGET_DIR".to_string(),
+        pkg_target.path().display().to_string(),
+    );
+
+    anodizer_core::cargo_package::package_one(crate_name, manifest_dir, &env, log).with_context(
+        || format!("publish: package '{crate_name}' to compute local .crate cksum"),
+    )?;
+
+    let version = read_cargo_toml_version(&crate_cfg.path).unwrap_or_default();
+    let crate_file = pkg_target
+        .path()
+        .join("package")
+        .join(format!("{crate_name}-{version}.crate"));
+    let cksum = anodizer_core::hashing::sha256_file(&crate_file)
+        .with_context(|| format!("publish: sha256 local .crate for '{crate_name}'"))?;
+    Ok(Some(cksum))
+}
+
+/// Refuse to run the content-vs-version poison guard against a dirty working
+/// tree.
+///
+/// `cargo package` stamps `"dirty": true` into the `.crate`'s
+/// `.cargo_vcs_info.json` whenever the tree differs from `HEAD`, which changes
+/// the tarball bytes. The release (Publish) job checks out the committed tag —
+/// a clean tree — so reproduction holds there. A manual `--publish-only` from a
+/// DIRTY operator workspace would package dirty bytes and (a) false-poison a
+/// crate that was published clean, or (b) mask real content drift behind the
+/// dirty marker. Either way the comparison against the immutable index cksum is
+/// no longer trustworthy.
+///
+/// Called ONCE before the publish loop's first binstall write, so anodizer's
+/// own (expected) binstall mutation is not itself flagged. Fails loud rather
+/// than silently skipping (a poison hole) or hard-failing on content (which
+/// would misattribute the divergence to a code change). The message lists the
+/// dirty paths and prescribes re-running from a clean tag checkout.
+fn ensure_publish_tree_clean(ctx: &Context) -> Result<()> {
+    let repo = ctx
+        .options
+        .project_root
+        .clone()
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    let porcelain = match anodizer_core::git::git_status_porcelain_result_in(&repo) {
+        Ok(out) => out,
+        // An errored `git status` (non-repo cwd, git absent, locked index)
+        // cannot PROVE the tree is clean. A guard that "fails loud rather than
+        // silently skipping" must refuse here, never treat the indeterminate
+        // result as clean — that would be the very poison hole this gate closes.
+        Err(e) => anyhow::bail!(
+            "publish: cannot verify the working tree is clean before checking already-published \
+             crates against the crates.io index ({e:#}). Without a clean-tree proof, a local \
+             `cargo package` checksum cannot be trusted to match what was published from the \
+             release tag. Re-run the publish from a clean git checkout of the release tag (the \
+             Release job does this automatically)."
+        ),
+    };
+    if porcelain.trim().is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "publish: working tree is DIRTY before verifying already-published crates against the \
+         crates.io index. `cargo package` records the dirty state in the .crate, so a local \
+         checksum would NOT match what was published from the clean release tag — \
+         already-published content verification is unreliable. Re-run from a clean checkout of \
+         the release tag (the Release job does this automatically; `git status` must show no \
+         changes). Uncommitted changes:\n{porcelain}"
+    );
+}
+
+/// Outcome of the already-published content-vs-version poison guard for one
+/// crate. `Skip` means the version is on crates.io with byte-identical
+/// content (a safe idempotent re-cut); `Publish` means proceed to
+/// `cargo publish`. A poisoned version (published with DIFFERENT content)
+/// never reaches either arm — the guard hard-fails instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CargoSkipDecision {
+    Skip,
+    Publish,
+}
+
+/// Decide whether an already-published crates.io version is a safe skip by
+/// comparing the local `.crate` sha256 against the index-recorded `cksum`.
+///
+/// - local == index → byte-identical re-cut → [`CargoSkipDecision::Skip`].
+/// - local != index → SILENT POISON (content drifted but the version was not
+///   bumped) → HARD FAIL with an actionable bump-the-version message.
+/// - index cksum is empty (malformed index line) → cannot compare → skip with
+///   a verbose note; the version is immutable on crates.io so re-publishing
+///   would be rejected anyway, and the missing cksum is a registry-side data
+///   gap, not local drift.
+/// - `local_cksum_check` returns `Ok(None)` → guard inapplicable
+///   (non-crates.io); skip (the caller already excluded non-crates.io targets,
+///   so this is a defensive belt-and-braces path).
+/// - `local_cksum_check` returns `Err` → FAIL CLOSED: an uncomputable local
+///   digest cannot prove content identity against an immutable published
+///   version, so refuse to skip.
+#[allow(clippy::too_many_arguments)]
+fn decide_already_published(
+    name: &str,
+    version: &str,
+    index_cksum: &str,
+    crate_cfg: &CrateConfig,
+    cargo_cfg: Option<&CargoPublishConfig>,
+    local_cksum_check: impl Fn(
+        &str,
+        &CrateConfig,
+        Option<&CargoPublishConfig>,
+    ) -> Result<Option<String>>,
+    log: &StageLogger,
+) -> Result<CargoSkipDecision> {
+    if index_cksum.is_empty() {
+        log.verbose(&format!(
+            "crates.io index entry for '{name}-{version}' carries no cksum; \
+             cannot verify content identity — treating the immutable published \
+             version as a safe skip"
+        ));
+        return Ok(CargoSkipDecision::Skip);
+    }
+
+    match local_cksum_check(name, crate_cfg, cargo_cfg) {
+        Ok(None) => Ok(CargoSkipDecision::Skip),
+        Ok(Some(local)) if local.eq_ignore_ascii_case(index_cksum) => {
+            log.verbose(&format!(
+                "'{name}-{version}' local .crate checksum matches the crates.io \
+                 index ({index_cksum}); safe idempotent re-cut"
+            ));
+            Ok(CargoSkipDecision::Skip)
+        }
+        Ok(Some(local)) => {
+            anyhow::bail!(
+                "publish: '{name}-{version}' is ALREADY published on crates.io with DIFFERENT \
+                 content (index cksum {index_cksum}, local .crate cksum {local}). Re-publishing \
+                 would be SILENTLY SKIPPED by cargo, so the changed code would never ship under \
+                 this version. Bump the version (crates.io versions are immutable) and re-run."
+            );
+        }
+        Err(e) => {
+            // Fail closed — cannot prove identity, so cannot safely skip.
+            Err(e).with_context(|| {
+                format!(
+                    "publish: '{name}-{version}' is already published on crates.io but its local \
+                     .crate checksum could not be computed; refusing to skip a version that may \
+                     have drifted from the published content. Resolve the packaging error and \
+                     re-run, or bump the version."
+                )
+            })
+        }
+    }
 }
 
 /// Poll the crates.io sparse index until `crate_name` at `version` appears or
@@ -1501,26 +1716,12 @@ fn resolve_default_targets(ctx: &Context) -> Vec<String> {
 /// Honors `dry_run` (the emitter does not mutate under dry-run); the caller
 /// already early-returns before the publish loop on `ctx.is_dry_run()`, so in
 /// practice this only runs on a real publish.
-fn ensure_binstall_metadata(
-    ctx: &mut Context,
-    crate_cfg: &CrateConfig,
-    dry_run: bool,
-    log: &StageLogger,
-) -> Result<()> {
-    ensure_binstall_metadata_with(
-        ctx,
-        crate_cfg,
-        dry_run,
-        log,
-        &anodizer_core::crate_scope::resolve_crate_tag,
-    )
-}
-
-/// Inner body of [`ensure_binstall_metadata`] with the per-crate tag source
-/// injected. Production passes [`anodizer_core::crate_scope::resolve_crate_tag`]
-/// (git-backed); tests pass a closure returning a fixed tag so the per-crate
-/// var scoping — and the resulting override set — can be exercised without a git
-/// fixture. Mirrors the build stage's `apply_source_mutations_with_resolver`
+/// The per-crate tag source is injected. The publish loop passes
+/// [`anodizer_core::crate_scope::resolve_crate_tag`] (git-backed, threaded in
+/// from the public entry points); tests pass a closure returning a fixed tag so
+/// the per-crate var scoping — and the resulting override set — can be exercised
+/// without a git fixture. Mirrors the build stage's
+/// `apply_source_mutations_with_resolver`
 /// seam so both paths are testable the same way.
 fn ensure_binstall_metadata_with(
     ctx: &mut Context,
@@ -1579,11 +1780,13 @@ pub fn publish_to_cargo(
     publish_to_cargo_with(ctx, selected, log, record, is_already_published)
 }
 
-/// Test seam for [`publish_to_cargo`]: identical behaviour, but the
-/// crates.io already-published idempotency check is injected. Production
-/// passes [`is_already_published`] (a real sparse-index GET); tests pass a
-/// stub so the partial-failure rollback path can be exercised without a
-/// network round-trip. The signature mirrors `is_already_published`
+/// Test seam for [`publish_to_cargo`] that injects only the crates.io
+/// already-published index check; the content-vs-version guard's local
+/// `.crate` checksum is wired to the production [`local_crate_cksum`].
+///
+/// Production passes [`is_already_published`] (a real sparse-index GET);
+/// tests pass a stub so the partial-failure rollback path can be exercised
+/// without a network round-trip. The signature mirrors `is_already_published`
 /// `(name, version, policy) -> Result<Option<cksum>>`.
 fn publish_to_cargo_with(
     ctx: &mut Context,
@@ -1595,6 +1798,46 @@ fn publish_to_cargo_with(
         &str,
         &anodizer_core::retry::RetryPolicy,
     ) -> Result<Option<String>>,
+) -> Result<()> {
+    publish_to_cargo_with_guard(
+        ctx,
+        selected,
+        log,
+        record,
+        already_published_check,
+        |name, crate_cfg, cargo_cfg| local_crate_cksum(name, crate_cfg, cargo_cfg, log),
+        &anodizer_core::crate_scope::resolve_crate_tag,
+    )
+}
+
+/// Full test seam: both the crates.io already-published index check AND the
+/// content-vs-version guard's local `.crate` checksum computer are injected.
+///
+/// The local-cksum stub returns `(crate_name, crate_cfg, cargo_cfg) ->
+/// Result<Option<cksum>>`:
+/// - `Ok(Some(hex))` — the local `.crate` sha256 the guard compares against
+///   the index-recorded `cksum`.
+/// - `Ok(None)` — guard inapplicable (non-crates.io registry); the
+///   already-published skip is also suppressed for that crate.
+/// - `Err(_)` — local digest uncomputable; the guard FAILS CLOSED rather
+///   than treat an unverifiable already-published version as a safe skip.
+#[allow(clippy::type_complexity)]
+fn publish_to_cargo_with_guard(
+    ctx: &mut Context,
+    selected: &[String],
+    log: &StageLogger,
+    record: &mut Vec<CargoYankTarget>,
+    already_published_check: impl Fn(
+        &str,
+        &str,
+        &anodizer_core::retry::RetryPolicy,
+    ) -> Result<Option<String>>,
+    local_cksum_check: impl Fn(
+        &str,
+        &CrateConfig,
+        Option<&CargoPublishConfig>,
+    ) -> Result<Option<String>>,
+    resolve_tag: &dyn Fn(&Context, &CrateConfig) -> Option<String>,
 ) -> Result<()> {
     // Defensive guard: the `--skip=cargo` gate lives in the
     // dispatcher in `lib.rs::PublishStage::run` so every publisher emits its
@@ -1636,6 +1879,15 @@ fn publish_to_cargo_with(
             log.verbose(&run_per_crate_start_message(name));
             let cmd = publish_command(name, cargo_cfgs.get(name));
             log.status(&format!("(dry-run) would run: {}", cmd.join(" ")));
+            // Surface that the content-vs-version poison guard would run for
+            // any crate already on crates.io — operators see WHAT would be
+            // checked without a network round-trip or local package step.
+            if targets_crates_io(cargo_cfgs.get(name)) {
+                log.status(&format!(
+                    "(dry-run) would verify '{}' local .crate checksum against the crates.io index if already published",
+                    name
+                ));
+            }
         }
         return Ok(());
     }
@@ -1681,6 +1933,31 @@ fn publish_to_cargo_with(
     // parsed at most once per run.
     let mut ws_root_cache = RootDepCache::new();
 
+    // Working-tree cleanliness gate — ONCE, before the loop's first binstall
+    // write dirties the tree. Checked here (not per crate) because the binstall
+    // mutation for crate A would otherwise dirty the tree and false-trip the
+    // check for crate B in a multi-crate workspace. A dirty tree at entry means
+    // `cargo package` stamps `"dirty": true` into `.cargo_vcs_info.json`,
+    // changing the `.crate` bytes vs the clean tag checkout the original release
+    // published from — so the content-vs-index comparison is unreliable (false
+    // poison on a clean-published crate, or masking real drift). Fail loud
+    // rather than skip (a poison hole) or hard-fail on content (which would
+    // misattribute the divergence to a code change). Only gates when at least
+    // one crate in the set could actually run the guard (crates.io target with a
+    // resolved version); a pure non-crates.io / unversioned set never packages
+    // for comparison, so a dirty tree there is irrelevant.
+    let any_guarded = sorted_names.iter().any(|name| {
+        targets_crates_io(cargo_cfgs.get(name))
+            && !crate_versions
+                .get(name)
+                .cloned()
+                .unwrap_or_default()
+                .is_empty()
+    });
+    if any_guarded {
+        ensure_publish_tree_clean(ctx)?;
+    }
+
     for (i, name) in sorted_names.iter().enumerate() {
         log.verbose(&run_per_crate_start_message(name));
         // Per-crate resolved version (own Cargo.toml `[package].version`,
@@ -1688,50 +1965,90 @@ fn publish_to_cargo_with(
         // already-published check uses the same version the preflight queried.
         let crate_version = crate_versions.get(name).cloned().unwrap_or_default();
 
-        // Idempotency: if this version already exists on crates.io, skip.
-        // crates.io versions are immutable once published, so presence on
-        // the index is sufficient evidence that this publisher's work is done.
-        // Byte-level cksum comparison is intentionally omitted: `cargo package`
-        // embeds file mtimes, making the output non-deterministic across runs;
-        // any mismatch is therefore a false positive that can't be fixed
-        // without bumping — and we can't fix it anyway (index is immutable).
-        // Index check failures are non-fatal — fall through to publish and let
-        // cargo's server-side 409 guard handle real conflicts.
-        let already_published = if crate_version.is_empty() {
-            false
+        let cargo_cfg = cargo_cfgs.get(name);
+        let crate_cfg = all_crates.iter().find(|c| &c.name == name);
+
+        // binstall metadata BEFORE the skip-decision packages — so
+        // `local_crate_cksum` hashes the SAME on-disk tree `cargo publish`
+        // uploads. The original publish wrote this table, so the crates.io
+        // cksum reflects it; packaging without it would mismatch and
+        // false-poison every binstall crate's clean re-cut (anodizer's own
+        // `cli` crate carries `binstall.enabled: true`). Mutating in place is
+        // byte-identical-by-construction: the real publish mutates the same tree
+        // and never reverts it, so there is no second tree to keep in sync. The
+        // tree was verified clean once before the loop, so this is the only
+        // dirtiness `cargo package` will see — matching the original publish.
+        if let Some(crate_cfg) = all_crates.iter().find(|c| &c.name == name).cloned() {
+            ensure_binstall_metadata_with(ctx, &crate_cfg, false, log, resolve_tag)?;
+        }
+
+        // Idempotency + poison guard: if this version already exists on
+        // crates.io, the publish may be a safe re-cut (byte-identical content)
+        // or a SILENT POISON (content changed but the version was not bumped —
+        // `cargo publish` would skip, never shipping the new bytes, while
+        // anodizer reports success and consumers get stale code). Before
+        // treating an already-published version as a safe skip, prove the
+        // local `.crate` is byte-identical to the published artifact by
+        // comparing sha256 against the index-recorded `cksum`. The local
+        // package step now reflects the binstall mutation applied above, so the
+        // hash matches what the original `cargo publish` uploaded.
+        //
+        // The skip — and the guard — apply ONLY to crates.io targets: a custom
+        // `registry =`/`index =` points cargo at a different index, so the
+        // crates.io cksum describes a different (or no) artifact. For those,
+        // attempt publish and let the target registry's server-side conflict
+        // handling govern idempotency.
+        //
+        // Index check failures (network) FAIL CLOSED for an already-published
+        // decision: an unreachable index cannot prove the version is absent,
+        // and silently skipping a maybe-poisoned version is the bug this guard
+        // exists to prevent.
+        let guard = if crate_version.is_empty() || !targets_crates_io(cargo_cfg) {
+            CargoSkipDecision::Publish
         } else {
             match already_published_check(name, &crate_version, &retry_policy) {
-                Ok(Some(_)) => true,
-                Ok(None) => false,
+                Ok(None) => CargoSkipDecision::Publish,
+                Ok(Some(index_cksum)) => {
+                    let crate_cfg = crate_cfg.ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "publish: '{name}-{crate_version}' is published on crates.io but its \
+                             crate config is missing; cannot verify content identity"
+                        )
+                    })?;
+                    decide_already_published(
+                        name,
+                        &crate_version,
+                        &index_cksum,
+                        crate_cfg,
+                        cargo_cfg,
+                        &local_cksum_check,
+                        log,
+                    )?
+                }
                 Err(e) => {
-                    log.warn(&format!(
-                        "could not check crates.io index for '{}-{}' ({}); attempting publish anyway",
-                        name, crate_version, e
-                    ));
-                    false
+                    // Fail closed: do not silently skip a version we cannot
+                    // confirm is byte-identical to what shipped.
+                    anyhow::bail!(
+                        "publish: could not reach the crates.io index to verify '{name}-{crate_version}' \
+                         is safe to skip ({e}); refusing to skip a possibly-poisoned already-published \
+                         version. Resolve the network issue and re-run, or bump the version."
+                    );
                 }
             }
         };
-        if already_published {
+        if matches!(guard, CargoSkipDecision::Skip) {
             log.status(&format!(
-                "skipped '{}-{}' — already published on crates.io",
+                "skipped '{}-{}' — already published on crates.io with identical content",
                 name, crate_version
             ));
             continue;
         }
 
-        let cargo_cfg = cargo_cfgs.get(name);
-
-        // Published-manifest guarantee: emit/refresh this crate's
-        // [package.metadata.binstall] in its on-disk Cargo.toml right before
-        // `cargo publish`, so `cargo binstall` fetches the prebuilt release
-        // asset instead of compiling from source. Done here (not only in the
-        // build stage) because the real release runs `--publish-only`, which
-        // skips the build stage entirely. Cloned out of `all_crates` so the
-        // re-scope inside can take `&mut ctx` without aliasing the universe.
-        if let Some(crate_cfg) = all_crates.iter().find(|c| &c.name == name).cloned() {
-            ensure_binstall_metadata(ctx, &crate_cfg, false, log)?;
-        }
+        // (binstall metadata was emitted above, before the skip-decision, so
+        // the local package step the guard ran reflects the same on-disk tree
+        // `cargo publish` is about to upload. It is needed regardless of the
+        // skip outcome — the real release runs `--publish-only`, which skips
+        // the build stage, so the table must exist before publish either way.)
 
         // Pre-publish gate: in multi-tag-multi-crate workspaces (e.g. cfgd)
         // per-crate tags fire independent Release.yml runs, so the upstream
@@ -2684,6 +3001,65 @@ mod tests {
             parse_index_cksum_for_version(body, "1.2.3"),
             Some("abcd".to_string())
         );
+    }
+
+    // ---- content-vs-version guard decision unit tests --------------------
+
+    #[test]
+    fn targets_crates_io_true_for_default_and_false_for_custom() {
+        assert!(targets_crates_io(None), "no cfg ⇒ crates.io");
+        assert!(
+            targets_crates_io(Some(&CargoPublishConfig::default())),
+            "empty cfg ⇒ crates.io"
+        );
+        let custom_reg = CargoPublishConfig {
+            registry: Some("corp".into()),
+            ..Default::default()
+        };
+        assert!(!targets_crates_io(Some(&custom_reg)), "registry= ⇒ custom");
+        let custom_idx = CargoPublishConfig {
+            index: Some("https://example/index".into()),
+            ..Default::default()
+        };
+        assert!(!targets_crates_io(Some(&custom_idx)), "index= ⇒ custom");
+    }
+
+    #[test]
+    fn decide_already_published_empty_index_cksum_skips() {
+        // A published-but-cksum-less index line cannot be compared; the
+        // version is immutable on crates.io, so skip without invoking the
+        // local computer at all.
+        let cfg = CrateConfig::default();
+        let log = StageLogger::new("t", anodizer_core::log::Verbosity::Normal);
+        let local_panics =
+            |_: &str, _: &CrateConfig, _: Option<&CargoPublishConfig>| -> Result<Option<String>> {
+                panic!("local cksum must not run when index cksum is empty")
+            };
+        let d = decide_already_published("c", "1.0.0", "", &cfg, None, local_panics, &log)
+            .expect("empty cksum ⇒ Ok(Skip)");
+        assert_eq!(d, CargoSkipDecision::Skip);
+    }
+
+    #[test]
+    fn decide_already_published_match_is_case_insensitive_skip() {
+        let cfg = CrateConfig::default();
+        let log = StageLogger::new("t", anodizer_core::log::Verbosity::Normal);
+        let local =
+            |_: &str, _: &CrateConfig, _: Option<&CargoPublishConfig>| Ok(Some("ABCD".into()));
+        let d = decide_already_published("c", "1.0.0", "abcd", &cfg, None, local, &log)
+            .expect("case-insensitive match ⇒ Skip");
+        assert_eq!(d, CargoSkipDecision::Skip);
+    }
+
+    #[test]
+    fn decide_already_published_mismatch_hard_fails() {
+        let cfg = CrateConfig::default();
+        let log = StageLogger::new("t", anodizer_core::log::Verbosity::Normal);
+        let local =
+            |_: &str, _: &CrateConfig, _: Option<&CargoPublishConfig>| Ok(Some("xxxx".into()));
+        let err = decide_already_published("c", "1.0.0", "abcd", &cfg, None, local, &log)
+            .expect_err("drift ⇒ hard fail");
+        assert!(format!("{err:#}").contains("DIFFERENT content"));
     }
 
     // ---- retry plumbing through is_already_published_at ------------------
@@ -4959,6 +5335,40 @@ mod partial_rollback_tests {
         dir.display().to_string()
     }
 
+    /// `git init` + commit everything under `dir`, yielding a CLEAN working
+    /// tree the cleanliness gate (`ensure_publish_tree_clean`) can verify.
+    ///
+    /// The guard fails CLOSED when `git status` cannot prove cleanliness (a
+    /// non-git dir errors), so these fixtures must back their `project_root`
+    /// with a real repo to exercise the genuine clean-pass rather than the old
+    /// fail-open hole.
+    fn init_clean_repo(dir: &Path) {
+        let run = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@example.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@example.com")
+                .output()
+                .expect("git on PATH")
+                .status
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "t@example.com"]);
+        run(&["config", "user.name", "t"]);
+        // Ignore the per-test runtime scratch (cargo-stub binary + its argv
+        // log) so the gate sees a CLEAN tree at entry: those files are test
+        // harness artifacts, not source, and the stub's argv log is written
+        // mid-run AFTER the cleanliness gate has already passed.
+        std::fs::write(dir.join(".gitignore"), "cargo\nargv.log\n").expect("write .gitignore");
+        run(&["add", "-A"]);
+        run(&["commit", "-qm", "fixture"]);
+    }
+
     /// Install a `cargo` shell stub on PATH that appends each invocation's
     /// argv (one line per call) to `argv_log` and chooses its exit code by
     /// argv: a `cargo publish -p <fail_crate>` exits 1; every other call
@@ -4995,6 +5405,14 @@ mod partial_rollback_tests {
             .lines()
             .map(str::to_string)
             .collect()
+    }
+
+    /// Fixed-tag resolver for the guard's binstall pre-publish mutation. These
+    /// tests use crates with no binstall config (the emitter early-returns), so
+    /// the resolver is never actually consulted; it exists only to satisfy the
+    /// `publish_to_cargo_with_guard` signature without a git fixture.
+    fn fixed_tag_resolver(_ctx: &Context, c: &CrateConfig) -> Option<String> {
+        Some(format!("v{}", c.name))
     }
 
     /// Always-not-published injection: drives the publish loop straight to
@@ -5070,12 +5488,14 @@ mod partial_rollback_tests {
             .tag("v1.0.0")
             .crates(vec![crate_a, crate_b])
             .selected_crates(vec!["crate-b".to_string()])
+            .project_root(tmp.path().to_path_buf())
             .build();
 
         let log = StageLogger::new("publish-test", anodizer_core::log::Verbosity::Normal);
         let mut record: Vec<CargoYankTarget> = Vec::new();
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "crate-b");
+        init_clean_repo(tmp.path());
         let _env = anodizer_core::test_helpers::env::env_mutex()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -5160,6 +5580,7 @@ mod partial_rollback_tests {
             .tag("v1.0.0")
             .crates(vec![crate_a, crate_b])
             .selected_crates(vec!["crate-b".to_string()])
+            .project_root(tmp.path().to_path_buf())
             .build();
 
         // Build the evidence the failed publish would record, exactly as
@@ -5167,6 +5588,7 @@ mod partial_rollback_tests {
         // and encoding whatever it recorded before the bail.
         let log = StageLogger::new("publish-test", anodizer_core::log::Verbosity::Normal);
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "crate-b");
+        init_clean_repo(tmp.path());
         let _env = anodizer_core::test_helpers::env::env_mutex()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -5239,11 +5661,15 @@ mod partial_rollback_tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let argv_log = tmp.path().join("argv.log");
 
-        let mut ctx = TestContextBuilder::new().tag("v1.0.0").build();
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .project_root(tmp.path().to_path_buf())
+            .build();
         let mut evidence = anodizer_core::PublishEvidence::new("cargo");
         evidence.extra = encode_cargo_yank_targets(&[]);
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "none");
+        init_clean_repo(tmp.path());
         let _env = anodizer_core::test_helpers::env::env_mutex()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -5336,7 +5762,10 @@ mod partial_rollback_tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let argv_log = tmp.path().join("argv.log");
 
-        let mut ctx = TestContextBuilder::new().tag("v1.0.0").build();
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .project_root(tmp.path().to_path_buf())
+            .build();
         let mut evidence = anodizer_core::PublishEvidence::new("cargo");
         evidence.extra = encode_cargo_yank_targets(&[CargoYankTarget {
             name: "crate-x".into(),
@@ -5376,7 +5805,10 @@ mod partial_rollback_tests {
         let tmp = tempfile::tempdir().expect("tempdir");
         let argv_log = tmp.path().join("argv.log");
 
-        let mut ctx = TestContextBuilder::new().tag("v1.0.0").build();
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .project_root(tmp.path().to_path_buf())
+            .build();
         let mut evidence = anodizer_core::PublishEvidence::new("cargo");
         evidence.extra = encode_cargo_yank_targets(&[CargoYankTarget {
             name: "crate-idx".into(),
@@ -5387,6 +5819,7 @@ mod partial_rollback_tests {
 
         // `none` never matches a publish arg, so this stub exits 0 for yank.
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "none");
+        init_clean_repo(tmp.path());
         let publisher = CargoPublisher::new();
         with_path(&new_path, || publisher.rollback(&mut ctx, &evidence)).expect("rollback ok");
 
@@ -5431,6 +5864,7 @@ mod partial_rollback_tests {
             .populate_git_vars(false)
             .crates(vec![crate_nv])
             .selected_crates(vec!["noversion".to_string()])
+            .project_root(tmp.path().to_path_buf())
             .build();
 
         let log = StageLogger::new("publish-test", anodizer_core::log::Verbosity::Normal);
@@ -5439,6 +5873,7 @@ mod partial_rollback_tests {
         // empty-version branch bypasses the index check entirely and goes
         // straight to publish — so the stub's `cargo publish` runs.
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "no-fail-crate");
+        init_clean_repo(tmp.path());
         let result = with_path(&new_path, || {
             publish_to_cargo_with(
                 &mut ctx,
@@ -5464,9 +5899,11 @@ mod partial_rollback_tests {
         );
     }
 
-    /// Already-published idempotency: when the injected index check reports
-    /// the version is live (`Ok(Some(_))`), the publish loop SKIPS that crate
-    /// — `cargo publish` is never spawned and nothing is recorded.
+    /// Already-published idempotency: when the index reports the version live
+    /// (`Ok(Some(cksum)`) AND the local `.crate` is byte-identical, the publish
+    /// loop SKIPS that crate — `cargo publish` is never spawned and nothing is
+    /// recorded. The content-vs-version guard only treats a match as a safe
+    /// skip; the identical-content path is the legitimate idempotent re-cut.
     #[test]
     #[serial(cargo_stub_path)]
     fn already_published_crate_is_skipped_not_republished() {
@@ -5479,28 +5916,36 @@ mod partial_rollback_tests {
             .tag("v9.9.9")
             .crates(vec![crate_cfg])
             .selected_crates(vec!["live-crate".to_string()])
+            .project_root(tmp.path().to_path_buf())
             .build();
 
-        // Inject "already on crates.io with this cksum" for every query.
+        // Inject "already on crates.io with this cksum" for every query, and a
+        // local `.crate` checksum that MATCHES — the safe idempotent re-cut.
         let always_published =
             |_n: &str,
              _v: &str,
              _p: &anodizer_core::retry::RetryPolicy|
              -> Result<Option<String>> { Ok(Some("deadbeef".to_string())) };
+        let local_matches = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
+            Ok(Some("deadbeef".to_string()))
+        };
 
         let log = StageLogger::new("publish-test", anodizer_core::log::Verbosity::Normal);
         let mut record: Vec<CargoYankTarget> = Vec::new();
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "never");
+        init_clean_repo(tmp.path());
         let result = with_path(&new_path, || {
-            publish_to_cargo_with(
+            publish_to_cargo_with_guard(
                 &mut ctx,
                 &["live-crate".to_string()],
                 &log,
                 &mut record,
                 always_published,
+                local_matches,
+                &fixed_tag_resolver,
             )
         });
-        result.expect("already-published path returns Ok");
+        result.expect("already-published-identical path returns Ok");
 
         assert!(
             read_argv_log(&argv_log).is_empty(),
@@ -5512,12 +5957,14 @@ mod partial_rollback_tests {
         );
     }
 
-    /// Index-check error (`Err`) is non-fatal: the loop logs a warn and
-    /// falls through to publish anyway, letting cargo's server-side guard
-    /// arbitrate. The crate publishes and is recorded.
+    /// Index-check error (`Err`) for a never-published crate (`crate_version`
+    /// resolves but the index is unreachable) FAILS CLOSED: the loop refuses
+    /// to skip a version it cannot confirm is byte-identical to the published
+    /// artifact, because silently skipping a possibly-poisoned version is the
+    /// exact failure the content-vs-version guard prevents.
     #[test]
     #[serial(cargo_stub_path)]
-    fn index_check_error_falls_through_to_publish() {
+    fn index_check_error_fails_closed() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let path = write_crate_dir(tmp.path(), "flaky", "1.0.0");
         let argv_log = tmp.path().join("argv.log");
@@ -5527,6 +5974,7 @@ mod partial_rollback_tests {
             .tag("v1.0.0")
             .crates(vec![crate_cfg])
             .selected_crates(vec!["flaky".to_string()])
+            .project_root(tmp.path().to_path_buf())
             .build();
 
         let index_errors = |_n: &str,
@@ -5535,29 +5983,35 @@ mod partial_rollback_tests {
          -> Result<Option<String>> {
             Err(anyhow::anyhow!("index transport blew up"))
         };
+        let local_unused = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
+            Ok(Some("unused".to_string()))
+        };
 
         let log = StageLogger::new("publish-test", anodizer_core::log::Verbosity::Normal);
         let mut record: Vec<CargoYankTarget> = Vec::new();
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "never");
+        init_clean_repo(tmp.path());
         let result = with_path(&new_path, || {
-            publish_to_cargo_with(
+            publish_to_cargo_with_guard(
                 &mut ctx,
                 &["flaky".to_string()],
                 &log,
                 &mut record,
                 index_errors,
+                local_unused,
+                &fixed_tag_resolver,
             )
         });
-        result.expect("index error is non-fatal; publish proceeds");
-
+        let err = result.expect_err("index error must fail closed, not publish blindly");
         assert!(
-            read_argv_log(&argv_log)
-                .iter()
-                .any(|l| l.contains("publish") && l.contains("flaky")),
-            "index-check error must fall through to publish"
+            format!("{err:#}").contains("could not reach the crates.io index"),
+            "fail-closed error names the network cause: {err:#}"
         );
-        assert_eq!(record.len(), 1, "the published crate is recorded");
-        assert_eq!(record[0].version, "1.0.0");
+        assert!(
+            read_argv_log(&argv_log).is_empty(),
+            "must NOT publish when the skip decision is unverifiable"
+        );
+        assert!(record.is_empty(), "nothing published ⇒ nothing recorded");
     }
 
     /// `wait_for_workspace_deps` integration: when enabled and the crate has
@@ -5614,11 +6068,13 @@ mod partial_rollback_tests {
             .tag("v1.0.0")
             .crates(vec![leaf, dep])
             .selected_crates(vec!["leaf".to_string()])
+            .project_root(tmp.path().to_path_buf())
             .build();
 
         let log = StageLogger::new("publish-test", anodizer_core::log::Verbosity::Normal);
         let mut record: Vec<CargoYankTarget> = Vec::new();
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "never");
+        init_clean_repo(tmp.path());
         // The dep-completeness guard runs first; inject `always_published` so
         // it treats `dep-crate` as live on crates.io (the legitimate multi-tag
         // case the wait-gate is for) and the wait-gate TIMEOUT — not the guard
@@ -5678,9 +6134,11 @@ mod partial_rollback_tests {
             .tag("v1.0.0")
             .crates(vec![crate_a, crate_b])
             .selected_crates(vec!["crate-b".to_string()])
+            .project_root(tmp.path().to_path_buf())
             .build();
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "crate-b");
+        init_clean_repo(tmp.path());
         let publisher = CargoPublisher::new();
         let run_result = with_path(&new_path, || publisher.run(&mut ctx));
         assert!(run_result.is_err(), "crate-b failure surfaces from run");
@@ -5730,6 +6188,7 @@ mod partial_rollback_tests {
         let mut ctx = TestContextBuilder::new()
             .tag("v1.0.0")
             .crates(vec![crate_cfg])
+            .project_root(tmp.path().to_path_buf())
             .build();
 
         // The "1.0.0" release version IS already on crates.io — if we
@@ -5743,6 +6202,7 @@ mod partial_rollback_tests {
              -> Result<Option<String>> { Ok(Some("deadbeef".to_string())) };
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "none");
+        init_clean_repo(tmp.path());
         let _env = anodizer_core::test_helpers::env::env_mutex()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -5784,6 +6244,445 @@ mod partial_rollback_tests {
             published.len(),
             1,
             "cargo publish must be invoked despite unresolvable manifest version: {invocations:?}"
+        );
+    }
+
+    // ----- content-vs-version poison guard --------------------------------
+    //
+    // These drive `publish_to_cargo_with_guard`, injecting BOTH the crates.io
+    // already-published index check AND the local `.crate` checksum computer,
+    // so the guard's match/mismatch/fail-closed branches run without any
+    // network round-trip or real `cargo package`.
+
+    /// `cargo publish -p <name>` count recorded by the stub.
+    fn publish_count(argv_log: &Path, name: &str) -> usize {
+        read_argv_log(argv_log)
+            .iter()
+            .filter(|l| l.starts_with("publish") && l.contains(name))
+            .count()
+    }
+
+    /// version-not-published → guard inert, crate publishes normally.
+    #[test]
+    #[serial(cargo_stub_path)]
+    fn guard_publishes_when_version_not_on_crates_io() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_crate_dir(tmp.path(), "alpha", "1.0.0");
+        let argv_log = tmp.path().join("argv.log");
+        let crate_cfg = cargo_crate("alpha", &path, &[], CargoPublishConfig::default());
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![crate_cfg])
+            .selected_crates(vec!["alpha".to_string()])
+            .project_root(tmp.path().to_path_buf())
+            .build();
+        let log = StageLogger::new("guard-test", anodizer_core::log::Verbosity::Normal);
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+
+        let index_absent = |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| Ok(None);
+        // Local cksum must NEVER be consulted when the version is absent.
+        let local_panics = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
+            panic!("local cksum must not be computed when version is not published")
+        };
+
+        let new_path = install_cargo_stub(tmp.path(), &argv_log, "no-fail");
+        init_clean_repo(tmp.path());
+        let result = with_path(&new_path, || {
+            publish_to_cargo_with_guard(
+                &mut ctx,
+                &["alpha".to_string()],
+                &log,
+                &mut record,
+                index_absent,
+                local_panics,
+                &fixed_tag_resolver,
+            )
+        });
+        result.expect("absent version must publish");
+        assert_eq!(publish_count(&argv_log, "alpha"), 1, "alpha must publish");
+    }
+
+    /// Fail-CLOSED on an indeterminate working tree: when `project_root` is not
+    /// a git repository (git status cannot prove cleanliness), the guard must
+    /// REFUSE — not treat the empty/errored porcelain as "clean → proceed". A
+    /// guard documented as failing loud rather than silently skipping is a
+    /// poison hole if an unverifiable tree slips through. Mirrors the real risk:
+    /// a manual `--publish-only` invoked from a non-repo cwd.
+    #[test]
+    #[serial(cargo_stub_path)]
+    fn guard_refuses_when_git_status_indeterminate() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_crate_dir(tmp.path(), "alpha", "1.0.0");
+        // Deliberately NOT a git repo — `git status` errors here.
+        let argv_log = tmp.path().join("argv.log");
+        let crate_cfg = cargo_crate("alpha", &path, &[], CargoPublishConfig::default());
+        let mut ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![crate_cfg])
+            .selected_crates(vec!["alpha".to_string()])
+            .project_root(tmp.path().to_path_buf())
+            .build();
+        let log = StageLogger::new("guard-test", anodizer_core::log::Verbosity::Normal);
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+
+        // The version is absent so a fail-OPEN guard would proceed to publish;
+        // a correct fail-CLOSED guard aborts before ever probing the index.
+        let index_absent = |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| Ok(None);
+        let local_panics = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
+            panic!("guard must abort on an unverifiable tree, never package")
+        };
+
+        // NB: no `init_clean_repo` here — this fixture's whole point is a
+        // non-git `project_root`, so the gate must fail closed.
+        let new_path = install_cargo_stub(tmp.path(), &argv_log, "no-fail");
+        let result = with_path(&new_path, || {
+            publish_to_cargo_with_guard(
+                &mut ctx,
+                &["alpha".to_string()],
+                &log,
+                &mut record,
+                index_absent,
+                local_panics,
+                &fixed_tag_resolver,
+            )
+        });
+        let err = result
+            .expect_err("an indeterminate (non-git) working tree must fail the guard, not proceed");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("cannot verify") && msg.contains("clean git checkout"),
+            "error must be actionable about the unverifiable tree: {msg}"
+        );
+        assert_eq!(
+            publish_count(&argv_log, "alpha"),
+            0,
+            "nothing may publish once the guard refuses: {:?}",
+            read_argv_log(&argv_log)
+        );
+    }
+
+    /// already-published + local checksum IDENTICAL → safe idempotent skip.
+    #[test]
+    #[serial(cargo_stub_path)]
+    fn guard_skips_when_already_published_identical() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_crate_dir(tmp.path(), "beta", "2.1.0");
+        let argv_log = tmp.path().join("argv.log");
+        let crate_cfg = cargo_crate("beta", &path, &[], CargoPublishConfig::default());
+        let mut ctx = TestContextBuilder::new()
+            .tag("v2.1.0")
+            .crates(vec![crate_cfg])
+            .selected_crates(vec!["beta".to_string()])
+            .project_root(tmp.path().to_path_buf())
+            .build();
+        let log = StageLogger::new("guard-test", anodizer_core::log::Verbosity::Normal);
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+
+        let index_match =
+            |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| Ok(Some("abc123".into()));
+        let local_match = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
+            Ok(Some("ABC123".to_string())) // case-insensitive match
+        };
+
+        let new_path = install_cargo_stub(tmp.path(), &argv_log, "no-fail");
+        init_clean_repo(tmp.path());
+        let result = with_path(&new_path, || {
+            publish_to_cargo_with_guard(
+                &mut ctx,
+                &["beta".to_string()],
+                &log,
+                &mut record,
+                index_match,
+                local_match,
+                &fixed_tag_resolver,
+            )
+        });
+        result.expect("identical content must be a safe skip");
+        assert_eq!(
+            publish_count(&argv_log, "beta"),
+            0,
+            "identical already-published version must NOT re-publish"
+        );
+    }
+
+    /// already-published + local checksum DIFFERENT → HARD FAIL (poison).
+    #[test]
+    #[serial(cargo_stub_path)]
+    fn guard_hard_fails_when_already_published_different() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_crate_dir(tmp.path(), "gamma", "3.0.0");
+        let argv_log = tmp.path().join("argv.log");
+        let crate_cfg = cargo_crate("gamma", &path, &[], CargoPublishConfig::default());
+        let mut ctx = TestContextBuilder::new()
+            .tag("v3.0.0")
+            .crates(vec![crate_cfg])
+            .selected_crates(vec!["gamma".to_string()])
+            .project_root(tmp.path().to_path_buf())
+            .build();
+        let log = StageLogger::new("guard-test", anodizer_core::log::Verbosity::Normal);
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+
+        let index_cksum = |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| {
+            Ok(Some("published_sha".into()))
+        };
+        let local_differs = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
+            Ok(Some("local_changed_sha".to_string()))
+        };
+
+        let new_path = install_cargo_stub(tmp.path(), &argv_log, "no-fail");
+        init_clean_repo(tmp.path());
+        let result = with_path(&new_path, || {
+            publish_to_cargo_with_guard(
+                &mut ctx,
+                &["gamma".to_string()],
+                &log,
+                &mut record,
+                index_cksum,
+                local_differs,
+                &fixed_tag_resolver,
+            )
+        });
+        let err = result.expect_err("content drift must hard-fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("DIFFERENT content") && msg.contains("Bump the version"),
+            "error must explain the poison and prescribe a bump: {msg}"
+        );
+        assert_eq!(
+            publish_count(&argv_log, "gamma"),
+            0,
+            "poisoned version must NOT publish"
+        );
+    }
+
+    /// already-published but the crates.io index is UNREACHABLE → fail closed
+    /// (never silently skip a possibly-poisoned version).
+    #[test]
+    #[serial(cargo_stub_path)]
+    fn guard_fails_closed_when_index_unreachable() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_crate_dir(tmp.path(), "delta", "4.2.0");
+        let argv_log = tmp.path().join("argv.log");
+        let crate_cfg = cargo_crate("delta", &path, &[], CargoPublishConfig::default());
+        let mut ctx = TestContextBuilder::new()
+            .tag("v4.2.0")
+            .crates(vec![crate_cfg])
+            .selected_crates(vec!["delta".to_string()])
+            .project_root(tmp.path().to_path_buf())
+            .build();
+        let log = StageLogger::new("guard-test", anodizer_core::log::Verbosity::Normal);
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+
+        // The dep-completeness probe at the top of the loop also consults this
+        // seam; an Err there is treated as Unknown (never fails the guard), so
+        // an unreachable index for a no-deps crate is benign until the skip
+        // decision, where it must fail closed.
+        let index_unreachable = |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| {
+            Err(anyhow::anyhow!("connection refused"))
+        };
+        let local_unused = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
+            Ok(Some("unused".to_string()))
+        };
+
+        let new_path = install_cargo_stub(tmp.path(), &argv_log, "no-fail");
+        init_clean_repo(tmp.path());
+        let result = with_path(&new_path, || {
+            publish_to_cargo_with_guard(
+                &mut ctx,
+                &["delta".to_string()],
+                &log,
+                &mut record,
+                index_unreachable,
+                local_unused,
+                &fixed_tag_resolver,
+            )
+        });
+        let err = result.expect_err("unreachable index must fail closed");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("could not reach the crates.io index")
+                && msg.contains("possibly-poisoned"),
+            "fail-closed error must name the network cause: {msg}"
+        );
+        assert_eq!(
+            publish_count(&argv_log, "delta"),
+            0,
+            "must NOT publish when the skip decision is unverifiable"
+        );
+    }
+
+    /// already-published but the local `.crate` checksum is UNCOMPUTABLE
+    /// (packaging error) → fail closed; cannot prove identity, refuse to skip.
+    #[test]
+    #[serial(cargo_stub_path)]
+    fn guard_fails_closed_when_local_cksum_uncomputable() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_crate_dir(tmp.path(), "epsilon", "5.0.0");
+        let argv_log = tmp.path().join("argv.log");
+        let crate_cfg = cargo_crate("epsilon", &path, &[], CargoPublishConfig::default());
+        let mut ctx = TestContextBuilder::new()
+            .tag("v5.0.0")
+            .crates(vec![crate_cfg])
+            .selected_crates(vec!["epsilon".to_string()])
+            .project_root(tmp.path().to_path_buf())
+            .build();
+        let log = StageLogger::new("guard-test", anodizer_core::log::Verbosity::Normal);
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+
+        let index_present = |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| {
+            Ok(Some("published".into()))
+        };
+        let local_errs = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
+            Err(anyhow::anyhow!("cargo package exploded"))
+        };
+
+        let new_path = install_cargo_stub(tmp.path(), &argv_log, "no-fail");
+        init_clean_repo(tmp.path());
+        let result = with_path(&new_path, || {
+            publish_to_cargo_with_guard(
+                &mut ctx,
+                &["epsilon".to_string()],
+                &log,
+                &mut record,
+                index_present,
+                local_errs,
+                &fixed_tag_resolver,
+            )
+        });
+        let err = result.expect_err("uncomputable local cksum must fail closed");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("could not be computed") && msg.contains("cargo package exploded"),
+            "fail-closed error must chain the packaging cause: {msg}"
+        );
+        assert_eq!(publish_count(&argv_log, "epsilon"), 0, "must not publish");
+    }
+
+    /// Custom (non-crates.io) registry → the crates.io index cksum is
+    /// meaningless, so the guard is skipped and publish is attempted (the
+    /// target registry's server governs idempotency). The local-cksum seam
+    /// must never be consulted.
+    #[test]
+    #[serial(cargo_stub_path)]
+    fn guard_skipped_for_custom_registry_publishes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_crate_dir(tmp.path(), "zeta", "6.0.0");
+        let argv_log = tmp.path().join("argv.log");
+        let cfg = CargoPublishConfig {
+            registry: Some("my-corp".to_string()),
+            index_timeout: Some(0),
+            ..Default::default()
+        };
+        let crate_cfg = cargo_crate("zeta", &path, &[], cfg);
+        let mut ctx = TestContextBuilder::new()
+            .tag("v6.0.0")
+            .crates(vec![crate_cfg])
+            .selected_crates(vec!["zeta".to_string()])
+            .project_root(tmp.path().to_path_buf())
+            .build();
+        let log = StageLogger::new("guard-test", anodizer_core::log::Verbosity::Normal);
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+
+        // Even if crates.io reports the name+version as published, a custom
+        // registry must NOT trust that: attempt publish anyway.
+        let index_says_published = |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| {
+            Ok(Some("crates_io".into()))
+        };
+        let local_panics = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
+            panic!("local cksum must not run for a non-crates.io registry")
+        };
+
+        let new_path = install_cargo_stub(tmp.path(), &argv_log, "no-fail");
+        init_clean_repo(tmp.path());
+        let result = with_path(&new_path, || {
+            publish_to_cargo_with_guard(
+                &mut ctx,
+                &["zeta".to_string()],
+                &log,
+                &mut record,
+                index_says_published,
+                local_panics,
+                &fixed_tag_resolver,
+            )
+        });
+        result.expect("custom registry publish must proceed");
+        assert_eq!(
+            publish_count(&argv_log, "zeta"),
+            1,
+            "custom-registry crate must publish despite a crates.io hit"
+        );
+    }
+
+    /// Per-crate workspace mode: EACH published crate is checked independently
+    /// against its own crates.io entry. crate-a is already published with
+    /// identical content (skip); crate-b is already published with DIFFERENT
+    /// content (hard fail) — so the run aborts on b. crate-a (skipped, not
+    /// published this run) must NOT be recorded for rollback.
+    #[test]
+    #[serial(cargo_stub_path)]
+    fn guard_per_crate_workspace_each_checked_independently() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path_a = write_crate_dir(tmp.path(), "ws-a", "0.3.0");
+        let path_b = write_crate_dir(tmp.path(), "ws-b", "0.7.0");
+        let argv_log = tmp.path().join("argv.log");
+        // b depends on a → topological order processes a first.
+        let crate_a = cargo_crate("ws-a", &path_a, &[], CargoPublishConfig::default());
+        let crate_b = cargo_crate("ws-b", &path_b, &["ws-a"], CargoPublishConfig::default());
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![crate_a, crate_b])
+            .selected_crates(vec!["ws-b".to_string()])
+            .project_root(tmp.path().to_path_buf())
+            .build();
+        let log = StageLogger::new("guard-test", anodizer_core::log::Verbosity::Normal);
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+
+        // Both already published; index cksums differ per crate.
+        let index_per_crate = |n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| match n {
+            "ws-a" => Ok(Some("a_published".into())),
+            "ws-b" => Ok(Some("b_published".into())),
+            _ => Ok(None),
+        };
+        // a matches (safe skip); b drifts (poison → hard fail).
+        let local_per_crate = |n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| match n
+        {
+            "ws-a" => Ok(Some("a_published".to_string())),
+            "ws-b" => Ok(Some("b_DRIFTED".to_string())),
+            _ => Ok(None),
+        };
+
+        let new_path = install_cargo_stub(tmp.path(), &argv_log, "no-fail");
+        init_clean_repo(tmp.path());
+        let result = with_path(&new_path, || {
+            publish_to_cargo_with_guard(
+                &mut ctx,
+                &["ws-b".to_string()],
+                &log,
+                &mut record,
+                index_per_crate,
+                local_per_crate,
+                &fixed_tag_resolver,
+            )
+        });
+        let err = result.expect_err("ws-b drift must abort the run");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("ws-b") && msg.contains("DIFFERENT content"),
+            "{msg}"
+        );
+        // Neither crate published this run; ws-a was a safe skip, ws-b poisoned.
+        assert_eq!(
+            publish_count(&argv_log, "ws-a"),
+            0,
+            "ws-a skipped, not published"
+        );
+        assert_eq!(
+            publish_count(&argv_log, "ws-b"),
+            0,
+            "ws-b poisoned, not published"
+        );
+        assert!(
+            record.is_empty(),
+            "no crate published → nothing to roll back"
         );
     }
 }
@@ -6216,6 +7115,32 @@ mod binstall_on_publish_tests {
         StageLogger::new("publish-test", Verbosity::Normal)
     }
 
+    /// `git init` + commit everything under `dir`, yielding a CLEAN working
+    /// tree the cleanliness gate can verify. The guard fails CLOSED when
+    /// `git status` cannot prove cleanliness, so a fixture must back its
+    /// `project_root` with a real repo to exercise the genuine clean-pass.
+    fn init_clean_repo(dir: &std::path::Path) {
+        let run = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .current_dir(dir)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@example.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@example.com")
+                .output()
+                .expect("git on PATH")
+                .status
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        run(&["init", "-q"]);
+        run(&["config", "user.email", "t@example.com"]);
+        run(&["config", "user.name", "t"]);
+        run(&["add", "-A"]);
+        run(&["commit", "-qm", "fixture"]);
+    }
+
     /// An anodize-style archive: explicit name_template, tar.gz default, windows→zip.
     fn anodize_archive() -> ArchiveConfig {
         ArchiveConfig {
@@ -6454,6 +7379,293 @@ mod binstall_on_publish_tests {
                 .iter()
                 .map(|s| s.to_string())
                 .collect::<Vec<_>>()
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Guard-ordering tests: the poison guard must package the SAME tree state
+    // `cargo publish` uploads, including anodizer's own pre-publish binstall
+    // mutation. These drive the full `publish_to_cargo_with_guard` loop with an
+    // injected local-cksum that READS the on-disk Cargo.toml, so the recorded
+    // hash reflects whether the binstall table was written before the guard ran.
+    // -----------------------------------------------------------------------
+
+    /// True when the crate at `path` carries `[package.metadata.binstall]` in
+    /// its on-disk Cargo.toml. The stand-in for "the .crate bytes differ with
+    /// vs without the binstall table" — without re-implementing `cargo package`.
+    fn has_binstall_table(path: &str) -> bool {
+        let manifest = std::path::Path::new(path).join("Cargo.toml");
+        std::fs::read_to_string(&manifest)
+            .ok()
+            .and_then(|s| s.parse::<toml_edit::DocumentMut>().ok())
+            .map(|doc| {
+                doc.get("package")
+                    .and_then(|p| p.get("metadata"))
+                    .and_then(|m| m.get("binstall"))
+                    .is_some()
+            })
+            .unwrap_or(false)
+    }
+
+    /// A cargo cfg with the post-publish index poll disabled (no dependents in
+    /// these single-crate fixtures) so the loop never waits on the real index.
+    fn no_poll_cargo_cfg() -> CargoPublishConfig {
+        CargoPublishConfig {
+            index_timeout: Some(0),
+            ..Default::default()
+        }
+    }
+
+    fn binstall_crate_for_publish(name: &str, repo: &str, path: &str) -> CrateConfig {
+        let mut c = binstall_crate(name, repo, path);
+        c.publish = Some(anodizer_core::config::PublishConfig {
+            cargo: Some(no_poll_cargo_cfg()),
+            ..Default::default()
+        });
+        c
+    }
+
+    /// BLOCKER reproduction: a binstall crate, already published with the
+    /// WITH-binstall content (as the original publish uploaded), must be a SAFE
+    /// SKIP on re-cut — NOT a false poison. The guard now writes the binstall
+    /// table before packaging, so the local hash reflects the same tree the
+    /// original `cargo publish` shipped. (Before the fix, the guard packaged the
+    /// pre-binstall tree → local "WITHOUT" ≠ index "WITH" → false hard-fail.)
+    #[test]
+    fn guard_skips_binstall_crate_when_recut_matches_published() {
+        let tmp = tempfile::tempdir().unwrap();
+        let crate_dir = tmp.path().join("cli");
+        write_manifest(&crate_dir, "anodizer", "1.2.3");
+        let path = crate_dir.to_str().unwrap();
+        let crate_cfg = binstall_crate_for_publish("anodizer", "anodizer", path);
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("anodizer")
+            .tag("v1.2.3")
+            .crates(vec![crate_cfg.clone()])
+            .selected_crates(vec!["anodizer".to_string()])
+            .build();
+        // Commit the fixture tree so the cleanliness gate verifies a genuine
+        // CLEAN repo (not the old fail-open hole), isolating the skip path.
+        init_clean_repo(tmp.path());
+        ctx.options.project_root = Some(tmp.path().to_path_buf());
+        let log = quiet_log();
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+
+        // The version is on crates.io; its recorded cksum is the WITH-binstall
+        // marker (what the original publish, which wrote the table, uploaded).
+        let index_with_binstall =
+            |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| Ok(Some("WITH".into()));
+        // The local-cksum stub hashes the REAL on-disk tree: "WITH" iff the
+        // binstall table is present at the moment the guard packages.
+        let local_reads_disk = |_n: &str, c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
+            let marker = if has_binstall_table(&c.path) {
+                "WITH"
+            } else {
+                "WITHOUT"
+            };
+            Ok(Some(marker.to_string()))
+        };
+        let fixed_tag = |_: &Context, _: &CrateConfig| Some("v1.2.3".to_string());
+
+        publish_to_cargo_with_guard(
+            &mut ctx,
+            &["anodizer".to_string()],
+            &log,
+            &mut record,
+            index_with_binstall,
+            local_reads_disk,
+            &fixed_tag,
+        )
+        .expect(
+            "a binstall crate re-cut whose published content already includes the binstall table \
+             must be a SAFE SKIP, not a false poison",
+        );
+        assert!(
+            record.is_empty(),
+            "a safe skip publishes nothing — nothing to record"
+        );
+    }
+
+    /// Negative control proving the fix is load-bearing: if the index recorded
+    /// the WITHOUT-binstall content (a crate published BEFORE anodizer started
+    /// writing the table), the guard — which now packages WITH the table — would
+    /// see a genuine content divergence and hard-fail. This demonstrates the
+    /// guard still flags real drift; it isn't blanket-skipping binstall crates.
+    #[test]
+    fn guard_flags_real_drift_even_for_binstall_crate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let crate_dir = tmp.path().join("cli");
+        write_manifest(&crate_dir, "anodizer", "9.9.9");
+        let path = crate_dir.to_str().unwrap();
+        let crate_cfg = binstall_crate_for_publish("anodizer", "anodizer", path);
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("anodizer")
+            .tag("v9.9.9")
+            .crates(vec![crate_cfg.clone()])
+            .selected_crates(vec!["anodizer".to_string()])
+            .build();
+        // Committed clean repo (see the sibling skip test) → the gate passes
+        // on merit and this test exercises the genuine drift hard-fail.
+        init_clean_repo(tmp.path());
+        ctx.options.project_root = Some(tmp.path().to_path_buf());
+        let log = quiet_log();
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+
+        let index_without_binstall =
+            |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| Ok(Some("WITHOUT".into()));
+        let local_reads_disk = |_n: &str, c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
+            let marker = if has_binstall_table(&c.path) {
+                "WITH"
+            } else {
+                "WITHOUT"
+            };
+            Ok(Some(marker.to_string()))
+        };
+        let fixed_tag = |_: &Context, _: &CrateConfig| Some("v9.9.9".to_string());
+
+        let err = publish_to_cargo_with_guard(
+            &mut ctx,
+            &["anodizer".to_string()],
+            &log,
+            &mut record,
+            index_without_binstall,
+            local_reads_disk,
+            &fixed_tag,
+        )
+        .expect_err("a genuine content divergence must still hard-fail");
+        assert!(
+            format!("{err:#}").contains("DIFFERENT content"),
+            "must report the poison, not silently skip: {err:#}"
+        );
+    }
+
+    /// Multi-crate regression: crate A's pre-publish binstall write dirties the
+    /// tree, but it must NOT false-trip the cleanliness check for crate B. The
+    /// check runs ONCE before the loop, on a tree clean at entry, so both
+    /// binstall crates re-cut safely. (A per-crate check would have seen A's
+    /// write and wrongly aborted B.)
+    #[test]
+    fn guard_clean_check_runs_once_not_per_crate() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir_a = tmp.path().join("a");
+        let dir_b = tmp.path().join("b");
+        write_manifest(&dir_a, "alpha", "1.0.0");
+        write_manifest(&dir_b, "beta", "1.0.0");
+        let mut crate_a = binstall_crate_for_publish("alpha", "alpha", dir_a.to_str().unwrap());
+        // b depends on a → topological order processes a first, so a's binstall
+        // write lands before b's iteration.
+        crate_a.depends_on = Some(vec![]);
+        let mut crate_b = binstall_crate_for_publish("beta", "beta", dir_b.to_str().unwrap());
+        crate_b.depends_on = Some(vec!["alpha".to_string()]);
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("alpha")
+            .tag("v1.0.0")
+            .crates(vec![crate_a, crate_b])
+            .selected_crates(vec!["beta".to_string()])
+            .build();
+        // Committed clean repo → the once-before-loop gate passes on merit;
+        // crate A's later in-loop binstall write must NOT retroactively trip it.
+        init_clean_repo(tmp.path());
+        ctx.options.project_root = Some(tmp.path().to_path_buf());
+        let log = quiet_log();
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+
+        // Both already published with WITH-binstall content → both safe skip.
+        let index_with =
+            |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| Ok(Some("WITH".into()));
+        let local_reads_disk = |_n: &str, c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
+            let m = if has_binstall_table(&c.path) {
+                "WITH"
+            } else {
+                "WITHOUT"
+            };
+            Ok(Some(m.to_string()))
+        };
+        let fixed_tag = |_: &Context, _: &CrateConfig| Some("v1.0.0".to_string());
+
+        publish_to_cargo_with_guard(
+            &mut ctx,
+            &["beta".to_string()],
+            &log,
+            &mut record,
+            index_with,
+            local_reads_disk,
+            &fixed_tag,
+        )
+        .expect("crate A's binstall write must not false-trip the dirty check for crate B");
+        assert!(
+            record.is_empty(),
+            "both crates safe-skipped → nothing recorded"
+        );
+    }
+
+    /// WARN coverage: a DIRTY working tree at guard entry is an unverifiable
+    /// precondition — the guard must STOP with an actionable error (not skip,
+    /// not hard-fail on content). Uses a real git fixture so
+    /// `git status --porcelain` reports the uncommitted change.
+    #[test]
+    fn guard_refuses_dirty_tree_before_binstall_mutation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = tmp.path();
+        // A minimal git repo with one committed crate, then an uncommitted edit.
+        let run_git = |args: &[&str]| {
+            let ok = std::process::Command::new("git")
+                .current_dir(repo)
+                .args(args)
+                .output()
+                .expect("git on PATH")
+                .status
+                .success();
+            assert!(ok, "git {args:?} failed");
+        };
+        run_git(&["init", "-q"]);
+        run_git(&["config", "user.email", "t@example.com"]);
+        run_git(&["config", "user.name", "t"]);
+        let crate_dir = repo.join("cli");
+        write_manifest(&crate_dir, "anodizer", "1.2.3");
+        run_git(&["add", "-A"]);
+        run_git(&["commit", "-qm", "init"]);
+        // Dirty the tree: an uncommitted source edit.
+        std::fs::write(crate_dir.join("extra.rs"), "// uncommitted\n").unwrap();
+
+        let path = crate_dir.to_str().unwrap();
+        let crate_cfg = binstall_crate_for_publish("anodizer", "anodizer", path);
+        let mut ctx = TestContextBuilder::new()
+            .project_name("anodizer")
+            .tag("v1.2.3")
+            .crates(vec![crate_cfg.clone()])
+            .selected_crates(vec!["anodizer".to_string()])
+            .build();
+        // Point the cleanliness check at the fixture repo, not the process cwd.
+        ctx.options.project_root = Some(repo.to_path_buf());
+        let log = quiet_log();
+        let mut record: Vec<CargoYankTarget> = Vec::new();
+
+        let index_present =
+            |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| Ok(Some("WITH".into()));
+        // Must never be reached — the dirty check aborts before packaging.
+        let local_panics = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
+            panic!("local cksum must not run against a dirty tree")
+        };
+        let fixed_tag = |_: &Context, _: &CrateConfig| Some("v1.2.3".to_string());
+
+        let err = publish_to_cargo_with_guard(
+            &mut ctx,
+            &["anodizer".to_string()],
+            &log,
+            &mut record,
+            index_present,
+            local_panics,
+            &fixed_tag,
+        )
+        .expect_err("a dirty tree is an unverifiable precondition; the guard must refuse");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("DIRTY") && msg.contains("clean checkout") && msg.contains("extra.rs"),
+            "error must be actionable (name the dirtiness + the remedy): {msg}"
         );
     }
 }
