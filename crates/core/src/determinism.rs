@@ -211,12 +211,30 @@ impl DeterminismState {
         // non-deterministic source so it is itself non-deterministic, but
         // not an independent finding worth surfacing.
         //
-        // Conspicuously gated (REMOVED after proof, no longer allow-listed):
-        // `.crate`, `.rpm`, `.deb`, `.snap`, and the Linux xar `.pkg` — each
-        // is byte-identical across two builds at a fixed SOURCE_DATE_EPOCH
-        // (the value the harness exports), so the harness must count any
-        // drift as a real regression. See the gating tests cited per format
-        // below in the unit-test module.
+        // `.deb` / `.rpm` are allow-listed BECAUSE the real config GPG-signs
+        // them (`deb.signature.key_file` / `rpm.signature.key_file` driven by
+        // `GPG_KEY_PATH`), and the determinism harness provisions an ephemeral
+        // GPG key so signing runs. The GPG signature embeds a non-pinnable
+        // creation time / randomized salt that is not byte-reproducible even at
+        // a fixed SOURCE_DATE_EPOCH (the same intrinsic-signature class as the
+        // cosign `.sig` files). The package BODY is fully byte-reproducible —
+        // proven by stage-nfpm::signed_{deb,rpm}_body_is_byte_reproducible_across_time
+        // — and the signature is verified cryptographically (gpg --verify), not
+        // by byte-equality. An earlier UNSIGNED reproducibility proof had
+        // removed them from this list; that missed the signed real-config path.
+        //
+        // Conspicuously gated, each byte-identical across two builds at a fixed
+        // SOURCE_DATE_EPOCH (the value the harness exports), so the harness must
+        // count any drift as a real regression:
+        //   - `.crate`, `.snap`, the Linux xar `.pkg` — UNSIGNED, so the whole
+        //     artifact must be byte-reproducible.
+        //   - `.apk` — SIGNED, but unlike the deb/rpm GPG signature nfpm's apk
+        //     RSA signature is DETERMINISTIC (PKCS#1, no salt / no embedded
+        //     timestamp), so the whole signed artifact is byte-reproducible —
+        //     proven by stage-nfpm::signed_apk_is_byte_reproducible_across_time.
+        //     Hence gated, NOT allow-listed (contrast `.deb`/`.rpm`, whose GPG
+        //     signature is non-reproducible).
+        // See the gating tests cited per format below in the unit-test module.
         let mut installer_allow: Vec<(&str, &str)> = vec![
             (
                 "*.msi",
@@ -229,6 +247,14 @@ impl DeterminismState {
             (
                 "*.flatpak",
                 "flatpak build-bundle wraps an OSTree commit whose metadata (commit object timestamp + per-object headers) is not byte-stable across runs even at a fixed SOURCE_DATE_EPOCH; empirically confirmed non-reproducible via two-build cmp",
+            ),
+            (
+                "*.deb",
+                "nfpm GPG-signs the deb (_gpgorigin ar member); the signature embeds a non-pinnable creation time / randomized salt and is not byte-reproducible even at a fixed SOURCE_DATE_EPOCH. The package body (debian-binary, control.tar.gz, data.tar.gz) IS byte-reproducible — gated by stage-nfpm::signed_deb_body_is_byte_reproducible_across_time — and the signature is verified cryptographically (gpg --verify), not by byte-equality.",
+            ),
+            (
+                "*.rpm",
+                "nfpm GPG-signs the rpm (RPM header signature); the signature embeds a non-pinnable creation time / randomized salt and is not byte-reproducible even at a fixed SOURCE_DATE_EPOCH. The package body (rpm2cpio payload) IS byte-reproducible — gated by stage-nfpm::signed_rpm_body_is_byte_reproducible_across_time — and the signature is verified cryptographically (gpg --verify), not by byte-equality.",
             ),
         ];
         // `*.pkg` is host-keyed. Only one producer runs per determinism
@@ -448,15 +474,26 @@ mod tests {
     }
 
     #[test]
-    fn rpm_and_deb_are_gated_not_allowlisted() {
+    fn rpm_and_deb_are_allowlisted_due_to_gpg_signing() {
         let s = DeterminismState::seed_from_commit(0).expect("non-negative");
-        // nfpm emits byte-identical .rpm/.deb across two builds at a fixed
-        // SOURCE_DATE_EPOCH (proven by stage-nfpm::rpm_is_byte_reproducible_across_time
-        // and ::deb_is_byte_reproducible_across_time). Both are gated.
-        assert!(s.resolve_reason("foo-1.0.rpm").is_none());
-        assert!(s.resolve_reason("foo_1.0_amd64.deb").is_none());
-        assert!(s.resolve_reason("foo-1.0.rpm.sha256").is_none());
-        assert!(s.resolve_reason("foo_1.0_amd64.deb.sha256").is_none());
+        // The real config GPG-signs both formats; the signature is intrinsically
+        // non-byte-reproducible even at a fixed SOURCE_DATE_EPOCH while the body
+        // IS reproducible (proven by stage-nfpm::signed_{deb,rpm}_body_is_byte_-
+        // reproducible_across_time). Both — and their sidecars — are allow-listed.
+        let rpm = s.resolve_reason("foo-1.0.rpm").expect("matches *.rpm");
+        assert!(
+            rpm.contains("signature") || rpm.contains("GPG"),
+            "rpm reason must cite the signature: {rpm}"
+        );
+        let deb = s
+            .resolve_reason("foo_1.0_amd64.deb")
+            .expect("matches *.deb");
+        assert!(
+            deb.contains("signature") || deb.contains("GPG"),
+            "deb reason must cite the signature: {deb}"
+        );
+        assert!(s.resolve_reason("foo-1.0.rpm.sha256").is_some());
+        assert!(s.resolve_reason("foo_1.0_amd64.deb.sha256").is_some());
     }
 
     #[test]
@@ -468,6 +505,19 @@ mod tests {
         // Gated, never allow-listed as "defense-in-depth".
         assert!(s.resolve_reason("probe_1.2.3_amd64.snap").is_none());
         assert!(s.resolve_reason("probe_1.2.3_amd64.snap.sha256").is_none());
+    }
+
+    #[test]
+    fn apk_is_signed_but_gated() {
+        let s = DeterminismState::seed_from_commit(0).expect("non-negative");
+        // nfpm RSA-signs the apk, but the signature is deterministic (PKCS#1,
+        // no salt / no embedded timestamp) so the whole signed artifact is
+        // byte-identical across two builds at a fixed SOURCE_DATE_EPOCH —
+        // proven by stage-nfpm::signed_apk_is_byte_reproducible_across_time.
+        // It must be GATED (real drift = regression), NOT allow-listed like
+        // the GPG-signed deb/rpm whose signature is non-reproducible.
+        assert!(s.resolve_reason("foo_1.0_amd64.apk").is_none());
+        assert!(s.resolve_reason("foo_1.0_amd64.apk.sha256").is_none());
     }
 
     #[test]

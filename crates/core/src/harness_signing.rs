@@ -66,11 +66,38 @@ pub struct EphemeralSigningKeys {
     /// to user configs as `{{ Env.GPG_FINGERPRINT }}`.
     pub gpg_fingerprint: String,
     /// Path to the armored secret-key file (consumed by nfpm via the
-    /// `GPG_KEY_PATH` env var when packaging signed deb/rpm/apk).
+    /// `GPG_KEY_PATH` env var when packaging signed deb/rpm).
     pub gpg_key_path: PathBuf,
+    /// Path to a PEM RSA private key consumed by nfpm's apk packager via
+    /// the `APK_PRIVATE_KEY_PATH` env var. `None` when `openssl` is
+    /// unavailable (apk then builds unsigned, as before).
+    pub apk_key_path: Option<PathBuf>,
     /// Keeps the tmpdir alive for the harness's run loop. Dropped
     /// when [`EphemeralSigningKeys`] goes out of scope.
     _tmpdir: TempDir,
+}
+
+#[cfg(feature = "test-helpers")]
+impl EphemeralSigningKeys {
+    /// Construct an instance with caller-supplied field values for tests that
+    /// exercise downstream env construction without spawning cosign/gpg/openssl.
+    /// The backing tempdir is empty — the paths need not exist; consumers only
+    /// read the fields.
+    pub fn for_test(apk_key_path: Option<PathBuf>) -> Self {
+        let tmpdir = tempfile::Builder::new()
+            .prefix("agpg-test-")
+            .tempdir()
+            .expect("for_test: create tempdir");
+        Self {
+            cosign_key_contents: "TEST-COSIGN-KEY".into(),
+            cosign_password: HARNESS_COSIGN_PASSWORD.into(),
+            gnupg_home: tmpdir.path().join("gnupg"),
+            gpg_fingerprint: "TESTFPR0000000000".into(),
+            gpg_key_path: tmpdir.path().join("anodize-harness.asc"),
+            apk_key_path,
+            _tmpdir: tmpdir,
+        }
+    }
 }
 
 /// Provision ephemeral cosign + GPG keys. `sde` is the harness's
@@ -98,6 +125,7 @@ pub fn provision_ephemeral_keys(sde: i64) -> Result<EphemeralSigningKeys> {
 
     let cosign_key_contents = provision_cosign(tmpdir.path())?;
     let (gnupg_home, gpg_fingerprint, gpg_key_path) = provision_gpg(tmpdir.path(), sde)?;
+    let apk_key_path = provision_apk(tmpdir.path());
 
     Ok(EphemeralSigningKeys {
         cosign_key_contents,
@@ -105,6 +133,7 @@ pub fn provision_ephemeral_keys(sde: i64) -> Result<EphemeralSigningKeys> {
         gnupg_home,
         gpg_fingerprint,
         gpg_key_path,
+        apk_key_path,
         _tmpdir: tmpdir,
     })
 }
@@ -195,6 +224,52 @@ fn provision_cosign(tmpdir: &Path) -> Result<String> {
     let contents = std::fs::read_to_string(&key_path)
         .with_context(|| format!("harness signing: read cosign key at {}", key_path.display()))?;
     Ok(contents)
+}
+
+/// Generate an ephemeral RSA private key (PEM PKCS#8) for nfpm's apk
+/// packager. nfpm RSA-signs apk; the signature is deterministic (no salt /
+/// no embedded timestamp), so the signed apk is byte-reproducible.
+///
+/// Returns `None` when `openssl` is missing or key generation fails.
+fn provision_apk(tmpdir: &Path) -> Option<PathBuf> {
+    let key_path = tmpdir.join("apk-harness.pem");
+    // Best-effort, NOT bail-on-failure (unlike provision_cosign/provision_gpg):
+    // apk is a Linux-only format and not every determinism shard builds it, so
+    // a missing `openssl` must NOT fail provisioning — bailing here would break
+    // the macos/windows shards that pass today without any apk key.
+    //
+    // `genpkey` (not `genrsa`) is pinned deliberately so the key is always
+    // PKCS#8 (`BEGIN PRIVATE KEY`) across openssl versions. `genrsa` emits
+    // PKCS#1 on openssl 1.x/LibreSSL and PKCS#8 on 3.x; a format nfpm's apk
+    // packager rejects would — because provisioning is best-effort — silently
+    // leave apk unsigned in-harness, re-opening the signed-path blindspot.
+    let ok = Command::new("openssl")
+        .args([
+            "genpkey",
+            "-algorithm",
+            "RSA",
+            "-pkeyopt",
+            "rsa_keygen_bits:2048",
+            "-out",
+        ])
+        .arg(&key_path)
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    if !ok {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(&key_path) {
+            let mut perms = meta.permissions();
+            perms.set_mode(0o600);
+            let _ = std::fs::set_permissions(&key_path, perms);
+        }
+    }
+    Some(key_path)
 }
 
 fn provision_gpg(tmpdir: &Path, sde: i64) -> Result<(PathBuf, String, PathBuf)> {
@@ -397,6 +472,23 @@ mod provision_tests {
             .install();
     }
 
+    /// `openssl` stub: writes a fake PEM to the `-out` path and exits 0,
+    /// so the apk provisioner's success path runs without a real openssl.
+    fn stub_openssl_ok(tools: &FakeToolDir) {
+        tools
+            .tool("openssl")
+            .script(
+                "out=\"\"\n\
+                 while [ $# -gt 0 ]; do\n\
+                   if [ \"$1\" = '-out' ]; then out=\"$2\"; shift; fi\n\
+                   shift\n\
+                 done\n\
+                 if [ -n \"$out\" ]; then printf '%s' '-----BEGIN PRIVATE KEY-----\\nFAKE\\n-----END PRIVATE KEY-----\\n' > \"$out\"; fi\n\
+                 exit 0",
+            )
+            .install();
+    }
+
     /// `gpg` stub covering the four argv shapes the provisioner issues:
     /// `--version`, `--batch --gen-key <file>`, `--list-secret-keys
     /// --with-colons`, `--batch --armor --export-secret-keys <fpr>`.
@@ -420,6 +512,7 @@ mod provision_tests {
         let tools = FakeToolDir::new();
         stub_cosign_ok(&tools);
         stub_gpg_ok(&tools);
+        stub_openssl_ok(&tools);
         let _g = tools.activate();
 
         // 2025-01-01T00:00:00Z
@@ -428,6 +521,11 @@ mod provision_tests {
         assert_eq!(keys.cosign_key_contents, "FAKE-ENCRYPTED-COSIGN-PEM");
         assert_eq!(keys.cosign_password, "anodize-harness");
         assert_eq!(keys.gpg_fingerprint, FAKE_FPR);
+        let apk_key = keys
+            .apk_key_path
+            .as_ref()
+            .expect("openssl stub yields an apk key path");
+        assert!(apk_key.is_file(), "apk key file must exist");
         assert_eq!(
             std::fs::read_to_string(&keys.gpg_key_path).unwrap(),
             "FAKE-ARMORED-SECRET-KEY\n"
@@ -472,6 +570,30 @@ mod provision_tests {
         assert_eq!(
             gpg_calls[3],
             vec!["--batch", "--armor", "--export-secret-keys", FAKE_FPR]
+        );
+    }
+
+    /// apk provisioning is best-effort: an unavailable `openssl` must NOT bail
+    /// the whole provisioner (apk is Linux-only and not every shard builds it).
+    /// Provisioning still succeeds and yields `apk_key_path == None`. A
+    /// failing stub stands in for "openssl unavailable" — the fake PATH
+    /// prepends but does not replace the host PATH, so a stub (shadowing any
+    /// real host openssl) is required to drive the unavailable branch
+    /// deterministically.
+    #[test]
+    #[serial_test::serial]
+    fn provision_succeeds_without_openssl_yielding_no_apk_key() {
+        let tools = FakeToolDir::new();
+        stub_cosign_ok(&tools);
+        stub_gpg_ok(&tools);
+        tools.tool("openssl").exit(1).install();
+        let _g = tools.activate();
+
+        let keys = provision_ephemeral_keys(1735689600)
+            .expect("provision must succeed even when openssl fails");
+        assert!(
+            keys.apk_key_path.is_none(),
+            "apk_key_path must be None when openssl is unavailable"
         );
     }
 

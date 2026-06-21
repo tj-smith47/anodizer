@@ -6562,6 +6562,409 @@ fn rpm_is_byte_reproducible_across_time() {
 }
 
 // ---------------------------------------------------------------------------
+// Signed-body reproducibility: the real config GPG-signs deb/rpm, so the WHOLE
+// file is intrinsically non-byte-reproducible (the signature embeds a
+// non-pinnable creation time / randomized salt). These tests prove the package
+// BODY is still byte-reproducible at a fixed SOURCE_DATE_EPOCH, justifying the
+// `*.deb` / `*.rpm` determinism allow-list entries (the harness verifies the
+// signature cryptographically, not by byte-equality).
+// ---------------------------------------------------------------------------
+
+/// Provision an ephemeral GNUPGHOME with an unprotected RSA key and export the
+/// armored secret key to a file. Returns `None` (skip-with-pass) when `gpg` is
+/// absent. The returned `TempDir` owns both the keyring and the exported key;
+/// keep it alive for the duration of the build.
+#[cfg(test)]
+fn provision_ephemeral_gpg_key() -> Option<(TempDir, std::path::PathBuf, String)> {
+    use std::process::Command;
+    if !anodizer_core::util::find_binary("gpg") {
+        eprintln!("gpg absent; signed-body reproducibility test skipped hermetically");
+        return None;
+    }
+    let dir = TempDir::new().unwrap();
+    let gnupghome = dir.path().join("gnupghome");
+    std::fs::create_dir_all(&gnupghome).unwrap();
+    // GNUPGHOME must be 0700 or gpg warns/refuses to use it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&gnupghome, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let params = dir.path().join("genkey.params");
+    std::fs::write(
+        &params,
+        "%no-protection\n\
+         Key-Type: RSA\n\
+         Key-Length: 2048\n\
+         Name-Real: Anodizer Determinism Probe\n\
+         Name-Email: probe@example.com\n\
+         Expire-Date: 0\n\
+         %commit\n",
+    )
+    .unwrap();
+    let genkey = Command::new("gpg")
+        .env("GNUPGHOME", &gnupghome)
+        .args(["--batch", "--gen-key", params.to_str().unwrap()])
+        .output()
+        .expect("spawn gpg --gen-key");
+    assert!(
+        genkey.status.success(),
+        "gpg --gen-key must succeed: {}",
+        String::from_utf8_lossy(&genkey.stderr)
+    );
+    // Resolve the new key's fingerprint to export precisely that secret key.
+    let list = Command::new("gpg")
+        .env("GNUPGHOME", &gnupghome)
+        .args([
+            "--batch",
+            "--with-colons",
+            "--list-secret-keys",
+            "--fingerprint",
+        ])
+        .output()
+        .expect("spawn gpg --list-secret-keys");
+    assert!(list.status.success(), "gpg --list-secret-keys must succeed");
+    let listing = String::from_utf8_lossy(&list.stdout);
+    let fpr = listing
+        .lines()
+        .find(|l| l.starts_with("fpr:"))
+        .and_then(|l| l.split(':').nth(9))
+        .expect("a fingerprint line in --list-secret-keys output")
+        .to_string();
+    let key_path = dir.path().join("secret.asc");
+    let export = Command::new("gpg")
+        .env("GNUPGHOME", &gnupghome)
+        .args([
+            "--batch",
+            "--export-secret-keys",
+            "--armor",
+            "--output",
+            key_path.to_str().unwrap(),
+            &fpr,
+        ])
+        .output()
+        .expect("spawn gpg --export-secret-keys");
+    assert!(
+        export.status.success(),
+        "gpg --export-secret-keys must succeed: {}",
+        String::from_utf8_lossy(&export.stderr)
+    );
+    Some((dir, key_path, gnupghome.to_string_lossy().into_owned()))
+}
+
+/// Build a GPG-signed nfpm package twice with a wall-clock gap, both at a fixed
+/// `SOURCE_DATE_EPOCH` and a fixed `mtime`. Returns the two byte streams, or
+/// `None` (skip-with-pass) when `nfpm` or `gpg` is absent.
+///
+/// `make_signature_block` receives the real exported key path and returns the
+/// format-specific `deb:`/`rpm:` signature YAML. The raw nfpm CLI reads
+/// `key_file` literally (it does NOT expand `{{ .Env.* }}` — that is anodizer's
+/// own pre-render step), so the literal path must be inlined here.
+#[cfg(test)]
+fn build_signed_nfpm_twice(
+    format: &str,
+    ext: &str,
+    make_signature_block: impl Fn(&std::path::Path) -> String,
+) -> Option<(Vec<u8>, Vec<u8>)> {
+    use std::process::Command;
+    if !anodizer_core::util::find_binary("nfpm") {
+        eprintln!("nfpm absent; signed {format} reproducibility test skipped hermetically");
+        return None;
+    }
+    let (keydir, key_path, gnupghome) = provision_ephemeral_gpg_key()?;
+    let dir = TempDir::new().unwrap();
+    let payload = dir.path().join("payload");
+    std::fs::write(&payload, b"#!/bin/sh\necho hi\n").unwrap();
+    // A second content entry forces data.tar.gz to carry >1 member, and a
+    // postinstall scriptlet forces control.tar.gz to carry a maintainer script
+    // — so the body byte-equality assertion covers a realistic multi-member
+    // body, not a near-empty one a single file would produce.
+    let extra = dir.path().join("extra.txt");
+    std::fs::write(&extra, b"probe-extra\n").unwrap();
+    let postinst = dir.path().join("postinstall.sh");
+    std::fs::write(&postinst, b"#!/bin/sh\nexit 0\n").unwrap();
+    let cfg = dir.path().join("nfpm.yaml");
+    // `mtime` pins the ar/cpio member timestamps; the signature block routes
+    // nfpm through its GPG signer so the whole-file output is non-reproducible
+    // while the body stays byte-stable.
+    std::fs::write(
+        &cfg,
+        format!(
+            "name: probe-pkg\narch: amd64\nversion: 1.2.3\n\
+             maintainer: test <test@example.com>\ndescription: probe\n\
+             mtime: 2024-01-01T00:00:00Z\n\
+             contents:\n  - src: {}\n    dst: /usr/local/bin/probe\n\
+             \x20 - src: {}\n    dst: /usr/local/share/probe/extra.txt\n\
+             scripts:\n  postinstall: {}\n{}",
+            payload.display(),
+            extra.display(),
+            postinst.display(),
+            make_signature_block(&key_path)
+        ),
+    )
+    .unwrap();
+    let sde = "1704067200";
+    let build = |out: &std::path::Path| {
+        let args = nfpm_command(cfg.to_str().unwrap(), format, out.to_str().unwrap());
+        // GNUPGHOME points nfpm's signer at the ephemeral keyring; GPG_KEY_PATH
+        // mirrors the real config's `{{ .Env.GPG_KEY_PATH }}` env contract.
+        let status = Command::new(&args[0])
+            .args(&args[1..])
+            .env("SOURCE_DATE_EPOCH", sde)
+            .env("GNUPGHOME", &gnupghome)
+            .env("GPG_KEY_PATH", &key_path)
+            .status()
+            .expect("spawn nfpm");
+        assert!(
+            status.success(),
+            "signed nfpm pkg --packager {format} must succeed"
+        );
+        std::fs::read(out).unwrap()
+    };
+    let a = build(&dir.path().join(format!("a{ext}")));
+    // The GPG/RSA signature salt — not wall-clock — is what makes the two
+    // whole-file outputs differ; this gap is incidental, so shortening or
+    // removing it would not break the assert_ne on the signed files.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let b = build(&dir.path().join(format!("b{ext}")));
+    // Keep the key material alive until both builds complete.
+    drop(keydir);
+    Some((a, b))
+}
+
+/// A GPG-signed `.deb` is NOT byte-identical across two builds (the `_gpgorigin`
+/// signature is non-deterministic), but the body members (debian-binary,
+/// control.tar.gz, data.tar.gz) ARE byte-identical at a fixed SOURCE_DATE_EPOCH.
+#[test]
+fn signed_deb_body_is_byte_reproducible_across_time() {
+    use std::process::Command;
+    let sig_block = |key: &std::path::Path| {
+        // Pin gzip so the hardcoded ar member names below (control.tar.gz,
+        // data.tar.gz) stay stable if nfpm changes its default deb compression.
+        format!(
+            "deb:\n  compression: gzip\n  signature:\n    key_file: \"{}\"\n    type: origin\n",
+            key.display()
+        )
+    };
+    let Some((a, b)) = build_signed_nfpm_twice("deb", ".deb", sig_block) else {
+        return;
+    };
+    // Signing is active and non-deterministic: the whole files must differ.
+    assert_ne!(
+        a, b,
+        "a GPG-signed .deb must differ across builds (proving signing ran)"
+    );
+    if !anodizer_core::util::find_binary("ar") {
+        eprintln!("ar absent; deb body comparison skipped hermetically");
+        return;
+    }
+    // Extract the ar members of each build into its own dir; the TempDir guard
+    // must outlive the member reads, so the closure returns the live guard.
+    let extract = |bytes: &[u8]| -> TempDir {
+        let d = TempDir::new().unwrap();
+        let deb = d.path().join("pkg.deb");
+        std::fs::write(&deb, bytes).unwrap();
+        let status = Command::new("ar")
+            .arg("x")
+            .arg(&deb)
+            .current_dir(d.path())
+            .status()
+            .expect("spawn ar x");
+        assert!(status.success(), "ar x must succeed");
+        d
+    };
+    let da = extract(&a);
+    let db = extract(&b);
+    for member in ["debian-binary", "control.tar.gz", "data.tar.gz"] {
+        let ma = std::fs::read(da.path().join(member))
+            .unwrap_or_else(|e| panic!("read {member} from build A: {e}"));
+        let mb = std::fs::read(db.path().join(member))
+            .unwrap_or_else(|e| panic!("read {member} from build B: {e}"));
+        assert_eq!(
+            ma, mb,
+            "deb body member {member} must be byte-identical across builds at a fixed SOURCE_DATE_EPOCH"
+        );
+    }
+    // The signature member must differ (else signing was a no-op).
+    let sa = std::fs::read(da.path().join("_gpgorigin")).expect("_gpgorigin in build A");
+    let sb = std::fs::read(db.path().join("_gpgorigin")).expect("_gpgorigin in build B");
+    assert_ne!(sa, sb, "the _gpgorigin signature must differ across builds");
+}
+
+/// A GPG-signed `.rpm` is NOT byte-identical across two builds (the RPM header
+/// signature is non-deterministic), but the rpm2cpio payload IS byte-identical
+/// at a fixed SOURCE_DATE_EPOCH.
+#[test]
+fn signed_rpm_body_is_byte_reproducible_across_time() {
+    use std::process::Command;
+    let sig_block = |key: &std::path::Path| {
+        format!("rpm:\n  signature:\n    key_file: \"{}\"\n", key.display())
+    };
+    let Some((a, b)) = build_signed_nfpm_twice("rpm", ".rpm", sig_block) else {
+        return;
+    };
+    assert_ne!(
+        a, b,
+        "a GPG-signed .rpm must differ across builds (proving signing ran)"
+    );
+    if !anodizer_core::util::find_binary("rpm2cpio") {
+        eprintln!("rpm2cpio absent; rpm body comparison skipped hermetically");
+        return;
+    }
+    // rpm2cpio strips the RPM header (where the signature lives) and emits only
+    // the cpio payload, which is the reproducible body.
+    let payload = |bytes: &[u8]| -> Vec<u8> {
+        let d = TempDir::new().unwrap();
+        let rpm = d.path().join("pkg.rpm");
+        std::fs::write(&rpm, bytes).unwrap();
+        let out = Command::new("rpm2cpio")
+            .arg(&rpm)
+            .output()
+            .expect("spawn rpm2cpio");
+        assert!(
+            out.status.success(),
+            "rpm2cpio must succeed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out.stdout
+    };
+    let pa = payload(&a);
+    let pb = payload(&b);
+    assert_eq!(
+        pa, pb,
+        "rpm2cpio payload must be byte-identical across builds at a fixed SOURCE_DATE_EPOCH"
+    );
+}
+
+/// A nfpm RSA-signed `.apk` is byte-identical across two builds at a fixed
+/// `SOURCE_DATE_EPOCH`, even with a wall-clock gap between them. Unlike the
+/// GPG-signed deb/rpm, nfpm's apk signature is deterministic (PKCS#1, no salt
+/// / no embedded timestamp), so the WHOLE signed artifact is reproducible —
+/// the premise that lets the determinism harness GATE `.apk` (count any drift
+/// as a regression) rather than allow-list it.
+#[test]
+fn signed_apk_is_byte_reproducible_across_time() {
+    use std::process::Command;
+    // Both tools are required to actually sign + build; skip-with-pass when
+    // either is absent so the suite stays hermetic on a bare host.
+    if !anodizer_core::util::find_binary("openssl") {
+        eprintln!("openssl absent; signed apk reproducibility test skipped hermetically");
+        return;
+    }
+    if !anodizer_core::util::find_binary("nfpm") {
+        eprintln!("nfpm absent; signed apk reproducibility test skipped hermetically");
+        return;
+    }
+
+    let dir = TempDir::new().unwrap();
+    let key_path = dir.path().join("apk.pem");
+    // `genpkey` (not `genrsa`) is pinned so the emitted key is always PKCS#8
+    // (`BEGIN PRIVATE KEY`) regardless of openssl version; `genrsa` emits
+    // PKCS#1 on openssl 1.x/LibreSSL and PKCS#8 on 3.x, and a format nfpm's
+    // apk packager rejects would leave the apk unsigned — defeating the
+    // signature-member assertion below. Mirrors `harness_signing::provision_apk`.
+    let genpkey = Command::new("openssl")
+        .args([
+            "genpkey",
+            "-algorithm",
+            "RSA",
+            "-pkeyopt",
+            "rsa_keygen_bits:2048",
+            "-out",
+        ])
+        .arg(&key_path)
+        .output()
+        .expect("spawn openssl genpkey");
+    assert!(
+        genpkey.status.success(),
+        "openssl genpkey must succeed: {}",
+        String::from_utf8_lossy(&genpkey.stderr)
+    );
+
+    let payload = dir.path().join("payload");
+    std::fs::write(&payload, b"#!/bin/sh\necho hi\n").unwrap();
+    let cfg = dir.path().join("nfpm.yaml");
+    // `mtime` + `file_info.mtime` pin every member timestamp; the apk signature
+    // block routes nfpm through its RSA apk signer using the ephemeral key.
+    std::fs::write(
+        &cfg,
+        format!(
+            "name: probe-pkg\narch: x86_64\nversion: 1.2.3\n\
+             maintainer: test <test@example.com>\ndescription: probe\n\
+             mtime: 2024-01-01T00:00:00Z\n\
+             contents:\n  - src: {}\n    dst: /usr/local/bin/probe\n\
+             \x20   file_info:\n      mtime: 2024-01-01T00:00:00Z\n\
+             apk:\n  signature:\n    key_file: \"{}\"\n",
+            payload.display(),
+            key_path.display(),
+        ),
+    )
+    .unwrap();
+
+    let sde = "1704067200";
+    let build = |out: &std::path::Path| -> Vec<u8> {
+        let args = nfpm_command(cfg.to_str().unwrap(), "apk", out.to_str().unwrap());
+        // APK_PRIVATE_KEY_PATH mirrors the real config's
+        // `{{ .Env.APK_PRIVATE_KEY_PATH }}`; the literal key_file above is what
+        // the raw nfpm CLI actually reads, so both point at the same key.
+        let status = Command::new(&args[0])
+            .args(&args[1..])
+            .env("SOURCE_DATE_EPOCH", sde)
+            .env("APK_PRIVATE_KEY_PATH", &key_path)
+            .status()
+            .expect("spawn nfpm");
+        assert!(
+            status.success(),
+            "signed nfpm pkg --packager apk must succeed"
+        );
+        std::fs::read(out).unwrap()
+    };
+
+    let a = build(&dir.path().join("a.apk"));
+    // A wall-clock gap proves the signed bytes don't carry a signing timestamp;
+    // its exact length is incidental to the byte-equality assertion.
+    std::thread::sleep(std::time::Duration::from_millis(1100));
+    let b = build(&dir.path().join("b.apk"));
+
+    assert_eq!(
+        a, b,
+        "an RSA-signed .apk must be byte-identical across builds at a fixed SOURCE_DATE_EPOCH \
+         (nfpm's apk signature is deterministic), so the harness gates it"
+    );
+
+    // Byte-equality alone is vacuous: an UNSIGNED apk is ALSO byte-identical
+    // across builds at a fixed SOURCE_DATE_EPOCH, so the assert above would stay
+    // green even if signing silently no-op'd. Prove the SIGNED path actually ran
+    // by confirming the apk carries a `.SIGN.RSA...` signature member (an apk is
+    // a gzipped tar; GNU `tar tzf` lists the concatenated gzip members). Skip
+    // this sub-check when `tar` is absent, matching the hermetic skip idiom above.
+    if !anodizer_core::util::find_binary("tar") {
+        eprintln!("tar absent; apk signature-member check skipped hermetically");
+        return;
+    }
+    let listing = Command::new("tar")
+        .arg("tzf")
+        .arg(dir.path().join("a.apk"))
+        .output()
+        .expect("spawn tar tzf");
+    assert!(
+        listing.status.success(),
+        "tar tzf must succeed: {}",
+        String::from_utf8_lossy(&listing.stderr)
+    );
+    let entries = String::from_utf8_lossy(&listing.stdout);
+    let signed = entries
+        .lines()
+        .any(|e| e.trim_start_matches("./").starts_with(".SIGN.RSA"));
+    assert!(
+        signed,
+        "the apk must carry a `.SIGN.RSA...` signature member; its absence means \
+         nfpm signing silently no-op'd, so the byte-equality above proves nothing \
+         about the signed path. tar tzf listing:\n{entries}"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // amd64 micro-architecture variant naming
 // ---------------------------------------------------------------------------
 

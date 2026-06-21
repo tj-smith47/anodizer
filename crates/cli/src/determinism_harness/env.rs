@@ -520,6 +520,15 @@ pub(crate) fn build_subprocess_env_with_env(
             "GPG_KEY_PATH".into(),
             anodizer_core::harness_signing::path_for_subprocess_env(&keys.gpg_key_path),
         );
+        // Re-insert the harness's ephemeral apk key path last so it wins over
+        // the stripped host `APK_PRIVATE_KEY`; absent when openssl was
+        // unavailable, leaving apk unsigned exactly as it built before.
+        if let Some(apk) = &keys.apk_key_path {
+            env.insert(
+                "APK_PRIVATE_KEY_PATH".into(),
+                anodizer_core::harness_signing::path_for_subprocess_env(apk),
+            );
+        }
     }
 
     env
@@ -584,6 +593,37 @@ mod tests {
     fn allow_listed_path_reads_through_env_source() {
         let env = MapEnvSource::new().with("PATH", "/fixture/bin:/usr/bin");
         assert_eq!(allow_listed_path_with_env(&env), "/fixture/bin:/usr/bin");
+    }
+
+    /// When the harness's signing keys carry an apk RSA key, the child env
+    /// exports `APK_PRIVATE_KEY_PATH` so nfpm's apk packager RSA-signs the
+    /// `.apk` — making the determinism gate cover the real signed-apk path.
+    #[test]
+    fn signing_keys_with_apk_key_export_apk_private_key_path() {
+        let scratch = tempfile::tempdir().unwrap();
+        let keys = EphemeralSigningKeys::for_test(Some(scratch.path().join("apk-harness.pem")));
+        let mut inputs = inputs(scratch.path());
+        inputs.signing_keys = Some(&keys);
+        let env = build_subprocess_env_with_env(&inputs, &MapEnvSource::new(), false);
+        assert!(
+            env.contains_key("APK_PRIVATE_KEY_PATH"),
+            "APK_PRIVATE_KEY_PATH must be exported when an apk key is present"
+        );
+    }
+
+    /// Without an apk key (openssl unavailable at provision time), no
+    /// `APK_PRIVATE_KEY_PATH` is exported — apk then builds unsigned.
+    #[test]
+    fn signing_keys_without_apk_key_omit_apk_private_key_path() {
+        let scratch = tempfile::tempdir().unwrap();
+        let keys = EphemeralSigningKeys::for_test(None);
+        let mut inputs = inputs(scratch.path());
+        inputs.signing_keys = Some(&keys);
+        let env = build_subprocess_env_with_env(&inputs, &MapEnvSource::new(), false);
+        assert!(
+            !env.contains_key("APK_PRIVATE_KEY_PATH"),
+            "APK_PRIVATE_KEY_PATH must be absent when no apk key was provisioned"
+        );
     }
 
     /// Static-config warnings (legacy aliases, submitter `required: true`)
