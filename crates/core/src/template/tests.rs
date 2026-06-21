@@ -3283,7 +3283,12 @@ fn test_base_tera_time_placeholder_produces_date() {
 
 // ---- Coverage: abs filter — relative path (lines 856-866) ----
 
+// `abs` resolves a relative input against the process-global cwd, so this
+// test must not run while a peer test (e.g. partial/artifact cwd mutators)
+// has swapped or deleted that cwd; the default `#[serial]` group it shares
+// with those mutators guarantees exclusive cwd access.
 #[test]
+#[serial_test::serial]
 fn test_abs_filter_relative_path() {
     let mut vars = test_vars();
     vars.set("RelPath", "some/relative/path");
@@ -3698,7 +3703,10 @@ fn test_abs_function_form_absolute() {
     assert_eq!(result, already_abs);
 }
 
+// Shares the default `#[serial]` group with the cwd-mutating peer tests for
+// the same reason as `test_abs_filter_relative_path`.
 #[test]
+#[serial_test::serial]
 fn test_abs_function_form_relative() {
     let vars = test_vars();
     let result = render("{{ abs(s=\"relative/path\") }}", &vars).unwrap();

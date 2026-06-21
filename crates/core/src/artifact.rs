@@ -1286,9 +1286,10 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn to_artifacts_json_strips_absolute_worktree_prefix() {
-        let cwd_guard = tempfile::tempdir().unwrap();
-        let original_cwd = std::env::current_dir().unwrap();
-        std::env::set_current_dir(cwd_guard.path()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        // RAII: restores the original cwd on drop even if the body panics, so a
+        // peer test reading the process-global cwd never observes the swap.
+        let _cwd = crate::test_helpers::CwdGuard::new(tmp.path()).unwrap();
         // current_dir() returns a canonicalized path on most platforms; mirror
         // that so strip_prefix matches what add() will compute internally.
         let canonical_cwd = std::env::current_dir().unwrap();
@@ -1315,8 +1316,6 @@ mod tests {
              determinism-harness runs at different worktree paths produce \
              byte-identical artifacts.json"
         );
-
-        std::env::set_current_dir(original_cwd).unwrap();
     }
 
     /// Regression for determinism drift on `dist/artifacts.json`: two

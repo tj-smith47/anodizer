@@ -754,17 +754,15 @@ mod tests {
     #[serial]
     #[cfg(unix)]
     fn detect_host_target_survives_deleted_cwd() {
-        let original = std::env::current_dir().unwrap();
         let scratch = tempfile::tempdir().unwrap();
-        std::env::set_current_dir(scratch.path()).unwrap();
+        // RAII: restores the original cwd on drop even if the body panics, so a
+        // peer test reading the process-global cwd never observes a deleted dir.
+        let _cwd = crate::test_helpers::CwdGuard::new(scratch.path()).unwrap();
         // Remove the directory the process cwd now points at, mimicking a peer
         // test that dropped its tempdir while we hold its path as cwd.
         scratch.close().unwrap();
 
         let result = detect_host_target();
-
-        // Restore a valid cwd before asserting so a failure can't cascade.
-        std::env::set_current_dir(&original).unwrap();
 
         let host = result.expect("host detection must succeed despite a deleted cwd");
         assert!(host.contains('-'), "host triple should contain '-': {host}");
