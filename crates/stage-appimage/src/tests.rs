@@ -108,14 +108,45 @@ fn ctx_v(version: &str) -> Context {
 #[test]
 fn filename_default_composite() {
     let ctx = ctx_v("1.2.3");
-    let name = resolve_appimage_filename(&ctx, None, "myapp", "1.2.3", "x86_64").unwrap();
+    let (name, resolved_template) =
+        resolve_appimage_filename(&ctx, None, "myapp", "1.2.3", "x86_64").unwrap();
     assert_eq!(name, "myapp-1.2.3-x86_64.AppImage");
+    // The default path reports the composed default as the resolved template
+    // (never an empty string) so a guard clobber error names a real template.
+    assert_eq!(resolved_template, "myapp-1.2.3-x86_64.AppImage");
+    assert!(!resolved_template.is_empty());
+}
+
+/// Drift guard: the amd64 suffix the default filename appends is rendered from
+/// the shared core const, so a `v3`-seeded build appends `v3` while a baseline
+/// (no `Amd64` var / `v1`) appends nothing — preserving the historical name.
+#[test]
+fn filename_default_appends_amd64_variant_suffix() {
+    let mut ctx = ctx_v("1.2.3");
+
+    // Baseline (v1) and None both render the unsuffixed historical name.
+    anodizer_core::archive_name::seed_amd64_variant_var(ctx.template_vars_mut(), Some("v1"));
+    assert_eq!(
+        resolve_appimage_filename(&ctx, None, "myapp", "1.2.3", "x86_64")
+            .unwrap()
+            .0,
+        "myapp-1.2.3-x86_64.AppImage"
+    );
+
+    // A v3 build appends the variant before the extension.
+    anodizer_core::archive_name::seed_amd64_variant_var(ctx.template_vars_mut(), Some("v3"));
+    let (name, resolved_template) =
+        resolve_appimage_filename(&ctx, None, "myapp", "1.2.3", "x86_64").unwrap();
+    assert_eq!(name, "myapp-1.2.3-x86_64v3.AppImage");
+    // The composed default carries the v3 suffix, so the guard cites the
+    // suffixed template — not an empty string.
+    assert_eq!(resolved_template, "myapp-1.2.3-x86_64v3.AppImage");
 }
 
 #[test]
 fn filename_template_appends_extension() {
     let ctx = ctx_v("1.2.3");
-    let name = resolve_appimage_filename(
+    let (name, resolved_template) = resolve_appimage_filename(
         &ctx,
         Some("custom-{{ Version }}"),
         "myapp",
@@ -124,12 +155,14 @@ fn filename_template_appends_extension() {
     )
     .unwrap();
     assert_eq!(name, "custom-1.2.3.AppImage");
+    // A user `filename:` is reported verbatim as the resolved template.
+    assert_eq!(resolved_template, "custom-{{ Version }}");
 }
 
 #[test]
 fn filename_template_keeps_existing_extension() {
     let ctx = ctx_v("1.2.3");
-    let name = resolve_appimage_filename(
+    let (name, _) = resolve_appimage_filename(
         &ctx,
         Some("custom-{{ Version }}.AppImage"),
         "myapp",
@@ -176,6 +209,7 @@ fn sample_job(tmp: &Path, entries: Vec<AppDirEntry>) -> AppImageJob {
         appdir_entries: entries,
         primary_target: Some("x86_64-unknown-linux-gnu".to_string()),
         primary_crate_name: "myapp".to_string(),
+        amd64_variant: None,
         sde_epoch: None,
     }
 }
@@ -512,6 +546,139 @@ fn multi_arch_produces_distinct_filenames() {
     assert_eq!(paths.len(), jobs.len());
 }
 
+/// Three x86_64 builds tagged amd64_variant v1/v2/v3 plus one aarch64 build
+/// must each yield a distinct `.AppImage` job (no ArchPathGuard error): the
+/// default filename appends the amd64 micro-arch suffix (v1 → no suffix, v2 →
+/// `…x86_64v2`, v3 → `…x86_64v3`), so the same triple no longer clobbers
+/// itself.
+#[test]
+fn same_triple_multi_variant_produces_distinct_filenames() {
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.2.3")
+        .populate_git_vars(true)
+        .dist(dist.clone())
+        .build();
+    fs::create_dir_all(&dist).unwrap();
+
+    for variant in ["v1", "v2", "v3"] {
+        let p = dist.join(format!("myapp-{variant}"));
+        fs::write(&p, b"bin").unwrap();
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("binary".to_string(), "myapp".to_string());
+        metadata.insert("amd64_variant".to_string(), variant.to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: format!("myapp-{variant}"),
+            path: p,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata,
+            size: None,
+        });
+    }
+    let arm = dist.join("myapp-arm");
+    fs::write(&arm, b"bin").unwrap();
+    let mut arm_meta = std::collections::HashMap::new();
+    arm_meta.insert("binary".to_string(), "myapp".to_string());
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: "myapp-arm".to_string(),
+        path: arm,
+        target: Some("aarch64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: arm_meta,
+        size: None,
+    });
+
+    let cfg = appimage_fixture(tmp.path());
+    let log = ctx.logger("appimage");
+    let mut jobs = Vec::new();
+    collect_config_jobs(
+        &mut ctx, &log, &cfg, &dist, "1.2.3", "myapp", None, false, &mut jobs,
+    )
+    .expect("multi-variant build must not clobber");
+
+    assert_eq!(jobs.len(), 4, "one AppImage per variant + arm64");
+    let names: std::collections::BTreeSet<String> =
+        jobs.iter().map(|j| j.filename.clone()).collect();
+    assert_eq!(
+        names,
+        [
+            "myapp-1.2.3-aarch64.AppImage",
+            "myapp-1.2.3-x86_64.AppImage",
+            "myapp-1.2.3-x86_64v2.AppImage",
+            "myapp-1.2.3-x86_64v3.AppImage",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect()
+    );
+    // Distinct AppDir + output paths (no clobber).
+    let paths: std::collections::BTreeSet<_> = jobs.iter().map(|j| j.output_path.clone()).collect();
+    assert_eq!(paths.len(), jobs.len());
+    let appdirs: std::collections::BTreeSet<_> =
+        jobs.iter().map(|j| j.appdir_root.clone()).collect();
+    assert_eq!(appdirs.len(), jobs.len(), "AppDir per variant must differ");
+    // The variant is recorded on the job for downstream artifact metadata.
+    let variants: std::collections::BTreeSet<Option<String>> =
+        jobs.iter().map(|j| j.amd64_variant.clone()).collect();
+    assert!(variants.contains(&Some("v2".to_string())));
+    assert!(variants.contains(&Some("v3".to_string())));
+}
+
+/// A constant `filename:` (no `{{ .Arch }}` / `{{ .Amd64 }}` discriminator)
+/// renders the same `.AppImage` path for two amd64 variants — the
+/// ArchPathGuard must error loudly rather than let the second job clobber the
+/// first.
+#[test]
+fn constant_filename_bails_across_variants() {
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.2.3")
+        .populate_git_vars(true)
+        .dist(dist.clone())
+        .build();
+    fs::create_dir_all(&dist).unwrap();
+
+    for variant in ["v1", "v3"] {
+        let p = dist.join(format!("myapp-{variant}"));
+        fs::write(&p, b"bin").unwrap();
+        let mut metadata = std::collections::HashMap::new();
+        metadata.insert("binary".to_string(), "myapp".to_string());
+        metadata.insert("amd64_variant".to_string(), variant.to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: format!("myapp-{variant}"),
+            path: p,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata,
+            size: None,
+        });
+    }
+
+    let mut cfg = appimage_fixture(tmp.path());
+    // Constant — no per-target discriminator.
+    cfg.filename = Some("myapp-installer".to_string());
+
+    let log = ctx.logger("appimage");
+    let mut jobs = Vec::new();
+    let err = collect_config_jobs(
+        &mut ctx, &log, &cfg, &dist, "1.2.3", "myapp", None, false, &mut jobs,
+    )
+    .unwrap_err()
+    .to_string();
+
+    assert!(err.contains("appimage:"), "{err}");
+    assert!(err.contains("crate 'myapp'"), "{err}");
+    assert!(err.contains("{{ .Amd64 }}"), "{err}");
+}
+
 #[test]
 fn harvest_missing_host_binary_errors() {
     let tmp = TempDir::new().unwrap();
@@ -700,7 +867,15 @@ fn group_by_platform_is_deterministic() {
     ];
     let groups = group_by_platform(&inputs);
     let keys: Vec<_> = groups.keys().cloned().collect();
-    assert_eq!(keys, vec!["linux_amd64".to_string(), "linux_arm64".into()]);
+    // Neither binary carries amd64_variant metadata, so the variant half of
+    // each key is None; ordering is still deterministic (BTreeMap, sorted).
+    assert_eq!(
+        keys,
+        vec![
+            ("linux_amd64".to_string(), None),
+            ("linux_arm64".to_string(), None),
+        ]
+    );
 }
 
 /// Build a Context holding a gnu and a musl x86_64 binary tagged with the
@@ -778,7 +953,7 @@ fn no_ids_admits_both_builds_the_collision_we_guard_against() {
     assert_eq!(bins.len(), 2, "auto-collect admits both (the hazard)");
     let groups = group_by_platform(&bins);
     assert_eq!(
-        groups.get("linux_amd64").map(Vec::len),
+        groups.get(&("linux_amd64".to_string(), None)).map(Vec::len),
         Some(2),
         "both x86_64 builds collide on the linux_amd64 group key"
     );

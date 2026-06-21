@@ -211,13 +211,15 @@ impl Stage for SnapcraftStage {
 
                 let by_target = group_binaries_by_target(&filtered_binaries);
 
-                for (target_key, target_binaries) in &by_target {
+                let mut name_guard = anodizer_core::arch_path_guard::ArchPathGuard::new();
+                for ((target_key, amd64_variant), target_binaries) in &by_target {
                     process_snap_target(
                         ctx,
                         &log,
                         snap_cfg,
                         &krate.name,
                         target_key,
+                        amd64_variant.as_deref(),
                         target_binaries,
                         &dist,
                         &version,
@@ -225,6 +227,7 @@ impl Stage for SnapcraftStage {
                         &mut new_artifacts,
                         &mut archives_to_remove,
                         &mut jobs,
+                        &mut name_guard,
                     )?;
                 }
             }
@@ -257,19 +260,28 @@ impl Stage for SnapcraftStage {
     }
 }
 
-/// Group a crate's Linux binary artifacts by target triple — one snap per
-/// platform. `BTreeMap` (not `HashMap`) so iteration order is deterministic
-/// across runs; the map is iterated to register one snap Artifact per target,
-/// and `HashMap`'s randomised iteration would bake per-run order into
-/// `dist/artifacts.json`. A binary with no target lands under the `unknown`
-/// key (a host-target build with no triple). Both the build's `run` loop and
-/// the offline `snapcraft_snap_yamls_for_crate` renderer call this so the two
-/// can never diverge on grouping.
-fn group_binaries_by_target<'a>(binaries: &[&'a Artifact]) -> BTreeMap<String, Vec<&'a Artifact>> {
-    let mut by_target: BTreeMap<String, Vec<&Artifact>> = BTreeMap::new();
+/// Group key for one snap: target triple plus the amd64 micro-architecture
+/// variant. Two amd64 builds of one triple (baseline `v1` and, e.g., `v3`)
+/// share `Os`/`Arch` but must produce distinct snaps, so the variant is part
+/// of the grouping key.
+type SnapTargetKey = (String, Option<String>);
+
+/// Group a crate's Linux binary artifacts by `(target triple, amd64_variant)`
+/// — one snap per platform-variant. `BTreeMap` (not `HashMap`) so iteration
+/// order is deterministic across runs; the map is iterated to register one
+/// snap Artifact per key, and `HashMap`'s randomised iteration would bake
+/// per-run order into `dist/artifacts.json`. A binary with no target lands
+/// under the `unknown` key (a host-target build with no triple). Both the
+/// build's `run` loop and the offline `snapcraft_snap_yamls_for_crate`
+/// renderer call this so the two can never diverge on grouping.
+fn group_binaries_by_target<'a>(
+    binaries: &[&'a Artifact],
+) -> BTreeMap<SnapTargetKey, Vec<&'a Artifact>> {
+    let mut by_target: BTreeMap<SnapTargetKey, Vec<&Artifact>> = BTreeMap::new();
     for b in binaries {
         let target = b.target.clone().unwrap_or_else(|| "unknown".to_string());
-        by_target.entry(target).or_default().push(b);
+        let variant = b.metadata.get("amd64_variant").cloned();
+        by_target.entry((target, variant)).or_default().push(b);
     }
     by_target
 }
@@ -399,7 +411,11 @@ pub fn snapcraft_snap_yamls_for_crate(ctx: &Context, crate_name: &str) -> Result
         }
 
         let by_target = group_binaries_by_target(&filtered);
-        for (target_key, target_binaries) in &by_target {
+        // Grouping keys on the variant to match the live build's per-variant
+        // snap builds 1:1; the variant disambiguates only the `.snap` FILENAME
+        // (`compute_snap_filename`), not the manifest — the snap `name:` is the
+        // package name — so the rendered YAML is variant-independent here.
+        for ((target_key, _amd64_variant), target_binaries) in &by_target {
             let target = if target_key == "unknown" {
                 None
             } else {
@@ -457,6 +473,7 @@ fn process_snap_target(
     snap_cfg: &SnapcraftConfig,
     crate_name: &str,
     target_key: &str,
+    amd64_variant: Option<&str>,
     target_binaries: &[&Artifact],
     dist: &Path,
     version: &str,
@@ -464,6 +481,7 @@ fn process_snap_target(
     new_artifacts: &mut Vec<Artifact>,
     archives_to_remove: &mut Vec<PathBuf>,
     jobs: &mut Vec<SnapcraftJob>,
+    name_guard: &mut anodizer_core::arch_path_guard::ArchPathGuard,
 ) -> Result<()> {
     let target = if target_key == "unknown" {
         None
@@ -502,8 +520,21 @@ fn process_snap_target(
         target.as_deref(),
         &os,
         &arch,
+        amd64_variant,
     )?;
     let snap_path = output_dir.join(&snap_filename);
+    let name_template = snap_cfg
+        .name_template
+        .as_deref()
+        .unwrap_or(DEFAULT_SNAP_NAME_TEMPLATE);
+    name_guard.check(
+        &snap_path,
+        "snapcrafts",
+        "snap",
+        name_template,
+        &snap_filename,
+        crate_name,
+    )?;
 
     let artifact_metadata = {
         let mut m = HashMap::new();
@@ -693,6 +724,7 @@ fn validate_and_check_skip(
 /// with per-target `Os` / `Arch` / `Arm` / `Amd64` / `Mips` / `Target`
 /// substitutions. Saves and restores `ProjectName` around the render so
 /// subsequent stages observe the same template-var state.
+#[allow(clippy::too_many_arguments)]
 fn compute_snap_filename(
     ctx: &mut Context,
     snap_cfg: &SnapcraftConfig,
@@ -701,6 +733,7 @@ fn compute_snap_filename(
     target: Option<&str>,
     os: &str,
     arch: &str,
+    amd64_variant: Option<&str>,
 ) -> Result<String> {
     // Default snap name template:
     //   {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}{{ with .Mips }}_{{ . }}{{ end }}{{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}
@@ -721,8 +754,13 @@ fn compute_snap_filename(
         ctx.template_vars_mut().set("Arch", arch);
         ctx.template_vars_mut().set("Arm", "");
     }
+    // The amd64 micro-architecture variant comes from the built binary's
+    // metadata, not the go-arch. The default template's `{% if not (eq .Amd64
+    // "v1") %}` clause suppresses the baseline so `None`/`"v1"` preserve
+    // historical single-variant snap names, while a non-`v1` variant (e.g.
+    // `"v3"`) appends the suffix.
     ctx.template_vars_mut()
-        .set("Amd64", if arch == "amd64" { "v1" } else { "" });
+        .set("Amd64", amd64_variant.unwrap_or(""));
     ctx.template_vars_mut().set("Mips", "");
     // `{{ .Target }}` is optional and consumed only by user-provided
     // `name_template:` values; empty signals a host-target build (no
@@ -1347,6 +1385,22 @@ mod id_binding_tests {
         }
     }
 
+    fn bin_variant(path: &str, target: &str, variant: Option<&str>) -> Artifact {
+        let mut metadata = HashMap::new();
+        if let Some(v) = variant {
+            metadata.insert("amd64_variant".to_string(), v.to_string());
+        }
+        Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: std::path::PathBuf::from(path),
+            target: Some(target.to_string()),
+            crate_name: "anodizer".to_string(),
+            metadata,
+            size: None,
+        }
+    }
+
     #[test]
     fn ids_filter_binds_gnu_build_excludes_musl() {
         // The snap must ship the glibc binary. snapcraft groups by Os/Arch and
@@ -1395,5 +1449,62 @@ mod id_binding_tests {
 
         let filtered = filter_binaries_by_ids(&all, None);
         assert_eq!(filtered.len(), 2, "auto-collect admits both (the hazard)");
+    }
+
+    #[test]
+    fn grouping_keys_on_target_and_amd64_variant() {
+        // Two amd64 builds of one triple (baseline + v3) share Os/Arch but must
+        // land in separate groups so each renders its own snap.
+        let v1 = bin_variant("dist/anodizer-v1", "x86_64-unknown-linux-gnu", None);
+        let v3 = bin_variant("dist/anodizer-v3", "x86_64-unknown-linux-gnu", Some("v3"));
+        let all = vec![&v1, &v3];
+
+        let groups = group_binaries_by_target(&all);
+        assert_eq!(groups.len(), 2, "two variants form two distinct groups");
+        assert!(groups.contains_key(&("x86_64-unknown-linux-gnu".to_string(), None)));
+        assert!(groups.contains_key(&(
+            "x86_64-unknown-linux-gnu".to_string(),
+            Some("v3".to_string())
+        )));
+    }
+
+    #[test]
+    fn same_triple_multi_variant_yields_distinct_snap_names() {
+        // 3 amd64 variants of one triple + 1 arm64 → 4 distinct .snap filenames
+        // under the default template (no clobber).
+        use anodizer_core::test_helpers::TestContextBuilder;
+        let mut ctx = TestContextBuilder::new()
+            .project_name("anodizer")
+            .tag("v1.2.3")
+            .build();
+
+        let snap_cfg = SnapcraftConfig::default();
+        let cases: [(&str, &str, Option<&str>); 4] = [
+            ("amd64", "x86_64-unknown-linux-gnu", None),
+            ("amd64", "x86_64-unknown-linux-gnu", Some("v2")),
+            ("amd64", "x86_64-unknown-linux-gnu", Some("v3")),
+            ("arm64", "aarch64-unknown-linux-gnu", None),
+        ];
+
+        let mut names = std::collections::HashSet::new();
+        for (arch, target, variant) in cases {
+            let name = compute_snap_filename(
+                &mut ctx,
+                &snap_cfg,
+                "anodizer",
+                "anodizer",
+                Some(target),
+                "linux",
+                arch,
+                variant,
+            )
+            .expect("render snap filename");
+            assert!(names.insert(name.clone()), "duplicate snap name: {name}");
+        }
+        assert_eq!(
+            names.len(),
+            4,
+            "all four targets/variants produce distinct names"
+        );
     }
 }

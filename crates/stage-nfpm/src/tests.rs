@@ -5311,6 +5311,11 @@ fn test_setup_lintian_overrides_dry_run_skips_write_but_injects_content() {
 /// Build a context with three linux/amd64 binaries (variants v1/v2/v3) +
 /// one linux/arm64 binary, all under one crate. The `amd64_variant` field on
 /// the nfpm config drives which subset of amd64 binaries is packaged.
+///
+/// A `file_name_template` carrying `{{ .Amd64 }}` is set so that admitting more
+/// than one amd64 variant produces distinct package filenames (deb/rpm/apk arch
+/// fields stay conventional, so the variant must live in the filename) rather
+/// than colliding under the conventional default.
 fn nfpm_amd64_variant_test_ctx(
     amd64_variant: Option<Vec<&str>>,
 ) -> anodizer_core::context::Context {
@@ -5323,6 +5328,9 @@ fn nfpm_amd64_variant_test_ctx(
         formats: vec!["deb".to_string()],
         maintainer: Some("test@example.com".to_string()),
         amd64_variant: amd64_variant.map(|v| v.into_iter().map(str::to_string).collect()),
+        file_name_template: Some(
+            "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}{{ .Amd64 }}".to_string(),
+        ),
         ..Default::default()
     };
 
@@ -5347,7 +5355,21 @@ fn nfpm_amd64_variant_test_ctx(
     ctx.template_vars_mut().set("Version", "1.0.0");
 
     use std::path::PathBuf;
-    for variant in ["v1", "v2", "v3"] {
+    // The baseline amd64 binary carries NO `amd64_variant` metadata (an untagged
+    // build), exactly as the build stage leaves a default `x86-64-v1` binary —
+    // `seed_amd64_variant_var(None)` renders no suffix, so its conventional name
+    // stays `myapp_1.0.0_amd64.deb`. Only the explicitly tuned `v2`/`v3` builds
+    // carry the metadata that pushes a `{{ .Amd64 }}` suffix into the filename.
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: PathBuf::from("dist/myapp_baseline"),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+    for variant in ["v2", "v3"] {
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Binary,
             name: String::new(),
@@ -5373,16 +5395,40 @@ fn nfpm_amd64_variant_test_ctx(
 #[test]
 fn test_nfpm_amd64_variant_unset_passes_all_amd64_variants() {
     // Unset amd64_variant => all amd64 variants pass; one nfpm package per
-    // platform group (target). 3 amd64 binaries share one target =>
-    // grouped into ONE deb (with multiple binaries). 1 arm64 binary =>
-    // ONE deb. Total: 2 deb packages.
+    // (target, amd64_variant) group. 3 amd64 variants of one triple => 3 debs
+    // (each variant disambiguated by `{{ .Amd64 }}` in the filename). 1 arm64
+    // binary => ONE deb. Total: 4 deb packages.
     let mut ctx = nfpm_amd64_variant_test_ctx(None);
     NfpmStage.run(&mut ctx).unwrap();
     let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
     assert_eq!(
         pkgs.len(),
-        2,
-        "unset amd64_variant should pass every variant; one deb per target"
+        4,
+        "unset amd64_variant should pass every variant; one deb per variant + arm64"
+    );
+    let names: Vec<String> = pkgs
+        .iter()
+        .filter_map(|p| {
+            p.path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .map(str::to_string)
+        })
+        .collect();
+    // The untagged baseline renders the CONVENTIONAL amd64 name (no `v1`
+    // suffix) — `seed_amd64_variant_var(None)` suppresses the variant clause;
+    // only `v2`/`v3` carry the discriminator the template appends.
+    assert!(
+        names.iter().any(|n| n == "myapp_1.0.0_amd64.deb"),
+        "baseline amd64 must use the conventional name, got {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "myapp_1.0.0_amd64v2.deb"),
+        "v2 variant must carry the discriminator, got {names:?}"
+    );
+    assert!(
+        names.iter().any(|n| n == "myapp_1.0.0_amd64v3.deb"),
+        "v3 variant must carry the discriminator, got {names:?}"
     );
 }
 
@@ -5402,9 +5448,10 @@ fn test_nfpm_amd64_variant_multiple_variants_pass_listed() {
     let mut ctx = nfpm_amd64_variant_test_ctx(Some(vec!["v2", "v3"]));
     NfpmStage.run(&mut ctx).unwrap();
     let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
-    // v2 and v3 both share the amd64 target — they're grouped into ONE
-    // package (per-platform grouping). + arm64 = 2 debs.
-    assert_eq!(pkgs.len(), 2);
+    // v2 and v3 are distinct micro-arch variants of the amd64 target — each
+    // forms its own package group (the conventional arch field can't carry the
+    // variant) + arm64 = 3 debs.
+    assert_eq!(pkgs.len(), 3);
 }
 
 #[test]
@@ -5429,7 +5476,11 @@ fn test_nfpm_amd64_variant_empty_vec_is_no_op() {
     let mut ctx = nfpm_amd64_variant_test_ctx(Some(Vec::new()));
     NfpmStage.run(&mut ctx).unwrap();
     let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
-    assert_eq!(pkgs.len(), 2, "empty amd64_variant vec should be a no-op");
+    assert_eq!(
+        pkgs.len(),
+        4,
+        "empty amd64_variant vec should be a no-op (all 3 variants + arm64)"
+    );
 }
 
 /// With no top-level `metadata:` block and a bare `nfpm:` config (no
@@ -5643,6 +5694,102 @@ fn test_nfpm_bin_alias_per_crate_config() {
         other.bin_alias.as_deref().unwrap().starts_with("bat-"),
         "second crate keeps its own templated alias, got {:?}",
         other.bin_alias
+    );
+}
+
+/// Offline/shipped parity for an `{{ .Amd64 }}`-bearing config FIELD: the
+/// schema-validated YAML (`nfpm_yaml_configs_for_crate`) and the live build's
+/// emitted YAML (`render_and_generate_nfpm_yaml`) must render the micro-arch
+/// variant identically for a v3 build, so the documented "offline-validated
+/// config is byte-identical to shipped" invariant holds. A regression where the
+/// offline renderer fails to seed `Amd64` leaves the field empty offline while
+/// the live YAML carries `v3` — exactly what this pins.
+#[test]
+fn test_nfpm_offline_yaml_seeds_amd64_field_like_live_build() {
+    use anodizer_core::config::{Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    let tmp = TempDir::new().unwrap();
+    let bin_path = tmp.path().join("myapp");
+    std::fs::write(&bin_path, b"#!/bin/sh\n").unwrap();
+    let bin_str = bin_path.to_string_lossy().into_owned();
+
+    let nfpm_cfg = NfpmConfig {
+        package_name: Some("myapp".to_string()),
+        formats: vec!["deb".to_string()],
+        maintainer: Some("m@example.com".to_string()),
+        // A description referencing the micro-arch variant — empty for the
+        // baseline, `v3` for the tuned build.
+        description: Some("myapp built for amd64{{ .Amd64 }}".to_string()),
+        ..Default::default()
+    };
+
+    // Live path: seed `Amd64` exactly as the stage loop does before rendering.
+    let mut live_ctx = Context::new(Config::default(), ContextOptions::default());
+    live_ctx.template_vars_mut().set("Version", "1.0.0");
+    anodizer_core::archive_name::seed_amd64_variant_var(live_ctx.template_vars_mut(), Some("v3"));
+    let live_yaml = render_and_generate_nfpm_yaml(
+        &mut live_ctx,
+        &nfpm_cfg,
+        "myapp",
+        &[],
+        Some("x86_64-unknown-linux-gnu"),
+        std::slice::from_ref(&bin_str),
+        &NfpmLibraryPaths::default(),
+        "linux",
+        "amd64",
+        "deb",
+        "myapp",
+        tmp.path(),
+        "1.0.0",
+        false,
+        true,
+    )
+    .unwrap();
+
+    assert!(
+        live_yaml.contains("myapp built for amd64v3"),
+        "live YAML must render the v3 variant in the field, got:\n{live_yaml}"
+    );
+
+    // Offline path: a v3-tagged amd64 binary drives the schema-validation
+    // renderer for the same crate.
+    let mut config = Config::default();
+    config.project_name = "myapp".to_string();
+    config.dist = tmp.path().join("dist");
+    config.crates = vec![CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        nfpms: Some(vec![nfpm_cfg]),
+        ..Default::default()
+    }];
+    let mut off_ctx = Context::new(config, ContextOptions::default());
+    off_ctx.template_vars_mut().set("Version", "1.0.0");
+    off_ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: bin_path.clone(),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: HashMap::from([("amd64_variant".to_string(), "v3".to_string())]),
+        size: None,
+    });
+
+    let configs = crate::nfpm_yaml_configs_for_crate(&off_ctx, "myapp").unwrap();
+    let deb = configs
+        .iter()
+        .find(|c| c.format == "deb")
+        .expect("offline render produced a deb config");
+    assert_eq!(
+        deb.amd64_variant.as_deref(),
+        Some("v3"),
+        "offline config must carry the variant for per-variant matching"
+    );
+    assert!(
+        deb.yaml.contains("myapp built for amd64v3"),
+        "offline YAML must seed Amd64 identically to the live build, got:\n{}",
+        deb.yaml
     );
 }
 
@@ -6356,6 +6503,105 @@ fn rpm_is_byte_reproducible_across_time() {
         a, b,
         ".rpm must be byte-identical across two builds at a fixed SOURCE_DATE_EPOCH"
     );
+}
+
+// ---------------------------------------------------------------------------
+// amd64 micro-architecture variant naming
+// ---------------------------------------------------------------------------
+
+mod amd64_variant {
+    use super::*;
+    use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    fn amd64_bin(dir: &std::path::Path, name: &str, variant: Option<&str>) -> Artifact {
+        let mut metadata = HashMap::new();
+        if let Some(v) = variant {
+            metadata.insert("amd64_variant".to_string(), v.to_string());
+        }
+        Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: dir.join(name),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata,
+            size: None,
+        }
+    }
+
+    fn ctx_with_two_variants(file_name_template: Option<&str>) -> (Context, TempDir) {
+        let tmp = TempDir::new().unwrap();
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            maintainer: Some("Jane Doe <jane@example.com>".to_string()),
+            file_name_template: file_name_template.map(str::to_string),
+            ..Default::default()
+        };
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpms: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(amd64_bin(tmp.path(), "myapp-v1", None));
+        ctx.artifacts
+            .add(amd64_bin(tmp.path(), "myapp-v3", Some("v3")));
+        (ctx, tmp)
+    }
+
+    #[test]
+    fn two_variants_under_conventional_default_bail_via_guard() {
+        // deb/rpm/apk arch fields must stay distro-conventional (`amd64`, never
+        // `amd64v3`), so the conventional default filename can't disambiguate
+        // two amd64 micro-arch variants of one triple — the guard must bail
+        // loudly instead of clobbering.
+        let (mut ctx, _tmp) = ctx_with_two_variants(None);
+        let err = NfpmStage.run(&mut ctx).unwrap_err().to_string();
+        assert!(err.contains("crate 'myapp'"), "{err}");
+        assert!(err.contains("{{ .Amd64 }}"), "discriminator hint: {err}");
+    }
+
+    #[test]
+    fn two_variants_with_amd64_template_produce_distinct_names() {
+        // A `file_name_template` that references `{{ .Amd64 }}` discriminates the
+        // two variants, so both packages register with distinct paths.
+        let (mut ctx, _tmp) = ctx_with_two_variants(Some(
+            "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}{{ .Amd64 }}",
+        ));
+        NfpmStage.run(&mut ctx).unwrap();
+
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 2, "one deb per amd64 variant");
+        let names: std::collections::HashSet<String> = pkgs
+            .iter()
+            .map(|a| a.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 2, "distinct filenames: {names:?}");
+        assert!(
+            names.contains("myapp_1.0.0_amd64.deb"),
+            "baseline keeps conventional arch: {names:?}"
+        );
+        assert!(
+            names.contains("myapp_1.0.0_amd64v3.deb"),
+            "v3 variant gets a suffix: {names:?}"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------

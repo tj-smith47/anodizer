@@ -161,7 +161,8 @@ fn collect_nfpm_jobs_for_crate(
             continue;
         };
 
-        for (target, binary_paths, lib_paths) in &platform_groups {
+        let mut name_guard = anodizer_core::arch_path_guard::ArchPathGuard::new();
+        for (target, amd64_variant, binary_paths, lib_paths) in &platform_groups {
             let (base_os, base_arch) = target
                 .as_deref()
                 .map(anodizer_core::target::map_target)
@@ -175,6 +176,7 @@ fn collect_nfpm_jobs_for_crate(
                     &krate.name,
                     &linux_binaries,
                     target,
+                    amd64_variant.as_deref(),
                     binary_paths,
                     lib_paths,
                     &base_os,
@@ -186,6 +188,7 @@ fn collect_nfpm_jobs_for_crate(
                     dry_run,
                     new_artifacts,
                     jobs,
+                    &mut name_guard,
                 )?;
             }
         }
@@ -205,6 +208,7 @@ fn process_nfpm_format(
     crate_name: &str,
     linux_binaries: &[Artifact],
     target: &Option<String>,
+    amd64_variant: Option<&str>,
     binary_paths: &[String],
     lib_paths: &NfpmLibraryPaths,
     base_os: &str,
@@ -216,6 +220,7 @@ fn process_nfpm_format(
     dry_run: bool,
     new_artifacts: &mut Vec<Artifact>,
     jobs: &mut Vec<NfpmJob>,
+    name_guard: &mut anodizer_core::arch_path_guard::ArchPathGuard,
 ) -> Result<()> {
     validate_format(format).with_context(|| format!("nfpm config for crate {}", crate_name))?;
 
@@ -246,6 +251,14 @@ fn process_nfpm_format(
     let pkg_name_owned = resolve_pkg_name(nfpm_cfg, &ctx.config.project_name, crate_name);
     let pkg_name: &str = pkg_name_owned.as_str();
     let ext = format_extension(format);
+
+    // Seed `Amd64` BEFORE rendering so a config field referencing `{{ .Amd64 }}`
+    // (description/maintainer/conflicts/…) AND the `file_name_template` both see
+    // this group's micro-arch variant. The conventional default filename
+    // deliberately omits the variant (deb/rpm/apk require a bare `amd64` arch
+    // field); the guard below is what stops two variants from colliding under
+    // that default. `None`/`v1` seed empty, preserving single-variant names.
+    anodizer_core::archive_name::seed_amd64_variant_var(ctx.template_vars_mut(), amd64_variant);
 
     let yaml_content = render_and_generate_nfpm_yaml(
         ctx,
@@ -296,9 +309,38 @@ fn process_nfpm_format(
     )?;
     let pkg_path = output_dir.join(&pkg_filename);
 
+    // A user `file_name_template` is echoed verbatim into a collision error so
+    // the user sees the template at fault; the conventional default has no real
+    // template, so its dedicated path names "the conventional default filename"
+    // and advises `{{ .Amd64 }}` (the default already carries `{{ .Arch }}`).
+    match nfpm_cfg.file_name_template.as_deref() {
+        Some(name_template) => name_guard.check(
+            &pkg_path,
+            "nfpms",
+            "package",
+            name_template,
+            &pkg_filename,
+            crate_name,
+        )?,
+        None => name_guard.check_conventional(
+            &pkg_path,
+            "nfpms",
+            "package",
+            &pkg_filename,
+            crate_name,
+        )?,
+    }
+
     let mut pkg_metadata = HashMap::from([("format".to_string(), format.to_string())]);
     if let Some(ref id) = nfpm_cfg.id {
         pkg_metadata.insert("id".to_string(), id.clone());
+    }
+    // Record the micro-arch variant so the offline schema validator can pair a
+    // built package with the exact per-variant config it was rendered from: two
+    // amd64 variants of one triple share (format, target), and a `{{ .Amd64 }}`
+    // in a control field makes their YAML differ.
+    if let Some(variant) = amd64_variant {
+        pkg_metadata.insert("amd64_variant".to_string(), variant.to_string());
     }
 
     if dry_run {
@@ -597,31 +639,51 @@ fn nfpm_eligible_artifacts(ctx: &Context, crate_name: &str) -> Vec<Artifact> {
 
 /// Build the per-platform artifact groups for one nfpm config.
 ///
+/// One per-platform package group: `(target, amd64_variant, binary_paths,
+/// library_paths)`. The amd64 micro-architecture variant is part of the key so
+/// two amd64 builds of one triple (baseline + e.g. `v3`) form separate groups
+/// and each emits its own package instead of silently clobbering.
+type PlatformGroup = (
+    Option<String>,
+    Option<String>,
+    Vec<String>,
+    NfpmLibraryPaths,
+);
+
 /// All artifacts are grouped by platform and ONE package is emitted per
 /// platform containing ALL artifacts for that platform. Returns `None` when
 /// the caller should skip the current nfpm config (ids filter matched
 /// nothing but there were binaries to begin with).
-#[allow(clippy::type_complexity)]
 fn build_platform_groups(
     nfpm_cfg: &anodizer_core::config::NfpmConfig,
     krate: &anodizer_core::config::CrateConfig,
     linux_binaries: &[Artifact],
     is_meta: bool,
     log: &anodizer_core::log::StageLogger,
-) -> Option<Vec<(Option<String>, Vec<String>, NfpmLibraryPaths)>> {
+) -> Option<Vec<PlatformGroup>> {
     if is_meta {
         if linux_binaries.is_empty() {
-            return Some(vec![(None, Vec::new(), NfpmLibraryPaths::default())]);
+            return Some(vec![(None, None, Vec::new(), NfpmLibraryPaths::default())]);
         }
         let mut seen = std::collections::HashSet::new();
         return Some(
             linux_binaries
                 .iter()
                 .filter(|b| {
-                    let key = b.target.clone().unwrap_or_default();
+                    let key = (
+                        b.target.clone().unwrap_or_default(),
+                        b.metadata.get("amd64_variant").cloned(),
+                    );
                     seen.insert(key)
                 })
-                .map(|b| (b.target.clone(), Vec::new(), NfpmLibraryPaths::default()))
+                .map(|b| {
+                    (
+                        b.target.clone(),
+                        b.metadata.get("amd64_variant").cloned(),
+                        Vec::new(),
+                        NfpmLibraryPaths::default(),
+                    )
+                })
                 .collect(),
         );
     }
@@ -677,6 +739,7 @@ fn build_platform_groups(
     if filtered.is_empty() {
         return Some(vec![(
             None,
+            None,
             vec![format!("dist/{}", krate.name)],
             NfpmLibraryPaths::default(),
         )]);
@@ -686,15 +749,16 @@ fn build_platform_groups(
         binaries: Vec<String>,
         libs: NfpmLibraryPaths,
     }
-    let mut groups: std::collections::BTreeMap<Option<String>, PlatformArtifacts> =
-        std::collections::BTreeMap::new();
+    let mut groups: std::collections::BTreeMap<
+        (Option<String>, Option<String>),
+        PlatformArtifacts,
+    > = std::collections::BTreeMap::new();
     for b in &filtered {
-        let entry = groups
-            .entry(b.target.clone())
-            .or_insert_with(|| PlatformArtifacts {
-                binaries: Vec::new(),
-                libs: NfpmLibraryPaths::default(),
-            });
+        let key = (b.target.clone(), b.metadata.get("amd64_variant").cloned());
+        let entry = groups.entry(key).or_insert_with(|| PlatformArtifacts {
+            binaries: Vec::new(),
+            libs: NfpmLibraryPaths::default(),
+        });
         let path = b.path.to_string_lossy().into_owned();
         match b.kind {
             ArtifactKind::Header => entry.libs.headers.push(path),
@@ -706,7 +770,7 @@ fn build_platform_groups(
     Some(
         groups
             .into_iter()
-            .map(|(t, pa)| (t, pa.binaries, pa.libs))
+            .map(|((t, v), pa)| (t, v, pa.binaries, pa.libs))
             .collect(),
     )
 }
@@ -1348,6 +1412,11 @@ pub struct NfpmRenderedConfig {
     /// Resolved package architecture stamped into the config (`amd64`,
     /// `arm64`, …) — the value nfpm would otherwise default to `amd64`.
     pub arch: String,
+    /// The amd64 micro-arch variant this config was rendered for (`None`/`v1`
+    /// → baseline). Two amd64 variants of one triple share `(format, target)`,
+    /// so a consumer pairing a built package with its source config must also
+    /// key on this to avoid validating a `v3` package against the `v1` config.
+    pub amd64_variant: Option<String>,
     /// The generated nfpm YAML, ready to parse and validate against nfpm's
     /// own config schema.
     pub yaml: String,
@@ -1421,7 +1490,7 @@ pub fn nfpm_yaml_configs_for_crate(
         // so the offline-validated config is byte-identical to the shipped one.
         let pkg_name = resolve_pkg_name(nfpm_cfg, &ctx.config.project_name, crate_name);
 
-        for (target, binary_paths, lib_paths) in &platform_groups {
+        for (target, amd64_variant, binary_paths, lib_paths) in &platform_groups {
             let (base_os, base_arch) = target
                 .as_deref()
                 .map(anodizer_core::target::map_target)
@@ -1456,6 +1525,7 @@ pub fn nfpm_yaml_configs_for_crate(
                     nfpm_cfg,
                     crate_name,
                     &render_target,
+                    amd64_variant.as_deref(),
                     &linux_binaries,
                     binary_paths,
                     lib_paths,
@@ -1465,6 +1535,7 @@ pub fn nfpm_yaml_configs_for_crate(
                     format: format.clone(),
                     target: target.clone().unwrap_or_default(),
                     arch,
+                    amd64_variant: amd64_variant.clone(),
                     yaml,
                 });
             }
@@ -1484,11 +1555,17 @@ pub fn nfpm_yaml_configs_for_crate(
 /// auto-derives from a target's `amd64_variant` metadata
 /// (`fill_deb_arch_variant`) is present in the validated YAML too, keeping the
 /// validated config byte-identical to the shipped one.
+///
+/// `amd64_variant` seeds the `Amd64` template var on the cloned vars, mirroring
+/// the live build, so a config field referencing `{{ .Amd64 }}` renders the
+/// same per-variant value offline as it ships.
+#[allow(clippy::too_many_arguments)]
 fn render_offline_nfpm_yaml(
     ctx: &Context,
     nfpm_cfg: &anodizer_core::config::NfpmConfig,
     crate_name: &str,
     render_target: &crate::generate::NfpmRenderTarget<'_>,
+    amd64_variant: Option<&str>,
     linux_binaries: &[Artifact],
     binary_paths: &[String],
     lib_paths: &NfpmLibraryPaths,
@@ -1504,6 +1581,7 @@ fn render_offline_nfpm_yaml(
             .map(anodizer_core::target::libc_from_target)
             .unwrap_or(""),
     );
+    anodizer_core::archive_name::seed_amd64_variant_var(&mut vars, amd64_variant);
 
     let mut rendered_cfg = render_nfpm_config_fields(nfpm_cfg, &ctx.config, &vars, crate_name)?;
     default_nfpm_mtime_to_sde(&mut rendered_cfg, ctx.env_source());

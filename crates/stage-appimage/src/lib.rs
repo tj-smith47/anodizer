@@ -30,6 +30,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result, bail};
 
+use anodizer_core::arch_path_guard::ArchPathGuard;
 use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
@@ -211,33 +212,54 @@ fn host_missing_error(id: &str) -> anyhow::Error {
 // Per-target template vars (mirrors makeself)
 // ---------------------------------------------------------------------------
 
-/// Group binary artifacts by platform string (e.g. `linux_amd64`) so each
-/// (os, arch) yields exactly one AppImage.
+/// Group binary artifacts by `(platform, amd64_variant)` — e.g.
+/// `("linux_amd64", Some("v3"))` — so each (os, arch) AND micro-architecture
+/// variant yields exactly one AppImage.
+///
+/// The key carries the binary's `amd64_variant` metadata alongside the os/arch
+/// platform string so two amd64 builds of one triple (a baseline `v1` and a
+/// `-Ctarget-cpu=x86-64-v3` tune) land in separate groups and produce two
+/// distinct `.AppImage` files instead of one silently clobbering the other.
 ///
 /// Uses a `BTreeMap` (not `HashMap`) so iteration order is deterministic
-/// across runs: callers register one AppImage Artifact per platform, and
+/// across runs: callers register one AppImage Artifact per group, and
 /// `HashMap` iteration is randomised per process — the matching
 /// `stage-archive`/`stage-makeself` regression shipped per-run drift into
 /// `dist/artifacts.json`. This stage shares the same guard.
 fn group_by_platform<'a>(
     binaries: &'a [Artifact],
-) -> std::collections::BTreeMap<String, Vec<&'a Artifact>> {
-    let mut groups: std::collections::BTreeMap<String, Vec<&'a Artifact>> =
+) -> std::collections::BTreeMap<(String, Option<String>), Vec<&'a Artifact>> {
+    let mut groups: std::collections::BTreeMap<(String, Option<String>), Vec<&'a Artifact>> =
         std::collections::BTreeMap::new();
     for a in binaries {
-        let key = match &a.target {
+        let platform = match &a.target {
             Some(t) => {
                 let (os, arch) = anodizer_core::target::map_target(t);
                 format!("{os}_{arch}")
             }
             None => "unknown".to_string(),
         };
-        groups.entry(key).or_default().push(a);
+        let variant = a.metadata.get("amd64_variant").cloned();
+        groups.entry((platform, variant)).or_default().push(a);
     }
     groups
 }
 
-fn set_per_target_template_vars(ctx: &mut Context, target: Option<&str>, os: &str, arch: &str) {
+/// Seed Os / Arch / Target plus the per-target variant template vars so the
+/// default filename template renders correctly.
+///
+/// `amd64_variant` is the built binary's `amd64_variant` metadata: it overrides
+/// the triple-derived `Amd64` so two amd64 builds of one triple (a baseline and
+/// a `-Ctarget-cpu=x86-64-v3` tune) render distinct `.AppImage` names. `None` /
+/// `Some("v1")` leave the suffix empty, preserving the single-variant name; the
+/// Arm/Mips triple derivation is untouched.
+fn set_per_target_template_vars(
+    ctx: &mut Context,
+    target: Option<&str>,
+    os: &str,
+    arch: &str,
+    amd64_variant: Option<&str>,
+) {
     ctx.template_vars_mut().set("Os", os);
     ctx.template_vars_mut().set("Arch", arch);
     ctx.template_vars_mut().set("Target", target.unwrap_or(""));
@@ -252,43 +274,73 @@ fn set_per_target_template_vars(ctx: &mut Context, target: Option<&str>, os: &st
         "aarch64" => ctx.template_vars_mut().set("Arm64", "v8"),
         "armv7" | "armv7l" => ctx.template_vars_mut().set("Arm", "7"),
         "armv6" | "armv6l" | "arm" => ctx.template_vars_mut().set("Arm", "6"),
-        "x86_64" => ctx.template_vars_mut().set("Amd64", "v1"),
         "i686" | "i386" | "i586" => ctx.template_vars_mut().set("I386", "sse2"),
         c if c.starts_with("mips") => {
             ctx.template_vars_mut().set("Mips", c);
         }
         _ => {}
     }
+
+    // Set `Amd64` from the binary's actual variant metadata (not a hardcoded
+    // `v1`) so v1/v2/v3 builds of the same x86_64 triple render distinctly;
+    // None / "v1" leave the suffix empty.
+    anodizer_core::archive_name::seed_amd64_variant_var(ctx.template_vars_mut(), amd64_variant);
+}
+
+/// The amd64 micro-architecture variant suffix the default AppImage filename
+/// appends, rendered from the binary's seeded `Amd64` template var.
+///
+/// AppImage keeps the whole go-arch in `arch_token` (no arm-split), so amd64 is
+/// the only micro-architecture dimension that can collide on one token — hence
+/// the amd64-only [`INSTALLER_AMD64_VARIANT_SUFFIX`](anodizer_core::archive_name::INSTALLER_AMD64_VARIANT_SUFFIX),
+/// not the full Arm/Mips/Amd64 clause. A baseline `v1` / `None` renders empty,
+/// preserving the historical single-variant name.
+fn default_amd64_suffix(ctx: &Context) -> Result<String> {
+    ctx.render_template(anodizer_core::archive_name::INSTALLER_AMD64_VARIANT_SUFFIX)
 }
 
 /// Render the `.AppImage` output filename for one (target, platform) combo.
 ///
 /// Honors `cfg.filename` as a Tera template when set (appending `.AppImage`
-/// if absent); otherwise composes `<project>-<version>-<arch>.AppImage`
+/// if absent); otherwise composes `<project>-<version>-<arch>[<amd64>].AppImage`
 /// (AppImage is Linux-only, so the os segment is omitted). The arch is the
-/// AppImage-flavoured arch token so multi-arch builds for the same project
-/// never collide on disk.
+/// AppImage-flavoured arch token, plus the amd64 micro-architecture variant
+/// suffix, so multi-arch AND multi-variant builds for the same project never
+/// collide on disk.
 ///
 /// Two `appimages:` configs that differ only by `id` (no custom `filename`)
 /// and target the same arch render the same default output name and would
 /// clobber on disk — set an explicit `filename:` on each to disambiguate.
 /// This matches the sibling makeself stage's default-naming behaviour.
+/// The rendered `.AppImage` filename paired with the template that produced it:
+/// `(rendered_name, resolved_template)`. The resolved template is the user's
+/// `filename:` when set, else the composed default (including the amd64 variant
+/// suffix) — exactly the string the [`ArchPathGuard`] cites when it rejects a
+/// clobber, so the diagnostic never reports an empty template.
+type ResolvedFilename = (String, String);
+
 fn resolve_appimage_filename(
     ctx: &Context,
     name_template: Option<&str>,
     project_name: &str,
     version: &str,
     arch_token: &str,
-) -> Result<String> {
+) -> Result<ResolvedFilename> {
     if let Some(tmpl) = name_template.filter(|t| !t.is_empty()) {
         let rendered = ctx.render_template(tmpl)?;
-        return Ok(if rendered.ends_with(".AppImage") {
+        let output_name = if rendered.ends_with(".AppImage") {
             rendered
         } else {
             format!("{rendered}.AppImage")
-        });
+        };
+        return Ok((output_name, tmpl.to_string()));
     }
-    Ok(format!("{project_name}-{version}-{arch_token}.AppImage"))
+    let amd64_suffix = default_amd64_suffix(ctx)?;
+    // The composed default is fully rendered, so it serves as both the produced
+    // name and the template the guard cites (no `{{ .Arch }}` placeholder to
+    // re-render — the arch token is already substituted in).
+    let composed = format!("{project_name}-{version}-{arch_token}{amd64_suffix}.AppImage");
+    Ok((composed.clone(), composed))
 }
 
 // ---------------------------------------------------------------------------
@@ -489,6 +541,10 @@ struct AppImageJob {
     appdir_entries: Vec<AppDirEntry>,
     primary_target: Option<String>,
     primary_crate_name: String,
+    /// The binary's amd64 micro-architecture variant (`None` / `Some("v1")`
+    /// → baseline), recorded in the produced artifact's metadata so downstream
+    /// stages can tell two amd64 builds of one triple apart.
+    amd64_variant: Option<String>,
     /// Pre-resolved `SOURCE_DATE_EPOCH` seconds. Resolved in the serial phase
     /// via `ctx.env_var` so the parallel execution phase never calls
     /// `std::env`; `None` outside a reproducible (harness) build.
@@ -579,6 +635,9 @@ fn execute_appimage_job(
     metadata.insert("id".to_string(), job.id.clone());
     metadata.insert("format".to_string(), "appimage".to_string());
     metadata.insert("ext".to_string(), ".AppImage".to_string());
+    if let Some(v) = &job.amd64_variant {
+        metadata.insert("amd64_variant".to_string(), v.clone());
+    }
 
     Ok(Artifact {
         kind: ArtifactKind::AppImage,
@@ -800,10 +859,17 @@ fn collect_config_jobs(
         extra_entries.push(h);
     }
 
-    // Group by platform so each (os, arch) produces exactly one AppImage.
+    // Group by (platform, amd64_variant) so each (os, arch) AND micro-arch
+    // variant produces exactly one AppImage.
     let groups = group_by_platform(&binaries);
 
-    for group in groups.values() {
+    // One guard per (crate, config) scope: a `filename:` lacking an
+    // `{{ .Arch }}` / `{{ .Amd64 }}` discriminator renders the same
+    // `.AppImage` path for two targets / variants — error loudly instead of
+    // clobbering.
+    let mut arch_guard = ArchPathGuard::new();
+
+    for ((_, amd64_variant), group) in &groups {
         let Some(primary) = group.first() else {
             continue;
         };
@@ -812,7 +878,13 @@ fn collect_config_jobs(
             .as_deref()
             .map(anodizer_core::target::map_target)
             .unwrap_or_else(|| ("linux".to_string(), "unknown".to_string()));
-        set_per_target_template_vars(ctx, primary.target.as_deref(), &os, &arch);
+        set_per_target_template_vars(
+            ctx,
+            primary.target.as_deref(),
+            &os,
+            &arch,
+            amd64_variant.as_deref(),
+        );
 
         let arch_token = primary
             .target
@@ -820,7 +892,7 @@ fn collect_config_jobs(
             .map(appimage_arch)
             .unwrap_or_else(|| arch.clone());
 
-        let filename = resolve_appimage_filename(
+        let (filename, resolved_template) = resolve_appimage_filename(
             ctx,
             cfg.filename.as_deref(),
             project_name,
@@ -828,12 +900,30 @@ fn collect_config_jobs(
             &arch_token,
         )?;
 
+        let output_path = dist.join(&filename);
+        // Reject a `filename:` that renders the same `.AppImage` path for two
+        // targets / amd64 variants (an override lacking `{{ .Arch }}` /
+        // `{{ .Amd64 }}`): the second would silently overwrite the first.
+        arch_guard.check(
+            &output_path,
+            "appimage",
+            "image",
+            &resolved_template,
+            &filename,
+            &primary.crate_name,
+        )?;
+
+        // Disambiguate the AppDir per amd64 variant so two non-baseline
+        // variants of one platform don't stage into (and clobber) the same dir.
+        let platform_subdir = match amd64_variant.as_deref() {
+            Some(v) if v != "v1" => format!("{os}_{arch}_{v}"),
+            _ => format!("{os}_{arch}"),
+        };
         let appdir_root = dist
             .join("appimage")
             .join(&id)
-            .join(format!("{os}_{arch}"))
+            .join(platform_subdir)
             .join(format!("{app_name}.AppDir"));
-        let output_path = dist.join(&filename);
 
         let binary_name = primary
             .metadata
@@ -863,6 +953,7 @@ fn collect_config_jobs(
             appdir_entries: extra_entries.clone(),
             primary_target: primary.target.clone(),
             primary_crate_name: primary.crate_name.clone(),
+            amd64_variant: amd64_variant.clone(),
             sde_epoch,
         });
     }

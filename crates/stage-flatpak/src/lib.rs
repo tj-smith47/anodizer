@@ -6,6 +6,7 @@ use std::process::Command;
 use anyhow::{Context as _, Result};
 use serde::Serialize;
 
+use anodizer_core::arch_path_guard::ArchPathGuard;
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
@@ -28,8 +29,25 @@ fn arch_to_flatpak(arch: &str) -> Option<&'static str> {
 // Default name template
 // ---------------------------------------------------------------------------
 
-/// Default output filename template for Flatpak bundles.
-const DEFAULT_NAME_TEMPLATE: &str = "{{ ProjectName }}_{{ Version }}_{{ Os }}_{{ Arch }}.flatpak";
+/// Stem of the default Flatpak bundle filename template, before the amd64
+/// variant suffix and the `.flatpak` extension.
+///
+/// Flatpak carries the whole go-arch in `Arch` (no arm-split), so the only
+/// micro-architecture dimension that can collide on one `Arch` is amd64 —
+/// hence the amd64-only suffix appended by [`default_name_template`], not the
+/// full Arm/Mips/Amd64 clause.
+const DEFAULT_NAME_PREFIX: &str = "{{ ProjectName }}_{{ Version }}_{{ Os }}_{{ Arch }}";
+
+/// Compose the default Flatpak bundle filename template: the
+/// [`DEFAULT_NAME_PREFIX`], the shared amd64 variant suffix, then the
+/// `.flatpak` extension. Sourced from the single core const so the suffix
+/// cannot drift from the other installer namers.
+fn default_name_template() -> String {
+    format!(
+        "{DEFAULT_NAME_PREFIX}{}.flatpak",
+        anodizer_core::archive_name::INSTALLER_AMD64_VARIANT_SUFFIX
+    )
+}
 
 // ---------------------------------------------------------------------------
 // Manifest JSON structures
@@ -147,6 +165,10 @@ struct FlatpakJob {
     target: Option<String>,
     crate_name: String,
     cfg_id: Option<String>,
+    /// The binary's amd64 micro-architecture variant (`None` / `Some("v1")`
+    /// → baseline), recorded in the produced artifact's metadata so downstream
+    /// stages can tell two amd64 builds of one target apart.
+    amd64_variant: Option<String>,
 }
 
 /// Collect crates that declare at least one `flatpaks:` config and are not
@@ -285,18 +307,25 @@ fn filter_binaries_by_ids(binaries: &mut Vec<Artifact>, filter_ids: Option<&Vec<
     }
 }
 
-/// Map filtered binaries onto `(target, path, flatpak_arch)` tuples,
-/// dropping any architecture Flatpak doesn't support.
+/// One Flatpak-buildable binary: `(target, amd64_variant, binary_path,
+/// flatpak_arch)`. `amd64_variant` is the binary's `amd64_variant` metadata
+/// (`None` / `Some("v1")` → no name suffix), carried so two amd64 builds of one
+/// triple stay distinct.
+type FlatpakBinary = (Option<String>, Option<String>, PathBuf, String);
+
+/// Map filtered binaries onto [`FlatpakBinary`] tuples, dropping any
+/// architecture Flatpak doesn't support.
 ///
-/// Deduplicates by `flatpak_arch` so at most one binary survives per Flatpak
-/// arch. Multiple build IDs can collapse onto the same Flatpak arch — e.g. an
-/// x86_64 gnu build and an x86_64 musl build both map to `x86_64` — and the
-/// per-job work dir and bundle filename are keyed only by
-/// `(crate, flatpak_arch)`, so two such binaries would target the identical
-/// `dist/flatpak/<crate>/<arch>/build` dir and identical
-/// `..._linux_amd64.flatpak` output. Run in parallel that races
-/// (`Build directory already initialized`); run serially the second clobbers
-/// the first.
+/// Deduplicates by `(flatpak_arch, amd64_variant)` so at most one binary
+/// survives per Flatpak arch *and* micro-architecture variant. Two builds that
+/// share an arch *and* a variant — e.g. an x86_64 gnu build and an x86_64 musl
+/// build, both baseline amd64 — collapse onto one job: the per-job work dir and
+/// bundle filename are keyed by `(crate, flatpak_arch, variant)`, so they would
+/// target the identical `dist/flatpak/<crate>/<arch>/build` dir and identical
+/// `..._linux_amd64.flatpak` output. Run in parallel that races (`Build
+/// directory already initialized`); run serially the second clobbers the first.
+/// Two amd64 builds tagged with *different* variants (`v1` + `v3`) keep distinct
+/// keys, so both survive and render distinct names.
 ///
 /// The dedup is a last-resort guard: which binary wins is order-dependent
 /// (first in the artifact list), so it must not be relied on to select the
@@ -304,45 +333,60 @@ fn filter_binaries_by_ids(binaries: &mut Vec<Artifact>, filter_ids: Option<&Vec<
 /// Flatpak arch is the config's `ids:` filter (applied upstream in
 /// [`process_flatpak_cfg`]) — binding the `flatpaks:` block to a single build,
 /// exactly as `snapcrafts:` does to avoid the same map_target collapse.
-fn map_to_supported_arches(binaries: &[Artifact]) -> Vec<(Option<String>, PathBuf, String)> {
-    let mut seen: Vec<String> = Vec::new();
-    let mut out: Vec<(Option<String>, PathBuf, String)> = Vec::new();
+fn map_to_supported_arches(binaries: &[Artifact]) -> Vec<FlatpakBinary> {
+    let mut seen: Vec<(String, Option<String>)> = Vec::new();
+    let mut out: Vec<FlatpakBinary> = Vec::new();
     for b in binaries {
         let (_, arch) = os_arch_from_target(b.target.as_deref());
         if let Some(flatpak_arch) = arch_to_flatpak(&arch) {
-            if seen.iter().any(|a| a == flatpak_arch) {
+            let variant = b.metadata.get("amd64_variant").cloned();
+            let key = (flatpak_arch.to_string(), variant.clone());
+            if seen.iter().any(|k| k == &key) {
                 continue;
             }
-            seen.push(flatpak_arch.to_string());
-            out.push((b.target.clone(), b.path.clone(), flatpak_arch.to_string()));
+            seen.push(key);
+            out.push((
+                b.target.clone(),
+                variant,
+                b.path.clone(),
+                flatpak_arch.to_string(),
+            ));
         }
     }
     out
 }
 
+/// The rendered bundle filename paired with the template that produced it:
+/// `(rendered_name, resolved_template)`. The resolved template is the user's
+/// `name_template` when set, else the composed default — exactly the string the
+/// [`ArchPathGuard`] cites when it rejects a clobber, so the diagnostic names
+/// the template the user can fix.
+type RenderedFilename = (String, String);
+
 /// Render the bundle output filename via `name_template`, defaulting to
-/// `DEFAULT_NAME_TEMPLATE`, and force a `.flatpak` suffix.
+/// `default_name`, and force a `.flatpak` suffix. Returns the rendered name
+/// alongside the resolved template so the single resolution feeds both the
+/// produced path and the clobber guard.
 fn render_output_filename(
     ctx: &Context,
     flatpak_cfg: &anodizer_core::config::FlatpakConfig,
     crate_name: &str,
     target: &Option<String>,
-) -> Result<String> {
-    let name_template = flatpak_cfg
-        .name_template
-        .as_deref()
-        .unwrap_or(DEFAULT_NAME_TEMPLATE);
+    default_name: &str,
+) -> Result<RenderedFilename> {
+    let name_template = flatpak_cfg.name_template.as_deref().unwrap_or(default_name);
     let rendered = ctx.render_template(name_template).with_context(|| {
         format!(
             "flatpak: render name template for crate {} target {:?}",
             crate_name, target
         )
     })?;
-    Ok(if rendered.to_lowercase().ends_with(".flatpak") {
+    let output_name = if rendered.to_lowercase().ends_with(".flatpak") {
         rendered
     } else {
         format!("{rendered}.flatpak")
-    })
+    };
+    Ok((output_name, name_template.to_string()))
 }
 
 /// Build the manifest JSON model plus the parallel `(sources, build_commands)`
@@ -401,6 +445,7 @@ fn dry_run_artifact(
     flatpak_cfg: &anodizer_core::config::FlatpakConfig,
     crate_name: &str,
     target: &Option<String>,
+    amd64_variant: Option<&str>,
     output_name: &str,
     output_path: PathBuf,
 ) -> Artifact {
@@ -416,6 +461,9 @@ fn dry_run_artifact(
     let mut metadata = HashMap::from([("format".to_string(), "flatpak".to_string())]);
     if let Some(id) = &flatpak_cfg.id {
         metadata.insert("id".to_string(), id.clone());
+    }
+    if let Some(v) = amd64_variant {
+        metadata.insert("amd64_variant".to_string(), v.to_string());
     }
     Artifact {
         kind: ArtifactKind::Flatpak,
@@ -575,6 +623,9 @@ fn run_flatpak_job(job: &FlatpakJob, verbosity: anodizer_core::log::Verbosity) -
     if let Some(id) = &job.cfg_id {
         metadata.insert("id".to_string(), id.clone());
     }
+    if let Some(v) = &job.amd64_variant {
+        metadata.insert("amd64_variant".to_string(), v.clone());
+    }
     Ok(Artifact {
         kind: ArtifactKind::Flatpak,
         name: String::new(),
@@ -628,9 +679,11 @@ fn process_binary_iteration(
     identity: &FlatpakIdentity<'_>,
     version: &str,
     target: &Option<String>,
+    amd64_variant: Option<&str>,
     binary_path: &std::path::Path,
     flatpak_arch: &str,
     dry_run: bool,
+    arch_guard: &mut ArchPathGuard,
     archives_to_remove: &mut Vec<PathBuf>,
 ) -> Result<BinaryOutcome> {
     let (os, arch) = os_arch_from_target(target.as_deref());
@@ -638,12 +691,36 @@ fn process_binary_iteration(
     ctx.template_vars_mut().set("Arch", &arch);
     ctx.template_vars_mut()
         .set("Target", target.as_deref().unwrap_or(""));
+    // Seed the amd64 variant so the default (or a custom) name template
+    // disambiguates two amd64 builds of one target.
+    anodizer_core::archive_name::seed_amd64_variant_var(ctx.template_vars_mut(), amd64_variant);
 
-    let output_name = render_output_filename(ctx, flatpak_cfg, &krate.name, target)?;
+    let default_name = default_name_template();
+    let (output_name, resolved_template) =
+        render_output_filename(ctx, flatpak_cfg, &krate.name, target, &default_name)?;
 
     let output_dir = dist.join("flatpak");
     let output_path = output_dir.join(&output_name);
-    let work_dir = dist.join("flatpak").join(&krate.name).join(flatpak_arch);
+
+    // Reject a `name_template` that renders the same `.flatpak` path for two
+    // build targets / amd64 variants (an override lacking `{{ .Arch }}` /
+    // `{{ .Amd64 }}`): the second bundle would silently overwrite the first.
+    arch_guard.check(
+        &output_path,
+        "flatpak",
+        "bundle",
+        &resolved_template,
+        &output_name,
+        &krate.name,
+    )?;
+
+    // Disambiguate the work dir per amd64 variant so two non-baseline variants
+    // of one flatpak arch don't stage into (and race over) the same build dir.
+    let work_subdir = match amd64_variant {
+        Some(v) if v != "v1" => format!("{flatpak_arch}_{v}"),
+        _ => flatpak_arch.to_string(),
+    };
+    let work_dir = dist.join("flatpak").join(&krate.name).join(work_subdir);
 
     let binary_name = binary_path
         .file_name()
@@ -678,6 +755,7 @@ fn process_binary_iteration(
             flatpak_cfg,
             &krate.name,
             target,
+            amd64_variant,
             &output_name,
             output_path,
         );
@@ -732,6 +810,7 @@ fn process_binary_iteration(
         target: target.clone(),
         crate_name: krate.name.clone(),
         cfg_id: flatpak_cfg.id.clone(),
+        amd64_variant: amd64_variant.map(str::to_string),
     }))
 }
 
@@ -797,7 +876,12 @@ fn process_flatpak_cfg(
         return Ok(());
     }
 
-    for (target, binary_path, flatpak_arch) in &effective_binaries {
+    // One guard per (crate, config) scope: a `name_template` lacking an
+    // `{{ .Arch }}` / `{{ .Amd64 }}` discriminator renders the same `.flatpak`
+    // path for two targets / variants — error loudly instead of clobbering.
+    let mut arch_guard = ArchPathGuard::new();
+
+    for (target, amd64_variant, binary_path, flatpak_arch) in &effective_binaries {
         let outcome = process_binary_iteration(
             ctx,
             log,
@@ -807,9 +891,11 @@ fn process_flatpak_cfg(
             &identity,
             version,
             target,
+            amd64_variant.as_deref(),
             binary_path,
             flatpak_arch,
             dry_run,
+            &mut arch_guard,
             acc.archives_to_remove,
         )?;
         match outcome {
@@ -1535,10 +1621,19 @@ finish_args:
 
     #[test]
     fn test_default_name_template() {
-        assert_eq!(
-            DEFAULT_NAME_TEMPLATE,
-            "{{ ProjectName }}_{{ Version }}_{{ Os }}_{{ Arch }}.flatpak"
+        // The default composes from the shared amd64-only suffix const (drift
+        // guard), so a v1/None baseline renders the historical unsuffixed name
+        // while a v3 build appends `v3` before `.flatpak`.
+        let tmpl = default_name_template();
+        assert!(
+            tmpl.starts_with("{{ ProjectName }}_{{ Version }}_{{ Os }}_{{ Arch }}"),
+            "{tmpl}"
         );
+        assert!(
+            tmpl.contains(anodizer_core::archive_name::INSTALLER_AMD64_VARIANT_SUFFIX),
+            "flatpak default must reuse INSTALLER_AMD64_VARIANT_SUFFIX: {tmpl}"
+        );
+        assert!(tmpl.ends_with(".flatpak"), "{tmpl}");
     }
 
     // -----------------------------------------------------------------------
@@ -1697,6 +1792,96 @@ finish_args:
 
         let flatpaks = ctx.artifacts.by_kind(ArtifactKind::Flatpak);
         assert_eq!(flatpaks.len(), 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // Same-triple multi-variant: distinct .flatpak names, no clobber
+    // -----------------------------------------------------------------------
+
+    /// Three x86_64 builds tagged amd64_variant v1/v2/v3 plus one aarch64 build
+    /// must each produce a distinct `.flatpak` artifact (no ArchPathGuard
+    /// error): the default name appends the amd64 micro-arch suffix (v1 → no
+    /// suffix, v2 → `…v2`, v3 → `…v3`), so the same triple no longer clobbers
+    /// itself.
+    #[test]
+    fn test_flatpak_dry_run_same_triple_multi_variant_distinct_names() {
+        use anodizer_core::config::{Config, CrateConfig, FlatpakConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+
+        let flatpak_cfg = FlatpakConfig {
+            app_id: Some("org.example.MyApp".to_string()),
+            runtime: Some("org.freedesktop.Platform".to_string()),
+            runtime_version: Some("24.08".to_string()),
+            sdk: Some("org.freedesktop.Sdk".to_string()),
+            ..Default::default()
+        };
+
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            flatpaks: Some(vec![flatpak_cfg]),
+            ..Default::default()
+        }];
+
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+
+        for variant in ["v1", "v2", "v3"] {
+            let p = tmp.path().join(format!("myapp-{variant}"));
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: p,
+                target: Some("x86_64-unknown-linux-gnu".to_string()),
+                crate_name: "myapp".to_string(),
+                metadata: HashMap::from([("amd64_variant".to_string(), variant.to_string())]),
+                size: None,
+            });
+        }
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: tmp.path().join("myapp-arm"),
+            target: Some("aarch64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+
+        let stage = FlatpakStage;
+        stage
+            .run(&mut ctx)
+            .expect("multi-variant build must not clobber");
+
+        let flatpaks = ctx.artifacts.by_kind(ArtifactKind::Flatpak);
+        assert_eq!(flatpaks.len(), 4, "one .flatpak per variant + arm64");
+        let names: std::collections::HashSet<String> = flatpaks
+            .iter()
+            .map(|f| {
+                f.path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(names.len(), 4, "all .flatpak filenames distinct: {names:?}");
+        assert!(names.contains("myapp_1.0.0_linux_amd64.flatpak"));
+        assert!(names.contains("myapp_1.0.0_linux_amd64v2.flatpak"));
+        assert!(names.contains("myapp_1.0.0_linux_amd64v3.flatpak"));
+        assert!(names.contains("myapp_1.0.0_linux_arm64.flatpak"));
     }
 
     // -----------------------------------------------------------------------
@@ -2200,7 +2385,14 @@ finish_args:
         ctx.template_vars_mut().set("Arch", "amd64");
 
         let target: Option<String> = Some("x86_64-unknown-linux-gnu".to_string());
-        let name = render_output_filename(&ctx, &flatpak_cfg, "myapp", &target).unwrap();
+        let (name, resolved_template) = render_output_filename(
+            &ctx,
+            &flatpak_cfg,
+            "myapp",
+            &target,
+            &default_name_template(),
+        )
+        .unwrap();
 
         assert!(
             name.ends_with(".flatpak"),
@@ -2208,6 +2400,10 @@ finish_args:
             name
         );
         assert_eq!(name, "myapp-3.0.0.flatpak");
+        assert_eq!(
+            resolved_template, "{{ ProjectName }}-{{ Version }}",
+            "resolved template should be the user's name_template, fed verbatim to the clobber guard"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -2763,7 +2959,7 @@ finish_args:
         let result = map_to_supported_arches(&binaries);
         assert_eq!(result.len(), 2, "i686 should be filtered out");
 
-        let arches: Vec<&str> = result.iter().map(|(_, _, a)| a.as_str()).collect();
+        let arches: Vec<&str> = result.iter().map(|(_, _, _, a)| a.as_str()).collect();
         assert!(arches.contains(&"x86_64"));
         assert!(arches.contains(&"aarch64"));
     }
@@ -2802,8 +2998,45 @@ finish_args:
             "gnu + musl both map to x86_64 — exactly one job must survive"
         );
         // First-seen-wins keeps the gnu binary.
-        assert_eq!(result[0].1, PathBuf::from("dist/app-gnu"));
-        assert_eq!(result[0].2, "x86_64");
+        assert_eq!(result[0].2, PathBuf::from("dist/app-gnu"));
+        assert_eq!(result[0].3, "x86_64");
+    }
+
+    /// Two x86_64 builds tagged with DIFFERENT amd64 variants (`v1` baseline +
+    /// `v3`) keep distinct `(flatpak_arch, variant)` keys, so BOTH survive the
+    /// dedup — the spec's same-triple-multi-variant case the guard backs up.
+    #[test]
+    fn test_map_to_supported_arches_keeps_distinct_amd64_variants() {
+        let binaries = vec![
+            Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from("dist/app-v1"),
+                target: Some("x86_64-unknown-linux-gnu".to_string()),
+                crate_name: "app".to_string(),
+                metadata: HashMap::from([("amd64_variant".to_string(), "v1".to_string())]),
+                size: None,
+            },
+            Artifact {
+                kind: ArtifactKind::Binary,
+                name: String::new(),
+                path: PathBuf::from("dist/app-v3"),
+                target: Some("x86_64-unknown-linux-gnu".to_string()),
+                crate_name: "app".to_string(),
+                metadata: HashMap::from([("amd64_variant".to_string(), "v3".to_string())]),
+                size: None,
+            },
+        ];
+
+        let result = map_to_supported_arches(&binaries);
+        assert_eq!(
+            result.len(),
+            2,
+            "v1 + v3 of one triple must both survive — distinct variant keys"
+        );
+        let variants: Vec<Option<&str>> = result.iter().map(|(_, v, _, _)| v.as_deref()).collect();
+        assert!(variants.contains(&Some("v1")));
+        assert!(variants.contains(&Some("v3")));
     }
 
     // -----------------------------------------------------------------------

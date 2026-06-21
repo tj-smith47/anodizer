@@ -209,15 +209,19 @@ fn validate_built_packages(
         }
         let format = artifact.metadata.get("format").map(String::as_str);
         let target = artifact.target.as_deref().unwrap_or("");
+        let variant = artifact.metadata.get("amd64_variant").map(String::as_str);
 
         // Pair the built package with the config it was rendered from so the
         // expected control values come from the same source the schema layer
-        // validated. Match on (format, target) — the keys that uniquely
-        // identify one rendered config.
-        let Some(cfg) = configs
-            .iter()
-            .find(|c| Some(c.format.as_str()) == format && c.target == target)
-        else {
+        // validated. Match on (format, target, amd64_variant): two amd64
+        // variants of one triple share (format, target), and a `{{ .Amd64 }}`
+        // in a control field makes their YAML differ — keying on the variant
+        // too stops a `v3` package from validating against the `v1` config.
+        let Some(cfg) = configs.iter().find(|c| {
+            Some(c.format.as_str()) == format
+                && c.target == target
+                && c.amd64_variant.as_deref() == variant
+        }) else {
             continue;
         };
         let expected = expected_control(&cfg.yaml, &cfg.format)?;

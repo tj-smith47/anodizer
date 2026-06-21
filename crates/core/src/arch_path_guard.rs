@@ -60,6 +60,39 @@ impl ArchPathGuard {
              build target's {artifact} gets a distinct path."
         );
     }
+
+    /// Record `path` for this scope when the name comes from a stage's
+    /// *conventional default* filename rather than a user template; error if a
+    /// previous call already produced it.
+    ///
+    /// For distro-conventional packagers (deb/rpm/apk), the default filename's
+    /// arch field must stay bare (`amd64`, never `amd64v3`), so two amd64
+    /// micro-architecture variants of one triple render the same path under the
+    /// default. The message names "the conventional default filename" (no fake
+    /// template echo) and advises a `file_name_template` carrying
+    /// `{{ .Amd64 }}` — the only field that disambiguates same-arch variants.
+    pub fn check_conventional(
+        &mut self,
+        path: &Path,
+        stage: &str,
+        artifact: &str,
+        rendered: &str,
+        crate_name: &str,
+    ) -> anyhow::Result<()> {
+        if self.seen.insert(path.to_path_buf()) {
+            return Ok(());
+        }
+        anyhow::bail!(
+            "{stage}: the conventional default filename rendered the same {artifact} \
+             '{rendered}' more than once for crate '{crate_name}', so one build target \
+             would silently overwrite another. This happens when two same-arch \
+             micro-architecture variants (e.g. a baseline amd64 build and one tuned \
+             with -Ctarget-cpu=x86-64-v3) share the distro-conventional arch field. \
+             Set a `file_name_template` carrying '{{{{ .Amd64 }}}}' \
+             (e.g. \"{{{{ .PackageName }}}}_{{{{ .Version }}}}_{{{{ .Arch }}}}{{{{ .Amd64 }}}}\") \
+             so each variant's {artifact} gets a distinct path."
+        );
+    }
 }
 
 #[cfg(test)]
@@ -121,6 +154,44 @@ mod tests {
         assert!(err.contains("crate 'app'"), "{err}");
         assert!(err.contains("{{ .Arch }}"), "{err}");
         assert!(err.contains("bundle gets a distinct path"), "{err}");
+    }
+
+    #[test]
+    fn conventional_default_collision_bails_without_fake_template() {
+        // The conventional-default path must NOT echo a fabricated template and
+        // must advise `{{ .Amd64 }}` (the conventional default already carries
+        // `{{ .Arch }}`, so advising `{{ .Arch }}` would be useless).
+        let mut guard = ArchPathGuard::new();
+        guard
+            .check_conventional(
+                Path::new("dist/linux/myapp_1.0.0_amd64.deb"),
+                "nfpms",
+                "package",
+                "myapp_1.0.0_amd64.deb",
+                "myapp",
+            )
+            .expect("first path must pass");
+
+        let err = guard
+            .check_conventional(
+                Path::new("dist/linux/myapp_1.0.0_amd64.deb"),
+                "nfpms",
+                "package",
+                "myapp_1.0.0_amd64.deb",
+                "myapp",
+            )
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("nfpms:"), "{err}");
+        assert!(err.contains("crate 'myapp'"), "{err}");
+        assert!(err.contains("conventional default filename"), "{err}");
+        assert!(err.contains("{{ .Amd64 }}"), "{err}");
+        assert!(
+            !err.contains("name template '"),
+            "must not echo a fake template: {err}"
+        );
+        assert!(err.contains("package gets a distinct path"), "{err}");
     }
 
     #[test]

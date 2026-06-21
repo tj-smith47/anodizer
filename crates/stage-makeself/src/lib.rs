@@ -5,6 +5,7 @@ use std::process::Command;
 
 use anyhow::{Context as _, Result};
 
+use anodizer_core::arch_path_guard::ArchPathGuard;
 use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
@@ -419,22 +420,33 @@ fn execute_makeself_job(
             )
         })?;
 
-    let mut metadata = HashMap::new();
-    metadata.insert("id".to_string(), job.id.clone());
-    metadata.insert("format".to_string(), "makeself".to_string());
-    if let Some(replaces) = &job.primary_replaces {
-        metadata.insert("replaces".to_string(), replaces.clone());
-    }
-
     Ok(Artifact {
         kind: ArtifactKind::Makeself,
         name: job.filename.clone(),
         path: job.output_path.clone(),
         target: job.primary_target.clone(),
         crate_name: job.primary_crate_name.clone(),
-        metadata,
+        metadata: makeself_artifact_metadata(job),
         size: None,
     })
+}
+
+/// Build the metadata map stamped onto a produced `.run` artifact: the `id`,
+/// the `format` tag, any `replaces` declaration, and — for an amd64 build
+/// tuned past baseline — the `amd64_variant`, so downstream stages can tell two
+/// amd64 builds of one target apart. A baseline (`None` / `v1`) records no
+/// variant, preserving the historical metadata shape.
+fn makeself_artifact_metadata(job: &MakeselfJob) -> HashMap<String, String> {
+    let mut metadata = HashMap::new();
+    metadata.insert("id".to_string(), job.id.clone());
+    metadata.insert("format".to_string(), "makeself".to_string());
+    if let Some(replaces) = &job.primary_replaces {
+        metadata.insert("replaces".to_string(), replaces.clone());
+    }
+    if let Some(variant) = &job.amd64_variant {
+        metadata.insert("amd64_variant".to_string(), variant.clone());
+    }
+    metadata
 }
 
 /// Group artifacts by `(platform, amd64_variant)` — e.g.
@@ -497,6 +509,10 @@ struct MakeselfJob {
     primary_target: Option<String>,
     primary_crate_name: String,
     primary_replaces: Option<String>,
+    /// The group's amd64 micro-architecture variant (`None` / `Some("v1")`
+    /// → baseline), stamped onto the produced `.run` artifact's metadata so
+    /// downstream stages can tell two amd64 builds of one target apart.
+    amd64_variant: Option<String>,
 }
 
 impl Stage for MakeselfStage {
@@ -654,6 +670,12 @@ fn collect_makeself_config_jobs(
 
     let groups = group_by_platform(&all_binaries);
 
+    // One guard per (crate, config) scope: a constant user `filename:` lacking
+    // an `{{ .Arch }}` / `{{ .Amd64 }}` discriminator renders the same `.run`
+    // path for two platforms or two amd64 variants — the guard turns that
+    // silent clobber into an actionable error instead of a survivor.
+    let mut arch_guard = ArchPathGuard::new();
+
     for ((platform, amd64_variant), binaries) in &groups {
         build_makeself_platform_job(
             ctx,
@@ -670,6 +692,7 @@ fn collect_makeself_config_jobs(
             amd64_variant.as_deref(),
             binaries,
             dry_run,
+            &mut arch_guard,
             jobs,
         )?;
     }
@@ -695,6 +718,7 @@ fn build_makeself_platform_job(
     amd64_variant: Option<&str>,
     binaries: &[&Artifact],
     dry_run: bool,
+    arch_guard: &mut ArchPathGuard,
     jobs: &mut Vec<MakeselfJob>,
 ) -> Result<()> {
     let primary = binaries[0];
@@ -714,6 +738,19 @@ fn build_makeself_platform_job(
 
     let filename =
         resolve_makeself_filename(ctx, name_template, project_name, version, &os, &arch)?;
+
+    // Reject a `filename:` that renders the same `.run` path for two platforms
+    // or two amd64 variants (a constant override lacking `{{ .Arch }}` /
+    // `{{ .Amd64 }}`): the second job would silently overwrite the first.
+    let output_path = dist.join(&filename);
+    arch_guard.check(
+        &output_path,
+        "makeself",
+        "package",
+        name_template,
+        &filename,
+        &primary.crate_name,
+    )?;
 
     let rendered_description = cfg
         .description
@@ -803,7 +840,6 @@ fn build_makeself_platform_job(
         .unwrap_or("setup.sh")
         .to_string();
 
-    let output_path = dist.join(&filename);
     let lsm_text = lsm.render();
 
     jobs.push(MakeselfJob {
@@ -822,6 +858,7 @@ fn build_makeself_platform_job(
         primary_target: primary.target.clone(),
         primary_crate_name: primary.crate_name.clone(),
         primary_replaces: primary.metadata.get("replaces").cloned(),
+        amd64_variant: amd64_variant.map(str::to_string),
     });
 
     Ok(())
@@ -1336,6 +1373,105 @@ crates:
         assert!(names.contains(&"myapp_1.0.0_linux_amd64v2.run"));
         assert!(names.contains(&"myapp_1.0.0_linux_amd64v3.run"));
         assert!(names.contains(&"myapp_1.0.0_linux_arm64.run"));
+
+        // Each job carries the binary's amd64_variant so the produced `.run`
+        // artifact can be told apart from its sibling amd64 builds.
+        let v3_job = jobs
+            .iter()
+            .find(|j| j.filename == "myapp_1.0.0_linux_amd64v3.run")
+            .expect("v3 job must exist");
+        assert_eq!(v3_job.amd64_variant.as_deref(), Some("v3"));
+
+        // The artifact metadata mirrors that variant.
+        let v3_meta = makeself_artifact_metadata(v3_job);
+        assert_eq!(v3_meta.get("amd64_variant").map(String::as_str), Some("v3"));
+        assert_eq!(v3_meta.get("format").map(String::as_str), Some("makeself"));
+
+        // A v1 build carries its variant verbatim, mirroring the flatpak /
+        // appimage stages (the disambiguator lives in the name, not by
+        // stripping v1 from metadata).
+        let baseline_job = jobs
+            .iter()
+            .find(|j| j.filename == "myapp_1.0.0_linux_amd64.run")
+            .expect("baseline job must exist");
+        assert_eq!(baseline_job.amd64_variant.as_deref(), Some("v1"));
+        assert_eq!(
+            makeself_artifact_metadata(baseline_job)
+                .get("amd64_variant")
+                .map(String::as_str),
+            Some("v1")
+        );
+
+        // A non-amd64 build carries no amd64_variant at all.
+        let arm_job = jobs
+            .iter()
+            .find(|j| j.filename == "myapp_1.0.0_linux_arm64.run")
+            .expect("arm64 job must exist");
+        assert_eq!(arm_job.amd64_variant, None);
+        assert!(!makeself_artifact_metadata(arm_job).contains_key("amd64_variant"));
+    }
+
+    #[test]
+    fn test_makeself_constant_filename_bails_across_variants() {
+        // A constant user `filename:` lacking any arch/variant discriminator
+        // renders the same `.run` path for two amd64 variants — the
+        // ArchPathGuard must error loudly instead of letting the second job
+        // silently overwrite the first.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut ctx = Context::new(
+            anodizer_core::config::Config::default(),
+            anodizer_core::context::ContextOptions::default(),
+        );
+        ctx.config.project_name = "myapp".to_string();
+        ctx.config.dist = tmp.path().to_path_buf();
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+        ctx.template_vars_mut().set("Version", "1.0.0");
+
+        for variant in ["v1", "v3"] {
+            let p = tmp.path().join(format!("myapp_{variant}"));
+            std::fs::write(&p, b"x").unwrap();
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Binary,
+                name: "myapp".to_string(),
+                path: p,
+                target: Some("x86_64-unknown-linux-gnu".to_string()),
+                crate_name: "myapp".to_string(),
+                metadata: HashMap::from([("amd64_variant".to_string(), variant.to_string())]),
+                size: None,
+            });
+        }
+
+        let script = tmp.path().join("install.sh");
+        std::fs::write(&script, b"#!/bin/sh\n").unwrap();
+
+        let cfg = MakeselfConfig {
+            id: Some("default".to_string()),
+            script: Some(script.to_string_lossy().into_owned()),
+            os: Some(vec!["linux".to_string()]),
+            // Constant — no `{{ .Arch }}` / `{{ .Amd64 }}` discriminator.
+            filename: Some("myapp-installer".to_string()),
+            ..Default::default()
+        };
+
+        let log =
+            anodizer_core::log::StageLogger::new("makeself", anodizer_core::log::Verbosity::Normal);
+        let mut jobs: Vec<MakeselfJob> = Vec::new();
+        let err = collect_makeself_config_jobs(
+            &mut ctx,
+            &log,
+            &cfg,
+            tmp.path(),
+            "1.0.0",
+            "myapp",
+            false,
+            &mut jobs,
+        )
+        .unwrap_err()
+        .to_string();
+
+        assert!(err.contains("makeself:"), "{err}");
+        assert!(err.contains("crate 'myapp'"), "{err}");
+        assert!(err.contains("{{ .Amd64 }}"), "{err}");
     }
 
     #[test]
