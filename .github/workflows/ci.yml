@@ -87,6 +87,9 @@ jobs:
           sccache: "true"
           task: "true"
           tools: cargo-nextest
+          # The Linux determinism integration test drives the nfpm stage, which
+          # the gate hard-fails on (no silent skip) when nfpm is absent.
+          nfpm: "true"
           github-token: ${{ secrets.GITHUB_TOKEN }}
       # Make the WiX toolchain reachable so the Windows test shard actually
       # executes msi_is_byte_reproducible_across_time (the MSI determinism
@@ -185,6 +188,7 @@ jobs:
           task: "true"
           tools: cargo-llvm-cov,cargo-nextest
           linux-packaging-tools: "true"
+          nfpm: "true"
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Run coverage and update badge
         run: task coverage:publish

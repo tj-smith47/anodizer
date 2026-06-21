@@ -39,14 +39,22 @@ inputs:
     default: ""
   linux-packaging-tools:
     description: >-
-      "true to apt-install the Linux installer-assembly toolchain available on
-      the GitHub-hosted runner (cpio/genisoimage/nsis/msitools/makeself). These
-      cover the dmg/nsis/msi/makeself assembly stages, which runtime-probe their
-      tool and skip-with-pass when absent. The flat-pkg (.pkg) stage additionally
+      "true to install the Linux installer-assembly toolchain available on
+      the GitHub-hosted runner: cpio/genisoimage/nsis/msitools/makeself via apt.
+      These cover the dmg/nsis/msi/makeself assembly stages, which runtime-probe
+      their tool and skip-with-pass when absent. The flat-pkg (.pkg) stage additionally
       needs bomutils(mkbom)+xar, neither of which is packaged for Ubuntu 24.04;
       its 2 end-to-end tests stay hermetic skip-with-pass here and are exercised
       locally / on the self-hosted release runner (whose base image carries them).
-      The pre-spawn .pkg logic is covered by injected-probe unit tests regardless."
+      The pre-spawn .pkg logic is covered by injected-probe unit tests regardless.
+      nfpm is provisioned separately via the `nfpm` input, not here."
+    default: "false"
+  nfpm:
+    description: >-
+      "true to install nfpm (deb/rpm/apk) from its release tarball. Set on any
+      job whose tests drive the nfpm determinism stage: the gate hard-fails
+      rather than skipping when the tool is absent, so it must be present.
+      Linux-only."
     default: "false"
 
 runs:
@@ -82,3 +90,30 @@ runs:
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
           cpio genisoimage nsis msitools makeself
+
+    # nfpm has no apt package, so it installs from its release tarball, verified
+    # against the release's checksums.txt (immutable tag → no hardcoded sha to
+    # drift). Linux-only: the tarball is a Linux build and the test that needs it
+    # is cfg(target_os = "linux").
+    - if: ${{ inputs.nfpm == 'true' && runner.os == 'Linux' }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        version=2.46.3
+        case "$RUNNER_ARCH" in
+          X64)   arch=x86_64 ;;
+          ARM64) arch=arm64 ;;
+          *) echo "::error::unsupported arch for nfpm: $RUNNER_ARCH"; exit 1 ;;
+        esac
+        base="https://github.com/goreleaser/nfpm/releases/download/v${version}"
+        tarball="nfpm_${version}_Linux_${arch}.tar.gz"
+        dir="${RUNNER_TEMP:-/tmp}/nfpm"
+        mkdir -p "$dir"
+        curl -sSfL "${base}/${tarball}" -o "${dir}/${tarball}"
+        curl -sSfL "${base}/checksums.txt" -o "${dir}/checksums.txt"
+        expected=$(grep " ${tarball}\$" "${dir}/checksums.txt" | awk '{print $1}')
+        echo "${expected}  ${dir}/${tarball}" | sha256sum -c -
+        tar -xzf "${dir}/${tarball}" -C "$dir" nfpm
+        chmod +x "${dir}/nfpm"
+        printf '%s\n' "$dir" >> "$GITHUB_PATH"
+        "${dir}/nfpm" --version

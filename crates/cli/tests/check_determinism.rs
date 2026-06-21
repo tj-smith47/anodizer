@@ -194,17 +194,16 @@ use common::{bootstrap_minimal_cargo_repo, host_triple, run_git, tool_on_path};
 /// minimal cargo workspace, drives the harness with `--runs=2
 /// --inject-drift=archive`, and asserts the JSON report records drift.
 ///
-/// On hosts without `cargo` or `git` on PATH, prints a skip marker and
-/// returns early so the suite stays green on minimal hosts.
+/// Requires `cargo` and `git` on PATH (the harness spawns both). Asserts their
+/// presence and fails loud rather than skipping — a determinism test that
+/// reports green on a toolless host is exactly the false coverage this suite
+/// exists to prevent.
 #[test]
 fn inject_drift_archive_reports_drift_on_minimal_workspace() {
-    if !tool_on_path("cargo") || !tool_on_path("git") {
-        eprintln!(
-            "SKIP inject_drift_archive_reports_drift_on_minimal_workspace: \
-             cargo or git missing from PATH"
-        );
-        return;
-    }
+    assert!(
+        tool_on_path("cargo") && tool_on_path("git"),
+        "inject_drift_archive_reports_drift_on_minimal_workspace requires cargo and git on PATH"
+    );
 
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path();
@@ -296,15 +295,23 @@ fn inject_drift_archive_reports_drift_on_minimal_workspace() {
 ///   level (verbose-only): it must not appear in this default-verbosity run
 ///   for either configured submitter (it would have printed 4× in the
 ///   pre-fix live run).
+///
+/// Scoped to Linux: the fixture drives the nfpm stage (deb/rpm/apk), so the
+/// host needs `nfpm` — the same per-OS-installer convention as
+/// `msi_is_byte_reproducible` (Windows) and `dmg_is_byte_reproducible` (macOS).
+/// The env-preflight-skip logic under test is OS-agnostic, so Linux coverage is
+/// sufficient. `nfpm` is provisioned on the Linux test/coverage CI jobs; if it
+/// is ever absent the determinism gate hard-fails this test (never silently
+/// skips), surfacing the missing tool.
+#[cfg(target_os = "linux")]
 #[test]
 fn harness_skips_env_preflight_and_prints_header_and_config_warnings_once() {
-    if !tool_on_path("cargo") || !tool_on_path("git") {
-        eprintln!(
-            "SKIP harness_skips_env_preflight_and_prints_header_and_config_warnings_once: \
-             cargo or git missing from PATH"
-        );
-        return;
-    }
+    assert!(
+        tool_on_path("cargo") && tool_on_path("git") && tool_on_path("nfpm"),
+        "harness_skips_env_preflight_and_prints_header_and_config_warnings_once requires \
+         cargo, git, and nfpm on PATH (the fixture drives the nfpm stage, which the \
+         determinism gate hard-fails on when its tool is absent)"
+    );
 
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path();
@@ -431,13 +438,10 @@ fn harness_skips_env_preflight_and_prints_header_and_config_warnings_once() {
 /// stderr.
 #[test]
 fn quiet_flag_silences_harness_run_bullets_and_children() {
-    if !tool_on_path("cargo") || !tool_on_path("git") {
-        eprintln!(
-            "SKIP quiet_flag_silences_harness_run_bullets_and_children: \
-             cargo or git missing from PATH"
-        );
-        return;
-    }
+    assert!(
+        tool_on_path("cargo") && tool_on_path("git"),
+        "quiet_flag_silences_harness_run_bullets_and_children requires cargo and git on PATH"
+    );
 
     let tmp = TempDir::new().unwrap();
     let repo = tmp.path();
