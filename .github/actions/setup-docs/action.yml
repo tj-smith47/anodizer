@@ -29,4 +29,10 @@ runs:
 
     - uses: go-task/setup-task@01a4adf9db2d14c1de7a560f09170b6e0df736aa # v2.1.0
       with:
+        # Pin an exact go-task release. Without `version`, setup-task defaults
+        # to `3.x` and resolves "latest 3.x" via the GitHub API at run time —
+        # which intermittently fails with "unable to get latest version" and
+        # broke Deploy Docs. An explicit version makes the install deterministic
+        # and API-independent.
+        version: 3.51.1
         repo-token: ${{ inputs.github-token }}
