@@ -103,6 +103,7 @@ pub fn msi_command(
     wxs_path: &str,
     output_path: &str,
     extensions: &[String],
+    msi_arch: &str,
 ) -> MsiCommands {
     match wix_version {
         WixVersion::V4 => {
@@ -110,6 +111,8 @@ pub fn msi_command(
                 "wix".to_string(),
                 "build".to_string(),
                 wxs_path.to_string(),
+                "-arch".to_string(),
+                msi_arch.to_string(),
                 "-o".to_string(),
                 output_path.to_string(),
             ];
@@ -129,9 +132,18 @@ pub fn msi_command(
             } else {
                 format!("{output_path}.wixobj")
             };
+            // candle's `-arch` sets the default component bitness AND how
+            // ProgramFiles64Folder resolves. Without it candle defaults to x86,
+            // so a 64-bit target's `.wxs` (ProgramFiles64Folder + a component
+            // with no explicit Win64) trips light's ICE80 (32BitComponent in a
+            // 64BitDirectory) and the build fails. The arch is the WiX-native
+            // identifier (x64/arm64/x86) the template already renders for
+            // `{{ MsiArch }}`.
             let mut primary = vec![
                 "candle".to_string(),
                 "-nologo".to_string(),
+                "-arch".to_string(),
+                msi_arch.to_string(),
                 wxs_path.to_string(),
                 "-o".to_string(),
                 wixobj_path.clone(),

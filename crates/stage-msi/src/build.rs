@@ -307,6 +307,7 @@ fn build_msi_target(
         &rendered_extensions,
         crate_name,
         target.as_deref(),
+        &msi_arch,
         log,
     )?;
     drop(tmp_dir);
@@ -562,6 +563,7 @@ fn execute_msi_build(
     rendered_extensions: &[String],
     crate_name: &str,
     target: Option<&str>,
+    msi_arch: &str,
     log: &anodizer_core::log::StageLogger,
 ) -> Result<()> {
     if wix_version == WixVersion::Wixl && !rendered_extensions.is_empty() {
@@ -576,6 +578,7 @@ fn execute_msi_build(
         &rendered_wxs_path.to_string_lossy(),
         &msi_path.to_string_lossy(),
         rendered_extensions,
+        msi_arch,
     );
 
     if let Some(ts) = mod_timestamp {
