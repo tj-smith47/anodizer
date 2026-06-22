@@ -6791,12 +6791,20 @@ fn signed_deb_body_is_byte_reproducible_across_time() {
     assert_ne!(sa, sb, "the _gpgorigin signature must differ across builds");
 }
 
-/// A GPG-signed `.rpm` is NOT byte-identical across two builds (the RPM header
-/// signature is non-deterministic), but the rpm2cpio payload IS byte-identical
-/// at a fixed SOURCE_DATE_EPOCH.
+/// A GPG-signed `.rpm` is NOT byte-identical across two builds (the RPM signature
+/// header is non-deterministic), but everything from the main header onward — the
+/// file-metadata header plus the compressed cpio payload — IS byte-identical at a
+/// fixed SOURCE_DATE_EPOCH.
+///
+/// The body is compared by parsing the RPM container directly rather than shelling
+/// to `rpm2cpio`. The signature lives in the *signature header* (the first of an
+/// RPM's two headers), so slicing from the main header to EOF isolates the
+/// deterministic region with zero external-tool dependency. `rpm2cpio` is unfit
+/// here: on rpm 4.x it verifies the package digest/signature and aborts mid-stream
+/// on a NOKEY signed package, and on rpm 6.x it is a symlink to `rpm2archive`,
+/// which emits a non-deterministically-gzipped tar instead of the raw cpio.
 #[test]
 fn signed_rpm_body_is_byte_reproducible_across_time() {
-    use std::process::Command;
     let sig_block = |key: &std::path::Path| {
         format!("rpm:\n  signature:\n    key_file: \"{}\"\n", key.display())
     };
@@ -6807,32 +6815,45 @@ fn signed_rpm_body_is_byte_reproducible_across_time() {
         a, b,
         "a GPG-signed .rpm must differ across builds (proving signing ran)"
     );
-    if !anodizer_core::util::find_binary("rpm2cpio") {
-        eprintln!("rpm2cpio absent; rpm body comparison skipped hermetically");
-        return;
-    }
-    // rpm2cpio strips the RPM header (where the signature lives) and emits only
-    // the cpio payload, which is the reproducible body.
-    let payload = |bytes: &[u8]| -> Vec<u8> {
-        let d = TempDir::new().unwrap();
-        let rpm = d.path().join("pkg.rpm");
-        std::fs::write(&rpm, bytes).unwrap();
-        let out = Command::new("rpm2cpio")
-            .arg(&rpm)
-            .output()
-            .expect("spawn rpm2cpio");
-        assert!(
-            out.status.success(),
-            "rpm2cpio must succeed: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
-        out.stdout
+    // Byte offset of the main (immutable) header: skip the 96-byte lead, then the
+    // signature header. An RPM header is a 16-byte intro (3-byte magic 8e ad e8 +
+    // 1-byte version + 4 reserved, then a BE u32 index-entry count and a BE u32
+    // data-store size), followed by `count` 16-byte index entries and the data
+    // store. The signature header is then padded up to an 8-byte boundary; the
+    // main header is not (the payload follows it directly).
+    const RPM_HDR_MAGIC: [u8; 4] = [0x8e, 0xad, 0xe8, 0x01];
+    let main_header_offset = |rpm: &[u8]| -> usize {
+        const LEAD: usize = 96;
+        assert_eq!(rpm[LEAD..LEAD + 4], RPM_HDR_MAGIC, "signature header magic");
+        let n_entries = u32::from_be_bytes(rpm[LEAD + 8..LEAD + 12].try_into().unwrap()) as usize;
+        let data_size = u32::from_be_bytes(rpm[LEAD + 12..LEAD + 16].try_into().unwrap()) as usize;
+        let sig_len = 16 + n_entries * 16 + data_size;
+        LEAD + ((sig_len + 7) & !7)
     };
-    let pa = payload(&a);
-    let pb = payload(&b);
+    let ma = main_header_offset(&a);
+    let mb = main_header_offset(&b);
     assert_eq!(
-        pa, pb,
-        "rpm2cpio payload must be byte-identical across builds at a fixed SOURCE_DATE_EPOCH"
+        a[ma..ma + 4],
+        RPM_HDR_MAGIC,
+        "parsed offset must land on the main header magic (build A)"
+    );
+    assert_eq!(
+        b[mb..mb + 4],
+        RPM_HDR_MAGIC,
+        "parsed offset must land on the main header magic (build B)"
+    );
+    // The difference between the two signed builds must live ENTIRELY in the
+    // signature header — proving signing ran AND that it is the sole source of
+    // non-determinism.
+    assert_ne!(
+        a[..ma],
+        b[..mb],
+        "the signature header must differ across builds"
+    );
+    assert_eq!(
+        a[ma..],
+        b[mb..],
+        "the RPM body (main header + cpio payload) must be byte-identical across builds at a fixed SOURCE_DATE_EPOCH"
     );
 }
 

@@ -266,7 +266,7 @@ impl DeterminismState {
             ),
             (
                 "*.rpm",
-                "nfpm GPG-signs the rpm (RPM header signature); the signature embeds a non-pinnable creation time / randomized salt and is not byte-reproducible even at a fixed SOURCE_DATE_EPOCH. The package body (rpm2cpio payload) IS byte-reproducible — gated by stage-nfpm::signed_rpm_body_is_byte_reproducible_across_time — and the signature is verified cryptographically (gpg --verify), not by byte-equality.",
+                "nfpm GPG-signs the rpm (RPM signature header); the signature embeds a non-pinnable creation time / randomized salt and is not byte-reproducible even at a fixed SOURCE_DATE_EPOCH. The package body (main header + cpio payload, i.e. everything after the signature header) IS byte-reproducible — gated by stage-nfpm::signed_rpm_body_is_byte_reproducible_across_time — and the signature is verified cryptographically (gpg --verify), not by byte-equality.",
             ),
         ];
         // `*.pkg` is host-keyed. Only one producer runs per determinism
