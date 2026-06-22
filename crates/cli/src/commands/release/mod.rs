@@ -172,6 +172,15 @@ pub struct ReleaseOpts {
     /// `false` (fail-closed): a non-release version reaching a one-way-door
     /// index is almost always an accident.
     pub allow_snapshot_publish: bool,
+    /// `--no-failure-policy` (hidden, harness-only): disable the
+    /// `release.on_failure` rollback/hold policy entirely. The determinism
+    /// harness's hermetic replica runs in a throwaway worktree with no
+    /// credentials, skips the `release` and `publish` stages, and must never
+    /// touch the real tag or source repo — so on a stage failure it must
+    /// surface the build error plainly, not fire (or even mention) a tag-delete
+    /// plus bump-revert rollback. `--rollback=<mode>` is a separate axis
+    /// (post-publish *publisher* rollback) that does not gate this policy.
+    pub no_failure_policy: bool,
 }
 
 /// Decide whether the pre-flight publisher-state check should run.
@@ -2036,6 +2045,7 @@ mod tests {
             summary_json: None,
             allow_ai_failure: false,
             allow_snapshot_publish: false,
+            no_failure_policy: false,
         }
     }
 

@@ -344,6 +344,7 @@ fn run() {
             summary_json,
             allow_ai_failure,
             allow_snapshot_publish,
+            no_failure_policy,
         } => {
             let duration = parse_timeout_or_exit(&timeout);
 
@@ -458,6 +459,7 @@ fn run() {
                     summary_json,
                     allow_ai_failure,
                     allow_snapshot_publish,
+                    no_failure_policy,
                 })
             })
         }

@@ -192,6 +192,15 @@ fn build_subprocess_command(spec: &ChildInvocation<'_>) -> Command {
     // confusing "set the GH_TOKEN environment variable" warning. Force the
     // no-op rollback mode so a harness stage failure surfaces plainly.
     cmd.arg("--rollback").arg("none");
+    // `--rollback none` only governs post-publish *publisher* rollback. The
+    // separate `release.on_failure` policy (rollback|hold) governs source-repo
+    // state — it would, on any stage failure, try to delete the run's tag and
+    // revert the version-bump commit. In this hermetic replica that is both
+    // wrong (the worktree is a throwaway with no push creds; nothing upstream
+    // was built) and noisy (the user sees a tag-rollback recovery message
+    // during a determinism check). Disable the policy so a stage failure
+    // surfaces plainly.
+    cmd.arg("--no-failure-policy");
     // The child's stderr is inherited into the harness's own stream, so
     // the operator's verbosity choice must extend to the child — a
     // `check determinism -q` whose children still print every section
@@ -452,6 +461,15 @@ mod tests {
                 args.get(pos + 1),
                 Some(&"none"),
                 "child argv (snapshot={snapshot}) must pass `--rollback none`; got {args:?}"
+            );
+            // `--rollback none` governs only publisher rollback; the hermetic
+            // replica must ALSO disable the source-repo on_failure policy so a
+            // stage failure never triggers (or mentions) a tag-delete + bump
+            // revert — including when snapshot=false (the CI determinism shards'
+            // real-version mode, where `applies()` would otherwise be true).
+            assert!(
+                args.contains(&"--no-failure-policy"),
+                "child argv (snapshot={snapshot}) must carry --no-failure-policy; got {args:?}"
             );
         }
     }

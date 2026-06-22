@@ -288,6 +288,12 @@ pub enum Commands {
             help = "Skip post-publish polling for chocolatey moderation / winget PR validation; report NotPolled for affected publishers."
         )]
         no_post_publish_poll: bool,
+        #[arg(
+            long = "no-failure-policy",
+            hide = true,
+            help = "(HARNESS) Disable the release.on_failure rollback/hold policy. Set by the determinism harness, whose hermetic replica builds nothing upstream and must surface a stage failure plainly without touching tags or the source repo."
+        )]
+        no_failure_policy: bool,
     },
     /// Build binaries only (always runs in snapshot mode)
     Build {

@@ -111,6 +111,11 @@ pub(super) fn applies(opts: &ReleaseOpts) -> bool {
         && !opts.split
         && !opts.announce_only
         && !opts.rollback_only
+        // The determinism harness's hermetic replica (which may run with
+        // snapshot=false so its dist carries the real version) sets this to
+        // suppress the source-repo rollback/hold policy: it builds nothing
+        // upstream and must surface a stage failure plainly.
+        && !opts.no_failure_policy
 }
 
 /// One-way-door evidence for the current run.
@@ -371,6 +376,7 @@ mod tests {
             summary_json: None,
             allow_ai_failure: false,
             allow_snapshot_publish: false,
+            no_failure_policy: false,
         }
     }
 
@@ -610,6 +616,16 @@ mod tests {
                 "rollback-only",
                 ReleaseOpts {
                     rollback_only: true,
+                    ..release_opts_fixture()
+                },
+            ),
+            (
+                // The determinism harness's hermetic replica sets this even
+                // with snapshot=false (CI real-version mode), so it must
+                // suppress the policy independent of the snapshot flag.
+                "no-failure-policy",
+                ReleaseOpts {
+                    no_failure_policy: true,
                     ..release_opts_fixture()
                 },
             ),
