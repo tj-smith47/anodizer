@@ -285,6 +285,10 @@ mod tests {
             &[],
             "x64",
         );
+        // Built via Path::join in production, so the separator is `\` on
+        // Windows — assert the same way rather than a hardcoded `/`.
+        let wixobj = std::path::Path::new("/build").join("app.wixobj");
+        let wixobj = wixobj.to_string_lossy();
         assert_eq!(
             cmds.primary,
             vec![
@@ -294,7 +298,7 @@ mod tests {
                 "x64",
                 "/tmp/app.wxs",
                 "-o",
-                "/build/app.wixobj"
+                wixobj.as_ref(),
             ]
         );
         let link = cmds.link.unwrap();
@@ -304,7 +308,7 @@ mod tests {
                 "light",
                 "-nologo",
                 "-spdb",
-                "/build/app.wixobj",
+                wixobj.as_ref(),
                 "-o",
                 "/out/app.msi"
             ]
@@ -1753,6 +1757,11 @@ crates:
             "x64",
         );
 
+        // Built via Path::join in production, so the separator is `\` on
+        // Windows — assert the same way rather than a hardcoded `/`.
+        let wixobj = std::path::Path::new("/build").join("app.wixobj");
+        let wixobj = wixobj.to_string_lossy();
+
         // candle gets -ext too
         assert_eq!(
             cmds.primary,
@@ -1763,7 +1772,7 @@ crates:
                 "x64",
                 "/tmp/app.wxs",
                 "-o",
-                "/build/app.wixobj",
+                wixobj.as_ref(),
                 "-ext",
                 "WixUIExtension",
             ]
@@ -1777,7 +1786,7 @@ crates:
                 "light",
                 "-nologo",
                 "-spdb",
-                "/build/app.wixobj",
+                wixobj.as_ref(),
                 "-o",
                 "/out/app.msi",
                 "-ext",
