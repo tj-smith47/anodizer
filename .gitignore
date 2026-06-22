@@ -20,6 +20,7 @@ CLAUDE.local.md
 !.claude/scripts/coverage-gate.sh
 !.claude/scripts/publish-coverage.sh
 !.claude/scripts/audit-log-status.sh
+!.claude/scripts/audit-log-labels.sh
 !.claude/scripts/audit-test-isolation.sh
 # Coverage artifact emitted by `task coverage:check`.
 cobertura.xml

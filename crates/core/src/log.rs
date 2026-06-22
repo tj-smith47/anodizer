@@ -34,9 +34,10 @@
 //!   `✗` failure (red) — one space, then the text.
 //! - **Key/value rows** ([`StageLogger::kv`]) are `•` detail lines whose
 //!   lowercase dimmed key is padded so the values align within a group.
-//! - **Status labels** (`Warning:` / `Error:` / `Note:`, via
-//!   [`render_warning`] / [`render_error`] / [`render_note`]) render at the body
-//!   indent.
+//! - **Status labels** (`Warning` / `Error` / `Note`, via
+//!   [`render_warning`] / [`render_error`] / [`render_note`]) render the label
+//!   right-aligned in the same verb gutter as a section header (no colon), so
+//!   their messages align with the header messages above them.
 //!
 //! [`success`]: StageLogger::success
 //! [`failure`]: StageLogger::failure
@@ -189,12 +190,25 @@ fn flush_pending() {
 /// `msg`) renders the bare gutter verb with no trailing space, so headers
 /// never carry stray whitespace.
 fn render_header(depth: usize, verb: &str, msg: &str) -> String {
-    let prefix = "  ".repeat(depth);
-    let verb = format!("{verb:>VERB_COLUMN$}").green().bold();
+    render_gutter(&"  ".repeat(depth), verb, |s| s.green().bold(), msg)
+}
+
+/// Render one gutter line: `label` right-aligned in the [`VERB_COLUMN`] gutter
+/// (painted by `paint`) after `prefix`, then a space and `msg` — or, when `msg`
+/// is empty, the bare painted label with no trailing space. The single column
+/// system shared by section headers and the Warning/Error/Note status labels,
+/// so a status label's message lands in the same column as a header's.
+fn render_gutter(
+    prefix: &str,
+    label: &str,
+    paint: impl Fn(String) -> colored::ColoredString,
+    msg: &str,
+) -> String {
+    let label = paint(format!("{label:>VERB_COLUMN$}"));
     if msg.is_empty() {
-        format!("{prefix}{verb}")
+        format!("{prefix}{label}")
     } else {
-        format!("{prefix}{verb} {msg}")
+        format!("{prefix}{label} {msg}")
     }
 }
 
@@ -283,49 +297,32 @@ pub fn stage_header(stage: &str) -> &'static str {
     }
 }
 
-/// Render the themed `Warning:` line for `msg`, aligned to the body indent
-/// beneath the current section. The single source of truth for the warning
-/// palette and label, shared by [`StageLogger::warn`] and the CLI's tracing
-/// formatter so a library-side `warn!` looks identical to a logger warn
-/// (one output authority).
+/// Render the themed `Warning` line for `msg`: the label right-aligned in the
+/// gutter (bold-yellow, no colon) at the current section indent, so it reads as
+/// a peer of the section verbs and its message aligns with theirs. The single
+/// source of truth for the warning palette and label, shared by
+/// [`StageLogger::warn`] and the CLI's tracing formatter so a library-side
+/// `warn!` looks identical to a logger warn (one output authority).
 pub fn render_warning(msg: &str) -> String {
-    format!(
-        "{}{}{} {}",
-        indent(),
-        BODY_INDENT,
-        "Warning:".yellow().bold(),
-        msg
-    )
+    render_gutter(&indent(), "Warning", |s| s.yellow().bold(), msg)
 }
 
-/// Render the themed `Error:` line for `msg`, aligned to the body indent
-/// beneath the current section. Companion to [`render_warning`]; shared so
-/// the error palette/label lives in exactly one place.
+/// Render the themed `Error` line for `msg` — gutter-aligned bold-red label,
+/// companion to [`render_warning`]; shared so the error palette/label lives in
+/// exactly one place.
 pub fn render_error(msg: &str) -> String {
-    format!(
-        "{}{}{} {}",
-        indent(),
-        BODY_INDENT,
-        "Error:".red().bold(),
-        msg
-    )
+    render_gutter(&indent(), "Error", |s| s.red().bold(), msg)
 }
 
-/// Render the themed `Note:` line for `msg`, aligned to the body indent
-/// beneath the current section. The third (and final) status label in the
-/// vocabulary — informational lines that are neither warnings nor errors
-/// (host-target selection, auto-snapshot activation). Bold-green to read as
-/// a benign status, distinct from the yellow `Warning:` and red `Error:`.
-/// Shared so the `Note:` palette/label lives in exactly one place rather than
-/// being open-coded per call site.
+/// Render the themed `Note` line for `msg`: gutter-aligned bold-green label.
+/// The third status label — informational lines that are neither warnings nor
+/// errors (host-target selection, auto-snapshot activation). The bold-green
+/// deliberately matches the section-verb palette (not yellow/red): a note is a
+/// neutral peer of the section headers, not an alert. Shared so the `Note`
+/// palette/label lives in exactly one place rather than being open-coded per
+/// call site.
 pub fn render_note(msg: &str) -> String {
-    format!(
-        "{}{}{} {}",
-        indent(),
-        BODY_INDENT,
-        "Note:".green().bold(),
-        msg
-    )
+    render_gutter(&indent(), "Note", |s| s.green().bold(), msg)
 }
 
 /// Current indentation prefix (2 spaces per open section). Empty at the
@@ -664,7 +661,7 @@ impl StageLogger {
     }
 
     /// Error message — always shown (even in quiet mode). Renders the
-    /// `Error:` status label at the body indent beneath the current section.
+    /// `Error` status label gutter-aligned beneath the current section.
     pub fn error(&self, msg: &str) {
         flush_pending();
         eprintln!("{}", render_error(msg));
@@ -674,8 +671,8 @@ impl StageLogger {
         }
     }
 
-    /// Warning message — shown at Normal and above. Renders the `Warning:`
-    /// status label at the body indent beneath the current section.
+    /// Warning message — shown at Normal and above. Renders the `Warning`
+    /// status label gutter-aligned beneath the current section.
     pub fn warn(&self, msg: &str) {
         if self.verbosity >= Verbosity::Normal {
             flush_pending();
@@ -1522,6 +1519,43 @@ mod tests {
                 assert_eq!(header, format!("{prefix}{:>VERB_COLUMN$}", "Publishing"));
                 assert!(!header.ends_with(' '));
             }
+        }
+    }
+
+    #[test]
+    fn test_status_labels_gutter_aligned_without_colon() {
+        // Regression guard: Warning/Error/Note must render as right-aligned
+        // gutter labels with NO trailing colon, and their message must land in
+        // the same column as a section header's message (both follow the
+        // VERB_COLUMN gutter + one space). The old format open-coded
+        // "Warning:" at BODY_INDENT, which faked Cargo alignment with an
+        // anti-Cargo colon.
+        let header = strip_ansi(&render_header(0, "Building", "binaries"));
+        let header_msg_col = header.find("binaries");
+        for (rendered, label, msg) in [
+            (render_warning("oops"), "Warning", "oops"),
+            (render_error("boom"), "Error", "boom"),
+            (render_note("fyi"), "Note", "fyi"),
+        ] {
+            let line = strip_ansi(&rendered);
+            assert!(
+                !line.contains(':'),
+                "status label must not carry a colon: {line:?}"
+            );
+            // Label lines go through the SAME gutter renderer as section
+            // headers: stripped of color, a Warning/Error/Note line is
+            // byte-identical to a header whose verb is that label. Deriving the
+            // expectation from `render_header` (not a hand-written format)
+            // proves the shared renderer rather than re-stating its shape.
+            assert_eq!(line, strip_ansi(&render_header(0, label, msg)));
+            // Column-invariance across differing label widths: every label's
+            // message lands in the same column as the "Building" header's,
+            // regardless of how long the verb is.
+            assert_eq!(
+                line.find(msg),
+                header_msg_col,
+                "status-label message must align with the header message column"
+            );
         }
     }
 

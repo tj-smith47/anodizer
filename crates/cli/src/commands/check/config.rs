@@ -48,7 +48,7 @@ pub fn run(
         );
         // Return the raw validator message: the top-level error handler wraps
         // returned errors in `render_error`, so prefixing it here would double
-        // the "Error:" label.
+        // the `Error` label.
         if let Err(msg) = anodizer_stage_publish::registry::validate_publisher_allowlist_configured(
             publishers, &ctx,
         ) {

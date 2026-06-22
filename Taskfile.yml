@@ -196,6 +196,11 @@ tasks:
     cmds:
       - .claude/scripts/audit-test-isolation.sh
 
+  audit:log-labels:
+    desc: "Guard: Warning/Error/Note status labels come only from log.rs (no open-coding)."
+    cmds:
+      - .claude/scripts/audit-log-labels.sh
+
   lint:
     desc: Local pre-commit check (tidy, clippy, build, snapshot dry-run)
     cmds:
@@ -204,6 +209,7 @@ tasks:
       - task: build
       - task: snapshot
       - task: audit:log
+      - task: audit:log-labels
       - task: audit:test-isolation
 
   ci:
