@@ -7,28 +7,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.12.0] - 2026-06-22
-
-### Features
-
-* 9320c98c1156 ship per-arch macOS/Windows installers via shard routing with deterministic MSI ProductCode #minor ([@tj-smith47](https://github.com/tj-smith47))
-* 66719950e3a3 cargo content-vs-version poison guard prevents re-publishing divergent crates ([@tj-smith47](https://github.com/tj-smith47))
-
----
-### Bug Fixes
-
-* 54787807d24a provision nfpm in-repo for the linux determinism test, fail-loud not skip ([@tj-smith47](https://github.com/tj-smith47))
-* e8e9a4017ae1 gate installer stages by PATH-existence, not --version exit ([@tj-smith47](https://github.com/tj-smith47))
-* eb0ff7615fdf wrap webhook body in a valid JSON envelope ([@tj-smith47](https://github.com/tj-smith47))
-* 45d82f87d5ed cargo poison guard fails closed when content identity is unverifiable ([@tj-smith47](https://github.com/tj-smith47))
-* f9d94ac8d9be never read a macOS .app bundle directory as a file ([@tj-smith47](https://github.com/tj-smith47))
-
----
-### Others
-
-* 98e3a5eaf500 Revert "chore(release): bump workspace → 0.12.0" ([@tj-smith47](https://github.com/tj-smith47))
-* f5899b853b0d Revert "chore(release): bump workspace → 0.12.0" ([@tj-smith47](https://github.com/tj-smith47))
-
 ## [0.11.3] - 2026-06-19
 
 ### Bug Fixes
@@ -393,8 +371,7 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.12.0...HEAD
-[0.12.0]: https://github.com/tj-smith47/anodizer/compare/v0.11.3...v0.12.0
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.11.3...HEAD
 [0.11.3]: https://github.com/tj-smith47/anodizer/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/tj-smith47/anodizer/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/tj-smith47/anodizer/compare/v0.11.0...v0.11.1
