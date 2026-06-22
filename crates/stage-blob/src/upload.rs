@@ -181,6 +181,7 @@ pub(crate) fn collect_artifacts<'a>(
         .filter(|a| a.crate_name == crate_name)
         .filter(|a| uploadable_kinds.contains(&a.kind))
         .filter(|a| !anodizer_core::artifact::is_binary_sign_output(a))
+        .filter(|a| !anodizer_core::artifact::is_directory_bundle_artifact(a))
         .filter(|a| anodizer_core::artifact::matches_id_filter(a, config.ids.as_deref()))
         .collect()
 }
@@ -503,6 +504,71 @@ mod summary_tests {
         assert_eq!(
             line,
             "uploaded 0 object(s), skipped 3 (identical) → gs://bucket/demo/v2"
+        );
+    }
+}
+
+#[cfg(test)]
+mod collect_artifacts_tests {
+    use super::*;
+    use anodizer_core::config::{Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+
+    /// A macOS `.app` bundle is registered as `ArtifactKind::Installer` (part of
+    /// the release-uploadable set) but lives on disk as a DIRECTORY. The blob
+    /// uploader later `tokio::fs::read`s each selected path; a directory dies
+    /// EISDIR. The bundle must be dropped from `collect_artifacts` while a
+    /// sibling installer FILE is still selected.
+    #[test]
+    fn collect_artifacts_skips_appbundle_directory() {
+        let config = Config {
+            project_name: "anodizer".to_string(),
+            crates: vec![CrateConfig {
+                name: "anodizer".to_string(),
+                path: ".".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Installer,
+            name: "anodizer_amd64.app".to_string(),
+            path: PathBuf::from("/dist/anodizer_amd64.app"),
+            target: Some("x86_64-apple-darwin".to_string()),
+            crate_name: "anodizer".to_string(),
+            metadata: std::collections::HashMap::from([(
+                "format".to_string(),
+                "appbundle".to_string(),
+            )]),
+            size: None,
+        });
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Installer,
+            name: "anodizer_amd64.msi".to_string(),
+            path: PathBuf::from("/dist/anodizer_amd64.msi"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "anodizer".to_string(),
+            metadata: std::collections::HashMap::from([("format".to_string(), "msi".to_string())]),
+            size: None,
+        });
+
+        let blob = BlobConfig {
+            provider: "s3".to_string(),
+            bucket: "b".to_string(),
+            ..Default::default()
+        };
+        let selected = collect_artifacts(&ctx, &blob, "anodizer");
+        let names: Vec<&str> = selected.iter().map(|a| a.name.as_str()).collect();
+
+        assert!(
+            names.contains(&"anodizer_amd64.msi"),
+            "the installer FILE must be selected for upload; got {names:?}"
+        );
+        assert!(
+            !names.contains(&"anodizer_amd64.app"),
+            "the .app DIRECTORY must be skipped, not uploaded; got {names:?}"
         );
     }
 }

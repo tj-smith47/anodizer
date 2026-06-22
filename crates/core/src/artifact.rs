@@ -727,6 +727,37 @@ pub const COMBINED_CHECKSUM_META: &str = "combined";
 /// Sentinel value stored under [`COMBINED_CHECKSUM_META`].
 pub const COMBINED_CHECKSUM_VALUE: &str = "true";
 
+/// Metadata key recording the on-disk packaging format of an artifact whose
+/// [`ArtifactKind`] alone is ambiguous. The load-bearing case is the macOS
+/// `.app` bundle, registered as [`ArtifactKind::Installer`] (shared with
+/// `.msi`/`.exe`) but distinguished by [`FORMAT_APPBUNDLE`] because it is a
+/// DIRECTORY, not a file. Read by [`is_directory_bundle_artifact`] and by the
+/// `pkg`/`dmg` stages, which wrap the `.app` rather than emit it as a release
+/// asset.
+pub const FORMAT_META: &str = "format";
+
+/// [`FORMAT_META`] value for a macOS `.app` bundle — a DIRECTORY tree, never a
+/// single file.
+pub const FORMAT_APPBUNDLE: &str = "appbundle";
+
+/// `true` when `artifact` is a packaging BUNDLE that lives on disk as a
+/// DIRECTORY rather than a single file — currently the macOS `.app` bundle
+/// (registered as [`ArtifactKind::Installer`] with `format = appbundle`).
+///
+/// A directory can never be sha256'd, cosign-blob-signed, or uploaded as a
+/// release asset (each opens the path as a file and dies with
+/// `Is a directory`). GoReleaser parity: the raw `.app` is never a
+/// checksum/sign/upload subject — it is wrapped into a `.dmg`/`.pkg` (both
+/// FILES, kept as subjects) or archived. This is the SINGLE place that rule is
+/// classified, so the subject-collection boundaries (checksum, sign, release
+/// upload) all share one definition rather than scattering `path.is_dir()`
+/// runtime probes — which would also misbehave under dry-run, where the
+/// directory has not been materialized yet.
+pub fn is_directory_bundle_artifact(artifact: &Artifact) -> bool {
+    matches!(artifact.kind, ArtifactKind::Installer)
+        && artifact.metadata.get(FORMAT_META).map(String::as_str) == Some(FORMAT_APPBUNDLE)
+}
+
 /// Artifact kinds the `ids:` filter always keeps — these are emitted for
 /// every release, not per-build, so a build-id filter has nothing to say
 /// about them.

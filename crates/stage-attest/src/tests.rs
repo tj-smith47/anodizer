@@ -984,6 +984,63 @@ fn dry_run_uses_placeholder_for_unwritten_sidecar() {
     );
 }
 
+/// A macOS `.app` bundle is registered as `ArtifactKind::Installer` (one of
+/// the default attestable kinds) but lives on disk as a DIRECTORY. The bundle
+/// EXISTS, so the dry-run placeholder branch never fires — `resolve_sha256`
+/// would die "Is a directory". The bundle must be skipped while a sibling
+/// installer FILE is still attested.
+#[test]
+fn collect_subjects_skips_appbundle_directory() {
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    fs::create_dir_all(&dist).unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("anodizer")
+        .tag("v1.0.0")
+        .dist(dist.clone())
+        .crates(vec![crate_cfg("anodizer")])
+        .build();
+
+    let app_dir = dist.join("anodizer_amd64.app");
+    fs::create_dir_all(app_dir.join("Contents/MacOS")).unwrap();
+    fs::write(app_dir.join("Contents/MacOS/anodizer"), b"binary").unwrap();
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Installer,
+        name: "anodizer_amd64.app".to_string(),
+        path: app_dir,
+        target: Some("x86_64-apple-darwin".to_string()),
+        crate_name: "anodizer".to_string(),
+        metadata: std::collections::HashMap::from([(
+            "format".to_string(),
+            "appbundle".to_string(),
+        )]),
+        size: None,
+    });
+
+    let msi = add_artifact(
+        &mut ctx,
+        &dist,
+        ArtifactKind::Installer,
+        "anodizer_amd64.msi",
+        "anodizer",
+        b"fake msi content",
+    );
+    assert!(msi.exists());
+
+    let subjects = collect_subjects(&ctx, "anodizer", None, false)
+        .expect("subject collection must not hash a .app directory");
+
+    assert!(
+        subjects.iter().any(|s| s.name == "anodizer_amd64.msi"),
+        "the installer FILE must be attested"
+    );
+    assert!(
+        !subjects.iter().any(|s| s.name == "anodizer_amd64.app"),
+        "the .app DIRECTORY must be skipped, not attested"
+    );
+}
+
 /// The dry-run placeholder must not mask a genuine failure: outside dry-run, a
 /// missing file with no metadata digest still surfaces the hashing error.
 #[test]

@@ -107,6 +107,12 @@ pub(crate) fn collect_upload_artifacts<'a>(
             if !kinds.contains(&a.kind) {
                 return false;
             }
+            // A macOS `.app` bundle is a DIRECTORY; uploading it as a file dies
+            // with "the asset to upload can't be a directory". Its wrapping
+            // `.dmg`/`.pkg` (both files) are the correct upload subjects.
+            if anodizer_core::artifact::is_directory_bundle_artifact(a) {
+                return false;
+            }
             // ID filter
             if !crate::util::matches_id_filter(a, ids) {
                 return false;
@@ -2046,6 +2052,50 @@ mod tests {
             collect_upload_artifacts(&ctx, "binary", None, None, CollectFlags::default());
         assert_eq!(binary_arts.len(), 1);
         assert_eq!(binary_arts[0].kind, ArtifactKind::UploadableBinary);
+    }
+
+    #[test]
+    fn test_collect_upload_artifacts_excludes_appbundle_directory() {
+        use anodizer_core::artifact::{FORMAT_APPBUNDLE, FORMAT_META};
+
+        let mut config = Config::default();
+        config.project_name = "testapp".to_string();
+        let mut ctx = Context::new(config, ContextOptions::default());
+
+        // A macOS `.app` bundle: Installer kind + format=appbundle, a directory.
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Installer,
+            name: "TestApp.app".to_string(),
+            path: PathBuf::from("dist/TestApp.app"),
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "testapp".to_string(),
+            metadata: HashMap::from([(FORMAT_META.to_string(), FORMAT_APPBUNDLE.to_string())]),
+            size: None,
+        });
+        // A sibling Installer FILE (e.g. an MSI) must still be uploaded.
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Installer,
+            name: "testapp-1.0.0.msi".to_string(),
+            path: PathBuf::from("dist/testapp-1.0.0.msi"),
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "testapp".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        let arts = collect_upload_artifacts(&ctx, "archive", None, None, CollectFlags::default());
+        assert_eq!(
+            arts.len(),
+            1,
+            "the directory `.app` bundle must be excluded, the MSI file kept"
+        );
+        assert_eq!(arts[0].name(), "testapp-1.0.0.msi");
+        assert!(
+            !arts
+                .iter()
+                .any(|a| anodizer_core::artifact::is_directory_bundle_artifact(a)),
+            "no directory bundle may survive selection"
+        );
     }
 
     #[test]

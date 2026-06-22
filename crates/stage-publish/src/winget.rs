@@ -977,6 +977,11 @@ fn collect_winget_installers(
             if !filters.matches(a) {
                 continue;
             }
+            // The macOS `.app` directory bundle shares ArtifactKind::Installer
+            // but is never a Windows installer winget can run.
+            if anodizer_core::artifact::is_directory_bundle_artifact(a) {
+                continue;
+            }
             let installer_type =
                 installer_type_for(a.metadata.get("format").map(String::as_str), use_artifact);
             installers.push(build_executable_installer(
@@ -1096,6 +1101,7 @@ fn resolve_winget_product_code(
         .by_kind_and_crate(anodizer_core::artifact::ArtifactKind::Installer, crate_name)
         .into_iter()
         .filter(|a| filters.matches(a))
+        .filter(|a| !anodizer_core::artifact::is_directory_bundle_artifact(a))
         .filter(|a| a.metadata.get("format").map(String::as_str) == Some("msi"))
         .find_map(|a| a.metadata.get("product_code").cloned())
         .filter(|s| !s.is_empty())
@@ -1134,7 +1140,9 @@ pub(crate) fn crate_has_winget_installer_artifacts(
             .artifacts
             .by_kind_and_crate(anodizer_core::artifact::ArtifactKind::Installer, crate_name)
             .iter()
-            .any(|a| filters.matches(a));
+            .any(|a| {
+                filters.matches(a) && !anodizer_core::artifact::is_directory_bundle_artifact(a)
+            });
     }
 
     let has_zip = ctx

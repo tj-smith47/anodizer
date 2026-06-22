@@ -428,6 +428,11 @@ pub(crate) fn process_sign_configs(
         let artifact_paths: Vec<ArtifactEntry> = {
             let mut matched = Vec::new();
             for a in ctx.artifacts.all().iter() {
+                // The macOS `.app` directory bundle can never be cosign-blob /
+                // gpg signed as a file — only the `.dmg`/`.pkg` wrapping it can.
+                if anodizer_core::artifact::is_directory_bundle_artifact(a) {
+                    continue;
+                }
                 match filter_mode {
                     ArtifactFilter::FromConfig => {
                         if !should_sign_artifact(a.kind, config_filter)? {

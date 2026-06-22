@@ -306,6 +306,10 @@ fn collect_source_artifacts(
             .artifacts
             .by_kind_and_crate(kind, crate_name)
             .into_iter()
+            // A directory bundle (the macOS `.app`) shares ArtifactKind::Installer
+            // with `.msi`/`.exe` but cannot be hashed as a file; the `.dmg`/`.pkg`
+            // wrapping it remain checksum subjects.
+            .filter(|a| !anodizer_core::artifact::is_directory_bundle_artifact(a))
             .cloned();
         if resolved.ids_filter.is_some() {
             source_artifacts
@@ -760,6 +764,10 @@ pub fn refresh_combined_checksums(ctx: &mut Context, dry_run: bool) -> Result<()
             // the output of checksumming/signing, never a subject — re-hashing
             // a .sig here is what produced the sha256.sig.sha256 chains.
             if anodizer_core::artifact::is_derived_sidecar_kind(artifact.kind) {
+                continue;
+            }
+            // The macOS `.app` directory bundle is never a hash subject.
+            if anodizer_core::artifact::is_directory_bundle_artifact(artifact) {
                 continue;
             }
             if !artifact.path.exists() {

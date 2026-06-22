@@ -1043,6 +1043,10 @@ pub fn collect_release_upload_candidates(
                 .by_kind_and_crate(kind, crate_name)
                 .into_iter()
                 .filter(|a| !anodizer_core::artifact::is_binary_sign_output(a))
+                // The raw macOS `.app` directory bundle is wrapped into a
+                // `.dmg`/`.pkg` (uploaded instead); a directory cannot be a
+                // release asset.
+                .filter(|a| !anodizer_core::artifact::is_directory_bundle_artifact(a))
                 .filter(|a| matches_id_filter(a, ids))
                 .map(|a| (a.path.clone(), None))
                 .collect::<Vec<_>>()

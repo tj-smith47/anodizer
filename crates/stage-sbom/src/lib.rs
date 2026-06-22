@@ -527,17 +527,23 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
         _ => {
             let kind = typed_artifact_kind(artifacts_type, id)?;
 
+            // A macOS `.app` bundle registers as Installer + format=appbundle but
+            // is a DIRECTORY never uploaded raw (its `.dmg`/`.pkg` wrapper ships).
+            // Excluding it stops syft generating a stray SBOM for an asset that
+            // never reaches a release.
             let pre_ids = ctx
                 .artifacts
                 .all()
                 .iter()
                 .filter(|a| a.kind == kind)
+                .filter(|a| !anodizer_core::artifact::is_directory_bundle_artifact(a))
                 .count();
             let matched: Vec<SbomSubject> = ctx
                 .artifacts
                 .all()
                 .iter()
                 .filter(|a| a.kind == kind)
+                .filter(|a| !anodizer_core::artifact::is_directory_bundle_artifact(a))
                 .filter(|a| matches_id_filter(a, sbom_cfg.ids.as_deref()))
                 .map(|a| {
                     (
@@ -901,17 +907,22 @@ fn run_sbom_builtin(
         }
         _ => {
             let kind = typed_artifact_kind(artifacts_type, id)?;
+            // A macOS `.app` bundle registers as Installer + format=appbundle but
+            // is a DIRECTORY never uploaded raw; skip it so the native SBOM path
+            // mirrors the syft path and emits no SBOM for a never-shipped asset.
             let pre_ids = ctx
                 .artifacts
                 .all()
                 .iter()
                 .filter(|a| a.kind == kind)
+                .filter(|a| !anodizer_core::artifact::is_directory_bundle_artifact(a))
                 .count();
             let matched: Vec<SbomSubject> = ctx
                 .artifacts
                 .all()
                 .iter()
                 .filter(|a| a.kind == kind)
+                .filter(|a| !anodizer_core::artifact::is_directory_bundle_artifact(a))
                 .filter(|a| matches_id_filter(a, sbom_cfg.ids.as_deref()))
                 .map(|a| {
                     (
@@ -1345,6 +1356,87 @@ mod tests {
             Some("syftcfg")
         );
         assert!(sboms[0].path.exists());
+    }
+
+    /// A macOS `.app` bundle (Installer + format=appbundle, a directory) must be
+    /// excluded from `artifacts: installer` SBOM generation — it is never an
+    /// uploaded asset, so cataloging it produces a stray SBOM. The sibling
+    /// Installer FILE (an MSI) is still cataloged: the tool runs exactly once.
+    #[cfg(unix)]
+    #[test]
+    fn external_installer_excludes_appbundle_directory() {
+        use anodizer_core::artifact::{FORMAT_APPBUNDLE, FORMAT_META};
+
+        let tools = FakeToolDir::new();
+        tools
+            .tool("syft")
+            .script(
+                "for a in \"$@\"; do case \"$a\" in *=*) echo '{\"k\":1}' > \"${a#*=}\";; esac; done",
+            )
+            .install();
+
+        let (mut ctx, tmp) = external_ctx(
+            tools.tool_path("syft"),
+            SbomConfig {
+                id: Some("inst".into()),
+                artifacts: Some("installer".into()),
+                documents: Some(vec!["{{ .ArtifactName }}.cdx.json".into()]),
+                args: Some(vec![
+                    "scan".into(),
+                    "--output".into(),
+                    "cyclonedx-json=$document".into(),
+                ]),
+                env: Some(vec![]),
+                ..Default::default()
+            },
+        );
+        let dist = tmp.path().to_path_buf();
+
+        // The `.app` bundle: a DIRECTORY, registered Installer + format=appbundle.
+        let app_dir = dist.join("MyApp.app");
+        std::fs::create_dir_all(&app_dir).unwrap();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Installer,
+            name: "MyApp.app".to_string(),
+            path: app_dir,
+            target: Some("aarch64-apple-darwin".to_string()),
+            crate_name: "myproj".to_string(),
+            metadata: HashMap::from([(FORMAT_META.to_string(), FORMAT_APPBUNDLE.to_string())]),
+            size: None,
+        });
+        // The sibling Installer FILE (MSI): must still be cataloged.
+        let msi = dist.join("myproj-1.0.0.msi");
+        std::fs::write(&msi, b"MSI fake").unwrap();
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Installer,
+            name: "myproj-1.0.0.msi".to_string(),
+            path: msi,
+            target: Some("x86_64-pc-windows-msvc".to_string()),
+            crate_name: "myproj".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+
+        SbomStage.run(&mut ctx).expect("sbom stage");
+
+        // Tool ran exactly once — for the MSI file, never the `.app` directory.
+        assert_eq!(
+            tools.call_count("syft"),
+            1,
+            "syft must catalog only the MSI file, not the `.app` directory"
+        );
+        let sboms: Vec<&Artifact> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.kind == ArtifactKind::Sbom)
+            .collect();
+        assert_eq!(sboms.len(), 1, "exactly one SBOM, for the MSI");
+        assert!(
+            sboms[0].name.contains("myproj-1.0.0.msi"),
+            "the SBOM is for the MSI, got: {}",
+            sboms[0].name
+        );
     }
 
     /// Tool exits non-zero → the stage bails and the error chain carries the

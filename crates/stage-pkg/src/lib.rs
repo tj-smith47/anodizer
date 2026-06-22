@@ -913,16 +913,11 @@ impl Stage for PkgStage {
 
                     // Collect source artifacts depending on `use` mode
                     let source_artifacts: Vec<_> = if use_mode == "appbundle" {
-                        // Collect Installer artifacts with format=appbundle for this crate
+                        // Wrap the macOS `.app` directory bundle for this crate.
                         ctx.artifacts
                             .by_kind_and_crate(ArtifactKind::Installer, &krate.name)
                             .into_iter()
-                            .filter(|a| {
-                                a.metadata
-                                    .get("format")
-                                    .map(|f| f == "appbundle")
-                                    .unwrap_or(false)
-                            })
+                            .filter(|a| anodizer_core::artifact::is_directory_bundle_artifact(a))
                             .cloned()
                             .collect()
                     } else {

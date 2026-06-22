@@ -426,6 +426,74 @@ fn test_checksum_stage_run() {
 }
 
 #[test]
+fn test_checksum_stage_skips_appbundle_directory() {
+    use anodizer_core::config::CrateConfig;
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    fs::create_dir_all(&dist).unwrap();
+
+    // A real macOS .app bundle is a DIRECTORY, registered as
+    // ArtifactKind::Installer with metadata format=appbundle. sha256-ing it
+    // fails with "Is a directory (os error 21)"; it must be skipped while a
+    // real installer FILE alongside it is still checksummed.
+    let app_dir = dist.join("anodizer_amd64.app");
+    fs::create_dir_all(app_dir.join("Contents/MacOS")).unwrap();
+    fs::write(app_dir.join("Contents/MacOS/anodizer"), b"binary").unwrap();
+
+    let dmg_path = dist.join("anodizer_amd64.dmg");
+    fs::write(&dmg_path, b"fake dmg content").unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("anodizer")
+        .tag("v1.0.0")
+        .dist(dist.clone())
+        .crates(vec![CrateConfig {
+            name: "anodizer".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }])
+        .build();
+
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Installer,
+        name: String::new(),
+        path: app_dir.clone(),
+        target: Some("x86_64-apple-darwin".to_string()),
+        crate_name: "anodizer".to_string(),
+        metadata: HashMap::from([("format".to_string(), "appbundle".to_string())]),
+        size: None,
+    });
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::DiskImage,
+        name: String::new(),
+        path: dmg_path.clone(),
+        target: Some("x86_64-apple-darwin".to_string()),
+        crate_name: "anodizer".to_string(),
+        metadata: Default::default(),
+        size: None,
+    });
+
+    let stage = ChecksumStage;
+    stage
+        .run(&mut ctx)
+        .expect("checksum stage must not error hashing a .app directory");
+
+    let combined = dist.join("anodizer_1.0.0_checksums.txt");
+    let combined_content = fs::read_to_string(&combined).unwrap();
+    assert!(
+        combined_content.contains("  anodizer_amd64.dmg"),
+        "the .dmg FILE must be checksummed"
+    );
+    assert!(
+        !combined_content.contains("anodizer_amd64.app"),
+        "the .app DIRECTORY must be skipped, not checksummed"
+    );
+}
+
+#[test]
 fn test_checksum_stage_dry_run() {
     use anodizer_core::config::CrateConfig;
     use anodizer_core::test_helpers::TestContextBuilder;

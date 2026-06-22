@@ -309,6 +309,9 @@ fn collect_subjects(
             if is_attestation_output(artifact) {
                 continue;
             }
+            if anodizer_core::artifact::is_directory_bundle_artifact(artifact) {
+                continue;
+            }
             if !seen.insert(artifact.name.clone()) {
                 continue;
             }

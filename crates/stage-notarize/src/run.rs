@@ -388,8 +388,7 @@ fn run_native_dmg(
         .all()
         .iter()
         .filter(|a| {
-            a.kind == ArtifactKind::Installer
-                && a.metadata.get("format").map(|f| f.as_str()) == Some("appbundle")
+            anodizer_core::artifact::is_directory_bundle_artifact(a)
                 && a.target
                     .as_deref()
                     .map(anodizer_core::target::is_darwin)
@@ -561,6 +560,10 @@ fn run_native_pkg(
         .all()
         .iter()
         .filter(|a| {
+            // Hand-rolled (not `is_directory_bundle_artifact`) on purpose: this
+            // gates the MacOsPackage kind, excluding its appbundle members,
+            // whereas the shared predicate gates the Installer bundle — applying
+            // it here would change which kind is selected.
             a.kind == ArtifactKind::MacOsPackage
                 && a.metadata.get("format").map(|f| f.as_str()) != Some("appbundle")
                 && a.target
