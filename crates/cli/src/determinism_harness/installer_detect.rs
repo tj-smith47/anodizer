@@ -26,7 +26,7 @@
 //! the operator did NOT explicitly request.
 
 use super::StageId;
-use anodizer_core::tool_detect::tool_available;
+use anodizer_core::util::find_binary;
 
 /// Result of an installer-tool availability sweep.
 ///
@@ -175,14 +175,21 @@ pub(super) fn missing_tool_error(skipped: &[(StageId, String)]) -> String {
     )
 }
 
-/// The production tool probe: [`anodizer_core::tool_detect::tool_available`]
-/// runs `<tool> --version` with stdout/stderr silenced. A spawn error
-/// (`NotFound`) and a non-zero exit both fold to "tool not available" —
-/// the stage's backing `Command::new` would have hit the same outcome at
-/// pipeline-execution time. [`super::Harness::run`] injects this into
+/// The production tool probe: PATH-existence via
+/// [`anodizer_core::util::find_binary`]. The gate's question is strictly
+/// "can the stage spawn this binary" — i.e. is it reachable on `PATH` — NOT
+/// "does `<tool> --version` exit zero". Several installer tools answer the
+/// latter with a non-zero exit despite being present and runnable: `hdiutil`
+/// has no version flag at all, and `pkgbuild` / WiX `candle` / `light` print
+/// usage and exit non-zero on `--version`. A `--version` probe therefore
+/// reports a present tool as missing and hard-fails the shard (the macOS
+/// dmg/pkg gate did exactly this). A binary that is on `PATH` but genuinely
+/// broken still surfaces at `Command::new` time, so PATH-existence is both
+/// correct for the gate and strictly safer than the version probe.
+/// [`super::Harness::run`] injects this into
 /// [`super::Harness::gate_installer_stages`]; tests inject a stub.
 pub(super) fn host_tool_probe(tool: &str) -> bool {
-    tool_available(tool).unwrap_or(false)
+    find_binary(tool)
 }
 
 /// Probe each installer stage in `requested` with `probe` and partition
@@ -494,5 +501,33 @@ mod tests {
                 stage
             );
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(path_env)]
+    fn host_tool_probe_detects_present_tool_that_lacks_version_flag() {
+        // Regression: the gate detects a tool by PATH-existence, NOT by a
+        // `<tool> --version` exit code. `hdiutil` (macOS) has no version flag
+        // and exits non-zero on `--version`; the old `tool_available` probe
+        // therefore reported it missing and hard-failed the macOS dmg/pkg
+        // determinism shard though the binary was present. A stub that exits
+        // non-zero on every call models such a tool — `host_tool_probe` (now
+        // backed by `find_binary`, a pure PATH lookup with no exec) must still
+        // find it.
+        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+
+        let tools = FakeToolDir::new();
+        tools.tool("hdiutil").exit(1).install();
+        let _path = tools.activate();
+
+        assert!(
+            host_tool_probe("hdiutil"),
+            "a tool present on PATH must be detected even when it fails --version"
+        );
+        assert!(
+            !host_tool_probe("anodizer-no-such-tool-zzz"),
+            "a genuinely absent tool must still report missing"
+        );
     }
 }
