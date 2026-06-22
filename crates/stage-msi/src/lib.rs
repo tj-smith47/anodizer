@@ -250,7 +250,14 @@ mod tests {
 
     #[test]
     fn test_msi_command_v4() {
-        let cmds = msi_command(WixVersion::V4, "/tmp/app.wxs", "/out/app.msi", &[], "x64");
+        let cmds = msi_command(
+            WixVersion::V4,
+            "/tmp/app.wxs",
+            "/out/app.msi",
+            "/build",
+            &[],
+            "x64",
+        );
         assert_eq!(
             cmds.primary,
             vec![
@@ -259,6 +266,8 @@ mod tests {
                 "/tmp/app.wxs",
                 "-arch",
                 "x64",
+                "-pdbtype",
+                "none",
                 "-o",
                 "/out/app.msi"
             ]
@@ -268,7 +277,14 @@ mod tests {
 
     #[test]
     fn test_msi_command_v3() {
-        let cmds = msi_command(WixVersion::V3, "/tmp/app.wxs", "/out/app.msi", &[], "x64");
+        let cmds = msi_command(
+            WixVersion::V3,
+            "/tmp/app.wxs",
+            "/out/app.msi",
+            "/build",
+            &[],
+            "x64",
+        );
         assert_eq!(
             cmds.primary,
             vec![
@@ -278,13 +294,20 @@ mod tests {
                 "x64",
                 "/tmp/app.wxs",
                 "-o",
-                "/out/app.wixobj"
+                "/build/app.wixobj"
             ]
         );
         let link = cmds.link.unwrap();
         assert_eq!(
             link,
-            vec!["light", "-nologo", "/out/app.wixobj", "-o", "/out/app.msi"]
+            vec![
+                "light",
+                "-nologo",
+                "-spdb",
+                "/build/app.wixobj",
+                "-o",
+                "/out/app.msi"
+            ]
         );
     }
 
@@ -294,7 +317,14 @@ mod tests {
         // else candle defaults to x86 and light fails ICE80 (LGHT0204,
         // 32BitComponent in a 64BitDirectory) for a ProgramFiles64Folder .wxs.
         for arch in ["x64", "arm64", "x86"] {
-            let v3 = msi_command(WixVersion::V3, "/tmp/app.wxs", "/out/app.msi", &[], arch);
+            let v3 = msi_command(
+                WixVersion::V3,
+                "/tmp/app.wxs",
+                "/out/app.msi",
+                "/build",
+                &[],
+                arch,
+            );
             let v3_arch_idx = v3
                 .primary
                 .iter()
@@ -302,7 +332,14 @@ mod tests {
                 .expect("V3 candle must pass -arch");
             assert_eq!(v3.primary[v3_arch_idx + 1], arch);
 
-            let v4 = msi_command(WixVersion::V4, "/tmp/app.wxs", "/out/app.msi", &[], arch);
+            let v4 = msi_command(
+                WixVersion::V4,
+                "/tmp/app.wxs",
+                "/out/app.msi",
+                "/build",
+                &[],
+                arch,
+            );
             let v4_arch_idx = v4
                 .primary
                 .iter()
@@ -314,7 +351,14 @@ mod tests {
 
     #[test]
     fn test_msi_command_wixl() {
-        let cmds = msi_command(WixVersion::Wixl, "/tmp/app.wxs", "/out/app.msi", &[], "x64");
+        let cmds = msi_command(
+            WixVersion::Wixl,
+            "/tmp/app.wxs",
+            "/out/app.msi",
+            "/build",
+            &[],
+            "x64",
+        );
         assert_eq!(
             cmds.primary,
             vec!["wixl", "-o", "/out/app.msi", "/tmp/app.wxs"]
@@ -329,6 +373,7 @@ mod tests {
             WixVersion::Wixl,
             "/tmp/app.wxs",
             "/out/app.msi",
+            "/build",
             &exts,
             "x64",
         );
@@ -1326,7 +1371,14 @@ crates:
     #[test]
     fn test_mod_timestamp_adds_bind_timestamp_v4() {
         // Build commands for V4 with mod_timestamp should include -d BindTimestamp=...
-        let mut commands = msi_command(WixVersion::V4, "/tmp/app.wxs", "/out/app.msi", &[], "x64");
+        let mut commands = msi_command(
+            WixVersion::V4,
+            "/tmp/app.wxs",
+            "/out/app.msi",
+            "/build",
+            &[],
+            "x64",
+        );
         let ts = "1704067200";
         // Simulate what the stage does for V4 with mod_timestamp
         commands.primary.push("-d".to_string());
@@ -1352,6 +1404,8 @@ crates:
                 "/tmp/app.wxs",
                 "-arch",
                 "x64",
+                "-pdbtype",
+                "none",
                 "-o",
                 "/out/app.msi",
                 "-d",
@@ -1360,7 +1414,14 @@ crates:
         );
 
         // V3 should NOT get -d BindTimestamp
-        let v3_commands = msi_command(WixVersion::V3, "/tmp/app.wxs", "/out/app.msi", &[], "x64");
+        let v3_commands = msi_command(
+            WixVersion::V3,
+            "/tmp/app.wxs",
+            "/out/app.msi",
+            "/build",
+            &[],
+            "x64",
+        );
         assert!(
             !v3_commands.primary.contains(&"-d".to_string()),
             "V3 command should not have -d flag"
@@ -1426,6 +1487,47 @@ crates:
                 "per-target var {key} should be cleared on stage exit"
             );
         }
+    }
+
+    #[test]
+    fn test_wixobj_intermediate_dir_is_build_tempdir_not_dist() {
+        // The production wiring (build.rs) derives intermediate_dir =
+        // rendered_wxs_path.parent(); that parent must be the per-build tempdir,
+        // never the dist/windows output dir — else candle's .wixobj re-enters
+        // dist and breaks the windows determinism gate.
+        use anodizer_core::config::{Config, MsiConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        let tmp = TempDir::new().unwrap();
+        let wxs_path = tmp.path().join("app.wxs");
+        fs::write(&wxs_path, "<Wix/>").unwrap();
+        let dist_windows = tmp.path().join("dist").join("windows");
+
+        let msi_cfg = MsiConfig {
+            wxs: Some(wxs_path.to_string_lossy().into_owned()),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        let ctx = Context::new(config, ContextOptions::default());
+        let log = StageLogger::new("msi", Verbosity::Quiet);
+
+        let (_guard, rendered) = crate::build::prepare_wxs_build_context(
+            &ctx,
+            &msi_cfg,
+            &wxs_path.to_string_lossy(),
+            None,
+            &log,
+        )
+        .unwrap();
+
+        let intermediate_dir = rendered.parent().expect("rendered wxs has a parent");
+        assert_ne!(intermediate_dir, dist_windows.as_path());
+        assert!(
+            !intermediate_dir.starts_with(&dist_windows),
+            "wixobj intermediate dir {intermediate_dir:?} must not be under dist/windows"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1610,7 +1712,14 @@ crates:
     #[test]
     fn test_msi_command_v4_with_extensions() {
         let exts = vec!["WixUIExtension".to_string(), "WixUtilExtension".to_string()];
-        let cmds = msi_command(WixVersion::V4, "/tmp/app.wxs", "/out/app.msi", &exts, "x64");
+        let cmds = msi_command(
+            WixVersion::V4,
+            "/tmp/app.wxs",
+            "/out/app.msi",
+            "/build",
+            &exts,
+            "x64",
+        );
         assert_eq!(
             cmds.primary,
             vec![
@@ -1619,6 +1728,8 @@ crates:
                 "/tmp/app.wxs",
                 "-arch",
                 "x64",
+                "-pdbtype",
+                "none",
                 "-o",
                 "/out/app.msi",
                 "-ext",
@@ -1633,7 +1744,14 @@ crates:
     #[test]
     fn test_msi_command_v3_with_extensions() {
         let exts = vec!["WixUIExtension".to_string()];
-        let cmds = msi_command(WixVersion::V3, "/tmp/app.wxs", "/out/app.msi", &exts, "x64");
+        let cmds = msi_command(
+            WixVersion::V3,
+            "/tmp/app.wxs",
+            "/out/app.msi",
+            "/build",
+            &exts,
+            "x64",
+        );
 
         // candle gets -ext too
         assert_eq!(
@@ -1645,7 +1763,7 @@ crates:
                 "x64",
                 "/tmp/app.wxs",
                 "-o",
-                "/out/app.wixobj",
+                "/build/app.wixobj",
                 "-ext",
                 "WixUIExtension",
             ]
@@ -1658,7 +1776,8 @@ crates:
             vec![
                 "light",
                 "-nologo",
-                "/out/app.wixobj",
+                "-spdb",
+                "/build/app.wixobj",
                 "-o",
                 "/out/app.msi",
                 "-ext",
@@ -2474,10 +2593,21 @@ crates:
     /// toolchain is reachable and the caller skips hermetically.
     #[cfg(target_os = "windows")]
     fn resolve_windows_wix_build(wxs_path: &str, out_path: &str) -> Option<MsiCommands> {
+        let int_dir = std::path::Path::new(out_path)
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
         if anodizer_core::util::find_binary("wix") {
-            return Some(msi_command(WixVersion::V4, wxs_path, out_path, &[], "x64"));
+            return Some(msi_command(
+                WixVersion::V4,
+                wxs_path,
+                out_path,
+                &int_dir,
+                &[],
+                "x64",
+            ));
         }
-        let mut cmds = msi_command(WixVersion::V3, wxs_path, out_path, &[], "x64");
+        let mut cmds = msi_command(WixVersion::V3, wxs_path, out_path, &int_dir, &[], "x64");
         let resolve_v3 = |bare: &str| -> Option<String> {
             if anodizer_core::util::find_binary(bare) {
                 return Some(bare.to_string());

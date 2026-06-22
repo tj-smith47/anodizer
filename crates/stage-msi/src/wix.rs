@@ -102,6 +102,7 @@ pub fn msi_command(
     wix_version: WixVersion,
     wxs_path: &str,
     output_path: &str,
+    intermediate_dir: &str,
     extensions: &[String],
     msi_arch: &str,
 ) -> MsiCommands {
@@ -113,6 +114,10 @@ pub fn msi_command(
                 wxs_path.to_string(),
                 "-arch".to_string(),
                 msi_arch.to_string(),
+                // Suppress the `.wixpdb` (a debug db that never ships and embeds
+                // the per-run build path) so it can't taint dist/.
+                "-pdbtype".to_string(),
+                "none".to_string(),
                 "-o".to_string(),
                 output_path.to_string(),
             ];
@@ -126,12 +131,17 @@ pub fn msi_command(
             }
         }
         WixVersion::V3 => {
-            // Derive the .wixobj path from the output path
-            let wixobj_path = if let Some(prefix) = output_path.strip_suffix(".msi") {
-                format!("{prefix}.wixobj")
-            } else {
-                format!("{output_path}.wixobj")
-            };
+            // Emit the `.wixobj` into the build tempdir, not dist/: candle bakes
+            // the source `.wxs` path in, so an in-dist copy isn't reproducible.
+            // Only the `.msi` belongs in dist/.
+            let wixobj_stem = std::path::Path::new(output_path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "output".to_string());
+            let wixobj_path = std::path::Path::new(intermediate_dir)
+                .join(format!("{wixobj_stem}.wixobj"))
+                .to_string_lossy()
+                .into_owned();
             // candle's `-arch` sets the default component bitness AND how
             // ProgramFiles64Folder resolves. Without it candle defaults to x86,
             // so a 64-bit target's `.wxs` (ProgramFiles64Folder + a component
@@ -155,6 +165,9 @@ pub fn msi_command(
             let mut link = vec![
                 "light".to_string(),
                 "-nologo".to_string(),
+                // `-spdb`: drop the `.wixpdb` light writes beside the `.msi`,
+                // same reason as the wixobj relocation above.
+                "-spdb".to_string(),
                 wixobj_path,
                 "-o".to_string(),
                 output_path.to_string(),

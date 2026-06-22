@@ -497,7 +497,7 @@ fn log_msi_dry_run(
 /// the build) and the path to the rendered `.wxs`.
 ///
 /// `mod_timestamp` must already be template-rendered by the caller.
-fn prepare_wxs_build_context(
+pub(crate) fn prepare_wxs_build_context(
     ctx: &Context,
     msi_cfg: &anodizer_core::config::MsiConfig,
     wxs_path: &str,
@@ -573,10 +573,16 @@ fn execute_msi_build(
         ));
     }
 
+    // Keep the candle `.wixobj` in the rendered-wxs tempdir, out of dist/.
+    let intermediate_dir = rendered_wxs_path
+        .parent()
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let mut commands = msi_command(
         wix_version,
         &rendered_wxs_path.to_string_lossy(),
         &msi_path.to_string_lossy(),
+        &intermediate_dir,
         rendered_extensions,
         msi_arch,
     );
