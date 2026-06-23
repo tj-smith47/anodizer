@@ -3,8 +3,7 @@ use std::path::PathBuf;
 
 use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum ArtifactKind {
     // --- Build outputs ---
@@ -174,6 +173,17 @@ impl ArtifactKind {
             "uploadable_file" => Some(ArtifactKind::UploadableFile),
             _ => None,
         }
+    }
+}
+
+// Hand-written so the serialized wire form is EXACTLY `as_str()`, which
+// `parse()` round-trips. A derived `rename_all = "snake_case"` diverges for
+// variants like `MacOsPackage` (→ `mac_os_package`) and `AppImage`
+// (→ `app_image`) that `parse()` does not accept, silently breaking the
+// publish-only artifact-manifest loader.
+impl serde::Serialize for ArtifactKind {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
     }
 }
 
@@ -949,6 +959,135 @@ pub fn print_size_report(registry: &mut ArtifactRegistry, log: &crate::log::Stag
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    /// Every `ArtifactKind` variant, in one list that drives the round-trip
+    /// coverage below. The `const _` guard that follows is an exhaustive match
+    /// with no `_` arm, sitting immediately after this list: adding a variant
+    /// fails to compile until it is added to BOTH, and the two lists live
+    /// together so they move together. `#[non_exhaustive]` does not block
+    /// exhaustive matching within the defining crate, so this compiles here.
+    /// (Stable Rust cannot enumerate variants without an explicit list; the
+    /// adjacent exhaustive match is the strongest available poka-yoke.)
+    fn all_artifact_kinds() -> Vec<ArtifactKind> {
+        use ArtifactKind::*;
+        let all = vec![
+            Binary,
+            UploadableBinary,
+            UniversalBinary,
+            Library,
+            Header,
+            CArchive,
+            CShared,
+            Wasm,
+            Archive,
+            SourceArchive,
+            Makeself,
+            AppImage,
+            LinuxPackage,
+            Snap,
+            PublishableSnapcraft,
+            Flatpak,
+            SourceRpm,
+            DiskImage,
+            Installer,
+            MacOsPackage,
+            DockerImage,
+            DockerImageV2,
+            PublishableDockerImage,
+            DockerManifest,
+            DockerDigest,
+            BrewFormula,
+            BrewCask,
+            Nixpkg,
+            ScoopManifest,
+            PublishableChocolatey,
+            WingetInstaller,
+            WingetDefaultLocale,
+            WingetVersion,
+            PkgBuild,
+            SrcInfo,
+            SourcePkgBuild,
+            SourceSrcInfo,
+            KrewPluginManifest,
+            Checksum,
+            Signature,
+            Certificate,
+            Sbom,
+            Metadata,
+            UploadableFile,
+        ];
+        // Compile-time exhaustiveness guard: coercing a non-capturing closure
+        // to a `fn` pointer in `const` context forces the match below to be
+        // type-checked. A new variant breaks the (no-`_`) match and fails the
+        // build until it is also added to `all` above. `const _` is never
+        // dead-code-linted, so this needs no `#[allow]`.
+        const _: fn(ArtifactKind) = |k| match k {
+            ArtifactKind::Binary
+            | ArtifactKind::UploadableBinary
+            | ArtifactKind::UniversalBinary
+            | ArtifactKind::Library
+            | ArtifactKind::Header
+            | ArtifactKind::CArchive
+            | ArtifactKind::CShared
+            | ArtifactKind::Wasm
+            | ArtifactKind::Archive
+            | ArtifactKind::SourceArchive
+            | ArtifactKind::Makeself
+            | ArtifactKind::AppImage
+            | ArtifactKind::LinuxPackage
+            | ArtifactKind::Snap
+            | ArtifactKind::PublishableSnapcraft
+            | ArtifactKind::Flatpak
+            | ArtifactKind::SourceRpm
+            | ArtifactKind::DiskImage
+            | ArtifactKind::Installer
+            | ArtifactKind::MacOsPackage
+            | ArtifactKind::DockerImage
+            | ArtifactKind::DockerImageV2
+            | ArtifactKind::PublishableDockerImage
+            | ArtifactKind::DockerManifest
+            | ArtifactKind::DockerDigest
+            | ArtifactKind::BrewFormula
+            | ArtifactKind::BrewCask
+            | ArtifactKind::Nixpkg
+            | ArtifactKind::ScoopManifest
+            | ArtifactKind::PublishableChocolatey
+            | ArtifactKind::WingetInstaller
+            | ArtifactKind::WingetDefaultLocale
+            | ArtifactKind::WingetVersion
+            | ArtifactKind::PkgBuild
+            | ArtifactKind::SrcInfo
+            | ArtifactKind::SourcePkgBuild
+            | ArtifactKind::SourceSrcInfo
+            | ArtifactKind::KrewPluginManifest
+            | ArtifactKind::Checksum
+            | ArtifactKind::Signature
+            | ArtifactKind::Certificate
+            | ArtifactKind::Sbom
+            | ArtifactKind::Metadata
+            | ArtifactKind::UploadableFile => {}
+        };
+        all
+    }
+
+    #[test]
+    fn artifact_kind_serde_parse_roundtrip() {
+        for k in all_artifact_kinds() {
+            // `parse()` must accept the canonical `as_str()` spelling.
+            assert_eq!(
+                ArtifactKind::parse(k.as_str()),
+                Some(k),
+                "parse(as_str()) must round-trip for {k:?}",
+            );
+            // serde serialization must equal `as_str()` exactly, so a kind
+            // serialized into artifacts.json re-parses cleanly on load.
+            assert_eq!(
+                serde_json::to_value(k).unwrap(),
+                serde_json::Value::String(k.as_str().to_string()),
+                "serde serialization must equal as_str() for {k:?}",
+            );
+        }
+    }
 
     fn derived(kind: ArtifactKind, meta: &[(&str, &str)]) -> Artifact {
         Artifact {
