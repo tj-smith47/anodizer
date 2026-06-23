@@ -31,11 +31,14 @@ fn anodizer() -> Command {
 }
 
 fn run_git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir).args(args);
+            cmd
+        },
+        "git",
+    );
     assert!(
         out.status.success(),
         "git {args:?} failed: {}",
@@ -178,11 +181,15 @@ fn single_crate_write_refreshes_file() {
     assert!(cl.contains("Unreleased"), "expected [Unreleased]: {cl}");
     assert!(cl.contains("add a thing"), "expected the commit: {cl}");
     // No commit was made: the write is a working-tree edit only.
-    let status = Command::new("git")
-        .current_dir(root)
-        .args(["status", "--porcelain", "CHANGELOG.md"])
-        .output()
-        .unwrap();
+    let status = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(root)
+                .args(["status", "--porcelain", "CHANGELOG.md"]);
+            cmd
+        },
+        "git",
+    );
     let out = String::from_utf8_lossy(&status.stdout);
     assert!(
         out.contains("CHANGELOG.md"),
@@ -628,11 +635,14 @@ fn real_single_crate_tag_bump_subject_matches_exclude_prefix() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr)
     );
-    let log = Command::new("git")
-        .current_dir(root)
-        .args(["log", "-1", "--format=%s"])
-        .output()
-        .unwrap();
+    let log = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(root).args(["log", "-1", "--format=%s"]);
+            cmd
+        },
+        "git",
+    );
     let subject = String::from_utf8_lossy(&log.stdout);
     let subject = subject.trim();
     assert!(

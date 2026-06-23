@@ -22,11 +22,14 @@ fn anodizer() -> Command {
 }
 
 fn run_git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir).args(args);
+            cmd
+        },
+        "git",
+    );
     assert!(
         out.status.success(),
         "git {args:?} failed: {}",
@@ -53,11 +56,14 @@ fn read(dir: &Path, rel: &str) -> String {
 /// The refreshed CHANGELOG.md must be committed, not left as an unstaged
 /// working-tree edit. Returns the file content at HEAD.
 fn show_head(dir: &Path, rel: &str) -> String {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(["show", &format!("HEAD:{rel}")])
-        .output()
-        .unwrap();
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir).args(["show", &format!("HEAD:{rel}")]);
+            cmd
+        },
+        "git",
+    );
     assert!(
         out.status.success(),
         "git show HEAD:{rel} failed: {}",
@@ -881,11 +887,15 @@ crates:
 
     // The bump commit + tags still happened: both new per-crate tags exist.
     for tag in ["core-v0.2.0", "cli-v0.3.0"] {
-        let out = Command::new("git")
-            .current_dir(root)
-            .args(["rev-parse", "--verify", &format!("refs/tags/{tag}")])
-            .output()
-            .unwrap();
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.current_dir(root)
+                    .args(["rev-parse", "--verify", &format!("refs/tags/{tag}")]);
+                cmd
+            },
+            "git",
+        );
         assert!(out.status.success(), "expected tag {tag} to be created");
     }
 }
@@ -1022,11 +1032,20 @@ version = "0.1.0"
     );
 
     // Both files are named in HEAD's tree diff — one commit, both features.
-    let diff = Command::new("git")
-        .current_dir(root)
-        .args(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"])
-        .output()
-        .unwrap();
+    let diff = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(root).args([
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                "HEAD",
+            ]);
+            cmd
+        },
+        "git",
+    );
     let names = String::from_utf8_lossy(&diff.stdout);
     assert!(
         names.lines().any(|l| l == "Chart.yaml"),
@@ -1414,11 +1433,20 @@ fn both_destination_writes_per_crate_and_root_in_one_commit() {
     );
 
     // BOTH files are named in HEAD's tree diff — one commit, both destinations.
-    let diff = Command::new("git")
-        .current_dir(root)
-        .args(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"])
-        .output()
-        .unwrap();
+    let diff = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(root).args([
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                "HEAD",
+            ]);
+            cmd
+        },
+        "git",
+    );
     let names = String::from_utf8_lossy(&diff.stdout);
     assert!(
         names.lines().any(|l| l == "CHANGELOG.md"),
@@ -1796,11 +1824,14 @@ fn same_prefix_flat_tag_collapses_to_one_section() {
     assert!(out.status.success(), "tag failed: {stdout}\n{stderr}");
 
     // Exactly one shared tag created for both crates (no duplicate-tag failure).
-    let tags = Command::new("git")
-        .current_dir(root)
-        .args(["tag"])
-        .output()
-        .unwrap();
+    let tags = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(root).args(["tag"]);
+            cmd
+        },
+        "git",
+    );
     let tag_list = String::from_utf8_lossy(&tags.stdout);
     assert_eq!(
         tag_list.matches("v0.2.0").count(),

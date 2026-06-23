@@ -24,11 +24,14 @@ fn anodizer() -> Command {
 }
 
 fn run_git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("git {:?} failed to spawn: {e}", args));
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir).args(args);
+            cmd
+        },
+        "git",
+    );
     assert!(
         out.status.success(),
         "git {:?} failed: {}",
@@ -38,11 +41,14 @@ fn run_git(dir: &Path, args: &[&str]) {
 }
 
 fn git_out(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("git {:?} failed to spawn: {e}", args));
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir).args(args);
+            cmd
+        },
+        "git",
+    );
     assert!(
         out.status.success(),
         "git {:?} failed: {}",
@@ -71,12 +77,16 @@ fn head_sha(dir: &Path) -> String {
 /// SHA the bare repo's `master` branch points at, or `None` when the branch
 /// does not exist yet.
 fn remote_branch_sha(bare: &Path, branch: &str) -> Option<String> {
-    let out = Command::new("git")
-        .args(["--git-dir"])
-        .arg(bare)
-        .args(["rev-parse", &format!("refs/heads/{branch}")])
-        .output()
-        .unwrap();
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(["--git-dir"])
+                .arg(bare)
+                .args(["rev-parse", &format!("refs/heads/{branch}")]);
+            cmd
+        },
+        "git",
+    );
     if out.status.success() {
         Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
@@ -86,12 +96,16 @@ fn remote_branch_sha(bare: &Path, branch: &str) -> Option<String> {
 
 /// Dereferenced SHA the remote tag points at, or `None` when absent.
 fn remote_tag_target(bare: &Path, tag: &str) -> Option<String> {
-    let out = Command::new("git")
-        .args(["--git-dir"])
-        .arg(bare)
-        .args(["rev-parse", &format!("refs/tags/{tag}^{{}}")])
-        .output()
-        .unwrap();
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(["--git-dir"])
+                .arg(bare)
+                .args(["rev-parse", &format!("refs/tags/{tag}^{{}}")]);
+            cmd
+        },
+        "git",
+    );
     if out.status.success() {
         Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
@@ -102,11 +116,15 @@ fn remote_tag_target(bare: &Path, tag: &str) -> Option<String> {
 /// Create a bare repo and return its path-holding TempDir.
 fn make_bare() -> TempDir {
     let bare = TempDir::new().unwrap();
-    let out = Command::new("git")
-        .args(["init", "--bare", "-q", "-b", "master"])
-        .arg(bare.path())
-        .output()
-        .unwrap();
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(["init", "--bare", "-q", "-b", "master"])
+                .arg(bare.path());
+            cmd
+        },
+        "git",
+    );
     assert!(out.status.success(), "git init --bare failed");
     bare
 }

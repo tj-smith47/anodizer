@@ -32,20 +32,26 @@ fn git_add_commit(dir: &Path, message: &str) {
 }
 
 fn git_tag_exists(dir: &Path, tag: &str) -> bool {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(["tag", "-l", tag])
-        .output()
-        .unwrap();
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir).args(["tag", "-l", tag]);
+            cmd
+        },
+        "git",
+    );
     !String::from_utf8_lossy(&out.stdout).trim().is_empty()
 }
 
 fn git_head_sha(dir: &Path) -> String {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .unwrap();
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir).args(["rev-parse", "HEAD"]);
+            cmd
+        },
+        "git",
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 

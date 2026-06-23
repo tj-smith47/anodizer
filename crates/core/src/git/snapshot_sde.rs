@@ -103,40 +103,56 @@ mod tests {
 
     fn init_repo() -> TempDir {
         let dir = tempfile::tempdir().unwrap();
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .arg("init")
-            .output()
-            .unwrap();
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["config", "user.email", "test@example.com"])
-            .output()
-            .unwrap();
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["config", "user.name", "test"])
-            .output()
-            .unwrap();
+        anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.arg("-C").arg(dir.path()).arg("init");
+                cmd
+            },
+            "git",
+        );
+        anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.arg("-C")
+                    .arg(dir.path())
+                    .args(["config", "user.email", "test@example.com"]);
+                cmd
+            },
+            "git",
+        );
+        anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.arg("-C")
+                    .arg(dir.path())
+                    .args(["config", "user.name", "test"]);
+                cmd
+            },
+            "git",
+        );
         fs::write(dir.path().join("a.txt"), "hello").unwrap();
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["add", "a.txt"])
-            .output()
-            .unwrap();
+        anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.arg("-C").arg(dir.path()).args(["add", "a.txt"]);
+                cmd
+            },
+            "git",
+        );
         // Pin commit timestamp deterministically so test assertions are stable.
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .env("GIT_AUTHOR_DATE", "1715000000 +0000")
-            .env("GIT_COMMITTER_DATE", "1715000000 +0000")
-            .args(["commit", "-m", "init"])
-            .output()
-            .unwrap();
+        anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.arg("-C")
+                    .arg(dir.path())
+                    .env("GIT_AUTHOR_DATE", "1715000000 +0000")
+                    .env("GIT_COMMITTER_DATE", "1715000000 +0000")
+                    .args(["commit", "-m", "init"]);
+                cmd
+            },
+            "git",
+        );
         dir
     }
 

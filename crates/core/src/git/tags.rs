@@ -1022,15 +1022,19 @@ mod delete_tag_tests {
         let bare = tempfile::tempdir().unwrap();
         let work = tempfile::tempdir().unwrap();
         let run = |dir: &Path, args: &[&str]| {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@t.com")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@t.com")
-                .output()
-                .unwrap();
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args)
+                        .current_dir(dir)
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                    cmd
+                },
+                "git",
+            );
             assert!(
                 out.status.success(),
                 "git {args:?} failed: {}",
@@ -1074,15 +1078,19 @@ mod delete_tag_tests {
     fn delete_remote_tag_in_succeeds_then_is_idempotent_on_second_call() {
         let (_bare, work) = init_clone_pair();
         let run = |args: &[&str]| {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(work.path())
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@t.com")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@t.com")
-                .output()
-                .unwrap();
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args)
+                        .current_dir(work.path())
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                    cmd
+                },
+                "git",
+            );
             assert!(out.status.success(), "git {args:?} failed");
         };
         run(&["tag", "v1.2.3"]);

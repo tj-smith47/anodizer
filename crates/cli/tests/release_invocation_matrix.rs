@@ -301,11 +301,14 @@ fn release_announce_only_bails_without_prior_report() {
     // tag the derived id is the short_commit which is fine but harder
     // to predict in a test. Using a tag also keeps the path
     // deterministic.
-    Command::new("git")
-        .current_dir(tmp.path())
-        .args(["tag", "v0.1.0-test"])
-        .output()
-        .expect("git tag");
+    let _ = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(tmp.path()).args(["tag", "v0.1.0-test"]);
+            cmd
+        },
+        "git",
+    );
 
     let out = run_anodizer(
         tmp.path(),

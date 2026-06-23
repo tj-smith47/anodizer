@@ -172,12 +172,17 @@ mod tests {
         let bare = tempfile::tempdir().expect("bare");
         let work = tempfile::tempdir().expect("work");
         assert!(
-            Command::new("git")
-                .args(["init", "--bare", "-b", "master"])
-                .arg(bare.path())
-                .status()
-                .unwrap()
-                .success()
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["init", "--bare", "-b", "master"])
+                        .arg(bare.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success()
         );
         for args in [
             vec!["init", "-b", "master"],
@@ -186,41 +191,59 @@ mod tests {
             vec!["config", "commit.gpgsign", "false"],
         ] {
             assert!(
-                Command::new("git")
-                    .args(&args)
-                    .current_dir(work.path())
-                    .status()
-                    .unwrap()
-                    .success()
+                anodizer_core::test_helpers::output_with_spawn_retry(
+                    || {
+                        let mut cmd = Command::new("git");
+                        cmd.args(&args).current_dir(work.path());
+                        cmd
+                    },
+                    "git",
+                )
+                .status
+                .success()
             );
         }
         std::fs::write(work.path().join("README"), "hi\n").unwrap();
         for args in [vec!["add", "README"], vec!["commit", "-m", "initial"]] {
             assert!(
-                Command::new("git")
-                    .args(&args)
-                    .current_dir(work.path())
-                    .status()
-                    .unwrap()
-                    .success()
+                anodizer_core::test_helpers::output_with_spawn_retry(
+                    || {
+                        let mut cmd = Command::new("git");
+                        cmd.args(&args).current_dir(work.path());
+                        cmd
+                    },
+                    "git",
+                )
+                .status
+                .success()
             );
         }
         assert!(
-            Command::new("git")
-                .args(["remote", "add", "origin"])
-                .arg(bare.path())
-                .current_dir(work.path())
-                .status()
-                .unwrap()
-                .success()
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["remote", "add", "origin"])
+                        .arg(bare.path())
+                        .current_dir(work.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success()
         );
         assert!(
-            Command::new("git")
-                .args(["push", "-u", "origin", "master"])
-                .current_dir(work.path())
-                .status()
-                .unwrap()
-                .success()
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["push", "-u", "origin", "master"])
+                        .current_dir(work.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success()
         );
         (bare.path().to_string_lossy().into_owned(), bare, work)
     }
@@ -274,18 +297,27 @@ mod tests {
         for (url, _, _) in &remotes {
             let verify = tempfile::tempdir().unwrap();
             assert!(
-                Command::new("git")
-                    .args(["clone", "--depth=2", url])
-                    .arg(verify.path().join("repo"))
-                    .status()
-                    .unwrap()
-                    .success()
+                anodizer_core::test_helpers::output_with_spawn_retry(
+                    || {
+                        let mut cmd = Command::new("git");
+                        cmd.args(["clone", "--depth=2", url])
+                            .arg(verify.path().join("repo"));
+                        cmd
+                    },
+                    "git",
+                )
+                .status
+                .success()
             );
-            let out = Command::new("git")
-                .args(["log", "-1", "--pretty=%s"])
-                .current_dir(verify.path().join("repo"))
-                .output()
-                .unwrap();
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["log", "-1", "--pretty=%s"])
+                        .current_dir(verify.path().join("repo"));
+                    cmd
+                },
+                "git",
+            );
             let subject = String::from_utf8_lossy(&out.stdout).trim().to_string();
             assert!(
                 subject.starts_with("Revert"),

@@ -130,37 +130,51 @@ mod tests {
 
     fn init_repo() -> TempDir {
         let dir = tempfile::tempdir().unwrap();
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .arg("init")
-            .output()
-            .unwrap();
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["config", "user.email", "test@example.com"])
-            .output()
-            .unwrap();
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["config", "user.name", "test"])
-            .output()
-            .unwrap();
+        anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.arg("-C").arg(dir.path()).arg("init");
+                cmd
+            },
+            "git",
+        );
+        anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.arg("-C")
+                    .arg(dir.path())
+                    .args(["config", "user.email", "test@example.com"]);
+                cmd
+            },
+            "git",
+        );
+        anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.arg("-C")
+                    .arg(dir.path())
+                    .args(["config", "user.name", "test"]);
+                cmd
+            },
+            "git",
+        );
         std::fs::write(dir.path().join("a.txt"), "hello").unwrap();
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["add", "a.txt"])
-            .output()
-            .unwrap();
-        Command::new("git")
-            .arg("-C")
-            .arg(dir.path())
-            .args(["commit", "-m", "init"])
-            .output()
-            .unwrap();
+        anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.arg("-C").arg(dir.path()).args(["add", "a.txt"]);
+                cmd
+            },
+            "git",
+        );
+        anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.arg("-C").arg(dir.path()).args(["commit", "-m", "init"]);
+                cmd
+            },
+            "git",
+        );
         dir
     }
 
@@ -191,22 +205,26 @@ mod tests {
     fn worktree_add_for_explicit_commit_checks_out_that_commit() {
         let repo = init_repo();
         // Get HEAD commit hash
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(repo.path())
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap();
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.arg("-C").arg(repo.path()).args(["rev-parse", "HEAD"]);
+                cmd
+            },
+            "git",
+        );
         let head_hash = String::from_utf8(out.stdout).unwrap().trim().to_string();
         let wt_dir = tempfile::tempdir().unwrap();
         let wt = Worktree::add(repo.path(), &wt_dir.path().join("wt3"), &head_hash).unwrap();
         // Verify the worktree's HEAD matches.
-        let out = Command::new("git")
-            .arg("-C")
-            .arg(wt.path())
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap();
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.arg("-C").arg(wt.path()).args(["rev-parse", "HEAD"]);
+                cmd
+            },
+            "git",
+        );
         let wt_head = String::from_utf8(out.stdout).unwrap().trim().to_string();
         assert_eq!(wt_head, head_hash);
     }

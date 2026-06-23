@@ -158,15 +158,19 @@ mod tests {
 
     fn init_repo(dir: &Path) {
         let run = |args: &[&str]| {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .env("GIT_AUTHOR_NAME", "test")
-                .env("GIT_AUTHOR_EMAIL", "test@test.com")
-                .env("GIT_COMMITTER_NAME", "test")
-                .env("GIT_COMMITTER_EMAIL", "test@test.com")
-                .output()
-                .unwrap();
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args)
+                        .current_dir(dir)
+                        .env("GIT_AUTHOR_NAME", "test")
+                        .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                        .env("GIT_COMMITTER_NAME", "test")
+                        .env("GIT_COMMITTER_EMAIL", "test@test.com");
+                    cmd
+                },
+                "git",
+            );
             assert!(
                 out.status.success(),
                 "git {:?} failed: {}",
@@ -245,11 +249,14 @@ mod tests {
         init_repo(tmp.path());
         std::fs::write(tmp.path().join("extra.txt"), "x").unwrap();
         let run = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(tmp.path())
-                .output()
-                .unwrap();
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args).current_dir(tmp.path());
+                    cmd
+                },
+                "git",
+            );
         };
         run(&["add", "extra.txt"]);
         run(&["commit", "-m", "add extra"]);

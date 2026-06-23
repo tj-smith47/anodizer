@@ -3568,12 +3568,16 @@ mod root_section_tests {
             vec!["config", "user.email", "test@example.com"],
             vec!["config", "user.name", "Test"],
         ] {
-            let ok = Command::new("git")
-                .args(&args)
-                .current_dir(dir)
-                .status()
-                .expect("git command runs")
-                .success();
+            let ok = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(&args).current_dir(dir);
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success();
             assert!(ok, "git {args:?} failed");
         }
         std::fs::write(dir.join("README.md"), "seed").expect("write seed file");
@@ -3581,12 +3585,16 @@ mod root_section_tests {
             vec!["add", "."],
             vec!["commit", "-q", "-m", "feat: initial work"],
         ] {
-            let ok = Command::new("git")
-                .args(&args)
-                .current_dir(dir)
-                .status()
-                .expect("git command runs")
-                .success();
+            let ok = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(&args).current_dir(dir);
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success();
             assert!(ok, "git {args:?} failed");
         }
     }
@@ -3596,12 +3604,16 @@ mod root_section_tests {
     fn tag_and_commit(dir: &std::path::Path, tag: &str, message: &str) {
         use std::process::Command;
         let run = |args: &[&str]| {
-            let ok = Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .status()
-                .expect("git command runs")
-                .success();
+            let ok = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args).current_dir(dir);
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success();
             assert!(ok, "git {args:?} failed");
         };
         run(&["tag", tag]);
@@ -4117,12 +4129,16 @@ mod root_section_tests {
         std::fs::create_dir_all(&dir).expect("mkdir crate dir");
         std::fs::write(dir.join(file), subject).expect("write crate file");
         for args in [vec!["add", "."], vec!["commit", "-q", "-m", subject]] {
-            let ok = Command::new("git")
-                .args(&args)
-                .current_dir(root)
-                .status()
-                .expect("git command runs")
-                .success();
+            let ok = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(&args).current_dir(root);
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success();
             assert!(ok, "git {args:?} failed");
         }
     }

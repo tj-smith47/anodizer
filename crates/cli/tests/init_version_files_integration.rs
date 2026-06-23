@@ -17,11 +17,14 @@ fn anodizer() -> Command {
 }
 
 fn run_git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir).args(args);
+            cmd
+        },
+        "git",
+    );
     assert!(
         out.status.success(),
         "git {args:?} failed: {}",

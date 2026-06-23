@@ -319,12 +319,16 @@ mod tests {
     use std::process::Command;
 
     fn git(dir: &std::path::Path, args: &[&str]) {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .status()
-            .expect("git runs")
-            .success();
+        let ok = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args).current_dir(dir);
+                cmd
+            },
+            "git",
+        )
+        .status
+        .success();
         assert!(ok, "git {args:?} failed");
     }
 

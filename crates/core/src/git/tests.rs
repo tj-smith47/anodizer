@@ -396,15 +396,19 @@ fn init_repo_with_tags(dir: &std::path::Path, tags: &[&str]) {
     use std::process::Command;
 
     let run = |args: &[&str]| {
-        let out = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .env("GIT_AUTHOR_NAME", "test")
-            .env("GIT_AUTHOR_EMAIL", "test@test.com")
-            .env("GIT_COMMITTER_NAME", "test")
-            .env("GIT_COMMITTER_EMAIL", "test@test.com")
-            .output()
-            .unwrap();
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args)
+                    .current_dir(dir)
+                    .env("GIT_AUTHOR_NAME", "test")
+                    .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                    .env("GIT_COMMITTER_NAME", "test")
+                    .env("GIT_COMMITTER_EMAIL", "test@test.com");
+                cmd
+            },
+            "git",
+        );
         assert!(
             out.status.success(),
             "git {:?} failed: {}",
@@ -742,15 +746,19 @@ fn test_find_latest_tag_prerelease_suffix_with_default_sort() {
     // with suffix, rc sorts *after* release but --sort=-version:refname
     // means descending, so release comes first.
     let run = |args: &[&str]| {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .env("GIT_AUTHOR_NAME", "test")
-            .env("GIT_AUTHOR_EMAIL", "test@test.com")
-            .env("GIT_COMMITTER_NAME", "test")
-            .env("GIT_COMMITTER_EMAIL", "test@test.com")
-            .output()
-            .unwrap();
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = std::process::Command::new("git");
+                cmd.args(args)
+                    .current_dir(dir)
+                    .env("GIT_AUTHOR_NAME", "test")
+                    .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                    .env("GIT_COMMITTER_NAME", "test")
+                    .env("GIT_COMMITTER_EMAIL", "test@test.com");
+                cmd
+            },
+            "git",
+        );
         assert!(out.status.success());
     };
     run(&["tag", "v1.1.1"]);
@@ -804,15 +812,19 @@ fn init_repo_with_tagged_commits(dir: &std::path::Path, tags: &[&str]) {
     use std::process::Command;
 
     let run = |args: &[&str]| {
-        let out = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .env("GIT_AUTHOR_NAME", "test")
-            .env("GIT_AUTHOR_EMAIL", "test@test.com")
-            .env("GIT_COMMITTER_NAME", "test")
-            .env("GIT_COMMITTER_EMAIL", "test@test.com")
-            .output()
-            .unwrap();
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args)
+                    .current_dir(dir)
+                    .env("GIT_AUTHOR_NAME", "test")
+                    .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                    .env("GIT_COMMITTER_NAME", "test")
+                    .env("GIT_COMMITTER_EMAIL", "test@test.com");
+                cmd
+            },
+            "git",
+        );
         assert!(
             out.status.success(),
             "git {:?} failed: {}",
@@ -1199,24 +1211,32 @@ fn head_is_at_tag_returns_false_when_head_has_no_tag() {
     init_repo_with_tagged_commits(dir, &["v1.0.0"]);
     // Advance HEAD past the tagged commit so describe --exact-match fails.
     std::fs::write(dir.join("untagged.txt"), "no tag here").unwrap();
-    Command::new("git")
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "test@test.com")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@test.com")
-        .args(["add", "."])
-        .output()
-        .unwrap();
-    Command::new("git")
-        .current_dir(dir)
-        .env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "test@test.com")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@test.com")
-        .args(["commit", "-m", "post-tag commit"])
-        .output()
-        .unwrap();
+    anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@test.com")
+                .args(["add", "."]);
+            cmd
+        },
+        "git",
+    );
+    anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir)
+                .env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@test.com")
+                .args(["commit", "-m", "post-tag commit"]);
+            cmd
+        },
+        "git",
+    );
     assert!(
         !head_is_at_tag(dir).unwrap(),
         "HEAD is one commit past v1.0.0; head_is_at_tag should return false"

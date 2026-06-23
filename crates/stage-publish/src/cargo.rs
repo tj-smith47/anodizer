@@ -5376,17 +5376,21 @@ mod partial_rollback_tests {
     /// fail-open hole.
     fn init_clean_repo(dir: &Path) {
         let run = |args: &[&str]| {
-            let ok = std::process::Command::new("git")
-                .current_dir(dir)
-                .args(args)
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@example.com")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@example.com")
-                .output()
-                .expect("git on PATH")
-                .status
-                .success();
+            let ok = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.current_dir(dir)
+                        .args(args)
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@example.com");
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success();
             assert!(ok, "git {args:?} failed");
         };
         run(&["init", "-q"]);
@@ -7153,17 +7157,21 @@ mod binstall_on_publish_tests {
     /// `project_root` with a real repo to exercise the genuine clean-pass.
     fn init_clean_repo(dir: &std::path::Path) {
         let run = |args: &[&str]| {
-            let ok = std::process::Command::new("git")
-                .current_dir(dir)
-                .args(args)
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@example.com")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@example.com")
-                .output()
-                .expect("git on PATH")
-                .status
-                .success();
+            let ok = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.current_dir(dir)
+                        .args(args)
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@example.com")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@example.com");
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success();
             assert!(ok, "git {args:?} failed");
         };
         run(&["init", "-q"]);
@@ -7644,13 +7652,16 @@ mod binstall_on_publish_tests {
         let repo = tmp.path();
         // A minimal git repo with one committed crate, then an uncommitted edit.
         let run_git = |args: &[&str]| {
-            let ok = std::process::Command::new("git")
-                .current_dir(repo)
-                .args(args)
-                .output()
-                .expect("git on PATH")
-                .status
-                .success();
+            let ok = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.current_dir(repo).args(args);
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success();
             assert!(ok, "git {args:?} failed");
         };
         run_git(&["init", "-q"]);

@@ -579,11 +579,15 @@ mod tests {
     /// elsewhere in the suite).
     #[test]
     fn create_tag_via_github_api_in_bails_when_not_a_git_repo() {
-        if Command::new("git")
+        // spawn-retry-ok: this is a git *availability* probe — an Err means git
+        // is absent (skip the test via the success() guard), not a transient
+        // spawn-init failure to retry; routing it through the panicking helper
+        // would crash on a git-less host instead of skipping.
+        if !Command::new("git")
             .arg("--version")
             .output()
-            .map(|o| !o.status.success())
-            .unwrap_or(true)
+            .map(|o| o.status.success())
+            .unwrap_or(false)
         {
             return;
         }

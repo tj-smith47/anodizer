@@ -110,13 +110,17 @@ fn local_package_reproduces_published_crates_io_cksum() {
     // poison guard does at publish time on the tagged release commit.
     let worktree = tempfile::tempdir().expect("tempdir for the tag worktree");
     let wt_path = worktree.path().join("wt");
-    let add = Command::new("git")
-        .current_dir(&root)
-        .args(["worktree", "add", "--detach"])
-        .arg(&wt_path)
-        .arg(PROOF_TAG)
-        .output()
-        .expect("git available on PATH");
+    let add = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(&root)
+                .args(["worktree", "add", "--detach"])
+                .arg(&wt_path)
+                .arg(PROOF_TAG);
+            cmd
+        },
+        "git",
+    );
     assert!(
         add.status.success(),
         "git worktree add at {PROOF_TAG} failed (is the tag present?): {}",
@@ -141,8 +145,9 @@ fn local_package_reproduces_published_crates_io_cksum() {
         .output()
         .expect("cargo available on PATH");
 
-    // Clean the worktree before asserting so a packaging failure does not leak
-    // a registered worktree into the host repo.
+    // spawn-retry-ok: best-effort worktree cleanup before the assertion below.
+    // A spawn failure here must be ignored, not retried-then-panicked — a panic
+    // would mask the real assertion. Err leaves the worktree, as it did before.
     let _ = Command::new("git")
         .current_dir(&root)
         .args(["worktree", "remove", "--force"])
@@ -232,13 +237,17 @@ fn extract_orig_manifest(crate_bytes: &[u8], version: &str) -> String {
 fn package_cli_at_tag(root: &std::path::Path, mutated_manifest: Option<&str>) -> String {
     let worktree = tempfile::tempdir().expect("tempdir for the tag worktree");
     let wt_path = worktree.path().join("wt");
-    let add = Command::new("git")
-        .current_dir(root)
-        .args(["worktree", "add", "--detach"])
-        .arg(&wt_path)
-        .arg(PROOF_TAG)
-        .output()
-        .expect("git available on PATH");
+    let add = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(root)
+                .args(["worktree", "add", "--detach"])
+                .arg(&wt_path)
+                .arg(PROOF_TAG);
+            cmd
+        },
+        "git",
+    );
     assert!(
         add.status.success(),
         "git worktree add at {PROOF_TAG} failed: {}",
@@ -268,6 +277,8 @@ fn package_cli_at_tag(root: &std::path::Path, mutated_manifest: Option<&str>) ->
         .output()
         .expect("cargo available on PATH");
 
+    // spawn-retry-ok: best-effort cleanup — a spawn failure must be ignored,
+    // not retried-then-panicked. Err leaves the worktree, as it did before.
     let _ = Command::new("git")
         .current_dir(root)
         .args(["worktree", "remove", "--force"])

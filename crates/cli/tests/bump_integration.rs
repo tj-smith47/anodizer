@@ -15,11 +15,14 @@ fn anodizer() -> Command {
 }
 
 fn run_git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("git {:?} failed to spawn: {e}", args));
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir).args(args);
+            cmd
+        },
+        "git",
+    );
     assert!(
         out.status.success(),
         "git {:?} failed: {}",
@@ -440,11 +443,15 @@ fn commit_flag_creates_single_commit() {
     git_init(tmp.path());
     git_add_commit(tmp.path(), "initial");
 
-    let before = Command::new("git")
-        .current_dir(tmp.path())
-        .args(["rev-list", "--count", "HEAD"])
-        .output()
-        .unwrap();
+    let before = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(tmp.path())
+                .args(["rev-list", "--count", "HEAD"]);
+            cmd
+        },
+        "git",
+    );
     let before_n: u32 = String::from_utf8_lossy(&before.stdout)
         .trim()
         .parse()
@@ -461,11 +468,15 @@ fn commit_flag_creates_single_commit() {
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let after = Command::new("git")
-        .current_dir(tmp.path())
-        .args(["rev-list", "--count", "HEAD"])
-        .output()
-        .unwrap();
+    let after = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(tmp.path())
+                .args(["rev-list", "--count", "HEAD"]);
+            cmd
+        },
+        "git",
+    );
     let after_n: u32 = String::from_utf8_lossy(&after.stdout)
         .trim()
         .parse()
@@ -473,11 +484,15 @@ fn commit_flag_creates_single_commit() {
     assert_eq!(after_n, before_n + 1, "exactly one new commit expected");
 
     // Commit message should include the new version.
-    let msg = Command::new("git")
-        .current_dir(tmp.path())
-        .args(["log", "-1", "--pretty=%B"])
-        .output()
-        .unwrap();
+    let msg = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(tmp.path())
+                .args(["log", "-1", "--pretty=%B"]);
+            cmd
+        },
+        "git",
+    );
     let msg = String::from_utf8_lossy(&msg.stdout);
     assert!(
         msg.contains("0.1.1"),
@@ -658,11 +673,15 @@ changelog:
         "feat: add a sparkly new feature",
     );
 
-    let before = Command::new("git")
-        .current_dir(tmp.path())
-        .args(["rev-list", "--count", "HEAD"])
-        .output()
-        .unwrap();
+    let before = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(tmp.path())
+                .args(["rev-list", "--count", "HEAD"]);
+            cmd
+        },
+        "git",
+    );
     let before_n: u32 = String::from_utf8_lossy(&before.stdout)
         .trim()
         .parse()
@@ -679,11 +698,15 @@ changelog:
         String::from_utf8_lossy(&out.stderr)
     );
 
-    let after = Command::new("git")
-        .current_dir(tmp.path())
-        .args(["rev-list", "--count", "HEAD"])
-        .output()
-        .unwrap();
+    let after = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(tmp.path())
+                .args(["rev-list", "--count", "HEAD"]);
+            cmd
+        },
+        "git",
+    );
     let after_n: u32 = String::from_utf8_lossy(&after.stdout)
         .trim()
         .parse()
@@ -695,11 +718,20 @@ changelog:
     );
 
     // Diff of the new commit must touch BOTH Cargo.toml and CHANGELOG.md.
-    let diff = Command::new("git")
-        .current_dir(tmp.path())
-        .args(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"])
-        .output()
-        .unwrap();
+    let diff = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(tmp.path()).args([
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                "HEAD",
+            ]);
+            cmd
+        },
+        "git",
+    );
     let names = String::from_utf8_lossy(&diff.stdout);
     assert!(
         names.lines().any(|l| l == "Cargo.toml"),
@@ -775,11 +807,20 @@ changelog:
     );
 
     // ...and the bump commit touches only Cargo.toml, never CHANGELOG.md.
-    let diff = Command::new("git")
-        .current_dir(tmp.path())
-        .args(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"])
-        .output()
-        .unwrap();
+    let diff = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(tmp.path()).args([
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                "HEAD",
+            ]);
+            cmd
+        },
+        "git",
+    );
     let names = String::from_utf8_lossy(&diff.stdout);
     assert!(
         names.lines().any(|l| l == "Cargo.toml"),
@@ -905,11 +946,20 @@ changelog:
     );
 
     // The bump commit must NOT reference a CHANGELOG.md.
-    let diff = Command::new("git")
-        .current_dir(tmp.path())
-        .args(["diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD"])
-        .output()
-        .unwrap();
+    let diff = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(tmp.path()).args([
+                "diff-tree",
+                "--no-commit-id",
+                "--name-only",
+                "-r",
+                "HEAD",
+            ]);
+            cmd
+        },
+        "git",
+    );
     let names = String::from_utf8_lossy(&diff.stdout);
     assert!(
         names.lines().any(|l| l == "Cargo.toml"),

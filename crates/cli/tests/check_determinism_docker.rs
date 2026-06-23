@@ -237,16 +237,23 @@ fn docker_oci_tar_is_byte_stable_on_minimal_dockerfile() {
         "FROM scratch\nLABEL anodize.fixture=det-harness\n",
     )
     .unwrap();
-    Command::new("git")
-        .args(["add", "Dockerfile"])
-        .current_dir(repo)
-        .status()
-        .expect("staging Dockerfile");
-    Command::new("git")
-        .args(["commit", "-q", "-m", "add Dockerfile"])
-        .current_dir(repo)
-        .status()
-        .expect("committing Dockerfile");
+    let _ = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(["add", "Dockerfile"]).current_dir(repo);
+            cmd
+        },
+        "git",
+    );
+    let _ = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(["commit", "-q", "-m", "add Dockerfile"])
+                .current_dir(repo);
+            cmd
+        },
+        "git",
+    );
 
     let report_path = repo.join("det.json");
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))

@@ -376,22 +376,32 @@ crates:
 "#,
     );
     // Commit the freshly-written config so the repo is clean.
-    std::process::Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(tmp.path())
-        .status()
-        .ok();
-    std::process::Command::new("git")
-        .args(["commit", "--amend", "--no-edit"])
-        .current_dir(tmp.path())
-        .status()
-        .ok();
+    let _ = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = std::process::Command::new("git");
+            cmd.args(["add", "-A"]).current_dir(tmp.path());
+            cmd
+        },
+        "git",
+    );
+    let _ = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = std::process::Command::new("git");
+            cmd.args(["commit", "--amend", "--no-edit"])
+                .current_dir(tmp.path());
+            cmd
+        },
+        "git",
+    );
     // Re-tag HEAD so tag_points_at_head still succeeds after amending.
-    std::process::Command::new("git")
-        .args(["tag", "-f", "v0.1.0"])
-        .current_dir(tmp.path())
-        .status()
-        .ok();
+    let _ = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = std::process::Command::new("git");
+            cmd.args(["tag", "-f", "v0.1.0"]).current_dir(tmp.path());
+            cmd
+        },
+        "git",
+    );
 
     let start = Instant::now();
 
@@ -477,21 +487,31 @@ crates:
     );
     // Commit the freshly-written config so the dirty-repo gate (which runs
     // before the before-hooks) does not abort first.
-    Command::new("git")
-        .args(["add", "-A"])
-        .current_dir(tmp.path())
-        .status()
-        .ok();
-    Command::new("git")
-        .args(["commit", "--amend", "--no-edit"])
-        .current_dir(tmp.path())
-        .status()
-        .ok();
-    Command::new("git")
-        .args(["tag", "-f", "v0.1.0"])
-        .current_dir(tmp.path())
-        .status()
-        .ok();
+    let _ = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(["add", "-A"]).current_dir(tmp.path());
+            cmd
+        },
+        "git",
+    );
+    let _ = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(["commit", "--amend", "--no-edit"])
+                .current_dir(tmp.path());
+            cmd
+        },
+        "git",
+    );
+    let _ = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(["tag", "-f", "v0.1.0"]).current_dir(tmp.path());
+            cmd
+        },
+        "git",
+    );
 
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["release", "--snapshot", "--verbose"])
@@ -1703,11 +1723,14 @@ fn test_e2e_workspace_change_detection_without_force() {
 
     // Initialize git repo (creates initial commit and v0.1.0 tag)
     let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(tmp.path())
-            .output()
-            .expect("git command failed");
+        let output = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args).current_dir(tmp.path());
+                cmd
+            },
+            "git",
+        );
         assert!(
             output.status.success(),
             "git {:?} failed: {}",
@@ -1847,11 +1870,14 @@ fn test_e2e_release_change_detection_from_subdir() {
     .unwrap();
 
     let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(tmp.path())
-            .output()
-            .expect("git command failed");
+        let output = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args).current_dir(tmp.path());
+                cmd
+            },
+            "git",
+        );
         assert!(
             output.status.success(),
             "git {:?} failed: {}",
@@ -3434,11 +3460,14 @@ fn test_e2e_changelog_with_groups() {
     create_test_project(tmp.path());
 
     let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(tmp.path())
-            .output()
-            .expect("git command failed");
+        let output = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args).current_dir(tmp.path());
+                cmd
+            },
+            "git",
+        );
         assert!(
             output.status.success(),
             "git {:?} failed: {}",
@@ -3605,11 +3634,14 @@ fn changelog_range_start_overrides_auto_discovered_previous_tag() {
     create_test_project(tmp.path());
 
     let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(tmp.path())
-            .output()
-            .expect("git command failed");
+        let output = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args).current_dir(tmp.path());
+                cmd
+            },
+            "git",
+        );
         assert!(
             output.status.success(),
             "git {:?} failed: {}",
@@ -3741,11 +3773,14 @@ fn changelog_nonexistent_range_ref_errors() {
     create_test_project(tmp.path());
 
     let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(tmp.path())
-            .output()
-            .expect("git command failed");
+        let output = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args).current_dir(tmp.path());
+                cmd
+            },
+            "git",
+        );
         assert!(
             output.status.success(),
             "git {:?} failed: {}",
@@ -4344,11 +4379,14 @@ fn test_e2e_full_dry_run_all_stages() {
     create_test_project(tmp.path());
 
     let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(tmp.path())
-            .output()
-            .expect("git command failed");
+        let output = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args).current_dir(tmp.path());
+                cmd
+            },
+            "git",
+        );
         assert!(
             output.status.success(),
             "git {:?} failed: {}",
@@ -4771,11 +4809,14 @@ fn test_e2e_changelog_header_footer() {
     create_test_project(tmp.path());
 
     let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(tmp.path())
-            .output()
-            .expect("git command failed");
+        let output = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args).current_dir(tmp.path());
+                cmd
+            },
+            "git",
+        );
         assert!(
             output.status.success(),
             "git {:?} failed: {}",
@@ -4887,11 +4928,14 @@ fn test_strict_mode_cross_axis_smoke() {
     create_test_project(tmp.path());
 
     let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(tmp.path())
-            .output()
-            .expect("git command failed");
+        let output = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args).current_dir(tmp.path());
+                cmd
+            },
+            "git",
+        );
         assert!(
             output.status.success(),
             "git {:?} failed: {}",
@@ -5029,11 +5073,14 @@ fn test_e2e_changelog_exclude_filters() {
     create_test_project(tmp.path());
 
     let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(tmp.path())
-            .output()
-            .expect("git command failed");
+        let output = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args).current_dir(tmp.path());
+                cmd
+            },
+            "git",
+        );
         assert!(
             output.status.success(),
             "git {:?} failed: {}",

@@ -238,15 +238,19 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let run = |args: &[&str]| {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@t.com")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@t.com")
-                .output()
-                .unwrap();
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args)
+                        .current_dir(dir)
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                    cmd
+                },
+                "git",
+            );
             assert!(out.status.success(), "git {args:?} failed");
         };
         run(&["init"]);
@@ -257,11 +261,14 @@ mod tests {
         run(&["commit", "-m", "c1"]);
 
         let capture = |args: &[&str]| -> String {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .output()
-                .unwrap();
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args).current_dir(dir);
+                    cmd
+                },
+                "git",
+            );
             assert!(out.status.success(), "git {args:?} failed");
             String::from_utf8(out.stdout).unwrap().trim().to_string()
         };

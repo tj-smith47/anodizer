@@ -396,12 +396,17 @@ mod tests {
         let work = tempfile::tempdir().expect("work");
 
         assert!(
-            Command::new("git")
-                .args(["init", "--bare", "-b", "master"])
-                .arg(bare.path())
-                .status()
-                .unwrap()
-                .success()
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["init", "--bare", "-b", "master"])
+                        .arg(bare.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success()
         );
 
         for args in [
@@ -411,41 +416,59 @@ mod tests {
             vec!["config", "commit.gpgsign", "false"],
         ] {
             assert!(
-                Command::new("git")
-                    .args(&args)
-                    .current_dir(work.path())
-                    .status()
-                    .unwrap()
-                    .success()
+                anodizer_core::test_helpers::output_with_spawn_retry(
+                    || {
+                        let mut cmd = Command::new("git");
+                        cmd.args(&args).current_dir(work.path());
+                        cmd
+                    },
+                    "git",
+                )
+                .status
+                .success()
             );
         }
         std::fs::write(work.path().join("README"), "hi\n").unwrap();
         for args in [vec!["add", "README"], vec!["commit", "-m", "initial"]] {
             assert!(
-                Command::new("git")
-                    .args(&args)
-                    .current_dir(work.path())
-                    .status()
-                    .unwrap()
-                    .success()
+                anodizer_core::test_helpers::output_with_spawn_retry(
+                    || {
+                        let mut cmd = Command::new("git");
+                        cmd.args(&args).current_dir(work.path());
+                        cmd
+                    },
+                    "git",
+                )
+                .status
+                .success()
             );
         }
         assert!(
-            Command::new("git")
-                .args(["remote", "add", "origin"])
-                .arg(bare.path())
-                .current_dir(work.path())
-                .status()
-                .unwrap()
-                .success()
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["remote", "add", "origin"])
+                        .arg(bare.path())
+                        .current_dir(work.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success()
         );
         assert!(
-            Command::new("git")
-                .args(["push", "-u", "origin", "master"])
-                .current_dir(work.path())
-                .status()
-                .unwrap()
-                .success()
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["push", "-u", "origin", "master"])
+                        .current_dir(work.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success()
         );
         (bare.path().to_string_lossy().into_owned(), bare, work)
     }
@@ -572,11 +595,14 @@ mod tests {
 
         // core.sshCommand must reference the PERSISTED key, not the
         // (already-deleted) bootstrap copy.
-        let cfg = Command::new("git")
-            .args(["config", "core.sshCommand"])
-            .current_dir(&dest)
-            .output()
-            .unwrap();
+        let cfg = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(["config", "core.sshCommand"]).current_dir(&dest);
+                cmd
+            },
+            "git",
+        );
         let cfg = String::from_utf8_lossy(&cfg.stdout);
         assert!(
             cfg.contains(&key_path.display().to_string()),

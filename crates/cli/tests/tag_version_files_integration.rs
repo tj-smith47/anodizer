@@ -18,11 +18,14 @@ fn anodizer() -> Command {
 }
 
 fn run_git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir).args(args);
+            cmd
+        },
+        "git",
+    );
     assert!(
         out.status.success(),
         "git {args:?} failed: {}",
@@ -49,11 +52,14 @@ fn read(dir: &Path, rel: &str) -> String {
 /// The version_files staged into the bump commit must be committed, not left
 /// as an unstaged working-tree edit. Returns the file's content at HEAD.
 fn show_head(dir: &Path, rel: &str) -> String {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(["show", &format!("HEAD:{rel}")])
-        .output()
-        .unwrap();
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir).args(["show", &format!("HEAD:{rel}")]);
+            cmd
+        },
+        "git",
+    );
     assert!(
         out.status.success(),
         "git show HEAD:{rel} failed: {}",

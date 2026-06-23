@@ -1076,20 +1076,26 @@ mod tests {
     }
 
     fn git_ok(dir: &Path, args: &[&str]) {
-        let status = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .status()
-            .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
-        assert!(status.success(), "git {args:?} failed");
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args).current_dir(dir);
+                cmd
+            },
+            "git",
+        );
+        assert!(out.status.success(), "git {args:?} failed");
     }
 
     fn git_stdout(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args).current_dir(dir);
+                cmd
+            },
+            "git",
+        );
         assert!(out.status.success(), "git {args:?} failed");
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
@@ -1116,13 +1122,18 @@ mod tests {
         git_ok(seed.path(), &["commit", "-m", "seed tap"]);
         // `git remote add` takes a path; pass it as an OsStr arg.
         assert!(
-            Command::new("git")
-                .args(["remote", "add", "origin"])
-                .arg(bare.path())
-                .current_dir(seed.path())
-                .status()
-                .expect("git remote add origin")
-                .success(),
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["remote", "add", "origin"])
+                        .arg(bare.path())
+                        .current_dir(seed.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success(),
             "git remote add origin failed"
         );
         git_ok(seed.path(), &["push", "-u", "origin", branch]);
@@ -1512,11 +1523,16 @@ mod tests {
         let formula = tap_show(bare_path, "main", "Formula/mytool.rb");
         assert!(formula.contains("class Mytool < Formula"), "{formula}");
         // The root path must NOT exist.
-        let root = Command::new("git")
-            .args(["cat-file", "-e", "main:mytool.rb"])
-            .current_dir(bare_path)
-            .status()
-            .expect("git cat-file");
+        let root = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(["cat-file", "-e", "main:mytool.rb"])
+                    .current_dir(bare_path);
+                cmd
+            },
+            "git",
+        )
+        .status;
         assert!(
             !root.success(),
             "formula must live under Formula/, not the tap root"

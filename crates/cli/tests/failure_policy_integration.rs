@@ -62,11 +62,14 @@ fn setup_tagged_repo_with_origin(config: &str) -> (TempDir, TempDir) {
 }
 
 fn git_stdout(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("git spawns");
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(args).current_dir(dir);
+            cmd
+        },
+        "git",
+    );
     assert!(out.status.success(), "git {args:?} failed: {out:?}");
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }

@@ -2881,12 +2881,16 @@ mod tests {
         fn with_hermetic_git_cwd(body: impl FnOnce()) {
             let tmp = tempfile::tempdir().unwrap();
             assert!(
-                std::process::Command::new("git")
-                    .args(["init", "-q"])
-                    .current_dir(tmp.path())
-                    .status()
-                    .expect("spawn git init")
-                    .success(),
+                anodizer_core::test_helpers::output_with_spawn_retry(
+                    || {
+                        let mut cmd = std::process::Command::new("git");
+                        cmd.args(["init", "-q"]).current_dir(tmp.path());
+                        cmd
+                    },
+                    "git",
+                )
+                .status
+                .success(),
                 "git init must succeed for the hermetic tag-test repo",
             );
             let orig = std::env::current_dir().unwrap();

@@ -1264,15 +1264,19 @@ fn test_integration_changelog_stage_with_real_git_repo() {
 
     // Helper to run git commands in the temp repo
     let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(repo)
-            .env("GIT_AUTHOR_NAME", "Test")
-            .env("GIT_AUTHOR_EMAIL", "test@example.com")
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .output()
-            .unwrap();
+        let output = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args)
+                    .current_dir(repo)
+                    .env("GIT_AUTHOR_NAME", "Test")
+                    .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                    .env("GIT_COMMITTER_NAME", "Test")
+                    .env("GIT_COMMITTER_EMAIL", "test@example.com");
+                cmd
+            },
+            "git",
+        );
         assert!(
             output.status.success(),
             "git {:?} failed: {}",
@@ -1420,15 +1424,19 @@ fn test_changelog_dist_write_gated_on_preview_flag() {
     let tmp = tempfile::tempdir().unwrap();
     let repo = tmp.path();
     let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(repo)
-            .env("GIT_AUTHOR_NAME", "Test")
-            .env("GIT_AUTHOR_EMAIL", "test@example.com")
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .output()
-            .unwrap();
+        let output = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args)
+                    .current_dir(repo)
+                    .env("GIT_AUTHOR_NAME", "Test")
+                    .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                    .env("GIT_COMMITTER_NAME", "Test")
+                    .env("GIT_COMMITTER_EMAIL", "test@example.com");
+                cmd
+            },
+            "git",
+        );
         assert!(
             output.status.success(),
             "git {:?} failed: {}",
@@ -1671,15 +1679,19 @@ fn test_changelog_written_to_correct_output_location() {
 
     // Helper to run git commands
     let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(repo)
-            .env("GIT_AUTHOR_NAME", "Test")
-            .env("GIT_AUTHOR_EMAIL", "test@example.com")
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .output()
-            .unwrap();
+        let output = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args)
+                    .current_dir(repo)
+                    .env("GIT_AUTHOR_NAME", "Test")
+                    .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                    .env("GIT_COMMITTER_NAME", "Test")
+                    .env("GIT_COMMITTER_EMAIL", "test@example.com");
+                cmd
+            },
+            "git",
+        );
         assert!(output.status.success());
     };
 
@@ -1832,15 +1844,19 @@ fn test_changelog_create_dist_dir_failure() {
 
     // Set up a minimal git repo so the stage gets past git operations
     let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(repo)
-            .env("GIT_AUTHOR_NAME", "Test")
-            .env("GIT_AUTHOR_EMAIL", "test@example.com")
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .output()
-            .unwrap();
+        let output = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args)
+                    .current_dir(repo)
+                    .env("GIT_AUTHOR_NAME", "Test")
+                    .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                    .env("GIT_COMMITTER_NAME", "Test")
+                    .env("GIT_COMMITTER_EMAIL", "test@example.com");
+                cmd
+            },
+            "git",
+        );
         assert!(output.status.success());
     };
 
@@ -1899,15 +1915,19 @@ fn test_changelog_write_failure_on_readonly_path() {
     let repo = tmp.path();
 
     let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(repo)
-            .env("GIT_AUTHOR_NAME", "Test")
-            .env("GIT_AUTHOR_EMAIL", "test@example.com")
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .output()
-            .unwrap();
+        let output = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args)
+                    .current_dir(repo)
+                    .env("GIT_AUTHOR_NAME", "Test")
+                    .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                    .env("GIT_COMMITTER_NAME", "Test")
+                    .env("GIT_COMMITTER_EMAIL", "test@example.com");
+                cmd
+            },
+            "git",
+        );
         assert!(output.status.success());
     };
 
@@ -1967,15 +1987,19 @@ fn test_changelog_dry_run_writes_file() {
     let dist = repo.join("dist");
 
     let git = |args: &[&str]| {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(repo)
-            .env("GIT_AUTHOR_NAME", "Test")
-            .env("GIT_AUTHOR_EMAIL", "test@example.com")
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .output()
-            .unwrap();
+        let output = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args)
+                    .current_dir(repo)
+                    .env("GIT_AUTHOR_NAME", "Test")
+                    .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                    .env("GIT_COMMITTER_NAME", "Test")
+                    .env("GIT_COMMITTER_EMAIL", "test@example.com");
+                cmd
+            },
+            "git",
+        );
         assert!(output.status.success());
     };
 
@@ -3150,32 +3174,49 @@ fn test_changelog_stage_github_no_prev_tag_uses_git_fallback() {
     let repo = tmp.path();
 
     // Initialize a fresh git repo with one commit but no tags.
-    Command::new("git")
-        .args(["init", "-q"])
-        .current_dir(repo)
-        .status()
-        .unwrap();
-    Command::new("git")
-        .args(["config", "user.email", "test@example.com"])
-        .current_dir(repo)
-        .status()
-        .unwrap();
-    Command::new("git")
-        .args(["config", "user.name", "Test"])
-        .current_dir(repo)
-        .status()
-        .unwrap();
+    let _ = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(["init", "-q"]).current_dir(repo);
+            cmd
+        },
+        "git",
+    );
+    let _ = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(["config", "user.email", "test@example.com"])
+                .current_dir(repo);
+            cmd
+        },
+        "git",
+    );
+    let _ = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(["config", "user.name", "Test"]).current_dir(repo);
+            cmd
+        },
+        "git",
+    );
     std::fs::write(repo.join("README.md"), "test").unwrap();
-    Command::new("git")
-        .args(["add", "."])
-        .current_dir(repo)
-        .status()
-        .unwrap();
-    Command::new("git")
-        .args(["commit", "-q", "-m", "feat: initial commit"])
-        .current_dir(repo)
-        .status()
-        .unwrap();
+    let _ = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(["add", "."]).current_dir(repo);
+            cmd
+        },
+        "git",
+    );
+    let _ = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(["commit", "-q", "-m", "feat: initial commit"])
+                .current_dir(repo);
+            cmd
+        },
+        "git",
+    );
 
     let dist = repo.join("dist");
     std::fs::create_dir_all(&dist).unwrap();
@@ -3763,12 +3804,16 @@ fn init_repo_with_origin(dir: &std::path::Path, remote_url: &str) {
         vec!["config", "user.name", "Test"],
         vec!["remote", "add", "origin", remote_url],
     ] {
-        let ok = Command::new("git")
-            .args(&args)
-            .current_dir(dir)
-            .status()
-            .expect("git command runs")
-            .success();
+        let ok = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(&args).current_dir(dir);
+                cmd
+            },
+            "git",
+        )
+        .status
+        .success();
         assert!(ok, "git {args:?} failed");
     }
 }
@@ -4253,12 +4298,16 @@ mod refresh_unreleased_tests {
 
     /// Run `git <args>` inside `dir`, asserting success.
     fn git(dir: &Path, args: &[&str]) {
-        let ok = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .status()
-            .expect("spawn git")
-            .success();
+        let ok = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args).current_dir(dir);
+                cmd
+            },
+            "git",
+        )
+        .status
+        .success();
         assert!(ok, "git {:?} failed in {}", args, dir.display());
     }
 

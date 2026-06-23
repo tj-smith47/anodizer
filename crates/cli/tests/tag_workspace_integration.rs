@@ -17,11 +17,14 @@ fn anodizer() -> Command {
 }
 
 fn run_git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("git {:?} failed to spawn: {e}", args));
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir).args(args);
+            cmd
+        },
+        "git",
+    );
     assert!(
         out.status.success(),
         "git {:?} failed: {}",
@@ -115,11 +118,14 @@ fn read_workspace_dep_version(root: &Path, name: &str) -> Option<String> {
 }
 
 fn git_tag_exists(dir: &Path, tag: &str) -> bool {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(["tag", "-l", tag])
-        .output()
-        .unwrap();
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir).args(["tag", "-l", tag]);
+            cmd
+        },
+        "git",
+    );
     !String::from_utf8_lossy(&out.stdout).trim().is_empty()
 }
 
@@ -244,11 +250,14 @@ fn workspace_mode_skips_when_already_at_target() {
     fs::write(tmp.path().join("Cargo.toml"), &root).unwrap();
     git_add_commit(tmp.path(), "chore: bump workspace manually #patch");
 
-    let head_before = Command::new("git")
-        .current_dir(tmp.path())
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .unwrap();
+    let head_before = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(tmp.path()).args(["rev-parse", "HEAD"]);
+            cmd
+        },
+        "git",
+    );
     let head_before = String::from_utf8_lossy(&head_before.stdout)
         .trim()
         .to_string();
@@ -269,11 +278,14 @@ fn workspace_mode_skips_when_already_at_target() {
         "expected new_tag=v0.1.1: {stdout}"
     );
 
-    let head_after = Command::new("git")
-        .current_dir(tmp.path())
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .unwrap();
+    let head_after = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(tmp.path()).args(["rev-parse", "HEAD"]);
+            cmd
+        },
+        "git",
+    );
     let head_after = String::from_utf8_lossy(&head_after.stdout)
         .trim()
         .to_string();

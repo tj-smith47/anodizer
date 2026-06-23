@@ -1,0 +1,5 @@
+# Warn at 60s, kill at 180s (3×60s) so a wedged subprocess fails fast and named
+# instead of stalling the job for hours. 60s clears the ~23s slowest healthy
+# test (config_shape_matrix_renders_all_formats on Windows) with margin.
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 3 }

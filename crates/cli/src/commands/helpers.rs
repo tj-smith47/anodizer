@@ -2999,12 +2999,16 @@ list:
     fn with_empty_git_repo_cwd(body: impl FnOnce()) {
         let tmp = tempfile::tempdir().unwrap();
         assert!(
-            std::process::Command::new("git")
-                .args(["init", "-q"])
-                .current_dir(tmp.path())
-                .status()
-                .expect("spawn git init")
-                .success(),
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.args(["init", "-q"]).current_dir(tmp.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success(),
             "git init must succeed",
         );
         let orig = std::env::current_dir().unwrap();

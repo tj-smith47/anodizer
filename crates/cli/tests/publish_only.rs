@@ -215,11 +215,14 @@ crates:
 /// Resolve the fixture repo's HEAD commit SHA so the publish-only
 /// commit cross-check (preserved.commit vs ctx.FullCommit) lines up.
 fn head_commit(repo: &Path) -> String {
-    let out = Command::new("git")
-        .current_dir(repo)
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .expect("git rev-parse HEAD");
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(repo).args(["rev-parse", "HEAD"]);
+            cmd
+        },
+        "git",
+    );
     assert!(out.status.success(), "git rev-parse failed: {:?}", out);
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }

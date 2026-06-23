@@ -1194,15 +1194,19 @@ mod tests {
 
     fn init_repo_with_commits(dir: &Path, files: &[&str]) {
         let run = |args: &[&str]| {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@t.com")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@t.com")
-                .output()
-                .unwrap();
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args)
+                        .current_dir(dir)
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                    cmd
+                },
+                "git",
+            );
             assert!(out.status.success(), "git {args:?} failed");
         };
         run(&["init"]);
@@ -1220,12 +1224,15 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         init_repo_with_commits(tmp.path(), &["a"]);
         let expected = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(tmp.path())
-                .output()
-                .unwrap()
-                .stdout,
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["rev-parse", "HEAD"]).current_dir(tmp.path());
+                    cmd
+                },
+                "git",
+            )
+            .stdout,
         )
         .unwrap()
         .trim()
@@ -1239,12 +1246,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         init_repo_with_commits(tmp.path(), &["a"]);
         let expected = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "--short", "HEAD"])
-                .current_dir(tmp.path())
-                .output()
-                .unwrap()
-                .stdout,
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["rev-parse", "--short", "HEAD"])
+                        .current_dir(tmp.path());
+                    cmd
+                },
+                "git",
+            )
+            .stdout,
         )
         .unwrap()
         .trim()
@@ -1259,30 +1270,38 @@ mod tests {
         let dir = tmp.path();
         init_repo_with_commits(dir, &["a"]);
         let run = |args: &[&str]| {
-            Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@t.com")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@t.com")
-                .output()
-                .unwrap();
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args)
+                        .current_dir(dir)
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                    cmd
+                },
+                "git",
+            );
         };
         run(&["tag", "v1.0.0"]);
         assert!(!has_commits_since_tag_in(dir, "v1.0.0").unwrap());
     }
 
     fn git_in(dir: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .env("GIT_AUTHOR_NAME", "t")
-            .env("GIT_AUTHOR_EMAIL", "t@t.com")
-            .env("GIT_COMMITTER_NAME", "t")
-            .env("GIT_COMMITTER_EMAIL", "t@t.com")
-            .output()
-            .unwrap();
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args)
+                    .current_dir(dir)
+                    .env("GIT_AUTHOR_NAME", "t")
+                    .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                    .env("GIT_COMMITTER_NAME", "t")
+                    .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                cmd
+            },
+            "git",
+        );
         assert!(out.status.success(), "git {args:?} failed");
     }
 
@@ -1371,15 +1390,19 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let run = |args: &[&str]| {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@t.com")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@t.com")
-                .output()
-                .unwrap();
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args)
+                        .current_dir(dir)
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                    cmd
+                },
+                "git",
+            );
             assert!(out.status.success(), "git {args:?} failed");
         };
         run(&["-c", "init.defaultBranch=t1-test-branch", "init"]);
@@ -1397,15 +1420,19 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let run = |args: &[&str]| {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@t.com")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@t.com")
-                .output()
-                .unwrap();
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args)
+                        .current_dir(dir)
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                    cmd
+                },
+                "git",
+            );
             assert!(out.status.success(), "git {args:?} failed");
         };
         run(&["-c", "init.defaultBranch=master", "init"]);
@@ -1464,15 +1491,19 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let run = |args: &[&str]| {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@t.com")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@t.com")
-                .output()
-                .unwrap();
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args)
+                        .current_dir(dir)
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                    cmd
+                },
+                "git",
+            );
             assert!(out.status.success(), "git {args:?} failed");
         };
         // Build a repo whose HEAD is detached AND no local branch points
@@ -1522,15 +1553,19 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let run = |args: &[&str]| {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@t.com")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@t.com")
-                .output()
-                .unwrap();
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args)
+                        .current_dir(dir)
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                    cmd
+                },
+                "git",
+            );
             assert!(out.status.success(), "git {args:?} failed");
         };
         run(&["-c", "init.defaultBranch=master", "init"]);
@@ -1553,15 +1588,19 @@ mod tests {
         let bare = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let run_in = |cwd: &Path, args: &[&str]| {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(cwd)
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@t.com")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@t.com")
-                .output()
-                .unwrap();
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args)
+                        .current_dir(cwd)
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                    cmd
+                },
+                "git",
+            );
             assert!(out.status.success(), "git {args:?} failed");
         };
         run_in(
@@ -1595,11 +1634,14 @@ mod tests {
         // bailing on the "nothing to commit" path.
         let created = stage_and_commit_in(dir, &["a"], "chore: should be a no-op").unwrap();
         assert!(!created, "no diff → no commit should be created");
-        let log = Command::new("git")
-            .args(["log", "--oneline"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
+        let log = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(["log", "--oneline"]).current_dir(dir);
+                cmd
+            },
+            "git",
+        );
         let log_text = String::from_utf8_lossy(&log.stdout);
         assert!(
             !log_text.contains("should be a no-op"),
@@ -1615,11 +1657,14 @@ mod tests {
         std::fs::write(dir.join("a"), "changed").unwrap();
         let created = stage_and_commit_in(dir, &["a"], "chore: real change").unwrap();
         assert!(created, "real change → commit must be created");
-        let log = Command::new("git")
-            .args(["log", "-1", "--pretty=%s"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
+        let log = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(["log", "-1", "--pretty=%s"]).current_dir(dir);
+                cmd
+            },
+            "git",
+        );
         let subject = String::from_utf8_lossy(&log.stdout).trim().to_string();
         assert_eq!(subject, "chore: real change");
     }
@@ -1668,17 +1713,22 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let run_env = |args: &[&str], extra: &[(&str, &str)]| {
-            let mut cmd = Command::new("git");
-            cmd.args(args)
-                .current_dir(dir)
-                .env("GIT_AUTHOR_NAME", "bootstrap")
-                .env("GIT_AUTHOR_EMAIL", "bootstrap@b.com")
-                .env("GIT_COMMITTER_NAME", "bootstrap")
-                .env("GIT_COMMITTER_EMAIL", "bootstrap@b.com");
-            for (k, v) in extra {
-                cmd.env(k, v);
-            }
-            let out = cmd.output().unwrap();
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args)
+                        .current_dir(dir)
+                        .env("GIT_AUTHOR_NAME", "bootstrap")
+                        .env("GIT_AUTHOR_EMAIL", "bootstrap@b.com")
+                        .env("GIT_COMMITTER_NAME", "bootstrap")
+                        .env("GIT_COMMITTER_EMAIL", "bootstrap@b.com");
+                    for (k, v) in extra {
+                        cmd.env(k, v);
+                    }
+                    cmd
+                },
+                "git",
+            );
             assert!(
                 out.status.success(),
                 "git {args:?} failed: {}",
@@ -1706,13 +1756,17 @@ mod tests {
 
         // The new HEAD commit's author email must be the injected one,
         // proving the env threading reached the git child.
-        let out = Command::new("git")
-            .current_dir(dir)
-            .args(["log", "-1", "--format=%ae"])
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("LC_ALL", "C")
-            .output()
-            .unwrap();
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.current_dir(dir)
+                    .args(["log", "-1", "--format=%ae"])
+                    .env("GIT_TERMINAL_PROMPT", "0")
+                    .env("LC_ALL", "C");
+                cmd
+            },
+            "git",
+        );
         let author_email = String::from_utf8_lossy(&out.stdout).trim().to_string();
         assert_eq!(
             author_email, "rollback-bot@anodize.test",
@@ -1721,13 +1775,17 @@ mod tests {
 
         // Repo config must remain unchanged — env-only fallback, no
         // `git config user.email ...` mutation.
-        let cfg = Command::new("git")
-            .current_dir(dir)
-            .args(["config", "--local", "--get", "user.email"])
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("LC_ALL", "C")
-            .output()
-            .unwrap();
+        let cfg = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.current_dir(dir)
+                    .args(["config", "--local", "--get", "user.email"])
+                    .env("GIT_TERMINAL_PROMPT", "0")
+                    .env("LC_ALL", "C");
+                cmd
+            },
+            "git",
+        );
         assert!(
             !cfg.status.success() || cfg.stdout.is_empty(),
             "revert must not write user.email into the repo's local config; got: {}",
@@ -1744,15 +1802,19 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let run = |args: &[&str]| {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@t.com")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@t.com")
-                .output()
-                .unwrap();
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args)
+                        .current_dir(dir)
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                    cmd
+                },
+                "git",
+            );
             assert!(
                 out.status.success(),
                 "git {args:?} failed: {}",
@@ -1794,11 +1856,14 @@ mod tests {
             !dir.join(".git/REVERT_HEAD").exists(),
             ".git/REVERT_HEAD must be cleaned up after --abort"
         );
-        let status_out = Command::new("git")
-            .args(["status", "--porcelain"])
-            .current_dir(dir)
-            .output()
-            .unwrap();
+        let status_out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(["status", "--porcelain"]).current_dir(dir);
+                cmd
+            },
+            "git",
+        );
         assert!(
             status_out.stdout.is_empty(),
             "working tree must be clean after revert --abort; got:\n{}",
@@ -1815,15 +1880,19 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
         let run = |args: &[&str]| {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .env("GIT_AUTHOR_NAME", "t")
-                .env("GIT_AUTHOR_EMAIL", "t@t.com")
-                .env("GIT_COMMITTER_NAME", "t")
-                .env("GIT_COMMITTER_EMAIL", "t@t.com")
-                .output()
-                .unwrap();
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args)
+                        .current_dir(dir)
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                    cmd
+                },
+                "git",
+            );
             assert!(out.status.success(), "git {args:?} failed");
         };
         run(&["init", "-b", "master"]);
@@ -1900,17 +1969,21 @@ mod tests {
         let dir = tmp.path();
         let run = |args: &[&str]| {
             assert!(
-                Command::new("git")
-                    .args(args)
-                    .current_dir(dir)
-                    .env("GIT_AUTHOR_NAME", "t")
-                    .env("GIT_AUTHOR_EMAIL", "t@t.com")
-                    .env("GIT_COMMITTER_NAME", "t")
-                    .env("GIT_COMMITTER_EMAIL", "t@t.com")
-                    .output()
-                    .unwrap()
-                    .status
-                    .success()
+                anodizer_core::test_helpers::output_with_spawn_retry(
+                    || {
+                        let mut cmd = Command::new("git");
+                        cmd.args(args)
+                            .current_dir(dir)
+                            .env("GIT_AUTHOR_NAME", "t")
+                            .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                            .env("GIT_COMMITTER_NAME", "t")
+                            .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                        cmd
+                    },
+                    "git",
+                )
+                .status
+                .success()
             );
         };
         run(&["init"]);
@@ -1942,17 +2015,21 @@ mod tests {
         let dir = tmp.path();
         let run = |args: &[&str]| {
             assert!(
-                Command::new("git")
-                    .args(args)
-                    .current_dir(dir)
-                    .env("GIT_AUTHOR_NAME", "t")
-                    .env("GIT_AUTHOR_EMAIL", "t@t.com")
-                    .env("GIT_COMMITTER_NAME", "t")
-                    .env("GIT_COMMITTER_EMAIL", "t@t.com")
-                    .output()
-                    .unwrap()
-                    .status
-                    .success()
+                anodizer_core::test_helpers::output_with_spawn_retry(
+                    || {
+                        let mut cmd = Command::new("git");
+                        cmd.args(args)
+                            .current_dir(dir)
+                            .env("GIT_AUTHOR_NAME", "t")
+                            .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                            .env("GIT_COMMITTER_NAME", "t")
+                            .env("GIT_COMMITTER_EMAIL", "t@t.com");
+                        cmd
+                    },
+                    "git",
+                )
+                .status
+                .success()
             );
         };
         run(&["init"]);
@@ -2085,17 +2162,21 @@ mod tests {
 
     /// Run a git command in `dir` with a pinned identity, asserting success.
     fn g(dir: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .env("GIT_AUTHOR_NAME", "Ada")
-            .env("GIT_AUTHOR_EMAIL", "ada@x.com")
-            .env("GIT_COMMITTER_NAME", "Ada")
-            .env("GIT_COMMITTER_EMAIL", "ada@x.com")
-            .env("GIT_AUTHOR_DATE", "1715000000 +0000")
-            .env("GIT_COMMITTER_DATE", "1715000000 +0000")
-            .output()
-            .unwrap();
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args)
+                    .current_dir(dir)
+                    .env("GIT_AUTHOR_NAME", "Ada")
+                    .env("GIT_AUTHOR_EMAIL", "ada@x.com")
+                    .env("GIT_COMMITTER_NAME", "Ada")
+                    .env("GIT_COMMITTER_EMAIL", "ada@x.com")
+                    .env("GIT_AUTHOR_DATE", "1715000000 +0000")
+                    .env("GIT_COMMITTER_DATE", "1715000000 +0000");
+                cmd
+            },
+            "git",
+        );
         assert!(
             out.status.success(),
             "git {args:?} failed: {}",
@@ -2484,12 +2565,15 @@ mod tests {
         commit_in(dir, "feat: add new.txt", false).unwrap();
 
         let subject = String::from_utf8(
-            Command::new("git")
-                .args(["log", "-1", "--pretty=%s"])
-                .current_dir(dir)
-                .output()
-                .unwrap()
-                .stdout,
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["log", "-1", "--pretty=%s"]).current_dir(dir);
+                    cmd
+                },
+                "git",
+            )
+            .stdout,
         )
         .unwrap()
         .trim()

@@ -1162,11 +1162,14 @@ mod source_mutation_tests {
     // -- git-backed integration: the REAL resolve_crate_tag path --------------
 
     fn run_git(dir: &std::path::Path, args: &[&str]) {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = std::process::Command::new("git");
+                cmd.args(args).current_dir(dir);
+                cmd
+            },
+            "git",
+        );
         assert!(
             out.status.success(),
             "git {args:?} failed: {}",

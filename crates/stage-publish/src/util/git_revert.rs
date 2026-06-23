@@ -234,12 +234,17 @@ mod tests {
         let work = tempfile::tempdir().expect("work tempdir");
 
         // Init the bare remote.
-        let ok = Command::new("git")
-            .args(["init", "--bare", "-b", "master"])
-            .arg(bare.path())
-            .status()
-            .expect("git init --bare")
-            .success();
+        let ok = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(["init", "--bare", "-b", "master"])
+                    .arg(bare.path());
+                cmd
+            },
+            "git",
+        )
+        .status
+        .success();
         assert!(ok, "git init --bare failed");
 
         // Init the working clone, commit a file, push to the bare remote.
@@ -250,12 +255,16 @@ mod tests {
             vec!["config", "commit.gpgsign", "false"],
         ] {
             assert!(
-                Command::new("git")
-                    .args(&args)
-                    .current_dir(work.path())
-                    .status()
-                    .expect("git config")
-                    .success(),
+                anodizer_core::test_helpers::output_with_spawn_retry(
+                    || {
+                        let mut cmd = Command::new("git");
+                        cmd.args(&args).current_dir(work.path());
+                        cmd
+                    },
+                    "git",
+                )
+                .status
+                .success(),
                 "git {:?} failed",
                 args
             );
@@ -266,12 +275,16 @@ mod tests {
             vec!["commit", "-m", "initial commit"],
         ] {
             assert!(
-                Command::new("git")
-                    .args(&args)
-                    .current_dir(work.path())
-                    .status()
-                    .expect("git step")
-                    .success(),
+                anodizer_core::test_helpers::output_with_spawn_retry(
+                    || {
+                        let mut cmd = Command::new("git");
+                        cmd.args(&args).current_dir(work.path());
+                        cmd
+                    },
+                    "git",
+                )
+                .status
+                .success(),
                 "git {:?} failed",
                 args
             );
@@ -280,22 +293,32 @@ mod tests {
         // which OsStr-based Command::arg handles directly; keep it out of
         // the &str-loop above.
         assert!(
-            Command::new("git")
-                .args(["remote", "add", "origin"])
-                .arg(bare.path())
-                .current_dir(work.path())
-                .status()
-                .expect("git remote add")
-                .success(),
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["remote", "add", "origin"])
+                        .arg(bare.path())
+                        .current_dir(work.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success(),
             "git remote add origin failed"
         );
         assert!(
-            Command::new("git")
-                .args(["push", "-u", "origin", "master"])
-                .current_dir(work.path())
-                .status()
-                .expect("git push")
-                .success()
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["push", "-u", "origin", "master"])
+                        .current_dir(work.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success()
         );
 
         let url = bare.path().to_string_lossy().into_owned();
@@ -320,18 +343,27 @@ mod tests {
         run_git_revert_and_push(&target, &log).expect("revert+push ok");
 
         let verify_dir = tempfile::tempdir().expect("verify tempdir");
-        let ok = Command::new("git")
-            .args(["clone", "--depth=2", &url])
-            .arg(verify_dir.path().join("repo"))
-            .status()
-            .expect("git clone verify")
-            .success();
+        let ok = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(["clone", "--depth=2", &url])
+                    .arg(verify_dir.path().join("repo"));
+                cmd
+            },
+            "git",
+        )
+        .status
+        .success();
         assert!(ok, "git clone for verification failed");
-        let log_out = Command::new("git")
-            .args(["log", "-1", "--pretty=%s"])
-            .current_dir(verify_dir.path().join("repo"))
-            .output()
-            .expect("git log");
+        let log_out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(["log", "-1", "--pretty=%s"])
+                    .current_dir(verify_dir.path().join("repo"));
+                cmd
+            },
+            "git",
+        );
         let subject = String::from_utf8_lossy(&log_out.stdout).trim().to_string();
         assert!(
             subject.starts_with("Revert"),

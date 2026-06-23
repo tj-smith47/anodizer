@@ -441,12 +441,15 @@ pub fn hermetic_repo_with_tags(tags: &[&str]) -> tempfile::TempDir {
     let repo = tempfile::tempdir().expect("tempdir for hermetic per-crate repo");
     anodizer_core::test_helpers::init_git_repo_with_commits(repo.path(), &["initial"]);
     for tag in tags {
-        let status = std::process::Command::new("git")
-            .args(["tag", tag])
-            .current_dir(repo.path())
-            .status()
-            .unwrap_or_else(|e| panic!("git tag {tag}: {e}"));
-        assert!(status.success(), "git tag {tag} exited non-zero");
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = std::process::Command::new("git");
+                cmd.args(["tag", tag]).current_dir(repo.path());
+                cmd
+            },
+            "git",
+        );
+        assert!(out.status.success(), "git tag {tag} exited non-zero");
     }
     repo
 }

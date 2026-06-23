@@ -201,6 +201,11 @@ tasks:
     cmds:
       - .claude/scripts/audit-log-labels.sh
 
+  audit:test-spawn:
+    desc: "Guard: TEST-context git/node spawns route through output_with_spawn_retry (Windows nextest flake)."
+    cmds:
+      - .claude/scripts/audit-test-spawn-retry.sh
+
   lint:
     desc: Local pre-commit check (tidy, clippy, build, snapshot dry-run)
     cmds:
@@ -211,6 +216,7 @@ tasks:
       - task: audit:log
       - task: audit:log-labels
       - task: audit:test-isolation
+      - task: audit:test-spawn
 
   ci:
     desc: Run all CI checks (everything except cross-platform builds)

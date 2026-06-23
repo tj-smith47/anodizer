@@ -2583,21 +2583,27 @@ crates:
 
     #[cfg(unix)]
     fn git_ok(dir: &std::path::Path, args: &[&str]) {
-        let status = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .status()
-            .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
-        assert!(status.success(), "git {args:?} failed");
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = std::process::Command::new("git");
+                cmd.args(args).current_dir(dir);
+                cmd
+            },
+            "git",
+        );
+        assert!(out.status.success(), "git {args:?} failed");
     }
 
     #[cfg(unix)]
     fn git_stdout(dir: &std::path::Path, args: &[&str]) -> String {
-        let out = std::process::Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = std::process::Command::new("git");
+                cmd.args(args).current_dir(dir);
+                cmd
+            },
+            "git",
+        );
         assert!(out.status.success(), "git {args:?} failed");
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
@@ -2618,13 +2624,18 @@ crates:
         git_ok(seed.path(), &["add", "README"]);
         git_ok(seed.path(), &["commit", "-m", "seed"]);
         assert!(
-            std::process::Command::new("git")
-                .args(["remote", "add", "origin"])
-                .arg(bare.path())
-                .current_dir(seed.path())
-                .status()
-                .expect("git remote add")
-                .success(),
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.args(["remote", "add", "origin"])
+                        .arg(bare.path())
+                        .current_dir(seed.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success(),
             "git remote add failed"
         );
         git_ok(seed.path(), &["push", "-u", "origin", "master"]);

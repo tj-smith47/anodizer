@@ -706,16 +706,96 @@ pub fn create_fake_binary(dir: &Path, name: &str) -> std::path::PathBuf {
 }
 
 // ---------------------------------------------------------------------------
+// Transient-spawn retry (Windows nextest flakiness)
+// ---------------------------------------------------------------------------
+
+// NTSTATUS process-creation failure codes (as the i32 `ExitStatus::code()`
+// surfaces them on Windows). Windows GitHub runners intermittently fail to
+// *create* a child process under heavy parallel nextest load — desktop-heap /
+// handle pressure makes the loader abort before the program's first
+// instruction. The OS reports this as one of these NTSTATUS values, never as a
+// program-level error: a real `git`/`node` failure returns 1 or 128. Retrying
+// only on these codes therefore masks no genuine failure — the program never
+// ran. Treated as i32 to match the sign-extended value `code()` returns.
+#[cfg(windows)]
+const TRANSIENT_SPAWN_CODES: &[i32] = &[
+    0xC000_0142u32 as i32, // STATUS_DLL_INIT_FAILED
+    0xC000_0135u32 as i32, // STATUS_DLL_NOT_FOUND
+    0xC000_007Bu32 as i32, // STATUS_INVALID_IMAGE_FORMAT
+    0xC000_0017u32 as i32, // STATUS_NO_MEMORY
+    0xC000_0018u32 as i32, // STATUS_CONFLICTING_ADDRESSES
+];
+
+/// True iff `status` is a transient Windows process-creation failure (the OS
+/// failing to *start* the child, not the child erroring).
+///
+/// Always `false` on non-Windows targets — these NTSTATUS codes are
+/// Windows-only, and no Unix exit status is a "spawn-init failure".
+#[cfg(windows)]
+pub fn is_transient_spawn_failure(status: &std::process::ExitStatus) -> bool {
+    status
+        .code()
+        .is_some_and(|c| TRANSIENT_SPAWN_CODES.contains(&c))
+}
+
+/// True iff `status` is a transient Windows process-creation failure (the OS
+/// failing to *start* the child, not the child erroring).
+///
+/// Always `false` on non-Windows targets — these NTSTATUS codes are
+/// Windows-only, and no Unix exit status is a "spawn-init failure".
+#[cfg(not(windows))]
+pub fn is_transient_spawn_failure(_status: &std::process::ExitStatus) -> bool {
+    false
+}
+
+/// Run a freshly-built [`Command`] to completion, retrying on transient Windows
+/// process-creation failures.
+///
+/// `build` MUST construct a brand-new [`Command`] on each call — [`Command`] is
+/// consumed by [`Command::output`], so a single instance cannot be reused
+/// across attempts. `what` names the spawned tool for panic messages.
+///
+/// Retries up to 5 attempts only when [`is_transient_spawn_failure`] holds (a
+/// Windows loader abort under parallel nextest load — see
+/// [`TRANSIENT_SPAWN_CODES`]); a real program error is returned immediately and
+/// unretried, so this masks no genuine failure. Backoff between attempts is
+/// 50ms, 100ms, 200ms, 400ms.
+pub fn output_with_spawn_retry(
+    mut build: impl FnMut() -> Command,
+    what: &str,
+) -> std::process::Output {
+    const MAX_ATTEMPTS: u32 = 5;
+    for attempt in 0..MAX_ATTEMPTS {
+        let out = build()
+            .output()
+            .unwrap_or_else(|e| panic!("{what} failed to spawn: {e}"));
+        let last = attempt + 1 == MAX_ATTEMPTS;
+        if is_transient_spawn_failure(&out.status) && !last {
+            // 50, 100, 200, 400ms — give the loader time to shed handle pressure.
+            let backoff = std::time::Duration::from_millis(50u64 << attempt);
+            std::thread::sleep(backoff);
+            continue;
+        }
+        return out;
+    }
+    unreachable!("loop returns on the final attempt")
+}
+
+// ---------------------------------------------------------------------------
 // Git helpers
 // ---------------------------------------------------------------------------
 
 /// Run a git command in `dir`, panicking on failure.
 fn run_git(dir: &Path, args: &[&str]) {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .unwrap_or_else(|e| panic!("git command failed to spawn: {e}"));
+    let owned: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    let output = output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(&owned).current_dir(dir);
+            cmd
+        },
+        "git",
+    );
     assert!(
         output.status.success(),
         "git {:?} failed with status {}: {}",
@@ -806,6 +886,37 @@ pub fn make_git_info(dirty: bool, prerelease: Option<&str>) -> GitInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn transient_spawn_classifier_windows() {
+        use std::os::windows::process::ExitStatusExt;
+        let init_fail = std::process::ExitStatus::from_raw(0xC000_0142);
+        assert!(
+            is_transient_spawn_failure(&init_fail),
+            "STATUS_DLL_INIT_FAILED must classify as transient spawn failure"
+        );
+        let real_error = std::process::ExitStatus::from_raw(1);
+        assert!(
+            !is_transient_spawn_failure(&real_error),
+            "a genuine exit code 1 must NOT classify as a spawn failure"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn transient_spawn_classifier_non_windows_always_false() {
+        // On Unix no exit status is a process-creation init failure; a real
+        // program error (here `false`, which exits 1) must classify as false.
+        let status = Command::new("false")
+            .status()
+            .expect("spawn `false` to obtain a known-failing status");
+        assert!(!status.success(), "`false` is expected to exit non-zero");
+        assert!(
+            !is_transient_spawn_failure(&status),
+            "non-Windows classifier must always be false"
+        );
+    }
 
     #[test]
     fn recursive_sidecar_chain_detector_classification() {

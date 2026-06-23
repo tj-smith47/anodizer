@@ -4073,20 +4073,26 @@ mod publish_flow_tests {
         }
 
         fn git_ok(dir: &Path, args: &[&str]) {
-            let st = Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .status()
-                .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
-            assert!(st.success(), "git {args:?} failed");
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args).current_dir(dir);
+                    cmd
+                },
+                "git",
+            );
+            assert!(out.status.success(), "git {args:?} failed");
         }
 
         fn git_stdout(dir: &Path, args: &[&str]) -> String {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .output()
-                .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args).current_dir(dir);
+                    cmd
+                },
+                "git",
+            );
             assert!(out.status.success(), "git {args:?} failed");
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         }
@@ -4106,13 +4112,18 @@ mod publish_flow_tests {
             git_ok(seed.path(), &["add", "README"]);
             git_ok(seed.path(), &["commit", "-m", "seed"]);
             assert!(
-                Command::new("git")
-                    .args(["remote", "add", "origin"])
-                    .arg(bare.path())
-                    .current_dir(seed.path())
-                    .status()
-                    .expect("remote add")
-                    .success()
+                anodizer_core::test_helpers::output_with_spawn_retry(
+                    || {
+                        let mut cmd = Command::new("git");
+                        cmd.args(["remote", "add", "origin"])
+                            .arg(bare.path())
+                            .current_dir(seed.path());
+                        cmd
+                    },
+                    "git",
+                )
+                .status
+                .success()
             );
             git_ok(seed.path(), &["push", "-u", "origin", "main"]);
             (bare.path().to_string_lossy().into_owned(), bare)

@@ -37,24 +37,37 @@ fn sandbox_env(cmd: &mut Command) -> TempDir {
     // so it is reclaimed at the end of the caller's scope, not the process —
     // it only needs to outlive the single command that reads HOME/XDG from it.
     let scratch = TempDir::new().expect("scratch tempdir for HOME redirect");
-    cmd.env("HOME", scratch.path())
-        .env("XDG_CONFIG_HOME", scratch.path())
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_CONFIG_SYSTEM", "/dev/null");
+    sandbox_env_at(cmd, scratch.path());
     scratch
 }
 
+/// Apply the HOME/XDG/git-config redirection env onto `cmd` from a
+/// caller-owned scratch `path`. Splitting the env-application from the
+/// TempDir ownership lets a spawn-retry closure (which rebuilds the
+/// `Command` on each attempt) reference a scratch dir hoisted into the
+/// surrounding scope, so the dir outlives every `.output()` attempt.
+fn sandbox_env_at(cmd: &mut Command, path: &Path) {
+    cmd.env("HOME", path)
+        .env("XDG_CONFIG_HOME", path)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null");
+}
+
 fn run_git(dir: &Path, args: &[&str]) {
-    let mut cmd = Command::new("git");
-    cmd.current_dir(dir).args(args);
-    let _scratch = sandbox_env(&mut cmd);
-    cmd.env("GIT_AUTHOR_NAME", "test")
-        .env("GIT_AUTHOR_EMAIL", "test@test.com")
-        .env("GIT_COMMITTER_NAME", "test")
-        .env("GIT_COMMITTER_EMAIL", "test@test.com");
-    let out = cmd
-        .output()
-        .unwrap_or_else(|e| panic!("git {args:?} failed to spawn: {e}"));
+    let scratch = TempDir::new().expect("scratch tempdir for HOME redirect");
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir).args(args);
+            sandbox_env_at(&mut cmd, scratch.path());
+            cmd.env("GIT_AUTHOR_NAME", "test")
+                .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                .env("GIT_COMMITTER_NAME", "test")
+                .env("GIT_COMMITTER_EMAIL", "test@test.com");
+            cmd
+        },
+        "git",
+    );
     assert!(
         out.status.success(),
         "git {:?} failed: {}",
@@ -98,27 +111,45 @@ fn add_non_github_origin(dir: &Path) {
 }
 
 fn git_tag_exists(dir: &Path, tag: &str) -> bool {
-    let mut cmd = Command::new("git");
-    cmd.current_dir(dir).args(["tag", "-l", tag]);
-    let _scratch = sandbox_env(&mut cmd);
-    let out = cmd.output().unwrap();
+    let scratch = TempDir::new().expect("scratch tempdir for HOME redirect");
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir).args(["tag", "-l", tag]);
+            sandbox_env_at(&mut cmd, scratch.path());
+            cmd
+        },
+        "git",
+    );
     !String::from_utf8_lossy(&out.stdout).trim().is_empty()
 }
 
 fn git_head_subject(dir: &Path) -> String {
-    let mut cmd = Command::new("git");
-    cmd.current_dir(dir)
-        .args(["log", "-1", "--format=%s", "HEAD"]);
-    let _scratch = sandbox_env(&mut cmd);
-    let out = cmd.output().unwrap();
+    let scratch = TempDir::new().expect("scratch tempdir for HOME redirect");
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir)
+                .args(["log", "-1", "--format=%s", "HEAD"]);
+            sandbox_env_at(&mut cmd, scratch.path());
+            cmd
+        },
+        "git",
+    );
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
 fn git_head_sha(dir: &Path) -> String {
-    let mut cmd = Command::new("git");
-    cmd.current_dir(dir).args(["rev-parse", "HEAD"]);
-    let _scratch = sandbox_env(&mut cmd);
-    let out = cmd.output().unwrap();
+    let scratch = TempDir::new().expect("scratch tempdir for HOME redirect");
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir).args(["rev-parse", "HEAD"]);
+            sandbox_env_at(&mut cmd, scratch.path());
+            cmd
+        },
+        "git",
+    );
     String::from_utf8(out.stdout).unwrap().trim().to_string()
 }
 
@@ -277,12 +308,18 @@ fn tag_rollback_works_on_identity_less_host() {
     // Repo's LOCAL config must remain identity-less — the fix is
     // env-only, never `git config user.email ...`. (Use `--local` so
     // the host's global `~/.gitconfig` doesn't leak into the check.)
-    let mut cfg_cmd = Command::new("git");
-    cfg_cmd
-        .current_dir(dir)
-        .args(["config", "--local", "--get", "user.email"]);
-    let _scratch = sandbox_env(&mut cfg_cmd);
-    let cfg = cfg_cmd.output().unwrap();
+    let cfg_scratch = TempDir::new().expect("scratch tempdir for HOME redirect");
+    let cfg = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cfg_cmd = Command::new("git");
+            cfg_cmd
+                .current_dir(dir)
+                .args(["config", "--local", "--get", "user.email"]);
+            sandbox_env_at(&mut cfg_cmd, cfg_scratch.path());
+            cfg_cmd
+        },
+        "git",
+    );
     assert!(
         !cfg.status.success() || cfg.stdout.is_empty(),
         "rollback must not write user.email into repo's local config; got: {}",

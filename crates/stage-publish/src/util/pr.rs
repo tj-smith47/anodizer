@@ -1282,20 +1282,26 @@ mod tests {
     }
 
     fn git_ok(dir: &Path, args: &[&str]) {
-        let status = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .status()
-            .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
-        assert!(status.success(), "git {args:?} failed");
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args).current_dir(dir);
+                cmd
+            },
+            "git",
+        );
+        assert!(out.status.success(), "git {args:?} failed");
     }
 
     fn git_stdout(dir: &Path, args: &[&str]) -> String {
-        let out = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .output()
-            .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args).current_dir(dir);
+                cmd
+            },
+            "git",
+        );
         assert!(out.status.success(), "git {args:?} failed");
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     }
@@ -1329,13 +1335,18 @@ mod tests {
         write_commit(work.path(), "README", "hello\n", "initial commit");
         // `git remote add` takes a path; pass it as an OsStr arg.
         assert!(
-            Command::new("git")
-                .args(["remote", "add", "origin"])
-                .arg(bare.path())
-                .current_dir(work.path())
-                .status()
-                .expect("git remote add origin")
-                .success(),
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["remote", "add", "origin"])
+                        .arg(bare.path())
+                        .current_dir(work.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success(),
             "git remote add origin failed"
         );
         git_ok(work.path(), &["push", "-u", "origin", "master"]);
@@ -1360,26 +1371,34 @@ mod tests {
         git_init_work(seed.path());
         write_commit(seed.path(), "base.txt", "base\n", "base commit");
         assert!(
-            Command::new("git")
-                .args(["remote", "add", "origin"])
-                .arg(upstream.path())
-                .current_dir(seed.path())
-                .status()
-                .expect("seed remote add")
-                .success()
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["remote", "add", "origin"])
+                        .arg(upstream.path())
+                        .current_dir(seed.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success()
         );
         git_ok(seed.path(), &["push", "-u", "origin", "master"]);
 
         // Clone the upstream into `work` (this shares history root).
         let upstream_url = upstream.path().to_string_lossy().into_owned();
         assert!(
-            Command::new("git")
-                .args(["clone"])
-                .arg(upstream.path())
-                .arg(work.path())
-                .status()
-                .expect("git clone work")
-                .success(),
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["clone"]).arg(upstream.path()).arg(work.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success(),
             "git clone for work failed"
         );
         git_ok(

@@ -49,11 +49,14 @@ pub fn tool_on_path(tool: &str) -> bool {
 /// failure. Used for fixture-repo setup — synthesizing a minimal
 /// cargo workspace with `git init` / `commit`-style boilerplate.
 pub fn run_git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
-        .current_dir(dir)
-        .args(args)
-        .output()
-        .unwrap_or_else(|e| panic!("git {:?} failed to spawn: {e}", args));
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.current_dir(dir).args(args);
+            cmd
+        },
+        "git",
+    );
     assert!(
         out.status.success(),
         "git {:?} failed: stdout={} stderr={}",

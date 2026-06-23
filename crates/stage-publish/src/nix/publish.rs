@@ -2330,20 +2330,26 @@ mod tests {
         const SAMPLE_SHA: &str = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
 
         fn git_ok(dir: &Path, args: &[&str]) {
-            let status = Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .status()
-                .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
-            assert!(status.success(), "git {args:?} failed");
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args).current_dir(dir);
+                    cmd
+                },
+                "git",
+            );
+            assert!(out.status.success(), "git {args:?} failed");
         }
 
         fn git_stdout(dir: &Path, args: &[&str]) -> String {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(dir)
-                .output()
-                .unwrap_or_else(|e| panic!("spawn git {args:?}: {e}"));
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(args).current_dir(dir);
+                    cmd
+                },
+                "git",
+            );
             assert!(out.status.success(), "git {args:?} failed");
             String::from_utf8_lossy(&out.stdout).trim().to_string()
         }
@@ -2380,13 +2386,18 @@ mod tests {
             git_ok(seed.path(), &["add", "README"]);
             git_ok(seed.path(), &["commit", "-m", "seed overlay"]);
             assert!(
-                Command::new("git")
-                    .args(["remote", "add", "origin"])
-                    .arg(bare.path())
-                    .current_dir(seed.path())
-                    .status()
-                    .expect("git remote add origin")
-                    .success(),
+                anodizer_core::test_helpers::output_with_spawn_retry(
+                    || {
+                        let mut cmd = Command::new("git");
+                        cmd.args(["remote", "add", "origin"])
+                            .arg(bare.path())
+                            .current_dir(seed.path());
+                        cmd
+                    },
+                    "git",
+                )
+                .status
+                .success(),
                 "git remote add origin failed"
             );
             git_ok(seed.path(), &["push", "-u", "origin", branch]);
@@ -2655,12 +2666,17 @@ mod tests {
             // The overlay branch is untouched: same tip, no default.nix landed.
             let after = git_stdout(bare_path, &["rev-parse", "main"]);
             assert_eq!(before, after, "no commit must reach the overlay branch");
-            let drv_present = Command::new("git")
-                .args(["cat-file", "-e", "main:pkgs/mytool/default.nix"])
-                .current_dir(bare_path)
-                .status()
-                .expect("git cat-file")
-                .success();
+            let drv_present = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["cat-file", "-e", "main:pkgs/mytool/default.nix"])
+                        .current_dir(bare_path);
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success();
             assert!(!drv_present, "no unformatted derivation must be pushed");
             drop(bare);
         }
@@ -2684,11 +2700,16 @@ mod tests {
             let drv = show(bare_path, "main", "packages/mytool.nix");
             assert!(drv.contains("pname = \"mytool\";"), "{drv}");
             // The default pkgs/<name>/default.nix path must NOT exist.
-            let default_path = Command::new("git")
-                .args(["cat-file", "-e", "main:pkgs/mytool/default.nix"])
-                .current_dir(bare_path)
-                .status()
-                .expect("git cat-file");
+            let default_path = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["cat-file", "-e", "main:pkgs/mytool/default.nix"])
+                        .current_dir(bare_path);
+                    cmd
+                },
+                "git",
+            )
+            .status;
             assert!(
                 !default_path.success(),
                 "derivation must live at the configured path, not the default"

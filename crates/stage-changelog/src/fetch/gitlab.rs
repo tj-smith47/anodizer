@@ -183,20 +183,29 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path();
         assert!(
-            Command::new("git")
-                .args(["init", "-q"])
-                .current_dir(path)
-                .status()
-                .expect("git init")
-                .success()
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["init", "-q"]).current_dir(path);
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success()
         );
         assert!(
-            Command::new("git")
-                .args(["remote", "add", "origin", remote_url])
-                .current_dir(path)
-                .status()
-                .expect("git remote add")
-                .success()
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["remote", "add", "origin", remote_url])
+                        .current_dir(path);
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success()
         );
         dir
     }

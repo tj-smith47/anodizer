@@ -378,20 +378,24 @@ fn test_source_archive_with_git_repo() {
     // First create dist dir
     std::fs::create_dir_all(&dist).unwrap();
 
-    let output = std::process::Command::new("git")
-        .args([
-            "archive",
-            "--format",
-            "tar.gz",
-            "--prefix",
-            "test-project-1.2.3/",
-            "--output",
-        ])
-        .arg(dist.join("test-project-1.2.3.tar.gz").to_str().unwrap())
-        .arg("HEAD")
-        .current_dir(tmp.path())
-        .output()
-        .unwrap();
+    let output = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = std::process::Command::new("git");
+            cmd.args([
+                "archive",
+                "--format",
+                "tar.gz",
+                "--prefix",
+                "test-project-1.2.3/",
+                "--output",
+            ])
+            .arg(dist.join("test-project-1.2.3.tar.gz").to_str().unwrap())
+            .arg("HEAD")
+            .current_dir(tmp.path());
+            cmd
+        },
+        "git",
+    );
 
     assert!(
         output.status.success(),
@@ -415,20 +419,24 @@ fn test_source_archive_zip_format_with_git_repo() {
     create_test_project(tmp.path());
     init_git_repo(tmp.path());
 
-    let output = std::process::Command::new("git")
-        .args([
-            "archive",
-            "--format",
-            "zip",
-            "--prefix",
-            "test-project-1.2.3/",
-            "--output",
-        ])
-        .arg(dist.join("test-project-1.2.3.zip").to_str().unwrap())
-        .arg("HEAD")
-        .current_dir(tmp.path())
-        .output()
-        .unwrap();
+    let output = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = std::process::Command::new("git");
+            cmd.args([
+                "archive",
+                "--format",
+                "zip",
+                "--prefix",
+                "test-project-1.2.3/",
+                "--output",
+            ])
+            .arg(dist.join("test-project-1.2.3.zip").to_str().unwrap())
+            .arg("HEAD")
+            .current_dir(tmp.path());
+            cmd
+        },
+        "git",
+    );
 
     assert!(
         output.status.success(),
@@ -615,11 +623,14 @@ fn test_stage_run_does_not_depend_on_cwd() {
 
     let dist = tmp.path().join("dist");
 
-    let real_commit = std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(tmp.path())
-        .output()
-        .unwrap();
+    let real_commit = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = std::process::Command::new("git");
+            cmd.args(["rev-parse", "HEAD"]).current_dir(tmp.path());
+            cmd
+        },
+        "git",
+    );
     let real_commit = String::from_utf8_lossy(&real_commit.stdout)
         .trim()
         .to_string();
@@ -1046,11 +1057,14 @@ fn test_source_stage_run_creates_archive_in_git_repo() {
     init_git_repo(tmp.path());
 
     // Get the real commit hash from the test repo so git archive can resolve it
-    let real_commit = std::process::Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .current_dir(tmp.path())
-        .output()
-        .unwrap_or_else(|e| panic!("git rev-parse HEAD should succeed: {e}"));
+    let real_commit = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = std::process::Command::new("git");
+            cmd.args(["rev-parse", "HEAD"]).current_dir(tmp.path());
+            cmd
+        },
+        "git",
+    );
     let real_commit = String::from_utf8_lossy(&real_commit.stdout)
         .trim()
         .to_string();

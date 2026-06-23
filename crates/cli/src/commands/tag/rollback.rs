@@ -867,15 +867,19 @@ mod tests {
     use std::process::Command;
 
     fn run_git(dir: &Path, args: &[&str]) {
-        let out = Command::new("git")
-            .args(args)
-            .current_dir(dir)
-            .env("GIT_AUTHOR_NAME", "test")
-            .env("GIT_AUTHOR_EMAIL", "test@test.com")
-            .env("GIT_COMMITTER_NAME", "test")
-            .env("GIT_COMMITTER_EMAIL", "test@test.com")
-            .output()
-            .expect("git invoke");
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args)
+                    .current_dir(dir)
+                    .env("GIT_AUTHOR_NAME", "test")
+                    .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                    .env("GIT_COMMITTER_NAME", "test")
+                    .env("GIT_COMMITTER_EMAIL", "test@test.com");
+                cmd
+            },
+            "git",
+        );
         assert!(
             out.status.success(),
             "git {:?} failed: {}",
@@ -900,12 +904,15 @@ mod tests {
         run_git(dir, &["tag", "v1.0.0"]);
 
         let bump_sha = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(dir)
-                .output()
-                .unwrap()
-                .stdout,
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["rev-parse", "HEAD"]).current_dir(dir);
+                    cmd
+                },
+                "git",
+            )
+            .stdout,
         )
         .unwrap()
         .trim()
@@ -1001,12 +1008,15 @@ mod tests {
         let dir = tmp.path();
         let _bump_sha = init_bump_repo(dir, 0);
         let head_before = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(dir)
-                .output()
-                .unwrap()
-                .stdout,
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["rev-parse", "HEAD"]).current_dir(dir);
+                    cmd
+                },
+                "git",
+            )
+            .stdout,
         )
         .unwrap()
         .trim()
@@ -1024,12 +1034,15 @@ mod tests {
         assert_eq!(tags, vec!["v1.0.0".to_string()]);
         // HEAD unchanged.
         let head_after = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(dir)
-                .output()
-                .unwrap()
-                .stdout,
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["rev-parse", "HEAD"]).current_dir(dir);
+                    cmd
+                },
+                "git",
+            )
+            .stdout,
         )
         .unwrap()
         .trim()
@@ -1142,12 +1155,15 @@ mod tests {
         run_git(dir, &["add", "."]);
         run_git(dir, &["commit", "-m", "c1"]);
         let older_sha = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(dir)
-                .output()
-                .unwrap()
-                .stdout,
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["rev-parse", "HEAD"]).current_dir(dir);
+                    cmd
+                },
+                "git",
+            )
+            .stdout,
         )
         .unwrap()
         .trim()
@@ -1192,12 +1208,15 @@ mod tests {
         run_git(dir, &["add", "."]);
         run_git(dir, &["commit", "-m", "c1"]);
         let older_sha = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(dir)
-                .output()
-                .unwrap()
-                .stdout,
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["rev-parse", "HEAD"]).current_dir(dir);
+                    cmd
+                },
+                "git",
+            )
+            .stdout,
         )
         .unwrap()
         .trim()
@@ -1229,12 +1248,15 @@ mod tests {
         run_git(dir, &["add", "."]);
         run_git(dir, &["commit", "-m", "c1"]);
         let older_sha = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .current_dir(dir)
-                .output()
-                .unwrap()
-                .stdout,
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["rev-parse", "HEAD"]).current_dir(dir);
+                    cmd
+                },
+                "git",
+            )
+            .stdout,
         )
         .unwrap()
         .trim()

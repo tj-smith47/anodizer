@@ -2532,6 +2532,9 @@ fn postinstall_js_uses_one_consistent_function_name_no_referenceerror() {
 /// `node` is not on PATH.
 #[test]
 fn postinstall_js_executes_redirect_without_referenceerror() {
+    // spawn-retry-ok: this probes node *availability* to skip-or-run; an Err
+    // here means node is absent (skip the test), not a transient spawn-init
+    // failure to retry — the retry helper would be the wrong tool here.
     if std::process::Command::new("node")
         .arg("--version")
         .output()
@@ -2546,11 +2549,14 @@ fn postinstall_js_executes_redirect_without_referenceerror() {
     std::fs::write(&script_path, &script).expect("write script");
 
     // 1) Syntax check: node --check must accept the file.
-    let check = std::process::Command::new("node")
-        .arg("--check")
-        .arg(&script_path)
-        .output()
-        .expect("spawn node --check");
+    let check = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = std::process::Command::new("node");
+            cmd.arg("--check").arg(&script_path);
+            cmd
+        },
+        "node",
+    );
     assert!(
         check.status.success(),
         "node --check failed: {}",
@@ -2638,10 +2644,14 @@ require(scriptPath);
     );
     let harness_path = tmp.path().join("harness.js");
     std::fs::write(&harness_path, harness).expect("write harness");
-    let run = std::process::Command::new("node")
-        .arg(&harness_path)
-        .output()
-        .expect("spawn node harness");
+    let run = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = std::process::Command::new("node");
+            cmd.arg(&harness_path);
+            cmd
+        },
+        "node",
+    );
     let stderr = String::from_utf8_lossy(&run.stderr);
     assert!(
         !stderr.contains("ReferenceError"),
