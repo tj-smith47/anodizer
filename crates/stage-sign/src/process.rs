@@ -58,6 +58,55 @@ pub(crate) fn is_keyless_cosign_under_harness(cmd: &str, args: &[String], ctx: &
     !has_key
 }
 
+/// Force keyed cosign signing fully offline under the determinism harness by
+/// appending `--tlog-upload=false` to its args.
+///
+/// By default `cosign sign` / `sign-blob` upload the signature to the public
+/// Rekor transparency log, which makes cosign fetch its signing config from
+/// sigstore's TUF CDN over the network. That network dependency violates the
+/// harness's hermeticity contract: a flaked DNS lookup on a CI runner fails an
+/// otherwise byte-reproducible rebuild. The harness signs with throwaway
+/// ephemeral keys purely to exercise the sign stage; the real
+/// `release --publish-only` step re-signs with the production key on a
+/// networked runner and keeps tlog transparency, so suppressing the upload
+/// here loses nothing real while guaranteeing the harness never touches the
+/// network for any consumer's cosign config.
+///
+/// A no-op (returns `args` unchanged) unless ALL hold: the harness is active,
+/// `cmd`'s basename is `cosign`, some arg supplies `--key` (keyless cosign is
+/// skipped upstream and the flag is meaningless without a key), and no arg
+/// already pins `--tlog-upload` (an explicit operator choice is respected,
+/// making this idempotent). cosign accepts the flag interspersed with or after
+/// positionals, so appending is always safe.
+pub(crate) fn harden_cosign_args_for_harness(
+    cmd: &str,
+    mut args: Vec<String>,
+    ctx: &Context,
+) -> Vec<String> {
+    if ctx.env_var("ANODIZER_IN_DETERMINISM_HARNESS").is_none() {
+        return args;
+    }
+    let basename = std::path::Path::new(cmd)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(cmd);
+    if basename != "cosign" {
+        return args;
+    }
+    let has_key = args.iter().any(|a| a == "--key" || a.starts_with("--key="));
+    if !has_key {
+        return args;
+    }
+    let already_pinned = args
+        .iter()
+        .any(|a| a == "--tlog-upload" || a.starts_with("--tlog-upload="));
+    if already_pinned {
+        return args;
+    }
+    args.push("--tlog-upload=false".to_string());
+    args
+}
+
 /// Artifact filter mode for `process_sign_configs`.
 #[derive(Clone, Copy)]
 pub(crate) enum ArtifactFilter {
@@ -398,7 +447,8 @@ pub(crate) fn process_sign_configs(
         // so the harness skips it — exactly like the unavailable-tool / docker
         // / srpm skips above. A config with an explicit `--key` (anodizer's own
         // `--key=env://COSIGN_KEY`) signs with the ephemeral key and still runs.
-        if is_keyless_cosign_under_harness(&cmd, &sign_cfg.resolved_args(), ctx) {
+        let args = harden_cosign_args_for_harness(&cmd, sign_cfg.resolved_args(), ctx);
+        if is_keyless_cosign_under_harness(&cmd, &args, ctx) {
             let reason = KEYLESS_COSIGN_HARNESS_SKIP.to_string();
             log.verbose(&format!(
                 "skipped {} config '{}' — {}",
@@ -414,8 +464,6 @@ pub(crate) fn process_sign_configs(
                 label
             ));
         }
-
-        let args = sign_cfg.resolved_args();
 
         type ArtifactEntry = (
             std::path::PathBuf,
@@ -1181,5 +1229,132 @@ mod faked_time_tests {
         let mut args: Vec<String> = vec![];
         inject_gpg_faked_system_time("gpg", &mut args, &env);
         assert_eq!(args, vec!["--faked-system-time=42!".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod harden_cosign_tests {
+    use super::harden_cosign_args_for_harness;
+    use anodizer_core::MapEnvSource;
+    use anodizer_core::config::Config;
+    use anodizer_core::context::{Context, ContextOptions};
+
+    /// Build a Context whose injected env carries (or omits) the harness marker.
+    fn ctx_with_harness(harness: bool) -> Context {
+        let mut ctx = Context::new(Config::default(), ContextOptions::default());
+        let env = if harness {
+            MapEnvSource::new().with("ANODIZER_IN_DETERMINISM_HARNESS", "1")
+        } else {
+            MapEnvSource::new()
+        };
+        ctx.set_env_source(env);
+        ctx
+    }
+
+    fn args(parts: &[&str]) -> Vec<String> {
+        parts.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn appends_tlog_false_for_keyed_cosign_under_harness() {
+        let ctx = ctx_with_harness(true);
+        let out = harden_cosign_args_for_harness(
+            "cosign",
+            args(&[
+                "sign-blob",
+                "--key=env://COSIGN_KEY",
+                "--bundle=cosign.bundle",
+                "--yes",
+                "artifact",
+            ]),
+            &ctx,
+        );
+        assert_eq!(out.last().map(String::as_str), Some("--tlog-upload=false"));
+        assert_eq!(
+            out.iter()
+                .filter(|a| a.starts_with("--tlog-upload"))
+                .count(),
+            1,
+            "appended exactly once: {out:?}"
+        );
+    }
+
+    #[test]
+    fn unchanged_when_not_under_harness() {
+        let ctx = ctx_with_harness(false);
+        let input = args(&["sign-blob", "--key=env://COSIGN_KEY", "artifact"]);
+        let out = harden_cosign_args_for_harness("cosign", input.clone(), &ctx);
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn unchanged_for_non_cosign_cmd() {
+        let ctx = ctx_with_harness(true);
+        let input = args(&["--detach-sig", "--key=secret", "artifact"]);
+        let out = harden_cosign_args_for_harness("gpg", input.clone(), &ctx);
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn unchanged_for_keyless_cosign() {
+        let ctx = ctx_with_harness(true);
+        let input = args(&["sign-blob", "--bundle=cosign.bundle", "--yes", "artifact"]);
+        let out = harden_cosign_args_for_harness("cosign", input.clone(), &ctx);
+        assert_eq!(out, input);
+    }
+
+    #[test]
+    fn unchanged_when_tlog_already_pinned() {
+        let ctx = ctx_with_harness(true);
+
+        let eq_true = args(&["sign-blob", "--key=k", "--tlog-upload=true", "a"]);
+        assert_eq!(
+            harden_cosign_args_for_harness("cosign", eq_true.clone(), &ctx),
+            eq_true
+        );
+
+        let two_token = args(&["sign-blob", "--key=k", "--tlog-upload", "false", "a"]);
+        assert_eq!(
+            harden_cosign_args_for_harness("cosign", two_token.clone(), &ctx),
+            two_token
+        );
+
+        let eq_false = args(&["sign-blob", "--key=k", "--tlog-upload=false", "a"]);
+        let out = harden_cosign_args_for_harness("cosign", eq_false, &ctx);
+        assert_eq!(
+            out.iter()
+                .filter(|a| a.starts_with("--tlog-upload"))
+                .count(),
+            1,
+            "no duplicate when already pinned false: {out:?}"
+        );
+    }
+
+    #[test]
+    fn matches_cosign_basename_through_path() {
+        let ctx = ctx_with_harness(true);
+        let out = harden_cosign_args_for_harness(
+            "/usr/local/bin/cosign",
+            args(&["sign-blob", "--key=env://COSIGN_KEY", "artifact"]),
+            &ctx,
+        );
+        assert_eq!(out.last().map(String::as_str), Some("--tlog-upload=false"));
+    }
+
+    #[test]
+    fn appends_tlog_false_for_two_token_key_form() {
+        let ctx = ctx_with_harness(true);
+        let out = harden_cosign_args_for_harness(
+            "cosign",
+            args(&[
+                "sign-blob",
+                "--key",
+                "env://COSIGN_KEY",
+                "--yes",
+                "artifact",
+            ]),
+            &ctx,
+        );
+        assert_eq!(out.last().map(String::as_str), Some("--tlog-upload=false"));
     }
 }

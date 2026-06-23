@@ -285,7 +285,11 @@ impl Stage for DockerSignStage {
 
                 let cmd = docker_sign_cfg.resolved_cmd().to_string();
 
-                let args = docker_sign_cfg.resolved_args();
+                let args = crate::process::harden_cosign_args_for_harness(
+                    &cmd,
+                    docker_sign_cfg.resolved_args(),
+                    ctx,
+                );
 
                 // Keyless cosign cannot run inside the determinism harness (no
                 // ambient OIDC; the ephemeral `COSIGN_KEY` env crashes a `--key`-
