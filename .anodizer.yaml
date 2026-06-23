@@ -727,16 +727,27 @@ crates:
           GoReleaser. It handles building, packaging, publishing, and announcing
           releases across multiple platforms and package managers.
         grade: stable
-        # classic: anodizer reads hidden paths (.git) and execs external
-        # binaries (cargo/docker/gpg), which strict confinement blocks. Classic
-        # snaps require a one-time Snap Store manual review before upload.
-        confinement: classic
+        # Interim: classic is what anodizer needs (it execs host cargo/docker/
+        # gpg, which a confined sandbox blocks), but classic uploads require a
+        # one-time Snap Store manual review that isn't granted yet. strict uploads
+        # without review but sandboxes those execs — a snap that installs but
+        # can't run a release. devmode runs unconfined so the tool actually works
+        # and still uploads without review; the Store only permits devmode on
+        # beta/edge, hence latest/beta. Restore `confinement: classic` +
+        # `latest/stable` once the store-request for the `anodizer` classic snap
+        # is approved.
+        confinement: devmode
+        license: MIT
         publish: true
         channel_templates:
-          - "latest/stable"
+          - "latest/beta"
         apps:
           anodizer:
             command: anodizer
+            plugs:
+              - home
+              - network
+              - network-bind
     flatpaks:
       # The Flatpak analog of the classic-confinement snap above: anodizer is a
       # release CLI that, once installed, execs the host's cargo/git/docker/
