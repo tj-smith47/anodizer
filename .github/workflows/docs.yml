@@ -8,20 +8,70 @@ on:
       - "crates/xtask/**"
       - "crates/cli/src/lib.rs"
       - "crates/core/src/config.rs"
+  # Release-driven redeploy: fires on every completion of the Release
+  # workflow, but the `gate` job below proceeds ONLY when that run actually
+  # cut + published a version (see its rationale). A bump=none Release run
+  # succeeds without publishing, and must not trigger a no-op docs deploy.
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
   contents: read
   pages: write
   id-token: write
+  # Read the triggering Release run's job list (the `gate` job's cut check).
+  actions: read
 
 concurrency:
   group: "pages"
   cancel-in-progress: false
 
 jobs:
+  gate:
+    name: Resolve deploy trigger
+    runs-on: ubuntu-latest
+    outputs:
+      should_deploy: ${{ steps.decide.outputs.should_deploy }}
+    steps:
+      - name: Decide whether this event should deploy
+        id: decide
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Docs-source pushes and manual dispatches always deploy — they are
+          # direct edits to the published site, not release-gated.
+          if [ "${{ github.event_name }}" != "workflow_run" ]; then
+            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+            echo "event=${{ github.event_name }} -> deploy"
+            exit 0
+          fi
+          # Release-driven path. Deploy ONLY when the triggering Release run
+          # actually cut + published a version. The Release pipeline gates its
+          # "Publish Release" job on resolve-release-target's tagged==true
+          # (.github/workflows/release.yml), so that job's `success` IS the
+          # auto-derived "a version was cut" signal — no hand-maintained input,
+          # no fragile cross-workflow output plumbing. A bump=none run leaves
+          # "Publish Release" skipped/absent and must NOT redeploy docs.
+          run_id='${{ github.event.workflow_run.id }}'
+          conclusion=$(gh api \
+            "repos/${{ github.repository }}/actions/runs/${run_id}/jobs" \
+            --paginate --jq '.jobs[] | select(.name == "Publish Release") | .conclusion' \
+            | head -n1)
+          if [ "${conclusion:-}" = "success" ]; then
+            echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+            echo "Release run ${run_id} published (Publish Release: success) -> deploy"
+          else
+            echo "should_deploy=false" >> "$GITHUB_OUTPUT"
+            echo "Release run ${run_id} did not publish (Publish Release: ${conclusion:-absent}) -> skip docs deploy"
+          fi
+
   docs-check:
     name: Docs freshness
+    needs: gate
+    if: needs.gate.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -32,7 +82,8 @@ jobs:
         run: task docs:check
 
   build:
-    needs: docs-check
+    needs: [gate, docs-check]
+    if: needs.gate.outputs.should_deploy == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -68,7 +119,8 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
-    needs: build
+    needs: [gate, build]
+    if: needs.gate.outputs.should_deploy == 'true'
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
