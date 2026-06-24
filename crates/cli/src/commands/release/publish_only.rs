@@ -929,6 +929,14 @@ fn run_one_crate_dist(
     //     the canonical file at the end of publish-only from the merged
     //     registry, so the existence check is trying to verify a file
     //     this pipeline itself will produce — a layering violation.
+    //   * Directory-bundle artifacts (macOS `.app`, `format=appbundle`) —
+    //     a `.app` is a DIRECTORY, not a file. dmg/pkg wrap it into a
+    //     `.dmg`/`.pkg` and every file subject (checksum/sign/upload)
+    //     filters it out via `is_directory_bundle_artifact`; the presence
+    //     check must share that classifier, else a legitimately-preserved
+    //     `.app` directory fails the `is_file()` probe and reads as
+    //     "missing". Same classifier — not a runtime `is_dir()` probe,
+    //     which would misbehave under dry-run before the dir is materialized.
     crate::commands::helpers::detect_missing_files(
         ctx.artifacts
             .all()
@@ -939,7 +947,7 @@ fn run_one_crate_dist(
                     anodizer_core::artifact::ArtifactKind::Binary
                         | anodizer_core::artifact::ArtifactKind::UniversalBinary
                         | anodizer_core::artifact::ArtifactKind::Metadata
-                )
+                ) && !anodizer_core::artifact::is_directory_bundle_artifact(a)
             })
             .map(|a| a.path.as_path()),
         &dist,

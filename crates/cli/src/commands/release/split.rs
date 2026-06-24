@@ -619,8 +619,18 @@ pub fn load_split_contexts_into(
     // partial restore, etc.). Surface as a manifest-shaped diagnostic
     // before SignStage / ChecksumStage bails with cosign / gpg's less
     // actionable "file not found".
+    //
+    // Directory-bundle artifacts (macOS `.app`, `format=appbundle`) are
+    // excluded: a `.app` is a DIRECTORY, not a file, so the `is_file()`
+    // presence probe would always report it missing. dmg/pkg wrap it into a
+    // `.dmg`/`.pkg` and every file subject filters it out via the same
+    // `is_directory_bundle_artifact` classifier; the presence check shares it.
     crate::commands::helpers::detect_missing_files(
-        ctx.artifacts.all().iter().map(|a| a.path.as_path()),
+        ctx.artifacts
+            .all()
+            .iter()
+            .filter(|a| !anodizer_core::artifact::is_directory_bundle_artifact(a))
+            .map(|a| a.path.as_path()),
         dist,
     )?;
 
@@ -1527,6 +1537,56 @@ mod tests {
         assert!(
             ctx.options.merge,
             "loader must mark context as merge-mode so downstream stages see the flag"
+        );
+    }
+
+    /// A macOS `.app` bundle is registered as `ArtifactKind::Installer`
+    /// with `format=appbundle` and its path is a DIRECTORY, not a file.
+    /// The loader's filesystem cross-check must skip directory-bundle
+    /// artifacts via `is_directory_bundle_artifact` — otherwise the
+    /// `is_file()` presence probe reports a legitimately-preserved `.app`
+    /// as missing and the merge bails before any publisher runs (the
+    /// v0.12.0 "Publish Release" failure this guards against).
+    #[test]
+    fn load_split_contexts_into_skips_directory_bundle_presence_check() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path();
+
+        // The `.app` is a directory tree, never a file — materialize it
+        // as one so the `is_file()` probe would (wrongly) report missing.
+        let app_dir = dist.join("Foo.app");
+        std::fs::create_dir_all(app_dir.join("Contents/MacOS")).unwrap();
+
+        let bundle = SplitArtifact {
+            name: "Foo.app".to_string(),
+            path: app_dir.to_string_lossy().into_owned(),
+            os: Some("darwin".to_string()),
+            arch: Some("amd64".to_string()),
+            target: Some("x86_64-apple-darwin".to_string()),
+            kind: "installer".to_string(),
+            type_s: "Installer".to_string(),
+            crate_name: "test".to_string(),
+            extra: BTreeMap::from([(
+                "format".to_string(),
+                serde_json::Value::String("appbundle".to_string()),
+            )]),
+            sha256: None,
+            size: None,
+        };
+        write_split_context_full(dist, "darwin", "darwin", vec![bundle]);
+
+        let mut ctx = make_bare_context();
+        load_split_contexts_into(&mut ctx, dist, &null_logger())
+            .expect("a directory-bundle .app must not trip the file-presence cross-check");
+
+        // The bundle is skipped from the presence probe, NOT dropped from
+        // the merge — it must survive into the registry for dmg/pkg to wrap.
+        assert!(
+            ctx.artifacts
+                .all()
+                .iter()
+                .any(anodizer_core::artifact::is_directory_bundle_artifact),
+            "the .app bundle must survive the merge as a directory-bundle artifact"
         );
     }
 
