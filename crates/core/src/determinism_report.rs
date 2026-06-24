@@ -1,4 +1,4 @@
-//! Determinism harness report types.
+//! Determinism Harness report types.
 //!
 //! `DeterminismReport` is the canonical JSON shape emitted by
 //! `anodize check determinism` at

@@ -216,7 +216,7 @@ platform's toolchain), parallelises the slow step (compilation), and lets
 a single coordinator handle the orchestrated parts (archive, sign,
 checksum, publish).
 
-## Determinism harness behaviour
+## Determinism Harness behaviour
 
 `anodizer check determinism` runs N from-clean rebuilds of your project in
 hermetic git worktrees and diffs the emitted artifacts byte-for-byte. With

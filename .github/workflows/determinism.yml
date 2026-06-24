@@ -1,4 +1,4 @@
-name: Determinism harness
+name: Determinism Harness
 
 # Reusable byte-for-byte reproducibility gate. Builds the release twice per
 # shard in a hermetic worktree and fails if any produced artifact differs

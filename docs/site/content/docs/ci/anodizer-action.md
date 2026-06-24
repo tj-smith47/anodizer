@@ -81,7 +81,7 @@ When a tag-triggered workflow runs, the action can resolve the triggering tag to
 | `resolve-workspace` | `false` | Run `anodizer resolve-tag $GITHUB_REF_NAME` and expose the result as the `workspace`, `crate-path`, and `has-builds` outputs. Fails the workflow if no crate matches the tag. |
 | `determinism-crate` | | When set alongside `determinism: true`, runs the harness scoped to a single crate (e.g. `core`). Use this as the matrix dimension in Strategy C1/C-hybrid to shard determinism checks per crate rather than running all crates in each shard. |
 
-### Determinism harness
+### Determinism Harness
 
 The action can run `anodize check determinism` directly (and preserve its
 hermetic dist tree for a downstream `release --publish-only` job) without

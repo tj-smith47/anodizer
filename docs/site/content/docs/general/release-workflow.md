@@ -87,6 +87,6 @@ The contract: `report.json` exists for replay (the `--rollback-only` flow) and f
 ## See also
 
 - [Split / merge (distributed builds)](@/docs/advanced/split-merge.md) — for the `--merge` half of the split-merge flow.
-- [Determinism harness](@/docs/advanced/determinism.md) — for the `--preserve-dist` source that `release --publish-only` typically consumes.
+- [Determinism Harness](@/docs/advanced/determinism.md) — for the `--preserve-dist` source that `release --publish-only` typically consumes.
 - [Release resilience](@/docs/advanced/release-resilience.md) — for the `--rollback-only` flow referenced above.
 - [Recovery flags](@/docs/advanced/recovery-flags.md) — for per-publisher overrides that change the recovery semantics.

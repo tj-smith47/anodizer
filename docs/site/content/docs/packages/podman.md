@@ -73,7 +73,7 @@ Mirrors GoReleaser Pro's caveats verbatim:
 - **No rootless / rootful opinion.** Anodizer treats the binary as opaque — whether `podman` runs rootless (default on most distros) or rootful is your runner's choice. Image layers and manifests written under rootless are stored at `$XDG_DATA_HOME/containers/storage`; rootful at `/var/lib/containers/storage`.
 - **No network reach checks.** Push failures retry per the `retry:` block (default 10 attempts, 10s base, 5m cap).
 
-## Determinism harness compatibility
+## Determinism Harness compatibility
 
 `anodizer check determinism` shells out to `docker buildx build --output=type=oci,rewrite-timestamp=true,...` for its byte-stability probe. Those flags are BuildKit-only and have no podman equivalent. When the project config has `use: podman` set on any `dockers_v2[]` entry, the harness skips the docker stage with an explanatory warning:
 
