@@ -205,6 +205,20 @@ pub(crate) struct BuildSubprocessEnv<'a> {
     /// build subprocess so two harness runs (at different worktree paths)
     /// produce a byte-identical anodizer binary.
     pub worktree: &'a Path,
+    /// Resolved per-shard build targets — the `--targets <csv>` list handed
+    /// to the child `anodize release --snapshot` (empty = host-only build,
+    /// no explicit `--target`).
+    ///
+    /// Gates the MSVC determinism-flag merge into the GLOBAL `RUSTFLAGS`
+    /// deterministically rather than relying solely on the fallible
+    /// `host_is_windows_msvc` `rustc -vV` probe: when every target is
+    /// windows-msvc, the `/Brepro` / strip flags MUST enter the global
+    /// `RUSTFLAGS` (the per-target `CARGO_TARGET_<triple>_RUSTFLAGS` is
+    /// out-precedenced by the global one the harness always sets for
+    /// `--remap-path-prefix`, so it never takes effect). `all` (not `any`)
+    /// because `/Brepro` is link.exe-only and errors on lld/ld — it may only
+    /// enter the shared global flags when no non-msvc target is in the build.
+    pub targets: &'a [String],
     /// Ephemeral signing keys for the sign stage. `None` skips the
     /// keying env-var block (caller is opting out of sign-stage
     /// validation). When `Some`, the harness exports `COSIGN_KEY` /
@@ -427,7 +441,27 @@ pub(crate) fn build_subprocess_env_with_env(
     // would silently skip the injection on a cross-built binary — the exact
     // failure class this guards. The MSVC link.exe flags are only valid on a
     // windows-msvc host, so they must NOT be added on any other host.
-    if host_is_windows_msvc {
+    //
+    // The KNOWN target set is authoritative over the host probe when a
+    // `--target` is requested: `host_is_windows_msvc` comes from a fallible
+    // `rustc -vV` spawn that returns `false` on any probe error, and an
+    // intermittent false there strips `/Brepro` from the global RUSTFLAGS —
+    // yielding a non-reproducible `.exe` even though the build IS a
+    // windows-msvc cross. When the resolved targets are all windows-msvc the
+    // flags are valid by construction (the linker is link.exe), so gate on
+    // the target set, not the probe. `all` (not `any`) keeps `/Brepro` out of
+    // the shared global flags when any non-msvc target is present (it errors
+    // on lld/ld). Empty targets = host build with no explicit `--target`, so
+    // fall back to the host probe.
+    let inject_msvc = if inputs.targets.is_empty() {
+        host_is_windows_msvc
+    } else {
+        inputs
+            .targets
+            .iter()
+            .all(|t| anodizer_core::target::is_windows_msvc(t))
+    };
+    if inject_msvc {
         rustflags = anodizer_core::determinism::merge_msvc_determinism_rustflags(&rustflags);
         env.insert("RUSTFLAGS".into(), rustflags.clone());
     }
@@ -578,6 +612,7 @@ mod tests {
             home_dir: scratch,
             sde: 1_715_000_000,
             worktree: scratch,
+            targets: &[],
             signing_keys: None,
         }
     }
@@ -1221,6 +1256,71 @@ mod tests {
             env.contains_key("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS"),
             "per-target windows-msvc RUSTFLAGS must still be injected regardless of host"
         );
+    }
+
+    /// Keystone regression: when EVERY resolved target is windows-msvc the
+    /// global RUSTFLAGS must carry the MSVC determinism flags DESPITE the
+    /// host probe returning `false`. The probe (`rustc -vV`) is fallible and
+    /// returns `false` on any spawn error; an intermittent false on the
+    /// windows-x86_64 shard stripped `/Brepro` from the global RUSTFLAGS and
+    /// left an unstripped, non-reproducible `.exe`. Gating on the known
+    /// target set makes the injection deterministic.
+    #[test]
+    fn harness_env_injects_global_msvc_flags_when_targets_all_msvc_despite_false_probe() {
+        let tmp = tempfile::tempdir().unwrap();
+        let targets = vec!["x86_64-pc-windows-msvc".to_string()];
+        let mut inputs = inputs(tmp.path());
+        inputs.targets = &targets;
+        let env = build_subprocess_env_with_env(&inputs, &MapEnvSource::new(), false);
+        let rf = env
+            .get("RUSTFLAGS")
+            .expect("global RUSTFLAGS must be set when the build is an all-msvc target set");
+        for needle in ["-C link-arg=/Brepro", "-C strip=symbols"] {
+            assert!(
+                rf.contains(needle),
+                "all-msvc target set must inject `{needle}` into global RUSTFLAGS \
+                 even when the host probe is false. got={rf}"
+            );
+        }
+    }
+
+    /// Complement: a non-msvc target set must NOT inject the MSVC-linker-only
+    /// flags into the global RUSTFLAGS even on a false host probe — `/Brepro`
+    /// errors on lld/ld, so a linux-gnu build would break.
+    #[test]
+    fn harness_env_omits_global_msvc_flags_for_non_msvc_targets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let targets = vec!["x86_64-unknown-linux-gnu".to_string()];
+        let mut inputs = inputs(tmp.path());
+        inputs.targets = &targets;
+        let env = build_subprocess_env_with_env(&inputs, &MapEnvSource::new(), false);
+        if let Some(rf) = env.get("RUSTFLAGS") {
+            assert!(
+                !rf.contains("/Brepro"),
+                "a non-msvc target set must NOT carry MSVC-only /Brepro in global RUSTFLAGS. got={rf}"
+            );
+        }
+    }
+
+    /// Mixed target set (msvc + non-msvc) must NOT inject the global MSVC
+    /// flags: `/Brepro` is link.exe-only, so `all` (not `any`) keeps it out
+    /// of the shared global flags the moment a non-msvc linker is in play.
+    #[test]
+    fn harness_env_omits_global_msvc_flags_for_mixed_targets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let targets = vec![
+            "x86_64-pc-windows-msvc".to_string(),
+            "x86_64-unknown-linux-gnu".to_string(),
+        ];
+        let mut inputs = inputs(tmp.path());
+        inputs.targets = &targets;
+        let env = build_subprocess_env_with_env(&inputs, &MapEnvSource::new(), false);
+        if let Some(rf) = env.get("RUSTFLAGS") {
+            assert!(
+                !rf.contains("/Brepro"),
+                "a mixed target set must NOT carry MSVC-only /Brepro in global RUSTFLAGS. got={rf}"
+            );
+        }
     }
 
     /// Regression: the inherit-everything pass must DROP every rustflags-

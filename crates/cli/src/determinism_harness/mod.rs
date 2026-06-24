@@ -892,6 +892,7 @@ impl Harness {
             home_dir: &home_dir,
             sde: self.sde,
             worktree: worktree.path(),
+            targets: self.targets.as_deref().unwrap_or(&[]),
             signing_keys,
         }))
     }
