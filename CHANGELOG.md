@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-06-24
+
+### Bug Fixes
+
+* 5cd973d4a46b publish-only log noise, hangs, dup artifacts, nsis reproducibility #patch ([@tj-smith47](https://github.com/tj-smith47))
+* 9b2a2782daee pass bash ${#...} through Tera rendering like GoReleaser ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.12.0] - 2026-06-22
 
 ### Features
@@ -395,7 +402,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/tj-smith47/anodizer/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/tj-smith47/anodizer/compare/v0.11.3...v0.12.0
 [0.11.3]: https://github.com/tj-smith47/anodizer/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/tj-smith47/anodizer/compare/v0.11.1...v0.11.2
