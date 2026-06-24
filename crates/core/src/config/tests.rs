@@ -7815,7 +7815,7 @@ crates:
 fn test_builds_structured_hook_all_fields_parse() {
     // Guard: hook strictness must reject ONLY unknown fields. A structured
     // build hook exercising every modeled `StructuredHook` field (cmd, dir,
-    // env, output, if, ids, artifacts) must still parse cleanly.
+    // env, output, if, ids, artifacts, run_once) must still parse cleanly.
     let yaml = r#"
 project_name: test
 crates:
@@ -7833,6 +7833,7 @@ crates:
               if: '{{ eq .Os "linux" }}'
               ids: ["app"]
               artifacts: all
+              run_once: true
 "#;
     let config: Config =
         serde_yaml_ng::from_str(yaml).expect("fully-populated structured hook must parse");
@@ -7841,7 +7842,7 @@ crates:
         .as_ref()
         .unwrap();
     let pre = &hooks.pre.as_ref().unwrap()[0];
-    // Prove all 7 fields round-trip into the struct, not just that it parsed.
+    // Prove all 8 fields round-trip into the struct, not just that it parsed.
     let HookEntry::Structured(hook) = pre else {
         panic!("expected object-form hook to deserialize as HookEntry::Structured, got {pre:?}");
     };
@@ -7858,6 +7859,7 @@ crates:
         hook.artifacts,
         Some(super::BeforePublishArtifactFilter::All)
     );
+    assert!(hook.run_once);
 }
 
 #[test]

@@ -143,6 +143,18 @@ pub struct StructuredHook {
     /// [`BeforePublishArtifactFilter::All`] (every registered artifact).
     /// Ignored by lifecycle hook sites for the same reason as `ids`.
     pub artifacts: Option<BeforePublishArtifactFilter>,
+    /// Run the hook exactly once before the publish stage instead of once
+    /// per matching artifact (`before_publish:` only). With the default
+    /// `false`, the hook keeps the per-artifact semantics: it fires once for
+    /// each artifact passing the `ids` / `artifacts` filters, with the
+    /// per-artifact template vars (`ArtifactName`, `ArtifactPath`, ...) and
+    /// the `$ANODIZER_ARTIFACT` channel bound. With `true`, the hook runs a
+    /// single time with the run-level template vars (`Version`, `Tag`, ...);
+    /// the `ids` / `artifacts` filters and the per-artifact vars do not apply,
+    /// so the command is expected to iterate the dist directory itself. A
+    /// Rust-additive extension with no GoReleaser counterpart.
+    #[serde(default)]
+    pub run_once: bool,
 }
 
 /// Artifact-type filter for `before_publish[*].artifacts`.

@@ -1,5 +1,5 @@
 use anodizer_core::retry::RetryPolicy;
-use anyhow::{Context as _, Result};
+use anyhow::Result;
 
 use crate::helpers::retry_http;
 
@@ -15,10 +15,7 @@ pub fn send_mastodon(
     policy: &RetryPolicy,
 ) -> Result<()> {
     let url = format!("{}/api/v1/statuses", server.trim_end_matches('/'));
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(anodizer_core::http::USER_AGENT)
-        .build()
-        .context("mastodon: build HTTP client")?;
+    let client = crate::http::blocking_client()?;
 
     let _ = retry_http("mastodon", "POST /api/v1/statuses", policy, || {
         client

@@ -27,7 +27,7 @@ pub fn send_discourse(
     })
     .to_string();
 
-    let client = reqwest::blocking::Client::new();
+    let client = crate::http::blocking_client()?;
     let _ = retry_http("discourse", "create topic", policy, || {
         client
             .post(&url)

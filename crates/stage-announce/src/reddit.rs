@@ -79,10 +79,7 @@ pub fn send_reddit(post: &RedditPost<'_>, log: &StageLogger, policy: &RetryPolic
     } = *post;
     validate_subreddit(subreddit)?;
 
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(anodizer_core::http::USER_AGENT)
-        .build()
-        .context("reddit: build HTTP client")?;
+    let client = crate::http::blocking_client()?;
 
     let token_body = retry_sync(policy, |_attempt| {
         match client

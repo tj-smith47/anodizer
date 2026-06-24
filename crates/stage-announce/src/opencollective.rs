@@ -232,7 +232,7 @@ pub fn send_opencollective(
     html: &str,
     policy: &RetryPolicy,
 ) -> Result<()> {
-    let client = reqwest::blocking::Client::new();
+    let client = crate::http::blocking_client()?;
 
     let resp_text = do_mutation(
         &client,

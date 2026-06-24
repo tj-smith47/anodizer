@@ -34,6 +34,12 @@ pub struct SmtpParams<'a> {
     pub encryption: EmailEncryption,
 }
 
+/// Bounded SMTP timeout. lettre defaults to none, so without this an
+/// unresponsive relay can hang the announce stage indefinitely.
+fn smtp_timeout() -> Option<std::time::Duration> {
+    Some(crate::http::ANNOUNCE_HTTP_TIMEOUT)
+}
+
 /// Resolve `EmailEncryption::Auto` against the configured port. Pure function
 /// so the call-site can short-circuit a few clearly-wrong combinations
 /// (e.g. requesting `none` on port 465) before opening a connection.
@@ -128,7 +134,7 @@ pub fn send_smtp(
         };
         transport_builder = transport_builder.tls(mode);
     }
-    let transport = transport_builder.build();
+    let transport = transport_builder.timeout(smtp_timeout()).build();
 
     retry_sync(policy, |_attempt| match transport.send(&email) {
         Ok(_) => Ok(()),
@@ -293,6 +299,16 @@ pub fn send_sendmail(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn smtp_transport_carries_bounded_timeout() {
+        // The transport builder is fed `smtp_timeout()`; a None here would
+        // restore the indefinite-hang failure mode on an unresponsive relay.
+        let t = super::smtp_timeout();
+        assert!(t.is_some(), "SMTP transport must set a timeout");
+        assert_eq!(t, Some(crate::http::ANNOUNCE_HTTP_TIMEOUT));
+        assert!(t.unwrap() > std::time::Duration::ZERO);
+    }
 
     #[test]
     fn test_build_rfc2822_message_single_recipient() {

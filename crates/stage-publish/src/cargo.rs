@@ -528,19 +528,39 @@ fn poll_crates_io_index(
     timeout_secs: u64,
     log: &StageLogger,
 ) -> Result<()> {
+    use std::time::Duration;
+    poll_crates_io_index_at(
+        &sparse_index_url(crate_name),
+        crate_name,
+        version,
+        timeout_secs,
+        Duration::from_secs(5),
+        log,
+    )
+}
+
+/// Same as [`poll_crates_io_index`] but uses the supplied URL and initial
+/// back-off instead of computing them. Lets tests point at a local TCP
+/// responder and skip the production 5 s first delay.
+fn poll_crates_io_index_at(
+    url: &str,
+    crate_name: &str,
+    version: &str,
+    timeout_secs: u64,
+    initial_backoff: std::time::Duration,
+    log: &StageLogger,
+) -> Result<()> {
     use std::time::{Duration, Instant};
 
-    const INITIAL_POLL_DELAY: Duration = Duration::from_secs(5);
     const MAX_POLL_DELAY: Duration = Duration::from_secs(60);
 
     let start = Instant::now();
     let deadline = Duration::from_secs(timeout_secs);
-    let url = sparse_index_url(crate_name);
 
     let client = anodizer_core::http::blocking_client(Duration::from_secs(10))
         .context("publish: build HTTP client for index polling")?;
 
-    let mut backoff = INITIAL_POLL_DELAY;
+    let mut backoff = initial_backoff;
 
     // Per-attempt logs go to `debug` — transient HTTP errors are the
     // normal shape of "the index hasn't propagated yet"; surfacing them
@@ -548,7 +568,7 @@ fn poll_crates_io_index(
     // timeout below escalates with a single bail!() carrying the same
     // context the per-attempt logs would have shown.
     loop {
-        match client.get(&url).send() {
+        match client.get(url).send() {
             Ok(resp) if resp.status().is_success() => {
                 let body = anodizer_core::http::body_of_blocking(resp);
                 // Each line of the sparse index is a JSON object; parse and check vers field.
@@ -558,7 +578,7 @@ fn poll_crates_io_index(
                         .and_then(|v| v.get("vers")?.as_str().map(|s| s == version))
                         .unwrap_or(false)
                 }) {
-                    log.status(&format!(
+                    log.verbose(&format!(
                         "crates.io index confirmed {}-{}",
                         crate_name, version
                     ));
@@ -2166,7 +2186,7 @@ fn publish_to_cargo_with_guard(
                     name
                 ));
             } else {
-                log.status(&format!(
+                log.verbose(&format!(
                     "waiting for {}-{} in crates.io index (timeout={}s)…",
                     name, crate_version, timeout
                 ));
@@ -3215,6 +3235,49 @@ mod tests {
         // Non-empty cksum in index body: old code would have compared it and
         // potentially bailed; new code ignores the value entirely.
         assert_eq!(cksum, "deadbeef");
+    }
+
+    // The per-crate index confirmation is propagation progress, not a RESULT:
+    // it fires once per crate with dependents, so it rides at verbose, leaving
+    // `published crate '<name>'` as the only default-level per-crate output.
+    #[test]
+    fn index_confirmation_rides_at_verbose_not_default() {
+        use anodizer_core::log::LogLevel;
+
+        let body = r#"{"name":"myapp","vers":"1.2.3","cksum":"deadbeef","yanked":false}"#;
+        let body_len = body.len();
+        let ok_resp: &'static str = Box::leak(
+            format!("HTTP/1.1 200 OK\r\nContent-Length: {body_len}\r\n\r\n{body}").into_boxed_str(),
+        );
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![ok_resp]);
+        let url = format!("http://{addr}/3/m/myapp");
+
+        let (log, cap) =
+            StageLogger::with_capture("publish-test", anodizer_core::log::Verbosity::Normal);
+        poll_crates_io_index_at(&url, "myapp", "1.2.3", 5, std::time::Duration::ZERO, &log)
+            .expect("version present ⇒ confirmed");
+
+        let confirmed = "crates.io index confirmed myapp-1.2.3";
+        let status: Vec<String> = cap
+            .all_messages()
+            .into_iter()
+            .filter(|(lvl, _)| *lvl == LogLevel::Status)
+            .map(|(_, m)| m)
+            .collect();
+        let verbose: Vec<String> = cap
+            .all_messages()
+            .into_iter()
+            .filter(|(lvl, _)| *lvl == LogLevel::Verbose)
+            .map(|(_, m)| m)
+            .collect();
+        assert!(
+            !status.iter().any(|m| m == confirmed),
+            "confirmation must NOT appear at default: {status:?}"
+        );
+        assert!(
+            verbose.iter().any(|m| m == confirmed),
+            "confirmation must ride at verbose: {verbose:?}"
+        );
     }
 
     // -----------------------------------------------------------------------

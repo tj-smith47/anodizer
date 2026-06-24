@@ -612,9 +612,11 @@ fn render_group_titles(
 /// An explicit `--from <ref>` (carried as `ctx.options.changelog_from`)
 /// overrides the auto-discovered tag, letting the operator pin the lower
 /// bound. Otherwise the latest tag matching the crate's `tag_template` is
-/// used. In a real release the result is filtered against `current_tag` so a
-/// range start equal to the upper bound (which would collapse the range to
-/// zero commits) is dropped.
+/// used. In a real release that latest tag IS the just-cut `current_tag` (and
+/// always is in lockstep, where every crate shares one tag namespace); rather
+/// than collapse the range, the genuine lower bound is then the tag preceding
+/// `current_tag`, resolved via ancestry. When no earlier tag exists the result
+/// is `None` and the caller covers all reachable commits.
 ///
 /// In snapshot mode that drop is suppressed: `current_tag` is a *preview*
 /// boundary (`resolve_git_context` resolves it to the latest EXISTING tag when
@@ -678,7 +680,32 @@ fn resolve_prev_tag(
     if ctx.is_snapshot() || ctx.options.changelog_preview {
         return Ok(candidate);
     }
-    Ok(candidate.filter(|t| current_tag != Some(t.as_str())))
+    // An explicit `--from` is the operator's chosen lower bound: keep it verbatim
+    // even if it happens to equal the current tag.
+    let from_is_explicit = ctx
+        .options
+        .changelog_from
+        .as_deref()
+        .is_some_and(|f| !f.trim().is_empty());
+    match candidate {
+        // Auto-discovered range start equals the just-cut tag: the latest tag
+        // matching this crate's `tag_template` IS the current release tag (the
+        // common case in a real release, and ALWAYS the case in lockstep where
+        // every crate shares one tag namespace). The genuine lower bound is the
+        // tag immediately preceding `current`, so look it back through ancestry
+        // rather than collapsing to full history.
+        Some(ref t) if !from_is_explicit && current_tag == Some(t.as_str()) && !t.is_empty() => {
+            let prev = anodizer_core::git::find_previous_tag_with_prefix(
+                t,
+                ctx.config.git.as_ref(),
+                Some(ctx.template_vars()),
+                monorepo_prefix,
+            )
+            .unwrap_or(None);
+            Ok(prev)
+        }
+        other => Ok(other),
+    }
 }
 
 /// Resolve the commit path-scope for `crate_cfg` via the shared

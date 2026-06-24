@@ -71,11 +71,7 @@ pub fn send_webhook(
         content_type
     };
 
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(anodizer_core::http::USER_AGENT)
-        .danger_accept_invalid_certs(skip_tls_verify)
-        .build()
-        .context("webhook: build HTTP client")?;
+    let client = crate::http::blocking_client_accept_invalid_certs(skip_tls_verify)?;
 
     retry_sync(policy, |_attempt| {
         let mut builder = client

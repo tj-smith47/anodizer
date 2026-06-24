@@ -271,34 +271,6 @@ fn copy_extra_files(
     Ok(per_file_mtimes)
 }
 
-/// Recursively apply a mod_timestamp to all files in a directory tree.
-///
-/// This is a local variant of `anodizer_core::util::apply_mod_timestamp` because
-/// the core utility only walks one directory level.  App bundles have a nested
-/// `Contents/{MacOS,Resources}/` structure, so we need recursive traversal.
-/// Modifying the core utility to be recursive could affect other stages that
-/// rely on the current single-level behaviour, so we keep this local copy.
-fn apply_mod_timestamp_recursive(
-    dir: &Path,
-    raw: &str,
-    log: &anodizer_core::log::StageLogger,
-) -> Result<()> {
-    let mtime = anodizer_core::util::parse_mod_timestamp(raw)?;
-
-    for entry in fs::read_dir(dir).with_context(|| format!("read dir {}", dir.display()))? {
-        let entry = entry?;
-        let ft = entry.file_type()?;
-        if ft.is_file() {
-            anodizer_core::util::set_file_mtime(&entry.path(), mtime)?;
-        } else if ft.is_dir() {
-            apply_mod_timestamp_recursive(&entry.path(), raw, log)?;
-        }
-    }
-
-    log.status(&format!("applied mod_timestamp={raw} to {}", dir.display()));
-    Ok(())
-}
-
 impl Stage for AppBundleStage {
     fn name(&self) -> &str {
         "appbundle"
@@ -701,7 +673,7 @@ impl Stage for AppBundleStage {
                             let ts = ctx
                                 .render_template(ts_tmpl)
                                 .with_context(|| "appbundle: render mod_timestamp template")?;
-                            apply_mod_timestamp_recursive(&app_dir, &ts, &log)?;
+                            anodizer_core::util::apply_mod_timestamp(&app_dir, &ts, &log)?;
                             for (path, mtime) in &per_file_mtimes {
                                 anodizer_core::util::set_file_mtime(path, *mtime)?;
                             }

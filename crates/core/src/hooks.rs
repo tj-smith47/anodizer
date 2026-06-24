@@ -94,6 +94,23 @@ impl<'a> HookRunContext<'a> {
 /// environment before calling `run_hooks`, which `setup_env()` handles. See
 /// [`HookRunContext`] for how `template_vars` and `build_env` are applied.
 pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> Result<()> {
+    run_hooks_inner(hooks, label, ctx, None).map(|_| ())
+}
+
+/// [`run_hooks`] with an optional bound artifact name. When `Some`, this is a
+/// per-artifact `before_publish` iteration and the "ran <label> hook" echo is
+/// demoted to verbose and names the artifact; `None` keeps the single default
+/// status line.
+///
+/// Returns `true` when at least one entry executed (reached the run past the
+/// `if:` gate) and `false` when every entry was `if:`-skipped. Dry-run counts
+/// as executed.
+fn run_hooks_inner(
+    hooks: &[HookEntry],
+    label: &str,
+    ctx: HookRunContext<'_>,
+    artifact_name: Option<&str>,
+) -> Result<bool> {
     let HookRunContext {
         dry_run,
         log,
@@ -101,6 +118,7 @@ pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> R
         build_env,
         extra_env,
     } = ctx;
+    let mut executed = false;
     for hook in hooks {
         let (raw_cmd, raw_dir, env, output_flag, if_cond) = match hook {
             HookEntry::Simple(s) => (s.as_str(), None, None, None, None),
@@ -172,6 +190,7 @@ pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> R
             None => None,
         };
 
+        executed = true;
         if dry_run {
             log.status(&format!(
                 "(dry-run) would run {} hook via `{}`",
@@ -220,7 +239,10 @@ pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> R
                 &format!("{} hook: {}", label, cmd_str),
             )?;
 
-            log.status(&format!("ran {label} hook"));
+            match artifact_name {
+                Some(name) => log.verbose(&format!("ran {label} hook '{cmd_str}' on {name}")),
+                None => log.status(&format!("ran {label} hook")),
+            }
 
             // When output flag is true, echo the hook's (redacted) stdout as a
             // `[hook output]` summary line — but NOT at verbose, where the run
@@ -235,7 +257,7 @@ pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> R
             }
         }
     }
-    Ok(())
+    Ok(executed)
 }
 
 /// Pipeline stage that runs `config.before_publish.hooks` immediately
@@ -545,14 +567,35 @@ fn run_before_publish_entry(
     log: &StageLogger,
     base_vars: &TemplateVars,
 ) -> Result<()> {
-    let (ids_filter, kind_filter) = match entry {
-        HookEntry::Simple(_) => (None, BeforePublishArtifactFilter::All),
+    let (cmd_label, ids_filter, kind_filter, run_once) = match entry {
+        HookEntry::Simple(s) => (s.as_str(), None, BeforePublishArtifactFilter::All, false),
         HookEntry::Structured(h) => (
+            h.cmd.as_str(),
             h.ids.as_deref(),
             h.artifacts.unwrap_or(BeforePublishArtifactFilter::All),
+            h.run_once,
         ),
     };
 
+    // run_once: fire the command a single time with run-level vars, not bound
+    // to any artifact. The `ids` / `artifacts` filters and `$ANODIZER_ARTIFACT`
+    // are per-artifact concepts that don't apply — the command iterates the
+    // dist dir itself. Same single-invocation shape as the run-once `before:`
+    // lifecycle hook (one entry, run-level vars, one default status line).
+    if run_once {
+        let single = std::slice::from_ref(entry);
+        run_hooks(
+            single,
+            "before-publish",
+            HookRunContext::new(dry_run, log, Some(base_vars)),
+        )?;
+        if !dry_run {
+            log.status(&format!("ran before-publish hook '{cmd_label}' once")); // status-ok: run-once summary
+        }
+        return Ok(());
+    }
+
+    let mut ran = 0usize;
     for artifact in artifacts {
         if !kind_filter.matches(artifact.kind) {
             continue;
@@ -576,11 +619,27 @@ fn run_before_publish_entry(
         // new here.
         let single = std::slice::from_ref(entry);
         // before_publish hooks are not build hooks — no per-target build env.
-        run_hooks(
+        // Naming the artifact demotes the per-iteration "ran" echo to verbose
+        // so the default-level result is the one summary line below.
+        let executed = run_hooks_inner(
             single,
             "before-publish",
             HookRunContext::new(dry_run, log, Some(&vars)),
+            Some(artifact.name()),
         )?;
+        // An `if:`-skipped artifact reaches no command, so it must not inflate
+        // the summary count (which would contradict the verbose per-artifact
+        // lines that only print for executed runs).
+        if executed {
+            ran += 1;
+        }
+    }
+
+    if !dry_run && ran > 0 {
+        let suffix = if ran == 1 { "" } else { "s" };
+        log.status(&format!(
+            "ran before-publish hook '{cmd_label}' over {ran} artifact{suffix}"
+        )); // status-ok: once-per-hook summary; per-artifact detail is verbose
     }
     Ok(())
 }
@@ -619,6 +678,8 @@ fn bind_per_artifact_vars(vars: &mut TemplateVars, artifact: &Artifact) {
 mod tests {
     use super::*;
     use crate::config::StructuredHook;
+    #[cfg(feature = "test-helpers")]
+    use crate::log::LogLevel;
     use crate::log::{StageLogger, Verbosity};
     use std::collections::HashMap;
 
@@ -1176,6 +1237,265 @@ mod tests {
             contents.contains("bar:9.9.9:bar_9.9.9.deb"),
             "every crate's before_publish must fire on the full-release path; \
              bar missing in: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn before_publish_entry_emits_one_summary_not_per_artifact() {
+        let (log, cap) = StageLogger::with_capture("before-publish", Verbosity::Verbose);
+        let artifacts = vec![
+            pkg_artifact("foo", "a.deb"),
+            pkg_artifact("foo", "b.deb"),
+            pkg_artifact("foo", "c.deb"),
+        ];
+        let base = TemplateVars::new();
+        run_before_publish_entry(
+            &HookEntry::Simple("true".to_string()),
+            &artifacts,
+            false,
+            &log,
+            &base,
+        )
+        .expect("entry must run over every artifact");
+
+        let msgs = cap.all_messages();
+        let summary_status: Vec<&String> = msgs
+            .iter()
+            .filter(|(lvl, m)| {
+                *lvl == LogLevel::Status && m.contains("before-publish hook") && m.contains('3')
+            })
+            .map(|(_, m)| m)
+            .collect();
+        assert_eq!(
+            summary_status.len(),
+            1,
+            "exactly one default-level summary line for 3 artifacts; got: {:?}",
+            msgs
+        );
+        let ran_status = msgs
+            .iter()
+            .filter(|(lvl, m)| *lvl == LogLevel::Status && m.starts_with("ran "))
+            .count();
+        assert_eq!(
+            ran_status, 1,
+            "no per-artifact 'ran' line may reach default level; got: {msgs:?}"
+        );
+        let per_artifact_verbose = msgs
+            .iter()
+            .filter(|(lvl, m)| {
+                *lvl == LogLevel::Verbose && m.starts_with("ran ") && m.contains(".deb")
+            })
+            .count();
+        assert_eq!(
+            per_artifact_verbose, 3,
+            "each artifact's 'ran' detail must be verbose-only and name the artifact; got: {msgs:?}"
+        );
+    }
+
+    /// The summary counts only artifacts the hook actually ran on, not `if:`-skipped ones.
+    #[cfg(feature = "test-helpers")]
+    #[test]
+    fn before_publish_summary_excludes_if_skipped_artifacts() {
+        let (log, cap) = StageLogger::with_capture("before-publish", Verbosity::Verbose);
+        let artifacts = vec![
+            pkg_artifact("foo", "a.deb"),
+            pkg_artifact("foo", "b.deb"),
+            pkg_artifact("foo", "c.deb"),
+        ];
+        let base = TemplateVars::new();
+        // Truthy only for `b.deb`; the other two are `if:`-skipped.
+        run_before_publish_entry(
+            &HookEntry::Structured(StructuredHook {
+                cmd: "true".to_string(),
+                if_condition: Some("{{ ArtifactName == \"b.deb\" }}".to_string()),
+                ..Default::default()
+            }),
+            &artifacts,
+            false,
+            &log,
+            &base,
+        )
+        .expect("entry must run");
+
+        let msgs = cap.all_messages();
+        let summary: Vec<&String> = msgs
+            .iter()
+            .filter(|(lvl, m)| *lvl == LogLevel::Status && m.contains("before-publish hook"))
+            .map(|(_, m)| m)
+            .collect();
+        assert_eq!(
+            summary.len(),
+            1,
+            "exactly one default-level summary; got: {msgs:?}"
+        );
+        assert!(
+            summary[0].contains("over 1 artifact") && !summary[0].contains("over 1 artifacts"),
+            "summary must count only the one executed artifact (singular), not the 3 filtered-in; \
+             got: {:?}",
+            summary[0]
+        );
+        let per_artifact_verbose: Vec<&String> = msgs
+            .iter()
+            .filter(|(lvl, m)| {
+                *lvl == LogLevel::Verbose && m.starts_with("ran ") && m.contains(".deb")
+            })
+            .map(|(_, m)| m)
+            .collect();
+        assert_eq!(
+            per_artifact_verbose.len(),
+            1,
+            "only the executed artifact emits a verbose 'ran ... on <name>' line; got: {msgs:?}"
+        );
+        assert!(
+            per_artifact_verbose[0].contains("b.deb"),
+            "the one verbose line must name the artifact that actually ran; got: {:?}",
+            per_artifact_verbose[0]
+        );
+    }
+
+    /// `run_once: true` executes the command exactly once regardless of how many artifacts match.
+    #[test]
+    fn before_publish_run_once_executes_a_single_time_for_many_artifacts() {
+        let dir = std::env::temp_dir().join(format!("anodizer-bp-runonce-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("runs.txt");
+        let _ = std::fs::remove_file(&out);
+        let out_s = out.display().to_string().replace('\\', "/");
+
+        let log = test_logger();
+        let artifacts = vec![
+            pkg_artifact("foo", "a.deb"),
+            pkg_artifact("foo", "b.deb"),
+            pkg_artifact("foo", "c.deb"),
+        ];
+        let mut base = TemplateVars::new();
+        base.set("Version", "1.2.3");
+        run_before_publish_entry(
+            &HookEntry::Structured(StructuredHook {
+                cmd: format!("echo once:{{{{ Version }}}} >> {out_s}"),
+                run_once: true,
+                ..Default::default()
+            }),
+            &artifacts,
+            false,
+            &log,
+            &base,
+        )
+        .expect("run_once entry must execute");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "run_once hook must fire exactly once for 3 artifacts; got: {contents:?}"
+        );
+        assert_eq!(
+            lines[0], "once:1.2.3",
+            "run_once hook must render run-level vars (Version), not per-artifact vars; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// A `run_once` hook whose command exits non-zero must abort the stage
+    /// (return `Err`), exactly like a per-artifact hook failure — so a failing
+    /// integrity gate still blocks the publish.
+    #[test]
+    fn before_publish_run_once_nonzero_exit_fails_stage() {
+        let log = test_logger();
+        let artifacts = vec![pkg_artifact("foo", "a.deb"), pkg_artifact("foo", "b.deb")];
+        let base = TemplateVars::new();
+        let err = run_before_publish_entry(
+            &HookEntry::Structured(StructuredHook {
+                cmd: "exit 1".to_string(),
+                run_once: true,
+                ..Default::default()
+            }),
+            &artifacts,
+            false,
+            &log,
+            &base,
+        )
+        .expect_err("a non-zero run_once command must fail the stage");
+        let _ = err;
+    }
+
+    /// `run_once: true` ignores the per-artifact `ids` / `artifacts` filters and still runs once.
+    #[test]
+    fn before_publish_run_once_ignores_artifact_filters() {
+        let dir =
+            std::env::temp_dir().join(format!("anodizer-bp-runonce-flt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("flt.txt");
+        let _ = std::fs::remove_file(&out);
+        let out_s = out.display().to_string().replace('\\', "/");
+
+        let log = test_logger();
+        // Only LinuxPackage artifacts exist; filter asks for Checksum (no match).
+        let artifacts = vec![pkg_artifact("foo", "a.deb")];
+        let base = TemplateVars::new();
+        run_before_publish_entry(
+            &HookEntry::Structured(StructuredHook {
+                cmd: format!("echo ran >> {out_s}"),
+                run_once: true,
+                artifacts: Some(BeforePublishArtifactFilter::Checksum),
+                ids: Some(vec!["nonexistent".to_string()]),
+                ..Default::default()
+            }),
+            &artifacts,
+            false,
+            &log,
+            &base,
+        )
+        .expect("run_once entry must run despite non-matching filters");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        assert_eq!(
+            contents.lines().filter(|l| !l.is_empty()).count(),
+            1,
+            "run_once must fire exactly once regardless of artifact filters; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// `run_once: false` (and absent) runs the command once per matching artifact.
+    #[test]
+    fn before_publish_run_once_false_stays_per_artifact() {
+        let dir = std::env::temp_dir().join(format!("anodizer-bp-perart-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("perart.txt");
+        let _ = std::fs::remove_file(&out);
+        let out_s = out.display().to_string().replace('\\', "/");
+
+        let log = test_logger();
+        let artifacts = vec![
+            pkg_artifact("foo", "a.deb"),
+            pkg_artifact("foo", "b.deb"),
+            pkg_artifact("foo", "c.deb"),
+        ];
+        let base = TemplateVars::new();
+        run_before_publish_entry(
+            &HookEntry::Structured(StructuredHook {
+                cmd: format!("echo {{{{ ArtifactName }}}} >> {out_s}"),
+                run_once: false,
+                ..Default::default()
+            }),
+            &artifacts,
+            false,
+            &log,
+            &base,
+        )
+        .expect("per-artifact entry must run");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        let mut lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+        lines.sort_unstable();
+        assert_eq!(
+            lines,
+            vec!["a.deb", "b.deb", "c.deb"],
+            "run_once:false must fire once per artifact with per-artifact vars; got: {contents:?}"
         );
         let _ = std::fs::remove_file(&out);
     }

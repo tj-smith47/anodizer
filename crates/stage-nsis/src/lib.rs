@@ -558,6 +558,23 @@ impl Stage for NsisStage {
                             )
                         })?;
 
+                        // makensis embeds each bundled file's on-disk mtime into
+                        // the installer; SOURCE_DATE_EPOCH pins makensis's own
+                        // build timestamp but not per-file mtimes, and `fs::copy`
+                        // stamps the wall clock. Pin the staging tree to SDE so the
+                        // installer is reproducible by default; an explicit
+                        // mod_timestamp below overrides on top.
+                        if let Some(sde) = anodizer_core::sde::source_date_epoch() {
+                            anodizer_core::util::pin_dir_mtimes_epoch(
+                                staging_dir,
+                                sde.timestamp(),
+                            )?;
+                            log.verbose(&format!(
+                                "pinned staging mtimes to SOURCE_DATE_EPOCH={}",
+                                sde.timestamp()
+                            ));
+                        }
+
                         // Apply mod_timestamp if set (template-rendered, to staging dir contents)
                         if let Some(ref ts_tmpl) = nsis_cfg.mod_timestamp {
                             let ts = ctx
@@ -815,6 +832,11 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let payload = dir.path().join("payload.txt");
             std::fs::write(&payload, b"deterministic payload\n").unwrap();
+            // makensis embeds the payload's on-disk mtime; pin it to the same
+            // fixed epoch passed as SOURCE_DATE_EPOCH so the only variable under
+            // test is makensis honoring the build clock — `fs::write` would
+            // otherwise stamp wall-clock mtimes that straddle a filesystem tick.
+            anodizer_core::util::set_file_mtime_epoch(&payload, 1700000000).unwrap();
             let out = dir.path().join("ReproProbe_setup.exe");
             let script = dir.path().join("repro.nsi");
             std::fs::write(
@@ -845,6 +867,31 @@ mod tests {
              A mismatch means makensis stopped honoring SOURCE_DATE_EPOCH or a \
              new variance source appeared — fix it, do NOT allow-list the .exe."
         );
+    }
+
+    #[test]
+    fn nsis_staging_pin_stamps_sde_epoch_on_staged_files() {
+        use std::time::{Duration, SystemTime};
+
+        let staging = tempfile::tempdir().unwrap();
+        let binary = staging.path().join("app.exe");
+        let extra = staging.path().join("README.txt");
+        std::fs::write(&binary, b"binary bytes").unwrap();
+        std::fs::write(&extra, b"readme bytes").unwrap();
+
+        let sde_epoch: i64 = 1700000000;
+        anodizer_core::util::pin_dir_mtimes_epoch(staging.path(), sde_epoch).unwrap();
+
+        let target = SystemTime::UNIX_EPOCH + Duration::from_secs(sde_epoch as u64);
+        for path in [&binary, &extra] {
+            let mtime = std::fs::metadata(path).unwrap().modified().unwrap();
+            assert_eq!(
+                mtime,
+                target,
+                "{}: staged mtime must equal SOURCE_DATE_EPOCH exactly",
+                path.display()
+            );
+        }
     }
 
     #[test]

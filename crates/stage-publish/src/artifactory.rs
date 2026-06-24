@@ -682,10 +682,10 @@ pub(crate) fn upload_single_artifact(
         match probe_artifact_presence(client, url, auth, &checksum) {
             ArtifactPresence::PresentMatching => {
                 log.status(&format!(
-                    "skipped {} — already uploaded at {} (sha256 match)",
-                    artifact.name(),
-                    url
+                    "skipped {} (already uploaded, sha256 match)",
+                    artifact.name()
                 ));
+                log.verbose(&format!("{} already present at {}", artifact.name(), url));
                 return Ok(UploadOutcome::AlreadyPresent);
             }
             ArtifactPresence::PresentDiffering { remote_checksum } => {
@@ -708,7 +708,7 @@ pub(crate) fn upload_single_artifact(
     let body = fs::read(path)
         .with_context(|| format!("{publisher}: failed to read '{}'", path.display()))?;
 
-    log.status(&format!(
+    log.verbose(&format!(
         "uploading {} ({} bytes) to {}",
         artifact.name(),
         body.len(),
@@ -796,7 +796,8 @@ pub(crate) fn upload_single_artifact(
         },
     )?;
 
-    log.status(&format!("uploaded {} ({})", artifact.name(), status));
+    log.status(&format!("uploaded {}", artifact.name()));
+    log.verbose(&format!("uploaded {} ({status}) → {url}", artifact.name()));
     Ok(UploadOutcome::Uploaded)
 }
 
@@ -2903,6 +2904,161 @@ mod tests {
         assert!(
             log_recorder.lock().unwrap().is_empty(),
             "no request must reach the wire for a bad method"
+        );
+    }
+
+    // The full upload URL is a request echo: at default verbosity an upload
+    // emits exactly one concise per-artifact RESULT line; the destination URL
+    // and HTTP status code ride at verbose.
+    #[test]
+    fn upload_routes_url_echo_to_verbose_keeps_concise_result_at_default() {
+        use anodizer_core::log::LogLevel;
+
+        let (addr, _rec) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "PUT",
+            path_pattern: "/repo/myapp.tar.gz",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+            times: None,
+        }]);
+        let (_dir, art) = file_artifact(b"payload-bytes", "myapp.tar.gz");
+        let ctx = upload_ctx();
+        let (log, cap) = StageLogger::with_capture("artifactory", Verbosity::Normal);
+        let url = format!("http://{addr}/repo/myapp.tar.gz");
+        let custom = no_headers();
+        let client = build_reqwest_client(None, None, None).unwrap();
+        upload_single_artifact(
+            &client,
+            &UploadHeaders {
+                publisher: "artifactory",
+                method: "PUT",
+                url: &url,
+                checksum_header: "X-Checksum-SHA256",
+                custom_headers: &custom,
+            },
+            &UploadAuth {
+                username: "",
+                password: "",
+            },
+            &art,
+            true,
+            &ctx,
+            &fast_policy(3),
+            &log,
+        )
+        .expect("201 upload succeeds");
+
+        let status: Vec<String> = cap
+            .all_messages()
+            .into_iter()
+            .filter(|(lvl, _)| *lvl == LogLevel::Status)
+            .map(|(_, m)| m)
+            .collect();
+        let verbose: Vec<String> = cap
+            .all_messages()
+            .into_iter()
+            .filter(|(lvl, _)| *lvl == LogLevel::Verbose)
+            .map(|(_, m)| m)
+            .collect();
+
+        assert!(
+            status.iter().any(|m| m == "uploaded myapp.tar.gz"),
+            "default RESULT must be the concise per-artifact line: {status:?}"
+        );
+        assert!(
+            !status.iter().any(|m| m.contains(&url)),
+            "the destination URL must not appear at default: {status:?}"
+        );
+        assert!(
+            !status.iter().any(|m| m.starts_with("uploading ")),
+            "the request echo must not appear at default: {status:?}"
+        );
+        assert!(
+            verbose
+                .iter()
+                .any(|m| m.contains(&url) && m.contains("uploading")),
+            "the request echo (with URL) must ride at verbose: {verbose:?}"
+        );
+        assert!(
+            verbose.iter().any(|m| m.contains("201")),
+            "the HTTP status code rides at verbose: {verbose:?}"
+        );
+    }
+
+    // An idempotent skip keeps a concise default RESULT; the matched URL is
+    // verbose-only.
+    #[test]
+    fn upload_skip_keeps_concise_result_url_at_verbose() {
+        use anodizer_core::log::LogLevel;
+
+        let (_dir, art) = file_artifact(b"already-there", "dup.tar.gz");
+        // The remote checksum the HEAD probe reports must equal the local
+        // file's sha256 to drive PresentMatching → skip.
+        let checksum = sha256_file(&art.path).unwrap();
+        let head_resp: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 200 OK\r\nX-Checksum-Sha256: {checksum}\r\nContent-Length: 0\r\n\r\n"
+            )
+            .into_boxed_str(),
+        );
+        let (addr, _rec) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "HEAD",
+            path_pattern: "/repo/dup.tar.gz",
+            response: head_resp,
+            times: None,
+        }]);
+        let ctx = upload_ctx();
+        let (log, cap) = StageLogger::with_capture("artifactory", Verbosity::Normal);
+        let url = format!("http://{addr}/repo/dup.tar.gz");
+        let custom = no_headers();
+        let client = build_reqwest_client(None, None, None).unwrap();
+        let outcome = upload_single_artifact(
+            &client,
+            &UploadHeaders {
+                publisher: "artifactory",
+                method: "PUT",
+                url: &url,
+                checksum_header: "X-Checksum-SHA256",
+                custom_headers: &custom,
+            },
+            &UploadAuth {
+                username: "",
+                password: "",
+            },
+            &art,
+            false,
+            &ctx,
+            &fast_policy(3),
+            &log,
+        )
+        .expect("identical artifact present ⇒ idempotent skip");
+        assert!(matches!(outcome, UploadOutcome::AlreadyPresent));
+
+        let status: Vec<String> = cap
+            .all_messages()
+            .into_iter()
+            .filter(|(lvl, _)| *lvl == LogLevel::Status)
+            .map(|(_, m)| m)
+            .collect();
+        let verbose: Vec<String> = cap
+            .all_messages()
+            .into_iter()
+            .filter(|(lvl, _)| *lvl == LogLevel::Verbose)
+            .map(|(_, m)| m)
+            .collect();
+
+        assert!(
+            status
+                .iter()
+                .any(|m| m == "skipped dup.tar.gz (already uploaded, sha256 match)"),
+            "default skip RESULT must be concise and URL-free: {status:?}"
+        );
+        assert!(
+            !status.iter().any(|m| m.contains(&url)),
+            "the matched URL must not appear at default: {status:?}"
+        );
+        assert!(
+            verbose.iter().any(|m| m.contains(&url)),
+            "the matched URL rides at verbose: {verbose:?}"
         );
     }
 

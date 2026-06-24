@@ -1,7 +1,38 @@
+use std::time::Duration;
+
 use anodizer_core::retry::RetryPolicy;
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 
 use crate::helpers::retry_http;
+
+/// Bounded per-request timeout applied to every announce HTTP client and the
+/// SMTP transport, so an unresponsive endpoint cannot hang the announce stage
+/// indefinitely.
+pub(crate) const ANNOUNCE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Build the canonical announce blocking client: the shared
+/// [`anodizer_core::http::blocking_client`] policy (UA + roots) plus the
+/// announce timeout. Single chokepoint so no announcer can construct a
+/// timeout-less client.
+pub(crate) fn blocking_client() -> Result<reqwest::blocking::Client> {
+    anodizer_core::http::blocking_client(ANNOUNCE_HTTP_TIMEOUT)
+}
+
+/// Announce blocking client that accepts invalid / self-signed TLS certs
+/// (the webhook `skip_tls_verify` option). Carries the same bounded timeout
+/// as [`blocking_client`]; `anodizer_core::http::blocking_client` cannot set
+/// `danger_accept_invalid_certs`, so the builder is reconstructed here while
+/// the timeout policy stays identical.
+pub(crate) fn blocking_client_accept_invalid_certs(
+    accept_invalid_certs: bool,
+) -> Result<reqwest::blocking::Client> {
+    reqwest::blocking::Client::builder()
+        .user_agent(anodizer_core::http::USER_AGENT)
+        .timeout(ANNOUNCE_HTTP_TIMEOUT)
+        .danger_accept_invalid_certs(accept_invalid_certs)
+        .build()
+        .context("announce: build HTTP client")
+}
 
 /// POST a JSON payload to `url`, returning an error that includes the
 /// provider name, HTTP status, and response body on failure.
@@ -24,7 +55,7 @@ pub(crate) fn post_json(
     provider: &str,
     policy: &RetryPolicy,
 ) -> Result<()> {
-    let client = reqwest::blocking::Client::new();
+    let client = blocking_client()?;
     let _ = retry_http(provider, "POST", policy, || {
         client
             .post(url)
@@ -37,7 +68,26 @@ pub(crate) fn post_json(
 
 #[cfg(test)]
 mod tests {
+    use super::{ANNOUNCE_HTTP_TIMEOUT, blocking_client, blocking_client_accept_invalid_certs};
     use anodizer_core::retry::{HttpError, is_retriable};
+    use std::time::Duration;
+
+    #[test]
+    fn announce_http_timeout_is_bounded_and_nonzero() {
+        // A timeout-less client can hang the announce stage indefinitely; the
+        // bound must stay finite and non-zero.
+        assert!(ANNOUNCE_HTTP_TIMEOUT > Duration::ZERO);
+        assert_eq!(ANNOUNCE_HTTP_TIMEOUT, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn announce_blocking_clients_construct() {
+        // Both client chokepoints feed ANNOUNCE_HTTP_TIMEOUT into the
+        // builder; a successful build proves the timeout-setting path runs.
+        blocking_client().expect("default announce client builds");
+        blocking_client_accept_invalid_certs(true).expect("skip-tls announce client builds");
+        blocking_client_accept_invalid_certs(false).expect("verifying announce client builds");
+    }
 
     /// Reproduce the exact error shape `post_json` constructs for an HTTP
     /// failure response and confirm the retry classifier sees the wrapped

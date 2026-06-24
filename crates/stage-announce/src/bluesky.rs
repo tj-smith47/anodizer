@@ -19,10 +19,7 @@ pub fn send_bluesky(
     let pds_url = pds_url
         .map(|s| s.trim_end_matches('/').to_string())
         .unwrap_or_else(|| DEFAULT_PDS_URL.to_string());
-    let client = reqwest::blocking::Client::builder()
-        .user_agent(anodizer_core::http::USER_AGENT)
-        .build()
-        .context("bluesky: build HTTP client")?;
+    let client = crate::http::blocking_client()?;
 
     let session_payload = json!({
         "identifier": username,

@@ -39,7 +39,7 @@ pub fn send_twitter(
     let url = twitter_tweets_url();
     let url = url.as_str();
     let body = serde_json::json!({ "text": message }).to_string();
-    let client = reqwest::blocking::Client::new();
+    let client = crate::http::blocking_client()?;
 
     retry_sync(policy, |_attempt| {
         // Re-sign on every attempt: oauth_nonce + oauth_timestamp must be

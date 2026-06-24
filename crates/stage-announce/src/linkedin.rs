@@ -105,7 +105,7 @@ fn send_linkedin_to(
     log: &StageLogger,
     policy: &RetryPolicy,
 ) -> Result<()> {
-    let client = reqwest::blocking::Client::new();
+    let client = crate::http::blocking_client()?;
     let profile_urn = get_profile_urn(&client, api_base, access_token, policy)?;
 
     let share = json!({

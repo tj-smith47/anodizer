@@ -321,36 +321,30 @@ impl ArtifactRegistry {
             artifact.name.clone()
         };
 
-        // Relativize absolute paths to the current working directory so the
-        // determinism harness produces byte-identical `artifacts.json` across
-        // runs that operate in different worktrees.
-        //
-        // Without this, raw cargo binaries register paths like
-        // `/tmp/anodize-determinism-12345-0/.det-tmp/target/<triple>/release/<bin>`
-        // — the leading `/tmp/anodize-determinism-<pid>-<idx>` prefix differs
-        // every run and drifts `dist/artifacts.json` even when the bytes of
-        // every other artifact match.
-        //
-        // Guard against cwd being the filesystem root (`/` on Unix, `C:\` on
-        // Windows): in that degenerate case every absolute path "starts with
-        // cwd" but stripping the leading separator yields a path that no
-        // longer resolves under the original cwd. We detect root via
-        // `parent().is_none()` (works cross-platform) and skip the
-        // relativization — production never runs from `/`, but a small
-        // number of unit tests do (e.g. `stage-source`'s
-        // `test_stage_run_does_not_depend_on_cwd`).
-        if should_relativize_path(artifact.kind)
-            && artifact.path.is_absolute()
-            && let Ok(cwd) = std::env::current_dir()
-            && cwd.parent().is_some()
-            && let Ok(rel) = artifact.path.strip_prefix(&cwd)
-        {
-            artifact.path = rel.to_path_buf();
-        }
+        artifact.path = resolve_stored_path(&artifact.path, artifact.kind);
 
-        // Normalize path: convert to forward slashes for cross-platform consistency.
-        let path_str = crate::util::normalize_path_separators(&artifact.path.to_string_lossy());
-        artifact.path = PathBuf::from(path_str);
+        // Idempotent re-add collapse, scoped to DERIVED SIDECAR kinds only.
+        // The publish-only pipeline re-runs sign→checksum→attest over a
+        // rehydrated dist, re-registering each artifact's checksum/signature/
+        // certificate/subjects-manifest at its existing (path, kind); without
+        // this merge those byte-stable re-adds would duplicate into
+        // `artifacts.json`. The narrowing is load-bearing: for a PRIMARY kind
+        // (Archive/Binary/LinuxPackage/…) a same-path duplicate is a real
+        // emission bug (e.g. two determinism shards overlapping a target) that
+        // MUST fall through to the warning + `detect_duplicate_paths` guard, not
+        // be silently swallowed.
+        if is_derived_sidecar_kind(artifact.kind)
+            && let Some(existing) = self
+                .artifacts
+                .iter_mut()
+                .find(|a| a.kind == artifact.kind && a.path == artifact.path)
+        {
+            for (key, value) in artifact.metadata {
+                existing.metadata.insert(key, value);
+            }
+            existing.size = existing.size.or(artifact.size);
+            return;
+        }
 
         // Warn on duplicate names for uploadable artifact types — but only when
         // the re-registration is a genuine conflict (a different on-disk path
@@ -405,6 +399,21 @@ impl ArtifactRegistry {
             }
             seen.insert(a.path.clone())
         });
+    }
+
+    /// `true` when an artifact at the same `(path, kind)` is already
+    /// registered. Re-running stages (the publish-only sign→checksum→attest
+    /// re-run over a rehydrated dist) guard a re-registration of a
+    /// non-collapsing kind (e.g. [`ArtifactKind::UploadableFile`]) with this so
+    /// a byte-stable re-emit is a no-op instead of a duplicate. `path` is run
+    /// through the SAME relativize + separator-normalize transform
+    /// [`add`](Self::add) applies before storing, so the comparison sees the
+    /// stored form regardless of how the caller spells the path.
+    pub fn contains_path_kind(&self, path: &std::path::Path, kind: ArtifactKind) -> bool {
+        let resolved = resolve_stored_path(path, kind);
+        self.artifacts
+            .iter()
+            .any(|a| a.kind == kind && a.path == resolved)
     }
 
     pub fn by_kind(&self, kind: ArtifactKind) -> Vec<&Artifact> {
@@ -690,6 +699,32 @@ pub fn is_derived_sidecar_kind(kind: ArtifactKind) -> bool {
 /// Check if an artifact kind is uploadable.
 fn is_uploadable(kind: ArtifactKind) -> bool {
     uploadable_kinds().contains(&kind)
+}
+
+/// Canonicalize an artifact path to the form `add` stores: relativize an
+/// absolute path under the cwd, then normalize separators to forward slashes.
+///
+/// Relativization keeps `dist/artifacts.json` byte-identical across determinism
+/// runs in different worktrees — raw cargo binaries otherwise register paths
+/// like `/tmp/anodize-determinism-<pid>-<idx>/.det-tmp/target/.../<bin>` whose
+/// leading prefix differs every run. The cwd-is-root guard (`parent().is_none()`,
+/// cross-platform) skips relativization in the degenerate case where every
+/// absolute path "starts with" `/` (or `C:\`) but stripping the separator
+/// yields a path that no longer resolves under the original cwd — production
+/// never runs from root, but a few unit tests do.
+fn resolve_stored_path(path: &std::path::Path, kind: ArtifactKind) -> PathBuf {
+    let mut path = path.to_path_buf();
+    if should_relativize_path(kind)
+        && path.is_absolute()
+        && let Ok(cwd) = std::env::current_dir()
+        && cwd.parent().is_some()
+        && let Ok(rel) = path.strip_prefix(&cwd)
+    {
+        path = rel.to_path_buf();
+    }
+    PathBuf::from(crate::util::normalize_path_separators(
+        &path.to_string_lossy(),
+    ))
 }
 
 /// Should the `add()` path normaliser convert an absolute path into a path
@@ -1350,6 +1385,120 @@ mod tests {
             registry.by_kind(ArtifactKind::Archive).len(),
             3,
             "per-target duplicates must remain so detect_duplicate_artifact_paths can flag them"
+        );
+    }
+
+    #[test]
+    fn add_collapses_same_path_same_kind_into_one_entry() {
+        let mut registry = ArtifactRegistry::new();
+        registry.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            name: "install.sh.sha256".to_string(),
+            path: PathBuf::from("dist/install.sh.sha256"),
+            target: None,
+            crate_name: "anodizer".to_string(),
+            metadata: HashMap::from([("algorithm".to_string(), "sha256".to_string())]),
+            size: Some(64),
+        });
+        // Same path, no size yet, richer metadata: an idempotent re-add.
+        registry.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            name: "install.sh.sha256".to_string(),
+            path: PathBuf::from("dist/install.sh.sha256"),
+            target: None,
+            crate_name: "anodizer".to_string(),
+            metadata: HashMap::from([
+                ("algorithm".to_string(), "sha256".to_string()),
+                ("ChecksumOf".to_string(), "dist/install.sh".to_string()),
+            ]),
+            size: None,
+        });
+
+        let checksums = registry.by_kind(ArtifactKind::Checksum);
+        assert_eq!(
+            checksums.len(),
+            1,
+            "a same-path+kind re-add must collapse to one entry, not duplicate"
+        );
+        let only = checksums[0];
+        assert_eq!(
+            only.size,
+            Some(64),
+            "a non-None size must survive an idempotent re-add"
+        );
+        assert_eq!(
+            only.metadata.get("ChecksumOf").map(String::as_str),
+            Some("dist/install.sh"),
+            "the re-add's richer metadata must be merged in"
+        );
+        assert_eq!(
+            only.metadata.get("algorithm").map(String::as_str),
+            Some("sha256")
+        );
+    }
+
+    #[test]
+    fn add_keeps_distinct_paths_and_distinct_kinds() {
+        let mut registry = ArtifactRegistry::new();
+        registry.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            name: "a.sha256".to_string(),
+            path: PathBuf::from("dist/a.sha256"),
+            target: None,
+            crate_name: "anodizer".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        registry.add(Artifact {
+            kind: ArtifactKind::Checksum,
+            name: "b.sha256".to_string(),
+            path: PathBuf::from("dist/b.sha256"),
+            target: None,
+            crate_name: "anodizer".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        assert_eq!(
+            registry.by_kind(ArtifactKind::Checksum).len(),
+            2,
+            "distinct paths must both remain"
+        );
+        // Same path, different (sidecar) kind: not collapsed.
+        registry.add(Artifact {
+            kind: ArtifactKind::Signature,
+            name: "a.sha256".to_string(),
+            path: PathBuf::from("dist/a.sha256"),
+            target: None,
+            crate_name: "anodizer".to_string(),
+            metadata: HashMap::new(),
+            size: None,
+        });
+        assert_eq!(
+            registry.all().len(),
+            3,
+            "same path with a different kind must NOT be collapsed"
+        );
+
+        // PRIMARY kind, same path twice: collapse is sidecar-only, so a
+        // duplicate primary artifact must NOT be swallowed — it stays a
+        // distinct entry for `detect_duplicate_paths` to flag as a real
+        // shard-overlap emission bug.
+        for _ in 0..2 {
+            registry.add(Artifact {
+                kind: ArtifactKind::Archive,
+                name: "app.tar.gz".to_string(),
+                path: PathBuf::from("dist/app.tar.gz"),
+                target: None,
+                crate_name: "anodizer".to_string(),
+                metadata: HashMap::new(),
+                size: None,
+            });
+        }
+        assert_eq!(
+            registry.by_kind(ArtifactKind::Archive).len(),
+            2,
+            "a same-path PRIMARY kind must NOT collapse — the duplicate must \
+             survive for the path guard to catch"
         );
     }
 
@@ -2237,6 +2386,49 @@ mod tests {
             captured.contains("already registered"),
             "conflicting re-registration must still warn, got: {captured:?}"
         );
+    }
+
+    #[test]
+    fn contains_path_kind_matches_on_path_and_kind_only() {
+        let mut registry = ArtifactRegistry::new();
+        registry.add(upload_artifact(
+            ArtifactKind::UploadableFile,
+            "attestation.intoto.jsonl",
+            "dist/attestation.intoto.jsonl",
+        ));
+
+        // Exact (path, kind): present.
+        assert!(registry.contains_path_kind(
+            std::path::Path::new("dist/attestation.intoto.jsonl"),
+            ArtifactKind::UploadableFile,
+        ));
+        // Same path, different kind: a real distinct asset — not present, so a
+        // re-registration there is never wrongly skipped.
+        assert!(!registry.contains_path_kind(
+            std::path::Path::new("dist/attestation.intoto.jsonl"),
+            ArtifactKind::Metadata,
+        ));
+        // Different path, same kind: a genuine conflict the skip must NOT
+        // swallow — falls through to add()'s duplicate-name warning.
+        assert!(!registry.contains_path_kind(
+            std::path::Path::new("dist/other/attestation.intoto.jsonl"),
+            ArtifactKind::UploadableFile,
+        ));
+    }
+
+    #[test]
+    fn contains_path_kind_normalizes_separators_like_add() {
+        let mut registry = ArtifactRegistry::new();
+        registry.add(upload_artifact(
+            ArtifactKind::UploadableFile,
+            "stmt.jsonl",
+            r"dist\stmt.jsonl",
+        ));
+        // add() stored the forward-slash form; a backslash query must still hit.
+        assert!(registry.contains_path_kind(
+            std::path::Path::new(r"dist\stmt.jsonl"),
+            ArtifactKind::UploadableFile,
+        ));
     }
 
     #[test]

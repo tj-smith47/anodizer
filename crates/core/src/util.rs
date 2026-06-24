@@ -180,18 +180,31 @@ pub fn parse_mod_timestamp(raw: &str) -> Result<SystemTime> {
     )
 }
 
-/// Apply `mod_timestamp` to all regular files in a directory.
+/// Apply `mod_timestamp` to every regular file in a directory tree.
 ///
-/// Parses the timestamp via `parse_mod_timestamp`, then sets the mtime on
-/// every regular file in `dir`.
+/// Parses the timestamp via `parse_mod_timestamp`, then recurses into
+/// subdirectories, setting the mtime on every regular file. Symlinks are not
+/// followed and directory mtimes are left untouched (files-only semantics,
+/// matching [`pin_dir_mtimes_epoch`], the SDE reproducibility floor this
+/// override is layered on top of). A nested staged file — e.g. a
+/// `templated_extra_files` entry whose dst is `docs/README.txt` — must receive
+/// the user's `mod_timestamp`, not the SDE epoch left by the floor.
 pub fn apply_mod_timestamp(dir: &Path, raw: &str, log: &crate::log::StageLogger) -> Result<()> {
     let mtime = parse_mod_timestamp(raw)?;
 
-    for entry in fs::read_dir(dir).with_context(|| format!("read staging dir {}", dir.display()))? {
-        let entry = entry?;
-        let ft = entry.file_type()?;
-        if ft.is_file() {
-            set_file_mtime(&entry.path(), mtime)?;
+    let mut stack: Vec<std::path::PathBuf> = vec![dir.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        for entry in
+            fs::read_dir(&p).with_context(|| format!("read staging dir {}", p.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            let ft = entry.file_type()?;
+            if ft.is_dir() {
+                stack.push(path);
+            } else if ft.is_file() {
+                set_file_mtime(&path, mtime)?;
+            }
         }
     }
 
@@ -225,6 +238,34 @@ pub fn set_file_mtime_epoch(path: &Path, epoch_secs: i64) -> Result<()> {
         SystemTime::UNIX_EPOCH - Duration::from_secs((-epoch_secs) as u64)
     };
     set_file_mtime(path, mtime)
+}
+
+/// Recursively pin every regular file's mtime under `dir` to `epoch_secs`
+/// (SOURCE_DATE_EPOCH seconds). Packaging tools (makeself's tar, NSIS's `File`)
+/// embed each input file's on-disk mtime; `fs::copy` stamps the wall clock, so
+/// two harness runs with identical contents drift the packed bytes. Pinning to
+/// the build epoch removes that variance.
+///
+/// Subdirectories are walked; only regular files have their mtime set (mirrors
+/// the mtime semantics relevant to the archive headers these tools emit).
+pub fn pin_dir_mtimes_epoch(dir: &Path, epoch_secs: i64) -> Result<()> {
+    let mut stack: Vec<std::path::PathBuf> = vec![dir.to_path_buf()];
+    while let Some(p) = stack.pop() {
+        for entry in
+            fs::read_dir(&p).with_context(|| format!("read_dir {} for mtime pin", p.display()))?
+        {
+            let entry = entry?;
+            let path = entry.path();
+            let ft = entry.file_type()?;
+            if ft.is_dir() {
+                stack.push(path);
+            } else if ft.is_file() {
+                set_file_mtime_epoch(&path, epoch_secs)
+                    .with_context(|| format!("pin mtime on {}", path.display()))?;
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Recursively copy the directory tree rooted at `src` into `dst`, recreating
@@ -526,9 +567,8 @@ mod tests {
 
     #[test]
     fn test_set_file_mtime_sets_both_atime_and_mtime() {
-        let dir = std::env::temp_dir().join("anodizer_test_set_file_mtime");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
 
         let file_path = dir.join("test.txt");
         std::fs::write(&file_path, "hello").unwrap();
@@ -564,8 +604,33 @@ mod tests {
             "atime should be within 1s of target, diff={:?}",
             diff_a
         );
+    }
 
-        let _ = std::fs::remove_dir_all(&dir);
+    #[test]
+    fn test_pin_dir_mtimes_epoch_recurses_into_subdirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let sub = dir.join("nested");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let top = dir.join("top.txt");
+        let nested = sub.join("nested.txt");
+        std::fs::write(&top, "top").unwrap();
+        std::fs::write(&nested, "nested").unwrap();
+
+        let epoch: i64 = 1704067200;
+        pin_dir_mtimes_epoch(dir, epoch).unwrap();
+
+        let target = SystemTime::UNIX_EPOCH + Duration::from_secs(epoch as u64);
+        for path in [&top, &nested] {
+            let mtime = std::fs::metadata(path).unwrap().modified().unwrap();
+            assert_eq!(
+                mtime,
+                target,
+                "{}: mtime must equal the pinned epoch exactly",
+                path.display()
+            );
+        }
     }
 
     #[test]
@@ -580,17 +645,16 @@ mod tests {
 
     #[test]
     fn test_apply_mod_timestamp_sets_mtime_on_regular_files() {
-        let dir = std::env::temp_dir().join("anodizer_test_apply_mod_timestamp");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
 
-        // Create two regular files and a subdirectory (should be skipped)
+        // Create two regular files and a subdirectory (the dir itself is not stamped)
         std::fs::write(dir.join("a.txt"), "aaa").unwrap();
         std::fs::write(dir.join("b.txt"), "bbb").unwrap();
         std::fs::create_dir(dir.join("subdir")).unwrap();
 
         let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
-        apply_mod_timestamp(&dir, "1704067200", &log).unwrap();
+        apply_mod_timestamp(dir, "1704067200", &log).unwrap();
 
         let target = SystemTime::UNIX_EPOCH + Duration::from_secs(1704067200);
         for name in &["a.txt", "b.txt"] {
@@ -607,20 +671,46 @@ mod tests {
                 diff
             );
         }
+    }
 
-        let _ = std::fs::remove_dir_all(&dir);
+    #[test]
+    fn test_apply_mod_timestamp_recurses_into_subdirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let dir = dir.path();
+        let sub = dir.join("docs");
+        std::fs::create_dir_all(&sub).unwrap();
+
+        let top = dir.join("top.txt");
+        let nested = sub.join("README.txt");
+        std::fs::write(&top, "top").unwrap();
+        std::fs::write(&nested, "nested").unwrap();
+
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+        apply_mod_timestamp(dir, "1704067200", &log).unwrap();
+
+        let target = SystemTime::UNIX_EPOCH + Duration::from_secs(1704067200);
+        for path in [&top, &nested] {
+            let mtime = std::fs::metadata(path).unwrap().modified().unwrap();
+            let diff = if mtime > target {
+                mtime.duration_since(target).unwrap()
+            } else {
+                target.duration_since(mtime).unwrap()
+            };
+            assert!(
+                diff.as_secs() <= 1,
+                "{}: nested file must receive mod_timestamp, diff={:?}",
+                path.display(),
+                diff
+            );
+        }
     }
 
     #[test]
     fn test_apply_mod_timestamp_invalid_timestamp_errors() {
-        let dir = std::env::temp_dir().join("anodizer_test_apply_mod_timestamp_invalid");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = tempfile::tempdir().unwrap();
 
         let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
-        let result = apply_mod_timestamp(&dir, "not-valid", &log);
+        let result = apply_mod_timestamp(dir.path(), "not-valid", &log);
         assert!(result.is_err());
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }

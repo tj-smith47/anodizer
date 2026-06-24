@@ -3271,6 +3271,110 @@ fn test_changelog_stage_github_no_prev_tag_uses_git_fallback() {
 }
 
 #[test]
+#[serial]
+fn test_lockstep_resolves_prev_tag_once_not_full_history() {
+    // Lockstep workspace: two crates share ONE tag namespace (`v{{ .Version }}`),
+    // so at release time the just-cut tag (v0.12.0) IS the latest match for
+    // every crate. The previous lockstep tag (v0.11.3) must be resolved for all
+    // crates and the range must be v0.11.3..HEAD — never a per-crate full-history
+    // fallback.
+    use anodizer_core::config::{ChangelogConfig, CrateConfig};
+    use std::process::Command;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let repo = tmp.path();
+
+    let git = |args: &[&str]| {
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args)
+                    .current_dir(repo)
+                    .env("GIT_AUTHOR_NAME", "Test")
+                    .env("GIT_AUTHOR_EMAIL", "test@example.com")
+                    .env("GIT_COMMITTER_NAME", "Test")
+                    .env("GIT_COMMITTER_EMAIL", "test@example.com");
+                cmd
+            },
+            "git",
+        );
+        assert!(out.status.success(), "git {:?} failed", args);
+    };
+
+    git(&["init", "-q"]);
+    std::fs::create_dir_all(repo.join("crates/alpha")).unwrap();
+    std::fs::create_dir_all(repo.join("crates/beta")).unwrap();
+
+    let commit = |path: &str, body: &str, msg: &str| {
+        std::fs::write(repo.join(path), body).unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-q", "-m", msg]);
+    };
+
+    // Pre-v0.11.3 history that must NOT leak into the changelog.
+    commit("crates/alpha/lib.rs", "v0", "feat: ancient alpha feature");
+    git(&["tag", "v0.11.3"]);
+
+    // Commits in the v0.11.3..HEAD window for both crates.
+    commit("crates/alpha/lib.rs", "v1", "feat: new alpha feature");
+    commit("crates/beta/lib.rs", "v1", "fix: new beta fix");
+    git(&["tag", "v0.12.0"]);
+
+    let dist = repo.join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+
+    let lockstep_crate = |name: &str, path: &str| CrateConfig {
+        name: name.to_string(),
+        path: path.to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        ..Default::default()
+    };
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("ws")
+        .dist(dist.clone())
+        .tag("v0.12.0")
+        .crates(vec![
+            lockstep_crate("alpha", "crates/alpha"),
+            lockstep_crate("beta", "crates/beta"),
+        ])
+        .build();
+    ctx.config.changelog = Some(ChangelogConfig {
+        use_source: Some("git".to_string()),
+        ..Default::default()
+    });
+
+    let _cwd = CwdGuard::new(repo).unwrap();
+    ChangelogStage.run(&mut ctx).unwrap();
+
+    let alpha = ctx
+        .stage_outputs
+        .changelogs
+        .get("alpha")
+        .cloned()
+        .unwrap_or_default();
+    let beta = ctx
+        .stage_outputs
+        .changelogs
+        .get("beta")
+        .cloned()
+        .unwrap_or_default();
+
+    assert!(
+        alpha.contains("new alpha feature"),
+        "alpha changelog should cover the v0.11.3..HEAD window, got: {alpha}"
+    );
+    assert!(
+        !alpha.contains("ancient alpha feature"),
+        "lockstep must resolve prev=v0.11.3 once; pre-v0.11.3 history leaked: {alpha}"
+    );
+    assert!(
+        beta.contains("new beta fix"),
+        "beta changelog should cover the v0.11.3..HEAD window, got: {beta}"
+    );
+}
+
+#[test]
 fn test_changelog_stage_unsupported_source_bails() {
     use anodizer_core::config::{ChangelogConfig, CrateConfig};
 

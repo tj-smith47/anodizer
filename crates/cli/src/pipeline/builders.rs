@@ -9,19 +9,70 @@
 
 use super::Pipeline;
 
+/// Push the publish-side tail shared verbatim by every publishing pipeline
+/// (full release, merge, publish-only): the contiguous run from the
+/// `before_publish:` gate through the terminal post-publish verification.
+///
+/// Centralizing it means the publish-side ordering — the one-way-door guard
+/// after release, docker before publish, blob before snapcraft, announce then
+/// verify-release terminal — exists in ONE place and cannot drift between the
+/// from-scratch and rehydrated-dist builders. The integrity prefix
+/// (sign/checksum/attest order, emission-validate presence) is NOT shared: it
+/// legitimately differs between builders and each pushes its own.
+fn push_publish_tail(p: &mut Pipeline) {
+    use anodizer_stage_announce::AnnounceStage;
+    use anodizer_stage_blob::BlobStage;
+    use anodizer_stage_docker::DockerStage;
+    use anodizer_stage_prepublish_guard::PrePublishGuardStage;
+    use anodizer_stage_publish::PublishStage;
+    use anodizer_stage_release::ReleaseStage;
+    use anodizer_stage_sign::DockerSignStage;
+    use anodizer_stage_snapcraft::SnapcraftPublishStage;
+    use anodizer_stage_verify_release::VerifyReleaseStage;
+
+    // BeforePublishStage runs user-defined `before_publish:` hooks here so a
+    // non-zero hook can abort the release before any publisher writes to a
+    // registry — last gate for smoke-tests / scanners against the staged dist.
+    p.add(Box::new(anodizer_core::hooks::BeforePublishStage));
+    p.add(Box::new(ReleaseStage));
+    // PrePublishGuardStage runs immediately after ReleaseStage — once the
+    // release exists, `ensure_release_url` has put the (real or derived)
+    // `ReleaseURL` in ctx — and BEFORE any irreversible publisher
+    // (chocolatey/winget moderation, AUR push) or announcer fires, so a broken
+    // publisher-manifest or announce template aborts with no one-way door
+    // already through.
+    p.add(Box::new(PrePublishGuardStage));
+    // Docker build+sign land between the GitHub release and PublishStage: the
+    // mcp publisher (inside PublishStage) validates that the OCI image its
+    // manifest references already exists in the registry, so the image must be
+    // built and pushed first. DockerSignStage follows so the image exists.
+    p.add(Box::new(DockerStage::new()));
+    p.add(Box::new(DockerSignStage));
+    p.add(Box::new(PublishStage));
+    // BlobStage runs before SnapcraftPublishStage so a required-blob failure
+    // can short-circuit the snapcraft upload via the same
+    // `any_failed(Assets, required_only=true)` check that already gates every
+    // other Submitter publisher.
+    p.add(Box::new(BlobStage));
+    p.add(Box::new(SnapcraftPublishStage));
+    p.add(Box::new(AnnounceStage));
+    // VerifyReleaseStage runs LAST — after the release exists and every
+    // publisher has run — because it needs the published release to verify
+    // against. A no-op unless `verify_release.enabled`; on a detected defect it
+    // reports + exits non-zero but never undoes the (already-live) release.
+    p.add(Box::new(VerifyReleaseStage));
+}
+
 /// Build the full release pipeline with all stages in order
 pub fn build_release_pipeline() -> Pipeline {
-    use anodizer_stage_announce::AnnounceStage;
     use anodizer_stage_appbundle::AppBundleStage;
     use anodizer_stage_appimage::AppImageStage;
     use anodizer_stage_archive::ArchiveStage;
     use anodizer_stage_attest::AttestStage;
-    use anodizer_stage_blob::BlobStage;
     use anodizer_stage_build::BuildStage;
     use anodizer_stage_changelog::ChangelogStage;
     use anodizer_stage_checksum::ChecksumStage;
     use anodizer_stage_dmg::DmgStage;
-    use anodizer_stage_docker::DockerStage;
     use anodizer_stage_flatpak::FlatpakStage;
     use anodizer_stage_makeself::MakeselfStage;
     use anodizer_stage_msi::MsiStage;
@@ -29,17 +80,14 @@ pub fn build_release_pipeline() -> Pipeline {
     use anodizer_stage_notarize::NotarizeStage;
     use anodizer_stage_nsis::NsisStage;
     use anodizer_stage_pkg::PkgStage;
-    use anodizer_stage_prepublish_guard::PrePublishGuardStage;
-    use anodizer_stage_publish::{EmissionValidateStage, PublishStage};
-    use anodizer_stage_release::ReleaseStage;
+    use anodizer_stage_publish::EmissionValidateStage;
     use anodizer_stage_sbom::SbomStage;
-    use anodizer_stage_sign::{DockerSignStage, SignStage};
-    use anodizer_stage_snapcraft::{SnapcraftPublishStage, SnapcraftStage};
+    use anodizer_stage_sign::SignStage;
+    use anodizer_stage_snapcraft::SnapcraftStage;
     use anodizer_stage_source::SourceStage;
     use anodizer_stage_srpm::SrpmStage;
     use anodizer_stage_templatefiles::TemplateFilesStage;
     use anodizer_stage_upx::UpxStage;
-    use anodizer_stage_verify_release::VerifyReleaseStage;
 
     // Canonical stage order.
     // Anodizer-specific stages (appbundle, dmg, msi, pkg, nsis, templatefiles,
@@ -100,37 +148,10 @@ pub fn build_release_pipeline() -> Pipeline {
     // it validates the binstall/nix/version-sync emissions (which the real
     // stages mutate/push but snapshot skips) against the produced asset set.
     // Runs after ChecksumStage so the archive cross-checks see every asset.
+    // Not part of the shared tail: only the from-scratch builders re-validate
+    // emissions; publish-only consumes the preserved dist as-is.
     p.add(Box::new(EmissionValidateStage));
-    // BeforePublishStage runs user-defined `before_publish:` hooks here so a
-    // non-zero hook can abort the release before any publisher writes to a
-    // registry — last gate for smoke-tests / scanners against the staged dist.
-    p.add(Box::new(anodizer_core::hooks::BeforePublishStage));
-    p.add(Box::new(ReleaseStage));
-    // PrePublishGuardStage runs immediately after ReleaseStage — once the
-    // release exists, `ensure_release_url` has put the (real or derived)
-    // `ReleaseURL` in ctx — and BEFORE any irreversible publisher
-    // (chocolatey/winget moderation, AUR push) or announcer fires, so a broken
-    // publisher-manifest or announce template aborts with no one-way door
-    // already through.
-    p.add(Box::new(PrePublishGuardStage));
-    p.add(Box::new(DockerStage::new()));
-    // DockerSignStage runs after DockerStage so docker image artifacts exist.
-    p.add(Box::new(DockerSignStage));
-    p.add(Box::new(PublishStage));
-    // BlobStage runs before SnapcraftPublishStage so a required-blob
-    // failure can short-circuit the snapcraft upload via the same
-    // `any_failed(Assets, required_only=true)` check that already gates
-    // every other Submitter publisher.
-    p.add(Box::new(BlobStage));
-    p.add(Box::new(SnapcraftPublishStage));
-    p.add(Box::new(AnnounceStage));
-
-    // ── Post-publish verification ────────────────────────────────────────
-    // VerifyReleaseStage runs LAST — after the release exists and every
-    // publisher has run — because it needs the published release to verify
-    // against. A no-op unless `verify_release.enabled`; on a detected defect
-    // it reports + exits non-zero but never undoes the (already-live) release.
-    p.add(Box::new(VerifyReleaseStage));
+    push_publish_tail(&mut p);
 
     // ── Per-crate lifecycle: after ──────────────────────────────────────────
     // AfterCrateStage runs each selected crate's `crates[].after` hooks at the
@@ -231,19 +252,17 @@ pub fn build_publish_pipeline() -> Pipeline {
 /// pipeline therefore consumes the full artifact set as-is and does
 /// not re-run any artifact-producing stages.
 pub(crate) fn build_publish_only_pipeline() -> Pipeline {
-    use anodizer_stage_announce::AnnounceStage;
     use anodizer_stage_attest::AttestStage;
-    use anodizer_stage_blob::BlobStage;
     use anodizer_stage_changelog::ChangelogStage;
     use anodizer_stage_checksum::ChecksumStage;
-    use anodizer_stage_docker::DockerStage;
-    use anodizer_stage_prepublish_guard::PrePublishGuardStage;
-    use anodizer_stage_publish::PublishStage;
-    use anodizer_stage_release::ReleaseStage;
-    use anodizer_stage_sign::{DockerSignStage, SignStage};
-    use anodizer_stage_snapcraft::SnapcraftPublishStage;
-    use anodizer_stage_verify_release::VerifyReleaseStage;
+    use anodizer_stage_sign::SignStage;
 
+    // Divergent integrity prefix: unlike the from-scratch builders (which run
+    // checksum→attest→sign), publish-only PREPENDS SignStage to re-sign the
+    // preserved dist's byte-stable archives with production keys, then RE-RUNS
+    // ChecksumStage over those signed bytes, and OMITS the from-scratch
+    // EmissionValidateStage (the preserved dist is consumed as-is). The
+    // identical publish-side tail is shared via `push_publish_tail`.
     let mut p = Pipeline::new();
     p.add(Box::new(ChangelogStage));
     p.add(Box::new(SignStage));
@@ -259,25 +278,7 @@ pub(crate) fn build_publish_only_pipeline() -> Pipeline {
     // uploads both. The emit-mode statement is signed in the upstream harness
     // run that produced the preserved dist; no re-sign happens here.
     p.add(Box::new(AttestStage));
-    p.add(Box::new(anodizer_core::hooks::BeforePublishStage));
-    p.add(Box::new(ReleaseStage));
-    // Abort before any irreversible publisher / announcer if a manifest or
-    // announce template fails to render — the release exists by now, so
-    // `ReleaseURL` is in ctx for the announce dry-render.
-    p.add(Box::new(PrePublishGuardStage));
-    // Docker build+sign land between the GitHub release and PublishStage:
-    // the mcp publisher (inside PublishStage) validates that the OCI image
-    // its manifest references already exists in the registry, so the image
-    // must be built and pushed first.
-    p.add(Box::new(DockerStage::new()));
-    p.add(Box::new(DockerSignStage));
-    p.add(Box::new(PublishStage));
-    p.add(Box::new(BlobStage));
-    p.add(Box::new(SnapcraftPublishStage));
-    p.add(Box::new(AnnounceStage));
-    // Post-publish verification runs LAST here too: `release --publish-only`
-    // creates a real release + publishes, so the same gate applies.
-    p.add(Box::new(VerifyReleaseStage));
+    push_publish_tail(&mut p);
     p
 }
 
@@ -292,16 +293,13 @@ pub fn build_announce_pipeline() -> Pipeline {
 
 /// Build a pipeline for --merge mode: all post-build stages.
 pub fn build_merge_pipeline() -> Pipeline {
-    use anodizer_stage_announce::AnnounceStage;
     use anodizer_stage_appbundle::AppBundleStage;
     use anodizer_stage_appimage::AppImageStage;
     use anodizer_stage_archive::ArchiveStage;
     use anodizer_stage_attest::AttestStage;
-    use anodizer_stage_blob::BlobStage;
     use anodizer_stage_changelog::ChangelogStage;
     use anodizer_stage_checksum::ChecksumStage;
     use anodizer_stage_dmg::DmgStage;
-    use anodizer_stage_docker::DockerStage;
     use anodizer_stage_flatpak::FlatpakStage;
     use anodizer_stage_makeself::MakeselfStage;
     use anodizer_stage_msi::MsiStage;
@@ -309,16 +307,13 @@ pub fn build_merge_pipeline() -> Pipeline {
     use anodizer_stage_notarize::NotarizeStage;
     use anodizer_stage_nsis::NsisStage;
     use anodizer_stage_pkg::PkgStage;
-    use anodizer_stage_prepublish_guard::PrePublishGuardStage;
-    use anodizer_stage_publish::{EmissionValidateStage, PublishStage};
-    use anodizer_stage_release::ReleaseStage;
+    use anodizer_stage_publish::EmissionValidateStage;
     use anodizer_stage_sbom::SbomStage;
-    use anodizer_stage_sign::{DockerSignStage, SignStage};
-    use anodizer_stage_snapcraft::{SnapcraftPublishStage, SnapcraftStage};
+    use anodizer_stage_sign::SignStage;
+    use anodizer_stage_snapcraft::SnapcraftStage;
     use anodizer_stage_source::SourceStage;
     use anodizer_stage_srpm::SrpmStage;
     use anodizer_stage_templatefiles::TemplateFilesStage;
-    use anodizer_stage_verify_release::VerifyReleaseStage;
 
     // Merge pipeline: same order as build_release_pipeline minus Build/UPX.
     let mut p = Pipeline::new();
@@ -343,26 +338,11 @@ pub fn build_merge_pipeline() -> Pipeline {
     p.add(Box::new(ChecksumStage));
     p.add(Box::new(AttestStage));
     p.add(Box::new(SignStage));
-    // Snapshot/dry-run emission validation; no-op in a real release.
+    // Snapshot/dry-run emission validation; no-op in a real release. Like
+    // build_release_pipeline, merge carries it in its prefix (publish-only does
+    // not); the identical publish-side tail is shared via `push_publish_tail`.
     p.add(Box::new(EmissionValidateStage));
-    p.add(Box::new(anodizer_core::hooks::BeforePublishStage));
-    p.add(Box::new(ReleaseStage));
-    // Same one-way-door guard as build_release_pipeline: abort on a broken
-    // publisher-manifest or announce template before any irreversible
-    // publisher fires, with `ReleaseURL` already in ctx post-Release.
-    p.add(Box::new(PrePublishGuardStage));
-    p.add(Box::new(DockerStage::new()));
-    p.add(Box::new(DockerSignStage));
-    p.add(Box::new(PublishStage));
-    // BlobStage before SnapcraftPublishStage — mirrors
-    // `build_release_pipeline`'s swap so merge-mode runs share the same
-    // submitter-gate semantics.
-    p.add(Box::new(BlobStage));
-    p.add(Box::new(SnapcraftPublishStage));
-    p.add(Box::new(AnnounceStage));
-    // Merge mode produces + publishes a real release, so the post-publish
-    // gate runs last here too.
-    p.add(Box::new(VerifyReleaseStage));
+    push_publish_tail(&mut p);
     p
 }
 
@@ -419,6 +399,45 @@ mod tests {
         let p = build_release_pipeline();
         let names = p.stage_names();
         assert_blob_before_snapcraft(&names, "build_release_pipeline");
+    }
+
+    /// The publish-side tail must be byte-identical across all three builders.
+    #[test]
+    fn publish_tail_is_identical_across_builders() {
+        fn publish_tail<'a>(names: &[&'a str]) -> Vec<&'a str> {
+            let start = names
+                .iter()
+                .position(|n| *n == "before-publish")
+                .expect("pipeline must include before-publish stage");
+            let end = names
+                .iter()
+                .position(|n| *n == "verify-release")
+                .expect("pipeline must include verify-release stage");
+            assert!(
+                start < end,
+                "before-publish must precede verify-release; got {names:?}"
+            );
+            names[start..=end].to_vec()
+        }
+
+        let release = build_release_pipeline();
+        let release_names = release.stage_names();
+        let publish_only = build_publish_only_pipeline();
+        let publish_only_names = publish_only.stage_names();
+        let merge = build_merge_pipeline();
+        let merge_names = merge.stage_names();
+
+        let release_tail = publish_tail(&release_names);
+        assert_eq!(
+            release_tail,
+            publish_tail(&publish_only_names),
+            "release vs publish-only publish tail drifted: {release_names:?} vs {publish_only_names:?}"
+        );
+        assert_eq!(
+            release_tail,
+            publish_tail(&merge_names),
+            "release vs merge publish tail drifted: {release_names:?} vs {merge_names:?}"
+        );
     }
 
     // -----------------------------------------------------------------------

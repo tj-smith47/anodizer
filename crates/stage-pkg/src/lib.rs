@@ -103,13 +103,13 @@ pub fn resolve_pkg_builder(probe: impl Fn(&str) -> bool) -> Result<PkgBuilder, S
 
 /// Recursively apply `mtime` to every file and directory under `root`.
 ///
-/// [`anodizer_core::util::apply_mod_timestamp`] only touches top-level regular
-/// files; the flat-package `pkgroot` nests the payload under the install
-/// location, so deterministic `Payload` mtimes require a recursive walk over
-/// files AND directories. `filetime::set_file_mtime` uses `utimensat` rather
-/// than `open(O_WRONLY)`, so it stamps directories (which `open(O_WRONLY)`
-/// rejects with EISDIR) — leaving directory mtimes at wall-clock would leak
-/// non-reproducible bytes into the cpio Payload.
+/// [`anodizer_core::util::apply_mod_timestamp`] is files-only; the cpio
+/// `Payload` embeds the mtime of every entry it archives — including the
+/// directories that hold the install location — so deterministic packages
+/// require stamping directories as well as files. `filetime::set_file_mtime`
+/// uses `utimensat` rather than `open(O_WRONLY)`, so it stamps directories
+/// (which `open(O_WRONLY)` rejects with EISDIR) — leaving directory mtimes at
+/// wall-clock would leak non-reproducible bytes into the cpio Payload.
 fn apply_mtime_recursive(root: &std::path::Path, mtime: std::time::SystemTime) -> Result<()> {
     let ft_time = filetime::FileTime::from_system_time(mtime);
     for entry in

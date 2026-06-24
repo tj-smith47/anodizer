@@ -82,7 +82,7 @@ pub fn send_telegram(
     let url = format!("{}/bot{bot_token}/sendMessage", telegram_api_base());
     let payload = telegram_payload(chat_id, message, parse_mode, message_thread_id);
 
-    let client = reqwest::blocking::Client::new();
+    let client = crate::http::blocking_client()?;
     retry_sync(policy, |_attempt| {
         let send_result = client
             .post(&url)

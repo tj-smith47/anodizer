@@ -480,6 +480,21 @@ impl Stage for AttestStage {
         }
 
         for a in new_artifacts {
+            // The emit-mode statement is an UploadableFile, which the registry
+            // does NOT collapse on re-add (a same-path UploadableFile is a real
+            // emission bug for genuine user assets). A publish-only re-run over
+            // a rehydrated dist already holds the byte-stable statement at this
+            // path, so re-adding it would duplicate the asset for every
+            // publisher; skip when it is already present.
+            if a.kind == ArtifactKind::UploadableFile
+                && ctx.artifacts.contains_path_kind(&a.path, a.kind)
+            {
+                log.verbose(&format!(
+                    "skipped re-registering already-present attestation statement {}",
+                    a.name
+                ));
+                continue;
+            }
             ctx.artifacts.add(a);
         }
         Ok(())

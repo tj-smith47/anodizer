@@ -139,30 +139,29 @@ after:
     - echo "Release complete for {{ ProjectName }} {{ Tag }}"
 
 # Pre-publish integrity gate — runs after build/sign/checksum, before any
-# one-way-door publisher dispatches. Each entry fires once per matching
-# artifact (the Pro before_publish: per-artifact semantics). A non-zero exit
-# aborts the release before crates.io / GitHub / blobs receive anything.
+# one-way-door publisher dispatches. Each entry runs once (run_once) and walks
+# the dist dir itself. A non-zero exit aborts the release before crates.io /
+# GitHub / blobs receive anything.
 before_publish:
   hooks:
-    # Gate 1: every checksum sidecar (per-archive {{ ArtifactName }}.sha256)
-    # must exist and be non-empty on disk. `test -s` exits non-zero on a
-    # missing or empty file, aborting the release. ArtifactPath reaches the
-    # shell through the env channel (never spliced into the command string)
-    # so a path with shell metacharacters cannot break out of the test.
-    - cmd: 'test -s "$ANODIZER_ARTIFACT" || { echo "FATAL: checksum file missing or empty: $ANODIZER_ARTIFACT" >&2; exit 1; }'
-      artifacts: checksum
-      env:
-        - "ANODIZER_ARTIFACT={{ ArtifactPath }}"
+    # Gate 1: at least one checksum file must exist and be non-empty. The glob
+    # spans both checksum modes so the gate is invariant to the `checksum.split`
+    # setting: split mode emits `*.sha256` sidecars, non-split emits a combined
+    # `*_checksums.txt` — a mode-specific glob would false-abort a healthy
+    # release whenever the other mode is configured. `shopt -s nullglob`
+    # collapses an unmatched glob to an empty set, so the empty-first-element
+    # check aborts rather than passing vacuously; `test -s` then fails on any
+    # empty file in the set.
+    - cmd: 'bash -c ''shopt -s nullglob; f=(dist/*_checksums.txt dist/*.sha256); [ -n "${f[0]:-}" ] || { echo "FATAL: no checksum files in dist/" >&2; exit 1; }; for c in "${f[@]}"; do test -s "$c" || { echo "FATAL: checksum file missing or empty: $c" >&2; exit 1; }; done'''
+      run_once: true
       output: true
-    # Gate 2: every primary release archive (id=default) must be a non-empty,
-    # readable tarball/zip. ArtifactPath is project-root-relative, so under
-    # `dir: dist` use ArtifactName (bare filename) to avoid a dist/dist/ prefix.
-    - cmd: 'test -s "$ANODIZER_ARTIFACT" || { echo "FATAL: archive missing or empty: $ANODIZER_ARTIFACT" >&2; exit 1; }'
-      artifacts: archive
-      ids: [default]
-      dir: dist
-      env:
-        - "ANODIZER_ARTIFACT={{ ArtifactName }}"
+    # Gate 2: every release archive must be a non-empty, readable archive. The
+    # glob enumerates every configured archive format (primary `tar.gz`/`zip`
+    # plus the `-extra` entry's `tar.xz`/`tar.zst`/`tgz`); omitting a format
+    # would leave its archives unchecked and could abort vacuously when only
+    # that format is present. Same nullglob + empty-first-element guard.
+    - cmd: 'bash -c ''shopt -s nullglob; f=(dist/*.tar.gz dist/*.zip dist/*.tar.xz dist/*.tar.zst dist/*.tgz); [ -n "${f[0]:-}" ] || { echo "FATAL: no release archives in dist/" >&2; exit 1; }; for a in "${f[@]}"; do test -s "$a" || { echo "FATAL: archive missing or empty: $a" >&2; exit 1; }; done'''
+      run_once: true
       output: true
 
 crates:

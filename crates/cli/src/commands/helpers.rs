@@ -2988,6 +2988,198 @@ list:
         );
     }
 
+    // ---- publish-only rehydrate → ChecksumStage idempotence ------------
+    //
+    // Exercises the exact runtime sequence `publish_only::run_one_crate_dist`
+    // performs — REAL `load_artifacts_from_manifest` (rehydrate a preserved
+    // dist whose manifest already records the per-target Checksum sidecars
+    // with a recorded size) followed by a REAL `ChecksumStage.run` in split
+    // mode (which re-emits those same `<archive>.sha256` sidecars). The
+    // determinism harness never runs the publish-side stages, and the
+    // builders-level tests only assert stage ORDER, so this is the only place
+    // the rehydrate→re-checksum slice executes. A non-idempotent
+    // `ArtifactRegistry::add` re-appends each sidecar at its already-present
+    // (path, Checksum) coordinate, doubling it for every downstream publisher.
+
+    /// A re-checksum over a rehydrated registry that already holds the
+    /// per-target Checksum sidecars must leave exactly one artifact per
+    /// (path, kind) — the re-add at an existing coordinate is an idempotent
+    /// update, never a second entry.
+    #[test]
+    fn rehydrate_then_checksum_split_has_no_duplicate_artifacts() {
+        use anodizer_core::config::{ChecksumConfig, CrateConfig};
+        use anodizer_core::stage::Stage;
+        use anodizer_core::test_helpers::TestContextBuilder;
+        use anodizer_stage_checksum::ChecksumStage;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+
+        // A prior shard already produced the archive AND its split sidecar on
+        // disk; the preserved dist carries both.
+        let archive = dist.join("myapp-1.0.0-linux-amd64.tar.gz");
+        std::fs::write(&archive, b"fake archive content").unwrap();
+        let sidecar = dist.join("myapp-1.0.0-linux-amd64.tar.gz.sha256");
+        std::fs::write(&sidecar, b"0".repeat(64)).unwrap();
+
+        // The preserved manifest records the archive and its Checksum sidecar
+        // with a concrete `size`, exactly as a post-pipeline `artifacts.json`
+        // would after a split-mode shard run.
+        let manifest = dist.join("artifacts.json");
+        std::fs::write(
+            &manifest,
+            r#"[
+              {"kind":"archive","name":"myapp-1.0.0-linux-amd64.tar.gz","path":"dist/myapp-1.0.0-linux-amd64.tar.gz","target":"x86_64-unknown-linux-gnu","crate_name":"myapp","metadata":{},"size":20},
+              {"kind":"checksum","name":"myapp-1.0.0-linux-amd64.tar.gz.sha256","path":"dist/myapp-1.0.0-linux-amd64.tar.gz.sha256","target":"x86_64-unknown-linux-gnu","crate_name":"myapp","metadata":{"algorithm":"sha256"},"size":64}
+            ]"#,
+        )
+        .unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist.clone())
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                checksum: Some(ChecksumConfig {
+                    split: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }])
+            .build();
+
+        // Rehydrate via the same loader publish-only uses.
+        load_artifacts_from_manifest(&mut ctx, &dist, &manifest).expect("rehydrate manifest");
+        let rehydrated = ctx.artifacts.all().len();
+        assert_eq!(rehydrated, 2, "manifest seeds the archive + its sidecar");
+
+        // Re-run the checksum stage over the rehydrated registry — split mode
+        // re-emits the same `<archive>.sha256` sidecar.
+        ChecksumStage.run(&mut ctx).expect("checksum stage");
+
+        // No (path, kind) pair may appear twice.
+        let mut seen: std::collections::HashSet<(PathBuf, ArtifactKind)> =
+            std::collections::HashSet::new();
+        for a in ctx.artifacts.all() {
+            assert!(
+                seen.insert((a.path.clone(), a.kind)),
+                "duplicate (path, kind) after re-checksum: {} / {:?}",
+                a.path.display(),
+                a.kind
+            );
+        }
+
+        // Re-checksum is idempotent: the registry holds exactly the rehydrated
+        // unique set, not a doubled one.
+        assert_eq!(
+            ctx.artifacts.all().len(),
+            rehydrated,
+            "split re-checksum over a rehydrated dist must not add a duplicate sidecar"
+        );
+    }
+
+    // ---- publish-only rehydrate → AttestStage emit idempotence ---------
+    //
+    // The emit-mode in-toto statement registers as `UploadableFile`, a kind
+    // `ArtifactRegistry::add` deliberately does NOT collapse (a same-path
+    // UploadableFile collision is a real emission bug for genuine user assets).
+    // A preserved dist produced by an emit-mode harness run carries that
+    // statement in its manifest, so a publish-only re-run rehydrates it and
+    // then AttestStage re-emits it byte-for-byte at the same path. Without an
+    // already-present guard the re-add duplicates `(path, UploadableFile)`,
+    // and every downstream publisher re-processes the doubled asset.
+
+    /// AttestStage emit mode re-run over a rehydrated dist that already holds
+    /// the in-toto statement must leave exactly one artifact per (path, kind)
+    /// — the re-emit at an existing UploadableFile coordinate is a skip, never
+    /// a second entry.
+    #[test]
+    fn rehydrate_then_attest_emit_has_no_duplicate_artifacts() {
+        use anodizer_core::config::{AttestationConfig, AttestationMode, CrateConfig};
+        use anodizer_core::stage::Stage;
+        use anodizer_core::test_helpers::TestContextBuilder;
+        use anodizer_stage_attest::AttestStage;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+
+        // A prior emit-mode shard produced the archive AND the in-toto
+        // statement on disk; the preserved dist carries both.
+        let archive = dist.join("myapp-1.0.0-linux-amd64.tar.gz");
+        std::fs::write(&archive, b"fake archive content").unwrap();
+        let statement = dist.join(AttestationConfig::STATEMENT_NAME);
+        std::fs::write(
+            &statement,
+            b"{\"_type\":\"https://in-toto.io/Statement/v1\"}\n",
+        )
+        .unwrap();
+
+        // The preserved manifest records the archive (with its sha256, the
+        // subject digest attestation reuses) and the emit statement as an
+        // UploadableFile, exactly as a post-pipeline `artifacts.json` would
+        // after an emit-mode shard run.
+        let manifest = dist.join("artifacts.json");
+        std::fs::write(
+            &manifest,
+            r#"[
+              {"kind":"archive","name":"myapp-1.0.0-linux-amd64.tar.gz","path":"dist/myapp-1.0.0-linux-amd64.tar.gz","target":"x86_64-unknown-linux-gnu","crate_name":"myapp","metadata":{"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},"size":20},
+              {"kind":"uploadable_file","name":"attestation.intoto.jsonl","path":"dist/attestation.intoto.jsonl","crate_name":"myapp","metadata":{"attestation_statement":"true"},"size":42}
+            ]"#,
+        )
+        .unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist.clone())
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }])
+            .build();
+        ctx.config.attestations = Some(AttestationConfig {
+            enabled: true,
+            mode: Some(AttestationMode::Emit),
+            ..Default::default()
+        });
+
+        // Rehydrate via the same loader publish-only uses.
+        load_artifacts_from_manifest(&mut ctx, &dist, &manifest).expect("rehydrate manifest");
+        let rehydrated = ctx.artifacts.all().len();
+        assert_eq!(rehydrated, 2, "manifest seeds the archive + its statement");
+
+        // Re-run the attest stage over the rehydrated registry — emit mode
+        // re-derives the same statement at the same path.
+        AttestStage.run(&mut ctx).expect("attest stage");
+
+        // No (path, kind) pair may appear twice across ALL kinds.
+        let mut seen: std::collections::HashSet<(PathBuf, ArtifactKind)> =
+            std::collections::HashSet::new();
+        for a in ctx.artifacts.all() {
+            assert!(
+                seen.insert((a.path.clone(), a.kind)),
+                "duplicate (path, kind) after re-emit: {} / {:?}",
+                a.path.display(),
+                a.kind
+            );
+        }
+
+        // Re-emit is idempotent: the registry holds exactly the rehydrated
+        // unique set, not a doubled one.
+        assert_eq!(
+            ctx.artifacts.all().len(),
+            rehydrated,
+            "emit re-run over a rehydrated dist must not add a duplicate statement"
+        );
+    }
+
     // ---- resolve_git_context — workspace fallback + snapshot defaults --
     //
     // resolve_git_context shells to `git` in the process cwd. Driving its

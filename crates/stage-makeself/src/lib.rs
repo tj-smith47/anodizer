@@ -164,23 +164,8 @@ fn resolve_packaging_date() -> Option<String> {
 /// `size_bytes` field that artifacts.json carries for the `.run` artifact.
 /// Pinning every file's mtime to `SOURCE_DATE_EPOCH` removes the drift.
 fn pin_workdir_mtimes(dir: &Path, epoch_secs: i64) -> Result<()> {
-    let mut stack: Vec<std::path::PathBuf> = vec![dir.to_path_buf()];
-    while let Some(p) = stack.pop() {
-        for entry in fs::read_dir(&p)
-            .with_context(|| format!("makeself: read_dir {} for mtime pin", p.display()))?
-        {
-            let entry = entry?;
-            let path = entry.path();
-            let ft = entry.file_type()?;
-            if ft.is_dir() {
-                stack.push(path);
-            } else if ft.is_file() {
-                anodizer_core::util::set_file_mtime_epoch(&path, epoch_secs)
-                    .with_context(|| format!("makeself: pin mtime on {}", path.display()))?;
-            }
-        }
-    }
-    Ok(())
+    anodizer_core::util::pin_dir_mtimes_epoch(dir, epoch_secs)
+        .with_context(|| format!("makeself: pin staging mtimes under {}", dir.display()))
 }
 
 /// Reject duplicate makeself config IDs (per-id `default` collapses unkeyed
