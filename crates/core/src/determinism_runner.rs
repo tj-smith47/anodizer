@@ -300,16 +300,22 @@ const PREFETCH_BACKOFF: Duration = Duration::from_secs(3);
 /// therefore the only place a transient registry hiccup is survivable, which
 /// is why it — and only it — retries.
 ///
-/// `targets` adds a `--target <triple>` per configured triple so a shard
-/// that cross-fetches target-specific dependencies (e.g. aarch64-windows
-/// from an x86_64 host) has them on disk before the offline build; empty
-/// fetches for the host triple only.
+/// The prefetch passes NO `--target`: a plain `cargo fetch` resolves and
+/// downloads the dependency superset for EVERY platform in the manifest's cfg
+/// graph (host + all cross targets at once — empirically `windows-sys`,
+/// `core-foundation-sys`, `cpufeatures`, … all land in the cache even from a
+/// Linux host). That all-platform superset is exactly what a hermetic offline
+/// rebuild needs, on any shard: the explicit-target Windows shards, the
+/// multi-arch `targets:''` macOS/Ubuntu shards, and the host-side man-page
+/// `before:` hook (`cargo run --bin anodize`) alike. See
+/// [`build_fetch_command`] for why an explicit `--target` is the bug this
+/// guards against.
 ///
 /// The child inherits the host env (operator cargo/proxy/registry config,
 /// `RUSTUP_HOME`, …) and only overrides `CARGO_HOME` + forces
 /// `CARGO_NET_OFFLINE=false` — the prefetch MUST stay online even if the host
 /// opted offline, unlike the sealed rebuild children.
-pub fn prefetch_deps(manifest_dir: &Path, cargo_home: &Path, targets: &[String]) -> Result<()> {
+pub fn prefetch_deps(manifest_dir: &Path, cargo_home: &Path) -> Result<()> {
     // A project that doesn't commit a `Cargo.lock` (library crate / minimal
     // fixture) gets one WRITTEN into the worktree by `cargo fetch` as a side
     // effect of resolution. Left in place it dirties the worktree and trips the
@@ -326,7 +332,6 @@ pub fn prefetch_deps(manifest_dir: &Path, cargo_home: &Path, targets: &[String])
     let res = prefetch_deps_with(
         manifest_dir,
         cargo_home,
-        targets,
         PREFETCH_ATTEMPTS,
         PREFETCH_BACKOFF,
     );
@@ -336,10 +341,20 @@ pub fn prefetch_deps(manifest_dir: &Path, cargo_home: &Path, targets: &[String])
     res
 }
 
-/// Build the `cargo fetch --locked` [`Command`]. Split out so unit tests can
-/// inspect the argv/env (`cmd.get_args()` / `cmd.get_envs()`) without a live
-/// network fetch.
-fn build_fetch_command(manifest_dir: &Path, cargo_home: &Path, targets: &[String]) -> Command {
+/// Build the `cargo fetch` [`Command`] that warms the shared cache. Split out
+/// so unit tests can inspect the argv/env (`cmd.get_args()` / `cmd.get_envs()`)
+/// without a live network fetch.
+///
+/// Passes NO `--target` deliberately: a plain `cargo fetch` resolves and
+/// downloads the dependency superset for EVERY platform in the manifest's cfg
+/// graph (host + all cross targets in one shot). Passing an explicit
+/// `--target X` is the bug this guards against — it NARROWS the fetch to X's
+/// resolve graph, dropping host-target deps the offline rebuild still needs
+/// for host-side work (the man-page `before:` hook's `cargo run --bin anodize`
+/// host build, proc-macros, build scripts). On a cross shard (host x86_64 ≠
+/// target aarch64) that surfaces as `failed to download <crate>: --offline was
+/// specified` the instant the offline seal bites.
+fn build_fetch_command(manifest_dir: &Path, cargo_home: &Path) -> Command {
     let mut cmd = Command::new("cargo");
     cmd.arg("fetch");
     // `--locked` ONLY when the project actually commits a `Cargo.lock` — the
@@ -355,9 +370,6 @@ fn build_fetch_command(manifest_dir: &Path, cargo_home: &Path, targets: &[String
     }
     cmd.arg("--manifest-path")
         .arg(manifest_dir.join("Cargo.toml"));
-    for triple in targets {
-        cmd.arg("--target").arg(triple);
-    }
     cmd.current_dir(manifest_dir);
     cmd.env("CARGO_HOME", cargo_home);
     // The harness seals the *rebuilds* offline; the prefetch is the one
@@ -372,18 +384,19 @@ fn build_fetch_command(manifest_dir: &Path, cargo_home: &Path, targets: &[String
 }
 
 /// Retry-wrapped core of [`prefetch_deps`], parameterized on attempt count +
-/// backoff so tests can drive the retry path without real sleeps.
+/// backoff so tests can drive the retry path without real sleeps. One
+/// all-platform `cargo fetch`, retried, so a transient registry/DNS hiccup is
+/// survivable on the harness's single network operation.
 fn prefetch_deps_with(
     manifest_dir: &Path,
     cargo_home: &Path,
-    targets: &[String],
     attempts: u32,
     backoff: Duration,
 ) -> Result<()> {
     let attempts = attempts.max(1);
     let mut last: Option<String> = None;
     for attempt in 1..=attempts {
-        let mut cmd = build_fetch_command(manifest_dir, cargo_home, targets);
+        let mut cmd = build_fetch_command(manifest_dir, cargo_home);
         match cmd.status() {
             Ok(status) if status.success() => return Ok(()),
             Ok(status) => last = Some(format!("cargo fetch exited {:?}", status.code())),
@@ -787,16 +800,14 @@ mod tests {
     /// The prefetch argv must carry `fetch --manifest-path <dir>/Cargo.toml`,
     /// set `CARGO_HOME` to the shared cache, force `CARGO_NET_OFFLINE=false`
     /// (the one online op), and — because a `Cargo.lock` is committed here —
-    /// the strict `--locked`. Per configured target it appends a `--target
-    /// <triple>` so cross-target deps are present before the offline rebuild.
+    /// the strict `--locked`.
     #[test]
-    fn fetch_command_pins_locked_home_and_targets() {
+    fn fetch_command_pins_locked_home_and_manifest() {
         let dir = tempfile::tempdir().unwrap();
         // A committed lock → `--locked` (the binary-release determinism path).
         std::fs::write(dir.path().join("Cargo.lock"), "# lock").unwrap();
         let home = PathBuf::from("/cache/cargo");
-        let targets = vec!["aarch64-pc-windows-msvc".to_string()];
-        let cmd = build_fetch_command(dir.path(), &home, &targets);
+        let cmd = build_fetch_command(dir.path(), &home);
 
         let args: Vec<String> = cmd
             .get_args()
@@ -818,15 +829,6 @@ mod tests {
             args.get(mp + 1).map(String::as_str),
             Some(dir.path().join("Cargo.toml").to_str().unwrap()),
             "manifest path must point at the worktree's Cargo.toml; got {args:?}"
-        );
-        let tp = args
-            .iter()
-            .position(|a| a == "--target")
-            .expect("--target present");
-        assert_eq!(
-            args.get(tp + 1).map(String::as_str),
-            Some("aarch64-pc-windows-msvc"),
-            "configured target must be passed to cargo fetch; got {args:?}"
         );
 
         let env: HashMap<String, String> = cmd
@@ -851,7 +853,7 @@ mod tests {
     fn fetch_command_omits_locked_without_committed_lock() {
         let dir = tempfile::tempdir().unwrap();
         // No Cargo.lock written.
-        let cmd = build_fetch_command(dir.path(), &PathBuf::from("/c"), &[]);
+        let cmd = build_fetch_command(dir.path(), &PathBuf::from("/c"));
         let args: Vec<String> = cmd
             .get_args()
             .map(|s| s.to_str().expect("ascii").to_string())
@@ -862,17 +864,25 @@ mod tests {
         );
     }
 
-    /// No configured targets → no `--target` flag (host triple only).
+    /// Regression guard for the cross-shard offline failure: the prefetch must
+    /// NEVER pass `--target`. A plain `cargo fetch` downloads the all-platform
+    /// dependency superset (host + every cross target); `cargo fetch --target X`
+    /// NARROWS to X's `CompileKind` and drops the host-target deps the offline
+    /// rebuild still needs for host-side work (the man-page `before:` hook's
+    /// `cargo run --bin anodize` host build) — which then dies with `failed to
+    /// download <crate>: --offline was specified` on a cross shard.
     #[test]
-    fn fetch_command_omits_target_when_none() {
-        let cmd = build_fetch_command(&PathBuf::from("/w"), &PathBuf::from("/c"), &[]);
+    fn fetch_command_never_narrows_to_a_target() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.lock"), "# lock").unwrap();
+        let cmd = build_fetch_command(dir.path(), &PathBuf::from("/c"));
         let args: Vec<String> = cmd
             .get_args()
             .map(|s| s.to_str().expect("ascii").to_string())
             .collect();
         assert!(
             args.iter().all(|a| a != "--target"),
-            "no targets configured → no --target; got {args:?}"
+            "prefetch must fetch the all-platform superset (no --target); got {args:?}"
         );
     }
 
@@ -885,7 +895,6 @@ mod tests {
         let res = prefetch_deps_with(
             &PathBuf::from("/nonexistent/anodize-prefetch-test-dir"),
             &PathBuf::from("/nonexistent/cargo-home"),
-            &[],
             1,
             Duration::ZERO,
         );

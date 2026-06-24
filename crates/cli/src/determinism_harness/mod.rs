@@ -694,7 +694,6 @@ impl Harness {
                 anodizer_core::determinism_runner::prefetch_deps(
                     worktree.path(),
                     &shared_cargo_home,
-                    self.targets.as_deref().unwrap_or(&[]),
                 )
                 .context("prefetching dependencies for the determinism harness")?;
             }
