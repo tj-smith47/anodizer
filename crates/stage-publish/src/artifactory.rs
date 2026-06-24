@@ -1308,7 +1308,7 @@ pub(crate) fn classify_delete_status(status: reqwest::StatusCode) -> DeleteOutco
 // ---------------------------------------------------------------------------
 
 // Wraps [`publish_to_artifactory`] in the [`anodizer_core::Publisher`] trait
-// so the new dispatch path (see [`crate::registry::configured_publishers`])
+// so the dispatch path (see [`crate::registry::configured_publishers`])
 // can drive Artifactory uploads alongside every other publisher.
 //
 // Group: [`anodizer_core::PublisherGroup::Assets`] (uploadable bytes,
@@ -1539,7 +1539,7 @@ fn parallel_delete(
                 let log = log.clone();
                 let counts = &counts;
                 handles.push(s.spawn(move || {
-                    log.status(&format!("DELETE {}", url));
+                    log.verbose(&format!("DELETE {}", url));
                     let mut req = client.delete(&url);
                     if let Some((ref u, ref p)) = basic_auth {
                         req = req.basic_auth(u, Some(p));

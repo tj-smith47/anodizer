@@ -348,7 +348,7 @@ fn rollback_via_object_store(
             let url = blob_target_url(t);
             match rt.block_on(store.delete(&path)) {
                 Ok(()) => {
-                    log.status(&format!("DELETE {}", url));
+                    log.status(&format!("deleted {}", url));
                     deleted += 1;
                 }
                 Err(object_store::Error::NotFound { .. }) => {

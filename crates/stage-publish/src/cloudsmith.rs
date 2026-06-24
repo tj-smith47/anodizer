@@ -1372,7 +1372,7 @@ fn list_cloudsmith_package_versions(
 // ---------------------------------------------------------------------------
 
 // Wraps [`publish_to_cloudsmith`] in the [`anodizer_core::Publisher`] trait
-// so the new dispatch path (see [`crate::registry::configured_publishers`])
+// so the dispatch path (see [`crate::registry::configured_publishers`])
 // can drive Cloudsmith uploads alongside every other publisher.
 //
 // Group: [`anodizer_core::PublisherGroup::Assets`] (uploadable packages,
@@ -1584,7 +1584,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
                 target.repo,
                 slug
             );
-            log.status(&format!("DELETE {}", url));
+            log.verbose(&format!("DELETE {}", url));
             let label = "packages/delete";
             match retry_request(label, &target.filename, &policy, &log, || {
                 client

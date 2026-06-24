@@ -20,11 +20,11 @@ use anyhow::{Context as _, Result, anyhow, bail};
 /// [`anodizer_core::PublishEvidence::extra`], which is persisted to
 /// `dist/run-<id>/report.json` and may surface in the announce body.
 /// `username` is operator-public (the DockerHub login appears on every
-/// pushed image) and is recorded verbatim; `secret_env_var` is the
-/// Aliased to the core-owned snapshot so the evidence schema lives in
-/// [`anodizer_core::publish_evidence`] and credential-shaped fields
-/// (resolved password VALUES) have no slot to land in — only the env
-/// var NAME the rollback path consults.
+/// pushed image) and is recorded verbatim; `secret_env_var` records only
+/// the NAME of the env var the rollback path re-resolves the password
+/// from — never the password VALUE. Aliased to the core-owned snapshot so
+/// the evidence schema lives in [`anodizer_core::publish_evidence`] and
+/// resolved password values have no slot to land in.
 type DockerhubTarget = anodizer_core::publish_evidence::DockerhubTargetSnapshot;
 
 /// Decode the `dockerhub_targets` array from
@@ -177,8 +177,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
         .context("dockerhub: failed to build shared HTTP client")?;
 
     // Single retry policy resolved from the top-level `retry:` block; reused
-    // for every entry's full_description fetch, login, and PATCH (mirrors
-    // the retry policy is captured once per pipe).
+    // for every entry's full_description fetch, login, and PATCH.
     let policy = ctx.retry_policy();
 
     let api_base = dockerhub_api_base(ctx.env_source());
@@ -610,7 +609,7 @@ fn restore_dockerhub_target_with_env<E: anodizer_core::EnvSource + ?Sized>(
 // ---------------------------------------------------------------------------
 
 // Wraps [`publish_to_dockerhub`] in the [`anodizer_core::Publisher`] trait so
-// the new dispatch path (see [`crate::registry::configured_publishers`]) can
+// the dispatch path (see [`crate::registry::configured_publishers`]) can
 // drive Docker Hub description sync alongside every other publisher.
 //
 // Group: [`anodizer_core::PublisherGroup::Assets`] (description sync is a

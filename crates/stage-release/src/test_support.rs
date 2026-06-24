@@ -32,7 +32,7 @@ pub(crate) fn build_test_octocrab(addr: SocketAddr) -> Arc<octocrab::Octocrab> {
 /// retry-through-success path resolves quickly without the production
 /// 5 s defaults. Use this anywhere a test wants to exercise the retry
 /// loop without padding the run with real seconds of sleep.
-#[allow(dead_code)] // populated for the next round of coverage work
+#[allow(dead_code)]
 pub(crate) fn test_retry_policy() -> anodizer_core::retry::RetryPolicy {
     anodizer_core::retry::RetryPolicy {
         max_attempts: 5,

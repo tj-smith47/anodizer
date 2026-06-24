@@ -624,7 +624,7 @@ pub fn delete_version<E: anodizer_core::EnvSource + ?Sized>(
         package,
         version
     );
-    log.status(&format!("DELETE {}", url));
+    log.verbose(&format!("DELETE {}", url));
     let scope = format!("gemfury delete for {}@{}", package, version);
     retry_http_blocking(
         &scope,

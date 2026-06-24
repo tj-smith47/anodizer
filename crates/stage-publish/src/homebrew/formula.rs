@@ -633,10 +633,6 @@ pub(super) fn build_conflicts_directives(
     directives
 }
 
-// `build_uninstall_directives` was removed when the cask renderer switched
-// to multi-key Ruby array rendering — see
-// `cask::{render_zap_block, render_uninstall_block}`.
-
 /// Render the formula's `license` stanza from a parsed SPDX expression.
 ///
 /// - single id → `license "MIT"`

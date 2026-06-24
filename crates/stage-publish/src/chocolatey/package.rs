@@ -43,7 +43,6 @@ fn rels_xml(nuspec_filename: &str) -> String {
 /// eliminating the dependency on the Windows-only Chocolatey CLI.
 pub(super) fn create_nupkg(
     name: &str,
-    version: &str,
     nuspec_path: &std::path::Path,
     tools_dir: &std::path::Path,
     output_path: &std::path::Path,
@@ -97,9 +96,6 @@ pub(super) fn create_nupkg(
             output_path.display()
         );
     }
-
-    // Log the package details.
-    let _nupkg_name = format!("{}.{}.nupkg", name, version);
 
     Ok(())
 }

@@ -3,12 +3,6 @@
 //! [`configured_publishers`] walks the active [`Context`] and instantiates
 //! a `Box<dyn Publisher>` for each configured publisher. The returned slice
 //! is what [`crate::dispatch::dispatch`] iterates over.
-//!
-//! The registry is populated incrementally by the per-publisher migration
-//! tasks. The existing macro-driven `PublishStage::run` body continues to
-//! dispatch publishers until those migrations are complete; this module +
-//! [`crate::dispatch`] live alongside it and are exercised only by tests
-//! until the swap lands.
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;

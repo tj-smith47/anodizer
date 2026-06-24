@@ -10,27 +10,6 @@ use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::context::Context;
 use anyhow::{Result, bail};
 
-// ---------------------------------------------------------------------------
-// OS / architecture inference from target triples
-// ---------------------------------------------------------------------------
-//
-// The functions below provide a two-layer normalisation scheme:
-//
-// 1. **Generic inference** (`infer_os` / `infer_arch`):
-//    Map a Rust-style target triple (e.g. `x86_64-unknown-linux-gnu`,
-//    `aarch64-apple-darwin`) to a canonical short form used internally
-//    by `OsArtifact` (`"linux"`, `"darwin"`, `"windows"`, `"amd64"`,
-//    `"arm64"`).
-//
-// 2. **Publisher-specific mapping** (e.g. `krew_os`, `krew_arch` in krew.rs):
-//    Translate the canonical form to whatever the target ecosystem expects.
-//    For Krew the mapping is effectively a no-op today, but keeping a
-//    separate layer means we can adjust for future drift without touching
-//    the shared inference code.
-//
-// Both artifact-search functions use these shared helpers so the inference
-// logic lives in exactly one place.
-
 /// Infer the canonical OS string from a target triple.
 ///
 /// Delegates to [`anodizer_core::target::map_target`] for the actual parsing.
@@ -198,10 +177,9 @@ pub(crate) fn find_artifacts_by_os_with_variant(
     arm_variant: Option<&str>,
 ) -> Result<Vec<OsArtifact>> {
     let require_url = !ctx.is_snapshot() && !ctx.is_dry_run();
-    // Include both Archive and UploadableBinary artifacts — both
-    // supports both UploadableArchive and UploadableBinary types for publisher
-    // packages. Use UploadableBinary (not Binary) so raw build outputs
-    // packaged into archives don't double-register as portable binaries.
+    // Include both Archive and UploadableBinary artifacts. Use UploadableBinary
+    // (not Binary) so raw build outputs packaged into archives don't
+    // double-register as portable binaries.
     let mut all = ctx
         .artifacts
         .by_kind_and_crate(ArtifactKind::Archive, crate_name);

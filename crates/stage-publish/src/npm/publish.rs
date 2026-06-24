@@ -1087,6 +1087,11 @@ fn publish_one_tarball(
         },
     )?;
 
+    log.status(&format!(
+        "published '{}@{}' to {} (tag={})",
+        staged.package, version, registry, dist_tag
+    ));
+
     Ok(Some(NpmTarget {
         package: staged.package.clone(),
         version: version.to_string(),
@@ -1207,7 +1212,7 @@ fn run_npm_publish(
             ));
         }
         let mut cmd = build_npm_publish_command(tarball, cfg_dir, registry, dist_tag, access, auth);
-        log.status(&format!(
+        log.verbose(&format!(
             "running npm publish {} --registry {} --tag {}",
             tarball.display(),
             registry,
@@ -1259,7 +1264,7 @@ pub(crate) fn run_npm_unpublish(
         .arg("--registry")
         .arg(registry)
         .arg("--force");
-    log.status(&format!(
+    log.verbose(&format!(
         "running npm unpublish {}@{} --registry {}",
         package, version, registry
     ));

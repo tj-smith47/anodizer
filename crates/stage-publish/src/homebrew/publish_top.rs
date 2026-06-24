@@ -570,8 +570,7 @@ pub fn publish_top_level_homebrew_casks(
         // Directory defaults to "Casks". A warning is emitted
         // when the resolved value is not "Casks" since a non-default cask
         // directory typically breaks `brew install` on end-user machines
-        // (homebrew-cask only auto-discovers files under "Casks/"). Pin
-        // C-new-10: emit the same warning here.
+        // (homebrew-cask only auto-discovers files under "Casks/").
         let directory = super::resolve_cask_directory(cask_cfg.directory.as_deref(), ctx)?;
         if directory != "Casks" {
             log.warn(&format!(

@@ -503,7 +503,7 @@ impl anodizer_core::Publisher for UploadsPublisher {
                 .get(&url)
                 .and_then(|entry| resolve_rollback_credentials(ctx, entry))
                 .filter(|(u, pw)| !u.is_empty() && !pw.is_empty());
-            log.status(&format!("DELETE {}", url));
+            log.verbose(&format!("DELETE {}", url));
             let mut req = client.delete(&url);
             if let Some((ref u, ref pw)) = basic_auth {
                 req = req.basic_auth(u, Some(pw));
@@ -1072,8 +1072,7 @@ mod tests {
     }
 
     /// Registration smoke test: a configured `uploads:` block makes the
-    /// `UploadsPublisher` appear in `configured_publishers`, proving the dead
-    /// config now drives a real stage.
+    /// `UploadsPublisher` appear in `configured_publishers`.
     #[test]
     fn registered_when_configured() {
         let mut config = Config::default();

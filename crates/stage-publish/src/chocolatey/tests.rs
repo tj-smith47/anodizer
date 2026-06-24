@@ -763,7 +763,7 @@ fn test_create_nupkg_produces_valid_opc_zip() {
 
     // Create nupkg
     let nupkg_path = pkg_dir.join("mytool.1.0.0.nupkg");
-    create_nupkg("mytool", "1.0.0", &nuspec_path, &tools_dir, &nupkg_path).unwrap();
+    create_nupkg("mytool", &nuspec_path, &tools_dir, &nupkg_path).unwrap();
 
     // Verify it's a valid ZIP with the expected OPC structure
     let file = std::fs::File::open(&nupkg_path).unwrap();

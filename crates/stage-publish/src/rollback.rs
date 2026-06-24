@@ -153,13 +153,6 @@ pub fn run(
         // `RollbackFailed` for both — a crate is live we could not pull,
         // which is the manual-intervention signal.
         let was_failure = matches!(report.results[i].outcome, PublisherOutcome::Failed(_));
-        // For a failed-submitter row (cargo) the `{{ .Error }}` template var
-        // carries the originating failure message; for a reverted
-        // `Succeeded` Assets/Manager publisher there is no error.
-        let _origin_error = match &report.results[i].outcome {
-            PublisherOutcome::Failed(msg) => msg.clone(),
-            _ => String::new(),
-        };
 
         log.status(&format!("invoking rollback for '{}'", name_owned));
         match publisher.rollback(ctx, &evidence_owned) {

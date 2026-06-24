@@ -14,8 +14,7 @@ use std::sync::LazyLock;
 #[derive(Debug, Clone, Default)]
 pub(crate) struct CommitInfo {
     pub raw_message: String,
-    /// Conventional commit type (feat, fix, chore, etc.). Used in tests for
-    /// assertion and available for future group-by-kind functionality.
+    /// Conventional commit type (feat, fix, chore, etc.).
     #[allow(dead_code)]
     pub kind: String,
     pub description: String,

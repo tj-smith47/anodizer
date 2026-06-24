@@ -1,8 +1,6 @@
 //! Shared helpers for the per-publisher modules in `stage-publish`.
 //!
-//! Carved out of the previously-flat `util.rs`.
-//!
-//! Each submodule is a banner-delimited section from the original file:
+//! Each submodule groups one concern:
 //!
 //! - [`config`] — config / context lookups & resolution helpers.
 //! - [`formats`] — package-format defaults + filename matching.
@@ -16,9 +14,8 @@
 //! - [`parallelism`] — shared `ROLLBACK_PARALLELISM` cap for publishers
 //!   that fan out per-target rollback work.
 //!
-//! External callers (homebrew/, scoop, krew, aur, aur_source, nix, cargo,
-//! chocolatey, cloudsmith, artifactory) reach these helpers through the
-//! `crate::util::IDENT` paths re-exported below.
+//! Per-publisher modules reach these helpers through the `crate::util::IDENT`
+//! paths re-exported below.
 
 mod artifacts;
 mod branch;

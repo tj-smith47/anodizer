@@ -674,9 +674,6 @@ fn render_text_fields(
         .map(|t| util::render_or_warn(ctx, log, "chocolatey.title", t))
         .transpose()?;
 
-    // Template-render Copyright, Summary, Description, ReleaseNotes.
-    // `Changelog` is injected as a per-render extra so configs that use
-    // `{{ Changelog }}` work.
     // Template-render extra: `Changelog` is a tera variable. When the changelog
     // stage has not populated `ReleaseNotes` (e.g. first release with no prior
     // tag), an empty string is the correct default — Tera renders `{{ Changelog }}`
@@ -867,7 +864,7 @@ fn stage_package(
     // Create .nupkg natively (OPC/ZIP format) — no `choco` CLI dependency.
     // A nupkg is a ZIP containing the nuspec, tools/, and OPC metadata files.
     let nupkg_path = pkg_dir.join(format!("{}.{}.nupkg", pkg_name, version));
-    create_nupkg(pkg_name, version, &nuspec_path, &tools_dir, &nupkg_path)?;
+    create_nupkg(pkg_name, &nuspec_path, &tools_dir, &nupkg_path)?;
     log.status(&format!("created nupkg {}", nupkg_path.display()));
 
     Ok(StagedPackage {

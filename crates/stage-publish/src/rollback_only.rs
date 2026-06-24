@@ -282,7 +282,6 @@ pub(crate) fn run_with_publishers(
             continue;
         };
 
-        // Audit ref: 2026-05-15 release-resilience-review finding I3 —
         // honor `rollback_scope_needed()` just like the live `rollback::run`
         // path. Without this check, replaying against a host that lost
         // its credential between the original run and the replay would
