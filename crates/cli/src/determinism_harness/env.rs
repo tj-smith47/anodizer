@@ -324,6 +324,21 @@ pub(crate) fn build_subprocess_env_with_env(
     env.insert("RUSTC_WRAPPER".into(), String::new());
     env.insert("RUSTC_WORKSPACE_WRAPPER".into(), String::new());
 
+    // Seal every rebuild offline. The harness warms a shared, lock-pinned
+    // `CARGO_HOME` registry cache exactly ONCE per invocation (the retried
+    // `cargo fetch --locked` prefetch in `determinism_runner::prefetch_deps`)
+    // before this loop runs; from then on no child build may reach the
+    // network. This is structural poka-yoke, not a perf tweak: the
+    // reproducibility gate must NOT depend on live crates.io reachability on
+    // every rebuild. Any `before:`/`after:` hook or stage that shells cargo
+    // in the worktree (the man-page hook is merely the first) is now
+    // network-sealed by construction — it fails fast offline with a clear
+    // error instead of silently flaking on a transient `Could not resolve
+    // host: index.crates.io`. Set before BOTH the allow-list and the Windows
+    // passthrough loops so neither can reintroduce an inherited host value
+    // (a host `CARGO_NET_OFFLINE=false` would otherwise unseal the build).
+    env.insert("CARGO_NET_OFFLINE".into(), "true".into());
+
     // Inject `--remap-path-prefix` so the absolute worktree path doesn't
     // leak into the compiled binary. Rustc embeds the absolute workspace
     // path into every `file!()` / `Location::caller()` expansion (panic
@@ -653,6 +668,23 @@ mod tests {
                 .map(String::as_str),
             Some("1"),
             "harness marker must be present without signing keys"
+        );
+    }
+
+    /// Every rebuild child must be sealed offline. The harness warms a
+    /// shared registry cache once via a retried prefetch before the run
+    /// loop; from then on no rebuild may touch the network, so a transient
+    /// crates.io/DNS hiccup can never flake a reproducibility run.
+    #[test]
+    fn harness_env_seals_child_builds_offline() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Even when the host explicitly opted ONLINE, the seal wins.
+        let env = build_with(tmp.path(), &[("CARGO_NET_OFFLINE", "false")]);
+        assert_eq!(
+            env.get("CARGO_NET_OFFLINE").map(String::as_str),
+            Some("true"),
+            "child rebuild env must force CARGO_NET_OFFLINE=true regardless \
+             of the host value so rebuilds can never reach the network"
         );
     }
 

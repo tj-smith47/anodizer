@@ -15,6 +15,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 /// Stage names the determinism harness must NOT run.
 ///
@@ -273,6 +274,135 @@ fn build_subprocess_command(spec: &ChildInvocation<'_>) -> Command {
 /// doesn't have to touch `std::env` for binary resolution.
 pub fn current_anodize_binary() -> Result<PathBuf> {
     std::env::current_exe().context("locating the currently-running anodize binary")
+}
+
+/// Number of `cargo fetch` attempts [`prefetch_deps`] makes before failing.
+/// The prefetch is the harness's single network operation; transient
+/// registry/DNS failures (`Could not resolve host: index.crates.io`) are
+/// precisely what a retry kills — so the retry lives here, on the one online
+/// op, and NOT on the offline-sealed rebuilds (which cannot reach the network
+/// to flake on it in the first place).
+const PREFETCH_ATTEMPTS: u32 = 3;
+
+/// Fixed backoff between [`prefetch_deps`] attempts.
+const PREFETCH_BACKOFF: Duration = Duration::from_secs(3);
+
+/// Warm `cargo_home`'s registry cache by fetching every `Cargo.lock`-pinned
+/// dependency of the workspace at `manifest_dir` exactly ONCE, before the
+/// harness's rebuild loop seals all child builds offline
+/// (`CARGO_NET_OFFLINE=true`, set in the harness's child env).
+///
+/// This makes the reproducibility gate network-independent on every rebuild:
+/// the shared, lock-pinned cache is determinism-safe to reuse across runs
+/// (`.crate` tarballs + extracted sources are content-addressed → byte-
+/// identical regardless of which run downloaded them), and the offline seal
+/// then guarantees no rebuild can reach the network at all. The prefetch is
+/// therefore the only place a transient registry hiccup is survivable, which
+/// is why it — and only it — retries.
+///
+/// `targets` adds a `--target <triple>` per configured triple so a shard
+/// that cross-fetches target-specific dependencies (e.g. aarch64-windows
+/// from an x86_64 host) has them on disk before the offline build; empty
+/// fetches for the host triple only.
+///
+/// The child inherits the host env (operator cargo/proxy/registry config,
+/// `RUSTUP_HOME`, …) and only overrides `CARGO_HOME` + forces
+/// `CARGO_NET_OFFLINE=false` — the prefetch MUST stay online even if the host
+/// opted offline, unlike the sealed rebuild children.
+pub fn prefetch_deps(manifest_dir: &Path, cargo_home: &Path, targets: &[String]) -> Result<()> {
+    // A project that doesn't commit a `Cargo.lock` (library crate / minimal
+    // fixture) gets one WRITTEN into the worktree by `cargo fetch` as a side
+    // effect of resolution. Left in place it dirties the worktree and trips the
+    // release pipeline's clean-state guard on non-snapshot rebuilds (`git is in
+    // a dirty state; … Use --snapshot to force`). The thing we actually wanted —
+    // a warm registry cache — lives in CARGO_HOME, not the worktree, so drop the
+    // stray lock afterward to leave the checkout byte-for-byte as `git worktree
+    // add` produced it. The offline rebuild regenerates an identical lock from
+    // the warm cache during its OWN build (after the clean-state check passes),
+    // so determinism is unaffected. Projects that DO commit a lock take the
+    // `--locked` path, which never mutates the lock, so nothing is removed.
+    let lock = manifest_dir.join("Cargo.lock");
+    let lock_committed = lock.is_file();
+    let res = prefetch_deps_with(
+        manifest_dir,
+        cargo_home,
+        targets,
+        PREFETCH_ATTEMPTS,
+        PREFETCH_BACKOFF,
+    );
+    if !lock_committed && lock.is_file() {
+        let _ = std::fs::remove_file(&lock);
+    }
+    res
+}
+
+/// Build the `cargo fetch --locked` [`Command`]. Split out so unit tests can
+/// inspect the argv/env (`cmd.get_args()` / `cmd.get_envs()`) without a live
+/// network fetch.
+fn build_fetch_command(manifest_dir: &Path, cargo_home: &Path, targets: &[String]) -> Command {
+    let mut cmd = Command::new("cargo");
+    cmd.arg("fetch");
+    // `--locked` ONLY when the project actually commits a `Cargo.lock` — the
+    // determinism contract for binary releases. cargo's `--locked` hard-errors
+    // when the lock is absent or stale, which would break two legitimate cases:
+    // library crates (Cargo.lock is conventionally gitignored) and the minimal
+    // test-fixture workspaces. When no lock is committed, plain `cargo fetch`
+    // resolves the manifest and writes a lock the offline rebuild then reuses;
+    // determinism still holds because every rebuild resolves the SAME manifest
+    // against the SAME warm, content-addressed registry cache.
+    if manifest_dir.join("Cargo.lock").is_file() {
+        cmd.arg("--locked");
+    }
+    cmd.arg("--manifest-path")
+        .arg(manifest_dir.join("Cargo.toml"));
+    for triple in targets {
+        cmd.arg("--target").arg(triple);
+    }
+    cmd.current_dir(manifest_dir);
+    cmd.env("CARGO_HOME", cargo_home);
+    // The harness seals the *rebuilds* offline; the prefetch is the one
+    // op that must reach crates.io, so force it online even if the host
+    // exported CARGO_NET_OFFLINE=true (otherwise the warm-the-cache step
+    // would itself fail offline and defeat the whole prefetch).
+    cmd.env("CARGO_NET_OFFLINE", "false");
+    // cargo writes progress to stderr (inherited so the operator sees the
+    // one-time download); stdout carries nothing the harness consumes.
+    cmd.stdout(Stdio::null());
+    cmd
+}
+
+/// Retry-wrapped core of [`prefetch_deps`], parameterized on attempt count +
+/// backoff so tests can drive the retry path without real sleeps.
+fn prefetch_deps_with(
+    manifest_dir: &Path,
+    cargo_home: &Path,
+    targets: &[String],
+    attempts: u32,
+    backoff: Duration,
+) -> Result<()> {
+    let attempts = attempts.max(1);
+    let mut last: Option<String> = None;
+    for attempt in 1..=attempts {
+        let mut cmd = build_fetch_command(manifest_dir, cargo_home, targets);
+        match cmd.status() {
+            Ok(status) if status.success() => return Ok(()),
+            Ok(status) => last = Some(format!("cargo fetch exited {:?}", status.code())),
+            Err(e) => last = Some(format!("spawning cargo fetch: {e}")),
+        }
+        if attempt < attempts {
+            tracing::warn!(
+                attempt,
+                attempts,
+                "determinism prefetch `cargo fetch` failed; retrying"
+            );
+            std::thread::sleep(backoff);
+        }
+    }
+    anyhow::bail!(
+        "determinism prefetch `cargo fetch` failed after {attempts} attempt(s) in {}: {}",
+        manifest_dir.display(),
+        last.unwrap_or_default()
+    )
 }
 
 #[cfg(test)]
@@ -652,6 +782,118 @@ mod tests {
                 ),
             }
         }
+    }
+
+    /// The prefetch argv must carry `fetch --manifest-path <dir>/Cargo.toml`,
+    /// set `CARGO_HOME` to the shared cache, force `CARGO_NET_OFFLINE=false`
+    /// (the one online op), and — because a `Cargo.lock` is committed here —
+    /// the strict `--locked`. Per configured target it appends a `--target
+    /// <triple>` so cross-target deps are present before the offline rebuild.
+    #[test]
+    fn fetch_command_pins_locked_home_and_targets() {
+        let dir = tempfile::tempdir().unwrap();
+        // A committed lock → `--locked` (the binary-release determinism path).
+        std::fs::write(dir.path().join("Cargo.lock"), "# lock").unwrap();
+        let home = PathBuf::from("/cache/cargo");
+        let targets = vec!["aarch64-pc-windows-msvc".to_string()];
+        let cmd = build_fetch_command(dir.path(), &home, &targets);
+
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_str().expect("ascii").to_string())
+            .collect();
+        assert_eq!(
+            args[0], "fetch",
+            "argv must lead with `fetch`; got {args:?}"
+        );
+        assert!(
+            args.contains(&"--locked".to_string()),
+            "a committed Cargo.lock must yield --locked: {args:?}"
+        );
+        let mp = args
+            .iter()
+            .position(|a| a == "--manifest-path")
+            .expect("--manifest-path present");
+        assert_eq!(
+            args.get(mp + 1).map(String::as_str),
+            Some(dir.path().join("Cargo.toml").to_str().unwrap()),
+            "manifest path must point at the worktree's Cargo.toml; got {args:?}"
+        );
+        let tp = args
+            .iter()
+            .position(|a| a == "--target")
+            .expect("--target present");
+        assert_eq!(
+            args.get(tp + 1).map(String::as_str),
+            Some("aarch64-pc-windows-msvc"),
+            "configured target must be passed to cargo fetch; got {args:?}"
+        );
+
+        let env: HashMap<String, String> = cmd
+            .get_envs()
+            .filter_map(|(k, v)| Some((k.to_str()?.to_string(), v?.to_str()?.to_string())))
+            .collect();
+        assert_eq!(
+            env.get("CARGO_HOME").map(String::as_str),
+            Some("/cache/cargo")
+        );
+        assert_eq!(
+            env.get("CARGO_NET_OFFLINE").map(String::as_str),
+            Some("false"),
+            "prefetch must stay online; the rebuilds are what get sealed offline"
+        );
+    }
+
+    /// No `Cargo.lock` committed (library crate / minimal fixture) → omit
+    /// `--locked`, which would otherwise hard-error before cargo can resolve
+    /// + write a lock. Plain `cargo fetch` is correct there.
+    #[test]
+    fn fetch_command_omits_locked_without_committed_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        // No Cargo.lock written.
+        let cmd = build_fetch_command(dir.path(), &PathBuf::from("/c"), &[]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_str().expect("ascii").to_string())
+            .collect();
+        assert!(
+            args.iter().all(|a| a != "--locked"),
+            "no committed lock → --locked must be omitted; got {args:?}"
+        );
+    }
+
+    /// No configured targets → no `--target` flag (host triple only).
+    #[test]
+    fn fetch_command_omits_target_when_none() {
+        let cmd = build_fetch_command(&PathBuf::from("/w"), &PathBuf::from("/c"), &[]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|s| s.to_str().expect("ascii").to_string())
+            .collect();
+        assert!(
+            args.iter().all(|a| a != "--target"),
+            "no targets configured → no --target; got {args:?}"
+        );
+    }
+
+    /// The prefetch retries then bails with a context-bearing error when
+    /// the fetch can't succeed — driven here with a bogus manifest dir so
+    /// every attempt fails fast (attempts=1, zero backoff keeps the test
+    /// instant).
+    #[test]
+    fn prefetch_fails_after_exhausting_attempts() {
+        let res = prefetch_deps_with(
+            &PathBuf::from("/nonexistent/anodize-prefetch-test-dir"),
+            &PathBuf::from("/nonexistent/cargo-home"),
+            &[],
+            1,
+            Duration::ZERO,
+        );
+        let err = res.expect_err("fetch against a missing manifest must error");
+        assert!(
+            err.to_string().contains("determinism prefetch"),
+            "error must identify the prefetch step; got {err:#}"
+        );
     }
 
     #[test]

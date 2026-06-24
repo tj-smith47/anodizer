@@ -1,4 +1,4 @@
-//! Determinism harness — drives N from-clean rebuilds in hermetic
+//! Determinism Harness — drives N from-clean rebuilds in hermetic
 //! worktrees and diffs the emitted artifacts.
 //!
 //! ## Shape
@@ -636,6 +636,20 @@ impl Harness {
         let worktree_path =
             worktree_root.join(format!("anodize-determinism-{}", std::process::id()));
 
+        // Shared, lock-pinned CARGO_HOME for the WHOLE invocation, hoisted
+        // OUT of the per-run worktree (which the loop wipes each iteration).
+        // This is the load-bearing change that makes every rebuild network-
+        // free: the run-0 prefetch warms this registry cache once, and it
+        // survives into runs 1..N instead of being re-downloaded from clean
+        // each time. Determinism-safe to share — `.crate` tarballs + their
+        // extracted sources are content-addressed and pinned by `Cargo.lock`,
+        // so byte-identical no matter which run fetched them. Only COMPILED
+        // output must stay per-run-fresh, and it does: `CARGO_TARGET_DIR`
+        // lives inside the worktree and is wiped with it every iteration.
+        let shared_cargo_home =
+            worktree_root.join(format!("anodize-determinism-cargo-{}", std::process::id()));
+        std::fs::create_dir_all(&shared_cargo_home)?;
+
         // When crate_name is set, anchor the preserved dist into a
         // per-crate subdir so parallel crate releases (each invoking
         // the harness independently) can merge into one `dist/` root
@@ -666,7 +680,26 @@ impl Harness {
             let _ = std::fs::remove_dir_all(&worktree_path);
             let worktree = Worktree::add(&self.repo_root, &worktree_path, &self.commit)
                 .with_context(|| format!("creating worktree for determinism run {}", run_idx))?;
-            let env = self.build_isolated_env(&worktree, signing_keys.as_ref())?;
+            if run_idx == 0 {
+                // Warm the shared registry cache ONCE — online, with retries
+                // — before any child build runs. Every rebuild below is
+                // sealed offline (`CARGO_NET_OFFLINE=true` in the child env),
+                // so this is the single, survivable network touch-point. The
+                // man-page `before:` hook (`cargo run … man`) was merely the
+                // FIRST cargo call to hit the empty per-run cache and flake on
+                // a transient `Could not resolve host: index.crates.io`; a warm
+                // shared cache plus the offline seal removes that live-crates.io
+                // dependency from the gate entirely.
+                log.verbose("prefetching dependencies into shared cargo home (online, retried)");
+                anodizer_core::determinism_runner::prefetch_deps(
+                    worktree.path(),
+                    &shared_cargo_home,
+                    self.targets.as_deref().unwrap_or(&[]),
+                )
+                .context("prefetching dependencies for the determinism harness")?;
+            }
+            let env =
+                self.build_isolated_env(&worktree, &shared_cargo_home, signing_keys.as_ref())?;
             self.run_build_pipeline(worktree.path(), &env, &effective_stages)
                 .with_context(|| format!("building pipeline for determinism run {}", run_idx))?;
             if effective_stages.contains(&StageId::CargoPackage) {
@@ -792,6 +825,13 @@ impl Harness {
             // Worktree dropped at end of scope → cleanup automatic.
         }
 
+        // Best-effort reclaim of the shared CARGO_HOME. It lives OUTSIDE the
+        // worktree, so the per-run `Worktree::drop` never touches it; remove it
+        // now that all runs are done. It's a throwaway cache (the next
+        // invocation re-prefetches into its own pid-suffixed dir), so a leftover
+        // on the error path is harmless.
+        let _ = std::fs::remove_dir_all(&shared_cargo_home);
+
         let report = self.build_report(per_run_hashes);
         if let Some(parent) = self.report_path.parent() {
             prune_dump_to_drifted(&parent.join("drift-bins"), &report);
@@ -834,18 +874,20 @@ impl Harness {
     fn build_isolated_env(
         &self,
         worktree: &Worktree,
+        cargo_home: &Path,
         signing_keys: Option<&EphemeralSigningKeys>,
     ) -> Result<HashMap<String, String>> {
         let tmpdir = worktree.path().join(".det-tmp");
         std::fs::create_dir_all(&tmpdir)?;
-        let cargo_home = tmpdir.join("cargo");
+        // `cargo_home` is the invocation-wide shared cache (created once in
+        // `run()` and warmed by the run-0 prefetch); only the compiled-output
+        // dir is per-run-fresh inside the worktree.
         let cargo_target = tmpdir.join("target");
         let home_dir = tmpdir.join("home");
-        std::fs::create_dir_all(&cargo_home)?;
         std::fs::create_dir_all(&home_dir)?;
 
         Ok(build_subprocess_env(&BuildSubprocessEnv {
-            cargo_home: &cargo_home,
+            cargo_home,
             cargo_target: &cargo_target,
             tmpdir: &tmpdir,
             home_dir: &home_dir,
