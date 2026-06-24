@@ -391,6 +391,68 @@ pub fn apply_minimal_env(command: &mut std::process::Command) {
     }
 }
 
+/// Cargo build-intermediate subdirectories that sit under a profile dir
+/// (`target/<triple>/release/`) and hold no shippable or hashed artifact.
+///
+/// The final binary and any sibling files live directly under the profile
+/// dir; everything reproducibility cares about (the produced binary, the
+/// `dist/` archives/installers built from it) is downstream of these. These
+/// four are pure cargo scratch — object files, build-script outputs,
+/// incremental-compilation state, and fingerprints — that cargo regenerates
+/// on demand if a later build touches the same triple.
+const CARGO_BUILD_INTERMEDIATE_DIRS: &[&str] = &["deps", "build", "incremental", ".fingerprint"];
+
+/// Free cargo build intermediates under a profile directory
+/// (`target/<triple>/release/`) once its binary has been produced, lowering
+/// peak disk for multi-target builds that share one `target/` tree.
+///
+/// Removes only [`CARGO_BUILD_INTERMEDIATE_DIRS`] (`deps`, `build`,
+/// `incremental`, `.fingerprint`). The final binary and every other file
+/// directly under `profile_dir` are left untouched, so neither a shipped
+/// artifact nor a determinism-hashed binary can change.
+///
+/// Best-effort: a missing subdir is the normal case (not every triple has
+/// `incremental/`), and a failed remove must never fail the build — both are
+/// reported at verbose and swallowed. Returns the list of subdir names
+/// actually removed so callers can log a precise per-triple line.
+///
+/// Guard: this only operates when `profile_dir`'s basename is a real cargo
+/// profile (`release` / `debug`). Handed anything else (a workspace root,
+/// `target/` itself, an empty/root path), it is a hard no-op — the scratch
+/// names are generic enough that a future miswire pointing at the wrong dir
+/// would otherwise delete a real `build`/`deps` tree.
+pub fn free_cargo_build_intermediates(
+    profile_dir: &Path,
+    log: &crate::log::StageLogger,
+) -> Vec<&'static str> {
+    let is_cargo_profile_dir = profile_dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n == "release" || n == "debug");
+    if !is_cargo_profile_dir {
+        log.verbose(&format!(
+            "refusing to free build intermediates under non-profile dir {}",
+            profile_dir.display()
+        ));
+        return Vec::new();
+    }
+    let mut freed = Vec::new();
+    for sub in CARGO_BUILD_INTERMEDIATE_DIRS {
+        let path = profile_dir.join(sub);
+        if !path.exists() {
+            continue;
+        }
+        match fs::remove_dir_all(&path) {
+            Ok(()) => freed.push(*sub),
+            Err(err) => log.verbose(&format!(
+                "could not free build intermediate {}: {err}",
+                path.display()
+            )),
+        }
+    }
+    freed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -712,5 +774,112 @@ mod tests {
         let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
         let result = apply_mod_timestamp(dir.path(), "not-valid", &log);
         assert!(result.is_err());
+    }
+
+    // -----------------------------------------------------------------------
+    // free_cargo_build_intermediates tests
+    // -----------------------------------------------------------------------
+
+    /// Build a `target/<triple>/release/` profile dir under `root` so the
+    /// helper's profile-dir guard (basename must be `release`/`debug`) is
+    /// satisfied, mirroring cargo's real layout.
+    fn mk_release_dir(root: &Path) -> std::path::PathBuf {
+        let profile = root
+            .join("target")
+            .join("x86_64-unknown-linux-gnu")
+            .join("release");
+        std::fs::create_dir_all(&profile).unwrap();
+        profile
+    }
+
+    #[test]
+    fn test_free_cargo_build_intermediates_removes_transient_keeps_binary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let profile = mk_release_dir(tmp.path());
+
+        // Scaffold the four transient subdirs (each with a file inside so the
+        // remove is non-trivial), the final binary, and a sibling regular file
+        // directly under the profile dir.
+        for sub in ["deps", "build", "incremental", ".fingerprint"] {
+            let d = profile.join(sub);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("scratch.o"), "obj").unwrap();
+        }
+        std::fs::write(profile.join("myapp"), b"\x7fELF binary").unwrap();
+        std::fs::write(profile.join("myapp.d"), "depinfo").unwrap();
+
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+        let mut freed = free_cargo_build_intermediates(&profile, &log);
+        freed.sort_unstable();
+        assert_eq!(freed, vec![".fingerprint", "build", "deps", "incremental"]);
+
+        for sub in ["deps", "build", "incremental", ".fingerprint"] {
+            assert!(
+                !profile.join(sub).exists(),
+                "transient subdir {sub} should be removed"
+            );
+        }
+        assert!(profile.join("myapp").exists(), "binary must be retained");
+        assert_eq!(
+            std::fs::read(profile.join("myapp")).unwrap(),
+            b"\x7fELF binary"
+        );
+        assert!(
+            profile.join("myapp.d").exists(),
+            "sibling regular file must be retained"
+        );
+    }
+
+    #[test]
+    fn test_free_cargo_build_intermediates_missing_dirs_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        let profile = mk_release_dir(tmp.path());
+        // Only a binary present — no transient subdirs at all.
+        std::fs::write(profile.join("myapp"), "bin").unwrap();
+
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+        let freed = free_cargo_build_intermediates(&profile, &log);
+        assert!(freed.is_empty(), "nothing to free when no subdirs exist");
+        assert!(profile.join("myapp").exists());
+    }
+
+    #[test]
+    fn test_free_cargo_build_intermediates_partial_subset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let profile = mk_release_dir(tmp.path());
+        // Only `deps/` and `incremental/` present — the helper frees exactly
+        // those and leaves the absent ones as no-ops.
+        std::fs::create_dir_all(profile.join("deps")).unwrap();
+        std::fs::create_dir_all(profile.join("incremental")).unwrap();
+        std::fs::write(profile.join("myapp"), "bin").unwrap();
+
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+        let mut freed = free_cargo_build_intermediates(&profile, &log);
+        freed.sort_unstable();
+        assert_eq!(freed, vec!["deps", "incremental"]);
+        assert!(profile.join("myapp").exists());
+    }
+
+    /// Guard: handed a NON-profile dir (basename not `release`/`debug`), the
+    /// helper is a hard no-op even if scratch-named subdirs are present, so a
+    /// future miswire can't delete a real `build`/`deps` tree elsewhere.
+    #[test]
+    fn test_free_cargo_build_intermediates_non_profile_dir_is_noop() {
+        let tmp = tempfile::tempdir().unwrap();
+        // A workspace-root-shaped dir whose basename is `target`, not a profile.
+        let not_profile = tmp.path().join("target");
+        std::fs::create_dir_all(not_profile.join("deps")).unwrap();
+        std::fs::create_dir_all(not_profile.join("build")).unwrap();
+
+        let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+        let freed = free_cargo_build_intermediates(&not_profile, &log);
+        assert!(
+            freed.is_empty(),
+            "non-profile dir must free nothing (guard)"
+        );
+        assert!(
+            not_profile.join("deps").exists() && not_profile.join("build").exists(),
+            "guard must leave a non-profile dir's contents untouched"
+        );
     }
 }

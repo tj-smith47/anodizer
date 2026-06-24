@@ -23,7 +23,8 @@ use crate::universal::{build_universal_binary, project_universal_out_path};
 use crate::validation::is_dynamically_linked;
 use crate::version_sync;
 use crate::workspace::{
-    resolve_binary_path, resolve_copy_from, resolve_reproducible_epoch_with_env,
+    find_workspace_root, resolve_binary_path, resolve_copy_from,
+    resolve_reproducible_epoch_with_env,
 };
 
 pub(crate) struct BuildJob {
@@ -371,6 +372,105 @@ pub(crate) fn run_dry_run(
     Ok(())
 }
 
+/// Resolve the profile directory (`target/<triple>/release/`) a binary lands
+/// in, mirroring where the executor's [`resolve_binary_path`] finds the
+/// produced binary — but EXISTENCE-INDEPENDENTLY.
+///
+/// `resolve_binary_path` gates the workspace-root rewrite on the binary
+/// already existing, so it returns the planned RELATIVE path before the build
+/// and the workspace-root ABSOLUTE path after. The reaper must key seed (pre-
+/// build) and completion (post-build) on ONE stable value, so this resolver
+/// drops that existence gate: if a workspace root is found from `crate_path`,
+/// the key is always `<ws_root>/<bin_path>`'s parent (where cargo writes in a
+/// workspace); otherwise the planned `bin_path` parent. Same answer at both
+/// call sites regardless of build timing — without it, the prune silently
+/// never fires for any real workspace build.
+fn resolved_profile_dir(bin_path: &Path, crate_path: &str) -> Option<PathBuf> {
+    let resolved = if bin_path.is_absolute() {
+        bin_path.to_path_buf()
+    } else if let Some(ws_root) = find_workspace_root(crate_path) {
+        ws_root.join(bin_path)
+    } else {
+        bin_path.to_path_buf()
+    };
+    resolved.parent().map(Path::to_path_buf)
+}
+
+/// Tracks how many build jobs still target each profile directory
+/// (`target/<triple>/release/`), so a triple's cargo intermediates are only
+/// freed once its LAST job has produced its binary — never mid-build while a
+/// sibling crate's job still reads the shared `deps/`.
+///
+/// Active ONLY inside the hermetic determinism-harness rebuild (gated on the
+/// `ANODIZER_IN_DETERMINISM_HARNESS` marker, the same signal stage-sign and
+/// `Context` read for hermetic behavior). The harness builds into a throwaway
+/// `.det-tmp/target/`; a plain local `--snapshot` build uses the user's
+/// persistent `target/` and MUST keep its cargo cache, so this is a no-op
+/// there — `pending` is empty and [`note_build_complete`] never prunes.
+struct IntermediateReaper {
+    /// Remaining job count keyed by the resolved profile dir each job's binary
+    /// lands in (via [`resolved_profile_dir`] over the job's PLANNED
+    /// `bin_path` + `crate_path`). The key is computed from the SAME planned
+    /// inputs at both seed and completion, so the workspace-root fallback can
+    /// never produce a seed-vs-lookup mismatch. Decremented as each job
+    /// completes; the triple is pruned when its count reaches zero.
+    pending: HashMap<PathBuf, usize>,
+}
+
+impl IntermediateReaper {
+    /// Build a reaper over `build_jobs`. When `enabled` is false (not the
+    /// harness rebuild) the map is empty, making every method an inert no-op.
+    fn new(enabled: bool, build_jobs: &[BuildJob]) -> Self {
+        let mut pending: HashMap<PathBuf, usize> = HashMap::new();
+        if enabled {
+            for job in build_jobs {
+                if let Some(profile_dir) = resolved_profile_dir(&job.bin_path, &job.crate_path) {
+                    *pending.entry(profile_dir).or_insert(0) += 1;
+                }
+            }
+        }
+        Self { pending }
+    }
+
+    /// Record that `job` finished building and, if it was the last pending job
+    /// for that profile dir, free the triple's cargo intermediates.
+    ///
+    /// The key is re-derived through [`resolved_profile_dir`] from the job's
+    /// PLANNED `bin_path` + `crate_path` — byte-for-byte the same inputs
+    /// [`IntermediateReaper::new`] seeded with — so the lookup always hits and
+    /// the freed dir is exactly the resolved profile dir cargo wrote into.
+    fn note_build_complete(&mut self, job: &BuildJob, log: &StageLogger) {
+        let Some(profile_dir) = resolved_profile_dir(&job.bin_path, &job.crate_path) else {
+            return;
+        };
+        let Some(remaining) = self.pending.get_mut(&profile_dir) else {
+            return;
+        };
+        *remaining = remaining.saturating_sub(1);
+        if *remaining == 0 {
+            self.pending.remove(&profile_dir);
+            let freed = anodizer_core::util::free_cargo_build_intermediates(&profile_dir, log);
+            if !freed.is_empty() {
+                log.verbose(&format!(
+                    "freed build intermediates ({}) under {}",
+                    freed.join(", "),
+                    profile_dir.display()
+                ));
+            }
+        }
+    }
+}
+
+/// True when this build is the hermetic determinism-harness rebuild, in which
+/// disk-bound context cargo intermediates are pruned as each triple finishes.
+/// Reads the `ANODIZER_IN_DETERMINISM_HARNESS` marker the harness injects into
+/// every child (see `determinism_harness/env.rs`), the same precedent
+/// stage-sign and `Context` follow. A plain local `--snapshot` lacks the
+/// marker and keeps its persistent cargo cache.
+fn harness_intermediate_prune_enabled(ctx: &Context) -> bool {
+    ctx.env_var("ANODIZER_IN_DETERMINISM_HARNESS").is_some()
+}
+
 /// Sequential path: compile each job in-process, register the produced
 /// artifact, then drain `copy_jobs` after all source builds complete.
 pub(crate) fn run_sequential(
@@ -379,6 +479,7 @@ pub(crate) fn run_sequential(
     build_jobs: &[BuildJob],
     copy_jobs: &[BuildJob],
 ) -> Result<()> {
+    let mut reaper = IntermediateReaper::new(harness_intermediate_prune_enabled(ctx), build_jobs);
     for job in build_jobs {
         if let Some(parent) = job.bin_path.parent() {
             std::fs::create_dir_all(parent).with_context(|| {
@@ -480,6 +581,13 @@ pub(crate) fn run_sequential(
             job.no_unique_dist_dir,
             &job.amd64_variant,
         )?;
+
+        // Clean-as-you-go: once this triple's last job has produced its
+        // binary, its cargo scratch is dead weight. Freeing it here — before
+        // the next triple builds — keeps the disk-bound macOS harness shard
+        // (two darwin target trees in one `.det-tmp/target/`) under the runner
+        // disk ceiling. No-op outside the harness rebuild.
+        reaper.note_build_complete(job, exec.log);
     }
 
     run_copy_jobs(ctx, exec, copy_jobs)
@@ -505,6 +613,8 @@ pub(crate) fn run_parallel(
         build_jobs.len(),
         parallelism
     ));
+
+    let mut reaper = IntermediateReaper::new(harness_intermediate_prune_enabled(ctx), build_jobs);
 
     for chunk in build_jobs.chunks(parallelism) {
         let template_vars = exec.template_vars;
@@ -655,7 +765,11 @@ pub(crate) fn run_parallel(
                 .collect()
         });
 
-        for result in results {
+        // Zip each result back to its source job so the reaper re-derives its
+        // key from the job's PLANNED inputs (identical to the seed), not the
+        // post-build resolved path. `results` preserves `chunk` order (the
+        // handles are spawned and joined in order).
+        for (job, result) in chunk.iter().zip(results) {
             let r = result?;
             exec.log.status(&format!(
                 "built {}/{} for {}",
@@ -674,6 +788,11 @@ pub(crate) fn run_parallel(
                 r.no_unique_dist_dir,
                 &r.amd64_variant,
             )?;
+
+            // Free this triple's cargo scratch once its last job lands — see
+            // the sequential path for the disk-ceiling rationale. No-op
+            // outside the harness rebuild.
+            reaper.note_build_complete(job, exec.log);
         }
     }
 
@@ -2727,5 +2846,326 @@ mod run_exec_tests {
         );
         // Artifact still registered (planning output).
         assert_eq!(ctx.artifacts.by_kind(ArtifactKind::Binary).len(), 1);
+    }
+
+    // -------------------------------------------------------------------------
+    // Harness-gated cargo-intermediate pruning
+    // -------------------------------------------------------------------------
+
+    /// Scaffold the four cargo-scratch subdirs under `profile_dir` so a prune
+    /// (or retention) is observable after the stub build runs.
+    fn seed_intermediates(profile_dir: &std::path::Path) {
+        for sub in ["deps", "build", "incremental", ".fingerprint"] {
+            let d = profile_dir.join(sub);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(d.join("scratch"), "x").unwrap();
+        }
+    }
+
+    fn intermediates_present(profile_dir: &std::path::Path) -> bool {
+        ["deps", "build", "incremental", ".fingerprint"]
+            .iter()
+            .any(|s| profile_dir.join(s).exists())
+    }
+
+    /// A real `<root>/target/<triple>/release/` profile dir, seeded with cargo
+    /// scratch — the layout the prune guard (basename `release`) requires.
+    fn mk_profile(root: &std::path::Path, triple: &str) -> std::path::PathBuf {
+        let profile = root.join("target").join(triple).join("release");
+        std::fs::create_dir_all(&profile).unwrap();
+        seed_intermediates(&profile);
+        profile
+    }
+
+    /// A build job whose binary lands IN-PLACE at the planned
+    /// `<root>/target/<triple>/release/<binary>` (planned == resolved).
+    ///
+    /// Each job gets its OWN stub tool (named after `binary`) that `creates`
+    /// the binary there via an absolute path — distinct tool names so multiple
+    /// jobs in one test don't overwrite each other's stub.
+    fn release_job(
+        tools: &FakeToolDir,
+        root: &std::path::Path,
+        triple: &str,
+        binary: &str,
+    ) -> BuildJob {
+        let profile = root.join("target").join(triple).join("release");
+        let bin_abs = profile.join(binary);
+        let tool_name = format!("cargo-{binary}");
+        tools
+            .tool(&tool_name)
+            .creates(bin_abs.to_string_lossy().into_owned(), "x")
+            .install();
+        let mut job = building_job(&tools.tool_path(&tool_name), root, binary, triple);
+        // bin_path is the planned absolute profile-dir path; cwd is the root.
+        job.bin_path = bin_abs;
+        job.crate_path = root.to_string_lossy().into_owned();
+        job
+    }
+
+    /// Without the `ANODIZER_IN_DETERMINISM_HARNESS` marker (a plain local
+    /// `--snapshot`), the cargo cache MUST be preserved — no pruning.
+    #[test]
+    fn run_sequential_retains_intermediates_without_harness_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let root = tmp.path();
+        let profile = mk_profile(root, "x86_64-unknown-linux-gnu");
+
+        let tools = FakeToolDir::new();
+        let job = release_job(&tools, root, "x86_64-unknown-linux-gnu", "app");
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let mut ctx = mk_ctx(); // MapEnvSource without the marker
+        run_sequential(&mut ctx, &exec, &[job], &[]).unwrap();
+
+        assert!(
+            intermediates_present(&profile),
+            "no harness marker → cargo intermediates must be retained"
+        );
+        assert!(profile.join("app").exists(), "binary must survive");
+    }
+
+    /// With the marker present (the hermetic harness rebuild), each triple's
+    /// cargo intermediates are freed once its build lands; the binary stays.
+    #[test]
+    fn run_sequential_prunes_intermediates_under_harness_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let root = tmp.path();
+        let profile = mk_profile(root, "x86_64-unknown-linux-gnu");
+
+        let tools = FakeToolDir::new();
+        let job = release_job(&tools, root, "x86_64-unknown-linux-gnu", "app");
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let mut ctx = mk_ctx();
+        ctx.set_env_source(MapEnvSource::new().with("ANODIZER_IN_DETERMINISM_HARNESS", "1"));
+        run_sequential(&mut ctx, &exec, &[job], &[]).unwrap();
+
+        assert!(
+            !intermediates_present(&profile),
+            "harness marker → cargo intermediates must be freed"
+        );
+        assert!(
+            profile.join("app").exists(),
+            "the produced binary must never be removed by the prune"
+        );
+        assert_eq!(
+            ctx.artifacts.by_kind(ArtifactKind::Binary).len(),
+            1,
+            "artifact still registered after prune"
+        );
+    }
+
+    /// BLOCKER regression: a workspace-root layout where the per-crate `cwd`
+    /// has NO local `target/` so the binary resolves to the workspace-root
+    /// `target/<triple>/release/<bin>` (planned RELATIVE ≠ resolved ABSOLUTE).
+    /// The reaper must key seed and completion identically (both through
+    /// `resolve_binary_path`), so the prune fires. Against the pre-fix code
+    /// (seed keyed on planned-relative parent, lookup on resolved-absolute
+    /// parent) this lookup MISSES and nothing is freed.
+    #[test]
+    fn run_sequential_prunes_when_binary_resolves_to_workspace_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+
+        // Workspace root with a `[workspace]` Cargo.toml and the real
+        // target/<triple>/release/ tree (where cargo actually writes).
+        let ws_root = tmp.path().join("ws");
+        std::fs::create_dir_all(&ws_root).unwrap();
+        std::fs::write(
+            ws_root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"member\"]\n",
+        )
+        .unwrap();
+        let triple = "x86_64-unknown-linux-gnu";
+        let ws_profile = mk_profile(&ws_root, triple);
+
+        // The per-crate dir (member) — its `cwd` has NO local target/, so the
+        // planned RELATIVE `target/<triple>/release/app` does not exist here
+        // and resolution walks to the workspace-root absolute path.
+        let member = ws_root.join("member");
+        std::fs::create_dir_all(&member).unwrap();
+
+        // Stub writes the binary at the ABSOLUTE workspace-root location.
+        let bin_abs = ws_profile.join("app");
+        let tools = FakeToolDir::new();
+        tools
+            .tool("cargo")
+            .creates(bin_abs.to_string_lossy().into_owned(), "x")
+            .install();
+
+        // Planned bin_path is RELATIVE (`target/<triple>/release/app`); the cwd
+        // for the stub is the member dir. crate_path = member so
+        // find_workspace_root walks up to ws_root.
+        let mut job = building_job(&tools.tool_path("cargo"), &member, "app", triple);
+        job.bin_path = std::path::PathBuf::from("target")
+            .join(triple)
+            .join("release")
+            .join("app");
+        job.crate_path = member.to_string_lossy().into_owned();
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let mut ctx = mk_ctx();
+        ctx.set_env_source(MapEnvSource::new().with("ANODIZER_IN_DETERMINISM_HARNESS", "1"));
+        run_sequential(&mut ctx, &exec, &[job], &[]).unwrap();
+
+        assert!(
+            !intermediates_present(&ws_profile),
+            "planned≠resolved must still prune the resolved workspace-root profile dir"
+        );
+        assert!(
+            bin_abs.exists(),
+            "the resolved binary must survive the prune"
+        );
+    }
+
+    /// Two jobs share one profile dir (two crates → same triple): the prune
+    /// must wait for the LAST job, never freeing `deps/` while a sibling job
+    /// still reads it. NON-tautological: a `before-build` hook on job 2 records
+    /// whether `deps/` still exists at the moment job 2 begins — if the reaper
+    /// wrongly freed after job 1, the sentinel is ABSENT and the assert fires.
+    #[test]
+    fn run_sequential_shared_triple_prunes_only_after_last_job() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let root = tmp.path();
+        let triple = "x86_64-unknown-linux-gnu";
+        let profile = mk_profile(root, triple);
+
+        let tools = FakeToolDir::new();
+        let job1 = release_job(&tools, root, triple, "app1");
+        let mut job2 = release_job(&tools, root, triple, "app2");
+
+        // job2 pre-build hook: assert deps/ is STILL present when job 2 starts.
+        // Records a sentinel iff deps/ exists at that instant; if the reaper
+        // freed after job1, deps/ is gone and the sentinel is never written.
+        let deps_dir = profile.join("deps");
+        let sentinel = tmp.path().join("deps_present_at_job2.flag");
+        job2.pre_hooks = vec![HookEntry::Structured(StructuredHook {
+            cmd: format!(
+                "test -d {} && touch {}",
+                deps_dir.display(),
+                sentinel.display()
+            ),
+            ..Default::default()
+        })];
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let mut ctx = mk_ctx();
+        ctx.set_env_source(MapEnvSource::new().with("ANODIZER_IN_DETERMINISM_HARNESS", "1"));
+        run_sequential(&mut ctx, &exec, &[job1, job2], &[]).unwrap();
+
+        assert!(
+            sentinel.exists(),
+            "deps/ must still exist when the second (sibling) job begins — \
+             the reaper must NOT free a shared triple after job 1"
+        );
+        assert!(
+            !intermediates_present(&profile),
+            "shared triple freed after its last job"
+        );
+        assert!(profile.join("app1").exists() && profile.join("app2").exists());
+    }
+
+    // -------------------------------------------------------------------------
+    // run_parallel analogs — exercise the post-chunk prune path
+    // -------------------------------------------------------------------------
+
+    /// Without the marker, run_parallel retains the cargo cache.
+    #[test]
+    fn run_parallel_retains_intermediates_without_harness_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let root = tmp.path();
+        let profile = mk_profile(root, "x86_64-unknown-linux-gnu");
+
+        let tools = FakeToolDir::new();
+        let job = release_job(&tools, root, "x86_64-unknown-linux-gnu", "app");
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let mut ctx = mk_ctx();
+        run_parallel(&mut ctx, &exec, &[job], &[], 2).unwrap();
+
+        assert!(
+            intermediates_present(&profile),
+            "no harness marker → run_parallel must retain intermediates"
+        );
+        assert!(profile.join("app").exists());
+    }
+
+    /// With the marker, run_parallel prunes each triple after its build lands.
+    #[test]
+    fn run_parallel_prunes_intermediates_under_harness_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let root = tmp.path();
+        let profile = mk_profile(root, "x86_64-unknown-linux-gnu");
+
+        let tools = FakeToolDir::new();
+        let job = release_job(&tools, root, "x86_64-unknown-linux-gnu", "app");
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let mut ctx = mk_ctx();
+        ctx.set_env_source(MapEnvSource::new().with("ANODIZER_IN_DETERMINISM_HARNESS", "1"));
+        run_parallel(&mut ctx, &exec, &[job], &[], 2).unwrap();
+
+        assert!(
+            !intermediates_present(&profile),
+            "harness marker → run_parallel must free intermediates"
+        );
+        assert!(profile.join("app").exists());
+        assert_eq!(ctx.artifacts.by_kind(ArtifactKind::Binary).len(), 1);
+    }
+
+    /// run_parallel shared triple: two distinct profile dirs (two triples) so
+    /// each is freed independently after its own job. (Sharing one dir within
+    /// a single parallel chunk would have both jobs racing the same `deps/`;
+    /// the per-dir count still guards the prune to the last job, which here is
+    /// each dir's sole job.) Both binaries survive; both triples are pruned.
+    #[test]
+    fn run_parallel_prunes_each_triple_independently() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dist = tmp.path().join("dist");
+        std::fs::create_dir_all(&dist).unwrap();
+        let root = tmp.path();
+        let t1 = "x86_64-unknown-linux-gnu";
+        let t2 = "aarch64-unknown-linux-gnu";
+        let p1 = mk_profile(root, t1);
+        let p2 = mk_profile(root, t2);
+
+        let tools = FakeToolDir::new();
+        let job1 = release_job(&tools, root, t1, "app1");
+        let job2 = release_job(&tools, root, t2, "app2");
+
+        let log = mk_log();
+        let tvars = TemplateVars::default();
+        let exec = mk_exec(&log, &tvars, &dist, "0");
+        let mut ctx = mk_ctx();
+        ctx.set_env_source(MapEnvSource::new().with("ANODIZER_IN_DETERMINISM_HARNESS", "1"));
+        run_parallel(&mut ctx, &exec, &[job1, job2], &[], 2).unwrap();
+
+        assert!(!intermediates_present(&p1), "triple 1 pruned");
+        assert!(!intermediates_present(&p2), "triple 2 pruned");
+        assert!(p1.join("app1").exists() && p2.join("app2").exists());
     }
 }
