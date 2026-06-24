@@ -4156,3 +4156,38 @@ fn test_unset_clears_key_from_both_maps() {
     assert!(!vars.unset("Missing"));
     assert!(!vars.unset_structured("Missing"));
 }
+
+#[test]
+fn test_shell_param_length_renders_literal() {
+    let vars = test_vars();
+    let result = render("bash -c 'n=${#f[@]}'", &vars).unwrap();
+    assert_eq!(result, "bash -c 'n=${#f[@]}'");
+}
+
+#[test]
+fn test_shell_param_length_gate_pattern_round_trips() {
+    let vars = test_vars();
+    let result = render("(( ${#f[@]} )) || exit 1", &vars).unwrap();
+    assert_eq!(result, "(( ${#f[@]} )) || exit 1");
+}
+
+#[test]
+fn test_shell_param_length_mixed_with_tera_var() {
+    let vars = test_vars();
+    let result = render("echo {{ Tag }}; n=${#arr[@]}", &vars).unwrap();
+    assert_eq!(result, "echo v1.2.3; n=${#arr[@]}");
+}
+
+#[test]
+fn test_shell_param_length_multiple_occurrences() {
+    let vars = test_vars();
+    let result = render("a=${#x[@]}; b=${#y[*]}; c=${#z}", &vars).unwrap();
+    assert_eq!(result, "a=${#x[@]}; b=${#y[*]}; c=${#z}");
+}
+
+#[test]
+fn test_standalone_tera_comment_still_stripped() {
+    let vars = test_vars();
+    let result = render("pre {# c #} post", &vars).unwrap();
+    assert_eq!(result, "pre  post");
+}

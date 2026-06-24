@@ -3,7 +3,9 @@ use std::collections::HashMap;
 use tera::Value;
 
 use crate::env_source::{EnvSource, ProcessEnvSource};
-use crate::template_preprocess::preprocess;
+use crate::template_preprocess::{
+    preprocess, protect_shell_param_length, restore_shell_param_length,
+};
 
 use super::base_tera::{BASE_TERA, translate_go_time_format};
 use super::vars::{ENV_REF_RE, NUMERIC_FIELDS, TemplateVars};
@@ -140,8 +142,12 @@ pub fn render_with_env(
     vars: &TemplateVars,
     host_env: &dyn EnvSource,
 ) -> Result<String> {
-    let preprocessed = preprocess(template);
-    let ctx = build_tera_context_for_template(vars, &preprocessed, host_env);
+    // Shield bash `${#…}` from Tera's `{#` comment-open before parsing, so it
+    // reaches the rendered output literally (GoReleaser's Go templates have no
+    // such collision); the inverse restore runs on the rendered string below.
+    let preprocessed_raw = preprocess(template);
+    let preprocessed = protect_shell_param_length(&preprocessed_raw)?;
+    let ctx = build_tera_context_for_template(vars, preprocessed.as_ref(), host_env);
 
     // Clone the base instance (cheap — filters carry over, no templates to clone)
     let mut tera = BASE_TERA.clone();
@@ -249,11 +255,13 @@ pub fn render_with_env(
         },
     );
 
-    tera.add_raw_template("__inline__", &preprocessed)
+    tera.add_raw_template("__inline__", preprocessed.as_ref())
         .with_context(|| format!("failed to parse template: {}", template))?;
 
-    tera.render("__inline__", &ctx)
-        .with_context(|| format!("failed to render template: {}", template))
+    let rendered = tera
+        .render("__inline__", &ctx)
+        .with_context(|| format!("failed to render template: {}", template))?;
+    Ok(restore_shell_param_length(&rendered).into_owned())
 }
 
 /// Extract the extension from an artifact filename, including compound

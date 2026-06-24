@@ -23,6 +23,7 @@ mod dots_dollars;
 mod go_blocks;
 mod methods;
 mod positional;
+mod shell_guard;
 mod tokens;
 
 #[cfg(test)]
@@ -33,6 +34,7 @@ use dots_dollars::preprocess_strip_dots;
 use go_blocks::preprocess_go_blocks;
 use methods::preprocess_method_calls;
 use positional::{preprocess_map_syntax, preprocess_positional_syntax};
+pub(crate) use shell_guard::{protect_shell_param_length, restore_shell_param_length};
 
 /// Compile a regex from a static literal. Panics with a diagnostic if the
 /// literal fails to parse — only called from `LazyLock::new(…)` initializers,
