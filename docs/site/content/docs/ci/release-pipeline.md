@@ -152,8 +152,9 @@ The publish job downloads and merges all four shards' preserved dist, asserts ev
     needs: [tag, determinism-check]
     # !cancelled() is load-bearing: it lets the explicit gate govern when
     # determinism-check is skipped (the re-publish path) rather than GHA
-    # applying an implicit success() and skipping the publish.
-    if: ${{ !cancelled() && needs.tag.outputs.tagged == 'true' && needs.determinism-check.result != 'failure' }}
+    # applying an implicit success() and skipping the publish. Exclude both
+    # failure AND cancelled — a cancelled shard leaves the merged dist partial.
+    if: ${{ !cancelled() && needs.tag.outputs.tagged == 'true' && needs.determinism-check.result != 'failure' && needs.determinism-check.result != 'cancelled' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write

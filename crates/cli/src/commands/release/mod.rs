@@ -424,9 +424,10 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         // Config-derived environment preflight runs BEFORE the `before:` hooks
         // (which can take minutes): a missing secret / tool / key must abort
         // with zero mutations and zero wasted hook time, never after a long
-        // prep. It depends only on the in-memory config's declared
-        // tools/secrets/endpoints, not on hook output or the nightly/snapshot
-        // template vars applied below, so running it first is side-effect-free.
+        // prep. It probes declared tool/secret/endpoint *presence*, which is
+        // version-independent; on --nightly it sees the base (pre-nightly)
+        // version vars applied below, so gate nightly-only requirements on the
+        // IsNightly bool rather than a rendered version string.
         run_release_env_preflight(&ctx, &opts, &log)?;
 
         run_before_hooks(&ctx, &config, &opts, &log)?;

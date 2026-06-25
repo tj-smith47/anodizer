@@ -356,8 +356,8 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
         log.status(&format!("(dry-run) would run: git push origin {branch}"));
         delete_tags(&cwd, &deletable, &opts, &log);
     } else {
-        // Push BEFORE deleting remote tags: only once the revert is safely on
-        // origin do we drop the tags it supersedes.
+        // Push BEFORE deleting remote tags: the destructive tag delete is the
+        // last step, so a push failure aborts before any tag is dropped.
         git::push_branch_in(&cwd, &branch)?;
         log.status(&format!("pushed revert to origin/{branch}"));
         delete_tags(&cwd, &deletable, &opts, &log);
