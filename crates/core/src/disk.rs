@@ -191,9 +191,20 @@ pub fn format_gib_exact(bytes: u64) -> String {
 /// "will this write succeed", as opposed to total free including
 /// root-reserved blocks.
 pub fn available_bytes(path: &Path) -> Option<u64> {
-    // fs4 stats the filesystem containing `path`; `path` itself must
-    // exist. The harness always probes the worktree root (created before
-    // any run), so this resolves in practice.
+    // Honor the documented "missing path → None" contract on every
+    // platform. `statvfs` (unix) already fails for an absent `path`, but
+    // `GetDiskFreeSpaceExW` (windows) resolves the *parent volume* of a
+    // missing path and reports its free space — which both contradicts the
+    // contract and masks a not-yet-mounted target (it would report the
+    // parent FS, not the intended mount). Gate on existence first so an
+    // absent path degrades to "headroom unknown" uniformly, never a
+    // manufactured parent-volume reading. A probe error (`Err`) is likewise
+    // treated as unknown. The harness always probes the worktree root
+    // (created before any run), so the existence check is satisfied in
+    // practice and costs one extra stat at the sampler's 0.5s cadence.
+    if !path.try_exists().unwrap_or(false) {
+        return None;
+    }
     fs4::available_space(path).ok()
 }
 
