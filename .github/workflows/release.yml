@@ -20,6 +20,10 @@ on:
         description: "Release run id whose preserved dist-* artifacts to reuse when skip_determinism is set. Empty auto-resolves to the latest Release run for the target commit. Artifacts expire after 90 days; tags older than that cannot be re-published from preserved dist."
         required: false
         default: ""
+      skip_publishers:
+        description: "Comma-separated publishers to skip for THIS run only (e.g. chocolatey to ship everything else while one publisher is blocked). Appended to the always-skipped npm submitter, which the dedicated publish-npm job owns. Empty on the normal CI-driven flow."
+        required: false
+        default: ""
       anodizer_version:
         description: "anodizer build that runs the publish, e.g. 0.8.0 to re-publish an older tag with a newer anodizer. Empty uses the binary built for the target commit."
         required: false
@@ -246,7 +250,7 @@ jobs:
           # provenance is minted from a GitHub-hosted OIDC token and the
           # registry rejects it (HTTP 422) on the self-hosted arc-anodizer
           # runner, so the main publish skips npm and the hosted job runs it.
-          args: release --publish-only --skip=npm
+          args: release --publish-only --skip=npm${{ inputs.skip_publishers != '' && format(',{0}', inputs.skip_publishers) || '' }}
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
