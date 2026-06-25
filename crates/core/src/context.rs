@@ -296,6 +296,21 @@ pub struct ContextOptions {
     /// ONLY the standalone changelog command sets this; the release/tag
     /// pipelines leave it `false` so their guards stay fully intact.
     pub changelog_preview: bool,
+    /// Marks the run as the standalone `anodizer notify` command — a
+    /// side-channel that sends a one-off message through the configured
+    /// announce integrations, NOT part of the `release` pipeline.
+    ///
+    /// notify is routinely invoked as an `on_error:` hook AFTER a release has
+    /// failed mid-flight, when the working tree is dirty (partial `dist/`,
+    /// in-flight writeback) and HEAD may not sit on the release tag. A
+    /// notification must never be blocked by repo state — losing the alert is
+    /// the worst outcome — so this flag relaxes the three release-time git
+    /// preconditions in `resolve_git_context` that are correct for a real
+    /// release but wrong for a notification: the no-tag bail (falls back to the
+    /// `v0.0.0` synthetic tag), the tag-must-point-at-HEAD bail, and the
+    /// dirty-tree bail. ONLY the notify command sets this; every release/tag
+    /// path leaves it `false` so their guards stay intact.
+    pub notify: bool,
     /// `--allow-snapshot-publish`: downgrade the publish stage's non-release
     /// version guard from a hard bail to a warning.
     ///
@@ -352,6 +367,7 @@ impl Default for ContextOptions {
             changelog_full_history: false,
             changelog_to: None,
             changelog_preview: false,
+            notify: false,
             allow_snapshot_publish: false,
         }
     }

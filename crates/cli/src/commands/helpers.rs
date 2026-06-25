@@ -416,6 +416,11 @@ pub fn resolve_git_context(
                         // HEAD; it validates only secret presence, so a synthetic
                         // v0.0.0 suffices to render any `{{ .Env.* }}` refs.
                         "v0.0.0".to_string()
+                    } else if ctx.options.notify {
+                        // A notification must not be blocked by the absence of a
+                        // tag; the synthetic v0.0.0 lets any `{{ Tag }}` ref render
+                        // (raw on_error messages skip rendering entirely).
+                        "v0.0.0".to_string()
                     } else {
                         anyhow::bail!("no git tag found; create a tag or use --snapshot");
                     }
@@ -435,6 +440,7 @@ pub fn resolve_git_context(
             && !ctx.options.nightly
             && !ctx.options.changelog_preview
             && !ctx.options.preflight_secrets
+            && !ctx.options.notify
         {
             let head = git::get_short_commit().unwrap_or_else(|_| "unknown".to_string());
             anyhow::bail!(
@@ -454,6 +460,7 @@ pub fn resolve_git_context(
                     && !ctx.options.nightly
                     && !ctx.options.changelog_preview
                     && !ctx.options.preflight_secrets
+                    && !ctx.options.notify
                 {
                     if ctx.options.dry_run {
                         log.warn("git is in a dirty state; run `git status` to see what changed.");
@@ -508,12 +515,20 @@ pub fn resolve_git_context(
                 ctx.populate_git_vars();
             }
             Err(e) => {
-                if ctx.options.snapshot || ctx.options.nightly {
-                    let mode = if ctx.options.nightly {
-                        "nightly"
-                    } else {
-                        "snapshot"
-                    };
+                // snapshot/nightly tolerate a tagless or HEADless repo (defaults
+                // stand in); notify joins them — a notification side-channel must
+                // not fail because git info can't be detected (e.g. a release that
+                // never reached a commit, or an on_error hook in a fresh repo).
+                let lenient_mode = if ctx.options.nightly {
+                    Some("nightly")
+                } else if ctx.options.snapshot {
+                    Some("snapshot")
+                } else if ctx.options.notify {
+                    Some("notify")
+                } else {
+                    None
+                };
+                if let Some(mode) = lenient_mode {
                     log.warn(&format!(
                         "could not detect git info in {mode} mode, using defaults: {e}"
                     ));
@@ -3212,6 +3227,48 @@ list:
         }
     }
 
+    /// Like [`with_empty_git_repo_cwd`] but seeds a committed, tagged HEAD and
+    /// then leaves the tree DIRTY (an uncommitted change), so the dirty-tree
+    /// guard in `resolve_git_context` is exercised against a real tag. Hermetic
+    /// committer identity is supplied via env so the helper never depends on a
+    /// global `git config`.
+    #[cfg(unix)]
+    fn with_tagged_dirty_repo_cwd(tag: &str, body: impl FnOnce()) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let git = |args: &[&str]| {
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = std::process::Command::new("git");
+                    cmd.args(args)
+                        .current_dir(dir)
+                        .env("GIT_AUTHOR_NAME", "t")
+                        .env("GIT_AUTHOR_EMAIL", "t@e")
+                        .env("GIT_COMMITTER_NAME", "t")
+                        .env("GIT_COMMITTER_EMAIL", "t@e");
+                    cmd
+                },
+                "git",
+            );
+            assert!(out.status.success(), "git {args:?} must succeed");
+        };
+        git(&["init", "-q"]);
+        std::fs::write(dir.join("f.txt"), "v1\n").unwrap();
+        git(&["add", "f.txt"]);
+        git(&["commit", "-q", "-m", "init"]);
+        git(&["tag", tag]);
+        // Leave the tree dirty: an unstaged edit on the tagged commit.
+        std::fs::write(dir.join("f.txt"), "v2\n").unwrap();
+
+        let orig = std::env::current_dir().unwrap();
+        std::env::set_current_dir(dir).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
+        std::env::set_current_dir(orig).unwrap();
+        if let Err(p) = result {
+            std::panic::resume_unwind(p);
+        }
+    }
+
     /// Build a context backed by an EMPTY env source so the tag-discovery env
     /// chain (`ANODIZER_CURRENT_TAG`, `GITHUB_REF_TYPE`/`GITHUB_REF_NAME`, …)
     /// resolves to nothing. anodizer's own CI runs under GitHub Actions, which
@@ -3308,6 +3365,80 @@ list:
                 err.to_string().contains("no git tag found"),
                 "unexpected error: {err}"
             );
+        });
+    }
+
+    /// The same no-tag, non-snapshot setup that bails above must NOT bail under
+    /// `notify: true`: a notification side-channel (e.g. an `on_error:` hook)
+    /// must render and send even with no tag, falling back to the v0.0.0
+    /// synthetic so `{{ Tag }}` still resolves.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(cwd)]
+    fn resolve_git_context_notify_no_tag_defaults_v0() {
+        with_empty_git_repo_cwd(|| {
+            let config = Config {
+                project_name: "x".to_string(),
+                crates: vec![CrateConfig {
+                    name: "x".to_string(),
+                    path: ".".to_string(),
+                    tag_template: "x-v{{ .Version }}".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+            let opts = ContextOptions {
+                notify: true,
+                ..Default::default()
+            };
+            let mut ctx = empty_env_ctx(&config, opts);
+            resolve_git_context(&mut ctx, &config, &quiet_log())
+                .expect("notify must not bail on a missing tag");
+            assert_eq!(
+                ctx.template_vars().get("Version").map(String::as_str),
+                Some("0.0.0"),
+                "notify with no tag must default Version to 0.0.0"
+            );
+        });
+    }
+
+    /// A dirty working tree on a tagged HEAD is the exact state an `on_error:`
+    /// notify hook runs in after a failed release (partial `dist/`, in-flight
+    /// writeback). Without `notify` it is a hard bail; with `notify: true` it
+    /// must resolve cleanly so the alert is never lost.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial(cwd)]
+    fn resolve_git_context_notify_dirty_tree_does_not_bail() {
+        with_tagged_dirty_repo_cwd("x-v0.1.0", || {
+            let config = Config {
+                project_name: "x".to_string(),
+                crates: vec![CrateConfig {
+                    name: "x".to_string(),
+                    path: ".".to_string(),
+                    tag_template: "x-v{{ .Version }}".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            };
+
+            // Baseline: a dirty tree with default options is a hard bail.
+            let mut bail_ctx = empty_env_ctx(&config, ContextOptions::default());
+            let err = resolve_git_context(&mut bail_ctx, &config, &quiet_log())
+                .expect_err("dirty tree + default options must bail");
+            assert!(
+                err.to_string().contains("dirty state"),
+                "unexpected error: {err}"
+            );
+
+            // notify relaxes it: same dirty tree resolves cleanly.
+            let opts = ContextOptions {
+                notify: true,
+                ..Default::default()
+            };
+            let mut ctx = empty_env_ctx(&config, opts);
+            resolve_git_context(&mut ctx, &config, &quiet_log())
+                .expect("notify must not bail on a dirty tree");
         });
     }
 

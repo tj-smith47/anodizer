@@ -41,6 +41,11 @@ pub fn run(opts: NotifyOpts) -> Result<()> {
         quiet: opts.quiet,
         verbose: opts.verbose,
         debug: opts.debug,
+        // notify is a side-channel, not a release step: it must send even when
+        // the tree is dirty or HEAD has moved off the tag — the common case is
+        // an `on_error:` hook firing after a failed release. Relaxes the
+        // release-time git guards in `resolve_git_context`.
+        notify: true,
         ..Default::default()
     };
 

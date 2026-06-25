@@ -1233,6 +1233,7 @@ fn build_context_options(
         // intact. Only the standalone `changelog --format release-notes`
         // command sets this true.
         changelog_preview: false,
+        notify: false,
         allow_snapshot_publish: opts.allow_snapshot_publish,
         publisher_allowlist: opts.publishers.clone(),
     }

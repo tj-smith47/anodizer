@@ -528,6 +528,7 @@ impl TestContextBuilder {
             changelog_full_history: self.changelog_full_history,
             changelog_to: self.changelog_to,
             changelog_preview: self.changelog_preview,
+            notify: false,
             allow_snapshot_publish: false,
             publisher_allowlist: self.publisher_allowlist,
         };
