@@ -430,39 +430,59 @@ pub(super) fn push_nupkg(
         let body = anodizer_core::http::body_of_blocking(response);
         let body_looks_html =
             content_type.contains("text/html") || body.trim_start().starts_with('<');
-        let edge_transient = matches!(status.as_u16(), 403 | 502 | 503 | 504) && body_looks_html;
 
-        let hint = if edge_transient {
-            "; this looks like a Cloudflare/IIS edge challenge — anodizer is \
-             retrying per the configured retry policy. If it persists, try \
-             again later or contact Chocolatey support"
-        } else {
-            ""
-        };
+        // Only 502/503/504 are transient: the edge could not reach the NuGet
+        // backend, and the identical request succeeds once it can. A 403 is NOT
+        // transient — it is an authorization decision the registry already made,
+        // and an automated push client cannot satisfy a Cloudflare 403 challenge
+        // by retrying (it runs no JavaScript). Retrying a 403 only wastes minutes
+        // and buries a real rejection behind an optimistic "edge challenge" guess.
+        let gateway_transient = matches!(status.as_u16(), 502..=504) && body_looks_html;
+
+        if gateway_transient {
+            log.warn(&format!(
+                "chocolatey gateway returned HTTP {} (attempt {}); retrying",
+                status, attempt
+            ));
+            let base_err = anyhow::anyhow!(
+                "chocolatey: push failed with HTTP {} to {} (attempt {}) — transient \
+                 gateway error: {}",
+                status,
+                push_url,
+                attempt,
+                redact_bearer_tokens(&summarize_response_body(&body)),
+            );
+            let http_err =
+                HttpError::new(std::io::Error::other(base_err.to_string()), status.as_u16());
+            return Err(ControlFlow::Continue(anyhow::Error::new(Retriable::new(
+                http_err,
+            ))));
+        }
+
+        if status.as_u16() == 403 {
+            // Surface what the registry actually said plus the concrete things to
+            // check, in order. The causes are listed, not asserted: a generic
+            // IIS/Cloudflare 403 body does not on its own disambiguate a bad key
+            // from a permissions gap from a full moderation queue.
+            return Err(ControlFlow::Break(anyhow::anyhow!(
+                "chocolatey: push to {} was rejected with HTTP 403 Forbidden (not retried — \
+                 403 is an authorization decision, not a transient error). Check, in order: \
+                 (1) CHOCO_API_KEY is valid and unexpired, (2) the account may push this \
+                 package id, (3) the package is not over its moderation-queue limit \
+                 (community.chocolatey.org/packages/<id>). Registry response: {}",
+                push_url,
+                redact_bearer_tokens(&summarize_response_body(&body)),
+            )));
+        }
+
         let base_err = anyhow::anyhow!(
-            "chocolatey: push failed with HTTP {} to {} (attempt {}){}: {}",
+            "chocolatey: push failed with HTTP {} to {} (attempt {}): {}",
             status,
             push_url,
             attempt,
-            hint,
-            redact_bearer_tokens(&body)
+            redact_bearer_tokens(&summarize_response_body(&body)),
         );
-
-        if edge_transient {
-            log.warn(&format!(
-                "chocolatey edge returned HTTP {} with HTML body (attempt {}); \
-                 retrying — likely a Cloudflare/IIS challenge, not a real rejection",
-                status, attempt
-            ));
-            // Force-retry the edge-challenge case regardless of 4xx fast-fail
-            // default by wrapping in Retriable. Wrap the io::Error in HttpError
-            // so downstream downcast_ref::<HttpError>() walks find the status
-            // (matching the cargo + milestone-close pattern).
-            let http_err =
-                HttpError::new(std::io::Error::other(base_err.to_string()), status.as_u16());
-            let err = anyhow::Error::new(Retriable::new(http_err));
-            Err(ControlFlow::Continue(err))
-        } else if status.is_server_error() || status.as_u16() == 429 {
+        if status.is_server_error() || status.as_u16() == 429 {
             // 5xx / 429 retry naturally.
             Err(ControlFlow::Continue(base_err))
         } else {
@@ -470,6 +490,74 @@ pub(super) fn push_nupkg(
             Err(ControlFlow::Break(base_err))
         }
     })
+}
+
+/// Reduce an HTTP error-response body to the operator-facing essentials. IIS /
+/// Cloudflare 403 pages wrap a single useful sentence in tens of lines of CSS
+/// and markup; this pulls the `<title>` and heading text so the surfaced error
+/// reads as a sentence. Non-HTML bodies are whitespace-collapsed and capped.
+fn summarize_response_body(body: &str) -> String {
+    const CAP: usize = 400;
+    let trimmed = body.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let looks_html = trimmed.starts_with('<') || lower.contains("<html");
+    if !looks_html {
+        return cap_chars(&collapse_ws(trimmed), CAP);
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for tag in ["title", "h1", "h2", "h3"] {
+        if let Some(text) = tag_inner_text(&lower, trimmed, tag) {
+            let text = collapse_ws(&text);
+            if !text.is_empty() && !parts.contains(&text) {
+                parts.push(text);
+            }
+        }
+    }
+    let joined = if parts.is_empty() {
+        collapse_ws(&strip_tags(trimmed))
+    } else {
+        parts.join(" — ")
+    };
+    cap_chars(&joined, CAP)
+}
+
+/// Inner text of the first `<tag …>…</tag>`. `lower` is `original` lowercased so
+/// the tag search is case-insensitive; `to_ascii_lowercase` is byte-length
+/// preserving, so the offsets index back into `original` to keep its casing.
+fn tag_inner_text(lower: &str, original: &str, tag: &str) -> Option<String> {
+    let open_at = lower.find(&format!("<{tag}"))?;
+    let after_open = open_at + lower[open_at..].find('>')? + 1;
+    let close_at = after_open + lower[after_open..].find(&format!("</{tag}>"))?;
+    Some(original[after_open..close_at].to_string())
+}
+
+/// Best-effort tag stripping for the fallback summary — drop everything between
+/// `<` and the next `>`. Not a real HTML parser; just enough to surface text.
+fn strip_tags(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out
+}
+
+fn collapse_ws(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn cap_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let head: String = s.chars().take(max).collect();
+        format!("{head}…")
+    }
 }
 
 #[cfg(test)]
@@ -517,20 +605,65 @@ mod tests {
     }
 
     #[test]
-    fn push_nupkg_retries_403_with_html_body() {
-        // Cloudflare/IIS edge challenge: 403 + HTML body must retry per the
-        // user's policy (force-classified as Retriable). A plain 403 with
-        // JSON body would fast-fail — covered by push_nupkg_4xx_fast_fails.
+    fn push_nupkg_403_with_html_body_fast_fails() {
+        // A 403 is an authorization decision, not a transient edge challenge: it
+        // must NOT retry (a push client cannot satisfy a JS challenge), and the
+        // surfaced error must carry the registry's own message rather than an
+        // optimistic "edge challenge" guess. Regression for the moderation /
+        // credential 403 that previously force-retried 10× and burned the release.
         use std::sync::atomic::Ordering;
 
         let dir = write_dummy_nupkg();
         let path = dir.path().join("foo.1.0.0.nupkg");
 
-        let html_body = "<html><head><title>403</title></head><body>edge challenge</body></html>";
+        let html_body = "<html><head><title>403 - Forbidden: Access is denied.</title></head>\
+                         <body><h2>403 - Forbidden: Access is denied.</h2>\
+                         <h3>You do not have permission to view this directory or page using the \
+                         credentials that you supplied.</h3></body></html>";
         let html_len = html_body.len();
         let html_resp: &'static str = Box::leak(
             format!(
                 "HTTP/1.1 403 Forbidden\r\nContent-Type: text/html\r\nContent-Length: {html_len}\r\n\r\n{html_body}"
+            )
+            .into_boxed_str(),
+        );
+        // A second 201 is queued; a correct implementation never reaches it.
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            html_resp,
+            "HTTP/1.1 201 Created\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let source = format!("http://{addr}/api/v2/package");
+        let log = StageLogger::new("test", Verbosity::Normal);
+
+        let err = push_nupkg(&path, &source, "apikey", &log, &fast_policy())
+            .expect_err("403 must fast-fail, not retry");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("403"), "error must mention 403: {msg}");
+        assert!(
+            msg.contains("credentials that you supplied") || msg.contains("Access is denied"),
+            "error must surface the registry's own message: {msg}"
+        );
+        assert!(
+            !msg.to_ascii_lowercase().contains("edge challenge"),
+            "must not relabel a real 403 as a benign edge challenge: {msg}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "403 must NOT retry");
+    }
+
+    #[test]
+    fn push_nupkg_retries_503_with_html_body() {
+        // 502/503/504 stay transient: the edge could not reach the backend, and
+        // the identical request succeeds once it can.
+        use std::sync::atomic::Ordering;
+
+        let dir = write_dummy_nupkg();
+        let path = dir.path().join("foo.1.0.0.nupkg");
+
+        let html_body = "<html><body>503 backend temporarily unavailable</body></html>";
+        let html_len = html_body.len();
+        let html_resp: &'static str = Box::leak(
+            format!(
+                "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/html\r\nContent-Length: {html_len}\r\n\r\n{html_body}"
             )
             .into_boxed_str(),
         );
@@ -542,12 +675,28 @@ mod tests {
         let log = StageLogger::new("test", Verbosity::Normal);
 
         push_nupkg(&path, &source, "apikey", &log, &fast_policy())
-            .expect("edge-challenge 403+HTML retries to 201");
-        assert_eq!(
-            calls.load(Ordering::SeqCst),
-            2,
-            "one edge-challenge retry then 201 success"
+            .expect("503 gateway error retries to 201");
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "one 503 retry then 201");
+    }
+
+    #[test]
+    fn summarize_response_body_extracts_iis_403_text() {
+        let page = "<!DOCTYPE html><html><head><title>403 - Forbidden: Access is denied.</title>\
+                    <style>body{color:red}</style></head><body><div id=\"header\"><h1>Server Error</h1></div>\
+                    <h2>403 - Forbidden: Access is denied.</h2>\
+                    <h3>You do not have permission to view this directory or page using the credentials that you supplied.</h3></body></html>";
+        let s = summarize_response_body(page);
+        assert!(s.contains("403 - Forbidden: Access is denied."), "got: {s}");
+        assert!(s.contains("credentials that you supplied"), "got: {s}");
+        assert!(
+            !s.contains("<h2>") && !s.contains("color:red"),
+            "markup/CSS leaked into summary: {s}"
         );
+    }
+
+    #[test]
+    fn summarize_response_body_passes_through_plain_text() {
+        assert_eq!(summarize_response_body("  bad apikey  "), "bad apikey");
     }
 
     #[test]
