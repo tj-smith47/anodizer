@@ -1,7 +1,7 @@
 +++
 title = "GitLab CI"
 description = "Automate releases with GitLab CI/CD"
-weight = 2
+weight = 7
 template = "docs.html"
 +++
 

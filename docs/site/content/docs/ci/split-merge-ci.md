@@ -1,7 +1,7 @@
 +++
 title = "Standalone Pipeline Commands"
 description = "Run publish and announce as independent CI jobs with anodizer publish and anodizer announce"
-weight = 32
+weight = 6
 template = "docs.html"
 +++
 
