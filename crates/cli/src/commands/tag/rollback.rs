@@ -327,9 +327,12 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
         return Ok(());
     }
 
-    // Mode=revert: create the revert commit FIRST, then delete tags,
-    // then push. The commit message lists the tags that WILL be
-    // deleted (or under --dry-run, that WOULD be deleted).
+    // Mode=revert: create the revert commit, PUSH it, then delete tags.
+    // Push precedes the remote tag delete so a push failure (e.g. a
+    // non-fast-forward) leaves the tags intact and the rollback safely
+    // retryable — never a tag-deleted-but-commit-unpushed limbo. The commit
+    // message lists the tags that WILL be deleted (or under --dry-run, that
+    // WOULD be deleted).
     let message = build_revert_message(&target_sha, &deletable, opts.dry_run);
     if opts.dry_run {
         log.status(&format!(
@@ -343,18 +346,21 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
         log.status(&format!("created revert commit {}", first_line(&message)));
     }
 
-    delete_tags(&cwd, &deletable, &opts, &log);
-
     if opts.no_push {
+        delete_tags(&cwd, &deletable, &opts, &log);
         log.status("skipped branch push — --no-push");
         return Ok(());
     }
     let branch = resolve_push_branch(&cwd, &target_sha, opts.branch.as_deref())?;
     if opts.dry_run {
         log.status(&format!("(dry-run) would run: git push origin {branch}"));
+        delete_tags(&cwd, &deletable, &opts, &log);
     } else {
+        // Push BEFORE deleting remote tags: only once the revert is safely on
+        // origin do we drop the tags it supersedes.
         git::push_branch_in(&cwd, &branch)?;
         log.status(&format!("pushed revert to origin/{branch}"));
+        delete_tags(&cwd, &deletable, &opts, &log);
     }
     Ok(())
 }
