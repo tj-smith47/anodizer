@@ -179,7 +179,11 @@ jobs:
   release:
     name: Publish Release
     needs: [tag, determinism-check]
-    if: needs.tag.result == 'success' && needs.tag.outputs.tagged == 'true' && (needs.determinism-check.result == 'success' || needs.determinism-check.result == 'skipped')
+    # !cancelled() is load-bearing: without a status-check function GHA applies
+    # an implicit success() to `if` and skips this job whenever determinism-check
+    # is skipped (the re-publish path). With it, the explicit gate governs —
+    # publish once a tag is cut and determinism did not fail.
+    if: ${{ !cancelled() && needs.tag.outputs.tagged == 'true' && needs.determinism-check.result != 'failure' }}
     runs-on: arc-anodizer
     permissions:
       contents: write
