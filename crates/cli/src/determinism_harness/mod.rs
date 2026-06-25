@@ -518,6 +518,25 @@ pub struct Harness {
     /// carries no requirement). The dispatcher resolves it once from the
     /// loaded config; tests inject the list directly.
     pub msi_tools: Vec<String>,
+    /// Absolute free-space floor (bytes) the headroom guard requires before
+    /// each determinism run starts. The SOLE gate before run-0 (no prior
+    /// peak measured yet, so a liveness backstop, not a peak guarantee) and
+    /// a backstop for run-1..N when their measured peak × factor is below
+    /// it.
+    ///
+    /// Derived, not required: the dispatcher resolves it via
+    /// [`anodizer_core::disk::abs_floor_bytes_from_env`] (the
+    /// `ANODIZER_DET_DISK_FLOOR_GIB` override, else
+    /// [`anodizer_core::disk::DEFAULT_ABS_FLOOR_BYTES`]). Tests inject a
+    /// value directly to exercise the guard without a real low-disk host.
+    pub disk_abs_floor_bytes: u64,
+    /// Multiplier applied to a prior run's MEASURED peak consumption when
+    /// gating run-1..N (slack above the observed peak for sampling jitter,
+    /// not a net→peak amplification). Derived via
+    /// [`anodizer_core::disk::safety_factor_from_env`]
+    /// (`ANODIZER_DET_DISK_SAFETY_FACTOR` override, else
+    /// [`anodizer_core::disk::DEFAULT_SAFETY_FACTOR`]).
+    pub disk_safety_factor: f64,
 }
 
 impl Harness {
@@ -673,8 +692,38 @@ impl Harness {
         // (see `determinism_runner::build_subprocess_command`).
         let log = StageLogger::new("check-determinism", self.verbosity);
 
+        // Largest MEASURED peak consumption observed across prior runs, the
+        // bound the headroom guard projects forward for run-1..N. `None`
+        // until run-0's sampler reports (and stays `None` if the probe is
+        // unavailable on this host). The net-vs-peak distinction is the
+        // whole point: a between-runs net delta misses the mid-dmg peak.
+        let mut max_prior_peak: Option<u64> = None;
+        // One-shot latch so a permanently-broken free-space probe warns
+        // ONCE (loud enough to notice in CI history) and then degrades
+        // quietly, rather than spamming a warn per run.
+        let mut probe_gap_warned = false;
+
         for run_idx in 0..self.runs {
             log.detail(&format!("run {} of {}", run_idx + 1, self.runs));
+            // Probe free space BEFORE this run touches disk and apply the
+            // fail-fast headroom guard. run-1..N are gated on the largest
+            // measured peak of any prior run (× safety factor); run-0 has
+            // no prior peak and is gated by the absolute floor alone.
+            // `worktree_root` is the parent of the per-run worktree, so it
+            // backs the same volume — probe it (it exists; the per-run
+            // `worktree_path` does not until `Worktree::add`).
+            let free_before = anodizer_core::disk::available_bytes(&worktree_root);
+            if free_before.is_none() && !probe_gap_warned {
+                log.warn(&format!(
+                    "free-space probe unavailable on {} — determinism disk-headroom guard \
+                     disabled for this invocation (a permanently-failing probe would otherwise \
+                     silently skip the guard for an entire CI history)",
+                    worktree_root.display()
+                ));
+                probe_gap_warned = true;
+            }
+            self.guard_run_headroom(&log, run_idx, &worktree_root, free_before, max_prior_peak)?;
+
             // Defensive: prior aborted runs may have left the dir behind;
             // `git worktree add` would reject a populated target.
             let _ = std::fs::remove_dir_all(&worktree_path);
@@ -699,6 +748,14 @@ impl Harness {
             }
             let env =
                 self.build_isolated_env(&worktree, &shared_cargo_home, signing_keys.as_ref())?;
+            // Sample free space throughout the build + produce stages so the
+            // mid-dmg PEAK (the actual ENOSPC moment) is measured, not the
+            // post-reclaim net residue. On an error path the sampler's
+            // `Drop` reaps the thread; we only read its minimum on success.
+            let sampler = anodizer_core::disk::FreeSpaceSampler::start(
+                &worktree_root,
+                anodizer_core::disk::DEFAULT_SAMPLE_INTERVAL,
+            );
             self.run_build_pipeline(worktree.path(), &env, &effective_stages)
                 .with_context(|| format!("building pipeline for determinism run {}", run_idx))?;
             if effective_stages.contains(&StageId::CargoPackage) {
@@ -721,6 +778,28 @@ impl Harness {
                     .with_context(|| {
                         format!("running docker stage for determinism run {}", run_idx)
                     })?;
+            }
+            // Stop the sampler now the disk high-water mark has passed. The
+            // peak = free-before − min-free-observed; fold it into
+            // `max_prior_peak` so run-(idx+1)'s guard is gated on the
+            // largest real peak seen so far. Emitted at verbose so the
+            // first CI run surfaces run-0's true number (B1.3 / W1).
+            let min_free_during = sampler.stop();
+            if let (Some(before), Some(min_free)) = (free_before, min_free_during) {
+                let peak = anodizer_core::disk::RunPeak {
+                    free_before: before,
+                    min_free_during: min_free,
+                };
+                let consumed = peak.consumed_bytes();
+                let dist_size = anodizer_core::disk::dir_size_bytes(&worktree.path().join("dist"));
+                log.verbose(&format!(
+                    "disk peak run {}: consumed {} (min free {}, worktree dist {})",
+                    run_idx + 1,
+                    anodizer_core::disk::format_gib(consumed),
+                    anodizer_core::disk::format_gib(min_free),
+                    anodizer_core::disk::format_gib(dist_size),
+                ));
+                max_prior_peak = Some(max_prior_peak.map_or(consumed, |m| m.max(consumed)));
             }
             let artifacts = discover_artifacts(worktree.path())?;
             // `--inject-drift=<stage>` (test-harness gated): mutate the
@@ -821,7 +900,35 @@ impl Harness {
                 // post-loop with `self.preserve_dist == Some(_)` is
                 // sufficient proof the copy succeeded.
             }
-            // Worktree dropped at end of scope → cleanup automatic.
+            // Inter-run reclamation: explicitly drop the worktree NOW
+            // (rather than at the `}` below) so its entire tree —
+            // `.det-tmp/target/**` (the per-run CARGO_TARGET_DIR, the
+            // heavy scratch), `.det-tmp/home`, `dist/**`, and the raw
+            // per-triple binaries — is freed by `Worktree::drop`'s
+            // `git worktree remove --force` BEFORE the next iteration's
+            // free-space probe and headroom guard run. Everything the
+            // next run consumes is rebuilt from the detached commit, so
+            // none of it is read across runs.
+            //
+            // Determinism-safe: by this point run-0's hashes are already
+            // recorded (`per_run_hashes.push` above), the drift-bins dump
+            // is already copied out, and — when `--preserve-dist` is set —
+            // run-0's dist tree AND raw binaries are already mirrored to
+            // `dest`. Nothing freed here feeds the byte comparison or the
+            // preserved dist; the worktree is pure rebuild scratch. The
+            // drift-bins dump under `<report>/drift-bins/run-N` is
+            // deliberately NOT freed here — it is the drift diagnostic and
+            // is pruned post-loop only after the comparison decides which
+            // runs drifted.
+            drop(worktree);
+            if let Some(after) = anodizer_core::disk::available_bytes(&worktree_root) {
+                log.verbose(&format!(
+                    "disk free {}: {} after run {} (worktree reclaimed)",
+                    worktree_root.display(),
+                    anodizer_core::disk::format_gib(after),
+                    run_idx + 1
+                ));
+            }
         }
 
         // Best-effort reclaim of the shared CARGO_HOME. It lives OUTSIDE the
@@ -867,6 +974,64 @@ impl Harness {
             }
         }
         Ok(report)
+    }
+
+    /// Emit a verbose disk-headroom line for the worktree volume and apply
+    /// the fail-fast guard before a determinism run starts.
+    ///
+    /// `vol` is the worktree-root path (its parent volume backs the
+    /// per-run worktree); `free` is the available bytes already probed on
+    /// it. `prior_peak` is the largest MEASURED peak consumption of any
+    /// prior run (`None` before run-0, when only the absolute floor gates;
+    /// `None` thereafter only if the probe was unavailable).
+    ///
+    /// Routine readings go to `verbose` (per the log-status-vs-verbose
+    /// rule); a shortfall is the one default-visible disk event — surfaced
+    /// as an `error` line and then returned as an `Err` that aborts the
+    /// harness BEFORE the opaque `hdiutil` ENOSPC can fire. Probe gaps
+    /// (`free == None`) degrade to a no-op: the guard never manufactures a
+    /// failure from missing data (the one-shot warn at the call site
+    /// records that the guard is disabled for the invocation).
+    fn guard_run_headroom(
+        &self,
+        log: &StageLogger,
+        run_idx: u32,
+        vol: &Path,
+        free: Option<u64>,
+        prior_peak: Option<u64>,
+    ) -> Result<()> {
+        use anodizer_core::disk::{HeadroomDecision, evaluate_headroom, format_gib};
+        let Some(free) = free else {
+            return Ok(());
+        };
+        let vols = anodizer_core::disk::mounted_volumes();
+        let mounts = if vols.is_empty() {
+            String::new()
+        } else {
+            format!(" — /Volumes: [{}]", vols.join(", "))
+        };
+        log.verbose(&format!(
+            "disk free {}: {} before run {}{}",
+            vol.display(),
+            format_gib(free),
+            run_idx + 1,
+            mounts
+        ));
+        match evaluate_headroom(
+            run_idx,
+            free,
+            self.disk_abs_floor_bytes,
+            prior_peak,
+            self.disk_safety_factor,
+            &vol.display().to_string(),
+        ) {
+            HeadroomDecision::Proceed => Ok(()),
+            HeadroomDecision::Abort(shortfall) => {
+                let msg = shortfall.message();
+                log.error(&msg);
+                anyhow::bail!(msg)
+            }
+        }
     }
 
     /// Construct the env map handed to each child build process.
@@ -1301,6 +1466,8 @@ mod tests {
             crate_name: None,
             verbosity: Verbosity::Normal,
             msi_tools: Vec::new(),
+            disk_abs_floor_bytes: anodizer_core::disk::DEFAULT_ABS_FLOOR_BYTES,
+            disk_safety_factor: anodizer_core::disk::DEFAULT_SAFETY_FACTOR,
         }
     }
 
@@ -1806,6 +1973,85 @@ mod tests {
         assert!(
             h.run_docker_stage(tmp.path(), &env, false).is_ok(),
             "auto-included docker under podman must warn-and-skip, not error"
+        );
+    }
+
+    /// The headroom guard must ABORT before a run when free space is below
+    /// the floor, and the error must carry the actionable numbers so a
+    /// recurrence is diagnosable from the log alone — never let the harness
+    /// limp into the opaque `hdiutil` ENOSPC.
+    #[test]
+    fn headroom_guard_aborts_below_floor_with_actionable_message() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let mut h = empty_harness();
+        h.disk_abs_floor_bytes = 45 * GIB;
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let vol = std::path::Path::new("/Volumes/scratch");
+        // run-0 (no prior peak), 30 GiB free, 45 GiB floor → abort.
+        let err = h
+            .guard_run_headroom(&log, 0, vol, Some(30 * GIB), None)
+            .expect_err("below-floor free space must abort the run");
+        let msg = err.to_string();
+        assert!(msg.contains("determinism run 1"), "1-based run: {msg}");
+        assert!(
+            msg.contains(&format!("{}", 45 * GIB)),
+            "exact required: {msg}"
+        );
+        assert!(
+            msg.contains(&format!("{}", 30 * GIB)),
+            "exact available: {msg}"
+        );
+        assert!(msg.contains("/Volumes/scratch"), "volume: {msg}");
+        assert!(msg.contains("reclaim-disk"), "remedy hint: {msg}");
+        assert!(
+            msg.contains("absolute floor"),
+            "run-0 must state the floor basis, not a peak guarantee: {msg}"
+        );
+    }
+
+    /// Ample headroom → the guard proceeds. And run-1's MEASURED-peak gate
+    /// (the B1 fix) aborts when a prior run's peak × factor exceeds the
+    /// available space, where a net-delta guard would have wrongly proceeded.
+    #[test]
+    fn headroom_guard_proceeds_with_ample_space_and_gates_on_measured_peak() {
+        const GIB: u64 = 1024 * 1024 * 1024;
+        let mut h = empty_harness();
+        h.disk_abs_floor_bytes = 45 * GIB;
+        h.disk_safety_factor = 1.3;
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let vol = std::path::Path::new("/scratch");
+        // run-0 with 60 GiB free clears the 45 GiB floor.
+        assert!(
+            h.guard_run_headroom(&log, 0, vol, Some(60 * GIB), None)
+                .is_ok(),
+            "ample free space must proceed"
+        );
+        // run-1 gated on run-0's measured PEAK of 70 GiB; ×1.3 = 91 GiB
+        // required. 71 GiB free → abort (a net delta would have seen ~30 and
+        // proceeded into ENOSPC); 95 GiB free → proceed.
+        let prior_peak = Some(70 * GIB);
+        assert!(
+            h.guard_run_headroom(&log, 1, vol, Some(71 * GIB), prior_peak)
+                .is_err(),
+            "71 GiB free under a 91 GiB peak-projected requirement must abort"
+        );
+        assert!(
+            h.guard_run_headroom(&log, 1, vol, Some(95 * GIB), prior_peak)
+                .is_ok(),
+            "95 GiB free clears the 91 GiB peak-projected requirement"
+        );
+    }
+
+    /// A probe gap (free space unknown) must degrade to a no-op — the guard
+    /// never manufactures a failure from missing disk data.
+    #[test]
+    fn headroom_guard_unknown_free_space_is_noop() {
+        let h = empty_harness();
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let vol = std::path::Path::new("/scratch");
+        assert!(
+            h.guard_run_headroom(&log, 1, vol, None, None).is_ok(),
+            "unknown free space must proceed (no manufactured abort)"
         );
     }
 }

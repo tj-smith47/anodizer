@@ -14,6 +14,7 @@ pub mod defaults_merge;
 pub mod determinism;
 pub mod determinism_report;
 pub mod determinism_runner;
+pub mod disk;
 pub mod docker_build;
 pub mod docker_detect;
 pub mod env;

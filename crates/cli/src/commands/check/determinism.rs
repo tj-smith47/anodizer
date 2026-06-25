@@ -206,6 +206,8 @@ pub fn run(args: CheckDeterminismArgs, verbose: bool, debug: bool, quiet: bool) 
         crate_name: args.crate_name.clone(),
         verbosity,
         msi_tools,
+        disk_abs_floor_bytes: anodizer_core::disk::abs_floor_bytes_from_env(),
+        disk_safety_factor: anodizer_core::disk::safety_factor_from_env(),
     };
 
     let report = harness.run()?;

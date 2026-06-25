@@ -143,6 +143,10 @@ flate2 = "1"
 tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tempfile = "3"
+# Cross-platform free-space probe (statvfs on unix, GetDiskFreeSpaceExW on
+# Windows) for the determinism harness's disk-headroom guard. `sync` only —
+# no async runtime, no file-locking surface pulled in.
+fs4 = { version = "1", default-features = false, features = ["sync"] }
 sha1 = "0.10"
 sha2 = "0.10"
 uuid = { version = "1", default-features = false, features = ["v5"] }
