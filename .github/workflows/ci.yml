@@ -66,6 +66,19 @@ jobs:
       - name: Clippy
         run: task clippy
 
+  cargo-audit:
+    name: Cargo Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ./.github/actions/setup-rust
+        with:
+          tools: cargo-audit
+          cache: "false"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Audit dependencies for RUSTSEC advisories
+        run: cargo audit
+
   test:
     name: Tests (${{ matrix.os }})
     strategy:
