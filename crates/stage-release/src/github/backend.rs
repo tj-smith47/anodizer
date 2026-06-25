@@ -263,6 +263,18 @@ pub(crate) fn run_github_backend(
             }
         };
 
+        // A release found by tag that is still a draft is, by anodizer's
+        // draft-then-publish invariant, debris from an incomplete prior
+        // attempt: a successful run always flips draft=false, and a draft's
+        // assets are never publicly downloadable. Auto-resume into it
+        // (overwrite same-name assets) so a CI retry self-heals without an
+        // operator passing --resume-release. A *published* (draft=false)
+        // release still blocks unless the user opts into replacement —
+        // clobbering live, possibly-consumed artifacts must stay explicit.
+        let existing_is_stale_draft = existing_by_tag.as_ref().is_some_and(|e| e.draft);
+        let resume_release = resume_release || existing_is_stale_draft;
+        let replace_existing_artifacts = replace_existing_artifacts || existing_is_stale_draft;
+
         // Leftover-assets pre-check: if a prior failed attempt already created
         // the release and uploaded some assets, and the user hasn't opted into
         // overwriting (replace_existing_artifacts: false) nor into resuming
@@ -2030,6 +2042,145 @@ mod orchestrator_tests {
         assert_eq!(
             upload_count, 2,
             "expected exactly 2 upload POSTs (first 422, second 201); calls: {entries:?}",
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // 7b. A DRAFT release found by tag with leftover assets auto-resumes:
+    // replace_existing_artifacts AND resume_release both false, yet the stale
+    // asset is overwritten (DELETE + re-upload) and the backend succeeds — no
+    // "left by a prior failed attempt" bail. A draft is never publicly
+    // downloadable (draft-then-publish invariant), so it is debris from an
+    // incomplete prior attempt and a CI retry must self-heal without an
+    // operator passing --resume-release / --replace-existing.
+    // ---------------------------------------------------------------------
+    #[test]
+    fn draft_found_by_tag_auto_resumes_overwriting_leftover_assets() {
+        let tmp = TempDir::new().expect("tempdir");
+        let bytes = b"fresh content";
+        let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", bytes);
+        let artifact_len = bytes.len() as u64;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        // find-by-tag returns a DRAFT (id=88) already carrying a stale
+        // demo.tar.gz (size 9999) left by a prior failed attempt.
+        let stale_asset: serde_json::Value =
+            serde_json::from_str(&asset_json(9, "demo.tar.gz", 9999)).expect("asset json");
+        let draft_with_stale = serde_json::json!({
+            "id": 88,
+            "node_id": "RL_88",
+            "tag_name": "v1.2.3",
+            "target_commitish": "main",
+            "name": "v1.2.3",
+            "draft": true,
+            "prerelease": false,
+            "created_at": "2026-01-01T00:00:00Z",
+            "published_at": null,
+            "author": null,
+            "assets": [stale_asset],
+            "tarball_url": null,
+            "zipball_url": null,
+            "body": null,
+            "url": format!("http://{addr}/repos/o/r/releases/88"),
+            "html_url": format!("http://{addr}/o/r/releases/88"),
+            "assets_url": format!("http://{addr}/repos/o/r/releases/88/assets"),
+            "upload_url": format!("http://{addr}/upload/88{{?name,label}}"),
+        })
+        .to_string();
+        let stale_list = format!("[{}]", asset_json(9, "demo.tar.gz", 9999));
+
+        let routes = vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/tags/v1.2.3",
+                response: http_ok(draft_with_stale.clone()),
+                times: None,
+            },
+            // PATCH the existing draft (update body, draft state preserved).
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/repos/o/r/releases/88",
+                response: http_ok(draft_with_stale.clone()),
+                times: None,
+            },
+            // readability guard + per-upload reads.
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/88",
+                response: http_ok(draft_with_stale.clone()),
+                times: None,
+            },
+            // size-probe assets list (stale 9999 vs local) → DeleteAndRetry.
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/88/assets?per_page=100&page=1",
+                response: http_ok(stale_list),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "DELETE",
+                path_pattern: "/repos/o/r/releases/assets/9",
+                response: HTTP_204,
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/upload/88?name=demo.tar.gz",
+                response: http_422_already_exists(),
+                times: Some(1),
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/upload/88?name=demo.tar.gz",
+                response: http_201(asset_json(11, "demo.tar.gz", artifact_len)),
+                times: Some(1),
+            },
+        ];
+        let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let ctx = build_ctx(addr);
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        let artifacts = vec![(artifact_path, Some("demo.tar.gz".to_string()))];
+
+        // mode != "replace" so the find-by-tag lookup runs; the draft is kept
+        // as a draft (no un-draft publish PATCH). base_opts leaves
+        // replace_existing_artifacts AND resume_release FALSE — the draft
+        // detection alone must enable the overwrite.
+        let spec = GithubReleaseSpec {
+            tag: "v1.2.3",
+            name: "v1.2.3",
+            body: "release body",
+            mode: "keep-existing",
+            draft: true,
+            prerelease: false,
+            make_latest: &None,
+            target_commitish: &None,
+            discussion_category: &None,
+        };
+
+        run_backend(
+            &rt,
+            &ctx,
+            &token,
+            &crate_cfg,
+            &spec,
+            &base_opts(),
+            &artifacts,
+        )
+        .expect("draft auto-resume must NOT bail and must succeed")
+        .expect("returns Some");
+
+        let entries = log.lock().expect("log mutex");
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "DELETE" && e.path == "/repos/o/r/releases/assets/9"),
+            "a draft found by tag must overwrite its leftover asset (DELETE + reupload), \
+             proving auto-resume despite replace=false/resume=false; calls: {entries:?}",
         );
     }
 
