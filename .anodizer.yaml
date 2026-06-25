@@ -489,6 +489,10 @@ crates:
           name: TJ Smith
           email: tj@jarvispro.io
       chocolatey:
+        # Disabled: chocolatey's moderation queue + recurring 403s stall the
+        # multi-publisher ship while every other registry succeeds. Re-enable
+        # once the registry-side moderation issue is resolved.
+        skip: true
         required: true
         repository:
           owner: tj-smith47
