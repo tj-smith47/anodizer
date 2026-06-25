@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.2] - 2026-06-25
+
+### Bug Fixes
+
+* 3b6a859203ea exclude a cancelled determinism shard from the publish gate ([@tj-smith47](https://github.com/tj-smith47))
+* 7dbfc22f759b notify must not require a clean tree or a tag at HEAD ([@tj-smith47](https://github.com/tj-smith47))
+* 54dc39f5732e patch RUSTSEC advisories; add cargo-audit gate + dependabot ([@tj-smith47](https://github.com/tj-smith47))
+* 55fe9c71e646 stop chocolatey 403 force-retry; surface the real registry error ([@tj-smith47](https://github.com/tj-smith47))
+* d6f43db359fb github-release auto-resumes a stale leftover draft ([@tj-smith47](https://github.com/tj-smith47))
+* e5cbdce13768 name the before-hook in logs; run env-preflight before hooks ([@tj-smith47](https://github.com/tj-smith47))
+* bff0f192a82a push the revert commit before deleting the tag on rollback ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.12.1] - 2026-06-24
 
 ### Bug Fixes
@@ -402,7 +414,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.12.1...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.12.2...HEAD
+[0.12.2]: https://github.com/tj-smith47/anodizer/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/tj-smith47/anodizer/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/tj-smith47/anodizer/compare/v0.11.3...v0.12.0
 [0.11.3]: https://github.com/tj-smith47/anodizer/compare/v0.11.2...v0.11.3
