@@ -97,6 +97,20 @@ pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> R
     run_hooks_inner(hooks, label, ctx, None).map(|_| ())
 }
 
+/// First line of a (rendered) hook command, truncated for a single-line status
+/// echo. Keeps a multi-line or very long hook from flooding the default log
+/// while still naming WHICH hook ran.
+fn hook_cmd_summary(cmd: &str) -> String {
+    const MAX: usize = 80;
+    let first = cmd.lines().next().unwrap_or("").trim();
+    if first.chars().count() > MAX {
+        let truncated: String = first.chars().take(MAX).collect();
+        format!("{truncated}…")
+    } else {
+        first.to_string()
+    }
+}
+
 /// [`run_hooks`] with an optional bound artifact name. When `Some`, this is a
 /// per-artifact `before_publish` iteration and the "ran <label> hook" echo is
 /// demoted to verbose and names the artifact; `None` keeps the single default
@@ -241,7 +255,13 @@ fn run_hooks_inner(
 
             match artifact_name {
                 Some(name) => log.verbose(&format!("ran {label} hook '{cmd_str}' on {name}")),
-                None => log.status(&format!("ran {label} hook")),
+                None => {
+                    // Name WHICH hook ran so several `before:`/`after:` entries
+                    // produce distinct default lines instead of N identical
+                    // "ran before hook" echoes.
+                    let hook_name = hook_cmd_summary(&cmd_str);
+                    log.status(&format!("ran {label} hook: {hook_name}"));
+                }
             }
 
             // When output flag is true, echo the hook's (redacted) stdout as a
@@ -1749,5 +1769,27 @@ mod tests {
             &fixed_tag,
         )
         .expect("absent per-crate after must be a no-op");
+    }
+
+    #[test]
+    fn hook_cmd_summary_takes_first_line_and_truncates() {
+        // Short single-line: returned verbatim (trimmed).
+        assert_eq!(
+            hook_cmd_summary("  cargo fmt --check  "),
+            "cargo fmt --check"
+        );
+        // Multi-line: only the first line names the hook.
+        assert_eq!(
+            hook_cmd_summary("cargo build\ncargo test\ncargo clippy"),
+            "cargo build"
+        );
+        // Over the cap: truncated with an ellipsis, never flooding the log.
+        let long = "x".repeat(200);
+        let summary = hook_cmd_summary(&long);
+        assert!(
+            summary.ends_with('…'),
+            "long command must be elided: {summary}"
+        );
+        assert_eq!(summary.chars().count(), 81, "80 chars + the ellipsis");
     }
 }

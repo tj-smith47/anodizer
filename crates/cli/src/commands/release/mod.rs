@@ -421,6 +421,14 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
             return Ok(());
         }
 
+        // Config-derived environment preflight runs BEFORE the `before:` hooks
+        // (which can take minutes): a missing secret / tool / key must abort
+        // with zero mutations and zero wasted hook time, never after a long
+        // prep. It depends only on the in-memory config's declared
+        // tools/secrets/endpoints, not on hook output or the nightly/snapshot
+        // template vars applied below, so running it first is side-effect-free.
+        run_release_env_preflight(&ctx, &opts, &log)?;
+
         run_before_hooks(&ctx, &config, &opts, &log)?;
         render_release_notes_tmpl(&mut ctx, &config, &opts, release_notes_path, &log)?;
         enforce_dirty_repo_gate(&ctx)?;
@@ -447,44 +455,6 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
         {
             milestones::preflight_milestones(milestones, &mut ctx, &log)?;
         }
-    }
-
-    // Config-derived environment preflight: every enabled stage/publisher
-    // declares its tools / env vars / endpoints / key material, and all
-    // failures are reported in one pass BEFORE any stage runs. Snapshot and
-    // dry-run skip it (no upstream side effects to guard); `--split` skips
-    // it (operator-orchestrated partial pipeline legs); `--publish-only`
-    // runs it — that mode is exactly the one whose missing secrets used to
-    // surface mid-publish. `--announce-only` checks announce requirements
-    // alone: announcers fire sequentially with real side effects, so a
-    // missing token must abort before the first channel posts.
-    //
-    // Both preflights run BEFORE the failure-policy boundary below: they
-    // abort with zero mutations, so a missing secret must surface as
-    // "fix and re-run", never as a destructive rollback of a tag the
-    // run did not touch.
-    if !opts.no_preflight && !opts.dry_run && !opts.snapshot && !opts.split {
-        let scope = if opts.announce_only {
-            crate::commands::preflight::PreflightScope::AnnounceOnly
-        } else if opts.publish_only {
-            crate::commands::preflight::PreflightScope::PublishOnly
-        } else {
-            crate::commands::preflight::PreflightScope::Full
-        };
-        let report = crate::commands::preflight::run_env_preflight(&ctx, scope, &log);
-        if !report.ok() {
-            anyhow::bail!(
-                "preflight: {} environment failure(s) across {} check(s); \
-                 fix the issues above or re-run with --no-preflight to override",
-                report.failures.len(),
-                report.checks
-            );
-        }
-    } else if opts.no_preflight {
-        log.warn(
-            "preflight skipped via --no-preflight; missing tools / secrets / key material \
-             will surface mid-pipeline (no idempotent recovery)",
-        );
     }
 
     if run_publisher_preflight(&mut ctx, &opts, &log)? {
@@ -1268,6 +1238,44 @@ fn run_rollback_only(ctx: &mut Context) -> Result<()> {
 /// `--merge` / `--split` / `--publish-only` modes — CI already validates
 /// the code before tagging, and hook compilation can dirty the working
 /// tree.
+/// Config-derived environment preflight for a release: every enabled
+/// stage/publisher declares its tools / env vars / endpoints / key material,
+/// and all failures are reported in one pass with ZERO mutations. Runs ahead
+/// of the `before:` hooks and the failure-policy boundary, so a missing secret
+/// surfaces as "fix and re-run" — never after minutes of hook work, and never
+/// as a destructive rollback of a tag the run did not touch.
+///
+/// Snapshot / dry-run / `--split` skip it (no upstream side effects to guard).
+/// `--publish-only` runs it (that mode's missing secrets used to surface
+/// mid-publish); `--announce-only` checks announce requirements alone, since
+/// announcers fire sequentially with real side effects.
+fn run_release_env_preflight(ctx: &Context, opts: &ReleaseOpts, log: &StageLogger) -> Result<()> {
+    if !opts.no_preflight && !opts.dry_run && !opts.snapshot && !opts.split {
+        let scope = if opts.announce_only {
+            crate::commands::preflight::PreflightScope::AnnounceOnly
+        } else if opts.publish_only {
+            crate::commands::preflight::PreflightScope::PublishOnly
+        } else {
+            crate::commands::preflight::PreflightScope::Full
+        };
+        let report = crate::commands::preflight::run_env_preflight(ctx, scope, log);
+        if !report.ok() {
+            anyhow::bail!(
+                "preflight: {} environment failure(s) across {} check(s); \
+                 fix the issues above or re-run with --no-preflight to override",
+                report.failures.len(),
+                report.checks
+            );
+        }
+    } else if opts.no_preflight {
+        log.warn(
+            "preflight skipped via --no-preflight; missing tools / secrets / key material \
+             will surface mid-pipeline (no idempotent recovery)",
+        );
+    }
+    Ok(())
+}
+
 fn run_before_hooks(
     ctx: &Context,
     config: &Config,
