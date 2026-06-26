@@ -210,7 +210,7 @@ object_store = { version = "0.13", features = ["aws", "gcp", "azure"] }
 object = { version = "0.39", default-features = false, features = ["read", "elf", "std"] }
 serial_test = "3"
 schemars = "1.2"
-tera = "1.20.1"
+tera = "1.20.1" # latest 1.x; held off 2.x (from-scratch rewrite breaks GoReleaser template parity — see dependabot.yml ignore)
 sha3 = "0.10" # digest-0.10 line; see the sha1/sha2 pin note above
 blake3 = "1"
 crc32fast = "1"
