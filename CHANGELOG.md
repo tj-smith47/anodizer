@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.3] - 2026-06-26
+
+### Bug Fixes
+
+* 94c4a1a32d5f bound the stage so a slow notification can never fail a published release ([@tj-smith47](https://github.com/tj-smith47))
+* c3a4b7854ad1 only synthesize default --bin when a bin named after the crate exists #51 ([@tj-smith47](https://github.com/tj-smith47))
+* ba075f01b083 kill the whole process subtree on a windows timeout ([@tj-smith47](https://github.com/tj-smith47))
+* fabad9f2268d land the cargo group bump — provider, rsa vuln, schemars/toml/rcgen ([@tj-smith47](https://github.com/tj-smith47))
+* f45b93b77bf5 pin lifecycle-script mtime so signed apk packages are reproducible ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.12.2] - 2026-06-25
 
 ### Bug Fixes
@@ -414,7 +424,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.12.2...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.12.3...HEAD
+[0.12.3]: https://github.com/tj-smith47/anodizer/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/tj-smith47/anodizer/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/tj-smith47/anodizer/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/tj-smith47/anodizer/compare/v0.11.3...v0.12.0
