@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 // Crate-internal items
 use super::BuildStage;
 use super::command::{
-    BuildContext, build_command, build_lib_command, crate_has_binary_target, detect_crate_type,
-    detect_cross_strategy, detect_cross_strategy_for_target_impl, is_linux_gnu,
+    BuildContext, build_command, build_lib_command, crate_declares_bin, crate_has_binary_target,
+    detect_crate_type, detect_cross_strategy, detect_cross_strategy_for_target_impl, is_linux_gnu,
     resolve_build_program, same_apple_family, same_windows_family, zigbuild_available,
 };
 
@@ -2413,6 +2413,177 @@ edition = "2021"
         binaries.is_empty(),
         "library crate must not produce any binary artifacts; got {} entries",
         binaries.len()
+    );
+}
+
+/// Regression (cfgd-core shape): a library crate that ALSO carries helper
+/// binaries whose names do NOT match the crate (e.g. `src/bin/gen.rs` renamed
+/// via `[[bin]]` to `mylib-gen`). `crate_has_binary_target` is true (it has
+/// bins), so the old guard let the synthesized default build fall through to
+/// `cargo build --bin mylib` — which fails with `no bin target named 'mylib'`
+/// and sank every determinism leg. The build planner must instead recognize
+/// there is no binary named after the crate and skip the default build.
+#[test]
+fn test_library_crate_with_renamed_helper_bins_skipped() {
+    use anodizer_core::config::{Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use std::fs;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let crate_dir = tmp.path().join("mylib");
+    fs::create_dir_all(crate_dir.join("src/bin")).unwrap();
+    fs::write(
+        crate_dir.join("Cargo.toml"),
+        r#"
+[package]
+name = "mylib"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+
+[[bin]]
+name = "mylib-gen"
+path = "src/bin/gen.rs"
+"#,
+    )
+    .unwrap();
+    fs::write(crate_dir.join("src/lib.rs"), "// library crate\n").unwrap();
+    fs::write(crate_dir.join("src/bin/gen.rs"), "fn main() {}\n").unwrap();
+
+    let crate_path = crate_dir.to_str().unwrap();
+    // The crate HAS a binary target ...
+    assert!(crate_has_binary_target(crate_path));
+    // ... but none named after the crate, so no default build may be synthesized ...
+    assert!(!crate_declares_bin(crate_path, "mylib"));
+    // ... while the renamed helper IS recognized as a real target.
+    assert!(crate_declares_bin(crate_path, "mylib-gen"));
+
+    // End-to-end: no `builds:` configured → synthesis path → must skip, not
+    // produce a phantom `--bin mylib` build that cargo would reject.
+    let mut config = Config::default();
+    config.project_name = "test".to_string();
+    config.crates.push(CrateConfig {
+        name: "mylib".to_string(),
+        path: crate_path.to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        ..Default::default()
+    });
+
+    let opts = ContextOptions {
+        dry_run: true,
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, opts);
+    let result = BuildStage.run(&mut ctx);
+    assert!(
+        result.is_ok(),
+        "library crate with renamed helper bins must not error, got: {result:?}"
+    );
+    assert!(
+        ctx.artifacts.by_kind(ArtifactKind::Binary).is_empty(),
+        "no default `--bin <crate>` build should be synthesized for a crate with no bin named after it"
+    );
+}
+
+/// Positive control: a normal binary crate (`src/main.rs`, package name ==
+/// crate name) still resolves a bin named after the crate, and an explicit
+/// `[[bin]] name = "<crate>"` does too — these must keep building.
+#[test]
+fn test_crate_declares_bin_positive_cases() {
+    use std::fs;
+
+    // src/main.rs → bin named after the package.
+    let tmp = tempfile::tempdir().unwrap();
+    let main_dir = tmp.path().join("app");
+    fs::create_dir_all(main_dir.join("src")).unwrap();
+    fs::write(
+        main_dir.join("Cargo.toml"),
+        "[package]\nname = \"app\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(main_dir.join("src/main.rs"), "fn main() {}\n").unwrap();
+    assert!(crate_declares_bin(main_dir.to_str().unwrap(), "app"));
+    assert!(!crate_declares_bin(main_dir.to_str().unwrap(), "other"));
+
+    // Explicit [[bin]] name == crate.
+    let bin_dir = tmp.path().join("app2");
+    fs::create_dir_all(bin_dir.join("src")).unwrap();
+    fs::write(
+        bin_dir.join("Cargo.toml"),
+        "[package]\nname = \"app2\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[[bin]]\nname = \"app2\"\npath = \"src/entry.rs\"\n",
+    )
+    .unwrap();
+    fs::write(bin_dir.join("src/entry.rs"), "fn main() {}\n").unwrap();
+    assert!(crate_declares_bin(bin_dir.to_str().unwrap(), "app2"));
+
+    // Auto-discovered src/bin/<crate>.rs (no [[bin]] re-paths it) → cargo
+    // synthesizes a bin named after the file stem, which equals the crate.
+    let auto_dir = tmp.path().join("app3");
+    fs::create_dir_all(auto_dir.join("src/bin")).unwrap();
+    fs::write(
+        auto_dir.join("Cargo.toml"),
+        "[package]\nname = \"app3\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\n",
+    )
+    .unwrap();
+    fs::write(auto_dir.join("src/lib.rs"), "// library\n").unwrap();
+    fs::write(auto_dir.join("src/bin/app3.rs"), "fn main() {}\n").unwrap();
+    assert!(crate_declares_bin(auto_dir.to_str().unwrap(), "app3"));
+}
+
+/// Hardening (branch 3): an auto-discoverable `src/bin/<crate>.rs` file is
+/// NOT a bin named after the crate when an explicit `[[bin]]` re-paths that
+/// same file to a *different* name — cargo then builds `renamed`, never
+/// `<crate>`. Synthesizing `--bin <crate>` here would fail at build time, so
+/// `crate_declares_bin` must return false for the crate name and true for the
+/// reclaimed name.
+#[test]
+fn test_crate_declares_bin_reclaimed_src_bin_stem() {
+    use std::fs;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let crate_dir = tmp.path().join("reclaimed");
+    fs::create_dir_all(crate_dir.join("src/bin")).unwrap();
+    fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\nname = \"reclaimed\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[lib]\n\n[[bin]]\nname = \"renamed\"\npath = \"src/bin/reclaimed.rs\"\n",
+    )
+    .unwrap();
+    fs::write(crate_dir.join("src/lib.rs"), "// library\n").unwrap();
+    fs::write(crate_dir.join("src/bin/reclaimed.rs"), "fn main() {}\n").unwrap();
+
+    assert!(
+        !crate_declares_bin(crate_dir.to_str().unwrap(), "reclaimed"),
+        "src/bin/reclaimed.rs re-pathed to a differently-named [[bin]] must not resolve --bin reclaimed"
+    );
+    assert!(
+        crate_declares_bin(crate_dir.to_str().unwrap(), "renamed"),
+        "the explicit [[bin]] name must still resolve"
+    );
+}
+
+/// Divergence: a `src/main.rs` crate whose `[package].name` differs from the
+/// directory / crate-config name resolves a bin named after the *package*,
+/// not the directory. `crate_declares_bin` keys off the package name so a
+/// crate-config name that doesn't match the package must return false.
+#[test]
+fn test_crate_declares_bin_package_name_divergence() {
+    use std::fs;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let crate_dir = tmp.path().join("dir-name");
+    fs::create_dir_all(crate_dir.join("src")).unwrap();
+    fs::write(
+        crate_dir.join("Cargo.toml"),
+        "[package]\nname = \"pkg-name\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(crate_dir.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+    assert!(crate_declares_bin(crate_dir.to_str().unwrap(), "pkg-name"));
+    assert!(
+        !crate_declares_bin(crate_dir.to_str().unwrap(), "dir-name"),
+        "main.rs resolves a bin named after [package].name, not the directory"
     );
 }
 

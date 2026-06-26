@@ -11,7 +11,8 @@ use anodizer_core::stage::Stage;
 use anodizer_core::target::map_target;
 
 use super::command::{
-    build_command, build_lib_command, crate_has_binary_target, detect_crate_type,
+    build_command, build_lib_command, crate_declares_bin, crate_has_binary_target,
+    detect_crate_type,
 };
 use super::profile::{detect_amd64_variant, detect_cargo_profile};
 use super::targets::{
@@ -288,6 +289,19 @@ fn merge_reproducible_rustflags(
     }
 }
 
+/// Diagnostic reason a crate gets no default `--bin <crate>` build: a pure
+/// library (no binary targets at all) versus a library that carries only
+/// helper binaries whose names don't match the crate (so cargo would reject
+/// `--bin <crate>`). Surfaced in the skip line so a consumer can tell the two
+/// apart at a glance.
+fn no_default_binary_reason(crate_path: &str, crate_name: &str) -> String {
+    if crate_has_binary_target(crate_path) {
+        format!("no binary target named '{crate_name}' (only differently-named helper binaries)")
+    } else {
+        format!("no binary target named '{crate_name}' (library crate)")
+    }
+}
+
 /// Flatten the nested (crate, build, target) tree into a list of
 /// `BuildJob` descriptors. No compilation happens here — the planner
 /// only resolves overrides, renders templates, and assembles the
@@ -318,10 +332,14 @@ fn plan_build_jobs(
         let builds: Vec<BuildConfig> = match &crate_cfg.builds {
             Some(b) if !b.is_empty() => b.clone(),
             _ => {
-                // No builds configured — only create a default binary build if
-                // the crate actually has a binary target (src/main.rs or [[bin]]).
-                // Library-only crates should not get a default --bin build.
-                if crate_has_binary_target(&crate_cfg.path) {
+                // No builds configured — only synthesize a default `--bin
+                // <crate>` build when the crate actually declares a binary
+                // target named after itself. A library crate (no bins) OR a
+                // library carrying only differently-named helper bins (e.g.
+                // cfgd-core's renamed src/bin codegen tools) has no default
+                // release binary, so `cargo build --bin <crate>` would fail —
+                // skip instead.
+                if crate_declares_bin(&crate_cfg.path, &crate_cfg.name) {
                     vec![BuildConfig {
                         binary: Some(crate_cfg.name.clone()),
                         ..Default::default()
@@ -330,8 +348,9 @@ fn plan_build_jobs(
                     log.skip_line(
                         ctx.options.show_skipped,
                         &format!(
-                            "skipped build for crate '{}' — no builds configured and no binary target found",
-                            crate_cfg.name
+                            "skipped build for crate '{}' — no builds configured and {}",
+                            crate_cfg.name,
+                            no_default_binary_reason(&crate_cfg.path, &crate_cfg.name)
                         ),
                     );
                     continue;
@@ -376,18 +395,20 @@ fn plan_build_jobs(
                 continue;
             }
 
-            // If this build has no explicit `binary:` and the crate has
-            // no binary target on disk (no `src/main.rs`, no `[[bin]]`),
-            // skip it. This protects library-only crates that inherited
-            // a `defaults.builds:` template — the template's missing
-            // `binary:` field would otherwise fall back to the crate
-            // name and `cargo build --bin <library-name>` would fail.
-            if build.binary.is_none() && !crate_has_binary_target(&crate_cfg.path) {
+            // If this build has no explicit `binary:`, the name falls back to
+            // the crate's own name — so skip it unless the crate declares a
+            // binary target with that name. This protects library crates that
+            // inherited a `defaults.builds:` template: whether the crate has no
+            // bins at all OR only differently-named helper bins, the fallback
+            // `cargo build --bin <crate>` would fail with `no bin target named
+            // '<crate>'`. An explicit `binary:` is left to cargo to resolve.
+            if build.binary.is_none() && !crate_declares_bin(&crate_cfg.path, &crate_cfg.name) {
                 log.skip_line(
                     ctx.options.show_skipped,
                     &format!(
-                        "skipped build for crate '{}' — no explicit binary, no binary target found",
-                        crate_cfg.name
+                        "skipped build for crate '{}' — no explicit binary and {}",
+                        crate_cfg.name,
+                        no_default_binary_reason(&crate_cfg.path, &crate_cfg.name)
                     ),
                 );
                 continue;

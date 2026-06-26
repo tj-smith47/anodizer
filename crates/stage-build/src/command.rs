@@ -398,6 +398,83 @@ pub(crate) fn crate_has_binary_target(crate_path: &str) -> bool {
     false
 }
 
+/// True when the crate at `crate_path` exposes a binary *target* named
+/// `wanted` — i.e. `cargo build --bin <wanted>` would resolve. Mirrors
+/// [`crate_has_binary_target`]'s filesystem-probe approach (no `cargo
+/// metadata` spawn): an explicit `[[bin]] name = "<wanted>"`, the
+/// package-named binary produced by `src/main.rs`, or an auto-discovered
+/// `src/bin/<wanted>.rs`.
+///
+/// Distinct from [`crate_has_binary_target`], which answers "does this crate
+/// have ANY binary target". A library crate can carry helper binaries whose
+/// names do not match the crate (e.g. `src/bin/gen.rs` renamed via `[[bin]]`
+/// to `mylib-gen`); such a crate "has a binary target" yet has none named
+/// after itself, so a synthesized default `--bin <crate>` build must be
+/// suppressed rather than handed to cargo, which would hard-error with
+/// `no bin target named '<crate>'` and fail the build/determinism legs.
+///
+/// Shares [`crate_has_binary_target`]'s documented `autobins = false`
+/// limitation for the `src/bin/` probe. One further filesystem-probe blind
+/// spot: a *nameless* `[[bin]]` with a custom `path` outside `src/bin/` (cargo
+/// derives that target's name from the path stem) is not detected — covering
+/// it would require a `cargo metadata` spawn. Such layouts are rare; declare a
+/// `name` to be seen here.
+pub(crate) fn crate_declares_bin(crate_path: &str, wanted: &str) -> bool {
+    let path = Path::new(crate_path);
+    let doc = std::fs::read_to_string(path.join("Cargo.toml"))
+        .ok()
+        .and_then(|c| c.parse::<toml_edit::DocumentMut>().ok());
+    let bin_tables = doc
+        .as_ref()
+        .and_then(|d| d.get("bin"))
+        .and_then(|b| b.as_array_of_tables());
+
+    // 1. Explicit `[[bin]] name = "<wanted>"`.
+    if let Some(arr) = bin_tables
+        && arr
+            .iter()
+            .any(|t| t.get("name").and_then(|v| v.as_str()) == Some(wanted))
+    {
+        return true;
+    }
+
+    // 2. `src/main.rs` yields a binary named after the package; it matches
+    //    when the package name is `wanted` (the default binary name a
+    //    synthesized build resolves to is the crate's own name).
+    if path.join("src/main.rs").exists()
+        && doc
+            .as_ref()
+            .and_then(|d| d.get("package"))
+            .and_then(|p| p.get("name"))
+            .and_then(|v| v.as_str())
+            == Some(wanted)
+    {
+        return true;
+    }
+
+    // 3. Auto-discovered `src/bin/<wanted>.rs` (cargo names the target after
+    //    the file stem) — unless an explicit `[[bin]]` re-paths that file to a
+    //    *different* name, which removes the stem-named target cargo would have
+    //    auto-discovered. Without this guard a crate named after one of its own
+    //    renamed helper files would falsely claim the target and re-trigger the
+    //    doomed `--bin <wanted>`.
+    let stem_file = format!("{wanted}.rs");
+    if path.join("src/bin").join(&stem_file).exists() {
+        let reclaimed_under_other_name = bin_tables.is_some_and(|arr| {
+            arr.iter().any(|t| {
+                t.get("name").and_then(|v| v.as_str()) != Some(wanted)
+                    && t.get("path")
+                        .and_then(|v| v.as_str())
+                        .and_then(|p| Path::new(p).file_name()?.to_str().map(str::to_owned))
+                        .as_deref()
+                        == Some(stem_file.as_str())
+            })
+        });
+        return !reclaimed_under_other_name;
+    }
+    false
+}
+
 /// Read a crate's Cargo.toml and return the first `crate-type` from [lib],
 /// if present (e.g. "cdylib", "staticlib", "rlib").
 pub(crate) fn detect_crate_type(crate_path: &str) -> Option<String> {
