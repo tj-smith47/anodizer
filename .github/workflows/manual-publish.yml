@@ -99,8 +99,11 @@ jobs:
           # publish version still comes from the preserved dist context.
           ANODIZER_CURRENT_TAG: ${{ inputs.tag }}
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
-          # No NPM_TOKEN: npm auth is Trusted Publishing (OIDC). With id-token:
-          # write present and no token, the npm publisher's `auth: auto` resolves
-          # to OIDC for the already-existing package and has no token to fall back
-          # to — so any OIDC/trusted-publisher gap surfaces loudly instead of
-          # silently degrading to a token publish without provenance.
+          # NPM_TOKEN authenticates the publish. Trusted Publishing (OIDC) is NOT
+          # used: it requires a per-package trusted-publisher binding configured by
+          # hand on npmjs.com, and the optional-deps layout fans out to ~9 packages
+          # (the umbrella + one per platform), several of which do not exist yet on
+          # first publish — a Trusted Publisher cannot attach to a missing package.
+          # The token publishes (and creates) them all; provenance still attaches
+          # from this github-hosted runner's OIDC when the runner supports it.
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
