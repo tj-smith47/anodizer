@@ -860,6 +860,7 @@ pub(crate) fn render_and_generate_nfpm_yaml(
 
     process_templated_contents(&mut rendered_cfg, nfpm_cfg, ctx, dist, crate_name, dry_run)?;
     process_templated_scripts(&mut rendered_cfg, nfpm_cfg, ctx, dist, crate_name, dry_run)?;
+    pin_nfpm_script_mtimes(&mut rendered_cfg, nfpm_cfg, dist, crate_name, dry_run)?;
 
     fill_deb_arch_variant(&mut rendered_cfg, linux_binaries, target);
 
@@ -969,12 +970,19 @@ pub(crate) fn render_nfpm_config_fields(
         render_in_place(&mut sig.key_file, vars)?;
         render_in_place(&mut sig.key_passphrase, vars)?;
     }
-    if let Some(ref mut apk) = rendered_cfg.apk
-        && let Some(ref mut sig) = apk.signature
-    {
-        render_in_place(&mut sig.key_file, vars)?;
-        render_in_place(&mut sig.key_name, vars)?;
-        render_in_place(&mut sig.key_passphrase, vars)?;
+    if let Some(ref mut apk) = rendered_cfg.apk {
+        if let Some(ref mut sig) = apk.signature {
+            render_in_place(&mut sig.key_file, vars)?;
+            render_in_place(&mut sig.key_name, vars)?;
+            render_in_place(&mut sig.key_passphrase, vars)?;
+        }
+        // apk's upgrade scripts are file paths like the top-level `scripts:`
+        // entries, so they get the same `{{ .Env.* }}` render — otherwise an
+        // unrendered path would reach nfpm literally.
+        if let Some(ref mut scripts) = apk.scripts {
+            render_in_place(&mut scripts.preupgrade, vars)?;
+            render_in_place(&mut scripts.postupgrade, vars)?;
+        }
     }
     if let Some(ref mut libdirs) = rendered_cfg.libdirs {
         render_in_place(&mut libdirs.header, vars)?;
@@ -1042,8 +1050,7 @@ fn process_templated_contents(
         return Ok(());
     }
 
-    let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
-    let tmpl_dir = dist.join("nfpm-tmp").join(crate_name).join(nfpm_id);
+    let tmpl_dir = nfpm_tmp_dir(dist, crate_name, nfpm_cfg);
     if !dry_run {
         fs::create_dir_all(&tmpl_dir).with_context(|| {
             format!(
@@ -1080,6 +1087,92 @@ fn process_templated_contents(
     Ok(())
 }
 
+/// The per-config staging root `<dist>/nfpm-tmp/<crate>/<nfpm_id>` where
+/// templated contents/scripts and pinned script copies live. An unnamed config
+/// falls back to the `default` id.
+fn nfpm_tmp_dir(
+    dist: &std::path::Path,
+    crate_name: &str,
+    nfpm_cfg: &anodizer_core::config::NfpmConfig,
+) -> std::path::PathBuf {
+    let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
+    dist.join("nfpm-tmp").join(crate_name).join(nfpm_id)
+}
+
+/// Stage every lifecycle script into an anodizer-owned dir with its mtime
+/// pinned to the package's resolved `mtime`, then rewrite each script field to
+/// the staged path.
+///
+/// nfpm's `mtime:` field normalizes script timestamps inside the deb/rpm
+/// payloads but NOT inside an apk: the apk packager stamps each of its six
+/// control scripts (the four top-level `scripts:` plus apk's `preupgrade`/
+/// `postupgrade`) with the script file's filesystem mtime. The determinism
+/// harness checks the script out in two separate hermetic worktrees, so git
+/// sets two different checkout-time mtimes, the signed apk control segment
+/// differs between the rebuilds, and the harness flags a false repro
+/// regression. Copying each script to a pinned-mtime path before nfpm reads it
+/// makes the apk byte-stable without mutating the user's working tree; deb/rpm
+/// are unaffected (they normalize internally). No-op in dry-run, when no
+/// scripts are set, or when `mtime` is unset/unparseable (the package is not
+/// reproducible-by-config anyway, and `build_nfpm_job` surfaces the parse
+/// warning).
+pub(crate) fn pin_nfpm_script_mtimes(
+    rendered_cfg: &mut anodizer_core::config::NfpmConfig,
+    nfpm_cfg: &anodizer_core::config::NfpmConfig,
+    dist: &std::path::Path,
+    crate_name: &str,
+    dry_run: bool,
+) -> Result<()> {
+    if dry_run {
+        return Ok(());
+    }
+    let Some(raw_mtime) = rendered_cfg.mtime.as_deref() else {
+        return Ok(());
+    };
+    let Ok(mt) = anodizer_core::util::parse_mod_timestamp(raw_mtime) else {
+        return Ok(());
+    };
+
+    let staged_dir = nfpm_tmp_dir(dist, crate_name, nfpm_cfg).join("scripts");
+    // Create the dir lazily on the first script staged, so a config with no
+    // scripts leaves no empty directory behind.
+    let mut dir_ready = false;
+    let mut stage = |name: &str, field: &mut Option<String>| -> Result<()> {
+        let Some(src) = field.as_deref() else {
+            return Ok(());
+        };
+        if !dir_ready {
+            fs::create_dir_all(&staged_dir).with_context(|| {
+                format!("nfpm: create script-pin dir: {}", staged_dir.display())
+            })?;
+            dir_ready = true;
+        }
+        let staged = staged_dir.join(format!("script-{name}"));
+        fs::copy(src, &staged).with_context(|| {
+            format!(
+                "nfpm: stage script {name}: copy {src} -> {}",
+                staged.display()
+            )
+        })?;
+        anodizer_core::util::set_file_mtime(&staged, mt)
+            .with_context(|| format!("nfpm: pin mtime on staged script {}", staged.display()))?;
+        *field = Some(staged.to_string_lossy().into_owned());
+        Ok(())
+    };
+
+    if let Some(scripts) = rendered_cfg.scripts.as_mut() {
+        stage("preinstall", &mut scripts.preinstall)?;
+        stage("postinstall", &mut scripts.postinstall)?;
+        stage("preremove", &mut scripts.preremove)?;
+        stage("postremove", &mut scripts.postremove)?;
+    }
+    if let Some(apk_scripts) = rendered_cfg.apk.as_mut().and_then(|a| a.scripts.as_mut()) {
+        stage("preupgrade", &mut apk_scripts.preupgrade)?;
+        stage("postupgrade", &mut apk_scripts.postupgrade)?;
+    }
+    Ok(())
+}
+
 /// `templated_scripts`: render each named lifecycle script
 /// body and substitute the result into `rendered_cfg.scripts`. A templated
 /// entry wins over a same-named plain `scripts` field.
@@ -1102,8 +1195,7 @@ fn process_templated_scripts(
         return Ok(());
     }
 
-    let nfpm_id = nfpm_cfg.id.as_deref().unwrap_or("default");
-    let tmpl_dir = dist.join("nfpm-tmp").join(crate_name).join(nfpm_id);
+    let tmpl_dir = nfpm_tmp_dir(dist, crate_name, nfpm_cfg);
     if !dry_run {
         fs::create_dir_all(&tmpl_dir).with_context(|| {
             format!("nfpm: create templated-scripts dir: {}", tmpl_dir.display())

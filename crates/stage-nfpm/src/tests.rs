@@ -6985,6 +6985,252 @@ fn signed_apk_is_byte_reproducible_across_time() {
     );
 }
 
+/// A signed `.apk` whose config carries lifecycle scripts must stay
+/// byte-identical across two builds even when the *source* script files'
+/// on-disk mtimes change between them — the exact drift the determinism
+/// harness hits because its two hermetic worktrees `git checkout` the scripts
+/// at different wall-clock times. nfpm's `mtime:` normalizes the script entries
+/// for deb/rpm but NOT for apk (the apk packager stamps the file's filesystem
+/// mtime onto all six control scripts), so `pin_nfpm_script_mtimes` re-stages
+/// each at the configured mtime before nfpm reads it. This guards both a
+/// top-level `scripts.postinstall` AND an apk-only `apk.scripts.preupgrade`.
+#[test]
+fn signed_apk_repro_despite_varying_script_disk_mtime() {
+    use super::run::pin_nfpm_script_mtimes;
+    use anodizer_core::config::{NfpmApkConfig, NfpmApkScripts, NfpmScripts};
+    use std::process::Command;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    if !anodizer_core::util::find_binary("openssl") {
+        eprintln!("openssl absent; apk script-mtime repro test skipped hermetically");
+        return;
+    }
+    if !anodizer_core::util::find_binary("nfpm") {
+        eprintln!("nfpm absent; apk script-mtime repro test skipped hermetically");
+        return;
+    }
+
+    let dir = TempDir::new().unwrap();
+    let key_path = dir.path().join("apk.pem");
+    let genpkey = Command::new("openssl")
+        .args([
+            "genpkey",
+            "-algorithm",
+            "RSA",
+            "-pkeyopt",
+            "rsa_keygen_bits:2048",
+            "-out",
+        ])
+        .arg(&key_path)
+        .output()
+        .expect("spawn openssl genpkey");
+    assert!(
+        genpkey.status.success(),
+        "openssl genpkey must succeed: {}",
+        String::from_utf8_lossy(&genpkey.stderr)
+    );
+
+    let payload = dir.path().join("payload");
+    std::fs::write(&payload, b"#!/bin/sh\necho hi\n").unwrap();
+    // Two source scripts — a top-level postinstall and an apk-only preupgrade —
+    // whose disk mtimes are what vary between builds.
+    let src_post = dir.path().join("postinstall.sh");
+    std::fs::write(&src_post, b"#!/bin/sh\nexit 0\n").unwrap();
+    let src_preup = dir.path().join("preupgrade.sh");
+    std::fs::write(&src_preup, b"#!/bin/sh\necho upgrade\n").unwrap();
+
+    const MTIME: &str = "2024-01-01T00:00:00Z";
+
+    // Build a signed apk carrying both a `scripts.postinstall` and an
+    // `apk.scripts.preupgrade`; each path arg selects the raw source script
+    // (control) or a pinned-mtime staged copy.
+    let build = |out: &std::path::Path, post_path: &str, preup_path: &str| -> Vec<u8> {
+        let cfg = dir.path().join(format!(
+            "nfpm-{}.yaml",
+            out.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::write(
+            &cfg,
+            format!(
+                "name: probe-pkg\narch: x86_64\nversion: 1.2.3\n\
+                 maintainer: test <test@example.com>\ndescription: probe\n\
+                 mtime: {MTIME}\n\
+                 contents:\n  - src: {}\n    dst: /usr/local/bin/probe\n\
+                 \x20   file_info:\n      mtime: {MTIME}\n\
+                 scripts:\n  postinstall: {}\n\
+                 apk:\n  signature:\n    key_file: \"{}\"\n  scripts:\n    preupgrade: {}\n",
+                payload.display(),
+                post_path,
+                key_path.display(),
+                preup_path,
+            ),
+        )
+        .unwrap();
+        let args = nfpm_command(cfg.to_str().unwrap(), "apk", out.to_str().unwrap());
+        let status = Command::new(&args[0])
+            .args(&args[1..])
+            .env("APK_PRIVATE_KEY_PATH", &key_path)
+            .status()
+            .expect("spawn nfpm");
+        assert!(
+            status.success(),
+            "signed nfpm pkg --packager apk must succeed"
+        );
+        std::fs::read(out).unwrap()
+    };
+
+    // Re-stage BOTH source scripts through the fix at `source_mtime`, returning
+    // (staged_postinstall, staged_preupgrade) — each pinned to MTIME regardless
+    // of the source's disk mtime.
+    let stage = |source_mtime: SystemTime| -> (String, String) {
+        anodizer_core::util::set_file_mtime(&src_post, source_mtime).unwrap();
+        anodizer_core::util::set_file_mtime(&src_preup, source_mtime).unwrap();
+        let mut cfg = NfpmConfig {
+            mtime: Some(MTIME.to_string()),
+            scripts: Some(NfpmScripts {
+                postinstall: Some(src_post.to_string_lossy().into_owned()),
+                ..Default::default()
+            }),
+            apk: Some(NfpmApkConfig {
+                scripts: Some(NfpmApkScripts {
+                    preupgrade: Some(src_preup.to_string_lossy().into_owned()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let id_cfg = cfg.clone();
+        pin_nfpm_script_mtimes(&mut cfg, &id_cfg, dir.path(), "probe", false).unwrap();
+        let staged_post = cfg.scripts.unwrap().postinstall.unwrap();
+        let staged_preup = cfg.apk.unwrap().scripts.unwrap().preupgrade.unwrap();
+        assert_ne!(
+            staged_post,
+            src_post.to_string_lossy(),
+            "pin must rewrite postinstall to a staged copy"
+        );
+        assert_ne!(
+            staged_preup,
+            src_preup.to_string_lossy(),
+            "pin must rewrite apk preupgrade to a staged copy"
+        );
+        (staged_post, staged_preup)
+    };
+
+    let t1 = UNIX_EPOCH + Duration::from_secs(1_600_000_000);
+    let t2 = UNIX_EPOCH + Duration::from_secs(1_700_000_000); // ~3yr later
+
+    // Positive: both scripts pinned → byte-identical signed apks.
+    let (p1, u1) = stage(t1);
+    let a = build(&dir.path().join("pinned-a.apk"), &p1, &u1);
+    let (p2, u2) = stage(t2);
+    let b = build(&dir.path().join("pinned-b.apk"), &p2, &u2);
+    assert_eq!(
+        a, b,
+        "a signed apk built from pinned-mtime staged scripts must be byte-identical \
+         across builds even when the source scripts' disk mtimes differ"
+    );
+
+    // Control A: WITHOUT the pin (raw source paths), differing mtimes leak into
+    // the signed apk — proving the test exercises the real drift.
+    anodizer_core::util::set_file_mtime(&src_post, t1).unwrap();
+    anodizer_core::util::set_file_mtime(&src_preup, t1).unwrap();
+    let raw_a = build(
+        &dir.path().join("raw-a.apk"),
+        &src_post.to_string_lossy(),
+        &src_preup.to_string_lossy(),
+    );
+    anodizer_core::util::set_file_mtime(&src_post, t2).unwrap();
+    anodizer_core::util::set_file_mtime(&src_preup, t2).unwrap();
+    let raw_b = build(
+        &dir.path().join("raw-b.apk"),
+        &src_post.to_string_lossy(),
+        &src_preup.to_string_lossy(),
+    );
+    assert_ne!(
+        raw_a, raw_b,
+        "control: unpinned source-script mtimes MUST leak into the signed apk; \
+         if these are equal the test no longer proves the pin does anything"
+    );
+
+    // Control B (apk-specific): pin postinstall but leave the apk preupgrade
+    // RAW. The apk still drifts — proving `apk.scripts.preupgrade` must also be
+    // pinned (the gap this guards), not just the top-level scripts.
+    let (sp1, _) = stage(t1);
+    anodizer_core::util::set_file_mtime(&src_preup, t1).unwrap();
+    let mixed_a = build(
+        &dir.path().join("mixed-a.apk"),
+        &sp1,
+        &src_preup.to_string_lossy(),
+    );
+    let (sp2, _) = stage(t2);
+    anodizer_core::util::set_file_mtime(&src_preup, t2).unwrap();
+    let mixed_b = build(
+        &dir.path().join("mixed-b.apk"),
+        &sp2,
+        &src_preup.to_string_lossy(),
+    );
+    assert_ne!(
+        mixed_a, mixed_b,
+        "control: an unpinned apk preupgrade mtime MUST still leak even when \
+         postinstall is pinned — so pinning apk.scripts is load-bearing"
+    );
+}
+
+/// `pin_nfpm_script_mtimes` must be a clean no-op (leaving `scripts.*` paths
+/// untouched) in dry-run, when no `mtime` is configured, and when no scripts
+/// are set — only a live build with both a script and an `mtime` re-stages.
+#[test]
+fn pin_nfpm_script_mtimes_noops_without_mtime_or_scripts_or_in_dry_run() {
+    use super::run::pin_nfpm_script_mtimes;
+    use anodizer_core::config::NfpmScripts;
+
+    let dir = TempDir::new().unwrap();
+    let src = dir.path().join("post.sh");
+    std::fs::write(&src, b"#!/bin/sh\n").unwrap();
+    let src_str = src.to_string_lossy().into_owned();
+
+    let with_script = || NfpmConfig {
+        mtime: Some("2024-01-01T00:00:00Z".to_string()),
+        scripts: Some(NfpmScripts {
+            postinstall: Some(src_str.clone()),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    // dry-run: never stages, so the path is left as the raw source.
+    let mut cfg = with_script();
+    let id = cfg.clone();
+    pin_nfpm_script_mtimes(&mut cfg, &id, dir.path(), "c", true).unwrap();
+    assert_eq!(
+        cfg.scripts.unwrap().postinstall.as_deref(),
+        Some(src_str.as_str())
+    );
+
+    // no `mtime`: no deterministic target to pin to → no rewrite.
+    let mut cfg = NfpmConfig {
+        mtime: None,
+        ..with_script()
+    };
+    let id = cfg.clone();
+    pin_nfpm_script_mtimes(&mut cfg, &id, dir.path(), "c", false).unwrap();
+    assert_eq!(
+        cfg.scripts.unwrap().postinstall.as_deref(),
+        Some(src_str.as_str())
+    );
+
+    // no scripts at all: clean no-op.
+    let mut cfg = NfpmConfig {
+        mtime: Some("2024-01-01T00:00:00Z".to_string()),
+        scripts: None,
+        ..Default::default()
+    };
+    let id = cfg.clone();
+    pin_nfpm_script_mtimes(&mut cfg, &id, dir.path(), "c", false).unwrap();
+    assert!(cfg.scripts.is_none());
+}
+
 // ---------------------------------------------------------------------------
 // amd64 micro-architecture variant naming
 // ---------------------------------------------------------------------------
