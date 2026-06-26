@@ -80,7 +80,7 @@ runs:
         repo-token: ${{ inputs.github-token }}
 
     - if: ${{ inputs.tools != '' }}
-      uses: taiki-e/install-action@7a79fe8c3a13344501c80d99cae481c1c9085912 # v2.81.10
+      uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2.82.5
       with:
         tool: ${{ inputs.tools }}
 
