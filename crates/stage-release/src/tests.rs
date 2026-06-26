@@ -2984,9 +2984,7 @@ fn test_dry_run_with_templated_extra_files() {
 /// Buffer service needs one) and a rustls CryptoProvider installed.
 /// Wrap assertions in a temporary runtime with the provider set.
 fn with_tokio<F: FnOnce()>(f: F) {
-    // Install the ring crypto provider if not already installed.
-    // ignore error if another test thread already installed it.
-    let _ = rustls::crypto::ring::default_provider().install_default();
+    anodizer_core::tls::install_default_crypto_provider();
     let rt = tokio::runtime::Runtime::new().unwrap();
     rt.block_on(async { f() });
 }

@@ -81,7 +81,7 @@ const REQUEST_READ_DEADLINE: Duration = Duration::from_secs(5);
 /// `danger_accept_invalid_certs`) so the client tolerates the
 /// untrusted cert chain.
 pub fn spawn_oneshot_https_responder(responses: Vec<&'static str>) -> (SocketAddr, Arc<AtomicU32>) {
-    install_default_provider_once();
+    crate::tls::install_default_crypto_provider();
 
     let server_config = Arc::new(build_self_signed_server_config());
 
@@ -154,27 +154,14 @@ fn build_self_signed_server_config() -> ServerConfig {
         rcgen::generate_simple_self_signed(subject_alt_names).expect("generate self-signed cert");
 
     let cert_der: CertificateDer<'static> = key_pair.cert.der().clone();
-    let key_der: PrivateKeyDer<'static> =
-        PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(key_pair.key_pair.serialize_der()));
+    let key_der: PrivateKeyDer<'static> = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(
+        key_pair.signing_key.serialize_der(),
+    ));
 
     ServerConfig::builder()
         .with_no_client_auth()
         .with_single_cert(vec![cert_der], key_der)
         .expect("build rustls::ServerConfig from self-signed cert")
-}
-
-/// `rustls` requires a process-wide default crypto provider be
-/// installed before any `ServerConfig::builder()` call. The workspace
-/// pulls `ring` only (`default-features = false`), so no provider is
-/// auto-installed; this fn installs one on first use. Subsequent
-/// calls are no-ops: `install_default` returns `Err` once a provider
-/// is set, which is the steady state.
-fn install_default_provider_once() {
-    use std::sync::Once;
-    static ONCE: Once = Once::new();
-    ONCE.call_once(|| {
-        let _ = rustls::crypto::ring::default_provider().install_default();
-    });
 }
 
 /// Terminate TLS on `stream`, consume one HTTP request, write `resp`,

@@ -228,6 +228,13 @@ fn init_tracing() {
 }
 
 fn main() {
+    // Pin rustls to `ring` before any TLS path runs. The dependency graph
+    // links two CryptoProviders (ring + the aws-lc-rs that rustls 0.23
+    // defaults transitive TLS users to); rustls panics on the first bare
+    // builder unless the process default is chosen up front. See
+    // `anodizer_core::tls`.
+    anodizer_core::tls::install_default_crypto_provider();
+
     // Windows' default main-thread stack is 1 MiB; Linux and macOS default
     // to 8 MiB. anodizer's deepest call chains (recursive config/defaults
     // merge, Tera template rendering, the release pipeline's nested stage

@@ -598,7 +598,7 @@
         "null"
       ],
       "format": "uint32",
-      "minimum": 0.0
+      "minimum": 0
     },
     "version_files": {
       "description": "Repo-committed files that embed the release version outside `Cargo.toml` (e.g. a Helm `Chart.yaml`, an install doc, a README badge), given as repo-root-relative path strings. At `tag` time each listed file has its occurrences of the old version rewritten to the new version — both the bare (`0.1.0`) and `v`-prefixed (`v0.1.0`) forms, word-boundary anchored — and is staged into the same bump commit as `Cargo.toml` / `Cargo.lock`, so these files never drift from the tag.\n\n```yaml version_files: - charts/cfgd/Chart.yaml - docs/installation.md ```",
@@ -1610,51 +1610,37 @@
         {
           "description": "Packaged archives (`.tar.gz`, `.zip`, ...) and self-extracting archives.",
           "type": "string",
-          "enum": [
-            "archive"
-          ]
+          "const": "archive"
         },
         {
           "description": "Raw uploadable binaries (uploaded as bare release assets).",
           "type": "string",
-          "enum": [
-            "binary"
-          ]
+          "const": "binary"
         },
         {
           "description": "Checksum file(s) (`checksums.txt` and split sidecars).",
           "type": "string",
-          "enum": [
-            "checksum"
-          ]
+          "const": "checksum"
         },
         {
           "description": "Linux packages (`.deb` / `.rpm` / `.apk`) and source RPMs.",
           "type": "string",
-          "enum": [
-            "package"
-          ]
+          "const": "package"
         },
         {
           "description": "Source archives (`source:` tarball).",
           "type": "string",
-          "enum": [
-            "source"
-          ]
+          "const": "source"
         },
         {
           "description": "Generated SBOM documents.",
           "type": "string",
-          "enum": [
-            "sbom"
-          ]
+          "const": "sbom"
         },
         {
           "description": "OS installers: Windows MSI/NSIS, macOS DMG (disk image), and macOS PKG.",
           "type": "string",
-          "enum": [
-            "installer"
-          ]
+          "const": "installer"
         }
       ]
     },
@@ -1711,16 +1697,12 @@
         {
           "description": "Emit a subjects manifest for `actions/attest-build-provenance` (OIDC).",
           "type": "string",
-          "enum": [
-            "subjects"
-          ]
+          "const": "subjects"
         },
         {
           "description": "Generate + sign a self-contained in-toto SLSA provenance statement.",
           "type": "string",
-          "enum": [
-            "emit"
-          ]
+          "const": "emit"
         }
       ]
     },
@@ -2610,7 +2592,7 @@
             "null"
           ],
           "format": "uint",
-          "minimum": 0.0
+          "minimum": 0
         },
         "provider": {
           "description": "Cloud storage provider: s3, gcs (or gs), or azblob (or azure).",
@@ -3026,16 +3008,12 @@
         {
           "description": "Build the binary by invoking `cargo build` (or `cross` / `zigbuild` per the `cross:` strategy). Default when no `builder:` is set.",
           "type": "string",
-          "enum": [
-            "cargo"
-          ]
+          "const": "cargo"
         },
         {
           "description": "Import a binary already staged on disk instead of compiling. Pairs with the `prebuilt:` block on the same build entry.",
           "type": "string",
-          "enum": [
-            "prebuilt"
-          ]
+          "const": "prebuilt"
         }
       ]
     },
@@ -3102,7 +3080,7 @@
             "null"
           ],
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 0
         },
         "jobs": {
           "description": "Number of parallel compile jobs for verification (`--jobs`).",
@@ -3112,7 +3090,7 @@
             "null"
           ],
           "format": "uint32",
-          "minimum": 0.0
+          "minimum": 0
         },
         "keep_going": {
           "description": "Continue on errors when verifying multiple crates (`--keep-going`).",
@@ -3958,16 +3936,12 @@
         {
           "description": "Order sections by release date (default).",
           "type": "string",
-          "enum": [
-            "date"
-          ]
+          "const": "date"
         },
         {
           "description": "Order sections by semantic tag version.",
           "type": "string",
-          "enum": [
-            "tag"
-          ]
+          "const": "tag"
         }
       ]
     },
@@ -4031,7 +4005,7 @@
             "null"
           ],
           "format": "uint32",
-          "minimum": 0.0
+          "minimum": 0
         },
         "organization": {
           "description": "CloudSmith organization slug.",
@@ -5090,7 +5064,7 @@
             "null"
           ],
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 0
         },
         "enabled": {
           "description": "Enable Discourse announcements (supports template expressions).",
@@ -5533,7 +5507,7 @@
             "null"
           ],
           "format": "uint32",
-          "minimum": 0.0
+          "minimum": 0
         },
         "delay": {
           "description": "Duration string for the initial retry delay (default: `\"10s\"`). Examples: `\"1s\"`, `\"500ms\"`.",
@@ -5860,12 +5834,12 @@
         "nanos": {
           "type": "integer",
           "format": "uint32",
-          "minimum": 0.0
+          "minimum": 0
         },
         "secs": {
           "type": "integer",
           "format": "uint64",
-          "minimum": 0.0
+          "minimum": 0
         }
       }
     },
@@ -5936,7 +5910,8 @@
             "null"
           ],
           "format": "uint16",
-          "minimum": 0.0
+          "maximum": 65535,
+          "minimum": 0
         },
         "subject_template": {
           "description": "Email subject template. Default: \"{{ ProjectName }} {{ Tag }} is out!\"",
@@ -5971,30 +5946,22 @@
         {
           "description": "Pick based on port: 465 → SMTPS, 25 → none, otherwise STARTTLS.",
           "type": "string",
-          "enum": [
-            "auto"
-          ]
+          "const": "auto"
         },
         {
           "description": "Implicit TLS on connect (typically port 465).",
           "type": "string",
-          "enum": [
-            "tls"
-          ]
+          "const": "tls"
         },
         {
           "description": "Plain SMTP that upgrades to TLS via STARTTLS (typically port 587).",
           "type": "string",
-          "enum": [
-            "starttls"
-          ]
+          "const": "starttls"
         },
         {
           "description": "Plain SMTP, no TLS. Only safe on trusted local relays (port 25).",
           "type": "string",
-          "enum": [
-            "none"
-          ]
+          "const": "none"
         }
       ]
     },
@@ -6096,12 +6063,14 @@
         "mode": {
           "description": "File permission mode. Accepts a YAML int (decimal, e.g. `420` for `0o644`) or an octal-prefixed string (`\"0o644\"`, `\"0644\"`). This a `uint32` type for `Mode` on archive/nfpm contents while letting users spell octal naturally in YAML.",
           "default": null,
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint32",
-          "minimum": 0.0
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrU32"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "mtime": {
           "description": "File modification time in RFC3339 format (e.g., \"2024-01-01T00:00:00Z\").",
@@ -8040,23 +8009,17 @@
         {
           "description": "Probe krew-index membership and pick `bot` (present) or `pr-direct` (absent). An indeterminate probe hard-errors.",
           "type": "string",
-          "enum": [
-            "auto"
-          ]
+          "const": "auto"
         },
         {
           "description": "Always submit via the krew-release-bot webhook.",
           "type": "string",
-          "enum": [
-            "bot"
-          ]
+          "const": "bot"
         },
         {
           "description": "Always open a fork PR against krew-index.",
           "type": "string",
-          "enum": [
-            "pr-direct"
-          ]
+          "const": "pr-direct"
         }
       ]
     },
@@ -8769,23 +8732,17 @@
         {
           "description": "Anonymous publish — for testing or registries that allow it. Serializes / deserializes as `none`.",
           "type": "string",
-          "enum": [
-            "none"
-          ]
+          "const": "none"
         },
         {
           "description": "GitHub Personal Access Token exchange via `/v0/auth/github-at`. Serializes / deserializes as `github`.",
           "type": "string",
-          "enum": [
-            "github"
-          ]
+          "const": "github"
         },
         {
           "description": "GitHub Actions OIDC token exchange via `/v0/auth/github-oidc`. Serializes / deserializes as `github-oidc`.",
           "type": "string",
-          "enum": [
-            "github-oidc"
-          ]
+          "const": "github-oidc"
         }
       ]
     },
@@ -8968,37 +8925,27 @@
         {
           "description": "OCI image (registry_type = \"oci\"). The `version` field in the published ServerJSON is intentionally empty for OCI packages — the version is encoded in the image identifier's `:tag` suffix.",
           "type": "string",
-          "enum": [
-            "oci"
-          ]
+          "const": "oci"
         },
         {
           "description": "npm registry (registry_type = \"npm\").",
           "type": "string",
-          "enum": [
-            "npm"
-          ]
+          "const": "npm"
         },
         {
           "description": "PyPI registry (registry_type = \"pypi\").",
           "type": "string",
-          "enum": [
-            "pypi"
-          ]
+          "const": "pypi"
         },
         {
           "description": "NuGet registry (registry_type = \"nuget\").",
           "type": "string",
-          "enum": [
-            "nuget"
-          ]
+          "const": "nuget"
         },
         {
           "description": "MCPB direct-download (registry_type = \"mcpb\").",
           "type": "string",
-          "enum": [
-            "mcpb"
-          ]
+          "const": "mcpb"
         }
       ]
     },
@@ -9062,23 +9009,17 @@
         {
           "description": "Local stdio transport.",
           "type": "string",
-          "enum": [
-            "stdio"
-          ]
+          "const": "stdio"
         },
         {
           "description": "Streamable HTTP remote transport.",
           "type": "string",
-          "enum": [
-            "streamable-http"
-          ]
+          "const": "streamable-http"
         },
         {
           "description": "Server-Sent Events remote transport.",
           "type": "string",
-          "enum": [
-            "sse"
-          ]
+          "const": "sse"
         }
       ]
     },
@@ -9847,12 +9788,14 @@
         "umask": {
           "description": "File permission umask. Accepts a YAML int (`18`), an octal-prefixed string (`\"0o022\"`), or a leading-zero octal string (`\"022\"`).",
           "default": null,
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint32",
-          "minimum": 0.0
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrU32"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "vendor": {
           "description": "Package vendor name — the distributing entity recorded in the rpm/deb Vendor field. When unset, derived from the crate's first `Cargo.toml [package].authors` entry with any `<email>` suffix stripped (e.g. `\"Ada Lovelace <ada@x>\"` → `\"Ada Lovelace\"`).",
@@ -10827,23 +10770,17 @@
         {
           "description": "Decide per package at publish time (default). The registry is probed for each package's existence: a package that already exists prefers OIDC (Trusted Publishing) when an OIDC context is present, otherwise the token; a brand-new package always uses the token (Trusted Publishing cannot create a package that does not yet exist) and hard-errors if no token is set. When OIDC is chosen for an existing package and the publish fails, `auto` retries that package with the token (if available) and emits a loud warning that Trusted Publishing was not exercised.",
           "type": "string",
-          "enum": [
-            "auto"
-          ]
+          "const": "auto"
         },
         {
           "description": "Always authenticate with the token (`NPM_TOKEN` / `cfg.token`); never attempt OIDC. Errors if no token is available. This is anodizer's historical behaviour.",
           "type": "string",
-          "enum": [
-            "token"
-          ]
+          "const": "token"
         },
         {
           "description": "Always authenticate with OIDC (Trusted Publishing); never fall back to the token. Errors if the OIDC request env is absent. Use when every package in this entry has a configured Trusted Publisher and you want a failed exchange to fail the release loudly rather than silently fall back to a token.",
           "type": "string",
-          "enum": [
-            "oidc"
-          ]
+          "const": "oidc"
         }
       ]
     },
@@ -11137,16 +11074,12 @@
         {
           "description": "Emit per-platform packages + a metapackage with `optionalDependencies` and a `require.resolve` bin shim. npm's native `os`/`cpu`/`libc` resolution selects the right prebuilt package — no download, no postinstall. Default.",
           "type": "string",
-          "enum": [
-            "optional-deps"
-          ]
+          "const": "optional-deps"
         },
         {
           "description": "Emit a single package with a `postinstall.js` shim that downloads and sha256-verifies the matching archive at install time.",
           "type": "string",
-          "enum": [
-            "postinstall"
-          ]
+          "const": "postinstall"
         }
       ]
     },
@@ -11280,16 +11213,12 @@
         {
           "description": "Roll back reversible state (delete the run's release tags, revert the version-bump commit) so the version can be re-cut. Degrades to `Hold` when any one-way-door publisher already landed.",
           "type": "string",
-          "enum": [
-            "rollback"
-          ]
+          "const": "rollback"
         },
         {
           "description": "Leave everything in place for forensics; exit nonzero with a pointer at `release --rollback-only --from-run=<id>`.",
           "type": "string",
-          "enum": [
-            "hold"
-          ]
+          "const": "hold"
         }
       ]
     },
@@ -12334,7 +12263,7 @@
             "null"
           ],
           "format": "uint32",
-          "minimum": 0.0
+          "minimum": 0
         },
         "upload_pace": {
           "description": "Minimum interval between successive asset-upload *starts* (a humantime string, e.g. `\"200ms\"`, `\"1s\"`, `\"0s\"`).\n\nThis is a *proactive* pace that smooths the initial burst of upload requests, layered on top of [`Self::upload_concurrency`] (the concurrency cap) and the reactive secondary-rate-limit backoff. With the concurrency cap alone, the first N uploads fire in the same instant — exactly the burst pattern that trips GitHub's secondary rate limit. Spacing each upload's *start* by this interval (with ±20% jitter so concurrent releases don't synchronise) makes the burst far less likely to trip the limit in the first place.\n\nDefault: `\"200ms\"` — at the default concurrency of 4 this caps the initial start rate at ~5/s, which is below the burst threshold yet adds negligible wall-clock to a normal release (upload time is dominated by transfer, not start-spacing). Set to `\"0s\"` to disable pacing entirely (rely on the concurrency cap + reactive backoff). Override at runtime with `ANODIZER_GITHUB_UPLOAD_PACE_MS` (integer milliseconds; `0` disables).",
@@ -12439,7 +12368,7 @@
           "default": 0,
           "type": "integer",
           "format": "uint",
-          "minimum": 0.0
+          "minimum": 0
         }
       },
       "additionalProperties": false
@@ -12453,7 +12382,7 @@
           "default": 10,
           "type": "integer",
           "format": "uint32",
-          "minimum": 0.0
+          "minimum": 0
         },
         "delay": {
           "description": "Initial delay before the second attempt. Default `10s`. Subsequent delays grow exponentially (`delay × 2^(n-2)`) up to [`Self::max_delay`].",
@@ -13891,7 +13820,7 @@
                 "null"
               ],
               "format": "uint32",
-              "minimum": 0.0
+              "minimum": 0
             },
             "source": {
               "type": "string"
@@ -14052,12 +13981,14 @@
         "mode": {
           "description": "File permissions mode. Accepts a YAML int (decimal) or an octal-prefixed string (`\"0o755\"`, `\"0755\"`). Stored as a `u32` after parsing — see [`StringOrU32`].",
           "default": null,
-          "type": [
-            "integer",
-            "null"
-          ],
-          "format": "uint32",
-          "minimum": 0.0
+          "anyOf": [
+            {
+              "$ref": "#/definitions/StringOrU32"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "mtime": {
           "description": "Modification time in RFC3339 format (supports templates).",
@@ -14330,6 +14261,12 @@
           "type": "string"
         }
       ]
+    },
+    "StringOrU32": {
+      "description": "A value that can be either a `u32` or a string parsed as octal/decimal.\n\nUsed by `NfpmConfig.umask` (and any future field specified as `int OR string` in YAML — the parser canonicalizes both forms to a `u32`). Accepts: `0o022`, `\"0o022\"`, `\"022\"`, `\"18\"`, `18`. Bare numeric YAML values are interpreted as decimal; YAML-string forms accept the `0o`/`0O` prefix to spell octal explicitly.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0
     },
     "StructuredHook": {
       "type": "object",
@@ -15315,7 +15252,8 @@
           "items": {
             "type": "integer",
             "format": "uint16",
-            "minimum": 0.0
+            "maximum": 65535,
+            "minimum": 0
           }
         },
         "headers": {

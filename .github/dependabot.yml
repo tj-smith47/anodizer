@@ -12,6 +12,31 @@ updates:
     groups:
       cargo:
         patterns: ["*"]
+    ignore:
+      # RustCrypto hash/MAC stack is held on the digest-0.10 line until `blake2`
+      # ships a stable `digest`-0.11 (latest is 0.11.0-rc.6). `stage-checksum`'s
+      # generic `hash_file_with::<D: Digest>` unifies all of these under one
+      # `digest` version, so a partial bump (sha2 → 0.11 while blake2 can't
+      # follow) splits the dependency graph and fails the build — exactly what
+      # the v0.12.3 group bump did. Allow patch bumps (0.10.x); block the
+      # 0.11 minor until blake2 catches up, then bump the whole set together.
+      - dependency-name: "sha1"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "sha2"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "sha3"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "md-5"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "hmac"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # object_store 0.14 takes a direct aws-lc-rs dependency, introducing a
+      # second rustls CryptoProvider (panics auto-selection) and a C/cmake/asm
+      # build toolchain that breaks the hermetic ring-only cross-compile. Hold
+      # the 0.14 bump until object_store ships a ring-only path. See the pin
+      # note in Cargo.toml.
+      - dependency-name: "object_store"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

@@ -31,6 +31,16 @@ pub(crate) fn build_octocrab_client(
     token: &str,
     github_urls: &Option<GitHubUrlsConfig>,
 ) -> Result<(octocrab::Octocrab, RetryAfterCapture)> {
+    // The non-`skip_tls` branch builds its `hyper_rustls` connector without an
+    // explicit provider, so it resolves the process-default rustls
+    // `CryptoProvider`. The dependency graph links both `ring` and `aws-lc-rs`
+    // (object_store/reqwest pull the latter under rustls 0.23), so rustls
+    // refuses to auto-select and panics unless a default is installed. `main()`
+    // installs `ring` at startup, but this constructor must not depend on a
+    // particular binary entry point having run — unit tests build it directly
+    // under nextest's process-per-test model. Install up front; idempotent.
+    anodizer_core::tls::install_default_crypto_provider();
+
     let skip_tls = github_urls
         .as_ref()
         .and_then(|u| u.skip_tls_verify)

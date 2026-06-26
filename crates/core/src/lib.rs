@@ -52,6 +52,7 @@ pub mod template;
 pub mod template_file_render;
 mod template_preprocess;
 pub mod templated_files;
+pub mod tls;
 pub mod tool_detect;
 pub mod url;
 pub mod user_command;

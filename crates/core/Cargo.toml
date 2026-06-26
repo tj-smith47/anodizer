@@ -14,7 +14,7 @@ documentation.workspace = true
 readme = "README.md"
 
 [features]
-test-helpers = ["dep:rustls", "dep:rcgen"]
+test-helpers = ["dep:rcgen"]
 
 [dev-dependencies]
 anodizer-core = { path = ".", features = ["test-helpers"] }
@@ -49,13 +49,18 @@ crc32fast.workspace = true
 md-5.workspace = true
 percent-encoding.workspace = true
 reqwest.workspace = true
+# Always-on: `tls::install_default_crypto_provider` pins the process-default
+# rustls provider to `ring` at startup (the binary links two providers; rustls
+# panics otherwise). Not gated behind `test-helpers` — it must compile into the
+# shipped library.
+rustls.workspace = true
 tempfile.workspace = true
 fs4.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 
-# Optional deps for the `test-helpers` feature (HTTPS responder + self-signed certs).
-rustls = { workspace = true, optional = true }
+# Optional dep for the `test-helpers` feature (self-signed certs for the
+# in-process HTTPS responder). `rustls` is now an always-on dependency above.
 rcgen = { workspace = true, optional = true }
 
 # Process-group SIGKILL for the bounded-subprocess watchdog (run.rs) so a hung,

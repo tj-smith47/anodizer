@@ -2,7 +2,7 @@ use anyhow::Result;
 
 /// Output JSON Schema for the `.anodizer.yaml` config file.
 pub fn run() -> Result<()> {
-    let schema = schemars::schema_for!(anodizer_core::config::Config);
+    let schema = anodizer_core::config::config_schema();
     let json = serde_json::to_string_pretty(&schema)?;
     println!("{json}");
     Ok(())
@@ -12,7 +12,7 @@ pub fn run() -> Result<()> {
 mod tests {
     #[test]
     fn test_jsonschema_generates_valid_json() {
-        let schema = schemars::schema_for!(anodizer_core::config::Config);
+        let schema = anodizer_core::config::config_schema();
         let json = serde_json::to_string_pretty(&schema);
         assert!(json.is_ok(), "schema should serialize to JSON");
         let json_str = json.unwrap();
@@ -28,7 +28,7 @@ mod tests {
 
     #[test]
     fn test_jsonschema_contains_new_fields() {
-        let schema = schemars::schema_for!(anodizer_core::config::Config);
+        let schema = anodizer_core::config::config_schema();
         let json = serde_json::to_string_pretty(&schema).unwrap();
         assert!(
             json.contains("env_files"),

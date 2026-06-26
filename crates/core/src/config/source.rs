@@ -89,15 +89,12 @@ impl SourceConfig {
 }
 
 /// Helper schema function for the source files field (accepts strings, objects, or mixed arrays).
-fn source_files_schema(
-    generator: &mut schemars::r#gen::SchemaGenerator,
-) -> schemars::schema::Schema {
+fn source_files_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
     let mut schema = generator.subschema_for::<Vec<SourceFileEntry>>();
-    if let schemars::schema::Schema::Object(ref mut obj) = schema {
-        obj.metadata().description = Some(
-            "Extra files for the source archive. Accepts strings (glob patterns), objects with src/dst/info, or a mixed array.".to_owned(),
-        );
-    }
+    schema.ensure_object().insert(
+        "description".to_owned(),
+        "Extra files for the source archive. Accepts strings (glob patterns), objects with src/dst/info, or a mixed array.".into(),
+    );
     schema
 }
 

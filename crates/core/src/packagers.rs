@@ -127,16 +127,12 @@ where
     deserializer.deserialize_any(MakeselfVisitor)
 }
 
-pub(crate) fn makeselfs_schema(
-    generator: &mut schemars::r#gen::SchemaGenerator,
-) -> schemars::schema::Schema {
+pub(crate) fn makeselfs_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
     let mut schema = generator.subschema_for::<Vec<MakeselfConfig>>();
-    if let schemars::schema::Schema::Object(ref mut obj) = schema {
-        obj.metadata().description = Some(
-            "Makeself self-extracting archive configurations. Accepts a single object or array."
-                .to_owned(),
-        );
-    }
+    schema.ensure_object().insert(
+        "description".to_owned(),
+        "Makeself self-extracting archive configurations. Accepts a single object or array.".into(),
+    );
     schema
 }
 
@@ -294,14 +290,12 @@ where
     deserializer.deserialize_any(AppImageVisitor)
 }
 
-pub(crate) fn appimages_schema(
-    generator: &mut schemars::r#gen::SchemaGenerator,
-) -> schemars::schema::Schema {
+pub(crate) fn appimages_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
     let mut schema = generator.subschema_for::<Vec<AppImageConfig>>();
-    if let schemars::schema::Schema::Object(ref mut obj) = schema {
-        obj.metadata().description =
-            Some("AppImage packaging configurations. Accepts a single object or array.".to_owned());
-    }
+    schema.ensure_object().insert(
+        "description".to_owned(),
+        "AppImage packaging configurations. Accepts a single object or array.".into(),
+    );
     schema
 }
 

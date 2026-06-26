@@ -278,74 +278,29 @@ impl std::fmt::Display for OnFailureConfig {
 }
 
 /// Schema for prerelease: "auto" or boolean.
-fn prerelease_schema(
-    _generator: &mut schemars::r#gen::SchemaGenerator,
-) -> schemars::schema::Schema {
-    use schemars::schema::{InstanceType, Schema, SchemaObject, SingleOrVec, SubschemaValidation};
-    Schema::Object(SchemaObject {
-        subschemas: Some(Box::new(SubschemaValidation {
-            one_of: Some(vec![
-                Schema::Object(SchemaObject {
-                    instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::String))),
-                    enum_values: Some(vec![serde_json::json!("auto")]),
-                    ..Default::default()
-                }),
-                Schema::Object(SchemaObject {
-                    instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::Boolean))),
-                    ..Default::default()
-                }),
-            ]),
-            ..Default::default()
-        })),
-        ..Default::default()
-    })
+fn prerelease_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    auto_or_bool_schema()
 }
 
 /// Schema for make_latest: "auto" or boolean.
-fn make_latest_schema(
-    _generator: &mut schemars::r#gen::SchemaGenerator,
-) -> schemars::schema::Schema {
-    use schemars::schema::{InstanceType, Schema, SchemaObject, SingleOrVec, SubschemaValidation};
-    Schema::Object(SchemaObject {
-        subschemas: Some(Box::new(SubschemaValidation {
-            one_of: Some(vec![
-                Schema::Object(SchemaObject {
-                    instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::String))),
-                    enum_values: Some(vec![serde_json::json!("auto")]),
-                    ..Default::default()
-                }),
-                Schema::Object(SchemaObject {
-                    instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::Boolean))),
-                    ..Default::default()
-                }),
-            ]),
-            ..Default::default()
-        })),
-        ..Default::default()
-    })
+fn make_latest_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    auto_or_bool_schema()
 }
 
 /// Schema for skip_push: "auto" or boolean.
-pub(super) fn skip_push_schema(
-    _generator: &mut schemars::r#gen::SchemaGenerator,
-) -> schemars::schema::Schema {
-    use schemars::schema::{InstanceType, Schema, SchemaObject, SingleOrVec, SubschemaValidation};
-    Schema::Object(SchemaObject {
-        subschemas: Some(Box::new(SubschemaValidation {
-            one_of: Some(vec![
-                Schema::Object(SchemaObject {
-                    instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::String))),
-                    enum_values: Some(vec![serde_json::json!("auto")]),
-                    ..Default::default()
-                }),
-                Schema::Object(SchemaObject {
-                    instance_type: Some(SingleOrVec::Single(Box::new(InstanceType::Boolean))),
-                    ..Default::default()
-                }),
-            ]),
-            ..Default::default()
-        })),
-        ..Default::default()
+pub(super) fn skip_push_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    auto_or_bool_schema()
+}
+
+/// A `oneOf` schema accepting the literal string `"auto"` or any boolean — the
+/// shape shared by `prerelease`, `make_latest`, and `skip_push` (each a
+/// tri-state where `"auto"` defers the value to release-time inference).
+fn auto_or_bool_schema() -> schemars::Schema {
+    schemars::json_schema!({
+        "oneOf": [
+            { "type": "string", "enum": ["auto"] },
+            { "type": "boolean" }
+        ]
     })
 }
 

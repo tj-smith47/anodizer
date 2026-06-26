@@ -52,7 +52,10 @@ pub fn derive_metadata_from_cargo_toml(crate_dir: &Path) -> MetadataConfig {
     let Ok(content) = std::fs::read_to_string(&cargo_toml) else {
         return MetadataConfig::default();
     };
-    let Ok(doc) = content.parse::<Value>() else {
+    // `toml::from_str` (not `str::parse`/`FromStr`): toml 1.x routes `Value`
+    // deserialization through serde, and the bare `FromStr` path rejects a
+    // real `Cargo.toml` here. Matches every other parse site in the workspace.
+    let Ok(doc) = toml::from_str::<Value>(&content) else {
         return MetadataConfig::default();
     };
 
@@ -110,7 +113,7 @@ impl WorkspacePackage {
         while let Some(d) = dir {
             let candidate = d.join("Cargo.toml");
             if let Ok(content) = std::fs::read_to_string(&candidate)
-                && let Ok(doc) = content.parse::<Value>()
+                && let Ok(doc) = toml::from_str::<Value>(&content)
                 && let Some(ws) = doc.get("workspace").and_then(Value::as_table)
             {
                 let table = ws.get("package").and_then(Value::as_table).cloned();

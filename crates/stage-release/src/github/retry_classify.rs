@@ -108,6 +108,11 @@ mod tests {
         // DNS resolution fails fast on every platform (Linux, macOS,
         // Windows) so the call returns a transport-class octocrab error
         // in milliseconds without any OS-level TCP semantics.
+        //
+        // Pin rustls to `ring` before octocrab builds its reqwest client; the
+        // graph links two providers and nextest isolates each test in its own
+        // process. See `crate::test_support::build_test_octocrab`.
+        anodizer_core::tls::install_default_crypto_provider();
         let builder = octocrab::OctocrabBuilder::new()
             .base_uri("http://nonexistent.invalid/")
             .ok()

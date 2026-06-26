@@ -1970,8 +1970,7 @@ fn test_binary_signs_artifacts_schema_is_runtime_constrained() {
     // — this test pins that contract so any future schema-typing attempt
     // surfaces as a deliberate decision (and updates this test + the
     // documenting comment above `deserialize_binary_signs`).
-    let schema = schemars::schema_for!(Config);
-    let json = serde_json::to_value(&schema).expect("schema must serialize");
+    let json = super::config_schema();
     let sign_artifacts = json
         .pointer("/definitions/SignConfig/properties/artifacts")
         .expect("SignConfig.artifacts must appear in the generated schema");
@@ -4089,7 +4088,7 @@ crates: []
 
 #[test]
 fn test_json_schema_generation() {
-    let schema = schemars::schema_for!(Config);
+    let schema = super::config_schema();
     let json = serde_json::to_string_pretty(&schema).unwrap();
     assert!(json.contains("project_name"));
     assert!(json.contains("env_files"));

@@ -9,7 +9,7 @@ const GENERATED_MARKER: &str =
 
 /// Generate the JSON Schema for `Config` as a pretty-printed JSON string.
 fn generate_schema_json() -> Result<String, String> {
-    let schema = schemars::schema_for!(anodizer_core::config::Config);
+    let schema = anodizer_core::config::config_schema();
     serde_json::to_string_pretty(&schema).map_err(|e| format!("cannot serialize schema: {e}"))
 }
 
@@ -308,8 +308,7 @@ fn generate_cli_reference(tera: &Tera) -> Result<String, String> {
 // Config reference generation — schema-driven
 // ---------------------------------------------------------------------------
 
-use schemars::Map;
-use schemars::schema::{InstanceType, Schema, SchemaObject, SingleOrVec};
+use serde_json::{Map, Value};
 
 #[derive(serde::Serialize)]
 struct ConfigField {
@@ -326,179 +325,212 @@ struct NestedSection {
     fields: Vec<ConfigField>,
 }
 
-/// Map an `InstanceType` variant to a human-readable string.
-fn format_instance_type(t: &InstanceType) -> String {
+/// Map a JSON Schema instance-type keyword to anodizer's human-readable type
+/// name as it appears in the config reference (`bool` for `boolean`, `list` for
+/// `array`, `map` for `object`).
+fn format_instance_type(t: &str) -> String {
     match t {
-        InstanceType::String => "string".into(),
-        InstanceType::Integer => "integer".into(),
-        InstanceType::Number => "number".into(),
-        InstanceType::Boolean => "bool".into(),
-        InstanceType::Array => "list".into(),
-        InstanceType::Object => "map".into(),
-        InstanceType::Null => "null".into(),
+        "string" => "string".into(),
+        "integer" => "integer".into(),
+        "number" => "number".into(),
+        "boolean" => "bool".into(),
+        "array" => "list".into(),
+        "object" => "map".into(),
+        "null" => "null".into(),
+        other => other.into(),
     }
 }
 
-/// Format a `serde_json::Value` default for markdown (em-dash for absent/null,
+/// Format a schema `default` value for markdown (em-dash for absent/null/empty,
 /// backtick-wrapped otherwise).
-fn format_default(val: &Option<serde_json::Value>) -> String {
+fn format_default(val: Option<&Value>) -> String {
     match val {
-        None => "\u{2014}".into(),
-        Some(serde_json::Value::Null) => "\u{2014}".into(),
-        Some(serde_json::Value::String(s)) if s.is_empty() => "\u{2014}".into(),
-        Some(serde_json::Value::String(s)) => format!("`{s}`"),
+        None | Some(Value::Null) => "\u{2014}".into(),
+        Some(Value::String(s)) if s.is_empty() => "\u{2014}".into(),
+        Some(Value::String(s)) => format!("`{s}`"),
         Some(v) => format!("`{v}`"),
     }
 }
 
-/// Given a schema object that may be a `$ref`, extract the definition name
-/// (i.e. the fragment after `#/definitions/`).
+/// The definition name a `#/definitions/<Name>` `$ref` string targets.
 fn ref_name(reference: &str) -> Option<String> {
     reference
         .strip_prefix("#/definitions/")
         .map(|s| s.to_string())
 }
 
-/// Resolve a schema object to a human-readable type name.
+/// The `$ref` string carried directly on a schema object, if any.
+fn direct_ref(schema: &Value) -> Option<&str> {
+    schema.as_object()?.get("$ref")?.as_str()
+}
+
+/// The non-null members of an `anyOf`/`oneOf` subschema list, treating
+/// `{ "type": "null" }` as the null variant schemars emits for an `Option<T>`.
+fn non_null_variants(variants: &[Value]) -> Vec<&Value> {
+    variants
+        .iter()
+        .filter(|s| {
+            !matches!(
+                s.as_object().and_then(|o| o.get("type")),
+                Some(Value::String(t)) if t == "null"
+            )
+        })
+        .collect()
+}
+
+/// Resolve a property schema to a human-readable type name, matching the config
+/// reference's vocabulary.
 ///
 /// Handles:
-/// - Direct `instance_type`
-/// - `$ref`
-/// - `anyOf` (Option<T> pattern: `[T, null]`)
-/// - `allOf` (#[serde(flatten)] pattern)
-/// - Array with items `$ref`
-fn resolve_type_name(prop: &SchemaObject) -> String {
-    // Direct $ref
-    if let Some(ref r) = prop.reference {
-        return ref_name(r).unwrap_or_else(|| r.clone());
+/// - direct `$ref` → definition name;
+/// - `anyOf`/`oneOf` (the `Option<T>` pattern: `[T, {"type":"null"}]`) → the
+///   single non-null variant's type, or a `T | U` join for a true union;
+/// - `allOf` (the `#[serde(default)]`-wrapper pattern) → the first entry's type;
+/// - array → `list of <inner>` (or bare `list` when the element type is
+///   inexpressible);
+/// - a `type` keyword (string or `[T, "null"]` union) → the mapped scalar name.
+fn resolve_type_name(prop: &Value, defs: &Map<String, Value>) -> String {
+    let Some(obj) = prop.as_object() else {
+        return "object".into();
+    };
+
+    if let Some(r) = direct_ref(prop) {
+        let Some(name) = ref_name(r) else {
+            return r.to_string();
+        };
+        // A `#[serde(transparent)]` newtype over a scalar (e.g. `StringOrU32`
+        // wrapping a `u32`) is a named definition that is just a scalar type;
+        // inline its underlying type so the field shows `integer` rather than
+        // the wrapper's name. Definitions with structure (`properties`, an enum
+        // `oneOf`/`anyOf`, …) keep their name and get their own section.
+        if let Some(scalar) = defs.get(&name).and_then(scalar_def_type) {
+            return scalar;
+        }
+        return name;
     }
 
-    // anyOf — Option<T> is represented as anyOf: [T, {type: null}]
-    if let Some(ref sub) = prop.subschemas {
-        if let Some(ref any_of) = sub.any_of {
-            // Collect non-null variants
-            let non_null: Vec<&Schema> = any_of
-                .iter()
-                .filter(|s| {
-                    if let Schema::Object(o) = s {
-                        if let Some(SingleOrVec::Single(ref t)) = o.instance_type {
-                            return **t != InstanceType::Null;
-                        }
-                        // Keep if it has a $ref or subschemas (not a bare null)
-                        return o.reference.is_some() || o.subschemas.is_some();
-                    }
-                    true
-                })
-                .collect();
-
-            if non_null.len() == 1
-                && let Schema::Object(inner) = non_null[0]
-            {
-                return resolve_type_name(inner);
-            }
-            // Multiple non-null variants — join them
-            let names: Vec<String> = non_null
-                .iter()
-                .filter_map(|s| {
-                    if let Schema::Object(o) = s {
-                        Some(resolve_type_name(o))
-                    } else {
-                        None
-                    }
-                })
-                .collect();
-            if !names.is_empty() {
-                return names.join(" | ");
-            }
+    // Only `anyOf` participates in type naming — it is how an `Option<T>`/
+    // nullable field renders (`[T, {"type":"null"}]`), so the field shows `T`.
+    // A `oneOf` (e.g. the `"auto"`-or-bool tri-state schemas) has no single
+    // representative type and renders as the generic `object`, matching the
+    // reference's long-standing treatment of those fields.
+    if let Some(Value::Array(variants)) = obj.get("anyOf") {
+        let non_null = non_null_variants(variants);
+        if let [single] = non_null.as_slice() {
+            return resolve_type_name(single, defs);
         }
-
-        // allOf — flatten pattern; use first entry's type
-        if let Some(ref all_of) = sub.all_of
-            && let Some(Schema::Object(first)) = all_of.first()
-        {
-            return resolve_type_name(first);
+        let names: Vec<String> = non_null
+            .iter()
+            .map(|s| resolve_type_name(s, defs))
+            .collect();
+        if !names.is_empty() {
+            return names.join(" | ");
         }
     }
 
-    // Array with items
-    if let Some(ref arr) = prop.array {
-        if let Some(SingleOrVec::Single(ref item_schema)) = arr.items
-            && let Schema::Object(ref item_obj) = **item_schema
-        {
-            let inner = resolve_type_name(item_obj);
-            return format!("list of {inner}");
+    if let Some(Value::Array(all_of)) = obj.get("allOf")
+        && let Some(first) = all_of.first()
+    {
+        return resolve_type_name(first, defs);
+    }
+
+    // `Option<Vec<T>>` renders as `type: ["array", "null"]`, while `Vec<T>`
+    // renders as the bare `type: "array"`; both must resolve their `items` type
+    // so the field shows `list of <inner>` rather than a bare `list`.
+    if schema_has_type(prop, "array") {
+        if let Some(item) = array_item(prop) {
+            return format!("list of {}", resolve_type_name(item, defs));
         }
         return "list".into();
     }
 
-    // Direct instance_type
-    if let Some(ref t) = prop.instance_type {
-        return match t {
-            SingleOrVec::Single(it) => format_instance_type(it),
-            SingleOrVec::Vec(its) => {
-                let non_null: Vec<String> = its
-                    .iter()
-                    .filter(|it| **it != InstanceType::Null)
-                    .map(format_instance_type)
-                    .collect();
-                if non_null.len() == 1 {
-                    non_null
-                        .into_iter()
-                        .next()
-                        .unwrap_or_else(|| panic!("filtered to exactly one non-null type"))
-                } else {
-                    non_null.join(" | ")
-                }
+    match obj.get("type") {
+        Some(Value::String(t)) => format_instance_type(t),
+        Some(Value::Array(types)) => {
+            let non_null: Vec<String> = types
+                .iter()
+                .filter_map(Value::as_str)
+                .filter(|t| *t != "null")
+                .map(format_instance_type)
+                .collect();
+            if non_null.is_empty() {
+                "object".into()
+            } else {
+                non_null.join(" | ")
             }
-        };
+        }
+        _ => "object".into(),
     }
-
-    "object".into()
 }
 
-/// Given a schema object, if it directly or indirectly references a definition,
-/// return that definition name. Handles `$ref`, `anyOf`/`allOf` with `$ref`,
-/// and array items `$ref`.
+/// Whether a schema's `type` keyword names `ty`, accepting both the single form
+/// (`"type": "array"`) and the nullable union form (`"type": ["array", "null"]`)
+/// schemars emits for an `Option<…>`.
+fn schema_has_type(schema: &Value, ty: &str) -> bool {
+    match schema.as_object().and_then(|o| o.get("type")) {
+        Some(Value::String(t)) => t == ty,
+        Some(Value::Array(types)) => types.iter().any(|t| t.as_str() == Some(ty)),
+        _ => false,
+    }
+}
+
+/// The mapped scalar type name of a definition that is a bare scalar — a `type`
+/// keyword and nothing structural (`properties`, `oneOf`, `anyOf`, `allOf`,
+/// `enum`). `None` for a structured definition (which keeps its own name and
+/// section). Underpins inlining a `#[serde(transparent)]` scalar newtype to the
+/// type it wraps.
+fn scalar_def_type(def: &Value) -> Option<String> {
+    let obj = def.as_object()?;
+    let structural = ["properties", "oneOf", "anyOf", "allOf", "enum"];
+    if structural.iter().any(|k| obj.contains_key(*k)) {
+        return None;
+    }
+    match obj.get("type")?.as_str()? {
+        // Only true scalars inline; a map (`object` + `additionalProperties`) or
+        // list newtype keeps its definition name and its own section.
+        t @ ("string" | "integer" | "number" | "boolean") => Some(format_instance_type(t)),
+        _ => None,
+    }
+}
+
+/// The element schema of an array schema's `items`, handling both the single-
+/// schema form (`"items": {…}`) and the tuple form (`"items": [{…}, …]`).
+fn array_item(schema: &Value) -> Option<&Value> {
+    match schema.as_object()?.get("items")? {
+        Value::Array(items) => items.first(),
+        other => Some(other),
+    }
+}
+
+/// If a property schema directly or indirectly references a definition, the
+/// definition name. Handles a direct `$ref`, a `$ref` inside `anyOf`/`oneOf`/
+/// `allOf`, and a `$ref` on array `items`.
 ///
 /// `allOf` coverage matters because schemars emits the
 /// `#[serde(default = "...")]` + `#[serde(rename = "use")]` pattern (used by
 /// `mcp:` among others) as a wrapper object with a default and a single-entry
 /// `allOf: [{ $ref: ... }]`. Without this branch the field shows up in the
 /// top-level table but never gets a `## <name>` schema section.
-fn resolve_ref_type_name(obj: &SchemaObject) -> Option<String> {
-    // Direct $ref
-    if let Some(ref r) = obj.reference {
+fn resolve_ref_type_name(schema: &Value) -> Option<String> {
+    let obj = schema.as_object()?;
+
+    if let Some(r) = direct_ref(schema) {
         return ref_name(r);
     }
 
-    if let Some(ref sub) = obj.subschemas {
-        // anyOf — look for non-null $ref variant
-        if let Some(ref any_of) = sub.any_of {
-            for s in any_of {
-                if let Schema::Object(inner) = s
-                    && let Some(ref r) = inner.reference
-                {
-                    return ref_name(r);
-                }
-            }
-        }
-        // allOf — wrapper for `#[serde(default)]` on a struct field
-        if let Some(ref all_of) = sub.all_of {
-            for s in all_of {
-                if let Schema::Object(inner) = s
-                    && let Some(ref r) = inner.reference
-                {
+    for key in ["anyOf", "oneOf", "allOf"] {
+        if let Some(Value::Array(variants)) = obj.get(key) {
+            for s in variants {
+                if let Some(r) = direct_ref(s) {
                     return ref_name(r);
                 }
             }
         }
     }
 
-    // Array with items $ref (e.g. signs, upx)
-    if let Some(ref arr) = obj.array
-        && let Some(SingleOrVec::Single(ref item_schema)) = arr.items
-        && let Schema::Object(ref item_obj) = **item_schema
-        && let Some(ref r) = item_obj.reference
+    if schema_has_type(schema, "array")
+        && let Some(item) = array_item(schema)
+        && let Some(r) = direct_ref(item)
     {
         return ref_name(r);
     }
@@ -506,42 +538,66 @@ fn resolve_ref_type_name(obj: &SchemaObject) -> Option<String> {
     None
 }
 
-/// Extract `ConfigField` entries from a properties map.
-fn extract_fields(props: &Map<String, Schema>) -> Vec<ConfigField> {
-    props
+/// Normalize a schema `description` for rendering: collapse each paragraph's
+/// internal whitespace (including the rustdoc doc-comment's hard line wraps,
+/// which schemars 1.x preserves verbatim) to single spaces, while preserving
+/// blank-line paragraph breaks (`\n\n`). This reproduces the single-spaced,
+/// paragraph-separated form that earlier schemars releases emitted, so the
+/// rendered reference text is independent of the doc-comment's source wrapping.
+fn collapse_description(s: &str) -> String {
+    s.split("\n\n")
+        .map(|para| {
+            // Join the paragraph's hard-wrapped lines with single spaces,
+            // trimming each line's own leading/trailing whitespace, but leave
+            // intra-line whitespace (e.g. aligned spaces inside a fenced code
+            // example) untouched.
+            para.split('\n')
+                .map(str::trim)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// The `description` keyword on a schema, normalized via [`collapse_description`]
+/// and with `|` escaped so a description containing a pipe does not break the
+/// markdown table column.
+fn schema_description(schema: &Value) -> String {
+    schema
+        .as_object()
+        .and_then(|o| o.get("description"))
+        .and_then(Value::as_str)
+        .map(collapse_description)
+        .unwrap_or_default()
+        .replace('|', "\\|")
+}
+
+/// Extract `ConfigField` entries from a properties map, sorted by field name.
+/// `defs` is the schema's definitions map, consulted to inline scalar newtype
+/// `$ref`s to their underlying type.
+fn extract_fields(props: &Map<String, Value>, defs: &Map<String, Value>) -> Vec<ConfigField> {
+    let mut fields: Vec<ConfigField> = props
         .iter()
         .map(|(name, schema)| {
-            let obj = match schema {
-                Schema::Object(o) => o,
-                Schema::Bool(_) => {
-                    return ConfigField {
-                        name: name.clone(),
-                        field_type: "any".into(),
-                        default: "\u{2014}".into(),
-                        description: String::new(),
-                    };
-                }
-            };
-
-            let description = obj
-                .metadata
-                .as_ref()
-                .and_then(|m| m.description.clone())
-                .unwrap_or_default()
-                .replace('|', "\\|");
-
-            let default = obj.metadata.as_ref().and_then(|m| m.default.clone());
-
-            let field_type = resolve_type_name(obj);
-
+            if schema.as_bool().is_some() {
+                return ConfigField {
+                    name: name.clone(),
+                    field_type: "any".into(),
+                    default: "\u{2014}".into(),
+                    description: String::new(),
+                };
+            }
             ConfigField {
                 name: name.clone(),
-                field_type,
-                default: format_default(&default),
-                description,
+                field_type: resolve_type_name(schema, defs),
+                default: format_default(schema.as_object().and_then(|o| o.get("default"))),
+                description: schema_description(schema),
             }
         })
-        .collect()
+        .collect();
+    fields.sort_by(|a, b| a.name.cmp(&b.name));
+    fields
 }
 
 /// Inner types (typically per-crate fields or per-crate `publish.*` entries)
@@ -585,54 +641,65 @@ const SECOND_LEVEL_SECTIONS: &[(&str, &str, &str)] = &[
 /// documentable properties. Shared by the top-level and second-level
 /// section passes so both resolve description + fields identically.
 fn build_nested_section(
-    defs: &Map<String, Schema>,
+    defs: &Map<String, Value>,
     def_name: &str,
     section_name: &str,
 ) -> Option<NestedSection> {
-    let def_schema = match defs.get(def_name) {
-        Some(Schema::Object(s)) => s,
-        _ => return None,
-    };
-    let def_props = match def_schema.object.as_ref() {
-        Some(o) if !o.properties.is_empty() => &o.properties,
+    let def_schema = defs.get(def_name)?.as_object()?;
+    let def_props = match def_schema.get("properties").and_then(Value::as_object) {
+        Some(o) if !o.is_empty() => o,
         _ => return None,
     };
     let description = def_schema
-        .metadata
-        .as_ref()
-        .and_then(|m| m.description.clone())
+        .get("description")
+        .and_then(Value::as_str)
+        .map(collapse_description)
         .unwrap_or_default();
     Some(NestedSection {
         name: section_name.to_string(),
         description,
-        fields: extract_fields(def_props),
+        fields: extract_fields(def_props, defs),
     })
 }
 
-fn generate_config_reference(tera: &Tera) -> Result<String, String> {
-    let root_schema = schemars::schema_for!(anodizer_core::config::Config);
-    let defs = &root_schema.definitions;
-    let root = &root_schema.schema;
+/// The `properties` map of an object schema, or an error if absent.
+fn object_properties<'a>(schema: &'a Value, what: &str) -> Result<&'a Map<String, Value>, String> {
+    schema
+        .as_object()
+        .and_then(|o| o.get("properties"))
+        .and_then(Value::as_object)
+        .ok_or_else(|| format!("{what} is not an object schema"))
+}
 
-    let root_props = root
-        .object
-        .as_ref()
-        .map(|o| &o.properties)
-        .ok_or("Config schema is not an object schema")?;
+fn generate_config_reference(tera: &Tera) -> Result<String, String> {
+    let root = anodizer_core::config::config_schema();
+    let empty = Map::new();
+    let defs = root
+        .as_object()
+        .and_then(|o| o.get("definitions"))
+        .and_then(Value::as_object)
+        .unwrap_or(&empty);
+
+    let root_props = object_properties(&root, "Config schema")?;
 
     // Build top-level field list
-    let top_level_fields = extract_fields(root_props);
+    let top_level_fields = extract_fields(root_props, defs);
 
     // Build nested sections: for every top-level field that references a
-    // definition, expand that definition's properties into a section.
+    // definition, expand that definition's properties into a section. Iterate
+    // the root properties in sorted key order so the emitted sections are
+    // alphabetical (schemars emits `properties` in struct-declaration order; the
+    // reference orders auto-discovered sections by field name).
     let mut nested_sections: Vec<NestedSection> = Vec::new();
 
-    for (field_name, schema) in root_props.iter() {
-        let obj = match schema {
-            Schema::Object(o) => o,
-            Schema::Bool(_) => continue,
-        };
-        let Some(def_name) = resolve_ref_type_name(obj) else {
+    let mut sorted_props: Vec<(&String, &Value)> = root_props.iter().collect();
+    sorted_props.sort_by(|a, b| a.0.cmp(b.0));
+
+    for (field_name, schema) in sorted_props {
+        if schema.as_bool().is_some() {
+            continue;
+        }
+        let Some(def_name) = resolve_ref_type_name(schema) else {
             continue;
         };
         if let Some(section) = build_nested_section(defs, &def_name, field_name) {
@@ -642,17 +709,16 @@ fn generate_config_reference(tera: &Tera) -> Result<String, String> {
 
     // Append second-level sections (per-crate / per-publisher sub-structs).
     for (section_name, parent_def, field_name) in SECOND_LEVEL_SECTIONS {
-        let parent_schema = match defs.get(*parent_def) {
-            Some(Schema::Object(s)) => s,
-            _ => continue,
+        let Some(parent_props) = defs
+            .get(*parent_def)
+            .and_then(|s| s.as_object())
+            .and_then(|o| o.get("properties"))
+            .and_then(Value::as_object)
+        else {
+            continue;
         };
-        let parent_props = match parent_schema.object.as_ref() {
-            Some(o) => &o.properties,
-            None => continue,
-        };
-        let field_obj = match parent_props.get(*field_name) {
-            Some(Schema::Object(o)) => o,
-            _ => continue,
+        let Some(field_obj) = parent_props.get(*field_name) else {
+            continue;
         };
         let Some(def_name) = resolve_ref_type_name(field_obj) else {
             continue;
@@ -845,13 +911,9 @@ mod tests {
 
     #[test]
     fn test_schema_has_all_config_fields() {
-        let schema = schemars::schema_for!(anodizer_core::config::Config);
-        let root = schema.schema;
-        let props = root
-            .object
-            .as_ref()
-            .unwrap_or_else(|| panic!("Config should be an object schema"));
-        let field_names: Vec<&String> = props.properties.keys().collect();
+        let schema = anodizer_core::config::config_schema();
+        let props = object_properties(&schema, "Config schema").unwrap_or_else(|e| panic!("{e}"));
+        let field_names: Vec<&String> = props.keys().collect();
 
         for expected in &[
             "version",
@@ -894,22 +956,24 @@ mod tests {
 
     #[test]
     fn test_all_config_fields_resolve_to_non_empty_type() {
-        use schemars::schema::Schema;
-        let schema = schemars::schema_for!(anodizer_core::config::Config);
-        let root = schema.schema;
-        let props = root
-            .object
-            .as_ref()
-            .unwrap_or_else(|| panic!("Config should be an object schema"));
+        let root = anodizer_core::config::config_schema();
+        let empty = Map::new();
+        let defs = root
+            .as_object()
+            .and_then(|o| o.get("definitions"))
+            .and_then(Value::as_object)
+            .unwrap_or(&empty);
+        let props = object_properties(&root, "Config schema").unwrap_or_else(|e| panic!("{e}"));
 
-        for (name, schema) in &props.properties {
-            if let Schema::Object(obj) = schema {
-                let type_str = super::resolve_type_name(obj);
-                assert!(
-                    !type_str.is_empty(),
-                    "field `{name}` resolved to an empty type string"
-                );
+        for (name, schema) in props {
+            if schema.as_bool().is_some() {
+                continue;
             }
+            let type_str = super::resolve_type_name(schema, defs);
+            assert!(
+                !type_str.is_empty(),
+                "field `{name}` resolved to an empty type string"
+            );
         }
     }
 }

@@ -421,7 +421,6 @@ pub enum Commands {
         publishers: Vec<String>,
         #[arg(
             long,
-            hide_env_values = true,
             help = "GitHub token override; when set, GitHub token env-var requirements are treated as satisfied"
         )]
         token: Option<String>,

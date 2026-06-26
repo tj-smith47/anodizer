@@ -238,13 +238,12 @@ pub struct CrateConfig {
 }
 
 /// Helper schema function for archives (accepts false or array).
-pub(super) fn archives_schema(
-    generator: &mut schemars::r#gen::SchemaGenerator,
-) -> schemars::schema::Schema {
+pub(super) fn archives_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
     let mut schema = generator.subschema_for::<Option<Vec<ArchiveConfig>>>();
-    if let schemars::schema::Schema::Object(ref mut obj) = schema {
-        obj.metadata().description = Some("Archive configurations for this crate. Set to false to disable archiving, or provide an array of archive configs.".to_owned());
-    }
+    schema.ensure_object().insert(
+        "description".to_owned(),
+        "Archive configurations for this crate. Set to false to disable archiving, or provide an array of archive configs.".into(),
+    );
     schema
 }
 

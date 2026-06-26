@@ -202,6 +202,10 @@ mod tests {
         let static_resp: &'static str = Box::leak(raw.into_boxed_str());
         let serve_count: usize = if status == 429 || status >= 500 { 4 } else { 1 };
         let (addr, _calls) = spawn_oneshot_http_responder(vec![static_resp; serve_count]);
+        // Pin rustls to `ring` before octocrab builds its reqwest client; the
+        // graph links two providers and nextest isolates each test in its own
+        // process. See `crate::test_support::build_test_octocrab`.
+        anodizer_core::tls::install_default_crypto_provider();
         let octo = octocrab::OctocrabBuilder::new()
             .base_uri(format!("http://{addr}/"))
             .expect("base_uri")

@@ -263,6 +263,10 @@ mod tests {
             // Retry disabled below, so a single served response suffices for
             // every status — no connection-count dependence on the retry count.
             let (addr, _calls) = spawn_oneshot_http_responder(vec![raw]);
+            // Pin rustls to `ring` before octocrab builds its reqwest client;
+            // the graph links two providers and nextest isolates each test in
+            // its own process. See `crate::test_support::build_test_octocrab`.
+            anodizer_core::tls::install_default_crypto_provider();
             let octo = octocrab::OctocrabBuilder::new()
                 .base_uri(format!("http://{addr}/"))
                 .expect("base_uri")

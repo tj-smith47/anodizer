@@ -17,6 +17,14 @@ use std::sync::Arc;
 /// `&Arc<Octocrab>`); for callers that need the bare client, `.clone()`
 /// or `Arc::clone` after this returns.
 pub(crate) fn build_test_octocrab(addr: SocketAddr) -> Arc<octocrab::Octocrab> {
+    // `OctocrabBuilder::new()` builds octocrab's internal reqwest client, which
+    // resolves the process-default rustls `CryptoProvider`. The graph links
+    // both `ring` and `aws-lc-rs`, so rustls panics on auto-selection unless a
+    // default is installed — and under nextest each test runs in its own
+    // process, so no earlier test's install carries over. Install `ring` here;
+    // idempotent.
+    anodizer_core::tls::install_default_crypto_provider();
+
     let builder = octocrab::OctocrabBuilder::new()
         .base_uri(format!("http://{addr}/"))
         .expect("OctocrabBuilder::base_uri accepts loopback URL");
