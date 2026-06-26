@@ -7231,6 +7231,93 @@ fn pin_nfpm_script_mtimes_noops_without_mtime_or_scripts_or_in_dry_run() {
     assert!(cfg.scripts.is_none());
 }
 
+/// Every lifecycle hook nfpm supports — the four top-level
+/// (`preinstall`/`postinstall`/`preremove`/`postremove`) AND the two apk-only
+/// (`preupgrade`/`postupgrade`) — must be re-staged by the pin, so no hook is
+/// silently skipped if one is dropped from the loop. Each source script is given
+/// a DISTINCT on-disk mtime; after pinning, all six staged copies must share one
+/// identical mtime (the determinism property) — a hook left unpinned would keep
+/// its own source mtime and break the equality.
+#[test]
+fn pin_nfpm_script_mtimes_pins_every_hook() {
+    use super::run::pin_nfpm_script_mtimes;
+    use anodizer_core::config::{NfpmApkConfig, NfpmApkScripts, NfpmScripts};
+    use std::time::{Duration, UNIX_EPOCH};
+
+    let dir = TempDir::new().unwrap();
+    // (hook-name, source path) for all six, each written then stamped with a
+    // different disk mtime so a missed hook would surface as a distinct mtime.
+    let names = [
+        "preinstall",
+        "postinstall",
+        "preremove",
+        "postremove",
+        "preupgrade",
+        "postupgrade",
+    ];
+    let mut srcs = Vec::new();
+    for (i, n) in names.iter().enumerate() {
+        let p = dir.path().join(format!("{n}.sh"));
+        std::fs::write(&p, format!("#!/bin/sh\n# {n}\n")).unwrap();
+        // Distinct mtime per source: 1.6e9 + i*1e6 seconds.
+        let mt = UNIX_EPOCH + Duration::from_secs(1_600_000_000 + (i as u64) * 1_000_000);
+        anodizer_core::util::set_file_mtime(&p, mt).unwrap();
+        srcs.push(p.to_string_lossy().into_owned());
+    }
+
+    let mut cfg = NfpmConfig {
+        mtime: Some("2024-01-01T00:00:00Z".to_string()),
+        scripts: Some(NfpmScripts {
+            preinstall: Some(srcs[0].clone()),
+            postinstall: Some(srcs[1].clone()),
+            preremove: Some(srcs[2].clone()),
+            postremove: Some(srcs[3].clone()),
+        }),
+        apk: Some(NfpmApkConfig {
+            scripts: Some(NfpmApkScripts {
+                preupgrade: Some(srcs[4].clone()),
+                postupgrade: Some(srcs[5].clone()),
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+    let id = cfg.clone();
+    pin_nfpm_script_mtimes(&mut cfg, &id, dir.path(), "probe", false).unwrap();
+
+    let scripts = cfg.scripts.expect("top-level scripts survive the pin");
+    let apk_scripts = cfg
+        .apk
+        .unwrap()
+        .scripts
+        .expect("apk scripts survive the pin");
+    let staged = [
+        scripts.preinstall.unwrap(),
+        scripts.postinstall.unwrap(),
+        scripts.preremove.unwrap(),
+        scripts.postremove.unwrap(),
+        apk_scripts.preupgrade.unwrap(),
+        apk_scripts.postupgrade.unwrap(),
+    ];
+
+    let mut mtimes = Vec::new();
+    for (i, path) in staged.iter().enumerate() {
+        assert_ne!(
+            path, &srcs[i],
+            "hook `{}` must be rewritten to a staged copy, not left at its source path",
+            names[i]
+        );
+        let meta = std::fs::metadata(path)
+            .unwrap_or_else(|e| panic!("staged `{}` script must exist: {e}", names[i]));
+        mtimes.push(meta.modified().unwrap());
+    }
+    assert!(
+        mtimes.windows(2).all(|w| w[0] == w[1]),
+        "all six pinned hooks must share one normalized mtime despite distinct \
+         source mtimes; got per-hook mtimes: {mtimes:?}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // amd64 micro-architecture variant naming
 // ---------------------------------------------------------------------------

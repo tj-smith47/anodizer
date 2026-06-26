@@ -637,6 +637,16 @@ crates:
             file_info:
               mode: 0644
               mtime: "{{ CommitDate }}"
+        # Refresh the man index post-install. Also dogfooding: a lifecycle
+        # script makes the determinism harness exercise the nfpm script-mtime
+        # pin on anodizer's OWN packages — the path a script-less package never
+        # covers, which is how apk script-mtime drift reached a consumer before
+        # it could fail here. The script is ALSO executed live by the
+        # verify-release `install_smoke` gate (it runs the real installer in a
+        # container), so it must stay install-safe — keep it best-effort and
+        # exit 0.
+        scripts:
+          postinstall: packaging/nfpm/postinstall.sh
         # Package signing uses two distinct key materials:
         #   * GPG_KEY_PATH         -> GPG-armored secret key, consumed by deb
         #                             (dpkg-sig) and rpm (rpmsign).
@@ -698,6 +708,11 @@ crates:
             file_info:
               mode: 0644
               mtime: "{{ CommitDate }}"
+        # Same postinstall as deb/rpm — load-bearing here: this is the SIGNED apk
+        # whose script-mtime drift the determinism harness must now catch on
+        # anodizer's own release (see the deb/rpm entry for the full rationale).
+        scripts:
+          postinstall: packaging/nfpm/postinstall.sh
         apk:
           signature:
             # apk-tools uses its own RSA-PSS scheme, not OpenPGP. nfpm's apk
