@@ -387,12 +387,14 @@ pub fn output_retrying_etxtbsy(cmd: &mut std::process::Command) -> std::process:
     panic!("fake tool stayed ETXTBSY after 50 retries");
 }
 
-#[cfg(test)]
+// Unix-only: every test here spawns a fake tool that is a shell script, so the
+// whole module compiles only on unix — gating it once here keeps the Windows
+// build free of unused-import warnings without per-item `#[cfg(unix)]`.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::process::Command;
 
-    #[cfg(unix)]
     #[test]
     fn records_argv_across_invocations() {
         let tools = FakeToolDir::new();
@@ -411,7 +413,6 @@ mod tests {
         assert_eq!(calls[1], vec!["clean"]);
     }
 
-    #[cfg(unix)]
     #[test]
     fn honors_exit_code_and_stderr() {
         let tools = FakeToolDir::new();
@@ -421,7 +422,6 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&out.stderr), "fatal\n");
     }
 
-    #[cfg(unix)]
     #[test]
     fn creates_output_file() {
         let tools = FakeToolDir::new();
@@ -437,7 +437,6 @@ mod tests {
         assert_eq!(body, "{\"k\":1}");
     }
 
-    #[cfg(unix)]
     #[test]
     fn custom_script_sees_argv() {
         let tools = FakeToolDir::new();
@@ -458,7 +457,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     #[serial_test::serial]
     fn activate_prepends_path_and_restores() {
@@ -476,7 +474,6 @@ mod tests {
         assert_eq!(std::env::var_os("PATH"), before);
     }
 
-    #[cfg(unix)]
     fn which_on_path(name: &str) -> Option<PathBuf> {
         let path = std::env::var_os("PATH")?;
         std::env::split_paths(&path)

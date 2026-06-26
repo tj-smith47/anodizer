@@ -60,8 +60,11 @@ fn set_own_process_group(cmd: &mut Command) {
 #[cfg(windows)]
 fn set_own_process_group(cmd: &mut Command) {
     use std::os::windows::process::CommandExt as _;
-    // CREATE_NEW_PROCESS_GROUP — lets a later group-targeted kill reach the
-    // child's descendants.
+    // CREATE_NEW_PROCESS_GROUP isolates the child from console control events
+    // aimed at our own group (a stray Ctrl-C won't race the watchdog). The
+    // subtree kill itself is done by `taskkill /T` in `kill_child_tree` — unlike
+    // Unix process groups, a Windows group is NOT a kill target for
+    // TerminateProcess.
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
 }
@@ -69,9 +72,10 @@ fn set_own_process_group(cmd: &mut Command) {
 #[cfg(not(any(unix, windows)))]
 fn set_own_process_group(_cmd: &mut Command) {}
 
-/// Kill `child` and, on Unix, its entire process group, so a forked grandchild
-/// holding an inherited pipe dies too (otherwise the reader threads never EOF).
-/// Best-effort: a child that already exited yields a benign error.
+/// Kill `child` and its entire process subtree, so a forked grandchild holding
+/// an inherited pipe dies too (otherwise the reader threads never EOF and the
+/// timeout fails to bound the call). Best-effort: a child that already exited
+/// yields a benign error.
 fn kill_child_tree(child: &mut Child) {
     #[cfg(unix)]
     {
@@ -85,10 +89,41 @@ fn kill_child_tree(child: &mut Child) {
             libc::kill(-pid, libc::SIGKILL);
         }
     }
-    // The direct child kill is the portable fallback (and the only path on
-    // non-Unix): on Windows the new process group is terminated when the child
-    // handle is killed, and any platform without group semantics still reaps
-    // the immediate child.
+    #[cfg(windows)]
+    {
+        // `child.kill()` (TerminateProcess) reaps ONLY the direct child;
+        // CREATE_NEW_PROCESS_GROUP does not extend termination to descendants.
+        // A forked grandchild (the `sh -c <tool>` wrapper shape) would survive
+        // holding the inherited stdout/stderr pipe, leaving the reader threads
+        // blocked until it exits on its own — so the timeout would not actually
+        // bound the call. `taskkill /T` walks the process tree (by PPID linkage)
+        // and terminates every descendant present at snapshot time, closing
+        // those pipes. It MUST run before `child.kill()` below: Windows never
+        // reparents orphans, so once the parent is killed its PID can be
+        // recycled by an unrelated process — the grandchild's now-stale PPID
+        // would then point the /T walk at the wrong subtree (or miss it
+        // entirely). Keeping the parent alive holds the tree linkage valid for
+        // the walk. Resolved by absolute path (System32) so a sanitized PATH
+        // can't strip the tool and silently drop us back to the 30s-hang bug.
+        // Best-effort — an already-exited tree yields a non-zero status we
+        // ignore.
+        let taskkill = std::env::var_os("SystemRoot")
+            .map(|root| {
+                std::path::Path::new(&root)
+                    .join("System32")
+                    .join("taskkill.exe")
+            })
+            .unwrap_or_else(|| std::path::PathBuf::from("taskkill.exe"));
+        let _ = std::process::Command::new(taskkill)
+            .args(["/T", "/F", "/PID", &child.id().to_string()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    // The direct child kill is the portable fallback (and the only path on a
+    // platform without group/tree semantics): it still reaps the immediate
+    // child when the subtree kill above was a no-op or unavailable.
     let _ = child.kill();
 }
 
