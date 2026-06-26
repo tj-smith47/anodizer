@@ -8,9 +8,19 @@
 //! This marker closes that gap channel-agnostically. After an announcer's
 //! `send` succeeds, its name is recorded in
 //! `<dist>/.announce-sent-<version>.json`. On a later run at the same version,
-//! any announcer already listed is skipped — the announcement is sent at most
-//! once per `(version, announcer)` regardless of how many times the release is
-//! re-run.
+//! any announcer already listed is skipped.
+//!
+//! **Delivery guarantee (honest):** the marker gives *exactly-once* for any
+//! send that **completed and was drained** before the announce stage's
+//! aggregate deadline — its success is recorded, so a re-run skips it. It
+//! degrades to *at-least-once* only for a send still **genuinely in-flight**
+//! when the deadline elapsed: that straggler is abandoned without a marker, so
+//! a re-run re-fires it (and it may also still land on the first run, hence the
+//! possible duplicate). A send that *finished* right at the deadline is NOT a
+//! straggler — the dispatch runner does a final non-blocking drain of completed
+//! results before computing the abandoned set, so a completed-but-undrained
+//! send is recorded rather than re-fired. The residual duplicate window is
+//! therefore confined to sends that had not returned by the deadline.
 //!
 //! The marker is keyed by VERSION (not run-id): a recovery re-run gets a fresh
 //! run-id, so a run-id-keyed marker could never deduplicate across runs. It is

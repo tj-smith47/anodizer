@@ -8,7 +8,15 @@ use crate::helpers::retry_http;
 /// Bounded per-request timeout applied to every announce HTTP client and the
 /// SMTP transport, so an unresponsive endpoint cannot hang the announce stage
 /// indefinitely.
-pub(crate) const ANNOUNCE_HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+///
+/// Announce is a best-effort post-publish notification, not a critical publish
+/// step, so this is tighter than the per-call cap used by the irreversible
+/// publishers: a channel that cannot answer in 10s on a release host (egress
+/// firewalled, DNS black-holed) should be abandoned quickly rather than burn a
+/// generous budget. Combined with the announce retry profile (1 retry) and the
+/// aggregate stage deadline, the worst-case time a single channel can consume
+/// is bounded to a handful of seconds.
+pub(crate) const ANNOUNCE_HTTP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Build the canonical announce blocking client: the shared
 /// [`anodizer_core::http::blocking_client`] policy (UA + roots) plus the
@@ -77,7 +85,7 @@ mod tests {
         // A timeout-less client can hang the announce stage indefinitely; the
         // bound must stay finite and non-zero.
         assert!(ANNOUNCE_HTTP_TIMEOUT > Duration::ZERO);
-        assert_eq!(ANNOUNCE_HTTP_TIMEOUT, Duration::from_secs(30));
+        assert_eq!(ANNOUNCE_HTTP_TIMEOUT, Duration::from_secs(10));
     }
 
     #[test]

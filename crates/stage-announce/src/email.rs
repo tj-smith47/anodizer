@@ -268,6 +268,13 @@ pub(crate) fn build_rfc2822_message(params: &EmailParams<'_>) -> Result<String> 
 ///
 /// Tries `sendmail -t` first; falls back to `msmtp -t` if sendmail is not
 /// found. Both commands read recipients from the message headers via `-t`.
+///
+/// The child is bounded by [`crate::http::ANNOUNCE_HTTP_TIMEOUT`] — the same
+/// per-call timeout the SMTP relay path uses. A `sendmail -t` blocked on an
+/// unreachable MX is killed (not abandoned) at that deadline so it can neither
+/// hang the announce worker nor leak as a zombie; the SMTP-relay timeout and
+/// the announce stage's aggregate deadline live a layer up and cannot reach
+/// into a spawned subprocess on their own.
 pub fn send_sendmail(
     params: &EmailParams<'_>,
     log: &anodizer_core::log::StageLogger,
@@ -288,7 +295,13 @@ pub fn send_sendmail(
 
     let mut cmd = Command::new(program);
     cmd.args(&args);
-    anodizer_core::run::run_checked_with_stdin(&mut cmd, message.as_bytes(), log, program)?;
+    anodizer_core::run::run_checked_with_stdin_timeout(
+        &mut cmd,
+        message.as_bytes(),
+        log,
+        program,
+        crate::http::ANNOUNCE_HTTP_TIMEOUT,
+    )?;
     Ok(())
 }
 

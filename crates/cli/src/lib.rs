@@ -79,8 +79,10 @@ pub enum Commands {
         token: Option<String>,
         #[arg(
             long,
-            default_value = "60m",
-            help = "Pipeline timeout duration (e.g., 60m, 1h, 5s)"
+            default_value = "3h",
+            help = "Pipeline timeout duration (e.g., 90m, 3h, 5s) — a generous \
+                    safety backstop, not the primary bound; per-stage bounds \
+                    (e.g. announce.deadline) catch a hung stage in seconds"
         )]
         timeout: String,
         #[arg(
@@ -301,8 +303,10 @@ pub enum Commands {
         crate_names: Vec<String>,
         #[arg(
             long,
-            default_value = "60m",
-            help = "Pipeline timeout duration (e.g., 60m, 1h, 5s)"
+            default_value = "3h",
+            help = "Pipeline timeout duration (e.g., 90m, 3h, 5s) — a generous \
+                    safety backstop, not the primary bound; per-stage bounds \
+                    (e.g. announce.deadline) catch a hung stage in seconds"
         )]
         timeout: String,
         #[arg(

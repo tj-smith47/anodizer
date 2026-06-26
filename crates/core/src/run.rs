@@ -26,11 +26,71 @@
 //! Command`), which `module-boundaries.md` explicitly sanctions.
 
 use std::io::{BufRead, BufReader, Write};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
 
 use crate::log::StageLogger;
+use crate::retry::Retriable;
+
+/// Poll cadence for the bounded-wait watchdog. Short enough that a child that
+/// exits just after a poll is reaped promptly, long enough not to spin a core.
+const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+/// Place a to-be-spawned, timeout-bounded child in its OWN process group so the
+/// watchdog can kill the WHOLE subtree on expiry — not just the immediate
+/// child.
+///
+/// A bare `Child::kill()` reaps only the direct child; a child that forked a
+/// grandchild holding the inherited stdout/stderr pipe (e.g. a `sh -c` wrapper
+/// around the real tool, or a relay that double-forks) would keep those pipes
+/// open after the parent died, so the reader threads never hit EOF and the run
+/// would hang until the grandchild exited on its own. Killing the process group
+/// closes every inherited pipe at once. Applied ONLY on the timeout path so the
+/// untimed `Command` setup is byte-for-byte unchanged.
+#[cfg(unix)]
+fn set_own_process_group(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt as _;
+    // 0 → put the child in a new group whose pgid equals its pid.
+    cmd.process_group(0);
+}
+
+#[cfg(windows)]
+fn set_own_process_group(cmd: &mut Command) {
+    use std::os::windows::process::CommandExt as _;
+    // CREATE_NEW_PROCESS_GROUP — lets a later group-targeted kill reach the
+    // child's descendants.
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
+}
+
+#[cfg(not(any(unix, windows)))]
+fn set_own_process_group(_cmd: &mut Command) {}
+
+/// Kill `child` and, on Unix, its entire process group, so a forked grandchild
+/// holding an inherited pipe dies too (otherwise the reader threads never EOF).
+/// Best-effort: a child that already exited yields a benign error.
+fn kill_child_tree(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        // Negative pid targets the process GROUP (pgid == child pid, set at
+        // spawn via `set_own_process_group`). SIGKILL the whole group so no
+        // descendant survives holding our pipe ends.
+        let pid = child.id() as i32;
+        // SAFETY: `kill(2)` with a negative pid and SIGKILL has no memory
+        // effects; an already-reaped group yields ESRCH, which is ignored.
+        unsafe {
+            libc::kill(-pid, libc::SIGKILL);
+        }
+    }
+    // The direct child kill is the portable fallback (and the only path on
+    // non-Unix): on Windows the new process group is terminated when the child
+    // handle is killed, and any platform without group semantics still reaps
+    // the immediate child.
+    let _ = child.kill();
+}
 
 /// Run an already-constructed `cmd`, capturing stdout and stderr, and route
 /// the result through [`StageLogger::check_output`].
@@ -76,12 +136,73 @@ pub fn run_checked_with_stdin(
     cmd.stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    run_inner(cmd, Some(stdin), log, label)
+    run_inner(cmd, Some(stdin), log, label, None)
+}
+
+/// Like [`run_checked_with_stdin`], but bounds the child to `timeout`: if it
+/// has not exited within that window the child is **killed** (not merely
+/// abandoned) and the call returns a retriable timeout error.
+///
+/// This is the pipe-input analogue of the bounded SMTP relay timeout. A
+/// transport with no wall-clock bound — the canonical case being `sendmail -t`
+/// /
+/// `msmtp -t` blocking on an unreachable MX — would otherwise hang the caller
+/// indefinitely AND leak the child, since the per-stage and aggregate deadlines
+/// the announce stage applies live one layer up and cannot reach into a spawned
+/// subprocess. Killing on expiry releases both the worker thread and the child.
+///
+/// The timeout error is wrapped in [`Retriable`] so the announce retry profile
+/// treats a transient hang like any other network blip (one bounded retry)
+/// rather than fast-failing.
+pub fn run_checked_with_stdin_timeout(
+    cmd: &mut Command,
+    stdin: &[u8],
+    log: &StageLogger,
+    label: &str,
+    timeout: Duration,
+) -> Result<Output> {
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    run_inner(cmd, Some(stdin), log, label, Some(timeout))
 }
 
 /// Verbose path for [`run_checked`] with no stdin to feed.
 fn run_streamed(cmd: &mut Command, log: &StageLogger, label: &str) -> Result<Output> {
-    run_inner(cmd, None, log, label)
+    run_inner(cmd, None, log, label, None)
+}
+
+/// Wait for `child` to exit, killing it if it outlives `timeout`.
+///
+/// Polls [`Child::try_wait`] on a short cadence so a child that exits on its own
+/// is reaped promptly; on the deadline it sends `kill()` (closing the child's
+/// stdout/stderr, which lets the concurrent reader threads hit EOF and the
+/// surrounding [`std::thread::scope`] unwind). Returns `Ok(Some(status))` when
+/// the child exited under its own power, `Ok(None)` when it was killed for
+/// exceeding `timeout`, and `Err` only on an OS-level wait failure.
+///
+/// `child` is shared with the main thread (which performs the final reaping
+/// `wait`) through a `Mutex`; the lock is held only for each non-blocking
+/// `try_wait` / `kill`, never across a sleep, so the main thread can still
+/// acquire it to drain the zombie after a kill.
+fn wait_or_kill(child: &Mutex<Child>, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        {
+            let mut guard = child.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(status) = guard.try_wait()? {
+                return Ok(Some(status));
+            }
+            if Instant::now() >= deadline {
+                // Kill the whole subtree (group), not just the direct child, so
+                // a forked grandchild holding the inherited pipe dies too and
+                // the readers can EOF. Benign if the child already exited.
+                kill_child_tree(&mut guard);
+                return Ok(None);
+            }
+        }
+        std::thread::sleep(WAIT_POLL_INTERVAL);
+    }
 }
 
 /// Spawn `cmd` and collect its output, draining stdout and stderr
@@ -96,13 +217,26 @@ fn run_streamed(cmd: &mut Command, log: &StageLogger, label: &str) -> Result<Out
 /// `log` / `stdin` without `'static` / `Arc`, and all join before the scope
 /// returns. `wait()` runs after the readers hit EOF, so the captured buffers
 /// are complete before the success/failure decision.
+///
+/// When `timeout` is `Some`, a fourth scoped thread watches the child: if it
+/// outlives the deadline it is **killed**, which closes its pipes so the reader
+/// threads reach EOF and the scope can unwind instead of blocking forever on a
+/// hung child. A killed-for-timeout run returns a retriable timeout error
+/// rather than the child's (nonexistent) exit status.
 fn run_inner(
     cmd: &mut Command,
     stdin: Option<&[u8]>,
     log: &StageLogger,
     label: &str,
+    timeout: Option<Duration>,
 ) -> Result<Output> {
     let verbose = log.is_verbose();
+    // A timeout-bounded child runs in its own process group so the watchdog can
+    // kill its whole subtree on expiry (a forked grandchild holding the
+    // inherited pipe would otherwise keep the readers blocked past the kill).
+    if timeout.is_some() {
+        set_own_process_group(cmd);
+    }
     let mut child = cmd
         .spawn()
         .with_context(|| format!("failed to spawn {label}"))?;
@@ -125,10 +259,22 @@ fn run_inner(
         .take()
         .with_context(|| format!("{label}: child has no stderr pipe"))?;
 
+    // Shared with the watchdog (which kills on deadline) and the post-scope
+    // reaping wait. The lock is only ever held for a non-blocking try_wait /
+    // kill, never across a sleep, so both sides make progress.
+    let child = Mutex::new(child);
+
     let mut out_buf: Vec<u8> = Vec::new();
     let mut err_buf: Vec<u8> = Vec::new();
     // Carries a non-fatal stdin-write I/O error out of the writer thread.
     let mut stdin_err: Option<std::io::Error> = None;
+    // Set by the watchdog when it killed the child for exceeding `timeout`.
+    let mut timed_out = false;
+    // Carries an OS-level wait failure out of the watchdog thread.
+    let mut watchdog_err: Option<std::io::Error> = None;
+    // A shared reference (Copy) the watchdog can move without taking the Mutex
+    // itself, leaving `child` available for the post-scope reaping wait.
+    let child_ref = &child;
     std::thread::scope(|s| {
         // Stdin writer (only when there is stdin): own thread so the readers
         // below drain concurrently and a full stdout pipe can't wedge us
@@ -144,11 +290,24 @@ fn run_inner(
         let out_handle = s.spawn(|| tee_stream(child_stdout, log, false, verbose));
         let err_handle = s.spawn(|| tee_stream(child_stderr, log, true, verbose));
 
+        // Bounded-wait watchdog: kills the child if it outlives `timeout`,
+        // unblocking the readers (killed pipes → EOF) so this scope can exit.
+        let watchdog = timeout.map(|t| s.spawn(move || wait_or_kill(child_ref, t)));
+
         // A reader-thread panic must not vanish the captured stream (it drives
         // the failure embed). Warn loudly and fall back to an empty buffer
         // instead of silently swallowing it.
         out_buf = join_capture(out_handle, log, "stdout");
         err_buf = join_capture(err_handle, log, "stderr");
+
+        if let Some(h) = watchdog {
+            match h.join() {
+                Ok(Ok(Some(_status))) => {} // child exited on its own
+                Ok(Ok(None)) => timed_out = true,
+                Ok(Err(e)) => watchdog_err = Some(e),
+                Err(_) => log.warn(&format!("{label}: timeout watchdog thread panicked")),
+            }
+        }
 
         if let Some(h) = stdin_handle {
             match h.join() {
@@ -162,6 +321,29 @@ fn run_inner(
         }
     });
 
+    // Always reap the (now-exited-or-killed) child so no zombie leaks, even on
+    // the timeout path. Done after the scope so the watchdog has released the
+    // lock.
+    let reaped = {
+        let mut guard = child.lock().unwrap_or_else(|p| p.into_inner());
+        guard.wait()
+    };
+
+    if let Some(e) = watchdog_err {
+        return Err(anyhow::Error::new(e).context(format!("{label}: failed to wait for child")));
+    }
+
+    // Timeout takes precedence over a stdin write error (the latter is the
+    // symptom — the child stopped reading because it hung). Surface a retriable
+    // timeout so the announce retry profile treats it like a transient blip.
+    if timed_out {
+        let secs = timeout.map(|t| t.as_secs_f64()).unwrap_or_default();
+        return Err(anyhow::Error::new(Retriable::new(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            format!("{label}: child did not exit within {secs:.0}s; killed"),
+        ))));
+    }
+
     // A non-broken-pipe stdin error is a real failure to deliver input.
     if let Some(e) = stdin_err
         && e.kind() != std::io::ErrorKind::BrokenPipe
@@ -169,9 +351,7 @@ fn run_inner(
         return Err(anyhow::Error::new(e).context(format!("{label}: failed to write stdin")));
     }
 
-    let status = child
-        .wait()
-        .with_context(|| format!("{label}: failed to wait for child"))?;
+    let status = reaped.with_context(|| format!("{label}: failed to wait for child"))?;
 
     let output = Output {
         status,
@@ -419,6 +599,61 @@ mod tests {
         assert!(
             String::from_utf8_lossy(&out.stdout).contains("line99999"),
             "the last generated stdout line must be captured"
+        );
+    }
+
+    /// A child that ignores its stdin and sleeps far past the timeout (the
+    /// `sendmail -t blocked on an unreachable MX` shape) must be KILLED at the
+    /// deadline, not awaited: the call returns promptly with a retriable
+    /// timeout error and the child does not outlive it.
+    #[test]
+    fn run_checked_with_stdin_timeout_kills_hung_child() {
+        let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let start = Instant::now();
+        let err = run_checked_with_stdin_timeout(
+            // Reads nothing, holds its stdout pipe open, sleeps 30s — a hang.
+            &mut sh("sleep 30"),
+            b"ignored stdin\n",
+            &log,
+            "hung",
+            Duration::from_millis(200),
+        )
+        .expect_err("a child outliving the timeout must surface as Err");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "timeout must return promptly (killed the child), took {elapsed:?}"
+        );
+        // The timeout error is retriable so the announce retry profile treats
+        // it like a transient blip.
+        assert!(
+            err.downcast_ref::<crate::retry::Retriable>().is_some(),
+            "timeout error must be Retriable; got: {err:#}"
+        );
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("did not exit") && chain.contains("killed"),
+            "timeout error must name the kill; got: {chain}"
+        );
+    }
+
+    /// A child that completes well within its timeout takes the normal success
+    /// path: the timeout never fires and the captured stdout round-trips.
+    #[test]
+    fn run_checked_with_stdin_timeout_fast_child_succeeds() {
+        let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let out = run_checked_with_stdin_timeout(
+            &mut Command::new("cat"),
+            b"within-deadline\n",
+            &log,
+            "cat",
+            Duration::from_secs(30),
+        )
+        .expect("a fast child must succeed under a generous timeout");
+        assert_eq!(
+            String::from_utf8_lossy(&out.stdout).trim_end(),
+            "within-deadline",
+            "the fast-path timeout call must still round-trip stdin to stdout"
         );
     }
 

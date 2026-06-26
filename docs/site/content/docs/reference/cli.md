@@ -40,7 +40,7 @@ Run the full release pipeline
 | `--skip` | — | — | Skip stages or publishers (comma-separated, e.g. docker,announce,npm). Unified denylist: a stage name skips the stage, a publisher name (npm, homebrew, chocolatey, …) skips that publisher. |
 | `--publishers` | — | — | Comma-separated publishers to run (default: all configured). --skip always wins over --publishers. |
 | `--token` | — | — | GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars) |
-| `--timeout` | — | `60m` | Pipeline timeout duration (e.g., 60m, 1h, 5s) |
+| `--timeout` | — | `3h` | Pipeline timeout duration (e.g., 90m, 3h, 5s) — a generous safety backstop, not the primary bound; per-stage bounds (e.g. announce.deadline) catch a hung stage in seconds |
 | `--parallelism` | `-p` | — | Maximum number of parallel build jobs (default: number of CPUs) |
 | `--auto-snapshot` | — | — | Automatically set --snapshot if the git repo is dirty |
 | `--single-target` | — | — | Build only for the host target triple |
@@ -87,7 +87,7 @@ Build binaries only (always runs in snapshot mode)
 | Flag | Short | Default | Description |
 |------|-------|---------|-------------|
 | `--crate` | — | — | Build a specific crate (repeatable) |
-| `--timeout` | — | `60m` | Pipeline timeout duration (e.g., 60m, 1h, 5s) |
+| `--timeout` | — | `3h` | Pipeline timeout duration (e.g., 90m, 3h, 5s) — a generous safety backstop, not the primary bound; per-stage bounds (e.g. announce.deadline) catch a hung stage in seconds |
 | `--parallelism` | `-p` | — | Maximum number of parallel build jobs (default: number of CPUs) |
 | `--single-target` | — | — | Build only for the host target triple |
 | `--workspace` | — | — | Build a specific workspace in a monorepo config |

@@ -95,6 +95,9 @@ Message bodies are secret-redacted before send: known secret env values are mask
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `bluesky` | BlueskyAnnounce | — | Bluesky announcement configuration. |
+| `deadline` | HumanDuration | — | Overall wall-clock deadline for the announce stage (e.g. `"90s"`, `"2m"`). Optional — defaults to [`DEFAULT_ANNOUNCE_DEADLINE`] (90s).
+
+Announcers run concurrently; any still running when this deadline elapses is abandoned with a warning rather than awaited. This bounds the stage so unreachable channels cannot accumulate into a hang that trips the pipeline timeout *after* publishers already crossed one-way doors. Raise it only if a slow-but-reachable channel legitimately needs longer. |
 | `discord` | DiscordAnnounce | — | Discord announcement configuration. |
 | `discourse` | DiscourseAnnounce | — | Discourse announcement configuration. |
 | `email` | EmailAnnounce | — | Email announcement configuration. accepts the historical `smtp:` key as an alias because the field was renamed `smtp:` -> `email:` in v1.21+ and kept the alias for migration. Keeping the alias avoids forcing a re-yaml of legacy configs. |

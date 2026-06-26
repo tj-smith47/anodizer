@@ -33,6 +33,21 @@ fn isolated_test_dist() -> std::path::PathBuf {
     path
 }
 
+/// Run `AnnounceStage` with a log capture attached and return the captured
+/// WARN lines. Announce is non-fatal post-publish: a misconfigured or failed
+/// channel is surfaced as a warn naming the provider, and `run` returns `Ok`.
+/// Tests that previously asserted `run(...).is_err()` / `.unwrap_err()` now
+/// assert `run` is `Ok` and that the expected provider/error text appears in
+/// these warns.
+fn run_capturing_warns(ctx: &mut Context) -> Vec<String> {
+    let capture = anodizer_core::log::LogCapture::new();
+    ctx.with_log_capture(capture.clone());
+    AnnounceStage
+        .run(ctx)
+        .expect("announce is non-fatal post-publish: run must return Ok even when a channel fails");
+    capture.warn_messages()
+}
+
 fn make_ctx(announce: Option<AnnounceConfig>) -> Context {
     let mut config = Config::default();
     config.dist = isolated_test_dist();
@@ -302,7 +317,13 @@ fn test_missing_webhook_url_returns_error() {
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set("Version", "1.0.0");
-    assert!(AnnounceStage.run(&mut ctx).is_err());
+    let warns = run_capturing_warns(&mut ctx);
+    assert!(
+        warns
+            .iter()
+            .any(|w| w.contains("missing webhook_url in announce.discord")),
+        "expected a warn naming the failed channel, got: {warns:?}"
+    );
 }
 
 #[test]
@@ -406,7 +427,13 @@ fn test_missing_telegram_bot_token_returns_error() {
     ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set("Version", "1.0.0");
-    assert!(AnnounceStage.run(&mut ctx).is_err());
+    let warns = run_capturing_warns(&mut ctx);
+    assert!(
+        warns
+            .iter()
+            .any(|w| w.contains("missing bot_token in announce.telegram")),
+        "expected a warn naming the failed channel, got: {warns:?}"
+    );
 }
 
 #[test]
@@ -456,7 +483,13 @@ fn test_missing_telegram_chat_id_returns_error() {
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set("Version", "1.0.0");
-    assert!(AnnounceStage.run(&mut ctx).is_err());
+    let warns = run_capturing_warns(&mut ctx);
+    assert!(
+        warns
+            .iter()
+            .any(|w| w.contains("missing chat_id in announce.telegram")),
+        "expected a warn naming the failed channel, got: {warns:?}"
+    );
 }
 
 #[test]
@@ -548,7 +581,13 @@ fn test_missing_teams_webhook_url_returns_error() {
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set("Version", "1.0.0");
-    assert!(AnnounceStage.run(&mut ctx).is_err());
+    let warns = run_capturing_warns(&mut ctx);
+    assert!(
+        warns
+            .iter()
+            .any(|w| w.contains("missing webhook_url in announce.teams")),
+        "expected a warn naming the failed channel, got: {warns:?}"
+    );
 }
 
 // ----------------------------------------------------------------
@@ -621,7 +660,13 @@ fn test_missing_mattermost_webhook_url_returns_error() {
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set("Version", "1.0.0");
-    assert!(AnnounceStage.run(&mut ctx).is_err());
+    let warns = run_capturing_warns(&mut ctx);
+    assert!(
+        warns
+            .iter()
+            .any(|w| w.contains("missing webhook_url in announce.mattermost")),
+        "expected a warn naming the failed channel, got: {warns:?}"
+    );
 }
 
 // ----------------------------------------------------------------
@@ -693,7 +738,13 @@ fn test_missing_email_from_returns_error() {
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set("Version", "1.0.0");
-    assert!(AnnounceStage.run(&mut ctx).is_err());
+    let warns = run_capturing_warns(&mut ctx);
+    assert!(
+        warns
+            .iter()
+            .any(|w| w.contains("missing from in announce.email")),
+        "expected a warn naming the failed channel, got: {warns:?}"
+    );
 }
 
 #[test]
@@ -719,7 +770,13 @@ fn test_missing_email_to_returns_error() {
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set("Version", "1.0.0");
-    assert!(AnnounceStage.run(&mut ctx).is_err());
+    let warns = run_capturing_warns(&mut ctx);
+    assert!(
+        warns
+            .iter()
+            .any(|w| w.contains("missing to (recipient list) in announce.email")),
+        "expected a warn naming the failed channel, got: {warns:?}"
+    );
 }
 
 #[test]
@@ -740,10 +797,10 @@ fn test_invalid_email_from_returns_error() {
     let mut ctx = Context::new(config, ContextOptions::default());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set("Version", "1.0.0");
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("missing @"),
-        "expected 'missing @' error, got: {err}"
+        warns.iter().any(|w| w.contains("missing @")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -1020,10 +1077,10 @@ fn test_missing_reddit_application_id_returns_error() {
     ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set("Version", "1.0.0");
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("missing application_id"),
-        "expected 'missing application_id' error, got: {err}"
+        warns.iter().any(|w| w.contains("missing application_id")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -1091,10 +1148,12 @@ fn test_missing_reddit_username_returns_error() {
     ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set("Version", "1.0.0");
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("missing username"),
-        "expected 'missing username' error, got: {err}"
+        warns
+            .iter()
+            .any(|w| w.contains("missing username in announce.reddit")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -1143,10 +1202,10 @@ fn test_missing_reddit_sub_returns_error() {
     ctx.set_env_source(MapEnvSource::new());
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set("Version", "1.0.0");
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("missing sub"),
-        "expected 'missing sub' error, got: {err}"
+        warns.iter().any(|w| w.contains("missing sub")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -1229,10 +1288,10 @@ fn test_twitter_missing_env_var_returns_error() {
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
     );
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("TWITTER_CONSUMER_KEY"),
-        "expected TWITTER_CONSUMER_KEY error, got: {err}"
+        warns.iter().any(|w| w.contains("TWITTER_CONSUMER_KEY")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -1325,10 +1384,12 @@ fn test_mastodon_missing_server_returns_error() {
     set_mastodon_creds(&mut ctx);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set("Version", "1.0.0");
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("missing server"),
-        "expected 'missing server' error, got: {err}"
+        warns
+            .iter()
+            .any(|w| w.contains("missing server in announce.mastodon")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -1377,10 +1438,10 @@ fn test_mastodon_missing_env_var_returns_error() {
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
     );
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("MASTODON_ACCESS_TOKEN"),
-        "expected MASTODON_ACCESS_TOKEN error, got: {err}"
+        warns.iter().any(|w| w.contains("MASTODON_ACCESS_TOKEN")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -1432,10 +1493,10 @@ fn test_mastodon_missing_client_id_returns_error() {
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
     );
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("MASTODON_CLIENT_ID"),
-        "expected MASTODON_CLIENT_ID error, got: {err}"
+        warns.iter().any(|w| w.contains("MASTODON_CLIENT_ID")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -1469,10 +1530,10 @@ fn test_mastodon_missing_client_secret_returns_error() {
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
     );
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("MASTODON_CLIENT_SECRET"),
-        "expected MASTODON_CLIENT_SECRET error, got: {err}"
+        warns.iter().any(|w| w.contains("MASTODON_CLIENT_SECRET")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -1615,10 +1676,12 @@ fn test_bluesky_missing_username_errors() {
     set_test_env(&mut ctx, &[("BLUESKY_APP_PASSWORD", "test_pass")]);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set("Version", "1.0.0");
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("missing username"),
-        "expected 'missing username' error, got: {err}"
+        warns
+            .iter()
+            .any(|w| w.contains("missing username in announce.bluesky")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -1652,10 +1715,10 @@ fn test_bluesky_missing_env_var_errors() {
         ..Default::default()
     };
     let mut ctx = make_ctx(Some(announce));
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("BLUESKY_APP_PASSWORD"),
-        "expected BLUESKY_APP_PASSWORD error, got: {err}"
+        warns.iter().any(|w| w.contains("BLUESKY_APP_PASSWORD")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -1672,10 +1735,10 @@ fn test_bluesky_empty_env_var_errors() {
     };
     let mut ctx = make_ctx(Some(announce));
     set_test_env(&mut ctx, &[("BLUESKY_APP_PASSWORD", "")]);
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("must not be empty"),
-        "expected 'must not be empty' error, got: {err}"
+        warns.iter().any(|w| w.contains("must not be empty")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -1754,10 +1817,10 @@ fn test_linkedin_missing_env_var_errors() {
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
     );
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("LINKEDIN_ACCESS_TOKEN"),
-        "expected LINKEDIN_ACCESS_TOKEN error, got: {err}"
+        warns.iter().any(|w| w.contains("LINKEDIN_ACCESS_TOKEN")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -1772,10 +1835,10 @@ fn test_linkedin_empty_env_var_errors() {
     };
     let mut ctx = make_ctx(Some(announce));
     set_test_env(&mut ctx, &[("LINKEDIN_ACCESS_TOKEN", "")]);
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("must not be empty"),
-        "expected 'must not be empty' error, got: {err}"
+        warns.iter().any(|w| w.contains("must not be empty")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -1855,10 +1918,10 @@ fn test_opencollective_missing_slug_errors() {
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set("Version", "1.0.0");
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("missing slug"),
-        "expected 'missing slug' error, got: {err}"
+        warns.iter().any(|w| w.contains("missing slug")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -1915,10 +1978,10 @@ fn test_opencollective_missing_env_var_errors() {
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
     );
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("OPENCOLLECTIVE_TOKEN"),
-        "expected OPENCOLLECTIVE_TOKEN error, got: {err}"
+        warns.iter().any(|w| w.contains("OPENCOLLECTIVE_TOKEN")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -1934,10 +1997,10 @@ fn test_opencollective_empty_env_var_errors() {
     };
     let mut ctx = make_ctx(Some(announce));
     set_test_env(&mut ctx, &[("OPENCOLLECTIVE_TOKEN", "")]);
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("must not be empty"),
-        "expected 'must not be empty' error, got: {err}"
+        warns.iter().any(|w| w.contains("must not be empty")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -2019,10 +2082,12 @@ fn test_missing_discourse_server_returns_error() {
     set_test_env(&mut ctx, &[("DISCOURSE_API_KEY", "test_key")]);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set("Version", "1.0.0");
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("missing server"),
-        "expected 'missing server' error, got: {err}"
+        warns
+            .iter()
+            .any(|w| w.contains("missing server in announce.discourse")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -2068,10 +2133,10 @@ fn test_missing_discourse_category_id_returns_error() {
     set_test_env(&mut ctx, &[("DISCOURSE_API_KEY", "test_key")]);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set("Version", "1.0.0");
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("missing category_id"),
-        "expected 'missing category_id' error, got: {err}"
+        warns.iter().any(|w| w.contains("missing category_id")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -2106,10 +2171,12 @@ fn test_zero_discourse_category_id_returns_error() {
     };
     let mut ctx = make_ctx(Some(announce));
     set_test_env(&mut ctx, &[("DISCOURSE_API_KEY", "test_key")]);
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("category_id must be non-zero"),
-        "expected 'category_id must be non-zero' error, got: {err}"
+        warns
+            .iter()
+            .any(|w| w.contains("category_id must be non-zero")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -2136,10 +2203,10 @@ fn test_discourse_missing_env_var_errors() {
         "ReleaseURL",
         "https://github.com/org/myapp/releases/tag/v1.0.0",
     );
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("DISCOURSE_API_KEY"),
-        "expected DISCOURSE_API_KEY error, got: {err}"
+        warns.iter().any(|w| w.contains("DISCOURSE_API_KEY")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -2156,10 +2223,10 @@ fn test_discourse_empty_env_var_errors() {
     };
     let mut ctx = make_ctx(Some(announce));
     set_test_env(&mut ctx, &[("DISCOURSE_API_KEY", "")]);
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     assert!(
-        err.to_string().contains("must not be empty"),
-        "expected 'must not be empty' error, got: {err}"
+        warns.iter().any(|w| w.contains("must not be empty")),
+        "expected a warn containing the failure text, got: {warns:?}"
     );
 }
 
@@ -2234,28 +2301,17 @@ fn test_mattermost_renders_channel_template() {
     let mut ctx = Context::new(config, opts);
     ctx.template_vars_mut().set("Tag", "v1.0.0");
     ctx.template_vars_mut().set("Version", "1.0.0");
-    let err = AnnounceStage.run(&mut ctx).unwrap_err();
+    let warns = run_capturing_warns(&mut ctx);
     // Structural assertion against anodizer-controlled wrapping strings only:
-    // - "announce errors:" comes from the stage aggregator (lib.rs:1046)
-    // - "mattermost:" comes from the per-announcer error tag (lib.rs:703)
-    // - "failed to render template" comes from the anodizer template engine's
-    //   `with_context` wrapper (`crates/core/src/template.rs:1552`)
-    // None of these depend on Tera's internal error wording, so this test
-    // stays green if Tera renames "syntax error" → "parse error" (or similar)
-    // upstream. The previous 5-token disjunction (`template`/`render`/`parse`/
-    // `syntax`/`tera`) leaned on Tera-internal phrases for some branches and
-    // would silently degrade if Tera reworded them.
-    //
-    // Note: we cannot use `err.chain().any(|e| e.is::<tera::Error>())` here
-    // because the per-announcer block at lib.rs:703 collapses each inner
-    // error to a String via `format!("mattermost: {e}")` before re-bailing
-    // through `anyhow::bail!`, flattening the chain to a single layer.
-    let msg = err.to_string();
+    // "mattermost:" is the per-announcer error tag; "failed to render
+    // template" is the template engine's `with_context` wrapper. Neither
+    // depends on Tera's internal error wording, so this stays green if Tera
+    // renames "syntax error" → "parse error" (or similar) upstream.
     assert!(
-        msg.contains("announce errors:")
-            && msg.contains("mattermost:")
-            && msg.contains("failed to render template"),
-        "expected mattermost template render error proving channel rendering is invoked, got: {err}"
+        warns
+            .iter()
+            .any(|w| w.contains("mattermost:") && w.contains("failed to render template")),
+        "expected mattermost template render error proving channel rendering is invoked, got: {warns:?}"
     );
 }
 

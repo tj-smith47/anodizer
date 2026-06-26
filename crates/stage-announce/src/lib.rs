@@ -46,7 +46,10 @@ pub use run::{AnnounceStage, emit_summary};
 /// `include` — when `Some`, only fire announcers whose name appears in the
 /// slice. `skip` — omit these integration names regardless of `include`.
 /// Per-provider errors are collected into `errors` rather than short-circuiting,
-/// so one failing integration does not block the others.
+/// so one failing integration does not block the others. Announcers run
+/// concurrently, bounded by the announce config's
+/// [`deadline`](anodizer_core::config::AnnounceConfig::deadline_duration);
+/// stragglers past it are abandoned with a warning.
 pub fn dispatch_filtered_announcers(
     ctx: &mut anodizer_core::context::Context,
     announce: &anodizer_core::config::AnnounceConfig,
@@ -56,11 +59,13 @@ pub fn dispatch_filtered_announcers(
     include: Option<&[&str]>,
     skip: &[&str],
 ) -> anyhow::Result<()> {
+    let deadline = announce.deadline_duration();
     announcers::dispatch_filtered_announcers(
         ctx,
         announce,
         retry_policy,
         log,
+        deadline,
         errors,
         None,
         announcers::AnnounceFilter { include, skip },

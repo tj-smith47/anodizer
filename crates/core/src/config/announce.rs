@@ -3,7 +3,28 @@ use std::collections::HashMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{StringOrBool, deserialize_string_or_bool_opt};
+use super::{HumanDuration, StringOrBool, deserialize_string_or_bool_opt};
+
+/// Default overall announce-stage deadline when `announce.deadline` is unset.
+///
+/// Announce is a best-effort post-publish notification: every configured
+/// channel runs concurrently, each bounded by the per-call HTTP/SMTP timeout
+/// and the announce retry profile. This caps the *aggregate* stage so a set of
+/// unreachable channels (e.g. external endpoints on an egress-firewalled
+/// self-hosted runner) cannot accumulate into a multi-minute hang that trips
+/// the pipeline timeout AFTER the release already published. Stragglers past
+/// this deadline are abandoned with a warning, never awaited forever.
+pub const DEFAULT_ANNOUNCE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(90);
+
+/// Floor for the resolved announce deadline.
+///
+/// An explicit `deadline: "0s"` (or any sub-second value) would let the runner
+/// abandon every channel on its first scheduling tick — traffic still leaves,
+/// but every result is warned as "did not complete", which is a useless and
+/// surprising state. Clamping the resolved deadline up to this floor makes that
+/// footgun unrepresentable: the smallest meaningful aggregate budget is one
+/// second, enough for a reachable local relay to report.
+pub const MIN_ANNOUNCE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(1);
 
 // ---------------------------------------------------------------------------
 // AnnounceConfig
@@ -55,6 +76,15 @@ pub struct AnnounceConfig {
     /// succeeded). See [`AnnounceGate`] for the other variants.
     #[serde(default)]
     pub gate_on: AnnounceGate,
+    /// Overall wall-clock deadline for the announce stage (e.g. `"90s"`,
+    /// `"2m"`). Optional — defaults to [`DEFAULT_ANNOUNCE_DEADLINE`] (90s).
+    ///
+    /// Announcers run concurrently; any still running when this deadline
+    /// elapses is abandoned with a warning rather than awaited. This bounds the
+    /// stage so unreachable channels cannot accumulate into a hang that trips
+    /// the pipeline timeout *after* publishers already crossed one-way doors.
+    /// Raise it only if a slow-but-reachable channel legitimately needs longer.
+    pub deadline: Option<HumanDuration>,
     /// Discord announcement configuration.
     pub discord: Option<DiscordAnnounce>,
     /// Discourse announcement configuration.
@@ -87,6 +117,23 @@ pub struct AnnounceConfig {
     pub linkedin: Option<LinkedInAnnounce>,
     /// OpenCollective announcement configuration.
     pub opencollective: Option<OpenCollectiveAnnounce>,
+}
+
+impl AnnounceConfig {
+    /// Resolve the overall announce-stage deadline, falling back to
+    /// [`DEFAULT_ANNOUNCE_DEADLINE`] when `deadline:` is unset.
+    ///
+    /// An explicit but degenerate value (`"0s"` or anything below
+    /// [`MIN_ANNOUNCE_DEADLINE`]) is clamped UP to the floor: a zero/sub-second
+    /// deadline would make the runner abandon every channel on the first tick
+    /// (traffic leaves, every result warned as "did not complete"), so it is
+    /// raised to the smallest budget under which a reachable channel can report.
+    pub fn deadline_duration(&self) -> std::time::Duration {
+        self.deadline
+            .map(|d| d.duration())
+            .unwrap_or(DEFAULT_ANNOUNCE_DEADLINE)
+            .max(MIN_ANNOUNCE_DEADLINE)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
@@ -476,4 +523,46 @@ pub struct SlackAttachment {
     /// Additional attachment-specific fields.
     #[serde(flatten)]
     pub extra: HashMap<String, serde_json::Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::HumanDuration;
+    use std::time::Duration;
+
+    #[test]
+    fn deadline_unset_uses_default() {
+        let cfg = AnnounceConfig::default();
+        assert_eq!(cfg.deadline_duration(), DEFAULT_ANNOUNCE_DEADLINE);
+    }
+
+    #[test]
+    fn deadline_zero_is_clamped_to_floor() {
+        // An explicit `deadline: "0s"` must NOT abandon every channel on the
+        // first tick — it is raised to the 1s floor.
+        let cfg = AnnounceConfig {
+            deadline: Some(HumanDuration(Duration::ZERO)),
+            ..Default::default()
+        };
+        assert_eq!(cfg.deadline_duration(), MIN_ANNOUNCE_DEADLINE);
+    }
+
+    #[test]
+    fn deadline_subsecond_is_clamped_to_floor() {
+        let cfg = AnnounceConfig {
+            deadline: Some(HumanDuration(Duration::from_millis(250))),
+            ..Default::default()
+        };
+        assert_eq!(cfg.deadline_duration(), MIN_ANNOUNCE_DEADLINE);
+    }
+
+    #[test]
+    fn deadline_above_floor_is_preserved() {
+        let cfg = AnnounceConfig {
+            deadline: Some(HumanDuration(Duration::from_secs(45))),
+            ..Default::default()
+        };
+        assert_eq!(cfg.deadline_duration(), Duration::from_secs(45));
+    }
 }

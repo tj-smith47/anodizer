@@ -57,3 +57,10 @@ tracing.workspace = true
 # Optional deps for the `test-helpers` feature (HTTPS responder + self-signed certs).
 rustls = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
+
+# Process-group SIGKILL for the bounded-subprocess watchdog (run.rs) so a hung,
+# timeout-bounded child's whole subtree is reaped, not just the direct child.
+# `libc` is already pervasive transitively in the dependency graph, so this
+# direct Unix entry adds nothing to the shipped glibc floor.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"

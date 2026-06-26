@@ -58,8 +58,8 @@ pub fn validate_announce_templates(ctx: &mut Context, log: &StageLogger) -> Resu
 mod tests {
     use super::*;
     use anodizer_core::config::{
-        AnnounceConfig, Config, DiscordAnnounce, EmailAnnounce, StringOrBool, TeamsAnnounce,
-        WebhookConfig,
+        AnnounceConfig, Config, CrateConfig, DiscordAnnounce, DiscourseAnnounce, EmailAnnounce,
+        StringOrBool, TeamsAnnounce, WebhookConfig, WorkspaceConfig,
     };
     use anodizer_core::context::{Context, ContextOptions};
 
@@ -70,6 +70,65 @@ mod tests {
             ..Default::default()
         };
         let mut ctx = Context::new(config, opts);
+        ctx.template_vars_mut().set("Tag", "v1.2.3");
+        ctx.template_vars_mut().set("ProjectName", "myapp");
+        ctx.set_release_url("https://github.com/acme/myapp/releases/tag/v1.2.3");
+        ctx
+    }
+
+    /// The release-shape axis every announce change must hold across. Each
+    /// variant differs only in how the project's crate topology is declared —
+    /// `announce:` is a single resolved block in all three, but exercising the
+    /// guard under each shape proves the config-shape validations fire
+    /// regardless of single-crate vs workspace dispatch.
+    #[derive(Clone, Copy)]
+    enum CrateMode {
+        Single,
+        Lockstep,
+        PerCrate,
+    }
+
+    /// Build a guard Context carrying `announce`, with a crate topology matching
+    /// `mode`. The announce config is identical across modes; only the
+    /// surrounding `crates:` / `workspaces:` declaration changes.
+    fn ctx_for_mode(announce: AnnounceConfig, mode: CrateMode) -> Context {
+        let mut config = Config {
+            project_name: "myapp".to_string(),
+            announce: Some(announce),
+            ..Default::default()
+        };
+        match mode {
+            CrateMode::Single => {}
+            CrateMode::Lockstep => {
+                config.workspaces = Some(vec![WorkspaceConfig {
+                    name: "myapp".to_string(),
+                    crates: vec![
+                        CrateConfig {
+                            name: "core".to_string(),
+                            ..Default::default()
+                        },
+                        CrateConfig {
+                            name: "cli".to_string(),
+                            ..Default::default()
+                        },
+                    ],
+                    ..Default::default()
+                }]);
+            }
+            CrateMode::PerCrate => {
+                config.crates = vec![
+                    CrateConfig {
+                        name: "core".to_string(),
+                        ..Default::default()
+                    },
+                    CrateConfig {
+                        name: "cli".to_string(),
+                        ..Default::default()
+                    },
+                ];
+            }
+        }
+        let mut ctx = Context::new(config, ContextOptions::default());
         ctx.template_vars_mut().set("Tag", "v1.2.3");
         ctx.template_vars_mut().set("ProjectName", "myapp");
         ctx.set_release_url("https://github.com/acme/myapp/releases/tag/v1.2.3");
@@ -269,5 +328,121 @@ mod tests {
         let log = ctx.logger("prepublish-guard");
         validate_announce_templates(&mut ctx, &log)
             .expect("announce.skip=true short-circuits the guard");
+    }
+
+    // ---- Config-shape errors fail PRE-publish, across every crate mode ----
+    //
+    // A pure config-shape typo that needs no secret/network (Discourse
+    // `category_id: 0`, Email empty `username:` on the SMTP path) must fail at
+    // the prepublish guard — before any irreversible publisher fires — not as a
+    // post-publish WARN. The send-time hard-bail used to be the only check, so a
+    // fat-fingered config silently failed to deliver after the release shipped.
+
+    /// Discourse `category_id: 0` fails the guard in single-crate, lockstep, AND
+    /// per-crate modes (the shape check is mode-independent — it must hold under
+    /// every dispatch topology).
+    #[test]
+    fn discourse_zero_category_id_fails_prepublish_guard_all_modes() {
+        for mode in [CrateMode::Single, CrateMode::Lockstep, CrateMode::PerCrate] {
+            let announce = AnnounceConfig {
+                discourse: Some(DiscourseAnnounce {
+                    enabled: enabled(),
+                    server: Some("https://forum.acme.example".to_string()),
+                    // The typo: a configured-but-zero category_id.
+                    category_id: Some(0),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let mut ctx = ctx_for_mode(announce, mode);
+            let log = ctx.logger("prepublish-guard");
+            let err = validate_announce_templates(&mut ctx, &log)
+                .expect_err("category_id: 0 must fail the prepublish guard");
+            let msg = format!("{err:#}");
+            assert!(
+                msg.contains("discourse"),
+                "error names the announcer: {msg}"
+            );
+            assert!(msg.contains("category_id"), "error names the field: {msg}");
+        }
+    }
+
+    /// A valid non-zero `category_id` passes the guard (the shape check does not
+    /// over-reject), across every crate mode.
+    #[test]
+    fn discourse_nonzero_category_id_passes_guard_all_modes() {
+        for mode in [CrateMode::Single, CrateMode::Lockstep, CrateMode::PerCrate] {
+            let announce = AnnounceConfig {
+                discourse: Some(DiscourseAnnounce {
+                    enabled: enabled(),
+                    server: Some("https://forum.acme.example".to_string()),
+                    category_id: Some(7),
+                    message_template: Some("{{ ProjectName }} {{ Tag }}".to_string()),
+                    title_template: Some("{{ ProjectName }} {{ Tag }}".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let mut ctx = ctx_for_mode(announce, mode);
+            let log = ctx.logger("prepublish-guard");
+            validate_announce_templates(&mut ctx, &log)
+                .expect("a non-zero category_id must pass the guard");
+        }
+    }
+
+    /// Email with the SMTP path selected (`host:` set) and an explicitly EMPTY
+    /// `username: ""` fails the guard in all three crate modes — the
+    /// env-independent shape error `send` hard-bails on.
+    #[test]
+    fn email_empty_smtp_username_fails_prepublish_guard_all_modes() {
+        for mode in [CrateMode::Single, CrateMode::Lockstep, CrateMode::PerCrate] {
+            let announce = AnnounceConfig {
+                email: Some(EmailAnnounce {
+                    enabled: enabled(),
+                    host: Some("smtp.acme.example".to_string()),
+                    // The typo: SMTP host selected but username blanked out.
+                    username: Some(String::new()),
+                    from: Some("rel@acme.example".to_string()),
+                    to: vec!["dev@acme.example".to_string()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let mut ctx = ctx_for_mode(announce, mode);
+            let log = ctx.logger("prepublish-guard");
+            let err = validate_announce_templates(&mut ctx, &log)
+                .expect_err("empty SMTP username must fail the prepublish guard");
+            let msg = format!("{err:#}");
+            assert!(msg.contains("email"), "error names the announcer: {msg}");
+            assert!(
+                msg.contains("username"),
+                "error names the failing field: {msg}"
+            );
+        }
+    }
+
+    /// An absent `username: None` is NOT flagged by the guard — `SMTP_USERNAME`
+    /// may legitimately supply it at send time, and the guard runs without env.
+    /// Rejecting it here would false-positive on a valid env-supplied config.
+    #[test]
+    fn email_absent_smtp_username_passes_guard_env_supplies_it() {
+        for mode in [CrateMode::Single, CrateMode::Lockstep, CrateMode::PerCrate] {
+            let announce = AnnounceConfig {
+                email: Some(EmailAnnounce {
+                    enabled: enabled(),
+                    host: Some("smtp.acme.example".to_string()),
+                    // None (not Some("")) — env may supply it; guard stays silent.
+                    username: None,
+                    from: Some("rel@acme.example".to_string()),
+                    to: vec!["dev@acme.example".to_string()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            };
+            let mut ctx = ctx_for_mode(announce, mode);
+            let log = ctx.logger("prepublish-guard");
+            validate_announce_templates(&mut ctx, &log)
+                .expect("an absent username (env may supply it) must not fail the guard");
+        }
     }
 }

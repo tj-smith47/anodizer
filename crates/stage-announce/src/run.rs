@@ -258,7 +258,14 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
     }
 
     let mut errors: Vec<String> = vec![];
-    let retry_policy = ctx.retry_policy();
+    // Announce is a best-effort post-publish notification, so it uses a tighter
+    // retry profile than the irreversible publishers: a channel that cannot be
+    // reached should be abandoned quickly, not retried on the canonical 10×
+    // schedule, because by the time announce runs the release has already
+    // crossed every one-way door and a notification must not become the slow
+    // path that strands it.
+    let retry_policy = announce_retry_policy(ctx);
+    let deadline = announce.deadline_duration();
 
     // Per-version sent-marker makes a re-run idempotent: an announcer that
     // already posted for this version is skipped. Only on the live path — a
@@ -272,15 +279,44 @@ fn announce_body(_stage: &AnnounceStage, ctx: &mut Context) -> Result<()> {
         &announce,
         &retry_policy,
         &log,
+        deadline,
         &mut errors,
         sent_marker.as_mut(),
     )?;
 
+    // Best-effort, by design: announce runs AFTER every publisher crossed a
+    // one-way door (cargo/crates.io, choco/winget moderation queues, AUR/nix
+    // pushes), so a notification failure must NOT flip the release exit code
+    // and strand an already-published release. This intentionally diverges from
+    // GoReleaser, which fails the run on an announce error — here a failed
+    // channel is surfaced as a WARN summary naming each provider and the stage
+    // returns Ok. The pre-publish template guard (render_only /
+    // validate_announce_templates) stays FATAL and catches broken templates
+    // BEFORE any publisher fires, so a misconfigured announce still fails fast
+    // at the right time.
     if !errors.is_empty() {
-        anyhow::bail!("announce errors:\n{}", errors.join("\n"));
+        log.warn(&format!(
+            "announce completed with {} failed channel(s) (release already \
+             published; not failing the run):\n{}",
+            errors.len(),
+            errors.join("\n")
+        ));
     }
 
     Ok(())
+}
+
+/// Best-effort retry profile for the post-publish announce send path.
+///
+/// Derives from the user's `retry:` block (so an operator who tuned retries
+/// still gets their base/cap), but clamps attempts to at most 2 (one retry):
+/// announce is a non-critical notification fired after every irreversible
+/// publisher already succeeded, so a single retry absorbs a transient blip
+/// without letting an unreachable channel burn the canonical 10-attempt budget.
+fn announce_retry_policy(ctx: &Context) -> anodizer_core::retry::RetryPolicy {
+    let mut policy = ctx.retry_policy();
+    policy.max_attempts = policy.max_attempts.min(2);
+    policy
 }
 
 /// End-of-pipeline run-summary emitter: write `summary.json` (and honor
@@ -812,12 +848,22 @@ mod gate_tests {
         ctx.template_vars_mut().set("Version", "1.0.0");
         ctx.template_vars_mut().set("Tag", "v1.0.0");
         ctx.template_vars_mut().set("ProjectName", "myapp");
-        let err = AnnounceStage
+        // Announce is non-fatal post-publish: the broken-template error is
+        // collected into the WARN summary rather than bailing. The presence of
+        // a `webhook:` failure warn proves the dispatch path WAS entered (a
+        // deselected announce would have short-circuited before any render).
+        let capture = anodizer_core::log::LogCapture::new();
+        ctx.with_log_capture(capture.clone());
+        AnnounceStage
             .run(&mut ctx)
-            .expect_err("selected announce enters dispatch and hits the broken-template error");
+            .expect("announce is non-fatal post-publish: run returns Ok even on a render failure");
         assert!(
-            err.to_string().contains("announce errors"),
-            "expected a dispatch render error, got: {err}",
+            capture
+                .warn_messages()
+                .iter()
+                .any(|w| w.contains("webhook:") && w.contains("render template")),
+            "expected a dispatch render-error warn, got: {:?}",
+            capture.warn_messages(),
         );
     }
 
