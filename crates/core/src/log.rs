@@ -298,20 +298,21 @@ pub fn stage_header(stage: &str) -> &'static str {
 }
 
 /// Render the themed `Warning` line for `msg`: the label right-aligned in the
-/// gutter (bold-yellow, no colon) at the current section indent, so it reads as
-/// a peer of the section verbs and its message aligns with theirs. The single
-/// source of truth for the warning palette and label, shared by
-/// [`StageLogger::warn`] and the CLI's tracing formatter so a library-side
-/// `warn!` looks identical to a logger warn (one output authority).
+/// gutter (bold-yellow, no colon) at the enclosing section's header indent
+/// ([`label_indent`]), so it reads as a peer of the section verbs and its
+/// message aligns with theirs. The single source of truth for the warning
+/// palette and label, shared by [`StageLogger::warn`] and the CLI's tracing
+/// formatter so a library-side `warn!` looks identical to a logger warn (one
+/// output authority).
 pub fn render_warning(msg: &str) -> String {
-    render_gutter(&indent(), "Warning", |s| s.yellow().bold(), msg)
+    render_gutter(&label_indent(), "Warning", |s| s.yellow().bold(), msg)
 }
 
 /// Render the themed `Error` line for `msg` — gutter-aligned bold-red label,
 /// companion to [`render_warning`]; shared so the error palette/label lives in
 /// exactly one place.
 pub fn render_error(msg: &str) -> String {
-    render_gutter(&indent(), "Error", |s| s.red().bold(), msg)
+    render_gutter(&label_indent(), "Error", |s| s.red().bold(), msg)
 }
 
 /// Render the themed `Note` line for `msg`: gutter-aligned bold-green label.
@@ -322,7 +323,7 @@ pub fn render_error(msg: &str) -> String {
 /// palette/label lives in exactly one place rather than being open-coded per
 /// call site.
 pub fn render_note(msg: &str) -> String {
-    render_gutter(&indent(), "Note", |s| s.green().bold(), msg)
+    render_gutter(&label_indent(), "Note", |s| s.green().bold(), msg)
 }
 
 /// Current indentation prefix (2 spaces per open section). Empty at the
@@ -331,11 +332,27 @@ pub fn render_note(msg: &str) -> String {
 /// what conveys section nesting, matching the continuous single-stream log
 /// GoReleaser emits.
 ///
-/// Exposed so the CLI's loggerless `tracing` warning formatter can apply
-/// the same indent a library warn fired mid-stage would otherwise lack,
-/// keeping it aligned with the surrounding body lines.
+/// This is the body-line depth (`•` detail / `success` / `failure` / `kv`
+/// rows). Status labels do NOT use it — they sit one level shallower at the
+/// enclosing header's depth via [`label_indent`].
 pub fn indent() -> String {
     "  ".repeat(current_depth())
+}
+
+/// Indentation prefix for a status label (`Warning` / `Error` / `Note`).
+///
+/// A label is a body-level event, but unlike a `•` detail line it renders
+/// through the right-aligned [`render_gutter`] system (like a section header),
+/// so to land its label in the verb column and its message in the header's
+/// message column it must sit at the ENCLOSING header's depth — one level
+/// shallower than [`indent`] (which tracks the deeper body depth). Using the
+/// body indent here would push the gutter-aligned label two columns past both
+/// the sibling headers and the body bullets, leaving it floating on its own.
+///
+/// Floored at the inherited [`base_depth`] so a label emitted with no open
+/// section never dedents below the ambient (e.g. GitHub Actions) indent.
+fn label_indent() -> String {
+    "  ".repeat(current_depth().saturating_sub(1).max(base_depth()))
 }
 
 /// RAII guard returned by [`indent_one_level`]. Removes the extra indent
@@ -1557,6 +1574,36 @@ mod tests {
                 "status-label message must align with the header message column"
             );
         }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_status_label_aligns_with_enclosing_header_not_body_depth() {
+        // Regression: a Warning/Error/Note fired INSIDE a section must align
+        // with that section's HEADER (label in the verb column, message in the
+        // header message column), NOT one level deeper at the body-bullet
+        // depth. The body-depth variant pushed the gutter-aligned label two
+        // columns past both the sibling headers and the `•` bullets, leaving it
+        // floating on its own.
+        let _guard = SECTION_TEST_LOCK.lock().unwrap();
+        let log = StageLogger::new("build", Verbosity::Normal);
+        let base = base_depth();
+        // Open one section: its header renders at depth `base`; body lines
+        // (and the bullets) render one level deeper at `base + 1`.
+        let _outer = log.group("preparing release");
+        let warn = strip_ansi(&render_warning("preflight skipped"));
+        // Aligns with the enclosing header (depth `base`) ...
+        assert_eq!(
+            warn,
+            strip_ansi(&render_header(base, "Warning", "preflight skipped")),
+            "in-section label must align with its enclosing header"
+        );
+        // ... and NOT with the deeper body depth (`base + 1`) it used before.
+        assert_ne!(
+            warn,
+            strip_ansi(&render_header(base + 1, "Warning", "preflight skipped")),
+            "in-section label must not float at the deeper body indent"
+        );
     }
 
     #[test]
