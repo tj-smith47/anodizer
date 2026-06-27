@@ -13,12 +13,32 @@
 use anodizer_core::PublisherOutcome;
 use anodizer_core::config::RepositoryConfig;
 use anodizer_core::log::StageLogger;
+use anodizer_core::run::run_capture_timeout;
 use anodizer_core::{EnvSource, ProcessEnvSource};
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use super::branch::{fetch_default_branch_with_env, github_api_base_from};
-use super::cmd::run_cmd_in;
+use super::cmd::{run_cmd_in, run_cmd_in_timeout};
+
+/// Wall-clock bound on `gh pr create` — a lightweight PR submission against the
+/// GitHub API. A hung API call would otherwise hang the release with no
+/// deadline; on expiry the subtree is killed and the attempt retries within the
+/// existing 3-try loop. Sized for a remote metadata/PR-submission call.
+const GH_PR_CREATE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Wall-clock bound on the `git fetch upstream` fork-sync. The fetch hits the
+/// upstream remote; sync is best-effort (a failure, incl. a deadline kill, only
+/// warns and proceeds), so a stalled fetch must not hang the release. Sized as a
+/// remote fetch.
+const GIT_FETCH_UPSTREAM_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Wall-clock bound on the force-push that updates an existing PR's branch. A
+/// wedged push must not hang the release; on expiry the subtree is killed and
+/// the failure warns (the PR simply isn't updated in place). Sized as a remote
+/// push.
+const GIT_FORCE_PUSH_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Sync a fork with its upstream base repository.
 ///
@@ -43,12 +63,17 @@ fn sync_fork(
         &format!("{label}: git remote add upstream"),
     );
 
-    // Fetch the upstream base branch.
-    if let Err(e) = run_cmd_in(
+    // Fetch the upstream base branch. Bounded: it hits the upstream remote, so
+    // a stalled fetch must not hang the release; a deadline kill warns like any
+    // other sync failure and proceeds.
+    if let Err(e) = run_cmd_in_timeout(
         repo_path,
         "git",
         &["fetch", "upstream", base_branch],
         &format!("{label}: git fetch upstream"),
+        None,
+        log,
+        GIT_FETCH_UPSTREAM_TIMEOUT,
     ) {
         log.warn(&format!(
             "failed to fetch upstream for {label} fork sync; continuing without sync: {e}"
@@ -199,10 +224,17 @@ fn create_pr_via_gh_cli(
     let mut last_stderr = String::new();
     let mut last_status: Option<std::process::ExitStatus> = None;
     for attempt in 1..=3 {
-        let pr_result = Command::new("gh")
-            .current_dir(repo_path)
-            .args(&args)
-            .output();
+        // Bounded: `gh pr create` hits the GitHub API, so a hung call must not
+        // hang the release. A deadline kill is Retriable → consumed by this
+        // loop's retry path; a spawn failure stays the hard `Failed` below.
+        let mut gh_cmd = Command::new("gh");
+        gh_cmd.current_dir(repo_path).args(&args);
+        let pr_result = run_capture_timeout(
+            &mut gh_cmd,
+            log,
+            &format!("{label}: gh pr create"),
+            GH_PR_CREATE_TIMEOUT,
+        );
         match pr_result {
             Ok(output) if output.status.success() => {
                 log.status(&format!("submitted {label} PR via gh CLI"));
@@ -216,11 +248,14 @@ fn create_pr_via_gh_cli(
                     if update_existing_pr {
                         // Force-push to the existing branch so the open PR
                         // picks up the new manifest without needing a new PR.
-                        if let Err(e) = run_cmd_in(
+                        if let Err(e) = run_cmd_in_timeout(
                             repo_path,
                             "git",
                             &["push", "--force-with-lease", "origin", branch_name],
                             &format!("{label}: git push --force-with-lease (update existing PR)"),
+                            None,
+                            log,
+                            GIT_FORCE_PUSH_TIMEOUT,
                         ) {
                             log.warn(&format!(
                                 "failed to force-push {label} PR branch (update_existing_pr=true): {e}"
@@ -247,6 +282,17 @@ fn create_pr_via_gh_cli(
                 std::thread::sleep(std::time::Duration::from_secs(5 * attempt));
             }
             Err(e) => {
+                // A deadline kill (the API call stalled) is Retriable and
+                // transient — consume it on the same 3-try path as a transient
+                // "No commits between …", rather than hard-failing on a hang.
+                if anodizer_core::retry::is_retriable(e.as_ref()) && attempt < 3 {
+                    last_stderr = format!("{e:#}");
+                    log.warn(&format!(
+                        "gh pr create for {label} timed out (attempt {attempt}/3); retrying..."
+                    ));
+                    std::thread::sleep(std::time::Duration::from_secs(5 * attempt));
+                    continue;
+                }
                 let msg = format!(
                     "could not run gh to create the {label} PR: {e} -- you may need to create the PR manually"
                 );

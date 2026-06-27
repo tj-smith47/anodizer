@@ -7,9 +7,12 @@
 //! to scrub are raw `Vec<u8>` from `std::process::Output` and the secret
 //! is passed in directly (no env-driven heuristic, no key/value mapping).
 
+use anodizer_core::log::StageLogger;
+use anodizer_core::run::run_capture_timeout;
 use anyhow::{Context as _, Result};
 use std::path::Path;
 use std::process::{Command, Output};
+use std::time::Duration;
 
 /// Replacement marker used in place of redacted secret bytes.
 pub(crate) const REDACTED_TOKEN_MARKER: &[u8] = b"<REDACTED_TOKEN>";
@@ -52,6 +55,53 @@ pub(crate) fn run_cmd_in_envs(
             label,
             program,
             args.join(" "),
+            output.status.code().unwrap_or(-1),
+            stderr,
+            stdout
+        );
+    }
+    Ok(())
+}
+
+/// Timeout-bounded variant of [`run_cmd_in`] for network-touching git ops
+/// (`git push` / `git fetch` to a remote). A remote that accepts the
+/// connection then never drains — a wedged TLS handshake, a half-open
+/// connection to AUR/a tap repo — would otherwise hang the release forever
+/// with no deadline. On expiry the whole git subtree is killed and the call
+/// returns a [`Retriable`](anodizer_core::retry::Retriable)-wrapped timeout
+/// error, so a call site inside a retry loop can route it to a retry and a
+/// non-looping caller surfaces a clear timeout instead of hanging.
+///
+/// `secret` is scrubbed from `argv`/`stderr`/`stdout` in the error embed
+/// exactly as [`run_cmd_in_redacted`] does (pass `None` when no element of
+/// `args` can carry a token).
+pub(crate) fn run_cmd_in_timeout(
+    dir: &Path,
+    program: &str,
+    args: &[&str],
+    label: &str,
+    secret: Option<&str>,
+    log: &StageLogger,
+    timeout: Duration,
+) -> Result<()> {
+    let mut cmd = Command::new(program);
+    cmd.args(args)
+        .current_dir(dir)
+        .env("GIT_TERMINAL_PROMPT", "0");
+    let output = run_capture_timeout(&mut cmd, log, label, timeout).with_context(|| {
+        let joined = redact_str(&args.join(" "), secret);
+        format!("{label}: failed to run {program} {joined}")
+    })?;
+    if !output.status.success() {
+        let output = redact_output_token(output, secret);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let joined = redact_str(&args.join(" "), secret);
+        anyhow::bail!(
+            "{}: {} {} failed (exit {})\nstderr: {}\nstdout: {}",
+            label,
+            program,
+            joined,
             output.status.code().unwrap_or(-1),
             stderr,
             stdout
@@ -151,4 +201,64 @@ pub(crate) fn replace_bytes(haystack: &[u8], needle: &[u8], replacement: &[u8]) 
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use std::time::Instant;
+
+    /// A network git op (`git push`/`fetch`) that wedges on an unreachable
+    /// remote must be killed at the deadline and surface a retriable timeout —
+    /// never hang the release. This is the publisher-stage analogue of
+    /// `core::run`'s `run_capture_timeout_kills_hung_child`, exercised through
+    /// the shared `run_cmd_in_timeout` bound that every git remote site uses.
+    #[test]
+    fn run_cmd_in_timeout_kills_hung_child() {
+        let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let dir = tempfile::tempdir().expect("tempdir");
+        let start = Instant::now();
+        // A real `git push` to a dead remote can block indefinitely; `sleep`
+        // is the deterministic stand-in for that wedge.
+        let err = run_cmd_in_timeout(
+            dir.path(),
+            "sleep",
+            &["30"],
+            "hung git push",
+            None,
+            &log,
+            Duration::from_millis(200),
+        )
+        .expect_err("a child outliving the timeout must surface as Err");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "the bound must return promptly (killed the child), took {elapsed:?}"
+        );
+        assert!(
+            anodizer_core::retry::is_retriable(err.as_ref()),
+            "a deadline kill must classify retriable so a looping caller retries; got: {err:#}"
+        );
+    }
+
+    /// The bound must be transparent on the fast path: a child that exits well
+    /// inside the deadline returns success exactly like the unbounded
+    /// `run_cmd_in`, so wrapping a remote git op in the timeout changes nothing
+    /// when the remote responds.
+    #[test]
+    fn run_cmd_in_timeout_succeeds_within_deadline() {
+        let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let dir = tempfile::tempdir().expect("tempdir");
+        run_cmd_in_timeout(
+            dir.path(),
+            "true",
+            &[],
+            "fast op",
+            None,
+            &log,
+            Duration::from_secs(30),
+        )
+        .expect("a child that exits inside the deadline must succeed");
+    }
 }

@@ -7,8 +7,21 @@ use anodizer_core::log::StageLogger;
 use anyhow::Result;
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
-use super::cmd::{run_cmd_in, run_cmd_in_envs};
+use super::cmd::{run_cmd_in, run_cmd_in_envs, run_cmd_in_timeout};
+
+/// Wall-clock bound on `git push` to a publisher's remote repo (a tap, AUR,
+/// winget-pkgs, krew-index, ...). A wedged push to the remote would otherwise
+/// hang the release forever, so the subtree is killed at the deadline. Sized
+/// as a large remote upload, matching the snapcraft/docker-push bound.
+const GIT_PUSH_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Wall-clock bound on the `git fetch` of an existing remote branch. The fetch
+/// only pulls a single shallow ref, so a shorter remote-metadata bound suffices;
+/// its failure is already ignored (the branch may simply not exist remotely), so
+/// a deadline kill degrades to the same "no remote branch" path.
+const GIT_FETCH_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Outcome of a `commit_and_push_with_opts` call.
 ///
@@ -194,6 +207,7 @@ pub(crate) fn commit_and_push_with_opts(
     branch: Option<&str>,
     label: &str,
     opts: &CommitOptions,
+    log: &StageLogger,
 ) -> Result<CommitOutcome> {
     // Pre-fetch the target branch (if any) so `origin/<branch>` is populated
     // in the local ref store. We must use an explicit refspec: `clone
@@ -206,11 +220,18 @@ pub(crate) fn commit_and_push_with_opts(
     // exist remotely.
     let remote_sha: Option<String> = if let Some(branch_name) = branch {
         let refspec = format!("+refs/heads/{0}:refs/remotes/origin/{0}", branch_name);
-        let _ = Command::new("git")
-            .args(["fetch", "--depth=1", "origin", &refspec])
-            .current_dir(repo_path)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .output();
+        // Bounded: the fetch hits the remote, so a stalled connection must not
+        // hang here with no deadline. Failure (incl. a deadline kill) is ignored
+        // — the branch genuinely may not exist remotely.
+        let _ = run_cmd_in_timeout(
+            repo_path,
+            "git",
+            &["fetch", "--depth=1", "origin", &refspec],
+            &format!("{label}: git fetch origin {branch_name}"),
+            None,
+            log,
+            GIT_FETCH_TIMEOUT,
+        );
         Command::new("git")
             .args([
                 "rev-parse",
@@ -376,13 +397,22 @@ pub(crate) fn commit_and_push_with_opts(
         (Some(branch_name), None) => vec!["push", "-u", "origin", branch_name],
         (None, _) => vec!["push"],
     };
-    run_cmd_in(repo_path, "git", &push_args, &format!("{label}: git push"))?;
+    run_cmd_in_timeout(
+        repo_path,
+        "git",
+        &push_args,
+        &format!("{label}: git push"),
+        None,
+        log,
+        GIT_PUSH_TIMEOUT,
+    )?;
     Ok(CommitOutcome::Pushed)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anodizer_core::log::Verbosity;
     use serial_test::serial;
     use std::process::Command as Cmd;
 
@@ -452,9 +482,16 @@ mod tests {
             signing: None,
             use_github_app_token: false,
         };
-        let outcome =
-            commit_and_push_with_opts(&local_dir, &["data.txt"], "add data", None, "test", &opts)
-                .unwrap();
+        let outcome = commit_and_push_with_opts(
+            &local_dir,
+            &["data.txt"],
+            "add data",
+            None,
+            "test",
+            &opts,
+            &StageLogger::new("test", Verbosity::Normal),
+        )
+        .unwrap();
 
         assert_eq!(outcome, CommitOutcome::Pushed);
     }
@@ -513,9 +550,16 @@ mod tests {
             signing: None,
             use_github_app_token: false,
         };
-        let outcome =
-            commit_and_push_with_opts(&local_dir, &["data.txt"], "no-op", None, "test", &opts)
-                .unwrap();
+        let outcome = commit_and_push_with_opts(
+            &local_dir,
+            &["data.txt"],
+            "no-op",
+            None,
+            "test",
+            &opts,
+            &StageLogger::new("test", Verbosity::Normal),
+        )
+        .unwrap();
 
         assert_eq!(outcome, CommitOutcome::NoChanges);
     }
@@ -553,6 +597,7 @@ mod tests {
             Some("publisher-v1.0.0"),
             "test",
             &opts,
+            &StageLogger::new("test", Verbosity::Normal),
         )
         .unwrap();
         assert_eq!(first, CommitOutcome::Pushed);
@@ -596,6 +641,7 @@ mod tests {
             Some("publisher-v1.0.0"),
             "test",
             &opts,
+            &StageLogger::new("test", Verbosity::Normal),
         )
         .unwrap();
         assert_eq!(retry, CommitOutcome::NoChanges);
@@ -680,9 +726,16 @@ mod tests {
             signing: None,
             use_github_app_token: false,
         };
-        let outcome =
-            commit_and_push_with_opts(&local_dir, &["data.txt"], "add data", None, "test", &opts)
-                .unwrap();
+        let outcome = commit_and_push_with_opts(
+            &local_dir,
+            &["data.txt"],
+            "add data",
+            None,
+            "test",
+            &opts,
+            &StageLogger::new("test", Verbosity::Normal),
+        )
+        .unwrap();
         assert_eq!(outcome, CommitOutcome::Pushed);
 
         let an = Cmd::new("git")
@@ -736,8 +789,16 @@ mod tests {
             signing: None,
             use_github_app_token: true,
         };
-        commit_and_push_with_opts(&local_dir, &["data.txt"], "add data", None, "test", &opts)
-            .unwrap();
+        commit_and_push_with_opts(
+            &local_dir,
+            &["data.txt"],
+            "add data",
+            None,
+            "test",
+            &opts,
+            &StageLogger::new("test", Verbosity::Normal),
+        )
+        .unwrap();
 
         let an = Cmd::new("git")
             .args(["log", "-1", "--pretty=%an"])

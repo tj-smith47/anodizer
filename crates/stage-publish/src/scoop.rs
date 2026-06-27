@@ -1119,6 +1119,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
         branch.as_deref(),
         "scoop",
         &commit_opts,
+        log,
     )?;
     match outcome {
         util::CommitOutcome::Pushed => {

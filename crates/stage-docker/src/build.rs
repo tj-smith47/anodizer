@@ -7,8 +7,27 @@ use std::time::Duration;
 use anyhow::{Context as _, Result};
 
 use anodizer_core::log::StageLogger;
+use anodizer_core::run::run_capture_timeout;
 
 use super::detect::is_retriable_error_v2;
+
+/// Wall-clock bound on a single `podman push <tag>` to a remote registry. A
+/// stalled registry upload (wedged TLS handshake, half-open connection, a
+/// registry that accepts the connection then never drains the layer) would
+/// otherwise hang the release forever, exactly like the snapcraft-upload stall.
+/// On expiry the whole push subtree is killed and the attempt retries within
+/// the push budget. Matches the snapcraft upload bound (large remote upload).
+const PODMAN_PUSH_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Wall-clock bound on a single docker/podman build job. A buildx `build --push`
+/// fuses image assembly with a registry upload in one process, so a stalled push
+/// (or a remote base-image fetch that never drains) would otherwise hang the
+/// release forever. Sized to the operator-facing whole-build ceiling: a single
+/// build outliving an hour is already past the expected envelope, so killing it
+/// there catches a true stall without false-killing a slow but legitimate
+/// multi-arch build. On expiry the whole build subtree is killed and the attempt
+/// retries within the build budget.
+const DOCKER_BUILD_TIMEOUT: Duration = Duration::from_secs(3600);
 
 // ---------------------------------------------------------------------------
 // list_staging_dir_recursive — diagnostic file listing
@@ -158,13 +177,26 @@ pub(crate) fn execute_docker_build(
         for (key, value) in &job.env_vars {
             cmd.env(key, value);
         }
-        let mut output = match cmd.output() {
+        let mut output = match run_capture_timeout(
+            &mut cmd,
+            log,
+            &format!("docker {}", job.backend_label),
+            DOCKER_BUILD_TIMEOUT,
+        ) {
             Ok(o) => o,
             Err(e) => {
-                return Err(ControlFlow::Break(anyhow::Error::from(e).context(format!(
+                let e = e.context(format!(
                     "docker: execute {} for crate {} index {} (attempt {}/{})",
                     job.backend_label, job.crate_name, job.idx, attempt, job.max_attempts
-                ))));
+                ));
+                // A deadline kill (build/push stalled past the whole-build
+                // ceiling) is wrapped Retriable → retry within the build budget;
+                // a spawn failure (binary missing) is fatal → break without
+                // burning retries.
+                if anodizer_core::retry::is_retriable(e.as_ref()) {
+                    return Err(ControlFlow::Continue(e));
+                }
+                return Err(ControlFlow::Break(e));
             }
         };
 
@@ -187,23 +219,13 @@ pub(crate) fn execute_docker_build(
             output.stderr = redacted.into_bytes();
         }
 
-        // The captured per-layer buildx progress (≈hundreds of lines, plus
-        // the ephemeral `/tmp/.tmpXXXX` staging-context path) is a firehose
-        // that drowns the default register; the concise "created images"
-        // summary below is the default-verbosity signal. Tee the raw stream
-        // only under `-v`, and to STDERR — stdout is anodizer's
-        // machine-readable channel. On the failure path `check_output`
-        // re-emits the redacted output regardless of verbosity, so a build
-        // error still surfaces its context.
-        if log.is_verbose() {
-            use std::io::Write;
-            // Best-effort tee: an EPIPE from a parent pipe close must
-            // not abort the build worker. `.ok()` is more intent-clear
-            // than `let _ =`.
-            std::io::stderr().write_all(&output.stdout).ok();
-            std::io::stderr().write_all(&output.stderr).ok();
-        }
-
+        // The captured per-layer buildx progress (≈hundreds of lines, plus the
+        // ephemeral `/tmp/.tmpXXXX` staging-context path) is a firehose that
+        // drowns the default register; the concise "created images" summary
+        // below is the default-verbosity signal. `run_capture_timeout` already
+        // teed the raw stream live (redacted) to stderr under `-v`; on the
+        // failure path `check_output` re-emits the redacted output regardless of
+        // verbosity, so a build error still surfaces its context.
         let stderr_text = String::from_utf8_lossy(&output.stderr).to_string();
 
         match log.check_output(output, &format!("docker {}", job.backend_label)) {
@@ -361,21 +383,27 @@ fn push_podman_tags(job: &DockerBuildJob, log: &StageLogger) -> Result<()> {
             }
 
             let mut cmd = Command::new(&push_args[0]);
-            cmd.args(&push_args[1..])
-                .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped());
+            cmd.args(&push_args[1..]);
             for (key, value) in &job.env_vars {
                 cmd.env(key, value);
             }
-            let mut output = match cmd.output() {
-                Ok(o) => o,
-                Err(e) => {
-                    return Err(ControlFlow::Break(anyhow::Error::from(e).context(format!(
-                        "podman push: execute for crate {} index {} (attempt {}/{})",
-                        job.crate_name, job.idx, attempt, job.max_attempts
-                    ))));
-                }
-            };
+            let mut output =
+                match run_capture_timeout(&mut cmd, log, "podman push", PODMAN_PUSH_TIMEOUT) {
+                    Ok(o) => o,
+                    Err(e) => {
+                        let e = e.context(format!(
+                            "podman push: execute for crate {} index {} (attempt {}/{})",
+                            job.crate_name, job.idx, attempt, job.max_attempts
+                        ));
+                        // A deadline kill (push stalled on the registry) is wrapped
+                        // Retriable → retry within budget. A spawn failure (binary
+                        // missing) is not transient → break without burning retries.
+                        if anodizer_core::retry::is_retriable(e.as_ref()) {
+                            return Err(ControlFlow::Continue(e));
+                        }
+                        return Err(ControlFlow::Break(e));
+                    }
+                };
 
             // Redact secrets from stdout/stderr before any output or logging,
             // mirroring the build path's redaction (registry auth tokens can

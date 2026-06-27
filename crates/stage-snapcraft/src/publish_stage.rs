@@ -7,7 +7,8 @@ use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::CrateConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anodizer_core::retry::{RetryPolicy, retry_sync};
+use anodizer_core::retry::{RetryPolicy, is_retriable, retry_sync};
+use anodizer_core::run::run_capture_timeout;
 use anodizer_core::stage::Stage;
 use anodizer_core::{
     PublishEvidence, PublishReport, PublisherGroup, PublisherOutcome, PublisherResult, SkipReason,
@@ -18,6 +19,20 @@ use crate::command::{
     snapcraft_list_revisions_command, snapcraft_upload_command,
 };
 use crate::targets::{SnapcraftTarget, collect_snapcraft_targets};
+
+/// Wall-clock bound on a single `snapcraft upload` attempt. A Snap Store upload
+/// that stalls (unreachable store, hung TLS handshake, a snapcraft prompt
+/// blocking on stdin) would otherwise hang the entire release forever — the
+/// store-side analogue of the bounded release-backend HTTP timeout. Sized
+/// generously for a multi-MB snap on a slow link; on expiry the whole snapcraft
+/// process subtree is killed and the attempt retries within the upload budget.
+const SNAPCRAFT_UPLOAD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// Wall-clock bound on the `snapcraft list-revisions` existence probe. The probe
+/// only reads a small revision table, so a much shorter bound suffices; on
+/// timeout it is treated like any other probe failure (proceed to upload rather
+/// than falsely skip a genuine first publish).
+const SNAPCRAFT_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 // ---------------------------------------------------------------------------
 // SnapcraftPublishStage — uploads previously built .snap artifacts
@@ -273,7 +288,14 @@ fn snap_revision_already_published(
     log: &StageLogger,
 ) -> Option<bool> {
     let args = snapcraft_list_revisions_command(snap_name);
-    let output = match Command::new(&args[0]).args(&args[1..]).output() {
+    let mut cmd = Command::new(&args[0]);
+    cmd.args(&args[1..]);
+    let output = match run_capture_timeout(
+        &mut cmd,
+        log,
+        "snapcraft list-revisions",
+        SNAPCRAFT_PROBE_TIMEOUT,
+    ) {
         Ok(o) if o.status.success() => o,
         Ok(o) => {
             // Non-zero exit: snap not registered, not logged in, etc. Can't
@@ -285,6 +307,10 @@ fn snap_revision_already_published(
             return None;
         }
         Err(e) => {
+            // Spawn failure or a deadline kill (probe stalled). Either way the
+            // existence check couldn't run — proceed to upload rather than
+            // falsely skip; a real auth/network fault resurfaces (bounded) from
+            // the upload itself.
             log.debug(&format!(
                 "snapcraft list-revisions for '{}' could not run ({}); proceeding with upload",
                 snap_name, e
@@ -427,20 +453,29 @@ fn run_uploads(
                             ));
                         }
                         log.verbose(&format!("running {}", upload_args.join(" ")));
-                        let upload_output = match Command::new(&upload_args[0])
-                            .args(&upload_args[1..])
-                            .output()
-                        {
+                        let mut cmd = Command::new(&upload_args[0]);
+                        cmd.args(&upload_args[1..]);
+                        let upload_output = match run_capture_timeout(
+                            &mut cmd,
+                            log,
+                            "snapcraft upload",
+                            SNAPCRAFT_UPLOAD_TIMEOUT,
+                        ) {
                             Ok(o) => o,
                             Err(e) => {
-                                // Spawning snapcraft itself failed (binary missing,
-                                // permission denied) — not a transient Store error.
-                                return Err(ControlFlow::Break(anyhow::Error::from(e).context(
-                                    format!(
-                                        "execute snapcraft upload for crate {} snap {}",
-                                        krate.name, snap_path
-                                    ),
-                                )));
+                                let e = e.context(format!(
+                                    "execute snapcraft upload for crate {} snap {}",
+                                    krate.name, snap_path
+                                ));
+                                // A deadline kill (upload stalled) is wrapped
+                                // Retriable → retry within budget rather than
+                                // hang forever. A spawn failure (binary missing,
+                                // permission denied) is not transient → break
+                                // without burning the retry budget.
+                                if is_retriable(e.as_ref()) {
+                                    return Err(ControlFlow::Continue(e));
+                                }
+                                return Err(ControlFlow::Break(e));
                             }
                         };
 

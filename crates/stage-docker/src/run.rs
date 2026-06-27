@@ -10,7 +10,19 @@ use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::HookEntry;
 use anodizer_core::context::Context;
 use anodizer_core::hooks::{HookRunContext, run_hooks};
+use anodizer_core::run::run_capture_timeout;
 use anodizer_core::stage::Stage;
+
+/// Wall-clock bound on `docker manifest push` — the registry upload of the
+/// assembled multi-arch manifest list. A wedged registry connection would
+/// otherwise hang the release forever; on expiry the push subtree is killed and
+/// the attempt retries within budget. Sized like a large remote upload.
+const DOCKER_MANIFEST_PUSH_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Wall-clock bound on `docker manifest create`. It assembles the manifest list
+/// and resolves each member's digest against the registry, so it is a remote
+/// metadata operation rather than a bulk upload — bounded shorter than the push.
+const DOCKER_MANIFEST_CREATE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Per-docker_v2-config post-hook state captured during config preparation
 /// and consumed after all parallel builds for that config have completed.
@@ -1483,13 +1495,24 @@ fn run_manifest_create_with_retry(
         for (key, value) in manifest_env_vars {
             create_command.env(key, value);
         }
-        let output = match create_command.output() {
+        let output = match run_capture_timeout(
+            &mut create_command,
+            log,
+            "docker manifest create",
+            DOCKER_MANIFEST_CREATE_TIMEOUT,
+        ) {
             Ok(o) => o,
             Err(e) => {
-                return Err(ControlFlow::Break(anyhow::Error::from(e).context(format!(
+                let e = e.context(format!(
                     "docker: manifest create for crate {} manifest {} (attempt {}/{})",
                     crate_name, midx, attempt, max_attempts
-                ))));
+                ));
+                // A deadline kill (registry stalled) is wrapped Retriable → retry
+                // within budget; a spawn failure is not transient → break.
+                if anodizer_core::retry::is_retriable(e.as_ref()) {
+                    return Err(ControlFlow::Continue(e));
+                }
+                return Err(ControlFlow::Break(e));
             }
         };
         match log.check_output(output, "docker manifest create") {
@@ -1550,13 +1573,24 @@ fn run_manifest_push_with_retry(
         for (key, value) in manifest_env_vars {
             push_command.env(key, value);
         }
-        let output = match push_command.output() {
+        let output = match run_capture_timeout(
+            &mut push_command,
+            log,
+            "docker manifest push",
+            DOCKER_MANIFEST_PUSH_TIMEOUT,
+        ) {
             Ok(o) => o,
             Err(e) => {
-                return Err(ControlFlow::Break(anyhow::Error::from(e).context(format!(
+                let e = e.context(format!(
                     "docker: manifest push for crate {} manifest {} (attempt {}/{})",
                     crate_name, midx, attempt, max_attempts
-                ))));
+                ));
+                // A deadline kill (registry stalled) is wrapped Retriable → retry
+                // within budget; a spawn failure is not transient → break.
+                if anodizer_core::retry::is_retriable(e.as_ref()) {
+                    return Err(ControlFlow::Continue(e));
+                }
+                return Err(ControlFlow::Break(e));
             }
         };
         // Capture stdout for digest extraction before checking status.

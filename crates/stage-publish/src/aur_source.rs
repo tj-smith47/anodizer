@@ -584,8 +584,15 @@ fn publish_aur_source_entry(
         ctx.render_is_strict(),
     )?;
     let commit_opts = util::resolve_commit_opts(ctx, cfg.commit_author.as_ref(), log)?;
-    let outcome =
-        util::commit_and_push_with_opts(repo_path, &["."], &commit_msg, None, label, &commit_opts)?;
+    let outcome = util::commit_and_push_with_opts(
+        repo_path,
+        &["."],
+        &commit_msg,
+        None,
+        label,
+        &commit_opts,
+        log,
+    )?;
     match outcome {
         util::CommitOutcome::Pushed => {
             log.status(&format!(

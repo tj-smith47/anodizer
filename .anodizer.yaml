@@ -425,10 +425,12 @@ crates:
           - LICENSE-MIT
           - LICENSE-APACHE
           - README.md
-    checksum:
-      name_template: "{{ ArtifactName }}.sha256"
-      algorithm: sha256
-      split: true
+    # Inherit the top-level combined `*_checksums.txt` (GoReleaser's default).
+    # Per-artifact split sidecars would emit one `.sha256` per asset AND, via
+    # `signs.artifacts: checksum`, one detached `.sig` per sidecar — ~114 tiny
+    # release assets that trip GitHub's secondary rate limit. Combined mode is
+    # one checksums file + one signature; scoop autoupdate auto-resolves to
+    # `ChecksumsRegex` (see resolve_autoupdate_hash) so nothing downstream breaks.
     binstall:
       # Auto-derived: anodize renders a per-target `overrides.<triple>` for every
       # build target from this crate's own archive `name_template` + release repo,

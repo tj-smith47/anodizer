@@ -699,6 +699,7 @@ fn run_real(
         Some(branch.as_str()),
         "schemastore",
         &commit_opts,
+        log,
     )?;
     if !push.is_pushed() {
         log.status("fork branch already matches the staged tree — nothing pushed");

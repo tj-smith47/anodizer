@@ -23,9 +23,18 @@ use std::path::Path;
 use std::process::Command;
 
 use anodizer_core::log::StageLogger;
+use anodizer_core::run::run_capture_timeout;
 use anyhow::{Context as _, Result};
 use regex::Regex;
 use std::sync::LazyLock;
+use std::time::Duration;
+
+/// Wall-clock bound on `docker buildx imagetools inspect` — a base-image digest
+/// lookup against the remote registry. An unreachable or stalled registry would
+/// otherwise hang the build forever with no exit; on expiry the probe subtree is
+/// killed and the caller falls back to an empty digest (best-effort). Sized as a
+/// remote metadata fetch.
+const IMAGETOOLS_INSPECT_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Result of resolving a Dockerfile's final base image.
 #[derive(Debug, Clone, Default)]
@@ -395,7 +404,7 @@ pub fn get_base_image(
         }));
     }
 
-    match resolve_digest(&base) {
+    match resolve_digest(&base, log) {
         Ok(digest) => Ok(Some(BaseImage { name: base, digest })),
         Err(e) => {
             log.warn(&format!(
@@ -416,18 +425,26 @@ pub fn get_base_image(
 /// buggy or compromised `docker` binary can't smuggle arbitrary bytes
 /// into the `BaseImageDigest` template variable (and from there, into
 /// OCI annotations).
-fn resolve_digest(reference: &str) -> Result<String> {
-    let output = Command::new("docker")
-        .args([
-            "buildx",
-            "imagetools",
-            "inspect",
-            reference,
-            "--format",
-            "{{.Manifest.Digest}}",
-        ])
-        .output()
-        .with_context(|| format!("spawn docker buildx imagetools inspect {reference}"))?;
+fn resolve_digest(reference: &str, log: &StageLogger) -> Result<String> {
+    let mut cmd = Command::new("docker");
+    cmd.args([
+        "buildx",
+        "imagetools",
+        "inspect",
+        reference,
+        "--format",
+        "{{.Manifest.Digest}}",
+    ]);
+    // Bounded: the inspect hits the remote registry, so an unreachable registry
+    // must not hang the build with no deadline. The caller treats any Err
+    // (including a deadline kill) as a best-effort miss and warns.
+    let output = run_capture_timeout(
+        &mut cmd,
+        log,
+        "docker buildx imagetools inspect",
+        IMAGETOOLS_INSPECT_TIMEOUT,
+    )
+    .with_context(|| format!("spawn docker buildx imagetools inspect {reference}"))?;
 
     if !output.status.success() {
         anyhow::bail!(

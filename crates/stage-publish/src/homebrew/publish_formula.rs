@@ -608,6 +608,7 @@ fn commit_files_to_tap(
         branch,
         "homebrew",
         &commit_opts,
+        log,
     )?;
     match outcome {
         crate::util::CommitOutcome::Pushed => {

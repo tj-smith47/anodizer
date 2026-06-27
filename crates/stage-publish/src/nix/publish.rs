@@ -991,6 +991,7 @@ fn finalize_publish(
         branch.as_deref(),
         "nix",
         &commit_opts,
+        log,
     )?;
 
     // Clone the repository config so `maybe_submit_pr` no longer

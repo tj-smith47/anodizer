@@ -5,12 +5,21 @@
 use anodizer_core::config::RepositoryConfig;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
+use anodizer_core::run::run_capture_timeout;
 use anyhow::{Context as _, Result};
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use super::cmd::{redact_output_token, run_cmd_in, run_cmd_in_redacted};
 use super::template::render_or_warn;
+
+/// Wall-clock bound on `git clone` of a publisher index repo (a tap, AUR,
+/// winget-pkgs, krew-index). The clone hits the remote, so an unreachable or
+/// stalled host would otherwise hang the release forever with no deadline; on
+/// expiry the clone subtree is killed and the error surfaces (redacted). Sized
+/// as a remote clone/fetch, matching the release-backend/bucket bound.
+const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Clone a git repo into `tmp_dir` with token-based auth.
 ///
@@ -38,12 +47,19 @@ pub(crate) fn clone_repo_with_auth(
     let clone_args: Vec<&str> = vec!["clone", "--depth=1", &effective_url];
     let repo_path_str = tmp_dir.to_string_lossy();
 
-    let output = Command::new("git")
-        .args(&clone_args)
+    let mut cmd = Command::new("git");
+    cmd.args(&clone_args)
         .arg(repo_path_str.as_ref())
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .with_context(|| format!("{label}: git clone: spawn"))?;
+        .env("GIT_TERMINAL_PROMPT", "0");
+    // Bounded: the clone hits the remote, so a stalled host must not hang the
+    // release with no deadline. A deadline kill surfaces as a Retriable error.
+    let output = run_capture_timeout(
+        &mut cmd,
+        log,
+        &format!("{label}: git clone"),
+        GIT_CLONE_TIMEOUT,
+    )
+    .with_context(|| format!("{label}: git clone: spawn"))?;
     // Pre-redact: git's stderr on failure typically echoes the full URL
     // (`fatal: unable to access 'https://x-access-token:<TOKEN>@host/...'`).
     // Scrub the token bytes BEFORE handing the `Output` to `check_output`,
@@ -122,9 +138,15 @@ pub(crate) fn clone_repo_ssh(
         bootstrap_key = Some(key_dir);
     }
 
-    let output = cmd
-        .output()
-        .with_context(|| format!("{label}: git clone via SSH: spawn"))?;
+    // Bounded: the SSH clone hits the remote (AUR, a tap), so a wedged ssh
+    // handshake must not hang the release. A deadline kill is a Retriable error.
+    let output = run_capture_timeout(
+        &mut cmd,
+        log,
+        &format!("{label}: git clone (SSH)"),
+        GIT_CLONE_TIMEOUT,
+    )
+    .with_context(|| format!("{label}: git clone via SSH: spawn"))?;
     // SSH credentials are passed via `GIT_SSH_COMMAND` env / sidecar key
     // file — they never appear in `argv` or in git's stdio. We still call
     // through `redact_output_token` with `None` to keep the call shape

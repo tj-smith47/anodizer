@@ -207,6 +207,22 @@ fn run_streamed(cmd: &mut Command, log: &StageLogger, label: &str) -> Result<Out
     run_inner(cmd, None, log, label, None)
 }
 
+/// Like [`run_checked`] (no stdin; a non-zero exit becomes an `Err`) but bounds
+/// the child to `timeout`: if it has not exited within that window the whole
+/// process subtree is **killed** and the call returns a [`Retriable`]-wrapped
+/// timeout error. Use this for network-touching subprocesses — registry pushes,
+/// `git push` over ssh, `gh` PR submission — whose remote side can stall a
+/// connection indefinitely and would otherwise hang the entire release.
+pub fn run_checked_timeout(
+    cmd: &mut Command,
+    log: &StageLogger,
+    label: &str,
+    timeout: Duration,
+) -> Result<Output> {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    run_inner(cmd, None, log, label, Some(timeout))
+}
+
 /// Wait for `child` to exit, killing it if it outlives `timeout`.
 ///
 /// Polls [`Child::try_wait`] on a short cadence so a child that exits on its own
@@ -258,7 +274,11 @@ fn wait_or_kill(child: &Mutex<Child>, timeout: Duration) -> std::io::Result<Opti
 /// threads reach EOF and the scope can unwind instead of blocking forever on a
 /// hung child. A killed-for-timeout run returns a retriable timeout error
 /// rather than the child's (nonexistent) exit status.
-fn run_inner(
+///
+/// Returns the raw captured [`Output`] regardless of exit status; the
+/// success/failure decision (`check_output`) is left to the caller — `run_inner`
+/// applies it, [`run_capture_timeout`] does not.
+fn capture_inner(
     cmd: &mut Command,
     stdin: Option<&[u8]>,
     log: &StageLogger,
@@ -388,18 +408,54 @@ fn run_inner(
 
     let status = reaped.with_context(|| format!("{label}: failed to wait for child"))?;
 
-    let output = Output {
+    Ok(Output {
         status,
         stdout: out_buf,
         stderr: err_buf,
-    };
-    if verbose {
+    })
+}
+
+/// Spawn `cmd` through [`capture_inner`] and apply the success/failure decision
+/// via `check_output` — the shared core behind [`run_checked`],
+/// [`run_checked_with_stdin`], and their timeout variants. A non-zero exit
+/// becomes an `Err`; callers that must inspect a non-zero `Output` themselves
+/// use [`run_capture_timeout`] instead.
+fn run_inner(
+    cmd: &mut Command,
+    stdin: Option<&[u8]>,
+    log: &StageLogger,
+    label: &str,
+    timeout: Option<Duration>,
+) -> Result<Output> {
+    let output = capture_inner(cmd, stdin, log, label, timeout)?;
+    if log.is_verbose() {
         // The tee already printed both streams live; suppress check_output's
         // own re-emit so nothing prints twice, while keeping the bail! embed.
         log.check_output_streamed(output, label)
     } else {
         log.check_output(output, label)
     }
+}
+
+/// Bound `cmd` to `timeout` and return its raw captured [`Output`] **without**
+/// treating a non-zero exit as an error: the caller inspects
+/// `status`/`stdout`/`stderr` itself. The Snap Store publish path needs this —
+/// a non-zero `snapcraft upload` may be a review-pending success or a retriable
+/// 5xx that must be classified from the body, not pre-converted to a hard fail.
+///
+/// The child runs in its own process group; if it outlives `timeout` the whole
+/// subtree is killed and a [`Retriable`]-wrapped timeout error is returned, so a
+/// transient store/network stall retries within budget instead of hanging the
+/// release indefinitely. Errors only on spawn failure, an OS-level wait
+/// failure, or the deadline kill.
+pub fn run_capture_timeout(
+    cmd: &mut Command,
+    log: &StageLogger,
+    label: &str,
+    timeout: Duration,
+) -> Result<Output> {
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+    capture_inner(cmd, None, log, label, Some(timeout))
 }
 
 /// Join a reader thread, returning its captured buffer. On a thread panic,
@@ -689,6 +745,60 @@ mod tests {
             String::from_utf8_lossy(&out.stdout).trim_end(),
             "within-deadline",
             "the fast-path timeout call must still round-trip stdin to stdout"
+        );
+    }
+
+    /// `run_capture_timeout` must hand back a NON-zero exit as `Ok(Output)` —
+    /// not pre-convert it to an `Err` the way `run_checked` does. The snapcraft
+    /// publish path relies on this to classify a failed `snapcraft upload` as a
+    /// review-pending success vs. a retriable 5xx from the captured body.
+    #[test]
+    fn run_capture_timeout_returns_nonzero_exit_as_ok_output() {
+        let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let out = run_capture_timeout(
+            &mut sh("echo to-stdout; echo to-stderr >&2; exit 7"),
+            &log,
+            "classify-me",
+            Duration::from_secs(30),
+        )
+        .expect("a non-zero exit must be Ok(Output), not Err");
+        assert_eq!(
+            out.status.code(),
+            Some(7),
+            "the caller must see the real non-zero exit code"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("to-stdout"),
+            "stdout must be captured for body classification"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains("to-stderr"),
+            "stderr must be captured for body classification"
+        );
+    }
+
+    /// A hung child (the Snap Store-stall analogue) must be killed at the
+    /// deadline and surface a retriable timeout — never block forever. This is
+    /// the regression guard for the publish-stage hang.
+    #[test]
+    fn run_capture_timeout_kills_hung_child() {
+        let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let start = Instant::now();
+        let err = run_capture_timeout(
+            &mut sh("sleep 30"),
+            &log,
+            "hung-upload",
+            Duration::from_millis(200),
+        )
+        .expect_err("a child outliving the timeout must surface as Err");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "timeout must return promptly (killed the child), took {elapsed:?}"
+        );
+        assert!(
+            crate::retry::is_retriable(err.as_ref()),
+            "a deadline kill must classify as retriable so the upload retries within budget; got: {err:#}"
         );
     }
 

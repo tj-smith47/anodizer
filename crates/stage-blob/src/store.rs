@@ -48,6 +48,34 @@ pub(crate) fn to_object_store_retry(cfg: &RetryConfig) -> ObjectStoreRetryConfig
     }
 }
 
+/// Per-request wall-clock bound applied to every bucket client. Without it an
+/// upload whose connection stalls (unreachable endpoint, hung TLS, a black-holed
+/// route mid-PUT) hangs the entire release forever — the bucket analogue of the
+/// 300 s timeout the gitea/gitlab release backends already carry. `object_store`
+/// applies this per HTTP request, so a large multipart upload is bounded
+/// per-part, not as a whole.
+const OBJECT_STORE_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// Connect-phase bound applied to every bucket client, so a dead endpoint fails
+/// in seconds instead of riding the full request timeout.
+const OBJECT_STORE_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `ClientOptions` carrying anodizer's standard bucket timeout policy, plus any
+/// provider-specific default headers (e.g. a canned-ACL header). Every store
+/// builder routes through this so no provider's client can be constructed
+/// without a request and connect deadline.
+fn timed_client_options(
+    headers: Option<reqwest::header::HeaderMap>,
+) -> object_store::ClientOptions {
+    let mut opts = object_store::ClientOptions::new()
+        .with_timeout(OBJECT_STORE_REQUEST_TIMEOUT)
+        .with_connect_timeout(OBJECT_STORE_CONNECT_TIMEOUT);
+    if let Some(headers) = headers {
+        opts = opts.with_default_headers(headers);
+    }
+    opts
+}
+
 /// Build an `ObjectStore` for the given provider and config.
 /// All env-based credential chains are handled by the builder's `from_env()`.
 pub(crate) fn build_store(
@@ -112,7 +140,7 @@ pub(crate) fn build_s3_store(
     // S3 canned ACL via x-amz-acl header.
     // We set it as a default header on the client — since each blob config
     // gets its own ObjectStore client, this is per-config ACL.
-    if let Some(ref acl) = config.acl {
+    let acl_headers = if let Some(ref acl) = config.acl {
         // Validate against the S3 canned ACL enum — `log-delivery-write`
         // (a valid AWS S3 canned ACL) is omitted to match upstream.
         const VALID_S3_ACLS: &[&str] = &[
@@ -138,9 +166,11 @@ pub(crate) fn build_s3_store(
             reqwest::header::HeaderValue::from_str(acl)
                 .with_context(|| format!("blobs: invalid ACL value: {acl}"))?,
         );
-        let client_opts = object_store::ClientOptions::new().with_default_headers(headers);
-        builder = builder.with_client_options(client_opts);
-    }
+        Some(headers)
+    } else {
+        None
+    };
+    builder = builder.with_client_options(timed_client_options(acl_headers));
 
     Ok(Box::new(
         builder
@@ -165,7 +195,7 @@ pub(crate) fn build_gcs_store(
     // https://cloud.google.com/storage/docs/access-control/lists#predefined-acl
     // and the GCS XML API canned ACL set so a typo (e.g. `public-read` instead
     // of `publicRead`) errors here rather than producing a 400 deep in upload.
-    if let Some(ref acl) = config.acl {
+    let acl_headers = if let Some(ref acl) = config.acl {
         const VALID_GCS_ACLS: &[&str] = &[
             "authenticatedRead",
             "bucketOwnerFullControl",
@@ -188,9 +218,11 @@ pub(crate) fn build_gcs_store(
             reqwest::header::HeaderValue::from_str(acl)
                 .with_context(|| format!("blobs: invalid ACL value: {acl}"))?,
         );
-        let client_opts = object_store::ClientOptions::new().with_default_headers(headers);
-        builder = builder.with_client_options(client_opts);
-    }
+        Some(headers)
+    } else {
+        None
+    };
+    builder = builder.with_client_options(timed_client_options(acl_headers));
 
     Ok(Box::new(
         builder
@@ -207,7 +239,8 @@ pub(crate) fn build_azure_store(
 
     let builder = MicrosoftAzureBuilder::from_env()
         .with_container_name(container)
-        .with_retry(to_object_store_retry(retry));
+        .with_retry(to_object_store_retry(retry))
+        .with_client_options(timed_client_options(None));
 
     Ok(Box::new(
         builder

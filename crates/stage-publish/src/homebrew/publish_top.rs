@@ -672,6 +672,7 @@ pub fn publish_top_level_homebrew_casks(
             branch.as_deref(),
             "homebrew_casks",
             &commit_opts,
+            log,
         )?;
         match outcome {
             crate::util::CommitOutcome::Pushed => {

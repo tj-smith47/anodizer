@@ -1690,6 +1690,7 @@ fn submit_winget_manifests(
         Some(branch_name),
         "winget",
         &commit_opts,
+        log,
     )?;
     match outcome {
         util::CommitOutcome::Pushed => {

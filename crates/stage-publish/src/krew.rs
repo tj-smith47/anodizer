@@ -1191,6 +1191,7 @@ pub fn publish_to_krew(
         branch,
         "krew",
         &commit_opts,
+        log,
     )?;
     let pushed = match push_outcome {
         util::CommitOutcome::Pushed => {

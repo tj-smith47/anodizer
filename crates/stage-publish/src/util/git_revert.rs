@@ -22,9 +22,17 @@
 use anyhow::{Context as _, Result};
 use std::path::Path;
 use std::process::Command;
+use std::time::Duration;
 
 use super::clone::{clone_repo_ssh, clone_repo_with_auth};
 use anodizer_core::log::StageLogger;
+use anodizer_core::run::run_capture_timeout;
+
+/// Wall-clock bound on the rollback `git push` of a revert commit. The push hits
+/// the publisher remote, so a wedged connection must not hang the rollback
+/// forever; on expiry the subtree is killed and the failure surfaces. Sized as a
+/// remote push.
+const GIT_REVERT_PUSH_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// Description of a publisher-owned repo whose HEAD should be reverted +
 /// pushed.
@@ -112,7 +120,7 @@ pub(crate) fn run_git_revert_and_push(target: &RevertTarget, log: &StageLogger) 
     }
 
     revert_head_in(repo_path)?;
-    push_after_revert(repo_path, target.branch.as_deref())?;
+    push_after_revert(repo_path, target.branch.as_deref(), log)?;
     Ok(())
 }
 
@@ -169,17 +177,24 @@ fn revert_head_in(path: &Path) -> Result<()> {
 /// `branch = Some("master")` pushes to `origin master`. `branch = None`
 /// pushes `HEAD` to its current upstream — same shape `commit_and_push_
 /// with_opts` uses for publishers that don't pin a branch.
-fn push_after_revert(path: &Path, branch: Option<&str>) -> Result<()> {
+fn push_after_revert(path: &Path, branch: Option<&str>, log: &StageLogger) -> Result<()> {
     let args: Vec<&str> = match branch {
         Some(b) => vec!["push", "origin", b],
         None => vec!["push", "origin", "HEAD"],
     };
-    let output = Command::new("git")
-        .args(&args)
+    let mut cmd = Command::new("git");
+    cmd.args(&args)
         .current_dir(path)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .output()
-        .with_context(|| format!("git_revert: git push in {}", path.display()))?;
+        .env("GIT_TERMINAL_PROMPT", "0");
+    // Bounded: the rollback push hits the remote, so a stalled connection must
+    // not hang the rollback. A deadline kill surfaces as a Retriable error.
+    let output = run_capture_timeout(
+        &mut cmd,
+        log,
+        "git_revert: git push",
+        GIT_REVERT_PUSH_TIMEOUT,
+    )
+    .with_context(|| format!("git_revert: git push in {}", path.display()))?;
     if !output.status.success() {
         anyhow::bail!(
             "git_revert: git push failed in {} (exit {})\nstderr: {}",

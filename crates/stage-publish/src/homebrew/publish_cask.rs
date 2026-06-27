@@ -202,6 +202,7 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
         branch.as_deref(),
         "homebrew cask",
         &commit_opts,
+        log,
     )?;
     match outcome {
         crate::util::CommitOutcome::Pushed => {

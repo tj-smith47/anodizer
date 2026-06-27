@@ -977,6 +977,7 @@ fn aur_commit_and_push(
         Some(AUR_REPO_BRANCH),
         "aur",
         &commit_opts,
+        log,
     )?;
     let pushed = match outcome {
         util::CommitOutcome::Pushed => {
