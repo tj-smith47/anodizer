@@ -24,7 +24,7 @@ pub fn has_remote_in(cwd: &Path, remote: &str) -> bool {
 
 /// Parse owner and repo name from a GitHub remote URL.
 /// Supports HTTPS (`https://github.com/owner/repo.git`) and SSH (`git@github.com:owner/repo.git`).
-pub fn parse_github_remote(url: &str) -> Option<(String, String)> {
+pub(crate) fn parse_github_remote(url: &str) -> Option<(String, String)> {
     let url = url.trim();
     if url.is_empty() {
         return None;
@@ -52,18 +52,12 @@ pub fn parse_github_remote(url: &str) -> Option<(String, String)> {
     None
 }
 
-/// Get the GitHub owner/name from the `origin` remote.
-pub fn detect_github_repo() -> Result<(String, String)> {
-    detect_github_repo_in(&std::env::current_dir()?)
-}
-
 /// Get the GitHub owner/name from the `origin` remote configured in `cwd`.
 ///
-/// Path-taking sibling of [`detect_github_repo`]; runs
-/// `git remote get-url origin` with an explicit `current_dir` so callers
+/// Runs `git remote get-url origin` with an explicit `current_dir` so callers
 /// (including tests against a temporary fixture repo) don't have to
 /// mutate the process-wide cwd.
-pub fn detect_github_repo_in(cwd: &Path) -> Result<(String, String)> {
+pub(crate) fn detect_github_repo_in(cwd: &Path) -> Result<(String, String)> {
     let url = git_output_in(cwd, &["remote", "get-url", "origin"])?;
     parse_github_remote(&url).ok_or_else(|| {
         // Strip inline `<scheme>://<userinfo>@...` userinfo before surfacing
@@ -83,7 +77,7 @@ pub fn detect_github_repo_in(cwd: &Path) -> Result<(String, String)> {
 ///
 /// This is a host-agnostic version of [`parse_github_remote`], suitable for
 /// GitLab, Gitea, and other SCM providers.
-pub fn parse_remote_owner_repo(url: &str) -> Option<(String, String)> {
+pub(crate) fn parse_remote_owner_repo(url: &str) -> Option<(String, String)> {
     let url = url.trim();
     if url.is_empty() {
         return None;
@@ -194,20 +188,12 @@ pub fn detect_remote_web_base_in(cwd: &Path) -> Result<String> {
     })
 }
 
-/// Get the owner/repo from the `origin` remote, regardless of SCM host.
-///
-/// Uses [`parse_remote_owner_repo`] which works with any git hosting provider
-/// (GitHub, GitLab, Gitea, etc.).
-pub fn detect_owner_repo() -> Result<(String, String)> {
-    detect_owner_repo_in(&std::env::current_dir()?)
-}
-
 /// Get the owner/repo from the `origin` remote configured in `cwd`,
 /// regardless of SCM host.
 ///
-/// Path-taking sibling of [`detect_owner_repo`] for use against an
-/// explicit working directory instead of the process-wide cwd.
-pub fn detect_owner_repo_in(cwd: &Path) -> Result<(String, String)> {
+/// Uses [`parse_remote_owner_repo`] which works with any git hosting provider
+/// (GitHub, GitLab, Gitea, etc.).
+pub(crate) fn detect_owner_repo_in(cwd: &Path) -> Result<(String, String)> {
     let url = git_output_in(cwd, &["remote", "get-url", "origin"])?;
     parse_remote_owner_repo(&url).ok_or_else(|| {
         // Strip inline userinfo before surfacing the URL.

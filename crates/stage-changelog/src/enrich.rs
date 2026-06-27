@@ -200,7 +200,9 @@ pub(crate) fn derive_github_target(
     {
         return Some(target);
     }
-    anodizer_core::git::detect_github_repo_in(workspace_root).ok()
+    anodizer_core::git::resolve_github_slug_in(None, None, workspace_root)
+        .ok()
+        .map(|slug| (slug.owner().to_string(), slug.name().to_string()))
 }
 
 /// Read the first usable `crates[].release.github` (or

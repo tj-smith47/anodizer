@@ -470,7 +470,28 @@ pub fn run(opts: TagOpts) -> Result<()> {
                     &log,
                 )?;
             }
-            git::create_tag_via_github_api(tag, message, dry_run, &log, strict)?;
+            // Resolve the repo identity once (config override -> origin
+            // remote) and hand it to the API tagger so it agrees with the
+            // rest of the pipeline instead of re-parsing the remote itself.
+            let release_github = loaded_config
+                .as_ref()
+                .and_then(|c| c.release.as_ref())
+                .and_then(|r| r.github.as_ref());
+            let slug = git::resolve_github_slug_in(
+                release_github.map(|g| g.owner.as_str()),
+                release_github.map(|g| g.name.as_str()),
+                &cwd,
+            )?;
+            git::create_tag_via_github_api_in(
+                &cwd,
+                std::path::Path::new("gh"),
+                &slug,
+                tag,
+                message,
+                dry_run,
+                &log,
+                strict,
+            )?;
         } else if push_mode {
             // Create the tag locally, then push branch + tag atomically so
             // neither an orphan tag NOR an orphan bump commit is possible.

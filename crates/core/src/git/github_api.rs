@@ -5,7 +5,7 @@ use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 
 use super::git_output_in;
-use super::remote::detect_github_repo_in;
+use super::slug::RepoSlug;
 use super::tags::create_and_push_tag_in;
 
 /// GET a GitHub API endpoint via the `gh` CLI (single request, no pagination).
@@ -291,7 +291,12 @@ fn gh_api_post_with_binary(
 /// lightweight tag object pointing at the HEAD commit on the default branch.
 ///
 /// Falls back to [`create_and_push_tag_in`] if `gh` is not available.
+///
+/// `slug` is the resolved repository identity (config override -> remote),
+/// supplied by the caller so the API target and the rest of the pipeline agree
+/// on one owner/repo rather than this function re-deriving its own.
 pub fn create_tag_via_github_api(
+    slug: &RepoSlug,
     tag: &str,
     message: &str,
     dry_run: bool,
@@ -301,6 +306,7 @@ pub fn create_tag_via_github_api(
     create_tag_via_github_api_in(
         &std::env::current_dir()?,
         Path::new("gh"),
+        slug,
         tag,
         message,
         dry_run,
@@ -311,15 +317,16 @@ pub fn create_tag_via_github_api(
 
 /// Path-taking sibling of [`create_tag_via_github_api`].
 ///
-/// `cwd` is the repository the tag should be created against (used for
-/// `git remote get-url origin` and `git rev-parse HEAD` lookups, plus
-/// the local `git tag -a` fallback when `gh_binary` is missing).
-/// `gh_binary` is the path to the `gh` CLI; pass `Path::new("gh")` to
-/// keep the production PATH-lookup behavior.
+/// `cwd` is the repository the tag should be created against (used for the
+/// `git rev-parse HEAD` lookup and the local `git tag -a` fallback when
+/// `gh_binary` is missing). `slug` is the resolved owner/repo. `gh_binary` is
+/// the path to the `gh` CLI; pass `Path::new("gh")` to keep the production
+/// PATH-lookup behavior.
 #[allow(clippy::too_many_arguments)]
 pub fn create_tag_via_github_api_in(
     cwd: &Path,
     gh_binary: &Path,
+    slug: &RepoSlug,
     tag: &str,
     message: &str,
     dry_run: bool,
@@ -334,11 +341,12 @@ pub fn create_tag_via_github_api_in(
         return Ok(());
     }
 
-    // Detect owner/repo from the origin remote.
-    let (owner, repo) = detect_github_repo_in(cwd)?;
+    let owner = slug.owner();
+    let repo = slug.name();
 
-    // Get the current HEAD SHA to point the tag at.
-    let sha = git_output_in(cwd, &["rev-parse", "HEAD"])?;
+    // Get the current HEAD SHA to point the tag at — via the canonical
+    // single sha resolver, not a private `rev-parse` here.
+    let sha = super::get_head_commit_in(cwd)?;
 
     let body = serde_json::json!({
         "tag": tag,
@@ -392,8 +400,9 @@ mod tests {
     #[test]
     fn create_tag_dry_run_short_circuits() {
         let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+        let slug = RepoSlug::for_test("owner", "repo");
         // Even with no git repo / no gh CLI, dry-run must succeed.
-        let result = create_tag_via_github_api("v1.0.0", "msg", true, &log, false);
+        let result = create_tag_via_github_api(&slug, "v1.0.0", "msg", true, &log, false);
         assert!(result.is_ok(), "dry-run must succeed: {result:?}");
     }
 
@@ -572,8 +581,8 @@ mod tests {
     }
 
     /// `create_tag_via_github_api_in` with `strict=true` must error
-    /// when `cwd` is not a git repo — the inner `detect_github_repo_in`
-    /// drives `git remote get-url origin` and fails there.
+    /// when `cwd` is not a git repo — the HEAD-sha resolver
+    /// (`get_head_commit_in`) drives `git rev-parse HEAD` and fails there.
     ///
     /// Skips when `git` isn't on PATH (mirrors `tool_on_path` patterns
     /// elsewhere in the suite).
@@ -593,9 +602,11 @@ mod tests {
         }
         let tmp = tempfile::tempdir().unwrap();
         let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+        let slug = RepoSlug::for_test("owner", "repo");
         let err = create_tag_via_github_api_in(
             tmp.path(),
             Path::new("gh"),
+            &slug,
             "v1.0.0",
             "msg",
             false,
@@ -617,9 +628,11 @@ mod tests {
     fn create_tag_via_github_api_in_dry_run_short_circuits() {
         let tmp = tempfile::tempdir().unwrap();
         let log = crate::log::StageLogger::new("test", crate::log::Verbosity::Quiet);
+        let slug = RepoSlug::for_test("owner", "repo");
         let result = create_tag_via_github_api_in(
             tmp.path(),
             Path::new("gh"),
+            &slug,
             "v1.0.0",
             "msg",
             true,

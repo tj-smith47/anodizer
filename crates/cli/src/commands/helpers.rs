@@ -766,8 +766,12 @@ pub fn setup_env(
     // Multiple-token detection.
     // When multiple SCM tokens are set without force_token, error early.
     if resolved_force.is_none() {
+        // Empty-filtered via the canonical resolver: a blank `GITHUB_TOKEN=""`
+        // is not a configured GitHub token and must not trip the multi-token
+        // ambiguity guard.
         let has_github =
-            ctx.env_var("GITHUB_TOKEN").is_some() || ctx.env_var("ANODIZER_GITHUB_TOKEN").is_some();
+            anodizer_core::git::resolve_github_token_with_env(None, &|key| ctx.env_var(key))
+                .is_some();
         let has_gitlab = ctx.env_var("GITLAB_TOKEN").is_some();
         let has_gitea = ctx.env_var("GITEA_TOKEN").is_some();
         let count = [has_github, has_gitlab, has_gitea]
@@ -1095,15 +1099,17 @@ pub fn infer_project_name(config: &mut Config, log: &StageLogger) {
 /// Auto-detect the GitHub owner/name from the git remote and fill in any crate
 /// release configs that are missing the `github` section.
 pub fn auto_detect_github(config: &mut Config, log: &StageLogger) {
-    let detected_github = git::detect_github_repo().ok();
+    // Resolve the slug once from the origin remote (no config override here —
+    // this fills the per-crate override precisely when it is absent).
+    let detected_github = git::resolve_github_slug(None, None).ok();
     for crate_cfg in &mut config.crates {
         if let Some(ref mut release) = crate_cfg.release
             && release.github.is_none()
         {
-            if let Some((ref owner, ref name)) = detected_github {
+            if let Some(slug) = &detected_github {
                 release.github = Some(GitHubConfig {
-                    owner: owner.clone(),
-                    name: name.clone(),
+                    owner: slug.owner().to_string(),
+                    name: slug.name().to_string(),
                 });
             } else {
                 log.warn("could not auto-detect GitHub repo from git remote");
@@ -1182,9 +1188,13 @@ pub fn resolve_scm_token_type(ctx: &mut Context, config: &Config) {
         ctx.options.token = match ctx.token_type {
             ScmTokenType::GitLab => ctx.env_var("GITLAB_TOKEN"),
             ScmTokenType::Gitea => ctx.env_var("GITEA_TOKEN"),
-            ScmTokenType::GitHub => ctx
-                .env_var("ANODIZER_GITHUB_TOKEN")
-                .or_else(|| ctx.env_var("GITHUB_TOKEN")),
+            // Route through the canonical resolver so an empty
+            // `GITHUB_TOKEN=""` (the shape GH Actions gives a missing secret)
+            // falls through to the next source instead of being taken as a
+            // real token.
+            ScmTokenType::GitHub => {
+                anodizer_core::git::resolve_github_token_with_env(None, &|key| ctx.env_var(key))
+            }
         };
     }
 }

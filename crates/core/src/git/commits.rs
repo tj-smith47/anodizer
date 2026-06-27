@@ -837,25 +837,13 @@ pub fn paths_changed_since_tag_in(cwd: &Path, tag: &str, paths: &[&str]) -> Resu
     }
 }
 
-/// `git -C <repo> rev-parse HEAD` — return HEAD's full commit hash for the
-/// given repository (or worktree). Path-taking sibling of
-/// [`get_head_commit`] so callers (the determinism harness, future CI
-/// glue) can resolve HEAD without `cd`-ing into the repo first.
+/// Return HEAD's full commit hash for the given repository (or worktree).
+///
+/// Retained as a named entry point for the determinism harness / CI glue;
+/// delegates to [`get_head_commit_in`] so HEAD-sha resolution lives in exactly
+/// one place rather than re-implementing its own `rev-parse`.
 pub fn head_commit_hash_in(repo: &std::path::Path) -> Result<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["rev-parse", "HEAD"])
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("LC_ALL", "C")
-        .output()
-        .context("failed to invoke git rev-parse HEAD")?;
-    if !out.status.success() {
-        let stderr_raw = String::from_utf8_lossy(&out.stderr);
-        let raw = format!("git rev-parse HEAD failed: {}", stderr_raw.trim());
-        bail!("{}", crate::redact::redact_process_env(&raw));
-    }
-    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    get_head_commit_in(repo)
 }
 
 /// Resolve a revision (sha, ref name, `HEAD`, etc.) to its full commit hash.

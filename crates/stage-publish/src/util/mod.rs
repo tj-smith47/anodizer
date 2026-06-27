@@ -54,7 +54,8 @@ pub(crate) use cmd::run_cmd_in;
 pub(crate) use commit::{CommitOutcome, commit_and_push_with_opts, resolve_commit_opts};
 pub(crate) use config::{
     all_crates, get_publish_config, resolve_artifact_kind, resolve_repo_owner_name,
-    resolve_repo_token, resolve_secret_name, should_skip_publisher_with_if, should_skip_upload,
+    resolve_repo_token, resolve_rollback_token, resolve_secret_name, should_skip_publisher_with_if,
+    should_skip_upload,
 };
 pub(crate) use disambiguate::{DisambiguateConfig, disambiguate_by_format};
 #[cfg(test)]

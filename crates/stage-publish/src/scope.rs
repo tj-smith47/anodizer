@@ -90,18 +90,14 @@ pub(crate) fn scope_available_with_env<E: anodizer_core::EnvSource + ?Sized>(
     env: &E,
 ) -> bool {
     let env_var = label.split_once(' ').map(|(v, _)| v).unwrap_or(label);
-    if env.var(env_var).map(|v| !v.is_empty()).unwrap_or(false) {
-        return true;
+    // The GitHub-token chain (GITHUB_TOKEN plus its ANODIZER_GITHUB_TOKEN
+    // alias, empty-filtered) is owned by the canonical resolver so this
+    // availability probe agrees with how the token is actually resolved.
+    if env_var == "GITHUB_TOKEN" {
+        return anodizer_core::git::resolve_github_token_with_env(None, &|key| env.var(key))
+            .is_some();
     }
-    if env_var == "GITHUB_TOKEN"
-        && env
-            .var("ANODIZER_GITHUB_TOKEN")
-            .map(|v| !v.is_empty())
-            .unwrap_or(false)
-    {
-        return true;
-    }
-    false
+    env.var(env_var).map(|v| !v.is_empty()).unwrap_or(false)
 }
 
 #[cfg(test)]

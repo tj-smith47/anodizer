@@ -3,7 +3,7 @@
 use anyhow::Result;
 
 use anodizer_core::context::Context;
-use anodizer_core::git::detect_owner_repo;
+use anodizer_core::git::resolve_repo_slug;
 use anodizer_core::log::StageLogger;
 use anodizer_core::retry::{SuccessClass, retry_http_blocking};
 
@@ -46,8 +46,11 @@ pub(crate) fn fetch_gitlab_commits(
     };
     let skip_tls = gitlab_urls.skip_tls_verify.unwrap_or(false);
 
-    // Derive project ID from git remote (owner/repo), URL-encode slashes.
-    let (owner, repo) = detect_owner_repo()?;
+    // Project ID = owner/repo: config override (`release.gitlab`) wins over
+    // the origin remote. URL-encode slashes below.
+    let cfg = ctx.config.release.as_ref().and_then(|r| r.gitlab.as_ref());
+    let slug = resolve_repo_slug(cfg.map(|c| c.owner.as_str()), cfg.map(|c| c.name.as_str()))?;
+    let (owner, repo) = (slug.owner().to_string(), slug.name().to_string());
     let project_path = if owner.is_empty() {
         repo.clone()
     } else {

@@ -647,11 +647,11 @@ fn check_no_published_releases(
     tags: &[String],
     log: &StageLogger,
 ) -> Result<()> {
-    let (owner, repo) = match git::detect_github_repo_in(cwd) {
-        Ok(pair) => pair,
+    let (owner, repo) = match git::resolve_github_slug_in(None, None, cwd) {
+        Ok(slug) => (slug.owner().to_string(), slug.name().to_string()),
         Err(e) if git::has_remote_in(cwd, "origin") => {
-            // `detect_github_repo_in` already redacts URL credentials in
-            // its parse-failure message, so `e` is safe to surface.
+            // The slug resolver already redacts URL credentials in its
+            // parse-failure message, so `e` is safe to surface.
             log.warn(&format!(
                 "skipped the published-release probe — origin is not a github.com \
                  remote ({e}); no github.com release can exist there \

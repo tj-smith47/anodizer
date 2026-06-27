@@ -498,9 +498,9 @@ fn resolve_repository_host(
 /// never invents a wrong `source`) and for any git failure (no remote,
 /// detached checkout, ...).
 fn github_repo_from_remote() -> Option<(&'static str, String, String)> {
-    anodizer_core::git::detect_github_repo()
+    anodizer_core::git::resolve_github_slug(None, None)
         .ok()
-        .map(|(owner, name)| ("github", owner, name))
+        .map(|slug| ("github", slug.owner().to_string(), slug.name().to_string()))
 }
 
 /// Apply a resolved `(host, owner, name)` to `mcp.repository`, leaving any

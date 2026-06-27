@@ -297,14 +297,76 @@ pub(crate) fn resolve_repo_token(
     resolve_token(ctx, env_var)
 }
 
+/// Resolve a GitHub token for a *rollback* target straight from an
+/// [`EnvSource`](anodizer_core::EnvSource) (rollback runs from a persisted
+/// target snapshot, not a live `Context`).
+///
+/// Precedence: the target's custom `token_env_var` (when it names a non-empty
+/// var) → `ANODIZER_GITHUB_TOKEN` → `GITHUB_TOKEN`. Empty values are skipped at
+/// every link because it delegates to the canonical
+/// [`resolve_github_token_with_env`](anodizer_core::git::resolve_github_token_with_env)
+/// — a `GITHUB_TOKEN=""` (the shape GitHub Actions materializes for a missing
+/// secret) must not be treated as a real token.
+pub(crate) fn resolve_rollback_token<E: anodizer_core::EnvSource + ?Sized>(
+    env: &E,
+    token_env_var: Option<&str>,
+) -> Option<String> {
+    let explicit = token_env_var.and_then(|n| env.var(n));
+    anodizer_core::git::resolve_github_token_with_env(explicit.as_deref(), &|key| env.var(key))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use anodizer_core::MapEnvSource;
     use anodizer_core::config::{
         BinstallConfig, CrateConfig, NixConfig, PublishConfig, RepositoryConfig, WorkspaceConfig,
     };
     use anodizer_core::log::LogCapture;
     use anodizer_core::test_helpers::TestContextBuilder;
+
+    /// `resolve_rollback_token` must empty-filter every link: a set-but-blank
+    /// `GITHUB_TOKEN=""` (GitHub Actions' shape for a missing secret) falls
+    /// through to the next source rather than masquerading as a real token.
+    #[test]
+    fn rollback_token_skips_empty_github_token() {
+        let env = MapEnvSource::new()
+            .with("GITHUB_TOKEN", "")
+            .with("ANODIZER_GITHUB_TOKEN", "real");
+        assert_eq!(resolve_rollback_token(&env, None).as_deref(), Some("real"));
+    }
+
+    /// A custom `token_env_var` that is set-but-empty also falls through to the
+    /// standard chain instead of returning `""`.
+    #[test]
+    fn rollback_token_empty_custom_var_falls_through() {
+        let env = MapEnvSource::new()
+            .with("MY_TOKEN", "")
+            .with("GITHUB_TOKEN", "gh");
+        assert_eq!(
+            resolve_rollback_token(&env, Some("MY_TOKEN")).as_deref(),
+            Some("gh")
+        );
+    }
+
+    /// A populated custom `token_env_var` wins over the standard chain.
+    #[test]
+    fn rollback_token_custom_var_wins_when_set() {
+        let env = MapEnvSource::new()
+            .with("MY_TOKEN", "custom")
+            .with("GITHUB_TOKEN", "gh");
+        assert_eq!(
+            resolve_rollback_token(&env, Some("MY_TOKEN")).as_deref(),
+            Some("custom")
+        );
+    }
+
+    /// All sources empty/absent resolves to `None` (no `""` token leaks out).
+    #[test]
+    fn rollback_token_none_when_all_empty() {
+        let env = MapEnvSource::new().with("GITHUB_TOKEN", "");
+        assert_eq!(resolve_rollback_token(&env, None), None);
+    }
 
     /// A templated `repository.token` (`{{ .Env.GH_PAT }}`) must be rendered
     /// to the env value before it is used as the auth credential — the

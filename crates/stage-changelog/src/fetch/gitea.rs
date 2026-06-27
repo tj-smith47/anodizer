@@ -5,7 +5,7 @@ use std::collections::BTreeSet;
 use anyhow::Result;
 
 use anodizer_core::context::Context;
-use anodizer_core::git::detect_owner_repo;
+use anodizer_core::git::resolve_repo_slug;
 use anodizer_core::log::StageLogger;
 use anodizer_core::retry::{SuccessClass, retry_http_blocking};
 
@@ -40,7 +40,9 @@ pub(crate) fn fetch_gitea_commits(
     let api = api_url.trim_end_matches('/');
     let skip_tls = gitea_urls.skip_tls_verify.unwrap_or(false);
 
-    let (owner, repo) = detect_owner_repo()?;
+    let cfg = ctx.config.release.as_ref().and_then(|r| r.gitea.as_ref());
+    let slug = resolve_repo_slug(cfg.map(|c| c.owner.as_str()), cfg.map(|c| c.name.as_str()))?;
+    let (owner, repo) = (slug.owner(), slug.name());
 
     let upper = ctx.options.changelog_to.as_deref().unwrap_or("HEAD");
     let url = if let Some(prev) = prev_tag {

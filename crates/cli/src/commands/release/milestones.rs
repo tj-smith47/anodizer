@@ -246,8 +246,8 @@ fn resolve_milestone_repo(
 
     // Final fallback: infer from the `origin` git remote so a top-level
     // `milestones:` block works without per-crate release config.
-    if let Ok(pair) = anodizer_core::git::detect_owner_repo() {
-        return pair;
+    if let Ok(slug) = anodizer_core::git::resolve_repo_slug(None, None) {
+        return (slug.owner().to_string(), slug.name().to_string());
     }
 
     (String::new(), String::new())

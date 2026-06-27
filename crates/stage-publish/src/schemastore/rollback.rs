@@ -80,11 +80,7 @@ pub(crate) fn rollback_publish(
     // git-revert publisher.
     let env = ctx.env_source();
     let resolve_token = |t: &SchemastoreTargetSnapshot| -> Option<String> {
-        t.token_env_var
-            .as_deref()
-            .and_then(|n| env.var(n))
-            .or_else(|| env.var("ANODIZER_GITHUB_TOKEN"))
-            .or_else(|| env.var("GITHUB_TOKEN"))
+        crate::util::resolve_rollback_token(env, t.token_env_var.as_deref())
     };
 
     let (mut closed, mut already_closed, mut failed) = (0usize, 0usize, 0usize);

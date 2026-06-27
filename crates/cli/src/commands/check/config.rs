@@ -791,10 +791,9 @@ fn check_docker_tooling(config: &Config, warnings: &mut Vec<String>) {
 
 fn check_github_token(config: &Config, warnings: &mut Vec<String>) {
     let needs_release = config.crates.iter().any(|c| c.release.is_some());
-    if needs_release
-        && std::env::var("ANODIZER_GITHUB_TOKEN").is_err()
-        && std::env::var("GITHUB_TOKEN").is_err()
-    {
+    // Route through the canonical resolver so an empty `GITHUB_TOKEN=""`
+    // (set-but-blank) is correctly reported as "no token", same as unset.
+    if needs_release && anodizer_core::git::resolve_github_token(None).is_none() {
         warnings.push(
             "no GitHub token found but release sections are configured; set GITHUB_TOKEN or ANODIZER_GITHUB_TOKEN"
                 .to_string(),

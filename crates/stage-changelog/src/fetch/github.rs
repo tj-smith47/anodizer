@@ -12,7 +12,7 @@ use anyhow::Result;
 
 use anodizer_core::context::Context;
 use anodizer_core::git::{
-    detect_github_repo, gh_api_get_paginated_with_binary, gh_api_get_with_binary,
+    gh_api_get_paginated_with_binary, gh_api_get_with_binary, resolve_github_slug,
 };
 use anodizer_core::log::StageLogger;
 
@@ -50,7 +50,11 @@ pub(crate) fn fetch_github_commits_with_binary(
     log: &StageLogger,
 ) -> Result<(Vec<CommitInfo>, String)> {
     let token = ctx.options.token.as_deref();
-    let (owner, repo) = detect_github_repo()?;
+    // Config override (`release.github`) wins over the origin remote so the
+    // changelog API target matches the configured release repo.
+    let gh = ctx.config.release.as_ref().and_then(|r| r.github.as_ref());
+    let slug = resolve_github_slug(gh.map(|g| g.owner.as_str()), gh.map(|g| g.name.as_str()))?;
+    let (owner, repo) = (slug.owner(), slug.name());
 
     // Build the compare URL. If there is a previous tag, compare tag..HEAD;
     // otherwise list recent commits (first page).

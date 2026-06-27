@@ -8,6 +8,7 @@ mod github_api;
 mod mailmap;
 mod remote;
 mod semver;
+mod slug;
 mod snapshot_sde;
 mod status;
 mod tags;
@@ -43,12 +44,17 @@ pub use github_api::{
     resolve_github_token_with_env,
 };
 pub use mailmap::canonical_author_email_in;
-pub use remote::{
-    detect_github_repo, detect_github_repo_in, detect_owner_repo, detect_owner_repo_in,
-    detect_remote_web_base_in, has_remote_in, parse_github_remote, parse_remote_owner_repo,
-    parse_remote_web_base,
-};
+// The owner/repo detectors are intentionally NOT re-exported publicly: the
+// only public path to a repository identity is a `slug::resolve_*` function,
+// which applies the config-override -> remote precedence in one place. See
+// `slug.rs`. `detect_remote_web_base_in` stays public — it is the dedicated
+// host-preserving web-base resolver (changelog compare footers) and has no
+// owner/name duplication to funnel.
+pub use remote::{detect_remote_web_base_in, has_remote_in, parse_remote_web_base};
 pub use semver::{SemVer, parse_semver, parse_semver_tag};
+pub use slug::{
+    RepoSlug, resolve_github_slug, resolve_github_slug_in, resolve_repo_slug, resolve_repo_slug_in,
+};
 pub use snapshot_sde::resolve_snapshot_sde;
 pub use status::{
     check_git_available, git_status_porcelain, git_status_porcelain_in,

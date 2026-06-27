@@ -274,12 +274,7 @@ impl anodizer_core::Publisher for NixPublisher {
         let prepared: Vec<RevertTarget> = unique
             .iter()
             .map(|t| {
-                let token = t
-                    .token_env_var
-                    .as_deref()
-                    .and_then(|n| env.var(n))
-                    .or_else(|| env.var("ANODIZER_GITHUB_TOKEN"))
-                    .or_else(|| env.var("GITHUB_TOKEN"));
+                let token = crate::util::resolve_rollback_token(env, t.token_env_var.as_deref());
                 RevertTarget {
                     target: t.target.clone(),
                     repo_url: t.repo_url.clone(),

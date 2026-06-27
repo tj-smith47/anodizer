@@ -538,12 +538,12 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
         .unwrap_or_else(|| "main".to_string());
     // A configured `repository.token` may be templated; render it before it
     // becomes the API bearer credential, or the literal template is sent.
-    let token = repo
-        .and_then(|r| r.token.as_deref())
-        .map(render)
-        .filter(|t| !t.is_empty())
-        .or_else(|| env.var("ANODIZER_GITHUB_TOKEN"))
-        .or_else(|| env.var("GITHUB_TOKEN"));
+    // The canonical resolver applies the empty-string filter at every link
+    // (including the rendered `repository.token`), so a blank value falls
+    // through to ANODIZER_GITHUB_TOKEN -> GITHUB_TOKEN.
+    let explicit = repo.and_then(|r| r.token.as_deref()).map(render);
+    let token =
+        anodizer_core::git::resolve_github_token_with_env(explicit.as_deref(), &|key| env.var(key));
 
     // Fork sync: when the PR targets a different upstream repository, sync first.
     let is_cross_repo = upstream_owner != repo_owner || upstream_name != repo_name;
@@ -701,9 +701,7 @@ pub(crate) fn submit_pr_via_gh_with_opts_with_env<E: EnvSource + ?Sized>(
     opts: SubmitPrOpts,
     env: &E,
 ) -> Option<PublisherOutcome> {
-    let token = env
-        .var("ANODIZER_GITHUB_TOKEN")
-        .or_else(|| env.var("GITHUB_TOKEN"));
+    let token = anodizer_core::git::resolve_github_token_with_env(None, &|key| env.var(key));
 
     // Discover the upstream's actual default branch. Hardcoding "main" breaks
     // PR creation against repos whose default is "master" (e.g.

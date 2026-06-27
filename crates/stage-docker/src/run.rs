@@ -267,9 +267,9 @@ pub(crate) fn resolve_registry_owner(
     {
         return Some(owner);
     }
-    anodizer_core::git::detect_github_repo()
+    anodizer_core::git::resolve_github_slug(None, None)
         .ok()
-        .map(|(owner, _name)| owner)
+        .map(|slug| slug.owner().to_string())
 }
 
 /// Fire per-config post-hooks once per docker_v2 config, after all

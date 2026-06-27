@@ -3906,11 +3906,7 @@ impl anodizer_core::Publisher for KrewPublisher {
         // every git-revert publisher.
         let env = ctx.env_source();
         let resolve_token = |t: &KrewPrTarget| -> Option<String> {
-            t.token_env_var
-                .as_deref()
-                .and_then(|n| env.var(n))
-                .or_else(|| env.var("ANODIZER_GITHUB_TOKEN"))
-                .or_else(|| env.var("GITHUB_TOKEN"))
+            util::resolve_rollback_token(env, t.token_env_var.as_deref())
         };
 
         // Fan out at PR granularity, not target granularity: a single
