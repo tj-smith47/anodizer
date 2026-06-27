@@ -53,6 +53,7 @@ jobs:
     name: Preflight secrets
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     # id-token: write so the OIDC request vars (ACTIONS_ID_TOKEN_REQUEST_URL /
     # _TOKEN) the npm/mcp provenance surfaces require are injected and the
     # gate sees them present — mirroring the publish-npm job's permission.
@@ -66,28 +67,20 @@ jobs:
           ref: ${{ inputs.tag || github.event.workflow_run.head_sha || github.sha }}
       - uses: ./.github/actions/setup-rust
         with:
+          # Warms the cargo cache so the action's `from-source` build of HEAD is
+          # fast on re-runs. anodizer is the one consumer that builds ITSELF from
+          # source to gate its own release; a downstream consumer would pin
+          # `version:` to a published binary and need no Rust toolchain here.
           cache-key: preflight-secrets
-      - name: Materialize key-file secrets
-        # The nfpm rpm/deb and apk signatures reference key material by FILE
-        # PATH (GPG_KEY_PATH / APK_PRIVATE_KEY_PATH) — the publish runner's
-        # anodizer-action materializes these from the GPG_PRIVATE_KEY /
-        # APK_PRIVATE_KEY secrets at runtime. Reproduce that here so the
-        # secret-presence check validates the actual key material, not just a
-        # path string: write the keys to disk and export the same path vars.
-        run: |
-          set -euo pipefail
-          install -d -m 700 "${RUNNER_TEMP}/keys"
-          printf '%s' "${GPG_PRIVATE_KEY}" > "${RUNNER_TEMP}/keys/gpg.asc"
-          printf '%s' "${APK_PRIVATE_KEY}" > "${RUNNER_TEMP}/keys/apk.rsa"
-          chmod 600 "${RUNNER_TEMP}/keys/gpg.asc" "${RUNNER_TEMP}/keys/apk.rsa"
-          {
-            echo "GPG_KEY_PATH=${RUNNER_TEMP}/keys/gpg.asc"
-            echo "APK_PRIVATE_KEY_PATH=${RUNNER_TEMP}/keys/apk.rsa"
-          } >> "${GITHUB_ENV}"
-        env:
-          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
-          APK_PRIVATE_KEY: ${{ secrets.APK_PRIVATE_KEY }}
       - name: Validate publish secrets
+        # Dogfood the published action as the preflight gate: it builds anodizer
+        # from this checkout (from-source), installs cosign for the offline
+        # key-load check, and materializes the GPG/APK key files from the same
+        # secrets — exporting GPG_KEY_PATH / APK_PRIVATE_KEY_PATH under the exact
+        # names the rpm/deb/apk signers resolve. This validates the ACTUAL key
+        # material the publish runner will load, through the SAME action, instead
+        # of a hand-rolled reproduction that could silently drift from it.
+        #
         # --skip=blob: the blob stage's S3/MinIO creds (AWS_ACCESS_KEY_ID /
         # AWS_SECRET_ACCESS_KEY) are AMBIENT on the self-hosted arc-anodizer
         # runner, not GitHub repo secrets — so this github-hosted gate cannot
@@ -95,7 +88,13 @@ jobs:
         # every release). Blob's creds are validated in-pipeline on arc, where
         # they live. Every OTHER publish secret IS a registered repo secret and
         # is validated here, before the tag is minted.
-        run: cargo run -q --release -p anodizer -- release --preflight-secrets --skip=blob
+        uses: tj-smith47/anodizer-action@v1
+        with:
+          from-source: true
+          install: cosign
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
+          args: release --preflight-secrets --skip=blob
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -120,6 +119,7 @@ jobs:
     needs: [preflight]
     if: ${{ needs.preflight.result == 'success' && (github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: write
       actions: read
@@ -184,6 +184,7 @@ jobs:
     # failure AND cancelled: a cancelled shard leaves the merged dist incomplete.
     if: ${{ !cancelled() && needs.tag.outputs.tagged == 'true' && needs.determinism-check.result != 'failure' && needs.determinism-check.result != 'cancelled' }}
     runs-on: arc-anodizer
+    timeout-minutes: 30
     permissions:
       contents: write
       actions: read
@@ -304,6 +305,7 @@ jobs:
     needs: [tag, release]
     if: needs.release.result == 'success'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
       id-token: write
