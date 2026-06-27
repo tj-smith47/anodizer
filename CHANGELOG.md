@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-06-27
+
+### Features
+
+* d14eeca0e63f exclude glob filter to drop assets per destination ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* a8b40e4b7b92 align Warning/Error/Note with the enclosing header, not body depth ([@tj-smith47](https://github.com/tj-smith47))
+* d33dc3cc7f8d root-cause v0.12.3 publish hang + signing/upload UX ([@tj-smith47](https://github.com/tj-smith47))
+* c97861d281e2 bound every remote subprocess and HTTP client against indefinite hangs ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.12.3] - 2026-06-26
 
 ### Bug Fixes
@@ -424,7 +437,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.12.3...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/tj-smith47/anodizer/compare/v0.12.3...v0.13.0
 [0.12.3]: https://github.com/tj-smith47/anodizer/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/tj-smith47/anodizer/compare/v0.12.1...v0.12.2
 [0.12.1]: https://github.com/tj-smith47/anodizer/compare/v0.12.0...v0.12.1
