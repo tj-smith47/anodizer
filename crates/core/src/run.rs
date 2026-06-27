@@ -73,9 +73,10 @@ fn set_own_process_group(cmd: &mut Command) {
     use std::os::windows::process::CommandExt as _;
     // CREATE_NEW_PROCESS_GROUP isolates the child from console control events
     // aimed at our own group (a stray Ctrl-C won't race the watchdog). The
-    // subtree kill itself is done by `taskkill /T` in `kill_child_tree` — unlike
-    // Unix process groups, a Windows group is NOT a kill target for
-    // TerminateProcess.
+    // subtree reap itself is done by a Job Object (`TerminateJobObject` in
+    // `ChildTree::reap`) — unlike a Unix process group, a Windows process group
+    // is NOT a kill target for TerminateProcess, and `taskkill /T` cannot reach
+    // a subtree whose root has already exited (the post-exit drain case).
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
     cmd.creation_flags(CREATE_NEW_PROCESS_GROUP);
 }
@@ -83,119 +84,290 @@ fn set_own_process_group(cmd: &mut Command) {
 #[cfg(not(any(unix, windows)))]
 fn set_own_process_group(_cmd: &mut Command) {}
 
-/// Kill the process subtree rooted at `pid` (its own process group on Unix,
-/// the `/T` tree walk on Windows), so a forked grandchild holding an inherited
-/// pipe dies too. Signal-safe ONLY on Unix (a bare `libc::kill`); the Windows
-/// arm spawns `taskkill` and must therefore never run from a signal/console
-/// handler — only from a normal watcher thread. Best-effort: an already-reaped
-/// tree yields a benign error.
+/// Per-platform handle that reaps a whole timeout-bounded child subtree on
+/// demand — crucially, **independent of whether the direct child is still
+/// alive**, since the post-exit drain reap fires only AFTER the child has exited
+/// while a leaked grandchild keeps the inherited pipe open.
 ///
-/// `signal` selects the disposition: the timeout watchdog passes `SIGKILL`
-/// (unconditional reap); the external-termination watcher passes `SIGTERM` so a
-/// well-behaved child (snapcraft, docker, git) gets a chance to clean up before
-/// anodizer itself re-raises and dies. The Windows arm is always `/F` (no
-/// graceful equivalent for an opaque subtree).
-fn kill_process_tree(pid: i32, signal: i32) {
-    #[cfg(unix)]
-    {
-        // Negative pid targets the process GROUP (pgid == child pid, set at
-        // spawn via `set_own_process_group`). Signal the whole group so no
-        // descendant survives holding our pipe ends.
-        //
-        // SAFETY: `kill(2)` with a negative pid is async-signal-safe and has no
-        // memory effects; an already-reaped group yields ESRCH, which is
-        // ignored. Callable from a signal handler.
-        unsafe {
-            libc::kill(-pid, signal);
-        }
-    }
+/// - **Unix**: the child's pgid (== pid, set at spawn via
+///   [`set_own_process_group`]); reaped via `kill(-pgid, signal)`. The group
+///   outlives its leader, so a leaked descendant is reaped after the leader
+///   exits.
+/// - **Windows**: the child's pid (registry key + `taskkill` fallback target)
+///   plus an optional [`JobHandle`](windows_job::JobHandle) for the Job Object
+///   the child and every process it spawns belong to; reaped via
+///   `TerminateJobObject`. Job membership — not a live root — anchors the tree,
+///   so descendants are reaped after the direct child exits. `taskkill /T`
+///   cannot serve that case: it walks from a LIVE root present in a process
+///   snapshot, and a terminated child is absent from that snapshot, so its
+///   orphans survive (the bug the Job Object replaces).
+///
+/// `Copy` so it lives in the static registry, threads into the scoped watchdog,
+/// and reaps from either site without ownership juggling.
+#[derive(Clone, Copy)]
+struct ChildTree {
+    /// Unix pgid (== child pid); Windows child pid.
+    pid: i32,
+    /// Windows: the kill-on-close Job Object enclosing the child + descendants.
+    /// `None` when the child could not be assigned to a job (a rare pre-Win8
+    /// nested-job restriction) — the reap then falls back to `taskkill /T`.
     #[cfg(windows)]
-    {
-        let _ = signal; // no graceful disposition for an opaque Windows subtree
-        // `child.kill()` (TerminateProcess) reaps ONLY the direct child;
-        // CREATE_NEW_PROCESS_GROUP does not extend termination to descendants.
-        // A forked grandchild (the `sh -c <tool>` wrapper shape) would survive
-        // holding the inherited stdout/stderr pipe, leaving the reader threads
-        // blocked until it exits on its own — so the timeout would not actually
-        // bound the call. `taskkill /T` walks the process tree (by PPID linkage)
-        // and terminates every descendant present at snapshot time, closing
-        // those pipes. Resolved by absolute path (System32) so a sanitized PATH
-        // can't strip the tool and silently drop us back to the 30s-hang bug.
-        // Best-effort — an already-exited tree yields a non-zero status we
-        // ignore. NOT signal-safe (spawns a subprocess); only the watcher
-        // thread calls this, never a console handler.
-        let taskkill = std::env::var_os("SystemRoot")
-            .map(|root| {
-                std::path::Path::new(&root)
-                    .join("System32")
-                    .join("taskkill.exe")
-            })
-            .unwrap_or_else(|| std::path::PathBuf::from("taskkill.exe"));
-        let _ = std::process::Command::new(taskkill)
-            .args(["/T", "/F", "/PID", &pid.to_string()])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status();
+    job: Option<windows_job::JobHandle>,
+}
+
+impl ChildTree {
+    /// Reap the whole subtree, best-effort (an already-reaped subtree yields a
+    /// benign error). `signal` selects the Unix disposition — the timeout
+    /// watchdog passes `SIGKILL` (unconditional), the external-termination
+    /// watcher passes `SIGTERM` (let a well-behaved child clean up first); it is
+    /// ignored on Windows, which has no graceful disposition for an opaque
+    /// subtree.
+    fn reap(self, signal: i32) {
+        #[cfg(unix)]
+        {
+            // Negative pid targets the process GROUP. SAFETY: `kill(2)` with a
+            // negative pid is async-signal-safe, has no memory effects, and an
+            // already-reaped group yields ESRCH (ignored).
+            unsafe {
+                libc::kill(-self.pid, signal);
+            }
+        }
+        #[cfg(windows)]
+        {
+            let _ = signal; // no graceful disposition for an opaque subtree
+            match self.job {
+                // Fast, non-blocking syscall; reaps every job member regardless
+                // of the direct child's liveness — the drain-reap case.
+                Some(job) => job.terminate(),
+                // No job (assignment failed): fall back to the `taskkill /T`
+                // walk, which still reaps a LIVE root's descendants.
+                None => taskkill_tree(self.pid),
+            }
+        }
     }
 }
 
-/// Kill `child` and its entire process subtree, so a forked grandchild holding
-/// an inherited pipe dies too (otherwise the reader threads never EOF and the
-/// timeout fails to bound the call). The timeout path is unconditional, so it
-/// uses `SIGKILL`. Best-effort: a child that already exited yields a benign
-/// error.
-fn kill_child_tree(child: &mut Child) {
+/// Best-effort `taskkill /T /F /PID <pid>` — the Windows fallback used ONLY when
+/// a child could not be enclosed in a Job Object. Walks the process tree from a
+/// LIVE root (a terminated root is absent from the snapshot, so this cannot reap
+/// a drain-orphaned grandchild — that is the Job Object's role). Resolved by
+/// absolute System32 path so a sanitized PATH can't strip the tool. NOT
+/// signal-safe (spawns a subprocess); only a normal watcher thread calls it.
+#[cfg(windows)]
+fn taskkill_tree(pid: i32) {
+    let taskkill = std::env::var_os("SystemRoot")
+        .map(|root| {
+            std::path::Path::new(&root)
+                .join("System32")
+                .join("taskkill.exe")
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("taskkill.exe"));
+    let _ = std::process::Command::new(taskkill)
+        .args(["/T", "/F", "/PID", &pid.to_string()])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// Reap `child` and its whole subtree (via [`ChildTree::reap`]), then the direct
+/// child as a portable fallback. The timeout path is unconditional, so Unix uses
+/// `SIGKILL`. Best-effort: a child that already exited yields a benign error.
+fn kill_child_tree(child: &mut Child, tree: ChildTree) {
     #[cfg(unix)]
-    kill_process_tree(child.id() as i32, libc::SIGKILL);
+    tree.reap(libc::SIGKILL);
     #[cfg(windows)]
-    {
-        // The /T tree walk MUST run before `child.kill()` below: Windows never
-        // reparents orphans, so once the parent is killed its PID can be
-        // recycled by an unrelated process — the grandchild's now-stale PPID
-        // would then point the /T walk at the wrong subtree (or miss it
-        // entirely). Keeping the parent alive holds the tree linkage valid.
-        kill_process_tree(child.id() as i32, 0);
-    }
-    // The direct child kill is the portable fallback (and the only path on a
-    // platform without group/tree semantics): it still reaps the immediate
-    // child when the subtree kill above was a no-op or unavailable.
+    tree.reap(0);
+    // Portable fallback: still reap the immediate child when the subtree reap
+    // above was a no-op or unavailable.
     let _ = child.kill();
 }
 
-/// Process-global registry of live, group-isolated child subtrees, keyed by
-/// the value that targets the whole tree on each platform (Unix: the child's
-/// pgid, equal to its pid; Windows: the child's pid for the `taskkill /T`
-/// walk). Populated only for children spawned in their own process group (the
-/// timeout-bounded path — the long-running snapcraft / docker / git subtrees
-/// that survive a cancel), so the external-termination watcher can group-kill
-/// every one of them before anodizer itself dies.
+/// Windows Job Object FFI: encloses a timeout-bounded child (and every process
+/// it spawns) so the watchdog can reap the WHOLE subtree via `TerminateJobObject`
+/// even after the direct child has exited — the drain-reap case `taskkill /T`
+/// cannot serve. Hand-rolled `extern "system"` declarations (mirroring the
+/// `SetConsoleCtrlHandler` FFI in [`windows_termination`]) keep the heavyweight
+/// `windows` crate out of the determinism-sensitive build.
+#[cfg(windows)]
+mod windows_job {
+    use std::ffi::c_void;
+    use std::os::windows::io::AsRawHandle as _;
+    use std::process::Child;
+
+    type Handle = *mut c_void;
+    type Bool = i32;
+    type Dword = u32;
+
+    /// `JOBOBJECTINFOCLASS::JobObjectExtendedLimitInformation`.
+    const JOB_OBJECT_EXTENDED_LIMIT_INFORMATION: i32 = 9;
+    const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE: Dword = 0x0000_2000;
+    const JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION: Dword = 0x0000_0400;
+
+    // The three structs mirror the Win32 `JOBOBJECT_*` layouts exactly so the
+    // pointer handed to `SetInformationJobObject` has the right size/offsets;
+    // only `limit_flags` is read back, so the rest are layout-only fields.
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    #[allow(dead_code)]
+    struct JobObjectBasicLimitInformation {
+        per_process_user_time_limit: i64,
+        per_job_user_time_limit: i64,
+        limit_flags: Dword,
+        minimum_working_set_size: usize,
+        maximum_working_set_size: usize,
+        active_process_limit: Dword,
+        affinity: usize,
+        priority_class: Dword,
+        scheduling_class: Dword,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    #[allow(dead_code)]
+    struct IoCounters {
+        read_operation_count: u64,
+        write_operation_count: u64,
+        other_operation_count: u64,
+        read_transfer_count: u64,
+        write_transfer_count: u64,
+        other_transfer_count: u64,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy)]
+    #[allow(dead_code)]
+    struct JobObjectExtendedLimitInformation {
+        basic_limit_information: JobObjectBasicLimitInformation,
+        io_info: IoCounters,
+        process_memory_limit: usize,
+        job_memory_limit: usize,
+        peak_process_memory_used: usize,
+        peak_job_memory_used: usize,
+    }
+
+    unsafe extern "system" {
+        fn CreateJobObjectW(attrs: *mut c_void, name: *const u16) -> Handle;
+        fn SetInformationJobObject(
+            job: Handle,
+            class: i32,
+            info: *const c_void,
+            len: Dword,
+        ) -> Bool;
+        fn AssignProcessToJobObject(job: Handle, process: Handle) -> Bool;
+        fn TerminateJobObject(job: Handle, exit_code: Dword) -> Bool;
+        fn CloseHandle(object: Handle) -> Bool;
+    }
+
+    /// A Job Object handle, stored as `isize` so it is `Send`/`Sync` for the
+    /// static registry and the scoped watchdog. (A raw `HANDLE` pointer is
+    /// neither, but the value is an opaque kernel handle — safe to move/share;
+    /// the Win32 calls that consume it are themselves thread-safe.)
+    #[derive(Clone, Copy)]
+    pub struct JobHandle(isize);
+    // SAFETY: an opaque kernel handle is just an integer the OS interprets; the
+    // Job Object Win32 APIs accept it from any thread.
+    unsafe impl Send for JobHandle {}
+    unsafe impl Sync for JobHandle {}
+
+    impl JobHandle {
+        /// Reap every process still in the job — including descendants orphaned
+        /// by the direct child's exit. Best-effort: an already-terminated/closed
+        /// job yields a benign failure.
+        pub fn terminate(self) {
+            // SAFETY: `TerminateJobObject` on a job handle we created; a failure
+            // (job already gone) is ignored.
+            unsafe {
+                let _ = TerminateJobObject(self.0 as Handle, 1);
+            }
+        }
+
+        /// Close the job handle on teardown. With `KILL_ON_JOB_CLOSE` the final
+        /// handle close reaps any straggler still in the job (the last
+        /// leak-prevention net). Paired 1:1 with [`enclose_child`].
+        pub fn close(self) {
+            // SAFETY: closing a handle we own exactly once.
+            unsafe {
+                let _ = CloseHandle(self.0 as Handle);
+            }
+        }
+    }
+
+    /// Create a kill-on-close Job Object and assign `child` (and, implicitly,
+    /// every process it later spawns) to it, returning the job handle.
+    ///
+    /// Returns `None` if any step fails — notably a pre-Win8 nested-job
+    /// restriction blocking assignment; the caller then falls back to the
+    /// `taskkill /T` walk (which still reaps a LIVE root's descendants).
+    ///
+    /// The assignment races a grandchild the child might fork in the microseconds
+    /// between spawn and assignment: such a grandchild escapes the job. The
+    /// window is negligible in practice — the bounded tools (snapcraft, docker,
+    /// `git push`) do real work before forking — and the `taskkill` fallback
+    /// covers a missing job.
+    pub fn enclose_child(child: &Child) -> Option<JobHandle> {
+        // SAFETY: each call uses a job handle we just created plus the child's
+        // own process handle; every failure is checked and unwinds via
+        // `CloseHandle` so no handle leaks.
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null_mut(), std::ptr::null());
+            if job.is_null() {
+                return None;
+            }
+            let mut info: JobObjectExtendedLimitInformation = std::mem::zeroed();
+            info.basic_limit_information.limit_flags =
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_DIE_ON_UNHANDLED_EXCEPTION;
+            if SetInformationJobObject(
+                job,
+                JOB_OBJECT_EXTENDED_LIMIT_INFORMATION,
+                std::ptr::addr_of!(info) as *const c_void,
+                std::mem::size_of::<JobObjectExtendedLimitInformation>() as Dword,
+            ) == 0
+            {
+                let _ = CloseHandle(job);
+                return None;
+            }
+            if AssignProcessToJobObject(job, child.as_raw_handle() as Handle) == 0 {
+                let _ = CloseHandle(job);
+                return None;
+            }
+            Some(JobHandle(job as isize))
+        }
+    }
+}
+
+/// Process-global registry of live, timeout-bounded child subtrees, keyed by the
+/// child's pid (Unix: == pgid; Windows: the Job Object owner). Populated only for
+/// the timeout-bounded path — the long-running snapcraft / docker / git subtrees
+/// that survive a cancel — so the external-termination watcher can reap every one
+/// before anodizer itself dies.
 ///
 /// A plain `Mutex` is safe here because it is locked ONLY from normal threads
 /// (`capture_inner` on spawn/reap, the watcher thread on signal) — never from
 /// the async-signal-safe handler, which touches only the self-pipe.
-static LIVE_CHILD_TREES: OnceLock<Mutex<std::collections::HashSet<i32>>> = OnceLock::new();
+static LIVE_CHILD_TREES: OnceLock<Mutex<std::collections::HashMap<i32, ChildTree>>> =
+    OnceLock::new();
 
-fn live_child_trees() -> &'static Mutex<std::collections::HashSet<i32>> {
-    LIVE_CHILD_TREES.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+fn live_child_trees() -> &'static Mutex<std::collections::HashMap<i32, ChildTree>> {
+    LIVE_CHILD_TREES.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
-/// Record a spawned, group-isolated child tree so the external-termination
+/// Record a spawned, timeout-bounded child tree so the external-termination
 /// watcher can reach it. Paired with [`deregister_child_tree`] on reap.
-fn register_child_tree(id: i32) {
+fn register_child_tree(tree: ChildTree) {
     live_child_trees()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .insert(id);
+        .insert(tree.pid, tree);
 }
 
-/// Drop a reaped child tree from the registry so a recycled pid is never
-/// signalled by a later termination.
-fn deregister_child_tree(id: i32) {
+/// Drop a reaped child tree from the registry so a recycled pid is never reaped
+/// by a later termination.
+fn deregister_child_tree(pid: i32) {
     live_child_trees()
         .lock()
         .unwrap_or_else(|p| p.into_inner())
-        .remove(&id);
+        .remove(&pid);
 }
 
 /// RAII guard that deregisters a registered child tree on every exit edge of
@@ -203,31 +375,40 @@ fn deregister_child_tree(id: i32) {
 /// the success return, and an unwinding panic. A manual deregister could only
 /// cover the edges before it and would leak the pid past any earlier `?` or
 /// `thread::scope` panic, after which an OS pid-recycle would let an external
-/// termination signal an unrelated process group.
-struct TreeRegistration(i32);
+/// termination reap an unrelated subtree.
+///
+/// On Windows it also closes the Job Object handle, which (with
+/// `KILL_ON_JOB_CLOSE`) reaps any straggler still in the job. It runs AFTER the
+/// `thread::scope` joins, so the watchdog can never touch a closed handle.
+struct TreeRegistration(ChildTree);
 
 impl Drop for TreeRegistration {
     fn drop(&mut self) {
-        deregister_child_tree(self.0);
+        deregister_child_tree(self.0.pid);
+        #[cfg(windows)]
+        if let Some(job) = self.0.job {
+            job.close();
+        }
     }
 }
 
-/// SIGTERM every registered child subtree. Run by the watcher thread (NOT a
-/// signal handler), so locking the registry and issuing the kills is safe.
-/// Returns the number of trees signalled. On Windows the trees are killed via
-/// `taskkill /T /F`; there is no graceful disposition for an opaque subtree.
+/// Reap every registered child subtree. Run by the watcher thread (NOT a signal
+/// handler), so locking the registry and issuing the kills is safe. Returns the
+/// number of trees reaped. Unix uses `SIGTERM` (a well-behaved child cleans up
+/// before anodizer re-raises and dies); Windows uses `TerminateJobObject` (no
+/// graceful disposition for an opaque subtree).
 fn terminate_all_child_trees() -> usize {
-    let ids: Vec<i32> = {
+    let trees: Vec<ChildTree> = {
         let guard = live_child_trees().lock().unwrap_or_else(|p| p.into_inner());
-        guard.iter().copied().collect()
+        guard.values().copied().collect()
     };
-    for id in &ids {
+    for tree in trees.iter().copied() {
         #[cfg(unix)]
-        kill_process_tree(*id, libc::SIGTERM);
+        tree.reap(libc::SIGTERM);
         #[cfg(windows)]
-        kill_process_tree(*id, 0);
+        tree.reap(0);
     }
-    ids.len()
+    trees.len()
 }
 
 /// Install a one-shot handler so an EXTERNAL SIGTERM/SIGINT (a GitHub Actions
@@ -535,6 +716,7 @@ fn wait_or_kill(
     readers_done: &AtomicUsize,
     reader_count: usize,
     timeout: Duration,
+    tree: ChildTree,
 ) -> std::io::Result<Option<ExitStatus>> {
     let deadline = Instant::now() + timeout;
     let mut exited: Option<ExitStatus> = None;
@@ -546,10 +728,10 @@ fn wait_or_kill(
                 exited = Some(status);
                 drain_deadline = Some(Instant::now() + POST_EXIT_DRAIN_GRACE);
             } else if Instant::now() >= deadline {
-                // Child itself outlived the timeout: kill the whole subtree (not
+                // Child itself outlived the timeout: reap the whole subtree (not
                 // just the direct child) so a forked grandchild holding the
                 // inherited pipe dies too and the readers can EOF.
-                kill_child_tree(&mut guard);
+                kill_child_tree(&mut guard, tree);
                 return Ok(None);
             }
         }
@@ -561,12 +743,13 @@ fn wait_or_kill(
                 return Ok(Some(status));
             }
             // Readers still blocked past the drain grace ⇒ a leaked grandchild
-            // is holding the pipe. Reap the group to force EOF, but report the
-            // child's real (success) status — it crossed its door; only the
-            // orphan was force-closed.
+            // is holding the pipe. Reap the subtree to force EOF (on Windows via
+            // the Job Object, which works even though the direct child has
+            // already exited), but report the child's real (success) status — it
+            // crossed its door; only the orphan was force-closed.
             if drain_deadline.is_some_and(|d| Instant::now() >= d) {
                 let mut guard = child.lock().unwrap_or_else(|p| p.into_inner());
-                kill_child_tree(&mut guard);
+                kill_child_tree(&mut guard, tree);
                 return Ok(Some(status));
             }
         }
@@ -614,18 +797,41 @@ fn capture_inner(
         .spawn()
         .with_context(|| format!("failed to spawn {label}"))?;
 
-    // Register the group-isolated child tree so an external SIGTERM/SIGINT
+    // Windows: enclose the timeout-bounded child (and every process it spawns)
+    // in a kill-on-close Job Object so the watchdog can reap the WHOLE subtree
+    // via `TerminateJobObject` even after the direct child has exited — the
+    // post-exit drain-reap case `taskkill /T` cannot serve (a terminated root is
+    // absent from the snapshot its tree walk needs). Assigned immediately after
+    // spawn; a grandchild forked in the microseconds before assignment escapes
+    // the job, but the bounded tools do real work before forking. `None` (job
+    // creation/assignment failed) falls back to the `taskkill` reap.
+    #[cfg(windows)]
+    let job = if timeout.is_some() {
+        windows_job::enclose_child(&child)
+    } else {
+        None
+    };
+
+    // The per-platform reap target shared by the timeout watchdog and the
+    // external-termination watcher (Unix pgid; Windows pid + Job Object handle).
+    let tree = ChildTree {
+        pid: child.id() as i32,
+        #[cfg(windows)]
+        job,
+    };
+
+    // Register the timeout-bounded child tree so an external SIGTERM/SIGINT
     // (CI cancel, runner job-timeout) reaches its whole subtree before anodizer
     // dies — otherwise a hung snapcraft/docker tree is orphaned and holds the
-    // runner open. Only the timeout path isolates the child into its own group,
-    // so only it has a tree the watcher can target. The RAII guard deregisters
-    // on every exit edge below (the pipe-take `?`s, the watchdog/stdin error
-    // returns, success, and an unwinding panic), so a recycled pid can never be
-    // signalled by a later external termination.
+    // runner open. Only the timeout path has a reapable tree (the Unix process
+    // group / Windows Job Object), so only it registers. The RAII guard
+    // deregisters (and, on Windows, closes the job handle) on every exit edge
+    // below — the pipe-take `?`s, the watchdog/stdin error returns, success, and
+    // an unwinding panic — so a recycled pid can never be reaped by a later
+    // external termination.
     let _registration = timeout.is_some().then(|| {
-        let id = child.id() as i32;
-        register_child_tree(id);
-        TreeRegistration(id)
+        register_child_tree(tree);
+        TreeRegistration(tree)
     });
 
     let child_stdin = match stdin {
@@ -646,9 +852,17 @@ fn capture_inner(
         .take()
         .with_context(|| format!("{label}: child has no stderr pipe"))?;
 
-    // Shared with the watchdog (which kills on deadline) and the post-scope
-    // reaping wait. The lock is only ever held for a non-blocking try_wait /
-    // kill, never across a sleep, so both sides make progress.
+    // Shared with the watchdog (which reaps on the runtime deadline or at the
+    // post-exit drain grace) and the post-scope reaping wait. Never held across a
+    // sleep, so both sides keep making progress. The lock IS briefly held across
+    // the reap: both kill edges in `wait_or_kill` call `kill_child_tree` under
+    // this guard. On Windows that reap is `TerminateJobObject` — a fast,
+    // non-blocking syscall — except in the rare fallback where the child could
+    // not be assigned to a job, which spawns a blocking `taskkill`. Either way no
+    // contender can be waiting: the only other acquirer is the main thread, and
+    // whenever the watchdog reaches a reap the main thread is parked in
+    // `join_capture` draining the readers, never reaching for this lock. (Unix
+    // reaps are an async-signal-safe `libc::kill`, which never blocks.)
     let child = Mutex::new(child);
 
     let mut out_buf: Vec<u8> = Vec::new();
@@ -695,7 +909,7 @@ fn capture_inner(
         // leaked grandchild holding the inherited pipe) so the readers EOF and
         // this scope can exit. `reader_count` = 2 (stdout + stderr always piped).
         let watchdog =
-            timeout.map(|t| s.spawn(move || wait_or_kill(child_ref, readers_done_ref, 2, t)));
+            timeout.map(|t| s.spawn(move || wait_or_kill(child_ref, readers_done_ref, 2, t, tree)));
 
         // A reader-thread panic must not vanish the captured stream (it drives
         // the failure embed). Warn loudly and fall back to an empty buffer
@@ -877,6 +1091,16 @@ mod tests {
     fn sh(script: &str) -> Command {
         let mut c = Command::new("sh");
         c.arg("-c").arg(script);
+        c
+    }
+
+    /// `cmd /c` wrapper — the Windows analogue of [`sh`] for the Windows-only
+    /// tests, which need batch syntax (`start /b`, `&`) rather than a POSIX
+    /// shell snippet.
+    #[cfg(windows)]
+    fn cmd_c(script: &str) -> Command {
+        let mut c = Command::new("cmd");
+        c.arg("/c").arg(script);
         c
     }
 
@@ -1198,6 +1422,67 @@ mod tests {
         );
     }
 
+    /// Windows analogue of `run_capture_timeout_reaps_grandchild_holding_pipe`.
+    /// A `cmd /c` that exits 0 immediately but leaves a backgrounded `ping` (the
+    /// Windows sleep idiom) holding the inherited stdout pipe — the
+    /// snapcraft → snapd / background-uploader shape on Windows. The direct
+    /// child's `try_wait` succeeds at once, but the reader threads can only EOF
+    /// once the leaked grandchild releases the pipe; without the drain bound they
+    /// block for ping's full ~60s lifetime, blowing past the timeout. On expiry
+    /// of `POST_EXIT_DRAIN_GRACE`, `wait_or_kill` calls `kill_child_tree`, which
+    /// on Windows reaps the Job Object the child was enclosed in via
+    /// `TerminateJobObject` — killing the leaked grandchild by job membership
+    /// even though the direct child already exited (which `taskkill /T` cannot
+    /// do: a terminated root is absent from the snapshot its tree walk needs).
+    /// That forces EOF so the call returns promptly with the child's real
+    /// (success) status. `ping` writes a line per second, so its presence in the
+    /// captured stdout also proves the grandchild genuinely inherited the pipe
+    /// (otherwise the pipe would close on the child's own exit and the drain reap
+    /// would never be exercised).
+    ///
+    /// This is the regression guard for the dead-root `taskkill /T` bug: before
+    /// the Job Object fix this test waited out the full ~59s.
+    #[serial_test::serial(child_tree_registry)]
+    #[test]
+    #[cfg(windows)]
+    fn run_capture_timeout_reaps_grandchild_holding_pipe_windows() {
+        let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let start = Instant::now();
+        // `start /b` launches ping as a background grandchild that inherits cmd's
+        // stdout handle; cmd exits 0 immediately while ping keeps the pipe
+        // write-end open (`ping -n 60 127.0.0.1` ≈ 59s of 1s waits).
+        let out = run_capture_timeout(
+            &mut cmd_c("start /b ping -n 60 127.0.0.1 & echo started & exit 0"),
+            &log,
+            "grandchild-holds-pipe",
+            Duration::from_millis(300),
+        )
+        .expect("a clean child exit must yield Ok(Output), even with a leaked grandchild");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "the drain must be bounded — the leaked grandchild's pipe was reaped \
+             at the deadline, not waited out ({elapsed:?})"
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "the direct child exited 0; reaping a leaked grandchild must not \
+             rewrite that into a failure (which would re-publish on retry)"
+        );
+        let captured = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            captured.contains("started"),
+            "output the child wrote before exiting must still be captured"
+        );
+        assert!(
+            captured.to_ascii_lowercase().contains("ping")
+                || captured.to_ascii_lowercase().contains("pinging"),
+            "the backgrounded grandchild must genuinely hold the inherited pipe \
+             (its ping output should land in our capture); got: {captured:?}"
+        );
+    }
+
     /// The same large-in/large-out child at VERBOSE: the tee path must also
     /// drain concurrently with the stdin write (no deadlock) and still capture
     /// both streams whole.
@@ -1218,19 +1503,26 @@ mod tests {
         );
     }
 
-    /// The live-child-tree registry add/remove is a plain set: register makes a
-    /// pgid visible to the external-termination watcher; deregister removes it so
-    /// a recycled pid is never signalled later. Uses a sentinel pgid that no real
-    /// child would own.
+    /// The live-child-tree registry add/remove is a plain map: register makes a
+    /// pid visible to the external-termination watcher; deregister removes it so
+    /// a recycled pid is never signalled later. Uses a sentinel pid that no real
+    /// child would own. Serialized against the other registry tests: it mutates
+    /// the shared registry, so it must not run while a baseline-sensitive test
+    /// (`err_path_does_not_leak_registered_child_tree`) is sampling the length.
+    #[serial_test::serial(child_tree_registry)]
     #[test]
     fn child_tree_registry_add_and_remove() {
         let sentinel = -424_242; // never a real pgid; distinct from any test child
-        register_child_tree(sentinel);
+        register_child_tree(ChildTree {
+            pid: sentinel,
+            #[cfg(windows)]
+            job: None,
+        });
         assert!(
             live_child_trees()
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .contains(&sentinel),
+                .contains_key(&sentinel),
             "register must make the tree visible to the watcher"
         );
         deregister_child_tree(sentinel);
@@ -1238,7 +1530,7 @@ mod tests {
             !live_child_trees()
                 .lock()
                 .unwrap_or_else(|p| p.into_inner())
-                .contains(&sentinel),
+                .contains_key(&sentinel),
             "deregister must drop the tree so a recycled pid is never signalled"
         );
     }
@@ -1314,7 +1606,7 @@ mod tests {
         let child = cmd.spawn().expect("spawn sleep child");
         let pid = child.id() as i32;
         let mut guard = KillOnDrop(Some(child));
-        register_child_tree(pid);
+        register_child_tree(ChildTree { pid });
 
         // Fire the watcher's actual kill routine (the same one the signal-watcher
         // thread runs). It group-SIGTERMs every registered tree.
