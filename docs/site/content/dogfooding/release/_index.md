@@ -167,7 +167,7 @@ others have full test coverage but no live secrets configured.
 | `artifactories[]` | 🤝 Help wanted | Target, mode, TLS, headers wired; no live deployment |
 | `uploads[]` | 🤝 Help wanted | Generic HTTP upload wired; no live deployment |
 | `gemfury[]` (alias `furies[]`) | 🟡 In progress | Wired in [anodizer's config](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`gemfury:` account `tj-smith47`, `FURY_PUSH_TOKEN` secret forwarded to the publish step) and enabled in CI; deb/rpm/apk push lands on the v0.10.0 release. See [`gemfury:` docs](../../../docs/publish/gemfury/) |
-| `cloudsmiths[]` | 🟡 In progress | Wired in [anodizer's config](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`cloudsmiths:` organization `jarvispro`, repository `anodizer`, per-format distributions) with a live `CLOUDSMITH_API_KEY`. Real `DELETE` rollback is test-covered (see Release resilience below). Awaiting a clean live upload to land a package in the repo. See [`cloudsmiths:` docs](../../../docs/publish/cloudsmith/) |
+| `cloudsmiths[]` | ✅ Verified | The [jarvispro/anodizer Cloudsmith repo](https://cloudsmith.io/~jarvispro/repos/anodizer/packages/) carries live `anodizer` packages in all three configured formats (`anodizer 1:0.12.3-1` deb + rpm, `anodizer 0.12.3-r1` alpine; via `GET /v1/packages/jarvispro/anodizer/`). Wired in [anodizer's config](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`cloudsmiths:` organization `jarvispro`, repository `anodizer`, per-format distributions). Real `DELETE` rollback is test-covered (see Release resilience below). See [`cloudsmiths:` docs](../../../docs/publish/cloudsmith/) |
 
 ## Custom publishers
 
