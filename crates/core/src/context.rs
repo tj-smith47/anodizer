@@ -5,6 +5,7 @@ use crate::git::GitInfo;
 use crate::log::{StageLogger, Verbosity};
 use crate::partial::PartialTarget;
 use crate::publish_report::PublishReport;
+use crate::publisher_kind::PublisherKind;
 use crate::scm::ScmTokenType;
 use crate::template::TemplateVars;
 use crate::verify_release_summary::VerifyReleaseSummary;
@@ -12,7 +13,8 @@ use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
+use strum::IntoEnumIterator;
 
 /// Rollback policy after the publish stage. `BestEffort` is the default when
 /// pre-flight ran clean; `None` is the implicit default otherwise (callers
@@ -35,34 +37,25 @@ pub enum RollbackMode {
     BestEffort,
 }
 
-/// Valid --skip values for the `release` command.
+/// Non-publisher `--skip` tokens for the `release` command: the pipeline
+/// stage / phase names that are NOT publishers.
 ///
-/// Skip tokens are stage names plus publisher names. Every publisher's skip
-/// token is its canonical [`crate::Publisher::name`] (the same token
-/// `--publishers` keys on and the same one GoReleaser's `--skip` uses), so
-/// homebrew is `homebrew` and chocolatey is `chocolatey` — there are no short
-/// aliases (`brew`/`choco`). This keeps one denylist vocabulary across the
-/// `--skip` and `--publishers` selectors and matches GoReleaser's `--skip`
-/// keys, so a single name works on both tools.
-pub const VALID_RELEASE_SKIPS: &[&str] = &[
+/// The publisher tokens are NOT listed here — they are derived from
+/// [`PublisherKind`] and unioned in by [`VALID_RELEASE_SKIPS`], so the
+/// `--skip` publisher vocabulary cannot drift from the registry. Keep ONLY
+/// non-publisher stage tokens here.
+///
+/// Two pairs look like publishers but are stages and belong here:
+/// `snapcraft` is the snap *build* stage (its publisher sibling is
+/// `snapcraft-publish`), and `release` is the GitHub/GitLab/Gitea release
+/// *stage* (its publisher sibling is `github-release`).
+const NON_PUBLISHER_RELEASE_SKIPS: &[&str] = &[
     "publish",
-    "announce",
     "sign",
     "validate",
     "sbom",
     "attest",
-    "docker",
-    "docker-sign",
-    "winget",
-    "chocolatey",
     "snapcraft",
-    "snapcraft-publish",
-    "scoop",
-    "homebrew",
-    "nix",
-    "aur",
-    "cargo",
-    "krew",
     "nfpm",
     "makeself",
     "appimage",
@@ -78,7 +71,6 @@ pub const VALID_RELEASE_SKIPS: &[&str] = &[
     "release",
     "checksum",
     "upx",
-    "blob",
     "templatefiles",
     "dmg",
     "msi",
@@ -87,6 +79,32 @@ pub const VALID_RELEASE_SKIPS: &[&str] = &[
     "appbundle",
     "verify-release",
 ];
+
+/// Valid `--skip` values for the `release` command: every pipeline
+/// stage/phase token ([`NON_PUBLISHER_RELEASE_SKIPS`]) PLUS every publisher
+/// token (derived from [`PublisherKind`]).
+///
+/// Skip tokens are stage names plus publisher names. Every publisher's skip
+/// token is its canonical [`crate::Publisher::name`] / [`PublisherKind::token`]
+/// (the same token `--publishers` keys on and the same one GoReleaser's
+/// `--skip` uses), so homebrew is `homebrew` and chocolatey is `chocolatey` —
+/// there are no short aliases (`brew`/`choco`). This keeps one denylist
+/// vocabulary across the `--skip` and `--publishers` selectors and matches
+/// GoReleaser's `--skip` keys, so a single name works on both tools.
+///
+/// Deriving the publisher half from [`PublisherKind::iter`] is what makes the
+/// vocabulary drift-proof: a newly added publisher is automatically a valid
+/// `--skip` token. (This closed a real gap — nine publisher tokens
+/// — `npm`, `gemfury`, `cloudsmith`, `artifactory`, `uploads`, `dockerhub`,
+/// `mcp`, `schemastore`, `upstream-aur` — had silently fallen out of the old
+/// hand-maintained literal.)
+pub static VALID_RELEASE_SKIPS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    NON_PUBLISHER_RELEASE_SKIPS
+        .iter()
+        .copied()
+        .chain(PublisherKind::iter().map(PublisherKind::token))
+        .collect()
+});
 
 /// Valid --skip values for the `build` command.
 pub const VALID_BUILD_SKIPS: &[&str] = &["pre-hooks", "post-hooks", "validate", "before"];
@@ -1532,6 +1550,58 @@ mod tests {
     use super::*;
     use crate::config::Config;
     use crate::git::{GitInfo, SemVer};
+    use std::collections::BTreeSet;
+
+    /// `VALID_RELEASE_SKIPS` MUST recognize every publisher token. Driven off
+    /// [`PublisherKind::iter`] so a newly added publisher that is not folded
+    /// into the `--skip` vocabulary trips immediately. Pins the nine tokens
+    /// that had silently dropped out of the former hand-maintained literal.
+    #[test]
+    fn valid_release_skips_is_superset_of_every_publisher_token() {
+        let skips: BTreeSet<&str> = VALID_RELEASE_SKIPS.iter().copied().collect();
+        for k in PublisherKind::iter() {
+            assert!(
+                skips.contains(k.token()),
+                "VALID_RELEASE_SKIPS missing publisher token `{}` — `--skip={}` would be \
+                 silently rejected",
+                k.token(),
+                k.token(),
+            );
+        }
+        for previously_missing in [
+            "npm",
+            "gemfury",
+            "cloudsmith",
+            "artifactory",
+            "uploads",
+            "dockerhub",
+            "mcp",
+            "schemastore",
+            "upstream-aur",
+        ] {
+            assert!(
+                skips.contains(previously_missing),
+                "publisher token `{previously_missing}` (one of the nine that had dropped out \
+                 of the old literal) is still not a recognized --skip value"
+            );
+        }
+    }
+
+    /// The non-publisher half of the vocabulary must stay disjoint from the
+    /// publisher tokens, so the union has a single, unambiguous owner per
+    /// token. (`snapcraft`/`snapcraft-publish` and `release`/`github-release`
+    /// are the deliberately-distinct stage-vs-publisher pairs.)
+    #[test]
+    fn non_publisher_release_skips_disjoint_from_publisher_tokens() {
+        let publisher_tokens: BTreeSet<&str> =
+            PublisherKind::iter().map(PublisherKind::token).collect();
+        for stage in NON_PUBLISHER_RELEASE_SKIPS {
+            assert!(
+                !publisher_tokens.contains(stage),
+                "`{stage}` is listed in NON_PUBLISHER_RELEASE_SKIPS but is also a publisher token"
+            );
+        }
+    }
 
     fn make_git_info(dirty: bool, prerelease: Option<&str>) -> GitInfo {
         let tag = match prerelease {
@@ -1594,15 +1664,15 @@ mod tests {
 
     #[test]
     fn validate_skip_values_dedups_repeated_invalid_tokens() {
+        // The token must not be a substring of any valid option, or `matches`
+        // would count the valid-options hint too (`uploads` contains `upload`).
         let err = validate_skip_values(
-            &["upload".to_string(), "upload".to_string()],
-            VALID_RELEASE_SKIPS,
+            &["bogusxyz".to_string(), "bogusxyz".to_string()],
+            &VALID_RELEASE_SKIPS,
         )
         .unwrap_err();
         assert_eq!(
-            err.matches("upload").count(),
-            // `upload` appears once as the invalid token and never in the
-            // (de-duped) valid list — so exactly one occurrence total.
+            err.matches("bogusxyz").count(),
             1,
             "a repeated invalid token must be reported once: {err}"
         );

@@ -6,7 +6,8 @@
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anodizer_core::{Publisher, PublisherGroup};
+use anodizer_core::{Publisher, PublisherGroup, PublisherKind};
+use strum::IntoEnumIterator;
 
 /// Collapse a set of per-crate / per-entry `required` overrides into one
 /// publisher-level value, escalating to `true`.
@@ -379,26 +380,53 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
 /// use this list for dispatch; `run`/`rollback` on an unconfigured
 /// publisher is not a supported path.
 pub fn all_publishers() -> Vec<Box<dyn Publisher>> {
-    vec![
-        Box::new(crate::cargo::CargoPublisher::new()),
-        Box::new(crate::dockerhub::DockerhubPublisher::new()),
-        Box::new(crate::artifactory::ArtifactoryPublisher::new()),
-        Box::new(crate::uploads::UploadsPublisher::new()),
-        Box::new(crate::cloudsmith::CloudsmithPublisher::new()),
-        Box::new(anodizer_stage_release::publisher::GithubReleasePublisher::new()),
-        Box::new(crate::homebrew::publisher::HomebrewPublisher::new()),
-        Box::new(crate::scoop::ScoopPublisher::new()),
-        Box::new(crate::nix::publisher::NixPublisher::new()),
-        Box::new(crate::mcp::publisher::McpPublisher::new()),
-        Box::new(crate::aur::AurOurPublisher::new()),
-        Box::new(crate::krew::KrewPublisher::new()),
-        Box::new(crate::schemastore::SchemastorePublisher::new()),
-        Box::new(crate::npm::NpmPublisher::new()),
-        Box::new(crate::gemfury::GemFuryPublisher::new()),
-        Box::new(crate::chocolatey::ChocolateyPublisher::new()),
-        Box::new(crate::winget::WingetPublisher::new()),
-        Box::new(crate::aur_source::AurSourcePublisher::new()),
-    ]
+    PublisherKind::iter()
+        .filter_map(new_trait_publisher)
+        .collect()
+}
+
+/// Instantiate the trait-dispatched [`Publisher`] for a [`PublisherKind`].
+///
+/// The exhaustive `match` (no `_ =>` wildcard) is the drift guard: a newly
+/// added [`PublisherKind`] variant fails to compile here until it is mapped
+/// either to its concrete `Publisher` impl (the 18 trait-dispatched
+/// publishers) or to `None` (the out-of-dispatch publish stages — `blob`,
+/// `snapcraft-publish`, `docker`, `docker-sign`, `announce` — which fire from
+/// their own pipeline stages and are deliberately NOT registered here; a
+/// parallel trait registration would double-publish, see the doc comment on
+/// [`configured_publishers`]). The `is_publish_stage` predicate and this match
+/// must agree — the [`tests`] cross-check enforces it.
+fn new_trait_publisher(kind: PublisherKind) -> Option<Box<dyn Publisher>> {
+    let publisher: Box<dyn Publisher> = match kind {
+        PublisherKind::Cargo => Box::new(crate::cargo::CargoPublisher::new()),
+        PublisherKind::Dockerhub => Box::new(crate::dockerhub::DockerhubPublisher::new()),
+        PublisherKind::Artifactory => Box::new(crate::artifactory::ArtifactoryPublisher::new()),
+        PublisherKind::Uploads => Box::new(crate::uploads::UploadsPublisher::new()),
+        PublisherKind::Cloudsmith => Box::new(crate::cloudsmith::CloudsmithPublisher::new()),
+        PublisherKind::GithubRelease => {
+            Box::new(anodizer_stage_release::publisher::GithubReleasePublisher::new())
+        }
+        PublisherKind::Homebrew => Box::new(crate::homebrew::publisher::HomebrewPublisher::new()),
+        PublisherKind::Scoop => Box::new(crate::scoop::ScoopPublisher::new()),
+        PublisherKind::Nix => Box::new(crate::nix::publisher::NixPublisher::new()),
+        PublisherKind::Mcp => Box::new(crate::mcp::publisher::McpPublisher::new()),
+        PublisherKind::Aur => Box::new(crate::aur::AurOurPublisher::new()),
+        PublisherKind::Krew => Box::new(crate::krew::KrewPublisher::new()),
+        PublisherKind::Schemastore => Box::new(crate::schemastore::SchemastorePublisher::new()),
+        PublisherKind::Npm => Box::new(crate::npm::NpmPublisher::new()),
+        PublisherKind::Gemfury => Box::new(crate::gemfury::GemFuryPublisher::new()),
+        PublisherKind::Chocolatey => Box::new(crate::chocolatey::ChocolateyPublisher::new()),
+        PublisherKind::Winget => Box::new(crate::winget::WingetPublisher::new()),
+        PublisherKind::UpstreamAur => Box::new(crate::aur_source::AurSourcePublisher::new()),
+        // Out-of-dispatch publish stages: governed by the selector vocabulary
+        // but not trait-registered here.
+        PublisherKind::Blob
+        | PublisherKind::SnapcraftPublish
+        | PublisherKind::Docker
+        | PublisherKind::DockerSign
+        | PublisherKind::Announce => return None,
+    };
+    Some(publisher)
 }
 
 /// True when at least one crate has a `publish.chocolatey` block.
@@ -665,33 +693,32 @@ pub const fn group_dispatch_order() -> [PublisherGroup; 3] {
 /// `ReleaseURL`), so excluding it via an allowlist would silently break the
 /// common `--publishers homebrew` case. It stays governed by `--skip=release`
 /// (the denylist) only.
-pub const PUBLISH_STAGE_PUBLISHERS: &[&str] = &[
-    "blob",
-    "snapcraft-publish",
-    "docker",
-    "docker-sign",
-    "announce",
-];
+///
+/// Derived from [`PublisherKind`] via the per-variant
+/// [`PublisherKind::is_publish_stage`] predicate — no second hand-list to
+/// drift from the enum.
+pub fn publish_stage_publishers() -> Vec<&'static str> {
+    PublisherKind::iter()
+        .filter(|k| k.is_publish_stage())
+        .map(PublisherKind::token)
+        .collect()
+}
 
-/// Every canonical publisher name: the trait-based publishers from
-/// [`all_publishers`] PLUS the out-of-dispatch publish stages in
-/// [`PUBLISH_STAGE_PUBLISHERS`].
+/// Every canonical publisher name: the trait-based publishers PLUS the
+/// out-of-dispatch publish stages — i.e. every [`PublisherKind::token`].
 ///
 /// This is the drift-proof source of valid `--publishers` / `--skip` publisher
-/// tokens: it instantiates one of every publisher and reads each
-/// [`anodizer_core::Publisher::name`], then appends the publish-stage tokens,
-/// so a newly registered publisher is automatically a valid selector with no
-/// hand-maintained literal list to update. The CLI validation (`init` /
-/// `release` `--publishers` / `--skip`) and any help/error text consult this
-/// rather than a duplicated constant.
+/// tokens: it reads every [`PublisherKind`] variant's token, so a newly added
+/// publisher is automatically a valid selector with no hand-maintained literal
+/// list to update. The CLI validation (`init` / `release` `--publishers` /
+/// `--skip`) and any help/error text consult this rather than a duplicated
+/// constant.
 ///
-/// Names are returned owned (`String`) because `Publisher::name` borrows the
-/// boxed instance, which does not outlive this call.
+/// Names are returned owned (`String`) for call-site ergonomics (callers
+/// compare against owned `--publishers` / `--skip` `String` values).
 pub fn valid_publisher_names() -> Vec<String> {
-    all_publishers()
-        .iter()
-        .map(|p| p.name().to_string())
-        .chain(PUBLISH_STAGE_PUBLISHERS.iter().map(|s| s.to_string()))
+    PublisherKind::iter()
+        .map(|k| k.token().to_string())
         .collect()
 }
 
@@ -795,7 +822,7 @@ pub fn validate_publisher_allowlist_configured(
     Ok(())
 }
 
-/// The subset of [`PUBLISH_STAGE_PUBLISHERS`] the active config enables.
+/// The subset of [`publish_stage_publishers`] the active config enables.
 ///
 /// Each out-of-dispatch publish stage is "configured" when its config block
 /// is present:
@@ -812,10 +839,10 @@ pub fn validate_publisher_allowlist_configured(
 fn configured_publish_stage_publishers(ctx: &Context) -> Vec<&'static str> {
     let mut out = Vec::new();
     if ctx.config.crates.iter().any(|c| c.blobs.is_some()) {
-        out.push("blob");
+        out.push(PublisherKind::Blob.token());
     }
     if ctx.config.crates.iter().any(|c| c.snapcrafts.is_some()) {
-        out.push("snapcraft-publish");
+        out.push(PublisherKind::SnapcraftPublish.token());
     }
     if ctx
         .config
@@ -823,7 +850,7 @@ fn configured_publish_stage_publishers(ctx: &Context) -> Vec<&'static str> {
         .iter()
         .any(|c| c.dockers_v2.is_some() || c.docker_manifests.is_some())
     {
-        out.push("docker");
+        out.push(PublisherKind::Docker.token());
     }
     if ctx
         .config
@@ -831,7 +858,7 @@ fn configured_publish_stage_publishers(ctx: &Context) -> Vec<&'static str> {
         .as_ref()
         .is_some_and(|v| !v.is_empty())
     {
-        out.push("docker-sign");
+        out.push(PublisherKind::DockerSign.token());
     }
     out
 }
@@ -899,13 +926,13 @@ mod tests {
 
     #[test]
     fn valid_publisher_names_includes_out_of_dispatch_publish_stages() {
-        // Every PUBLISH_STAGE_PUBLISHERS entry (blob / snapcraft-publish /
+        // Every publish_stage_publishers entry (blob / snapcraft-publish /
         // docker / docker-sign / announce) performs an external, irreversible
         // publish from a pipeline stage outside dispatch; each must be part of
         // the selector vocabulary so `--publishers <stage>` is accepted and an
         // allowlist omitting it deselects it.
         let names = valid_publisher_names();
-        for stage in PUBLISH_STAGE_PUBLISHERS {
+        for stage in publish_stage_publishers() {
             assert!(
                 names.iter().any(|n| n == stage),
                 "expected {stage} in {names:?}"
@@ -917,7 +944,7 @@ mod tests {
     fn validate_publisher_selection_accepts_publish_stage_allowlist() {
         // `--publishers blob` / `snapcraft-publish` / `docker` / `docker-sign`
         // must NOT be rejected as invalid.
-        for stage in PUBLISH_STAGE_PUBLISHERS {
+        for stage in publish_stage_publishers() {
             let allow = vec![stage.to_string()];
             assert!(
                 validate_publisher_selection(&allow, &[]).is_ok(),
@@ -1922,6 +1949,63 @@ mod tests {
         assert!(
             !names.contains(&"schemastore"),
             "schemastore must not register with an empty `schemas` block (got {names:?})"
+        );
+    }
+
+    /// The `--publishers` / `--skip` publisher vocabulary is exactly the set of
+    /// [`PublisherKind`] tokens — neither side may drift from the enum.
+    #[test]
+    fn valid_publisher_names_equals_publisher_kind_tokens() {
+        use std::collections::BTreeSet;
+        let names: BTreeSet<String> = valid_publisher_names().into_iter().collect();
+        let tokens: BTreeSet<String> = PublisherKind::iter()
+            .map(|k| k.token().to_string())
+            .collect();
+        assert_eq!(
+            names, tokens,
+            "valid_publisher_names() drifted from PublisherKind::iter() tokens"
+        );
+    }
+
+    /// Every trait-dispatched [`PublisherKind`] variant resolves to exactly one
+    /// registered publisher in [`all_publishers`] (so its `skips_on_nightly`
+    /// value is defined), and no registered publisher exists that the enum does
+    /// not know. Driven off [`PublisherKind::iter`] so a new variant without
+    /// registry wiring fails here; [`new_trait_publisher`]'s exhaustive match
+    /// traps it at compile time first.
+    #[test]
+    fn every_trait_publisher_kind_has_registry_entry_and_nightly_value() {
+        use std::collections::{BTreeMap, BTreeSet};
+        let registered: BTreeMap<String, bool> = all_publishers()
+            .iter()
+            .map(|p| (p.name().to_string(), p.skips_on_nightly()))
+            .collect();
+
+        let trait_tokens: BTreeSet<&str> = PublisherKind::iter()
+            .filter(|k| !k.is_publish_stage())
+            .map(PublisherKind::token)
+            .collect();
+
+        for token in &trait_tokens {
+            assert!(
+                registered.contains_key(*token),
+                "trait publisher `{token}` has no all_publishers() registry entry"
+            );
+            // Read the nightly value to prove it is defined (required trait method).
+            let _nightly: bool = registered[*token];
+        }
+        for name in registered.keys() {
+            assert!(
+                trait_tokens.contains(name.as_str()),
+                "all_publishers() registered `{name}` with no matching PublisherKind variant"
+            );
+        }
+        assert_eq!(
+            registered.len(),
+            trait_tokens.len(),
+            "registry entry count {} != trait PublisherKind variant count {}",
+            registered.len(),
+            trait_tokens.len(),
         );
     }
 }

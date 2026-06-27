@@ -40,6 +40,7 @@ pub mod preflight;
 pub mod publish_evidence;
 pub mod publish_report;
 pub mod publisher;
+pub mod publisher_kind;
 pub mod redact;
 pub mod retry;
 pub mod run;
@@ -75,6 +76,7 @@ pub use publish_report::{
     PublishReport, PublisherGroup, PublisherOutcome, PublisherResult, SkipReason,
 };
 pub use publisher::{PreflightCheck, Publisher, rollback_empty_warning_msg};
+pub use publisher_kind::PublisherKind;
 pub use verify_release_summary::VerifyReleaseSummary;
 
 #[cfg(feature = "test-helpers")]
