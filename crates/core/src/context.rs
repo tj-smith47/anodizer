@@ -96,20 +96,33 @@ pub const VALID_BUILD_SKIPS: &[&str] = &["pre-hooks", "post-hooks", "validate", 
 /// Returns `Ok(())` if all values are valid, or `Err` with a descriptive
 /// message listing the invalid value(s) and the full set of valid options.
 pub fn validate_skip_values(skip: &[String], valid: &[&str]) -> Result<(), String> {
-    let invalid: Vec<&str> = skip
-        .iter()
-        .map(|s| s.as_str())
-        .filter(|s| !valid.contains(s))
-        .collect();
+    let invalid: Vec<&str> = dedup_preserving_order(
+        skip.iter()
+            .map(|s| s.as_str())
+            .filter(|s| !valid.contains(s)),
+    );
     if invalid.is_empty() {
         Ok(())
     } else {
+        // The combined skip vocabulary is `VALID_RELEASE_SKIPS ++ publisher
+        // names`, which overlap (e.g. `homebrew`, `cargo` appear in both), so a
+        // raw join prints each shared token twice. De-dup the hint — a consumer
+        // (or the action's skip-token generator) reading "Valid options" should
+        // see one clean vocabulary, not a confusing list with repeats.
         Err(format!(
             "invalid --skip value(s): {}. Valid options: {}",
             invalid.join(", "),
-            valid.join(", "),
+            dedup_preserving_order(valid.iter().copied()).join(", "),
         ))
     }
+}
+
+/// Collect an iterator of string slices, dropping later duplicates while keeping
+/// first-seen order — used so the `--skip` error hint lists each valid token
+/// once even though its source set unions overlapping vocabularies.
+fn dedup_preserving_order<'a>(items: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
+    let mut seen = std::collections::HashSet::new();
+    items.filter(|s| seen.insert(*s)).collect()
 }
 
 pub struct ContextOptions {
@@ -1558,6 +1571,40 @@ mod tests {
         assert_eq!(
             ctx.template_vars().get("ProjectName"),
             Some(&"test-project".to_string())
+        );
+    }
+
+    #[test]
+    fn validate_skip_values_hint_dedups_overlapping_vocabulary() {
+        // The release skip vocabulary is `VALID_RELEASE_SKIPS ++ publisher
+        // names`, which legitimately overlap. A bad token must surface a hint
+        // listing each valid option exactly ONCE, in first-seen order — not the
+        // doubled list a raw `valid.join(", ")` produces.
+        let valid = ["homebrew", "cargo", "npm", "homebrew", "cargo", "uploads"];
+        let err = validate_skip_values(&["bogus".to_string()], &valid).unwrap_err();
+        let opts = err
+            .split("Valid options: ")
+            .nth(1)
+            .expect("hint must carry a Valid options list");
+        assert_eq!(
+            opts, "homebrew, cargo, npm, uploads",
+            "valid options must be de-duplicated in first-seen order"
+        );
+    }
+
+    #[test]
+    fn validate_skip_values_dedups_repeated_invalid_tokens() {
+        let err = validate_skip_values(
+            &["upload".to_string(), "upload".to_string()],
+            VALID_RELEASE_SKIPS,
+        )
+        .unwrap_err();
+        assert_eq!(
+            err.matches("upload").count(),
+            // `upload` appears once as the invalid token and never in the
+            // (de-duped) valid list — so exactly one occurrence total.
+            1,
+            "a repeated invalid token must be reported once: {err}"
         );
     }
 

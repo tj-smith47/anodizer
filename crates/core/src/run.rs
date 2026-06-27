@@ -27,6 +27,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -38,6 +39,16 @@ use crate::retry::Retriable;
 /// Poll cadence for the bounded-wait watchdog. Short enough that a child that
 /// exits just after a poll is reaped promptly, long enough not to spin a core.
 const WAIT_POLL_INTERVAL: Duration = Duration::from_millis(25);
+
+/// Grace window granted to the reader threads to hit EOF AFTER the direct child
+/// has exited. The common case completes in microseconds: the child's pipe ends
+/// close on exit, the readers drain the last buffered bytes and EOF. A grace is
+/// only ever consumed when a forked grandchild inherited and still holds the
+/// pipe write-end (snapcraft → snapd, a backgrounded uploader): once it elapses
+/// the watchdog reaps the whole process group so the leaked grandchild releases
+/// the pipe and the readers EOF, instead of the drain hanging for the
+/// grandchild's full lifetime and blowing past the deadline.
+const POST_EXIT_DRAIN_GRACE: Duration = Duration::from_secs(3);
 
 /// Place a to-be-spawned, timeout-bounded child in its OWN process group so the
 /// watchdog can kill the WHOLE subtree on expiry — not just the immediate
@@ -496,33 +507,67 @@ pub fn run_checked_timeout(
     run_inner(cmd, None, log, label, Some(timeout))
 }
 
-/// Wait for `child` to exit, killing it if it outlives `timeout`.
+/// Wait for `child` to exit, killing it if it outlives `timeout`, and bound the
+/// post-exit reader drain so a leaked grandchild can't hang past the deadline.
 ///
-/// Polls [`Child::try_wait`] on a short cadence so a child that exits on its own
-/// is reaped promptly; on the deadline it sends `kill()` (closing the child's
-/// stdout/stderr, which lets the concurrent reader threads hit EOF and the
-/// surrounding [`std::thread::scope`] unwind). Returns `Ok(Some(status))` when
-/// the child exited under its own power, `Ok(None)` when it was killed for
-/// exceeding `timeout`, and `Err` only on an OS-level wait failure.
+/// Polls [`Child::try_wait`] on a short cadence. Two deadline edges:
+/// - **Child runtime** — if the direct child has not exited by `timeout`, the
+///   whole subtree is killed and `Ok(None)` is returned (a true timeout).
+/// - **Drain** — once the direct child HAS exited, the reader threads must hit
+///   EOF for the surrounding [`std::thread::scope`] to unwind. They do so
+///   immediately in the common case (the child's pipe ends closed on exit), but
+///   a forked grandchild that inherited the pipe write-end keeps them blocked.
+///   `readers_done` (incremented by each reader as it returns) is watched: when
+///   it reaches `reader_count` the call returns the child's real status
+///   promptly; if the readers are still blocked [`POST_EXIT_DRAIN_GRACE`] after
+///   the child exited, the whole process group is reaped so the leaked
+///   grandchild releases the pipe — and the child's real (success) status is
+///   STILL returned, because the child itself succeeded; only a leaked
+///   descendant was force-closed. Rewriting that into a timeout would re-publish
+///   a succeeded one-way-door publisher on retry.
 ///
 /// `child` is shared with the main thread (which performs the final reaping
 /// `wait`) through a `Mutex`; the lock is held only for each non-blocking
 /// `try_wait` / `kill`, never across a sleep, so the main thread can still
 /// acquire it to drain the zombie after a kill.
-fn wait_or_kill(child: &Mutex<Child>, timeout: Duration) -> std::io::Result<Option<ExitStatus>> {
+fn wait_or_kill(
+    child: &Mutex<Child>,
+    readers_done: &AtomicUsize,
+    reader_count: usize,
+    timeout: Duration,
+) -> std::io::Result<Option<ExitStatus>> {
     let deadline = Instant::now() + timeout;
+    let mut exited: Option<ExitStatus> = None;
+    let mut drain_deadline: Option<Instant> = None;
     loop {
-        {
+        if exited.is_none() {
             let mut guard = child.lock().unwrap_or_else(|p| p.into_inner());
             if let Some(status) = guard.try_wait()? {
-                return Ok(Some(status));
-            }
-            if Instant::now() >= deadline {
-                // Kill the whole subtree (group), not just the direct child, so
-                // a forked grandchild holding the inherited pipe dies too and
-                // the readers can EOF. Benign if the child already exited.
+                exited = Some(status);
+                drain_deadline = Some(Instant::now() + POST_EXIT_DRAIN_GRACE);
+            } else if Instant::now() >= deadline {
+                // Child itself outlived the timeout: kill the whole subtree (not
+                // just the direct child) so a forked grandchild holding the
+                // inherited pipe dies too and the readers can EOF.
                 kill_child_tree(&mut guard);
                 return Ok(None);
+            }
+        }
+
+        if let Some(status) = exited {
+            // Child is done. Let the readers finish draining; return promptly
+            // once they EOF.
+            if readers_done.load(Ordering::Acquire) >= reader_count {
+                return Ok(Some(status));
+            }
+            // Readers still blocked past the drain grace ⇒ a leaked grandchild
+            // is holding the pipe. Reap the group to force EOF, but report the
+            // child's real (success) status — it crossed its door; only the
+            // orphan was force-closed.
+            if drain_deadline.is_some_and(|d| Instant::now() >= d) {
+                let mut guard = child.lock().unwrap_or_else(|p| p.into_inner());
+                kill_child_tree(&mut guard);
+                return Ok(Some(status));
             }
         }
         std::thread::sleep(WAIT_POLL_INTERVAL);
@@ -617,6 +662,12 @@ fn capture_inner(
     // A shared reference (Copy) the watchdog can move without taking the Mutex
     // itself, leaving `child` available for the post-scope reaping wait.
     let child_ref = &child;
+    // Counts the stdout + stderr reader threads that have reached EOF and
+    // returned. The watchdog watches this so that, once the direct child has
+    // exited, it can tell "readers drained, return promptly" from "readers still
+    // blocked on a leaked grandchild's pipe, reap the group at the drain grace".
+    let readers_done = AtomicUsize::new(0);
+    let readers_done_ref = &readers_done;
     std::thread::scope(|s| {
         // Stdin writer (only when there is stdin): own thread so the readers
         // below drain concurrently and a full stdout pipe can't wedge us
@@ -629,12 +680,22 @@ fn capture_inner(
             })
         });
 
-        let out_handle = s.spawn(|| tee_stream(child_stdout, log, false, verbose));
-        let err_handle = s.spawn(|| tee_stream(child_stderr, log, true, verbose));
+        let out_handle = s.spawn(move || {
+            let buf = tee_stream(child_stdout, log, false, verbose);
+            readers_done_ref.fetch_add(1, Ordering::Release);
+            buf
+        });
+        let err_handle = s.spawn(move || {
+            let buf = tee_stream(child_stderr, log, true, verbose);
+            readers_done_ref.fetch_add(1, Ordering::Release);
+            buf
+        });
 
-        // Bounded-wait watchdog: kills the child if it outlives `timeout`,
-        // unblocking the readers (killed pipes → EOF) so this scope can exit.
-        let watchdog = timeout.map(|t| s.spawn(move || wait_or_kill(child_ref, t)));
+        // Bounded-wait watchdog: kills the child (and, at the drain grace, a
+        // leaked grandchild holding the inherited pipe) so the readers EOF and
+        // this scope can exit. `reader_count` = 2 (stdout + stderr always piped).
+        let watchdog =
+            timeout.map(|t| s.spawn(move || wait_or_kill(child_ref, readers_done_ref, 2, t)));
 
         // A reader-thread panic must not vanish the captured stream (it drives
         // the failure embed). Warn loudly and fall back to an empty buffer
@@ -1092,6 +1153,48 @@ mod tests {
         assert!(
             crate::retry::is_retriable(err.as_ref()),
             "a deadline kill must classify as retriable so the upload retries within budget; got: {err:#}"
+        );
+    }
+
+    /// A child that exits cleanly but leaves a backgrounded grandchild holding
+    /// the inherited stdout/stderr pipe (the snapcraft → snapd / background
+    /// uploader shape) must STILL honour the deadline. The direct child's
+    /// `try_wait` succeeds immediately, but the reader threads can only EOF once
+    /// the leaked grandchild releases the pipe — without a drain bound they block
+    /// for the grandchild's full lifetime, blowing past the timeout and only
+    /// surfacing at the global 1h pipeline watchdog (RED past every one-way
+    /// door). The deadline must reap the whole process group so the readers EOF
+    /// and the call returns promptly with the child's real (success) status.
+    #[serial_test::serial(child_tree_registry)]
+    #[test]
+    #[cfg(unix)]
+    fn run_capture_timeout_reaps_grandchild_holding_pipe() {
+        let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let start = Instant::now();
+        // `sleep 60 &` inherits sh's stdout/stderr; sh exits 0 immediately while
+        // the backgrounded sleep keeps the pipe write-end open for 60s.
+        let out = run_capture_timeout(
+            &mut sh("sleep 60 & echo started; exit 0"),
+            &log,
+            "grandchild-holds-pipe",
+            Duration::from_millis(300),
+        )
+        .expect("a clean child exit must yield Ok(Output), even with a leaked grandchild");
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(20),
+            "the drain must be bounded — the leaked grandchild's pipe was reaped \
+             at the deadline, not waited out ({elapsed:?})"
+        );
+        assert_eq!(
+            out.status.code(),
+            Some(0),
+            "the direct child exited 0; reaping a leaked grandchild must not \
+             rewrite that into a failure (which would re-publish on retry)"
+        );
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("started"),
+            "output the child wrote before exiting must still be captured"
         );
     }
 
