@@ -52,7 +52,7 @@ homebrew_casks:
 
 | Channel | Status | Verify |
 |---|---|---|
-| **GitHub Releases** | ✅ Verified | [anodizer v0.9.1](https://github.com/tj-smith47/anodizer/releases/tag/v0.9.1) · [cfgd v0.4.0](https://github.com/tj-smith47/cfgd/releases/tag/v0.4.0) |
+| **GitHub Releases** | ✅ Verified | [anodizer v0.12.3](https://github.com/tj-smith47/anodizer/releases/tag/v0.12.3) · [cfgd v0.4.0](https://github.com/tj-smith47/cfgd/releases/tag/v0.4.0) |
 | **crates.io** | ✅ Verified | [crates.io/crates/anodizer](https://crates.io/crates/anodizer) · [crates.io/crates/cfgd](https://crates.io/crates/cfgd) |
 | **npm** | ✅ Verified | [npmjs.com/package/@tj-smith47/anodizer](https://www.npmjs.com/package/@tj-smith47/anodizer) — the package is live on npm. The per-platform `optionalDependencies` metapackage shape lands with v0.10.0 (the live v0.9.1 package has no `optionalDependencies` yet). See [`npms:` docs](../../../docs/publish/npm/) |
 | **Snap Store** | ✅ Verified | [snapcraft.io/anodizer](https://snapcraft.io/anodizer) · [snapcraft.io/cfgd](https://snapcraft.io/cfgd) |

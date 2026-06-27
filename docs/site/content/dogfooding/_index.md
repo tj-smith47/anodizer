@@ -24,7 +24,7 @@ don't ask you to read source code to verify our claims.
 
 Two public projects use anodizer to ship themselves:
 
-- **anodizer**, releases at [github.com/tj-smith47/anodizer/releases](https://github.com/tj-smith47/anodizer/releases). Latest: [v0.9.1](https://github.com/tj-smith47/anodizer/releases/tag/v0.9.1).
+- **anodizer**, releases at [github.com/tj-smith47/anodizer/releases](https://github.com/tj-smith47/anodizer/releases). Latest: [v0.12.3](https://github.com/tj-smith47/anodizer/releases/tag/v0.12.3).
 - **cfgd**, a 4-crate workspace (CLI + lib + operator + CSI driver) at [github.com/tj-smith47/cfgd/releases](https://github.com/tj-smith47/cfgd/releases). Latest: [v0.4.0](https://github.com/tj-smith47/cfgd/releases/tag/v0.4.0).
 
 When a row says "lives on `<package manager>`", click through and you'll

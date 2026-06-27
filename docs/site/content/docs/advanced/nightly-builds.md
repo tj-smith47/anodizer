@@ -103,6 +103,12 @@ Run nightly builds on a schedule:
 on:
   schedule:
     - cron: "0 2 * * *"    # 2 AM UTC daily
+  workflow_dispatch: {}    # also allow on-demand nightly runs
+
+permissions:
+  contents: write          # create/replace the rolling `nightly` release + tag
+  id-token: write          # keyless cosign signing via Fulcio/OIDC
+  attestations: write      # mint SLSA build provenance
 
 jobs:
   nightly:
@@ -120,3 +126,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
+
+anodizer dogfoods this on its own repo with a `workflow_dispatch`-only
+[`nightly.yml`](https://github.com/tj-smith47/anodizer/blob/v0.12.3/.github/workflows/nightly.yml)
+(`from-branch: master`, schedule withheld pending a target-coverage decision),
+while cfgd runs the full scheduled form above.
