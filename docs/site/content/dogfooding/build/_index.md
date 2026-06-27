@@ -104,7 +104,7 @@ sboms:
 |---|---|---|
 | `tar.gz` | ✅ Verified | [`anodizer-0.1.1-linux-amd64.tar.gz`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer-0.1.1-linux-amd64.tar.gz) |
 | `zip` | ✅ Verified | [`anodizer-0.1.1-windows-amd64.zip`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer-0.1.1-windows-amd64.zip) |
-| `tar.xz`, `tar.zst`, `tgz` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (second `archives[]` entry with `formats: [tar.xz, tar.zst]` + `tgz` override). TODO: link a live asset once v0.2.0 ships |
+| `tar.xz`, `tar.zst`, `tgz` | ✅ Verified | [`anodizer-0.12.3-linux-amd64-extra.tar.xz`](https://github.com/tj-smith47/anodizer/releases/download/v0.12.3/anodizer-0.12.3-linux-amd64-extra.tar.xz), [`anodizer-0.12.3-linux-amd64-extra.tar.zst`](https://github.com/tj-smith47/anodizer/releases/download/v0.12.3/anodizer-0.12.3-linux-amd64-extra.tar.zst), [`anodizer-0.12.3-windows-amd64-extra.tgz`](https://github.com/tj-smith47/anodizer/releases/download/v0.12.3/anodizer-0.12.3-windows-amd64-extra.tgz) (second `archives[]` entry with `formats: [tar.xz, tar.zst]` + `tgz` override) |
 | `source.format` | ✅ Verified | [`anodizer-0.1.1-source.tar.gz`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer-0.1.1-source.tar.gz) |
 | `makeselfs[]` | ✅ Verified | [`anodizer-0.1.1-linux-amd64-installer.run`](https://github.com/tj-smith47/anodizer/releases/download/v0.1.1/anodizer-0.1.1-linux-amd64-installer.run) (4 platforms) |
 
@@ -137,17 +137,19 @@ Windows host in the build matrix. Anodizer's own dogfood config wires all five
 ([`anodizer .anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml),
 `app_bundles:` / `dmgs:` / `pkgs:` / `msis:` / `nsis:` blocks), built unsigned
 in CI. Code-signing and notarization still require the platform's own
-credentials; the bundles themselves do not. Live release assets land with
-v0.10.0 — until then these are `🟡 In progress` (config wired + CI-built,
-no public release asset yet).
+credentials; the bundles themselves do not. As of
+[v0.12.3](https://github.com/tj-smith47/anodizer/releases/tag/v0.12.3) all five
+ship as live release assets (amd64 + arm64). The `.AppImage` row below is the
+sole remaining `🟡 In progress` format — its block is wired and CI-built, but no
+public release asset has landed yet.
 
 | Format | Status | Built on Linux via |
 |---|---|---|
-| `.app` bundle | 🟡 In progress | in-process directory + `Info.plist` assembly (no external tool); [`app_bundles:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml). See [app-bundle docs](../../../docs/packages/app-bundles/) |
-| `.dmg` | 🟡 In progress | `genisoimage` / `mkisofs`; [`dmgs:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml). See [dmg docs](../../../docs/packages/dmg/) |
-| `.pkg` | 🟡 In progress | flat XAR toolchain (`xar` + `mkbom`), byte-reproducible TOC; [`pkgs:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml). See [pkg docs](../../../docs/packages/pkg/) |
-| `.msi` | 🟡 In progress | `wixl` (msitools); [`msis:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml). See [msi docs](../../../docs/packages/msi/) |
-| `.exe` (NSIS) | 🟡 In progress | `makensis`; [`nsis:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml). See [nsis docs](../../../docs/packages/nsis/) |
+| `.app` bundle | ✅ Verified | [`anodizer_amd64.dmg`](https://github.com/tj-smith47/anodizer/releases/download/v0.12.3/anodizer_amd64.dmg) ships the bundle (in-process directory + `Info.plist` assembly, no external tool); [`app_bundles:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml). See [app-bundle docs](../../../docs/packages/app-bundles/) |
+| `.dmg` | ✅ Verified | [`anodizer_amd64.dmg`](https://github.com/tj-smith47/anodizer/releases/download/v0.12.3/anodizer_amd64.dmg) + [`anodizer_arm64.dmg`](https://github.com/tj-smith47/anodizer/releases/download/v0.12.3/anodizer_arm64.dmg) via `genisoimage` / `mkisofs`; [`dmgs:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml). See [dmg docs](../../../docs/packages/dmg/) |
+| `.pkg` | ✅ Verified | [`anodizer_amd64.pkg`](https://github.com/tj-smith47/anodizer/releases/download/v0.12.3/anodizer_amd64.pkg) + [`anodizer_arm64.pkg`](https://github.com/tj-smith47/anodizer/releases/download/v0.12.3/anodizer_arm64.pkg) via flat XAR toolchain (`xar` + `mkbom`), byte-reproducible TOC; [`pkgs:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml). See [pkg docs](../../../docs/packages/pkg/) |
+| `.msi` | ✅ Verified | [`anodizer_amd64.msi`](https://github.com/tj-smith47/anodizer/releases/download/v0.12.3/anodizer_amd64.msi) + [`anodizer_arm64.msi`](https://github.com/tj-smith47/anodizer/releases/download/v0.12.3/anodizer_arm64.msi) via `wixl` (msitools); [`msis:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml). See [msi docs](../../../docs/packages/msi/) |
+| `.exe` (NSIS) | ✅ Verified | [`anodizer_x64-setup.exe`](https://github.com/tj-smith47/anodizer/releases/download/v0.12.3/anodizer_x64-setup.exe) + [`anodizer_arm64-setup.exe`](https://github.com/tj-smith47/anodizer/releases/download/v0.12.3/anodizer_arm64-setup.exe) via `makensis`; [`nsis:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml). See [nsis docs](../../../docs/packages/nsis/) |
 | `.AppImage` | 🟡 In progress | `linuxdeploy` with optional zsync update metadata; [`appimages:`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml). See [appimage docs](../../../docs/packages/appimage/) |
 
 | Key | Status | Notes |
