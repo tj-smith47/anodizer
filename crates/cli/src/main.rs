@@ -622,6 +622,24 @@ fn run() {
                 config_override: cli.config.clone(),
             })
         }
+        Commands::Vocabulary { json } => {
+            commands::vocabulary::run(commands::vocabulary::VocabularyOpts { json })
+        }
+        Commands::Tools {
+            json,
+            publish_only,
+            skip,
+            publishers,
+        } => commands::tools::run(commands::tools::ToolsOpts {
+            config_override: cli.config.clone(),
+            json,
+            publish_only,
+            skip,
+            publishers,
+            quiet: cli.quiet,
+            verbose: cli.verbose,
+            debug: cli.debug,
+        }),
         Commands::ResolveTag { tag, json } => {
             commands::resolve_tag::run(commands::resolve_tag::ResolveTagOpts {
                 tag,

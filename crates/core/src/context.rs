@@ -106,6 +106,55 @@ pub static VALID_RELEASE_SKIPS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
         .collect()
 });
 
+/// One entry in anodizer's canonical `--skip` / `--publishers` vocabulary,
+/// emitted by `anodizer vocabulary` for machine consumers (the GitHub Action
+/// derives its skip / publisher token sets from this instead of re-deriving
+/// them in shell).
+///
+/// `is_publisher` marks the publisher tokens (the half of the vocabulary that
+/// `--publishers` also accepts); `is_publish_stage` mirrors
+/// [`PublisherKind::is_publish_stage`] for those, and is always `false` for
+/// the non-publisher pipeline-stage tokens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct ReleaseToken {
+    /// The canonical lowercase token, exactly as `--skip` / `--publishers`
+    /// key on it (e.g. `homebrew`, never `homebrew-cask`; `uploads`, never
+    /// `upload`).
+    pub token: &'static str,
+    /// `true` for the publisher half of the vocabulary — the tokens
+    /// `--publishers` also accepts. `false` for non-publisher stage tokens.
+    pub is_publisher: bool,
+    /// `true` when this is a publisher that fires its publish from a pipeline
+    /// stage rather than the trait-dispatch chokepoint (see
+    /// [`PublisherKind::is_publish_stage`]). Always `false` for non-publisher
+    /// stage tokens.
+    pub is_publish_stage: bool,
+}
+
+/// The full canonical `--skip` / `--publishers` vocabulary as structured
+/// entries, derived entirely from [`NON_PUBLISHER_RELEASE_SKIPS`] and
+/// [`PublisherKind::iter`] — no hand-maintained list. Adding a publisher
+/// variant or a non-publisher stage token updates this automatically.
+///
+/// The set of [`ReleaseToken::token`] values equals [`VALID_RELEASE_SKIPS`]
+/// exactly (enforced by a by-construction test), so anodizer and its
+/// consumers can never disagree on the legal token set.
+pub fn release_skip_vocabulary() -> Vec<ReleaseToken> {
+    NON_PUBLISHER_RELEASE_SKIPS
+        .iter()
+        .map(|&token| ReleaseToken {
+            token,
+            is_publisher: false,
+            is_publish_stage: false,
+        })
+        .chain(PublisherKind::iter().map(|k| ReleaseToken {
+            token: k.token(),
+            is_publisher: true,
+            is_publish_stage: k.is_publish_stage(),
+        }))
+        .collect()
+}
+
 /// Valid --skip values for the `build` command.
 pub const VALID_BUILD_SKIPS: &[&str] = &["pre-hooks", "post-hooks", "validate", "before"];
 
@@ -1600,6 +1649,60 @@ mod tests {
                 !publisher_tokens.contains(stage),
                 "`{stage}` is listed in NON_PUBLISHER_RELEASE_SKIPS but is also a publisher token"
             );
+        }
+    }
+
+    /// By construction: the token set `anodizer vocabulary` emits equals
+    /// [`VALID_RELEASE_SKIPS`] exactly — same members, no duplicates. Both are
+    /// derived from the same SSOT ([`NON_PUBLISHER_RELEASE_SKIPS`] ∪
+    /// [`PublisherKind::iter`]), so a newly added publisher or stage token
+    /// flows into both at once; this pins that they can never diverge.
+    #[test]
+    fn release_skip_vocabulary_token_set_equals_valid_release_skips() {
+        let vocab = release_skip_vocabulary();
+        let emitted: BTreeSet<&str> = vocab.iter().map(|t| t.token).collect();
+        let valid: BTreeSet<&str> = VALID_RELEASE_SKIPS.iter().copied().collect();
+        assert_eq!(
+            emitted, valid,
+            "`anodizer vocabulary` token set drifted from VALID_RELEASE_SKIPS"
+        );
+        assert_eq!(
+            vocab.len(),
+            emitted.len(),
+            "release_skip_vocabulary emitted a duplicate token"
+        );
+    }
+
+    /// Each vocabulary entry classifies itself consistently with the SSOT:
+    /// publisher entries carry [`PublisherKind::is_publish_stage`]; the
+    /// non-publisher stage tokens are never marked as publishers or publish
+    /// stages.
+    #[test]
+    fn release_skip_vocabulary_flags_match_publisher_kind() {
+        let vocab = release_skip_vocabulary();
+        for entry in &vocab {
+            if entry.is_publisher {
+                let kind = PublisherKind::iter()
+                    .find(|k| k.token() == entry.token)
+                    .unwrap_or_else(|| panic!("publisher entry `{}` has no kind", entry.token));
+                assert_eq!(
+                    entry.is_publish_stage,
+                    kind.is_publish_stage(),
+                    "is_publish_stage for `{}` drifted from PublisherKind",
+                    entry.token
+                );
+            } else {
+                assert!(
+                    !entry.is_publish_stage,
+                    "non-publisher token `{}` must not be a publish stage",
+                    entry.token
+                );
+                assert!(
+                    NON_PUBLISHER_RELEASE_SKIPS.contains(&entry.token),
+                    "non-publisher entry `{}` is not in NON_PUBLISHER_RELEASE_SKIPS",
+                    entry.token
+                );
+            }
         }
     }
 

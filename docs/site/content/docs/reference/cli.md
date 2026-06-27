@@ -221,6 +221,29 @@ Emit the configured build targets as a GitHub Actions matrix
 | `--crate` | — | — | Restrict to specific crate(s) |
 
 
+### `anodizer vocabulary`
+
+Emit the canonical `--skip` / `--publishers` token vocabulary
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--json` | — | — | Output as JSON |
+
+
+### `anodizer tools`
+
+Emit the external CLI tools the resolved config's pipeline will invoke
+
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--json` | — | — | Output as JSON |
+| `--publish-only` | — | — | Only the tools the publish-time surface needs (the stages `release --publish-only` runs), not artifact-producing stages |
+| `--skip` | — | — | Drop tools contributed by these skipped stages (comma-separated, same names as release --skip) |
+| `--publishers` | — | — | Comma-separated publishers to run (default: all configured). --skip always wins over --publishers. |
+
+
 ### `anodizer tag`
 
 Auto-tag based on commit message directives

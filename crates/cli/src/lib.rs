@@ -447,6 +447,40 @@ pub enum Commands {
         #[arg(long = "crate", action = clap::ArgAction::Append, help = "Restrict to specific crate(s)")]
         crate_names: Vec<String>,
     },
+    /// Emit the canonical `--skip` / `--publishers` token vocabulary.
+    ///
+    /// Lists every legal `--skip` / `--publishers` token, each tagged with
+    /// `is_publisher` / `is_publish_stage`, derived from anodizer's publisher
+    /// registry (no hand-maintained list). Consumed by `anodizer-action` so it
+    /// emits only canonical tokens (e.g. `homebrew`, not `homebrew-cask`)
+    /// instead of re-deriving them in shell.
+    Vocabulary {
+        #[arg(long, help = "Output as JSON")]
+        json: bool,
+    },
+    /// Emit the external CLI tools the resolved config's pipeline will invoke.
+    ///
+    /// Derives the tool set from the same per-stage / per-publisher
+    /// requirements the preflight engine checks, so it tracks the config
+    /// exactly. Consumed by `anodizer-action` to decide what to install on a
+    /// runner instead of grepping the config in shell.
+    Tools {
+        #[arg(long, help = "Output as JSON")]
+        json: bool,
+        #[arg(
+            long,
+            help = "Only the tools the publish-time surface needs (the stages `release --publish-only` runs), not artifact-producing stages"
+        )]
+        publish_only: bool,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Drop tools contributed by these skipped stages (comma-separated, same names as release --skip)"
+        )]
+        skip: Vec<String>,
+        #[arg(long = "publishers", value_delimiter = ',', help = PUBLISHERS_HELP_STEM)]
+        publishers: Vec<String>,
+    },
     /// Auto-tag based on commit message directives
     Tag {
         #[arg(long, help = "Show what tag would be created without pushing")]

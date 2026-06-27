@@ -18,4 +18,6 @@ pub mod release;
 pub mod resolve_tag;
 pub mod tag;
 pub mod targets;
+pub mod tools;
 pub mod version_files_resolve;
+pub mod vocabulary;
