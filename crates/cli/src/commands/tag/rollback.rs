@@ -1298,7 +1298,7 @@ mod tests {
     }
 
     /// Fixture repo with a GitHub-shaped origin so
-    /// `detect_github_repo_in` resolves owner/repo without a network.
+    /// `resolve_repo_slug_in` resolves owner/repo without a network.
     fn init_github_origin_repo(dir: &Path) {
         let _ = init_bump_repo(dir, 0);
         run_git(

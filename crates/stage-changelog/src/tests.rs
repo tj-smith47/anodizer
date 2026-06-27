@@ -3234,7 +3234,7 @@ fn test_changelog_stage_github_no_prev_tag_uses_git_fallback() {
             ..Default::default()
         }])
         // No token — if the API path were taken, fetch_github_commits
-        // would attempt detect_github_repo() → likely fail, then
+        // would attempt resolve_repo_slug() → likely fail, then
         // strict_guard would log + fall back. Our pre-empt skips that
         // entire branch.
         .dry_run(true)

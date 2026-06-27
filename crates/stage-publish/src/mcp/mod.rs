@@ -458,9 +458,9 @@ fn mcp_owning_crate_name(ctx: &Context) -> Option<&str> {
 /// gap, and a user-set `repository.source` is likewise preserved.
 ///
 /// The git-remote fallback is GitHub-only by construction: a self-hosted or
-/// non-GitHub `origin` never matches [`parse_github_remote`], so the
-/// `repository` object stays user-supplied rather than being force-derived
-/// with a wrong `source`.
+/// non-GitHub `origin` never resolves to a GitHub slug via
+/// `resolve_github_slug`, so the `repository` object stays user-supplied
+/// rather than being force-derived with a wrong `source`.
 fn infer_repository_from_release(ctx: &Context, mcp: &mut McpConfig) {
     if !mcp.repository.url.is_empty() {
         return;

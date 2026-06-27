@@ -614,7 +614,7 @@ mod tests {
     fn config_with_empty_release_block() -> Config {
         // An empty github block forces resolve_milestone_repo to return ("", "")
         // via the preferred-token-type branch, exercising the unresolvable-repo
-        // path without needing to mock `git::detect_owner_repo`.
+        // path without needing to mock `git::resolve_repo_slug`.
         Config {
             crates: vec![CrateConfig {
                 release: Some(ReleaseConfig {

@@ -210,7 +210,7 @@ mod tests {
     }
 
     /// Spin up a temp git repo with origin set to a fixed GitHub remote so
-    /// `detect_github_repo()` resolves to ("myorg", "myrepo"). Returns the
+    /// `resolve_repo_slug()` resolves to ("myorg", "myrepo"). Returns the
     /// tempdir handle so the caller keeps it alive for the duration of the
     /// test.
     fn temp_github_repo() -> tempfile::TempDir {

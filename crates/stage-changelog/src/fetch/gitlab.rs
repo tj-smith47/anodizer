@@ -179,7 +179,7 @@ mod tests {
     use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 
     /// Create a temp git repo with a remote pointing at the given URL so
-    /// `detect_owner_repo()` (which calls `git remote get-url origin`)
+    /// `resolve_repo_slug()` (which calls `git remote get-url origin`)
     /// returns ("myorg", "myrepo"). Returns the tempdir handle so the
     /// caller can keep it alive.
     fn temp_git_repo_with_remote(remote_url: &str) -> tempfile::TempDir {
@@ -250,7 +250,7 @@ mod tests {
             ..Default::default()
         };
 
-        // Fake git repo so detect_owner_repo() returns ("myorg", "myrepo").
+        // Fake git repo so resolve_repo_slug() returns ("myorg", "myrepo").
         // CwdGuard restores cwd on drop so test parallelism isn't affected
         // beyond the brief git-init window.
         let repo_dir = temp_git_repo_with_remote("git@gitlab.example.com:myorg/myrepo.git");

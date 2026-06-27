@@ -180,7 +180,7 @@ mod tests {
     use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
 
     /// Create a temp git repo with a remote pointing at the given URL so
-    /// `detect_owner_repo()` returns the parsed owner/repo. Returns the
+    /// `resolve_repo_slug()` returns the parsed owner/repo. Returns the
     /// tempdir handle so the caller can keep it alive.
     fn temp_git_repo_with_remote(remote_url: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("tempdir");

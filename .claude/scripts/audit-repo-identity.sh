@@ -28,9 +28,11 @@
 # enforcement is type-level (private fields + crate-private detectors). It
 # exists as a grep backstop; wire it into `task lint` in a later batch.
 #
-# Comment lines and `crates/*/tests/**` are exempt. A genuinely legitimate
-# site tags the line with `// slug-ok: <why>` (class A) or
-# `// token-ok: <why>` (class B).
+# Comment lines, `crates/*/tests/**` integration tests, and unit-test module
+# files (`*/tests.rs`) are exempt — test scaffolding routinely reads the raw
+# env to save/restore it around a case, which is not production resolution. A
+# genuinely legitimate production site tags the line with `// slug-ok: <why>`
+# (class A) or `// token-ok: <why>` (class B).
 set -euo pipefail
 
 ROOT="${1:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
@@ -45,7 +47,7 @@ slug_hits="$(
         | grep -v -E '^[^:]+:[0-9]+:[[:space:]]*//' \
         | grep -v -E '^crates/core/src/git/' \
         | grep -v -E ':[0-9]+:.*//[[:space:]]*slug-ok:' \
-        | grep -v -E '/tests/' \
+        | grep -v -E '/tests/|(^|/)tests\.rs:' \
         || true
 )"
 if [[ -n "$slug_hits" ]]; then
@@ -64,12 +66,12 @@ fi
 
 # --- Class B: hand-rolled GitHub token env reads outside the resolver -------
 token_hits="$(
-    grep -rnE '\.(var|env_var)\(\s*"(ANODIZER_GITHUB_TOKEN|GITHUB_TOKEN)"' \
+    grep -rnE '(\.|::)(var|env_var)\(\s*"(ANODIZER_GITHUB_TOKEN|GITHUB_TOKEN)"' \
         crates --include='*.rs' 2>/dev/null \
         | grep -v -E '^[^:]+:[0-9]+:[[:space:]]*//' \
         | grep -v -E '^crates/core/src/git/github_api.rs:' \
         | grep -v -E ':[0-9]+:.*//[[:space:]]*token-ok:' \
-        | grep -v -E '/tests/' \
+        | grep -v -E '/tests/|(^|/)tests\.rs:' \
         || true
 )"
 if [[ -n "$token_hits" ]]; then
