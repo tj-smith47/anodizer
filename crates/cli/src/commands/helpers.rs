@@ -3226,13 +3226,12 @@ list:
             .success(),
             "git init must succeed",
         );
-        let orig = std::env::current_dir().unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
-        std::env::set_current_dir(orig).unwrap();
-        if let Err(p) = result {
-            std::panic::resume_unwind(p);
-        }
+        // The shared CwdGuard swaps into `tmp` and restores the original cwd on
+        // Drop — panic-safe, so a panicking `body` still restores. Declared
+        // after `tmp` so the guard drops (restores cwd) before the tempdir is
+        // deleted.
+        let _cwd = anodizer_core::test_helpers::CwdGuard::new(tmp.path()).unwrap();
+        body();
     }
 
     /// Like [`with_empty_git_repo_cwd`] but seeds a committed, tagged HEAD and
@@ -3268,13 +3267,10 @@ list:
         // Leave the tree dirty: an unstaged edit on the tagged commit.
         std::fs::write(dir.join("f.txt"), "v2\n").unwrap();
 
-        let orig = std::env::current_dir().unwrap();
-        std::env::set_current_dir(dir).unwrap();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
-        std::env::set_current_dir(orig).unwrap();
-        if let Err(p) = result {
-            std::panic::resume_unwind(p);
-        }
+        // Swap into the tagged-dirty repo; CwdGuard restores on Drop. `dir`
+        // borrows `tmp`, declared first, so it outlives the guard's restore.
+        let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
+        body();
     }
 
     /// Build a context backed by an EMPTY env source so the tag-discovery env

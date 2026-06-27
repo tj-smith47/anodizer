@@ -48,14 +48,19 @@ use std::process::Command;
 /// restored when the guard unwinds — preventing one test's failure from
 /// contaminating subsequent tests in the same process.
 ///
-/// Pair with `#[serial]` (from the `serial_test` crate) when multiple tests
-/// in a file mutate cwd, since changing cwd is a process-wide side effect.
-/// The whole crate's cwd-touching tests must share ONE serial key so they
-/// mutually exclude: process-global cwd is also read by tests that spawn a
-/// cwd-sensitive subprocess (e.g. `rustc -vV` in `partial.rs`), which inherit
-/// the cwd and fail spuriously if a concurrent test moved it. Use the default
-/// (unnamed) `#[serial]` key everywhere — a distinct keyed group would run in
-/// parallel and reopen the race.
+/// Pair with `serial_test` whenever more than one test in the same test
+/// binary touches cwd, since changing cwd is a process-wide side effect.
+/// Within ONE test binary, *every* cwd-touching test — a swapper like this
+/// guard, or a test that spawns a cwd-sensitive subprocess (e.g. `rustc -vV`
+/// in `partial.rs`) — must share a SINGLE serial key. If two cwd swappers land
+/// in different serial groups they run concurrently and one captures the
+/// other's soon-to-be-deleted tempdir as its restore target, so the restore
+/// fails `NotFound`. The workspace-canonical key is
+/// `#[serial_test::serial(cwd)]`; a binary whose cwd tests already co-vary with
+/// PATH/env under a broader unnamed `#[serial]` (e.g. the `FakeToolDir` tests
+/// in `stage-notarize`) keeps that one key for all of them. The rule is
+/// one-key-per-binary, enforced for raw `set_current_dir` call sites by
+/// `.claude/scripts/audit-test-isolation.sh`.
 ///
 /// # Example
 ///
@@ -63,7 +68,7 @@ use std::process::Command;
 /// use anodizer_core::test_helpers::CwdGuard;
 ///
 /// #[test]
-/// #[serial]
+/// #[serial_test::serial(cwd)]
 /// fn my_test() {
 ///     let tmp = tempfile::tempdir().unwrap();
 ///     let _guard = CwdGuard::new(tmp.path()).unwrap();
@@ -80,7 +85,7 @@ impl CwdGuard {
     /// the original cwd is restored when the guard is dropped.
     pub fn new(target: impl AsRef<Path>) -> std::io::Result<Self> {
         let original = std::env::current_dir()?;
-        std::env::set_current_dir(target.as_ref())?;
+        std::env::set_current_dir(target.as_ref())?; // cwd-ok: blessed CwdGuard swap; users serialise via #[serial(cwd)]
         Ok(Self { original })
     }
 }
@@ -88,7 +93,7 @@ impl CwdGuard {
 impl Drop for CwdGuard {
     fn drop(&mut self) {
         // Best-effort: ignore the error during unwind so we never double-panic.
-        let _ = std::env::set_current_dir(&self.original);
+        let _ = std::env::set_current_dir(&self.original); // cwd-ok: RAII restore in the blessed CwdGuard
     }
 }
 

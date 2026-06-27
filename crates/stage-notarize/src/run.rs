@@ -827,10 +827,12 @@ mod tests {
         // No-op sleeper so the exponential backoff doesn't stall the suite.
         let nap = |_: std::time::Duration| {};
         // Run from `work` so the `.attempted` marker lands in a temp dir.
-        let prev = std::env::current_dir().unwrap();
-        std::env::set_current_dir(work.path()).unwrap();
+        // CwdGuard restores cwd on Drop (panic-safe); declared after `work` so
+        // cwd is restored before the tempdir is deleted. Stays on this binary's
+        // unnamed #[serial] group — its FakeToolDir siblings already mutually
+        // exclude on shared process state, of which cwd is one facet.
+        let _cwd = anodizer_core::test_helpers::CwdGuard::new(work.path()).unwrap();
         let res = run_with_retry(&args, "rcodesign notary-submit", &logger(), &nap);
-        std::env::set_current_dir(prev).unwrap();
 
         let out = res.unwrap();
         assert!(out.status.success(), "second attempt should succeed");

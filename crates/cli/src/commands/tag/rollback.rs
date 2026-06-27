@@ -962,12 +962,13 @@ mod tests {
         }
     }
 
-    /// Process-wide cwd swap. Marked `serial` to match the surrounding
-    /// cwd-swapping tests so they don't race.
+    /// Process-wide cwd swap. Marked `serial(cwd)` — the workspace-canonical
+    /// cwd serial group — so these swappers mutually exclude with every other
+    /// cwd-touching test in this binary (e.g. `helpers::resolve_git_context`).
     use serial_test::serial;
 
     #[test]
-    #[serial]
+    #[serial(cwd)]
     fn safety_check_fires_when_non_bump_commits_sit_on_top() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
@@ -987,7 +988,7 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(cwd)]
     fn safety_check_passes_against_clean_head_at_bump_commit() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
@@ -1008,7 +1009,7 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(cwd)]
     fn dry_run_makes_no_mutations() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
@@ -1057,7 +1058,7 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(cwd)]
     fn no_push_skips_remote_ops_but_does_local_revert() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
@@ -1097,7 +1098,7 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(cwd)]
     fn skips_tags_not_matching_anodize_shape() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path();
@@ -1446,7 +1447,7 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(cwd)]
     #[cfg(unix)]
     fn run_refuses_rollback_when_release_is_published() {
         // End-to-end through `run_with_gh`: the stub `gh` reports a
@@ -1471,7 +1472,7 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial(cwd)]
     #[cfg(unix)]
     fn run_force_bypasses_published_release_guard() {
         // Same fixture, but --force: the guard is skipped (the stub gh

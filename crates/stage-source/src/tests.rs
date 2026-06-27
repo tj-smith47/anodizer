@@ -608,11 +608,12 @@ fn test_stage_dry_run_does_not_create_files() {
 ///
 /// Here we point the process cwd at a directory that is NOT a git repo
 /// (`/`) and prove the stage still resolves the workspace via the
-/// explicit `project_root`. The test is `#[serial]` because it mutates
-/// the process-wide cwd; if any other cwd-sensitive test joins this crate
-/// the runner will keep them mutually exclusive.
+/// explicit `project_root`. The test is `#[serial(cwd)]` (the
+/// workspace-canonical cwd serial group) because it mutates the
+/// process-wide cwd; any other cwd-touching test joining this crate must
+/// share that key so the runner keeps them mutually exclusive.
 #[test]
-#[serial_test::serial]
+#[serial_test::serial(cwd)]
 fn test_stage_run_does_not_depend_on_cwd() {
     use anodizer_core::config::{SbomConfig, SourceConfig};
     use anodizer_core::test_helpers::{create_test_project, init_git_repo};
@@ -653,19 +654,14 @@ fn test_stage_run_does_not_depend_on_cwd() {
         ..Default::default()
     }];
 
-    // Stash the real cwd, then point cwd at a directory that is not a git
-    // repo. `/` is non-traversable for `git rev-parse --show-toplevel`,
-    // mirroring the macOS-CI failure shape. Restore at end-of-test so the
-    // test harness's own pre/post teardown still sees a sane cwd.
-    let saved = std::env::current_dir().ok();
-    std::env::set_current_dir("/").expect("cwd to / must succeed in tests");
+    // Point the process cwd at a directory that is not a git repo. `/` is
+    // non-traversable for `git rev-parse --show-toplevel`, mirroring the
+    // macOS-CI failure shape. CwdGuard restores the real cwd on Drop —
+    // panic-safe, so a failed assertion below never strands the process cwd.
+    let _cwd =
+        anodizer_core::test_helpers::CwdGuard::new("/").expect("cwd to / must succeed in tests");
 
     let result = SourceStage.run(&mut ctx);
-
-    // Restore before asserting so a failed assertion does not strand cwd.
-    if let Some(prev) = saved {
-        let _ = std::env::set_current_dir(prev);
-    }
 
     result.unwrap_or_else(|e| panic!("stage must succeed regardless of cwd: {e}"));
     let artifacts = ctx.artifacts.all();

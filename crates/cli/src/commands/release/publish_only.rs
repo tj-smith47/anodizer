@@ -2885,7 +2885,7 @@ mod tests {
         /// empty repo makes the lookup return an error fast — caught and
         /// logged by `apply_per_crate_tag`, leaving `Tag` (the thing under
         /// test) untouched. Process-wide cwd swap, so callers must be
-        /// `#[serial]`.
+        /// `#[serial(cwd)]` (the workspace-canonical cwd serial group).
         fn with_hermetic_git_cwd(body: impl FnOnce()) {
             let tmp = tempfile::tempdir().unwrap();
             assert!(
@@ -2901,13 +2901,11 @@ mod tests {
                 .success(),
                 "git init must succeed for the hermetic tag-test repo",
             );
-            let orig = std::env::current_dir().unwrap();
-            std::env::set_current_dir(tmp.path()).unwrap();
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
-            std::env::set_current_dir(orig).unwrap();
-            if let Err(payload) = result {
-                std::panic::resume_unwind(payload);
-            }
+            // The shared CwdGuard swaps into `tmp` and restores cwd on Drop
+            // (panic-safe). Declared after `tmp` so cwd is restored before the
+            // tempdir is deleted.
+            let _cwd = anodizer_core::test_helpers::CwdGuard::new(tmp.path()).unwrap();
+            body();
         }
 
         fn crate_cfg(name: &str, tag_template: &str) -> CrateConfig {
@@ -2935,7 +2933,7 @@ mod tests {
         /// restore, both inherit whichever tag `resolve_git_context`
         /// pinned once at HEAD.
         #[test]
-        #[serial]
+        #[serial(cwd)]
         fn restores_per_crate_tag_from_tag_template() {
             with_hermetic_git_cwd(|| {
                 for (crate_name, tag_template, expect_tag) in [
@@ -2993,7 +2991,7 @@ mod tests {
         /// `apply_per_crate_version` re-anchor, both render against the
         /// global `0.4.0` and the wrong crate gets a mis-tagged release.
         #[test]
-        #[serial]
+        #[serial(cwd)]
         fn independent_version_workspace_renders_per_crate_version() {
             with_hermetic_git_cwd(|| {
                 let tmp = tempfile::tempdir().unwrap();
@@ -3186,7 +3184,7 @@ mod tests {
         /// original config rather than the overlaid one). The lookup
         /// must fall back to the workspace list.
         #[test]
-        #[serial]
+        #[serial(cwd)]
         fn finds_tag_template_in_workspace_fallback() {
             with_hermetic_git_cwd(|| {
                 let config = Config {
