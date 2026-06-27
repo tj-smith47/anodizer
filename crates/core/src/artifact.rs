@@ -921,6 +921,51 @@ pub fn ids_filter_eliminated_all(
     post_filter == 0 && pre_filter > 0 && ids.is_some_and(|i| !i.is_empty())
 }
 
+/// `true` when `artifact` should be KEPT for an upload destination — i.e. NO
+/// `exclude:` glob matches its file name. Globs match `artifact.name` (the
+/// asset filename), so `["*.sha256", "*.sig", "*.cdx.json"]` keeps heavy
+/// checksum / signature / SBOM sidecars off a mirror while archives still
+/// upload. A `None`/empty list keeps everything.
+///
+/// An unparseable glob is treated as "does not match" (it is skipped, never
+/// crashing a release). Surface malformed globs at config-validation time
+/// (see `validate_exclude_globs`) so a typo is rejected before it can silently
+/// drop assets.
+pub fn passes_exclude_filter(artifact: &Artifact, exclude: Option<&[String]>) -> bool {
+    name_passes_exclude_filter(artifact.name(), exclude)
+}
+
+/// Name-level companion to [`passes_exclude_filter`]: `true` when `name` is
+/// kept (no `exclude:` glob matches it). Lets call sites that hold only a
+/// resolved asset name (e.g. config-derived signature/SBOM expectations in the
+/// `verify-release` gate) apply the SAME exclude semantics the upload path
+/// uses, so an intentionally-excluded sidecar is not reported as missing.
+/// An unparseable glob is skipped (treated as non-matching); a `None`/empty
+/// list keeps everything.
+pub fn name_passes_exclude_filter(name: &str, exclude: Option<&[String]>) -> bool {
+    let Some(globs) = exclude else { return true };
+    if globs.is_empty() {
+        return true;
+    }
+    !globs.iter().any(|g| {
+        glob::Pattern::new(g)
+            .map(|pat| pat.matches(name))
+            .unwrap_or(false)
+    })
+}
+
+/// `true` when a non-empty `exclude:` filter reduced a non-empty candidate set
+/// to zero — the signal for stages to warn that the FILTER (not the artifact
+/// set) is why a destination would upload nothing. Without the warning a
+/// typo'd glob (e.g. `*` instead of `*.sig`) silently drops every asset.
+pub fn exclude_filter_eliminated_all(
+    exclude: Option<&[String]>,
+    pre_filter: usize,
+    post_filter: usize,
+) -> bool {
+    post_filter == 0 && pre_filter > 0 && exclude.is_some_and(|e| !e.is_empty())
+}
+
 /// Format a byte count into a human-readable string (e.g. "4.2 MB").
 pub fn format_size(bytes: u64) -> String {
     const KB: f64 = 1024.0;
@@ -1137,6 +1182,111 @@ mod tests {
                 .collect(),
             size: None,
         }
+    }
+
+    fn named(name: &str) -> Artifact {
+        Artifact {
+            kind: ArtifactKind::Archive,
+            name: name.to_string(),
+            path: PathBuf::from(name),
+            target: None,
+            crate_name: "app".to_string(),
+            metadata: std::collections::HashMap::new(),
+            size: None,
+        }
+    }
+
+    #[test]
+    fn exclude_none_keeps_everything() {
+        let a = named("app_1.0.0_x86_64.tar.gz");
+        assert!(passes_exclude_filter(&a, None));
+    }
+
+    #[test]
+    fn exclude_empty_keeps_everything() {
+        let a = named("checksums.txt.sig");
+        let globs: Vec<String> = vec![];
+        assert!(passes_exclude_filter(&a, Some(&globs)));
+    }
+
+    #[test]
+    fn exclude_suffix_glob_drops_match_keeps_archive() {
+        let globs = vec!["*.sig".to_string()];
+        assert!(
+            !passes_exclude_filter(&named("checksums.txt.sig"), Some(&globs)),
+            "*.sig must drop the signature sidecar"
+        );
+        assert!(
+            passes_exclude_filter(&named("app_1.0.0_x86_64.tar.gz"), Some(&globs)),
+            "*.sig must keep the archive"
+        );
+    }
+
+    #[test]
+    fn exclude_multi_glob_drops_any_match() {
+        let globs = vec![
+            "*.sha256".to_string(),
+            "*.sig".to_string(),
+            "*.cdx.json".to_string(),
+        ];
+        assert!(!passes_exclude_filter(
+            &named("app.tar.gz.sha256"),
+            Some(&globs)
+        ));
+        assert!(!passes_exclude_filter(
+            &named("app.tar.gz.sig"),
+            Some(&globs)
+        ));
+        assert!(!passes_exclude_filter(&named("app.cdx.json"), Some(&globs)));
+        assert!(passes_exclude_filter(
+            &named("app_1.0.0_x86_64.tar.gz"),
+            Some(&globs)
+        ));
+    }
+
+    #[test]
+    fn exclude_no_match_keeps_artifact() {
+        let globs = vec!["*.sig".to_string(), "*.deb".to_string()];
+        assert!(passes_exclude_filter(
+            &named("app_1.0.0_x86_64.tar.gz"),
+            Some(&globs)
+        ));
+    }
+
+    #[test]
+    fn exclude_invalid_glob_is_ignored_not_panic() {
+        // An unparseable pattern (unclosed `[`) must NOT crash the release and
+        // must NOT match — it is skipped, so the artifact is kept.
+        let globs = vec!["[".to_string()];
+        assert!(
+            passes_exclude_filter(&named("app.tar.gz"), Some(&globs)),
+            "an invalid glob is skipped (treated as non-matching), keeping the artifact"
+        );
+    }
+
+    #[test]
+    fn exclude_invalid_glob_alongside_valid_still_filters() {
+        // A valid glob in the same list still does its job even when a sibling
+        // glob is malformed.
+        let globs = vec!["[".to_string(), "*.sig".to_string()];
+        assert!(!passes_exclude_filter(&named("a.sig"), Some(&globs)));
+        assert!(passes_exclude_filter(&named("a.tar.gz"), Some(&globs)));
+    }
+
+    #[test]
+    fn exclude_eliminated_all_flags_empty_result() {
+        let globs = vec!["*".to_string()];
+        // Non-empty candidate set reduced to zero by a non-empty exclude.
+        assert!(exclude_filter_eliminated_all(Some(&globs), 5, 0));
+        // Zero result but the candidate set was already empty: not the filter's
+        // fault.
+        assert!(!exclude_filter_eliminated_all(Some(&globs), 0, 0));
+        // Non-zero result: nothing to warn about.
+        assert!(!exclude_filter_eliminated_all(Some(&globs), 5, 3));
+        // No / empty exclude never trips the warning.
+        assert!(!exclude_filter_eliminated_all(None, 5, 0));
+        let empty: Vec<String> = vec![];
+        assert!(!exclude_filter_eliminated_all(Some(&empty), 5, 0));
     }
 
     #[test]

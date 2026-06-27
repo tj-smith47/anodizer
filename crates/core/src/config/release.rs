@@ -74,6 +74,20 @@ pub struct ReleaseConfig {
     /// inherit the verdict of the artifact they derive from — a signature
     /// uploads iff the artifact it signs uploads.
     pub ids: Option<Vec<String>>,
+    /// Glob patterns matched against each release asset's file name; anodizer
+    /// drops any asset whose name matches at least one glob before attaching it
+    /// to THIS GitHub release only (a mirror configured elsewhere is
+    /// unaffected). Use it to keep heavy sidecars (checksums, signatures,
+    /// SBOMs) off the GitHub release while archives still attach. Composes with
+    /// `ids:` (both filters apply). `None`/empty keeps everything.
+    ///
+    /// ```yaml
+    /// release:
+    ///   github: { owner: my-org, name: my-repo }
+    ///   exclude: ["*.sha256", "*.sig", "*.cdx.json"]
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude: Option<Vec<String>>,
     /// Target branch or SHA for the release tag.
     pub target_commitish: Option<String>,
     /// GitHub Discussion category name for the release.

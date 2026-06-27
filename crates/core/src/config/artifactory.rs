@@ -26,6 +26,19 @@ pub struct ArtifactoryConfig {
     pub password: Option<String>,
     /// Build IDs filter: only upload artifacts from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
+    /// Glob patterns matched against each artifact's file name; anodizer drops
+    /// any artifact whose name matches at least one glob from THIS Artifactory
+    /// target only. Use it to keep heavy sidecars (checksums, signatures,
+    /// SBOMs) off a given repository while archives still upload. Composes with
+    /// `ids:` and `exts:` (all filters apply). `None`/empty keeps everything.
+    ///
+    /// ```yaml
+    /// artifactories:
+    ///   - target: "https://repo.example.com/{{ .ProjectName }}/{{ .Tag }}/{{ .ArtifactName }}"
+    ///     exclude: ["*.sha256", "*.sig", "*.cdx.json"]
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude: Option<Vec<String>>,
     /// File extension filter: only upload artifacts matching these extensions.
     pub exts: Option<Vec<String>>,
     /// Path to client X.509 certificate for mTLS authentication.

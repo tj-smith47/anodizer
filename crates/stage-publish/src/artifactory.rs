@@ -73,12 +73,14 @@ pub(crate) struct CollectFlags {
     pub(crate) extra_files_only: bool,
 }
 
-/// Collect artifacts matching mode, optional ID filter, and optional extension filter.
+/// Collect artifacts matching mode, optional ID filter, optional extension
+/// filter, and optional `exclude:` glob filter.
 /// Also collects checksum/signature/metadata artifacts and extra files when configured.
 pub(crate) fn collect_upload_artifacts<'a>(
     ctx: &'a Context,
     mode: &str,
     ids: Option<&[String]>,
+    exclude: Option<&[String]>,
     exts: Option<&[String]>,
     flags: CollectFlags,
 ) -> Vec<&'a Artifact> {
@@ -115,6 +117,11 @@ pub(crate) fn collect_upload_artifacts<'a>(
             }
             // ID filter
             if !crate::util::matches_id_filter(a, ids) {
+                return false;
+            }
+            // `exclude:` glob filter — drop sidecars (checksums/sigs/SBOMs)
+            // the operator keeps off THIS Artifactory target.
+            if !anodizer_core::artifact::passes_exclude_filter(a, exclude) {
                 return false;
             }
             // Extension filter (case-folding via the shared matcher).
@@ -225,12 +232,13 @@ pub(crate) fn collect_upload_artifacts_owned(
     publisher: &str,
     mode: &str,
     ids: Option<&[String]>,
+    exclude: Option<&[String]>,
     exts: Option<&[String]>,
     flags: CollectFlags,
     extra_files: Option<&[anodizer_core::config::ExtraFileSpec]>,
     log: &StageLogger,
 ) -> Result<Vec<Artifact>> {
-    let mut out: Vec<Artifact> = collect_upload_artifacts(ctx, mode, ids, exts, flags)
+    let mut out: Vec<Artifact> = collect_upload_artifacts(ctx, mode, ids, exclude, exts, flags)
         .into_iter()
         .cloned()
         .collect();
@@ -263,23 +271,35 @@ pub(crate) fn collect_upload_artifacts_owned(
 /// already surfaced there. The fallback therefore never hides a publish
 /// failure; it just keeps the rollback DELETE list as complete as the
 /// resolvable inputs allow.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn collect_target_artifacts_best_effort(
     ctx: &Context,
     publisher: &'static str,
     mode: &str,
     ids: Option<&[String]>,
+    exclude: Option<&[String]>,
     exts: Option<&[String]>,
     flags: CollectFlags,
     extra_files: Option<&[anodizer_core::config::ExtraFileSpec]>,
 ) -> Vec<Artifact> {
     let quiet = StageLogger::new(publisher, anodizer_core::log::Verbosity::Quiet);
-    collect_upload_artifacts_owned(ctx, publisher, mode, ids, exts, flags, extra_files, &quiet)
-        .unwrap_or_else(|_| {
-            collect_upload_artifacts(ctx, mode, ids, exts, flags)
-                .into_iter()
-                .cloned()
-                .collect()
-        })
+    collect_upload_artifacts_owned(
+        ctx,
+        publisher,
+        mode,
+        ids,
+        exclude,
+        exts,
+        flags,
+        extra_files,
+        &quiet,
+    )
+    .unwrap_or_else(|_| {
+        collect_upload_artifacts(ctx, mode, ids, exclude, exts, flags)
+            .into_iter()
+            .cloned()
+            .collect()
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -292,7 +312,14 @@ pub fn build_reqwest_client(
     client_key_path: Option<&str>,
     trusted_certs_pem: Option<&str>,
 ) -> Result<reqwest::blocking::Client> {
-    let mut builder = reqwest::blocking::ClientBuilder::new().user_agent("anodizer/1.0");
+    // Bound every request so a stalled Artifactory upload (unreachable host,
+    // hung TLS, a black-holed route mid-PUT) fails fast instead of hanging the
+    // release forever. Matches the 300 s request bound the gitea/gitlab release
+    // backends and the bucket clients already carry.
+    let mut builder = reqwest::blocking::ClientBuilder::new()
+        .user_agent("anodizer/1.0")
+        .timeout(std::time::Duration::from_secs(300))
+        .connect_timeout(std::time::Duration::from_secs(30));
 
     // mTLS client certificate
     if let (Some(cert_path), Some(key_path)) = (client_cert_path, client_key_path) {
@@ -1035,6 +1062,7 @@ pub fn publish_to_artifactory(
                 "artifactory",
                 mode,
                 entry.ids.as_deref(),
+                entry.exclude.as_deref(),
                 entry.exts.as_deref(),
                 CollectFlags {
                     checksum: include_checksum,
@@ -1080,6 +1108,7 @@ pub fn publish_to_artifactory(
             "artifactory",
             mode,
             entry.ids.as_deref(),
+            entry.exclude.as_deref(),
             entry.exts.as_deref(),
             CollectFlags {
                 checksum: include_checksum,
@@ -1092,6 +1121,41 @@ pub fn publish_to_artifactory(
         )?;
 
         if artifacts.is_empty() {
+            // Distinguish a genuinely empty candidate set from an `exclude:`
+            // glob that dropped everything (a typo silently uploading nothing).
+            if entry.exclude.as_deref().is_some_and(|e| !e.is_empty()) {
+                let pre_exclude = collect_upload_artifacts_owned(
+                    ctx,
+                    "artifactory",
+                    mode,
+                    entry.ids.as_deref(),
+                    None,
+                    entry.exts.as_deref(),
+                    CollectFlags {
+                        checksum: include_checksum,
+                        signature: include_signature,
+                        meta: include_meta,
+                        extra_files_only,
+                    },
+                    entry.extra_files.as_deref(),
+                    log,
+                )
+                .map(|v| v.len())
+                .unwrap_or(0);
+                if anodizer_core::artifact::exclude_filter_eliminated_all(
+                    entry.exclude.as_deref(),
+                    pre_exclude,
+                    0,
+                ) {
+                    log.warn(&format!(
+                        "exclude filter {:?} dropped all {} candidate artifact(s) for \
+                         artifactory '{}'; check the globs match asset names, not full paths",
+                        entry.exclude.as_deref().unwrap_or_default(),
+                        pre_exclude,
+                        name
+                    ));
+                }
+            }
             log.status(&format!(
                 "no matching artifactory artifacts for '{}' (mode={})",
                 name, mode
@@ -1203,6 +1267,7 @@ pub(crate) fn collect_artifactory_targets(ctx: &Context) -> Vec<ArtifactoryTarge
             "artifactory",
             mode,
             entry.ids.as_deref(),
+            entry.exclude.as_deref(),
             entry.exts.as_deref(),
             flags,
             entry.extra_files.as_deref(),
@@ -2044,13 +2109,13 @@ mod tests {
 
         // Archive mode should find archive but not binary
         let archive_arts =
-            collect_upload_artifacts(&ctx, "archive", None, None, CollectFlags::default());
+            collect_upload_artifacts(&ctx, "archive", None, None, None, CollectFlags::default());
         assert_eq!(archive_arts.len(), 1);
         assert_eq!(archive_arts[0].kind, ArtifactKind::Archive);
 
         // Binary mode should find binary but not archive
         let binary_arts =
-            collect_upload_artifacts(&ctx, "binary", None, None, CollectFlags::default());
+            collect_upload_artifacts(&ctx, "binary", None, None, None, CollectFlags::default());
         assert_eq!(binary_arts.len(), 1);
         assert_eq!(binary_arts[0].kind, ArtifactKind::UploadableBinary);
     }
@@ -2084,7 +2149,8 @@ mod tests {
             size: None,
         });
 
-        let arts = collect_upload_artifacts(&ctx, "archive", None, None, CollectFlags::default());
+        let arts =
+            collect_upload_artifacts(&ctx, "archive", None, None, None, CollectFlags::default());
         assert_eq!(
             arts.len(),
             1,
@@ -2125,8 +2191,14 @@ mod tests {
         });
 
         let exts = vec!["zip".to_string()];
-        let arts =
-            collect_upload_artifacts(&ctx, "archive", None, Some(&exts), CollectFlags::default());
+        let arts = collect_upload_artifacts(
+            &ctx,
+            "archive",
+            None,
+            None,
+            Some(&exts),
+            CollectFlags::default(),
+        );
         assert_eq!(arts.len(), 1);
         assert!(arts[0].name().ends_with(".zip"));
     }
@@ -2157,13 +2229,15 @@ mod tests {
         });
 
         // Without include_checksum
-        let arts = collect_upload_artifacts(&ctx, "archive", None, None, CollectFlags::default());
+        let arts =
+            collect_upload_artifacts(&ctx, "archive", None, None, None, CollectFlags::default());
         assert_eq!(arts.len(), 1);
 
         // With include_checksum
         let arts = collect_upload_artifacts(
             &ctx,
             "archive",
+            None,
             None,
             None,
             CollectFlags {

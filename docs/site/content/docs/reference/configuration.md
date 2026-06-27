@@ -150,6 +150,9 @@ Artifactory upload configuration. Uploads artifacts to JFrog Artifactory reposit
 | `deb_architecture` | string | — | Override the Debian architecture for `.deb` uploads (`;deb.architecture=`). When unset (the default), the architecture is derived from each artifact's build target (`x86_64` → `amd64`, `aarch64` → `arm64`, `armv7` → `armhf`, `i686` → `i386`, …), so it never needs to be set by hand. Set this only to force a value for an artifact whose target can't be mapped. Ignored for non-`.deb` artifacts. |
 | `deb_components` | list of string | — | Debian repository component(s) for `.deb` uploads, written into the `;deb.component=` matrix param. Defaults to `["main"]` when unset. Multiple components are emitted comma-separated. Ignored for non-`.deb` artifacts. |
 | `deb_distributions` | list of string | — | Debian repository distribution(s) for `.deb` uploads, written into the Artifactory `;deb.distribution=` upload matrix param so apt can index the package. Defaults to `["stable"]` when unset. A multi-element list is emitted as Artifactory's comma-separated form (`deb.distribution=bookworm,bullseye`), publishing the same `.deb` into several distributions at once. Ignored for non-`.deb` artifacts. |
+| `exclude` | list of string | — | Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS Artifactory target only. Use it to keep heavy sidecars (checksums, signatures, SBOMs) off a given repository while archives still upload. Composes with `ids:` and `exts:` (all filters apply). `None`/empty keeps everything.
+
+```yaml artifactories: - target: "https://repo.example.com/{{ .ProjectName }}/{{ .Tag }}/{{ .ArtifactName }}" exclude: ["*.sha256", "*.sig", "*.cdx.json"] ``` |
 | `extra_files` | list of ExtraFileSpec | — | Extra files to upload alongside build artifacts. |
 | `extra_files_only` | bool | — | When true, upload only extra_files (skip normal artifacts). |
 | `exts` | list of string | — | File extension filter: only upload artifacts matching these extensions. |
@@ -292,6 +295,9 @@ CloudSmith publisher configuration. Pushes packages to CloudSmith repositories.
 |-------|------|---------|-------------|
 | `component` | string | — | Debian component name (e.g. "main"). |
 | `distributions` | map | — | Distribution mapping per format. Each entry accepts either a single slug (`deb: "ubuntu/focal"`) or an array of slugs (`deb: ["ubuntu/focal", "ubuntu/jammy"]`); the array form issues one upload per entry. |
+| `exclude` | list of string | — | Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS CloudSmith target only. Use it to keep heavy sidecars off a given repository while packages still upload. Composes with `ids:` and `formats:` (all filters apply). `None`/empty keeps everything.
+
+```yaml cloudsmiths: - organization: my-org repository: my-repo exclude: ["*.sha256", "*.sig", "*.cdx.json"] ``` |
 | `formats` | list of string | — | Package format filter: only publish artifacts matching these formats. |
 | `ids` | list of string | — | Build IDs filter: only publish artifacts from builds whose `id` is in this list. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the CloudSmith publisher is skipped. Render failure hard-errors. Config key: `cloudsmiths[].if:`. |
@@ -429,6 +435,9 @@ Pushes deb / rpm / apk artifacts to `https://push.fury.io/<account>`. Authentica
 | `account` | string | — | GemFury account name. Required; rendered through the template engine so `account: "{{ Env.MY_FURY_ACCOUNT }}"` works. |
 | `api_secret_name` | string | — | Environment variable name carrying the API (delete) token. Default `FURY_API_TOKEN`. |
 | `api_token` | string | — | Optional API token used by rollback to issue `DELETE /<account>/packages/<name>/versions/<version>`. When unset, the env var named by `api_secret_name` (default `FURY_API_TOKEN`) is consulted at rollback time. If both are absent at rollback time, the publisher falls back to a manual-cleanup warn. |
+| `exclude` | list of string | — | Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS GemFury target only. Use it to keep heavy sidecars off the account while packages still upload. Composes with `ids:` and the format filter (all filters apply). `None`/empty keeps everything.
+
+```yaml gemfury: - account: my-account exclude: ["*.sha256", "*.sig", "*.cdx.json"] ``` |
 | `formats` | list of string | — | Package format filter: only push artifacts matching these formats. Defaults to `["apk", "deb", "rpm"]`. |
 | `id` | string | — | Unique identifier for selecting this entry from the CLI (`--id=...`). |
 | `ids` | list of string | — | Build IDs filter: only include artifacts whose archive `id` is in this list. |
@@ -706,6 +715,9 @@ The legacy `goos` spelling is accepted as a back-compat alias for `os` (folded a
 |-------|------|---------|-------------|
 | `discussion_category_name` | string | — | GitHub Discussion category name for the release. |
 | `draft` | bool | — | When true, create the release as a draft (unpublished). |
+| `exclude` | list of string | — | Glob patterns matched against each release asset's file name; anodizer drops any asset whose name matches at least one glob before attaching it to THIS GitHub release only (a mirror configured elsewhere is unaffected). Use it to keep heavy sidecars (checksums, signatures, SBOMs) off the GitHub release while archives still attach. Composes with `ids:` (both filters apply). `None`/empty keeps everything.
+
+```yaml release: github: { owner: my-org, name: my-repo } exclude: ["*.sha256", "*.sig", "*.cdx.json"] ``` |
 | `extra_files` | list of ExtraFileSpec | — | Extra files to upload to the release beyond build artifacts.
 
 Paths / globs are resolved relative to the project root. `..` segments are accepted, so an entry like `../sibling/dist/*` will reach outside the project tree — security-conscious users should keep the entries inside the repo or canonicalise them before invoking the release pipeline. |
@@ -895,6 +907,9 @@ All rendered template files are uploaded to the release by default. Both `src` a
 | `client_x509_key` | string | — | Path to PEM-encoded client X.509 key for mTLS. |
 | `custom_artifact_name` | bool | — | When true, use the artifact name as-is (don't append to target URL). |
 | `custom_headers` | map | — | Custom HTTP headers (each value is template-expanded). |
+| `exclude` | list of string | — | Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS upload target only. Use it to keep heavy sidecars (checksums, signatures, SBOMs) off a given endpoint while archives still upload. Composes with `ids:` and `exts:` (all filters apply). `None`/empty keeps everything.
+
+```yaml uploads: - name: mirror target: "https://mirror.example.com/{{ .ArtifactName }}" exclude: ["*.sha256", "*.sig", "*.cdx.json"] ``` |
 | `extra_files` | list of ExtraFileSpec | — | Extra files to include in uploading. |
 | `extra_files_only` | bool | — | Upload only extra files, skip normal artifacts. |
 | `exts` | list of string | — | File extension filter: only upload artifacts with these extensions. |

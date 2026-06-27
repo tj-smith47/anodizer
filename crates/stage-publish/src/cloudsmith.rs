@@ -682,8 +682,10 @@ pub(crate) fn publish_to_cloudsmith(
             None => false,
         };
 
-        // Collect matching artifacts.
-        let artifacts: Vec<_> = ctx
+        // Collect matching artifacts. The `exclude:` glob filter is applied
+        // last so the pre-exclude count is available for the eliminated-all
+        // warning (a typo'd glob silently dropping every package).
+        let id_filtered: Vec<_> = ctx
             .artifacts
             .all()
             .iter()
@@ -699,6 +701,25 @@ pub(crate) fn publish_to_cloudsmith(
                 crate::util::matches_id_filter(a, entry.ids.as_deref())
             })
             .collect();
+        let pre_exclude = id_filtered.len();
+        let artifacts: Vec<_> = id_filtered
+            .into_iter()
+            .filter(|a| anodizer_core::artifact::passes_exclude_filter(a, entry.exclude.as_deref()))
+            .collect();
+        if anodizer_core::artifact::exclude_filter_eliminated_all(
+            entry.exclude.as_deref(),
+            pre_exclude,
+            artifacts.len(),
+        ) {
+            log.warn(&format!(
+                "exclude filter {:?} dropped all {} candidate package(s) for CloudSmith \
+                 repo '{}/{}'; check the globs match asset names, not full paths",
+                entry.exclude.as_deref().unwrap_or_default(),
+                pre_exclude,
+                organization,
+                repository
+            ));
+        }
 
         // --- Dry-run logging ---
         if ctx.is_dry_run() {

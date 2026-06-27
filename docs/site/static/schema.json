@@ -1445,6 +1445,16 @@
             "type": "string"
           }
         },
+        "exclude": {
+          "description": "Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS Artifactory target only. Use it to keep heavy sidecars (checksums, signatures, SBOMs) off a given repository while archives still upload. Composes with `ids:` and `exts:` (all filters apply). `None`/empty keeps everything.\n\n```yaml artifactories: - target: \"https://repo.example.com/{{ .ProjectName }}/{{ .Tag }}/{{ .ArtifactName }}\" exclude: [\"*.sha256\", \"*.sig\", \"*.cdx.json\"] ```",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "extra_files": {
           "description": "Extra files to upload alongside build artifacts.",
           "default": null,
@@ -2521,6 +2531,16 @@
             "string",
             "null"
           ]
+        },
+        "exclude": {
+          "description": "Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS blob target only (other destinations are unaffected). Use it to keep heavy sidecars off a mirror — e.g. checksums, signatures, and SBOMs — while archives still upload. Composes with `ids:` (both filters apply). `None`/empty keeps everything.\n\n```yaml blobs: - provider: s3 bucket: my-mirror exclude: [\"*.sha256\", \"*.sig\", \"*.cdx.json\"] ```",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
         },
         "extra_files": {
           "description": "Pre-existing files to upload (supports glob patterns).",
@@ -3966,6 +3986,16 @@
           ],
           "additionalProperties": {
             "$ref": "#/definitions/CloudSmithDistributions"
+          }
+        },
+        "exclude": {
+          "description": "Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS CloudSmith target only. Use it to keep heavy sidecars off a given repository while packages still upload. Composes with `ids:` and `formats:` (all filters apply). `None`/empty keeps everything.\n\n```yaml cloudsmiths: - organization: my-org repository: my-repo exclude: [\"*.sha256\", \"*.sig\", \"*.cdx.json\"] ```",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
           }
         },
         "formats": {
@@ -6273,6 +6303,16 @@
             "string",
             "null"
           ]
+        },
+        "exclude": {
+          "description": "Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS GemFury target only. Use it to keep heavy sidecars off the account while packages still upload. Composes with `ids:` and the format filter (all filters apply). `None`/empty keeps everything.\n\n```yaml gemfury: - account: my-account exclude: [\"*.sha256\", \"*.sig\", \"*.cdx.json\"] ```",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
         },
         "formats": {
           "description": "Package format filter: only push artifacts matching these formats. Defaults to `[\"apk\", \"deb\", \"rpm\"]`.",
@@ -12014,6 +12054,16 @@
             "null"
           ]
         },
+        "exclude": {
+          "description": "Glob patterns matched against each release asset's file name; anodizer drops any asset whose name matches at least one glob before attaching it to THIS GitHub release only (a mirror configured elsewhere is unaffected). Use it to keep heavy sidecars (checksums, signatures, SBOMs) off the GitHub release while archives still attach. Composes with `ids:` (both filters apply). `None`/empty keeps everything.\n\n```yaml release: github: { owner: my-org, name: my-repo } exclude: [\"*.sha256\", \"*.sig\", \"*.cdx.json\"] ```",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "extra_files": {
           "description": "Extra files to upload to the release beyond build artifacts.\n\nPaths / globs are resolved relative to the project root. `..` segments are accepted, so an entry like `../sibling/dist/*` will reach outside the project tree — security-conscious users should keep the entries inside the repo or canonicalise them before invoking the release pipeline.",
           "default": null,
@@ -14868,6 +14918,16 @@
             "null"
           ],
           "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "exclude": {
+          "description": "Glob patterns matched against each artifact's file name; anodizer drops any artifact whose name matches at least one glob from THIS upload target only. Use it to keep heavy sidecars (checksums, signatures, SBOMs) off a given endpoint while archives still upload. Composes with `ids:` and `exts:` (all filters apply). `None`/empty keeps everything.\n\n```yaml uploads: - name: mirror target: \"https://mirror.example.com/{{ .ArtifactName }}\" exclude: [\"*.sha256\", \"*.sig\", \"*.cdx.json\"] ```",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
             "type": "string"
           }
         },

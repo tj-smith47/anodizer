@@ -57,11 +57,39 @@ blobs:
     content_disposition: "attachment;filename={{Filename}}"  # optional; "-" to disable
     kms_key: ""                                # optional; AWS KMS key ARN (S3 only)
     ids: []                                    # optional; filter by artifact IDs
+    exclude: []                                # optional; drop artifacts whose name matches a glob
     disable: false                             # optional; bool or template string
     include_meta: false                        # optional; also upload metadata.json/artifacts.json
     extra_files: []                            # optional; additional files to upload
     extra_files_only: false                    # optional; skip artifacts, upload only extra_files
 ```
+
+## Excluding sidecars with `exclude`
+
+A heavy release attaches a checksum, a signature, and an SBOM next to every
+archive — three sidecars per asset. When you mirror to a bucket you often want
+the archives there but not the sidecars, both to save space and to stay under
+provider rate limits. `exclude` is a list of globs matched against each
+artifact's **file name** (e.g. `anodizer_0.12.4_x86_64.tar.gz`); anodizer drops
+every artifact whose name matches at least one glob from **this blob target
+only** — other destinations still receive the full set.
+
+```yaml
+blobs:
+  - provider: s3
+    bucket: my-mirror
+    exclude:
+      - "*.sha256"      # checksum sidecars
+      - "*.sig"         # cosign / GPG signatures
+      - "*.cdx.json"    # CycloneDX SBOMs
+```
+
+`exclude` composes with `ids:` — an artifact uploads only when it passes both
+filters. An empty or unset `exclude` keeps everything. Globs are validated at
+config-load, so a malformed pattern is rejected with a clear error rather than
+silently keeping (or dropping) the wrong assets; if a non-empty candidate set
+is reduced to zero, anodizer warns that the filter — not an empty release — is
+why nothing uploaded.
 
 ## Authentication
 

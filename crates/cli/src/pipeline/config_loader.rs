@@ -253,6 +253,10 @@ pub fn load_config(path: &Path) -> Result<Config> {
     anodizer_core::config::validate_changelog_groups_depth(&config).map_err(anyhow::Error::msg)?;
     // Validate changelog.paths[] syntax (reject leading `/` and empty entries).
     anodizer_core::config::validate_changelog_paths(&config).map_err(anyhow::Error::msg)?;
+    // Validate every upload-destination `exclude:` glob (blobs / release /
+    // artifactories / cloudsmiths / gemfury) — reject a malformed pattern at
+    // config-load rather than letting it silently no-op or drop every asset.
+    anodizer_core::config::validate_exclude_globs(&config).map_err(anyhow::Error::msg)?;
     anodizer_core::config::warn_on_legacy_homebrew_formula(&config);
     // The deprecated nested `dockers_v2[].retry:` / `docker_manifests[].retry:`
     // in favour of the top-level `retry:` block.

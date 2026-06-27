@@ -1628,6 +1628,91 @@ pub fn validate_changelog_paths(config: &Config) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate every upload-destination `exclude:` glob across all config axes.
+///
+/// `exclude:` drops artifacts whose file name matches a glob (see
+/// [`crate::artifact::passes_exclude_filter`]). An unparseable glob is treated
+/// as non-matching at runtime so it never crashes a release — but a typo'd
+/// glob that silently keeps an asset (or, worse, drops every asset) is a
+/// foot-gun. Reject malformed globs here, at config-load, with a clear message
+/// before they can take effect.
+///
+/// Covers every config position where `exclude:` is settable: per-crate
+/// `release:` and `blobs:` (top-level crates AND `workspaces[].crates[]`), the
+/// top-level `artifactories:`, `cloudsmiths:`, `gemfury:`, and `uploads:`
+/// lists, and the top-level shared `release:` block.
+pub fn validate_exclude_globs(config: &Config) -> Result<(), String> {
+    fn check(location: &str, exclude: Option<&[String]>) -> Result<(), String> {
+        let Some(globs) = exclude else {
+            return Ok(());
+        };
+        for (idx, g) in globs.iter().enumerate() {
+            if g.is_empty() {
+                return Err(format!(
+                    "{location}: exclude[{idx}] is empty; remove the entry or set a \
+                     real glob (an empty pattern matches nothing and is a no-op)"
+                ));
+            }
+            if let Err(e) = glob::Pattern::new(g) {
+                return Err(format!(
+                    "{location}: exclude[{idx}] = {g:?} is not a valid glob: {e}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    let check_crate = |location: &str, krate: &CrateConfig| -> Result<(), String> {
+        if let Some(ref release) = krate.release {
+            check(&format!("{location}.release"), release.exclude.as_deref())?;
+        }
+        if let Some(ref blobs) = krate.blobs {
+            for (i, b) in blobs.iter().enumerate() {
+                check(&format!("{location}.blobs[{i}]"), b.exclude.as_deref())?;
+            }
+        }
+        Ok(())
+    };
+
+    for krate in &config.crates {
+        check_crate(&format!("crates[{}]", krate.name), krate)?;
+    }
+    if let Some(ref ws_list) = config.workspaces {
+        for ws in ws_list {
+            for krate in &ws.crates {
+                check_crate(
+                    &format!("workspaces[{}].crates[{}]", ws.name, krate.name),
+                    krate,
+                )?;
+            }
+        }
+    }
+    if let Some(ref list) = config.artifactories {
+        for (i, a) in list.iter().enumerate() {
+            check(&format!("artifactories[{i}]"), a.exclude.as_deref())?;
+        }
+    }
+    if let Some(ref list) = config.cloudsmiths {
+        for (i, c) in list.iter().enumerate() {
+            check(&format!("cloudsmiths[{i}]"), c.exclude.as_deref())?;
+        }
+    }
+    if let Some(ref list) = config.gemfury {
+        for (i, g) in list.iter().enumerate() {
+            check(&format!("gemfury[{i}]"), g.exclude.as_deref())?;
+        }
+    }
+    if let Some(ref list) = config.uploads {
+        for (i, u) in list.iter().enumerate() {
+            check(&format!("uploads[{i}]"), u.exclude.as_deref())?;
+        }
+    }
+    if let Some(ref release) = config.release {
+        check("release", release.exclude.as_deref())?;
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Per-crate publish visitor
 // ---------------------------------------------------------------------------

@@ -74,6 +74,7 @@ artifactories:
     username: ""              # falls back to ARTIFACTORY_{NAME}_USERNAME
     password: ""              # falls back to ARTIFACTORY_{NAME}_SECRET
     ids: []
+    exclude: []               # drop artifacts whose name matches a glob
     exts: []
     checksum_header: "X-Checksum-SHA256"
     custom_headers: {}        # template-rendered
@@ -88,6 +89,28 @@ artifactories:
     trusted_certificates: ""
     skip: false
 ```
+
+## Excluding sidecars with `exclude`
+
+`exclude` is a list of globs matched against each artifact's **file name**;
+anodizer drops every artifact whose name matches at least one glob from **this
+Artifactory target only**. Use it to keep heavy sidecars (checksums,
+signatures, SBOMs) out of a given repository while archives still upload.
+
+```yaml
+artifactories:
+  - target: "https://artifactory.example.com/repo/{{ Version }}/{{ ArtifactName }}"
+    exclude:
+      - "*.sha256"
+      - "*.sig"
+      - "*.cdx.json"
+```
+
+`exclude` composes with `ids:` and `exts:` — an artifact uploads only when it
+passes every filter. An empty or unset `exclude` keeps everything. Globs are
+validated at config-load; a malformed pattern is rejected with a clear error,
+and an `exclude` that drops every candidate raises a warning so a typo'd glob
+is never a silent empty upload.
 
 ## Authentication
 

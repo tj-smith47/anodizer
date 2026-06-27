@@ -775,7 +775,7 @@ fn test_collect_artifacts_filters_by_crate() {
         size: None,
     });
     let config = BlobConfig::default();
-    let arts = collect_artifacts(&ctx, &config, "mycrate");
+    let arts = collect_artifacts(&ctx, &config, "mycrate", &test_log());
     assert_eq!(arts.len(), 1);
     assert_eq!(arts[0].crate_name, "mycrate");
 }
@@ -796,7 +796,7 @@ fn test_collect_artifacts_extra_files_only() {
         extra_files_only: Some(true),
         ..Default::default()
     };
-    let arts = collect_artifacts(&ctx, &config, "mycrate");
+    let arts = collect_artifacts(&ctx, &config, "mycrate", &test_log());
     assert!(arts.is_empty());
 }
 
@@ -827,8 +827,42 @@ fn test_collect_artifacts_ids_filter() {
         ids: Some(vec!["linux-build".to_string()]),
         ..Default::default()
     };
-    let arts = collect_artifacts(&ctx, &config, "mycrate");
+    let arts = collect_artifacts(&ctx, &config, "mycrate", &test_log());
     assert_eq!(arts.len(), 1);
+}
+
+#[test]
+fn test_collect_artifacts_exclude_filter_drops_sidecars() {
+    // An `exclude: ["*.sig", "*.sha256"]` keeps the archive but drops the
+    // signature + checksum sidecars from THIS blob target. Names are derived
+    // from the path basename by `ArtifactRegistry::add`.
+    let mut ctx = make_ctx();
+    for path in [
+        "dist/app_1.0.0_x86_64.tar.gz",
+        "dist/app_1.0.0_x86_64.tar.gz.sig",
+        "dist/app_1.0.0_x86_64.tar.gz.sha256",
+    ] {
+        ctx.artifacts.add(anodizer_core::artifact::Artifact {
+            kind: ArtifactKind::Archive,
+            name: String::new(),
+            path: PathBuf::from(path),
+            target: None,
+            crate_name: "mycrate".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+    }
+    let config = BlobConfig {
+        exclude: Some(vec!["*.sig".to_string(), "*.sha256".to_string()]),
+        ..Default::default()
+    };
+    let arts = collect_artifacts(&ctx, &config, "mycrate", &test_log());
+    let names: Vec<&str> = arts.iter().map(|a| a.name()).collect();
+    assert_eq!(
+        names,
+        vec!["app_1.0.0_x86_64.tar.gz"],
+        "only the archive survives exclude"
+    );
 }
 
 #[test]
@@ -845,7 +879,7 @@ fn test_collect_artifacts_includes_metadata_kind() {
     });
     // Without include_meta
     let config = BlobConfig::default();
-    let arts = collect_artifacts(&ctx, &config, "mycrate");
+    let arts = collect_artifacts(&ctx, &config, "mycrate", &test_log());
     assert!(arts.is_empty());
 
     // With include_meta
@@ -853,7 +887,7 @@ fn test_collect_artifacts_includes_metadata_kind() {
         include_meta: Some(true),
         ..Default::default()
     };
-    let arts = collect_artifacts(&ctx, &config_meta, "mycrate");
+    let arts = collect_artifacts(&ctx, &config_meta, "mycrate", &test_log());
     assert_eq!(arts.len(), 1);
 }
 
@@ -902,7 +936,7 @@ fn test_collect_artifacts_excludes_binary_sign_outputs() {
     });
 
     let config = BlobConfig::default();
-    let arts = collect_artifacts(&ctx, &config, "mycrate");
+    let arts = collect_artifacts(&ctx, &config, "mycrate", &test_log());
     let names: Vec<String> = arts
         .iter()
         .map(|a| a.path.to_string_lossy().into_owned())

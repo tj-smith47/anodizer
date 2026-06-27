@@ -16,6 +16,20 @@ pub struct UploadConfig {
     pub name: Option<String>,
     /// Build IDs filter: only upload artifacts whose `id` is in this list.
     pub ids: Option<Vec<String>>,
+    /// Glob patterns matched against each artifact's file name; anodizer drops
+    /// any artifact whose name matches at least one glob from THIS upload
+    /// target only. Use it to keep heavy sidecars (checksums, signatures,
+    /// SBOMs) off a given endpoint while archives still upload. Composes with
+    /// `ids:` and `exts:` (all filters apply). `None`/empty keeps everything.
+    ///
+    /// ```yaml
+    /// uploads:
+    ///   - name: mirror
+    ///     target: "https://mirror.example.com/{{ .ArtifactName }}"
+    ///     exclude: ["*.sha256", "*.sig", "*.cdx.json"]
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude: Option<Vec<String>>,
     /// File extension filter: only upload artifacts with these extensions.
     pub exts: Option<Vec<String>>,
     /// Target URL template (supports template variables like {{ ProjectName }}, {{ Version }}).

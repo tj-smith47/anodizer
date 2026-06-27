@@ -34,6 +34,7 @@ uploads:
     username: ""                       # optional; falls back to UPLOAD_{NAME}_USERNAME
     password: ""                       # optional; falls back to UPLOAD_{NAME}_SECRET
     ids: []                            # optional; filter by build IDs
+    exclude: []                        # optional; drop artifacts whose name matches a glob
     exts: []                           # optional; filter by file extensions
     checksum_header: ""                # optional; HTTP header name for SHA-256
     custom_headers: {}                 # optional; extra HTTP headers (template-rendered)
@@ -48,6 +49,28 @@ uploads:
     trusted_certificates: ""           # optional; CA bundle path
     skip: false                        # optional
 ```
+
+## Excluding sidecars with `exclude`
+
+`exclude` is a list of globs matched against each artifact's **file name**;
+anodizer drops every artifact whose name matches at least one glob from **this
+upload target only**. Use it to keep heavy sidecars (checksums, signatures,
+SBOMs) off a given endpoint while archives still upload.
+
+```yaml
+uploads:
+  - name: mirror
+    target: "https://mirror.example.com/{{ ArtifactName }}"
+    exclude:
+      - "*.sha256"
+      - "*.sig"
+      - "*.cdx.json"
+```
+
+`exclude` composes with `ids:` and `exts:` — an artifact uploads only when it
+passes every filter. An empty or unset `exclude` keeps everything. Globs are
+validated at config-load; an `exclude` that drops every candidate raises a
+warning so a typo'd glob is never a silent empty upload.
 
 ## Authentication
 

@@ -388,7 +388,7 @@ pub fn publish_to_gemfury(
 
         let formats = resolve_formats(cfg);
 
-        let artifacts: Vec<_> = ctx
+        let id_format_filtered: Vec<_> = ctx
             .artifacts
             .all()
             .iter()
@@ -401,6 +401,27 @@ pub fn publish_to_gemfury(
             // to record the slug on the published target.
             .filter(|a| crate::util::format_matches(a.name(), &formats))
             .collect();
+        // `exclude:` glob filter applied last so the pre-exclude count drives
+        // the eliminated-all warning (a typo'd glob silently dropping every
+        // package).
+        let pre_exclude = id_format_filtered.len();
+        let artifacts: Vec<_> = id_format_filtered
+            .into_iter()
+            .filter(|a| anodizer_core::artifact::passes_exclude_filter(a, cfg.exclude.as_deref()))
+            .collect();
+        if anodizer_core::artifact::exclude_filter_eliminated_all(
+            cfg.exclude.as_deref(),
+            pre_exclude,
+            artifacts.len(),
+        ) {
+            log.warn(&format!(
+                "exclude filter {:?} dropped all {} candidate package(s) for GemFury \
+                 account '{}'; check the globs match asset names, not full paths",
+                cfg.exclude.as_deref().unwrap_or_default(),
+                pre_exclude,
+                account
+            ));
+        }
 
         // ---- Dry-run logging ----
         if ctx.is_dry_run() {

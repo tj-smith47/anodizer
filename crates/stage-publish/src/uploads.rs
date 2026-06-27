@@ -214,6 +214,7 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
                 "uploads",
                 mode,
                 entry.ids.as_deref(),
+                entry.exclude.as_deref(),
                 entry.exts.as_deref(),
                 flags,
                 entry.extra_files.as_deref(),
@@ -254,6 +255,7 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
             "uploads",
             mode,
             entry.ids.as_deref(),
+            entry.exclude.as_deref(),
             entry.exts.as_deref(),
             flags,
             entry.extra_files.as_deref(),
@@ -261,6 +263,36 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
         )?;
 
         if artifacts.is_empty() {
+            // Distinguish a genuinely empty candidate set from an `exclude:`
+            // glob that dropped everything (a typo silently uploading nothing).
+            if entry.exclude.as_deref().is_some_and(|e| !e.is_empty()) {
+                let pre_exclude = collect_upload_artifacts_owned(
+                    ctx,
+                    "uploads",
+                    mode,
+                    entry.ids.as_deref(),
+                    None,
+                    entry.exts.as_deref(),
+                    flags,
+                    entry.extra_files.as_deref(),
+                    log,
+                )
+                .map(|v| v.len())
+                .unwrap_or(0);
+                if anodizer_core::artifact::exclude_filter_eliminated_all(
+                    entry.exclude.as_deref(),
+                    pre_exclude,
+                    0,
+                ) {
+                    log.warn(&format!(
+                        "exclude filter {:?} dropped all {} candidate artifact(s) for \
+                         upload '{}'; check the globs match asset names, not full paths",
+                        entry.exclude.as_deref().unwrap_or_default(),
+                        pre_exclude,
+                        name
+                    ));
+                }
+            }
             log.status(&format!(
                 "no matching upload artifacts for '{}' (mode={})",
                 name, mode
@@ -347,6 +379,7 @@ pub(crate) fn collect_upload_targets(ctx: &Context) -> Vec<ArtifactoryTarget> {
             "uploads",
             mode,
             entry.ids.as_deref(),
+            entry.exclude.as_deref(),
             entry.exts.as_deref(),
             entry_collect_flags(entry),
             entry.extra_files.as_deref(),

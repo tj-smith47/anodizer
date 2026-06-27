@@ -46,6 +46,7 @@ gemfury:
   - id: primary                       # optional; selector for --id=...
     account: myorg                    # required; Gemfury account (templated)
     ids: [demo]                       # optional; filter by build IDs
+    exclude: []                       # optional; drop packages whose name matches a glob
     formats: [deb, rpm, apk]          # optional; default ["apk","deb","rpm"]
     secret_name: FURY_PUSH_TOKEN      # optional; env var for the push token
     api_secret_name: FURY_API_TOKEN   # optional; env var for the delete token
@@ -55,6 +56,27 @@ gemfury:
     required: true                    # optional; override required-default
     if: "{{ Prerelease != \"\" }}"    # optional; template-conditional gate
 ```
+
+## Excluding sidecars with `exclude`
+
+`exclude` is a list of globs matched against each artifact's **file name**;
+anodizer drops every package whose name matches at least one glob from **this
+GemFury account only**. Use it to keep heavy sidecars (checksums, signatures,
+SBOMs) off the account while `.deb` / `.rpm` / `.apk` packages still upload.
+
+```yaml
+gemfury:
+  - account: my-account
+    exclude:
+      - "*.sha256"
+      - "*.sig"
+      - "*.cdx.json"
+```
+
+`exclude` composes with `ids:` and the `formats:` filter — a package uploads
+only when it passes every filter. An empty or unset `exclude` keeps everything.
+Globs are validated at config-load; an `exclude` that drops every candidate
+raises a warning so a typo'd glob is never a silent empty upload.
 
 ## Authentication
 

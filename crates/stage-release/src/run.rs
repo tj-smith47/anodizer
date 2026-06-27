@@ -219,6 +219,7 @@ fn release_one_crate(
 
     let flags = resolve_release_flags(ctx, release_cfg, &crate_name, &tag)?;
     let ids_filter = release_cfg.ids.as_ref();
+    let exclude_filter = release_cfg.exclude.as_ref();
 
     let artifact_entries = assemble_artifact_entries(
         ctx,
@@ -226,6 +227,7 @@ fn release_one_crate(
         crate_cfg,
         release_cfg,
         ids_filter,
+        exclude_filter,
         flags.include_meta,
         dry_run,
     )?;
@@ -378,20 +380,38 @@ fn resolve_release_name(
 /// 5. `include_meta: true` appends `metadata.json` (only the Metadata
 ///    kind, not anodizer's
 ///    private `artifacts.json` manifest).
+// One private helper for the release-entry assembly; the ids/exclude/meta/
+// dry-run knobs are each a distinct filter the single caller threads through,
+// and a params struct would only relocate the same fields.
+#[allow(clippy::too_many_arguments)]
 fn assemble_artifact_entries(
     ctx: &mut Context,
     log: &anodizer_core::log::StageLogger,
     crate_cfg: &anodizer_core::config::CrateConfig,
     release_cfg: &anodizer_core::config::ReleaseConfig,
     ids_filter: Option<&Vec<String>>,
+    exclude_filter: Option<&Vec<String>>,
     include_meta: bool,
     dry_run: bool,
 ) -> Result<Vec<(std::path::PathBuf, Option<String>)>> {
+    // The id-filtered set BEFORE exclude, so an exclude that drops every
+    // remaining asset can be distinguished from an ids filter that already
+    // matched nothing.
+    let pre_exclude = collect_release_upload_candidates(
+        ctx,
+        &crate_cfg.name,
+        ids_filter.map(Vec::as_slice),
+        None,
+        include_meta,
+    )
+    .len();
+
     let mut artifact_entries: Vec<(std::path::PathBuf, Option<String>)> =
         collect_release_upload_candidates(
             ctx,
             &crate_cfg.name,
             ids_filter.map(Vec::as_slice),
+            exclude_filter.map(Vec::as_slice),
             include_meta,
         );
 
@@ -411,6 +431,21 @@ fn assemble_artifact_entries(
                 crate_cfg.name
             ));
         }
+    }
+
+    if anodizer_core::artifact::exclude_filter_eliminated_all(
+        exclude_filter.map(Vec::as_slice),
+        pre_exclude,
+        artifact_entries.len(),
+    ) {
+        log.warn(&format!(
+            "exclude filter {:?} dropped all {} candidate asset(s) for crate '{}' \
+             (the release will be created with no uploaded files; check the globs \
+             match asset names, not full paths)",
+            exclude_filter.map(Vec::as_slice).unwrap_or_default(),
+            pre_exclude,
+            crate_cfg.name
+        ));
     }
 
     // Refresh combined checksum files before
@@ -1021,6 +1056,8 @@ fn handle_dry_run(
 /// 2. Crate must match `crate_name`.
 /// 3. Binary-sign intermediates are excluded (see `is_binary_sign_output`).
 /// 4. When `ids` is supplied, `matches_id_filter` is applied.
+/// 5. When `exclude` is supplied, an asset whose name matches any glob is
+///    dropped (`passes_exclude_filter`); composes with the `ids` filter.
 ///
 /// Returned entries pair each artifact's path with an optional custom
 /// destination name (always `None` here; extra-files appending happens
@@ -1029,6 +1066,7 @@ pub fn collect_release_upload_candidates(
     ctx: &Context,
     crate_name: &str,
     ids: Option<&[String]>,
+    exclude: Option<&[String]>,
     include_meta: bool,
 ) -> Vec<(std::path::PathBuf, Option<String>)> {
     let mut upload_kinds: Vec<ArtifactKind> =
@@ -1048,6 +1086,7 @@ pub fn collect_release_upload_candidates(
                 // release asset.
                 .filter(|a| !anodizer_core::artifact::is_directory_bundle_artifact(a))
                 .filter(|a| matches_id_filter(a, ids))
+                .filter(|a| anodizer_core::artifact::passes_exclude_filter(a, exclude))
                 .map(|a| (a.path.clone(), None))
                 .collect::<Vec<_>>()
         })

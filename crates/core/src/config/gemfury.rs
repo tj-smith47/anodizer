@@ -29,6 +29,20 @@ pub struct GemFuryConfig {
     /// Build IDs filter: only include artifacts whose archive `id` is in this list.
     pub ids: Option<Vec<String>>,
 
+    /// Glob patterns matched against each artifact's file name; anodizer drops
+    /// any artifact whose name matches at least one glob from THIS GemFury
+    /// target only. Use it to keep heavy sidecars off the account while
+    /// packages still upload. Composes with `ids:` and the format filter (all
+    /// filters apply). `None`/empty keeps everything.
+    ///
+    /// ```yaml
+    /// gemfury:
+    ///   - account: my-account
+    ///     exclude: ["*.sha256", "*.sig", "*.cdx.json"]
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude: Option<Vec<String>>,
+
     /// GemFury account name. Required; rendered through the template engine
     /// so `account: "{{ Env.MY_FURY_ACCOUNT }}"` works.
     pub account: Option<String>,

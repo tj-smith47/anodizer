@@ -3848,7 +3848,8 @@ fn test_release_upload_candidates_exclude_binary_sign_outputs() {
     // Call the production helper directly. If a future refactor drops the
     // binary-sign filter from `collect_release_upload_candidates`, this test
     // will fail.
-    let candidates = super::run::collect_release_upload_candidates(&ctx, "myapp", None, false);
+    let candidates =
+        super::run::collect_release_upload_candidates(&ctx, "myapp", None, None, false);
     let paths: Vec<String> = candidates
         .iter()
         .map(|(p, _)| p.to_string_lossy().into_owned())
@@ -4466,8 +4467,9 @@ fn test_release_upload_candidates_include_meta_adds_metadata_kind() {
         size: None,
     });
 
-    let without =
-        super::run::collect_release_upload_candidates(&ctx, "myapp", None, /*meta*/ false);
+    let without = super::run::collect_release_upload_candidates(
+        &ctx, "myapp", None, None, /*meta*/ false,
+    );
     assert!(
         !without
             .iter()
@@ -4475,8 +4477,9 @@ fn test_release_upload_candidates_include_meta_adds_metadata_kind() {
         "Metadata kind must be excluded when include_meta=false"
     );
 
-    let with =
-        super::run::collect_release_upload_candidates(&ctx, "myapp", None, /*meta*/ true);
+    let with = super::run::collect_release_upload_candidates(
+        &ctx, "myapp", None, None, /*meta*/ true,
+    );
     assert!(
         with.iter()
             .any(|(p, _)| p.to_string_lossy().ends_with("metadata.json")),
@@ -4511,13 +4514,101 @@ fn test_release_upload_candidates_ids_filter_selects_matching() {
     });
 
     let ids = vec!["linux-archive".to_string()];
-    let selected = super::run::collect_release_upload_candidates(&ctx, "myapp", Some(&ids), false);
+    let selected =
+        super::run::collect_release_upload_candidates(&ctx, "myapp", Some(&ids), None, false);
     let paths: Vec<String> = selected
         .iter()
         .map(|(p, _)| p.to_string_lossy().into_owned())
         .collect();
     assert!(paths.iter().any(|p| p.ends_with("keep.tar.gz")));
     assert!(!paths.iter().any(|p| p.ends_with("drop.zip")));
+}
+
+#[test]
+fn test_release_upload_candidates_exclude_filter_drops_sidecars() {
+    // `release.exclude: ["*.sig", "*.cdx.json"]` keeps the archive + checksums
+    // but drops the signature + SBOM sidecars from the GitHub release.
+    let mut ctx = TestContextBuilder::new().build();
+    let mut add = |kind: ArtifactKind, name: &str| {
+        ctx.artifacts.add(Artifact {
+            kind,
+            path: format!("dist/{name}").into(),
+            name: name.to_string(),
+            target: None,
+            crate_name: "myapp".to_string(),
+            metadata: std::collections::HashMap::new(),
+            size: None,
+        });
+    };
+    add(ArtifactKind::Archive, "app_1.0.0_x86_64.tar.gz");
+    add(ArtifactKind::Signature, "app_1.0.0_x86_64.tar.gz.sig");
+    add(ArtifactKind::Sbom, "app_1.0.0_x86_64.tar.gz.cdx.json");
+    add(ArtifactKind::Checksum, "checksums.txt");
+
+    let exclude = vec!["*.sig".to_string(), "*.cdx.json".to_string()];
+    let selected =
+        super::run::collect_release_upload_candidates(&ctx, "myapp", None, Some(&exclude), false);
+    let mut names: Vec<String> = selected
+        .iter()
+        .filter_map(|(p, _)| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        vec![
+            "app_1.0.0_x86_64.tar.gz".to_string(),
+            "checksums.txt".to_string()
+        ],
+        "exclude must drop the .sig and .cdx.json sidecars, keep archive + checksums"
+    );
+}
+
+#[test]
+fn test_release_upload_candidates_exclude_per_crate_isolates_each_crate() {
+    // Per-crate mode (`per_crate: true`) materializes one CrateConfig per crate;
+    // `exclude` lives on each crate's own ReleaseConfig and is applied against
+    // that crate's artifacts only. Registering two crates and filtering by name
+    // proves the per-crate path threads exclude independently.
+    let mut ctx = TestContextBuilder::new().build();
+    let mut add = |kind: ArtifactKind, name: &str, crate_name: &str| {
+        ctx.artifacts.add(Artifact {
+            kind,
+            path: format!("dist/{crate_name}/{name}").into(),
+            name: name.to_string(),
+            target: None,
+            crate_name: crate_name.to_string(),
+            metadata: std::collections::HashMap::new(),
+            size: None,
+        });
+    };
+    add(ArtifactKind::Archive, "core_1.0.0.tar.gz", "core");
+    add(ArtifactKind::Signature, "core_1.0.0.tar.gz.sig", "core");
+    add(ArtifactKind::Archive, "cli_1.0.0.tar.gz", "cli");
+    add(ArtifactKind::Signature, "cli_1.0.0.tar.gz.sig", "cli");
+
+    let exclude = vec!["*.sig".to_string()];
+    // `core` excludes its signature; `cli` (no exclude) keeps everything.
+    let core =
+        super::run::collect_release_upload_candidates(&ctx, "core", None, Some(&exclude), false);
+    let cli = super::run::collect_release_upload_candidates(&ctx, "cli", None, None, false);
+    let core_names: Vec<String> = core
+        .iter()
+        .filter_map(|(p, _)| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+    let cli_names: Vec<String> = cli
+        .iter()
+        .filter_map(|(p, _)| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        .collect();
+    assert_eq!(
+        core_names,
+        vec!["core_1.0.0.tar.gz".to_string()],
+        "core's exclude drops only core's signature"
+    );
+    assert!(
+        cli_names.contains(&"cli_1.0.0.tar.gz".to_string())
+            && cli_names.contains(&"cli_1.0.0.tar.gz.sig".to_string()),
+        "cli has no exclude and keeps its signature; got {cli_names:?}"
+    );
 }
 
 #[test]
@@ -4591,7 +4682,8 @@ fn test_release_upload_candidates_ids_filter_signatures_inherit_subject_verdict(
     );
 
     let ids = vec!["keep".to_string()];
-    let selected = super::run::collect_release_upload_candidates(&ctx, "myapp", Some(&ids), false);
+    let selected =
+        super::run::collect_release_upload_candidates(&ctx, "myapp", Some(&ids), None, false);
     let names: Vec<String> = selected
         .iter()
         .map(|(p, _)| p.file_name().unwrap().to_string_lossy().into_owned())
@@ -4646,7 +4738,8 @@ fn test_release_upload_candidates_filters_by_crate_name() {
         size: None,
     });
 
-    let selected = super::run::collect_release_upload_candidates(&ctx, "mycrate", None, false);
+    let selected =
+        super::run::collect_release_upload_candidates(&ctx, "mycrate", None, None, false);
     let paths: Vec<String> = selected
         .iter()
         .map(|(p, _)| p.to_string_lossy().into_owned())

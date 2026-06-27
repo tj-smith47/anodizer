@@ -53,6 +53,21 @@ pub struct BlobConfig {
     pub kms_key: Option<String>,
     /// Build IDs to include. Empty means all artifacts.
     pub ids: Option<Vec<String>>,
+    /// Glob patterns matched against each artifact's file name; anodizer drops
+    /// any artifact whose name matches at least one glob from THIS blob target
+    /// only (other destinations are unaffected). Use it to keep heavy sidecars
+    /// off a mirror — e.g. checksums, signatures, and SBOMs — while archives
+    /// still upload. Composes with `ids:` (both filters apply). `None`/empty
+    /// keeps everything.
+    ///
+    /// ```yaml
+    /// blobs:
+    ///   - provider: s3
+    ///     bucket: my-mirror
+    ///     exclude: ["*.sha256", "*.sig", "*.cdx.json"]
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude: Option<Vec<String>>,
     /// Skip this blob config. Accepts bool or template string
     /// (e.g. `"{{ if IsSnapshot }}true{{ endif }}"` for conditional skip).
     /// Accepts the legacy `disable:` spelling via serde alias for back-compat.

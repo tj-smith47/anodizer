@@ -83,9 +83,34 @@ release:
   replace_existing_artifacts: false
   mode: ""                    # keep-existing | append | prepend | replace
   ids: []
+  exclude: []                 # drop assets whose name matches a glob
   skip: false
   on_failure: rollback        # rollback | hold (auto-degrades to hold past one-way doors)
 ```
+
+## Excluding sidecars with `exclude`
+
+`exclude` is a list of globs matched against each release asset's **file
+name**; anodizer drops every asset whose name matches at least one glob before
+attaching it to **this GitHub release only** (a mirror configured elsewhere is
+unaffected). Use it to keep heavy sidecars (checksums, signatures, SBOMs) off
+the GitHub release while archives still attach.
+
+```yaml
+release:
+  github: { owner: my-org, name: my-repo }
+  exclude:
+    - "*.sha256"
+    - "*.sig"
+    - "*.cdx.json"
+```
+
+`exclude` composes with `ids:` — an asset attaches only when it passes both
+filters. An empty or unset `exclude` keeps everything. Globs are validated at
+config-load; an `exclude` that drops every candidate raises a warning so a
+typo'd glob is never a silent empty release. The `verify-release` gate applies
+the same `exclude`, so a deliberately-excluded signature or SBOM is not flagged
+as a missing asset.
 
 ## Authentication
 

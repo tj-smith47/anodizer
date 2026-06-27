@@ -196,9 +196,14 @@ fn crate_binary_name(crate_cfg: &CrateConfig) -> String {
 /// not reported as a missing asset here. The asset name is resolved exactly as
 /// the upload path resolves it — the custom destination name when set,
 /// otherwise the file's basename.
-fn produced_asset_names(ctx: &Context, crate_name: &str, ids: Option<&[String]>) -> Vec<String> {
+fn produced_asset_names(
+    ctx: &Context,
+    crate_name: &str,
+    ids: Option<&[String]>,
+    exclude: Option<&[String]>,
+) -> Vec<String> {
     let mut names: Vec<String> = anodizer_stage_release::collect_release_upload_candidates(
-        ctx, crate_name, ids,
+        ctx, crate_name, ids, exclude,
         // include_meta: the asset-existence check verifies the regular
         // release-uploadable set, not the optional metadata.json sidecar.
         false,
@@ -232,6 +237,7 @@ fn config_expected_asset_names(
     ctx: &Context,
     crate_name: &str,
     release_ids: Option<&[String]>,
+    release_exclude: Option<&[String]>,
 ) -> Result<Vec<String>> {
     // `release_ids` mirrors the upload path's id-filter semantics: derived
     // artifacts inherit their SUBJECT's verdict (`matches_id_filter`), so a
@@ -243,6 +249,11 @@ fn config_expected_asset_names(
         crate_name,
         release_ids,
     )?);
+    // Apply the SAME `release.exclude` the upload path applies: a signature or
+    // SBOM the operator deliberately excluded from THIS release is not a
+    // missing asset. Without this an `exclude: ["*.sig"]` would make the gate
+    // demand an asset the upload was configured never to attach.
+    names.retain(|n| anodizer_core::artifact::name_passes_exclude_filter(n, release_exclude));
     names.sort();
     names.dedup();
     Ok(names)
@@ -274,14 +285,19 @@ fn verify_one_crate(
             crate_cfg,
         )) {
             Ok(Some(published)) => {
-                let produced =
-                    produced_asset_names(ctx, &crate_cfg.name, release_cfg.ids.as_deref());
+                let produced = produced_asset_names(
+                    ctx,
+                    &crate_cfg.name,
+                    release_cfg.ids.as_deref(),
+                    release_cfg.exclude.as_deref(),
+                );
                 // Config-derived expectations (signatures / SBOMs). A
                 // derivation error is itself a finding — never a silent pass.
                 let derived = match config_expected_asset_names(
                     ctx,
                     &crate_cfg.name,
                     release_cfg.ids.as_deref(),
+                    release_cfg.exclude.as_deref(),
                 ) {
                     Ok(d) => d,
                     Err(e) => {

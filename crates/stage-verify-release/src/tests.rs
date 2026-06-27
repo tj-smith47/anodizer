@@ -98,7 +98,7 @@ fn verify_release_never_demands_signature_of_a_signature_or_certificate() {
     add_artifact(&mut ctx, ArtifactKind::Signature, "app.tar.gz.sig", "app");
     add_artifact(&mut ctx, ArtifactKind::Certificate, "app.tar.gz.pem", "app");
 
-    let derived = config_expected_asset_names(&ctx, "app", None).expect("derivation");
+    let derived = config_expected_asset_names(&ctx, "app", None, None).expect("derivation");
 
     // Both the combined file and the split sidecar are signed (GR parity).
     assert!(
@@ -211,9 +211,9 @@ fn produced_asset_names_derives_from_registry_per_crate() {
     // A raw Binary is NOT in release_uploadable_kinds(); must be excluded.
     add_artifact(&mut ctx, ArtifactKind::Binary, "raw-bin", "crate-a");
 
-    let a = produced_asset_names(&ctx, "crate-a", None);
+    let a = produced_asset_names(&ctx, "crate-a", None, None);
     assert_eq!(a, vec!["a.deb", "a.tar.gz", "checksums.txt"]);
-    let b = produced_asset_names(&ctx, "crate-b", None);
+    let b = produced_asset_names(&ctx, "crate-b", None, None);
     assert_eq!(b, vec!["b.tar.gz"], "crate-b set is isolated from crate-a");
 }
 
@@ -261,13 +261,13 @@ fn produced_asset_names_honors_release_ids_filter() {
     );
 
     // No filter: both candidates are expected assets.
-    let all = produced_asset_names(&ctx, "app", None);
+    let all = produced_asset_names(&ctx, "app", None, None);
     assert_eq!(all, vec!["linux.tar.gz", "windows.zip"]);
 
     // ids = [linux]: the windows artifact is filtered out of the upload set and
     // therefore must NOT appear in the expected (produced) asset names.
     let ids = vec!["linux".to_string()];
-    let filtered = produced_asset_names(&ctx, "app", Some(&ids));
+    let filtered = produced_asset_names(&ctx, "app", Some(&ids), None);
     assert_eq!(
         filtered,
         vec!["linux.tar.gz"],
@@ -1169,7 +1169,7 @@ fn derived_expectations_include_per_artifact_sigs_when_signing_enabled() {
     add_combined_checksum(&mut ctx, "app_checksums.txt", "app");
     add_artifact(&mut ctx, ArtifactKind::Archive, "app.tar.gz", "app");
 
-    let derived = config_expected_asset_names(&ctx, "app", None).expect("derivation");
+    let derived = config_expected_asset_names(&ctx, "app", None, None).expect("derivation");
     assert_eq!(derived, vec!["app_checksums.txt.sig".to_string()]);
 }
 
@@ -1180,7 +1180,7 @@ fn derived_expectations_empty_when_signing_not_configured() {
         .crates(vec![published_crate("app", None)])
         .build();
     add_artifact(&mut ctx, ArtifactKind::Checksum, "app_checksums.txt", "app");
-    let derived = config_expected_asset_names(&ctx, "app", None).expect("derivation");
+    let derived = config_expected_asset_names(&ctx, "app", None, None).expect("derivation");
     assert!(derived.is_empty());
 }
 
@@ -1195,7 +1195,7 @@ fn derived_expectations_empty_when_sign_skipped_by_condition() {
         ..checksum_gpg_sign()
     }];
     add_artifact(&mut ctx, ArtifactKind::Checksum, "app_checksums.txt", "app");
-    let derived = config_expected_asset_names(&ctx, "app", None).expect("derivation");
+    let derived = config_expected_asset_names(&ctx, "app", None, None).expect("derivation");
     assert!(
         derived.is_empty(),
         "an if: that evaluated false must not create expectations"
@@ -1212,7 +1212,7 @@ fn derived_expectations_empty_when_run_recorded_intentional_skip() {
     add_artifact(&mut ctx, ArtifactKind::Checksum, "app_checksums.txt", "app");
     // The run's own skip record is the authoritative waiver.
     ctx.remember_skip("sign", "default", "`if` condition evaluated falsy");
-    let derived = config_expected_asset_names(&ctx, "app", None).expect("derivation");
+    let derived = config_expected_asset_names(&ctx, "app", None, None).expect("derivation");
     assert!(derived.is_empty());
 }
 
@@ -1255,7 +1255,7 @@ fn derived_expectations_follow_subject_verdict_under_release_ids() {
     });
 
     let ids = vec!["keep".to_string()];
-    let derived = config_expected_asset_names(&ctx, "app", Some(&ids)).expect("derivation");
+    let derived = config_expected_asset_names(&ctx, "app", Some(&ids), None).expect("derivation");
     assert_eq!(
         derived,
         vec![
@@ -1264,6 +1264,46 @@ fn derived_expectations_follow_subject_verdict_under_release_ids() {
         ],
         "the combined checksum (always-pass) and the ids-included archive are \
          signed under `all`; the ids-excluded archive contributes none"
+    );
+}
+
+#[test]
+fn derived_expectations_drop_excluded_signature() {
+    // `release.exclude: ["*.sig"]` keeps a signature off the GitHub release, so
+    // the verify-release gate must NOT expect it — otherwise an intentional
+    // exclude triggers a false "missing asset" failure.
+    let mut ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![published_crate("app", None)])
+        .build();
+    ctx.config.signs = vec![anodizer_core::config::SignConfig {
+        artifacts: Some("all".to_string()),
+        ..checksum_gpg_sign()
+    }];
+    add_combined_checksum(&mut ctx, "app_checksums.txt", "app");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        name: "app.tar.gz".to_string(),
+        path: std::path::PathBuf::from("app.tar.gz"),
+        target: None,
+        crate_name: "app".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+
+    // No exclude: the .sig expectations are present.
+    let without = config_expected_asset_names(&ctx, "app", None, None).expect("derivation");
+    assert!(
+        without.iter().any(|n| n.ends_with(".sig")),
+        "precondition: signatures are expected without exclude; got {without:?}"
+    );
+
+    // With `exclude: ["*.sig"]`: every .sig expectation is filtered out.
+    let exclude = vec!["*.sig".to_string()];
+    let with = config_expected_asset_names(&ctx, "app", None, Some(&exclude)).expect("derivation");
+    assert!(
+        with.iter().all(|n| !n.ends_with(".sig")),
+        "release.exclude must drop excluded signatures from the expected set; got {with:?}"
     );
 }
 
@@ -1282,8 +1322,8 @@ fn derived_expectations_resolve_per_crate() {
     add_combined_checksum(&mut ctx, "a_checksums.txt", "crate-a");
     add_combined_checksum(&mut ctx, "b_checksums.txt", "crate-b");
 
-    let a = config_expected_asset_names(&ctx, "crate-a", None).expect("derivation");
-    let b = config_expected_asset_names(&ctx, "crate-b", None).expect("derivation");
+    let a = config_expected_asset_names(&ctx, "crate-a", None, None).expect("derivation");
+    let b = config_expected_asset_names(&ctx, "crate-b", None, None).expect("derivation");
     assert_eq!(a, vec!["a_checksums.txt.sig".to_string()]);
     assert_eq!(b, vec!["b_checksums.txt.sig".to_string()]);
 }
@@ -1542,7 +1582,7 @@ fn v080_mirror_split_checksum_signing_demands_second_level_sigs_no_recursion() {
     ctx.config.sboms = real_sboms_config();
     register_v080_produced_set(&mut ctx, "anodizer");
 
-    let derived = config_expected_asset_names(&ctx, "anodizer", None).expect("derivation");
+    let derived = config_expected_asset_names(&ctx, "anodizer", None, None).expect("derivation");
 
     // Every demanded asset is a legit terminal — no forbidden recursive chain.
     for name in &derived {

@@ -158,10 +158,15 @@ pub(crate) fn resolve_extra_files(
 // ---------------------------------------------------------------------------
 
 /// Collect artifacts to upload based on config filters.
+///
+/// `log` carries the exclude-eliminated-all warning: when a non-empty
+/// `exclude:` reduces a non-empty candidate set to zero, a typo'd glob (e.g.
+/// `*` instead of `*.sig`) would otherwise silently drop every asset.
 pub(crate) fn collect_artifacts<'a>(
     ctx: &'a Context,
     config: &BlobConfig,
     crate_name: &str,
+    log: &anodizer_core::log::StageLogger,
 ) -> Vec<&'a Artifact> {
     if config.extra_files_only.unwrap_or(false) {
         return vec![];
@@ -175,7 +180,8 @@ pub(crate) fn collect_artifacts<'a>(
         uploadable_kinds.push(ArtifactKind::Metadata);
     }
 
-    ctx.artifacts
+    let id_filtered: Vec<&Artifact> = ctx
+        .artifacts
         .all()
         .iter()
         .filter(|a| a.crate_name == crate_name)
@@ -183,7 +189,26 @@ pub(crate) fn collect_artifacts<'a>(
         .filter(|a| !anodizer_core::artifact::is_binary_sign_output(a))
         .filter(|a| !anodizer_core::artifact::is_directory_bundle_artifact(a))
         .filter(|a| anodizer_core::artifact::matches_id_filter(a, config.ids.as_deref()))
-        .collect()
+        .collect();
+    let pre_exclude = id_filtered.len();
+    let kept: Vec<&Artifact> = id_filtered
+        .into_iter()
+        .filter(|a| anodizer_core::artifact::passes_exclude_filter(a, config.exclude.as_deref()))
+        .collect();
+    if anodizer_core::artifact::exclude_filter_eliminated_all(
+        config.exclude.as_deref(),
+        pre_exclude,
+        kept.len(),
+    ) {
+        log.warn(&format!(
+            "exclude filter {:?} dropped all {} candidate artifact(s) for blob config on \
+             crate '{}'; check the globs match asset names, not full paths",
+            config.exclude.as_deref().unwrap_or_default(),
+            pre_exclude,
+            crate_name
+        ));
+    }
+    kept
 }
 
 // ---------------------------------------------------------------------------
@@ -559,7 +584,9 @@ mod collect_artifacts_tests {
             bucket: "b".to_string(),
             ..Default::default()
         };
-        let selected = collect_artifacts(&ctx, &blob, "anodizer");
+        let log =
+            anodizer_core::log::StageLogger::new("blob-test", anodizer_core::log::Verbosity::Quiet);
+        let selected = collect_artifacts(&ctx, &blob, "anodizer", &log);
         let names: Vec<&str> = selected.iter().map(|a| a.name.as_str()).collect();
 
         assert!(

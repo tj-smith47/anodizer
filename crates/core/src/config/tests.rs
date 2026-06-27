@@ -8,9 +8,9 @@ use super::WorkspaceConfig;
 use super::{Config, ERR_DEFAULTS_AXIS_MISMATCH, IncludeFilePath, IncludeSpec, IncludeUrlConfig};
 use super::{
     validate_changelog_groups_depth, validate_changelog_paths, validate_defaults_axis,
-    validate_format_overrides, validate_homebrew_cask_url_template, validate_on_failure_root_only,
-    validate_tag_sort, validate_version, validate_winget_dependency_architectures,
-    validate_winget_upgrade_behavior,
+    validate_exclude_globs, validate_format_overrides, validate_homebrew_cask_url_template,
+    validate_on_failure_root_only, validate_tag_sort, validate_version,
+    validate_winget_dependency_architectures, validate_winget_upgrade_behavior,
 };
 
 // Items re-exported from config submodules (all reachable as super::ItemName
@@ -8662,6 +8662,138 @@ crates:
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
     assert!(validate_changelog_paths(&config).is_ok());
+}
+
+// ---- validate_exclude_globs ----
+
+#[test]
+fn test_validate_exclude_globs_accepts_valid_globs_all_destinations() {
+    let yaml = r#"
+project_name: test
+artifactories:
+  - target: "https://repo/{{ .ArtifactName }}"
+    exclude: ["*.sig", "*.cdx.json"]
+cloudsmiths:
+  - organization: org
+    repository: repo
+    exclude: ["*.sha256"]
+gemfury:
+  - account: acct
+    exclude: ["*.sig"]
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      github: { owner: o, name: n }
+      exclude: ["*.sha256", "*.sig", "*.cdx.json"]
+    blobs:
+      - provider: s3
+        bucket: b
+        exclude: ["*.sig"]
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    validate_exclude_globs(&config).expect("valid globs on every destination pass");
+}
+
+#[test]
+fn test_validate_exclude_globs_rejects_invalid_blob_glob() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    blobs:
+      - provider: s3
+        bucket: b
+        exclude: ["["]
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_exclude_globs(&config).unwrap_err();
+    assert!(err.contains("crates[a].blobs[0]"), "{err}");
+    assert!(err.contains("not a valid glob"), "{err}");
+}
+
+#[test]
+fn test_validate_exclude_globs_rejects_invalid_release_glob() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    release:
+      github: { owner: o, name: n }
+      exclude: ["a[b"]
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_exclude_globs(&config).unwrap_err();
+    assert!(err.contains("crates[a].release"), "{err}");
+    assert!(err.contains("not a valid glob"), "{err}");
+}
+
+#[test]
+fn test_validate_exclude_globs_rejects_invalid_top_level_release_glob() {
+    // The top-level shared `release:` block carries the same `exclude:` field
+    // as a per-crate `release:`; a malformed glob there must be rejected too.
+    let yaml = r#"
+project_name: test
+release:
+  github: { owner: o, name: n }
+  exclude: ["a[b"]
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_exclude_globs(&config).unwrap_err();
+    assert!(
+        err.starts_with("release:"),
+        "expected top-level `release` location, got: {err}"
+    );
+    assert!(err.contains("not a valid glob"), "{err}");
+}
+
+#[test]
+fn test_validate_exclude_globs_rejects_empty_entry() {
+    let yaml = r#"
+project_name: test
+cloudsmiths:
+  - organization: org
+    repository: repo
+    exclude: [""]
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_exclude_globs(&config).unwrap_err();
+    assert!(err.contains("cloudsmiths[0]"), "{err}");
+    assert!(err.contains("empty"), "{err}");
+}
+
+#[test]
+fn test_validate_exclude_globs_rejects_invalid_glob_in_workspace_crate() {
+    let yaml = r#"
+project_name: test
+workspaces:
+  - name: ws
+    crates:
+      - name: a
+        path: "crates/a"
+        tag_template: "v{{ .Version }}"
+        blobs:
+          - provider: s3
+            bucket: b
+            exclude: ["x[y"]
+crates: []
+"#;
+    let config: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    let err = validate_exclude_globs(&config).unwrap_err();
+    assert!(err.contains("workspaces[ws].crates[a].blobs[0]"), "{err}");
 }
 
 // ---------------------------------------------------------------------------

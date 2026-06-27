@@ -568,7 +568,7 @@ impl BlobStage {
                 // Collect artifacts to upload
                 let mut upload_items: Vec<(PathBuf, String)> = Vec::new();
 
-                let artifacts = collect_artifacts(ctx, blob_cfg, &krate.name);
+                let artifacts = collect_artifacts(ctx, blob_cfg, &krate.name, &log);
                 for artifact in &artifacts {
                     let filename = artifact
                         .path

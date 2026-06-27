@@ -56,8 +56,32 @@ cloudsmiths:
     republish: true              # allow overwriting existing versions
     keep_versions: 3             # keep 3 newest releases, prune older (opt-in)
     ids: []                      # filter by build IDs
+    exclude: []                  # drop packages whose name matches a glob
     skip: false                  # skip this config
 ```
+
+## Excluding sidecars with `exclude`
+
+`exclude` is a list of globs matched against each artifact's **file name**;
+anodizer drops every package whose name matches at least one glob from **this
+CloudSmith repository only**. Use it to keep heavy sidecars (checksums,
+signatures, SBOMs) off a repository while `.deb` / `.rpm` / `.apk` packages
+still upload.
+
+```yaml
+cloudsmiths:
+  - organization: my-org
+    repository: my-repo
+    exclude:
+      - "*.sha256"
+      - "*.sig"
+      - "*.cdx.json"
+```
+
+`exclude` composes with `ids:` and `formats:` — a package uploads only when it
+passes every filter. An empty or unset `exclude` keeps everything. Globs are
+validated at config-load; an `exclude` that drops every candidate raises a
+warning so a typo'd glob is never a silent empty upload.
 
 ## Authentication
 

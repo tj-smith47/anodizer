@@ -45,6 +45,20 @@ pub struct CloudSmithConfig {
     pub repository: Option<String>,
     /// Build IDs filter: only publish artifacts from builds whose `id` is in this list.
     pub ids: Option<Vec<String>>,
+    /// Glob patterns matched against each artifact's file name; anodizer drops
+    /// any artifact whose name matches at least one glob from THIS CloudSmith
+    /// target only. Use it to keep heavy sidecars off a given repository while
+    /// packages still upload. Composes with `ids:` and `formats:` (all filters
+    /// apply). `None`/empty keeps everything.
+    ///
+    /// ```yaml
+    /// cloudsmiths:
+    ///   - organization: my-org
+    ///     repository: my-repo
+    ///     exclude: ["*.sha256", "*.sig", "*.cdx.json"]
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exclude: Option<Vec<String>>,
     /// Package format filter: only publish artifacts matching these formats.
     pub formats: Option<Vec<String>>,
     /// Distribution mapping per format. Each entry accepts either a single
