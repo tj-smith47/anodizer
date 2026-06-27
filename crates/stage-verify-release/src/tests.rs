@@ -1395,8 +1395,10 @@ fn skipped_sign_stage_does_not_fail_unsigned_release() {
 
 #[test]
 fn sbom_expectations_fail_when_configured_sboms_never_uploaded() {
-    // sboms: configured per-archive, but neither the registry nor the
-    // release has the SBOM => the gate fails naming the missing document.
+    // sboms: configured with the built-in (Cargo.lock) generator, whose
+    // archive-independent content collapses to one `<project>-<version>` SBOM;
+    // neither the registry nor the release has it => the gate fails naming the
+    // missing document.
     let (addr, _log) = spawn_release_route(&["app.tar.gz"]);
 
     let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
@@ -1413,7 +1415,7 @@ fn sbom_expectations_fail_when_configured_sboms_never_uploaded() {
         .expect_err("missing config-required SBOM assets must fail the gate");
     let msg = format!("{err:#}");
     assert!(
-        msg.contains("app.tar.gz.cdx.json"),
+        msg.contains("app-1.0.0.cdx.json"),
         "error names the missing SBOM asset: {msg}"
     );
 }

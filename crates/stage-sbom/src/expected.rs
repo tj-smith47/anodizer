@@ -120,6 +120,19 @@ pub fn expected_sbom_assets(
                 .collect()
         };
 
+        // The built-in (Cargo.lock) generator's output is archive-independent,
+        // so the stage emits a SINGLE workspace SBOM regardless of how many
+        // archives match — named `<project>-<version>.<ext>` (the `any`
+        // filename). The match scan above still gates it: zero matches means
+        // the stage produced nothing, so demand nothing.
+        if use_builtin {
+            if !matching.is_empty() {
+                let (_, extension) = builtin_format_and_extension(&documents);
+                expected.push(format!("{project_name}-{version}.{extension}"));
+            }
+            continue;
+        }
+
         for artifact in matching {
             let vars = crate::artifact_template_vars(
                 ctx,
@@ -127,17 +140,9 @@ pub fn expected_sbom_assets(
                 &artifact.metadata,
                 artifact.target.as_deref(),
             );
-            // Built-in mode renders documents[0] only; the external command
-            // path renders and registers EVERY documents entry per artifact.
-            let doc_templates: &[String] = if use_builtin {
-                match documents.first() {
-                    Some(first) => std::slice::from_ref(first),
-                    None => continue,
-                }
-            } else {
-                &documents
-            };
-            for doc_tpl in doc_templates {
+            // The external command path renders and registers EVERY documents
+            // entry per artifact (genuinely-distinct per-archive scans).
+            for doc_tpl in &documents {
                 let rendered =
                     anodizer_core::template::render(doc_tpl, &vars).with_context(|| {
                         format!("sbom[{id}]: failed to render document template '{doc_tpl}'")
@@ -200,24 +205,23 @@ mod tests {
     }
 
     #[test]
-    fn builtin_per_archive_expectations() {
+    fn builtin_archive_expects_single_workspace_document() {
+        // The built-in generator emits ONE archive-independent workspace SBOM,
+        // not one per archive — so the derivation predicts a single
+        // `<project>-<version>.<ext>` document regardless of archive count.
         let mut ctx = TestContextBuilder::new()
             .project_name("app")
+            .tag("v1.0.0")
             .add_sbom(per_archive_cfg())
             .build();
+        ctx.template_vars_mut().set("Version", "1.0.0");
         ctx.artifacts
             .add(archive("app-1.0-linux-amd64.tar.gz", "app", None));
         ctx.artifacts
             .add(archive("app-1.0-darwin-arm64.tar.gz", "app", None));
 
         let expected = expected_sbom_assets(&ctx, "app", None).expect("derivation");
-        assert_eq!(
-            expected,
-            vec![
-                "app-1.0-darwin-arm64.tar.gz.cdx.json".to_string(),
-                "app-1.0-linux-amd64.tar.gz.cdx.json".to_string(),
-            ]
-        );
+        assert_eq!(expected, vec!["app-1.0.0.cdx.json".to_string()]);
     }
 
     #[test]
@@ -479,9 +483,15 @@ mod tests {
         // per-artifact vars on a clone, never on the shared context. The
         // conditional template makes a leak visible: under leaky binding the
         // no-target archive would render "...-linux.cdx.json".
+        //
+        // Per-artifact document rendering is exclusive to the external-command
+        // path (the built-in generator emits one archive-independent workspace
+        // SBOM), so this hermeticity contract is pinned against `cmd:`.
         let dist = tempfile::tempdir().expect("tempdir");
         let cfg = SbomConfig {
             id: Some("default".to_string()),
+            cmd: Some("sh".to_string()),
+            args: Some(vec!["-c".to_string(), "echo x > \"$document\"".to_string()]),
             documents: Some(vec![
                 "{{ .ArtifactName }}{% if Os %}-{{ Os }}{% endif %}.cdx.json".to_string(),
             ]),
@@ -571,7 +581,7 @@ mod tests {
     fn expected_sbom_assets_match_builtin_stage_registrations() {
         // Equivalence pin: run the REAL built-in SBOM generator over archives
         // in a temp dist and assert the derivation predicted exactly the Sbom
-        // artifact names the stage registered.
+        // artifact names the stage registered — a SINGLE workspace document.
         let dist = tempfile::tempdir().expect("tempdir");
         let mut ctx = TestContextBuilder::new()
             .project_name("app")
@@ -608,6 +618,11 @@ mod tests {
         assert_eq!(
             predicted, registered,
             "config-derived SBOM expectations must equal what the stage registers"
+        );
+        assert_eq!(
+            registered,
+            vec!["app-1.0.0.cdx.json".to_string()],
+            "built-in generator emits one workspace SBOM, not one per archive"
         );
     }
 }

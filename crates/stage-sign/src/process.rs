@@ -107,6 +107,48 @@ pub(crate) fn harden_cosign_args_for_harness(
     args
 }
 
+/// True when `cmd`'s basename identifies the cosign binary (matches `cosign`
+/// and `cosign-*` variants).
+///
+/// Single source for the cosign-basename test shared by the consent-side
+/// (`ensure_cosign_consent_env`) and the signing-requirement derivation
+/// (`entry_env_requirements`'s `KeyEnv{Cosign}` site) so the two cannot drift.
+pub(crate) fn is_cosign_cmd(cmd: &str) -> bool {
+    std::path::Path::new(cmd)
+        .file_name()
+        .and_then(|b| b.to_str())
+        .is_some_and(|b| b.starts_with("cosign"))
+}
+
+/// Env var name carrying cosign's non-interactive consent (the argv equivalent
+/// is the global `--yes`/`-y` flag).
+pub(crate) const COSIGN_CONSENT_ENV: &str = "COSIGN_YES";
+
+/// Ensure a cosign invocation runs non-interactively by exporting
+/// `COSIGN_YES=true` in its child env.
+///
+/// Without consent, `cosign sign` / `sign-blob` print the sigstore privacy
+/// banner ("Note that there may be personally identifiable information … By
+/// typing 'y' you attest …") and block on a `y/N` prompt — there is no TTY in
+/// CI, so the prompt hangs or the banner pollutes the log. cosign's documented
+/// non-interactive consent is the global `--yes` flag or its `COSIGN_YES` env
+/// equivalent; the env form is preferred here because it is subcommand- and
+/// arg-position-agnostic (one seam covers `sign`, `sign-blob`, and any
+/// user-supplied args) and cannot collide with a positional the user wrote.
+///
+/// A no-op for non-cosign signers. Idempotent and operator-respecting: an
+/// explicit `COSIGN_YES` already present in the rendered env (e.g. a user who
+/// set it to `false` to force interactivity) is left untouched.
+pub(crate) fn ensure_cosign_consent_env(cmd: &str, env: &mut Vec<(String, String)>) {
+    if !is_cosign_cmd(cmd) {
+        return;
+    }
+    if env.iter().any(|(k, _)| k == COSIGN_CONSENT_ENV) {
+        return;
+    }
+    env.push((COSIGN_CONSENT_ENV.to_string(), "true".to_string()));
+}
+
 /// Artifact filter mode for `process_sign_configs`.
 #[derive(Clone, Copy)]
 pub(crate) enum ArtifactFilter {
@@ -297,12 +339,16 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
     let stdout_str = anodizer_core::redact::string(&stdout_raw, &env_pairs);
     let stderr_str = anodizer_core::redact::string(&stderr_raw, &env_pairs);
 
+    // Raw subprocess stdio is verbose-only detail per
+    // .claude/rules/log-status-vs-verbose.md; an explicit `output:` opts the
+    // tee back in but it stays below default. A non-zero exit still surfaces
+    // via `check_output` below.
     if job.output_flag {
         if !stdout_str.is_empty() {
-            log.status(&format!("[{} stdout] {}", job.label, stdout_str.trim()));
+            log.verbose(&format!("[{} stdout] {}", job.label, stdout_str.trim()));
         }
         if !stderr_str.is_empty() {
-            log.status(&format!("[{} stderr] {}", job.label, stderr_str.trim()));
+            log.verbose(&format!("[{} stderr] {}", job.label, stderr_str.trim()));
         }
     }
 
@@ -796,6 +842,11 @@ pub(crate) fn process_sign_configs(
                     rendered_env.push(((*k).to_string(), (*v).to_string()));
                 }
             }
+
+            // cosign signing must never block on the sigstore consent prompt in
+            // CI; export `COSIGN_YES` so the banner is suppressed. No-op for
+            // gpg / other signers.
+            ensure_cosign_consent_env(&cmd, &mut rendered_env);
 
             let rendered_env = if rendered_env.is_empty() {
                 None

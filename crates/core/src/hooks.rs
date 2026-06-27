@@ -94,7 +94,7 @@ impl<'a> HookRunContext<'a> {
 /// environment before calling `run_hooks`, which `setup_env()` handles. See
 /// [`HookRunContext`] for how `template_vars` and `build_env` are applied.
 pub fn run_hooks(hooks: &[HookEntry], label: &str, ctx: HookRunContext<'_>) -> Result<()> {
-    run_hooks_inner(hooks, label, ctx, None).map(|_| ())
+    run_hooks_inner(hooks, label, ctx, HookResultLine::Status).map(|_| ())
 }
 
 /// First line of a (rendered) hook command, truncated for a single-line status
@@ -111,10 +111,28 @@ fn hook_cmd_summary(cmd: &str) -> String {
     }
 }
 
-/// [`run_hooks`] with an optional bound artifact name. When `Some`, this is a
-/// per-artifact `before_publish` iteration and the "ran <label> hook" echo is
-/// demoted to verbose and names the artifact; `None` keeps the single default
-/// status line.
+/// How [`run_hooks_inner`] surfaces the per-entry "ran <label> hook" result.
+/// All three modes log exactly one line per executed entry; they differ only
+/// in level and wording so a caller that prints its own single summary line
+/// does not produce a second default-visible line for the same hook.
+#[derive(Clone, Copy)]
+enum HookResultLine<'a> {
+    /// Default-visible per-hook status line naming WHICH hook ran (the
+    /// lifecycle `before:` / `after:` sites and the standalone case).
+    Status,
+    /// A per-artifact `before_publish` iteration: demote to verbose and name
+    /// the artifact; the caller prints one default summary over all artifacts.
+    PerArtifact(&'a str),
+    /// Run-once: demote to verbose with no artifact; the caller prints the one
+    /// default summary line, so the inner echo must NOT also hit `status`.
+    Suppressed,
+}
+
+/// [`run_hooks`] with control over how the per-entry result line is surfaced
+/// (see [`HookResultLine`]). The verbose-suppressing modes converge every
+/// caller that prints its own single summary onto the SAME inner runner, so the
+/// joined hook command is never echoed at `status` and the default level shows
+/// exactly one RESULT line per hook.
 ///
 /// Returns `true` when at least one entry executed (reached the run past the
 /// `if:` gate) and `false` when every entry was `if:`-skipped. Dry-run counts
@@ -123,7 +141,7 @@ fn run_hooks_inner(
     hooks: &[HookEntry],
     label: &str,
     ctx: HookRunContext<'_>,
-    artifact_name: Option<&str>,
+    result_line: HookResultLine<'_>,
 ) -> Result<bool> {
     let HookRunContext {
         dry_run,
@@ -253,9 +271,16 @@ fn run_hooks_inner(
                 &format!("{} hook: {}", label, cmd_str),
             )?;
 
-            match artifact_name {
-                Some(name) => log.verbose(&format!("ran {label} hook '{cmd_str}' on {name}")),
-                None => {
+            match result_line {
+                HookResultLine::PerArtifact(name) => {
+                    log.verbose(&format!("ran {label} hook '{cmd_str}' on {name}"))
+                }
+                // Run-once: the caller emits the single default summary, so the
+                // joined command stays at verbose — never echoed at `status`.
+                HookResultLine::Suppressed => {
+                    log.verbose(&format!("ran {label} hook '{cmd_str}' once"))
+                }
+                HookResultLine::Status => {
                     // Name WHICH hook ran so several `before:`/`after:` entries
                     // produce distinct default lines instead of N identical
                     // "ran before hook" echoes.
@@ -604,13 +629,22 @@ fn run_before_publish_entry(
     // lifecycle hook (one entry, run-level vars, one default status line).
     if run_once {
         let single = std::slice::from_ref(entry);
-        run_hooks(
+        // Suppress the inner per-hook line to verbose so the run-once path emits
+        // exactly ONE default RESULT line (the summary below) and never echoes
+        // the joined hook command at `status` — converging on the same
+        // verbose-demoting inner runner the per-artifact path uses.
+        run_hooks_inner(
             single,
             "before-publish",
             HookRunContext::new(dry_run, log, Some(base_vars)),
+            HookResultLine::Suppressed,
         )?;
         if !dry_run {
-            log.status(&format!("ran before-publish hook '{cmd_label}' once")); // status-ok: run-once summary
+            // Summarize the command (first line, truncated) so the default line
+            // names WHICH hook ran without echoing a full multi-line / very-long
+            // joined bash one-liner — the command detail stays at verbose.
+            let hook_name = hook_cmd_summary(cmd_label);
+            log.status(&format!("ran before-publish hook: {hook_name} (once)")); // status-ok: run-once summary
         }
         return Ok(());
     }
@@ -645,7 +679,7 @@ fn run_before_publish_entry(
             single,
             "before-publish",
             HookRunContext::new(dry_run, log, Some(&vars)),
-            Some(artifact.name()),
+            HookResultLine::PerArtifact(artifact.name()),
         )?;
         // An `if:`-skipped artifact reaches no command, so it must not inflate
         // the summary count (which would contradict the verbose per-artifact
@@ -1417,6 +1451,63 @@ mod tests {
             "run_once hook must render run-level vars (Version), not per-artifact vars; got: {contents:?}"
         );
         let _ = std::fs::remove_file(&out);
+    }
+
+    /// The run-once `before_publish` path must emit exactly ONE default-level
+    /// RESULT line and must NOT echo the joined bash command at `status` — the
+    /// command echo belongs at verbose. Regression guard for the double-print +
+    /// argv-at-default-verbosity bug.
+    #[test]
+    fn before_publish_run_once_logs_result_once_no_argv_at_status() {
+        let (log, cap) = StageLogger::with_capture("before-publish", Verbosity::Verbose);
+        let artifacts = vec![pkg_artifact("foo", "a.deb"), pkg_artifact("foo", "b.deb")];
+        let base = TemplateVars::new();
+        // A long joined command so an un-summarized argv echo at status is
+        // detectable: the trailing sentinel sits past the 80-char summary cut,
+        // so it appears ONLY if the full joined command leaks to a status line.
+        let joined = format!("true {}&& echo TAILSENTINEL", "&& true ".repeat(12));
+        run_before_publish_entry(
+            &HookEntry::Structured(StructuredHook {
+                cmd: joined.clone(),
+                run_once: true,
+                ..Default::default()
+            }),
+            &artifacts,
+            false,
+            &log,
+            &base,
+        )
+        .expect("run_once entry must execute");
+
+        let msgs = cap.all_messages();
+        let status_hook_lines: Vec<&String> = msgs
+            .iter()
+            .filter(|(lvl, m)| *lvl == LogLevel::Status && m.contains("before-publish hook"))
+            .map(|(_, m)| m)
+            .collect();
+        assert_eq!(
+            status_hook_lines.len(),
+            1,
+            "run-once must emit exactly one default RESULT line (no double-print); got: {msgs:?}"
+        );
+        assert!(
+            status_hook_lines[0].contains("(once)"),
+            "the single default line must be the run-once summary; got: {:?}",
+            status_hook_lines[0]
+        );
+        assert!(
+            !msgs
+                .iter()
+                .any(|(lvl, m)| *lvl == LogLevel::Status && m.contains("TAILSENTINEL")),
+            "the full joined bash command must NOT be echoed at default verbosity \
+             (the summary is truncated); got: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|(lvl, m)| *lvl == LogLevel::Verbose
+                && m.contains("ran before-publish hook")
+                && m.contains("once")),
+            "the per-hook command echo must be demoted to verbose; got: {msgs:?}"
+        );
     }
 
     /// A `run_once` hook whose command exits non-zero must abort the stage

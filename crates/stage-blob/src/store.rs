@@ -23,6 +23,23 @@ use crate::provider::Provider;
 /// do.
 const OBJECT_STORE_RETRY_TIMEOUT_CAP: std::time::Duration = std::time::Duration::from_secs(5 * 60);
 
+/// Floor on `object_store::RetryConfig::max_retries` for an idempotent blob
+/// PUT, decoupled from the global attempt cap. A bucket PUT to a fixed key is
+/// idempotent — re-issuing it after a transient 5xx/429 or a dropped
+/// connection lands the same bytes at the same key. Stateful modes like
+/// `--publish-only` resolve `attempts: 1` → `max_retries: 0`, which strips the
+/// SDK's own transient retry entirely and turns a recoverable network blip
+/// into a failed release. Flooring at 2 retries (3 total attempts) restores a
+/// bounded retry for the recoverable case while a real 4xx (auth/permission)
+/// still fails fast inside object_store. Mirrors the HTTP-upload and GitHub
+/// asset idempotent-retry floors.
+///
+/// Sourced from the shared [`anodizer_core::retry::IDEMPOTENT_PUT_ATTEMPTS`]
+/// so the "3 total attempts" guarantee is single-sourced. object_store counts
+/// RETRIES (not attempts), so the floor is `IDEMPOTENT_PUT_ATTEMPTS - 1`: 2
+/// retries == 3 total attempts.
+const OBJECT_STORE_MIN_RETRIES: usize = anodizer_core::retry::IDEMPOTENT_PUT_ATTEMPTS as usize - 1;
+
 /// Bridge anodizer's user-facing [`RetryConfig`] (top-level `retry:` block)
 /// into [`object_store::RetryConfig`] so the bucket SDK retries align with
 /// every other HTTP-uploading publisher. `attempts` includes the first try
@@ -34,7 +51,10 @@ const OBJECT_STORE_RETRY_TIMEOUT_CAP: std::time::Duration = std::time::Duration:
 /// lifetime — see [`OBJECT_STORE_RETRY_TIMEOUT_CAP`].
 pub(crate) fn to_object_store_retry(cfg: &RetryConfig) -> ObjectStoreRetryConfig {
     let policy = cfg.to_policy();
-    let max_retries = policy.max_attempts.saturating_sub(1) as usize;
+    // Idempotent PUTs keep a transient-error retry floor even when a stateful
+    // mode (`--publish-only`) resolves `attempts: 1` → `max_retries: 0`.
+    let max_retries =
+        (policy.max_attempts.saturating_sub(1) as usize).max(OBJECT_STORE_MIN_RETRIES);
     let raw_total = policy.max_delay.saturating_mul(policy.max_attempts.max(1));
     let retry_timeout = std::cmp::min(raw_total, OBJECT_STORE_RETRY_TIMEOUT_CAP);
     ObjectStoreRetryConfig {
@@ -282,6 +302,23 @@ mod retry_bridge_tests {
             ..RetryConfig::default()
         };
         assert_eq!(to_object_store_retry(&cfg).max_retries, 3);
+    }
+
+    #[test]
+    fn max_retries_floored_for_idempotent_put_under_single_attempt() {
+        // A stateful mode (`--publish-only`) resolves `attempts: 1`, which
+        // would naively yield `max_retries: 0` and strip the SDK's own
+        // transient retry from an idempotent PUT. The floor keeps a bounded
+        // retry (2) so a recoverable 5xx/429/dropped-connection still re-issues
+        // the PUT.
+        let cfg = RetryConfig {
+            attempts: 1,
+            ..RetryConfig::default()
+        };
+        assert_eq!(
+            to_object_store_retry(&cfg).max_retries,
+            OBJECT_STORE_MIN_RETRIES
+        );
     }
 
     #[test]

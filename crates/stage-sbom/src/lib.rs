@@ -952,102 +952,60 @@ fn run_sbom_builtin(
         return Ok(());
     }
 
-    // Track rendered output filenames so a misconfigured `documents:`
-    // template (e.g. one missing `{{ .ArtifactName }}` while iterating
-    // multiple archives) bails loudly rather than silently overwriting
-    // the same file N times.
-    let mut written_paths: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
+    // The built-in (Cargo.lock) generator's output is archive-INDEPENDENT by
+    // construction — it catalogs the workspace dependency graph, not the
+    // contents of any one archive. Emitting one document per matched artifact
+    // would write the SAME bytes to N differently-named files (N redundant
+    // checksum + signature objects). So emit ONE workspace SBOM regardless of
+    // `artifacts:` mode, named `<project>-<version>.<ext>` (the `any`
+    // filename). The matched-artifact scan above is still load-bearing: it
+    // gates the strict-guard (an `archive` SBOM configured against a build that
+    // produced none is a config bug) and the first matched subject carries the
+    // verdict record the release `ids:` filter inherits. External (syft)
+    // scanning DOES vary per archive and never reaches this function.
+    let (_, subject_meta, subject_target, subject_kind) = &matching_artifacts[0];
 
-    for (artifact_path, artifact_meta, artifact_target, artifact_kind) in &matching_artifacts {
-        let output_path = if artifacts_type == "any" {
-            // Legacy global-SBOM filename: `<project>-<version>.<ext>`.
-            let filename = format!("{}-{}.{}", project_name, version, extension);
-            dist.join(filename)
-        } else {
-            // Per-artifact: render `documents[0]` with `ArtifactName`
-            // bound to the matched archive. Matches the external path's
-            // template surface so config templates port verbatim.
-            let vars = artifact_template_vars(
-                ctx,
-                artifact_path,
-                artifact_meta,
-                artifact_target.as_deref(),
-            );
+    let filename = format!("{}-{}.{}", project_name, version, extension);
+    let output_path = dist.join(filename);
 
-            let doc_tpl = documents.first().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "sbom[{}]: built-in mode with `artifacts: {}` requires a `documents:` \
-                     template (e.g. \"{{{{ .ArtifactName }}}}.cdx.json\")",
-                    id,
-                    artifacts_type
-                )
-            })?;
-            let rendered = anodizer_core::template::render(doc_tpl, &vars).with_context(|| {
-                format!(
-                    "sbom[{}]: failed to render document template '{}'",
-                    id, doc_tpl
-                )
-            })?;
-            if Path::new(&rendered).is_absolute() {
-                bail!(
-                    "sbom[{}]: rendered document path '{}' is absolute; \
-                     SBOM outputs must be relative to the dist directory",
-                    id,
-                    rendered
-                );
-            }
-            dist.join(rendered)
-        };
+    std::fs::write(&output_path, &json_string)
+        .with_context(|| format!("sbom: failed to write {}", output_path.display()))?;
 
-        if !written_paths.insert(output_path.clone()) {
-            bail!(
-                "sbom[{}]: built-in mode rendered the same output path '{}' for two \
-                 artifacts — add `{{{{ .ArtifactName }}}}` (or another per-artifact \
-                 var) to the `documents:` template",
-                id,
-                output_path.display()
+    let name = output_path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    log.status(&format!("wrote {} for sbom[{}] ({})", name, id, format));
+
+    let mut metadata = HashMap::new();
+    metadata.insert("format".to_string(), format.to_string());
+    metadata.insert("sbom_id".to_string(), id.to_string());
+    // Subject provenance: the SBOM inherits its subject's verdict record so
+    // the release `ids:` filter gives it the same upload verdict as the
+    // artifact it catalogs.
+    if let Some(kind) = subject_kind {
+        let (verdict_kind, inherited_id) =
+            anodizer_core::artifact::subject_verdict_record(*kind, subject_meta);
+        if let Some(verdict_kind) = verdict_kind {
+            metadata.insert(
+                anodizer_core::artifact::SUBJECT_KIND_META.to_string(),
+                verdict_kind,
             );
         }
-
-        std::fs::write(&output_path, &json_string)
-            .with_context(|| format!("sbom: failed to write {}", output_path.display()))?;
-
-        let name = output_path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
-        log.status(&format!("wrote {} for sbom[{}] ({})", name, id, format));
-
-        let mut metadata = HashMap::new();
-        metadata.insert("format".to_string(), format.to_string());
-        metadata.insert("sbom_id".to_string(), id.to_string());
-        // Subject provenance: the SBOM inherits its subject's verdict
-        // record so the release `ids:` filter gives it the same upload
-        // verdict as the artifact it catalogs.
-        if let Some(kind) = artifact_kind {
-            let (subject_kind, inherited_id) =
-                anodizer_core::artifact::subject_verdict_record(*kind, artifact_meta);
-            if let Some(subject_kind) = subject_kind {
-                metadata.insert(
-                    anodizer_core::artifact::SUBJECT_KIND_META.to_string(),
-                    subject_kind,
-                );
-            }
-            if let Some(subject_id) = inherited_id {
-                metadata.insert("id".to_string(), subject_id);
-            }
+        if let Some(subject_id) = inherited_id {
+            metadata.insert("id".to_string(), subject_id);
         }
-
-        ctx.artifacts.add(Artifact {
-            kind: ArtifactKind::Sbom,
-            name,
-            path: output_path,
-            target: artifact_target.clone(),
-            crate_name: project_name.to_string(),
-            metadata,
-            size: None,
-        });
     }
+
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Sbom,
+        name,
+        path: output_path,
+        target: subject_target.clone(),
+        crate_name: project_name.to_string(),
+        metadata,
+        size: None,
+    });
 
     Ok(())
 }
@@ -1828,6 +1786,144 @@ mod tests {
                 .all()
                 .iter()
                 .all(|a| a.kind != ArtifactKind::Sbom)
+        );
+    }
+
+    /// Built-in (Cargo.lock) generator with `artifacts: archive` and MULTIPLE
+    /// archives emits exactly ONE workspace SBOM, not one byte-identical copy
+    /// per archive. The built-in output is archive-independent (it catalogs the
+    /// dependency graph), so N copies would only multiply the downstream
+    /// checksum + signature object count for no information gain.
+    #[cfg(unix)]
+    #[test]
+    fn builtin_archive_emits_single_workspace_sbom() {
+        let tmpdir = tempfile::tempdir().expect("tempdir");
+        let dist = tmpdir.path().to_path_buf();
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myproj")
+            .tag("v1.0.0")
+            .dist(dist.clone())
+            // No `cmd`/`args` → use_builtin path. `documents:` provides only the
+            // format/extension hint (.cdx.json → cyclonedx); the built-in path
+            // does not render it per-archive.
+            .add_sbom(SbomConfig {
+                id: Some("wsbom".into()),
+                artifacts: Some("archive".into()),
+                documents: Some(vec!["{{ .ArtifactName }}.cdx.json".into()]),
+                ..Default::default()
+            })
+            .build();
+
+        // Three Archive artifacts across distinct targets — the pre-fix loop
+        // would write three identical `.cdx.json` files.
+        for (name, target) in [
+            ("pkg-linux.tar.gz", "x86_64-unknown-linux-gnu"),
+            ("pkg-mac.tar.gz", "aarch64-apple-darwin"),
+            ("pkg-win.zip", "x86_64-pc-windows-msvc"),
+        ] {
+            let p = dist.join(name);
+            std::fs::write(&p, b"archive").unwrap();
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Archive,
+                name: name.into(),
+                path: p,
+                target: Some(target.into()),
+                crate_name: "myproj".into(),
+                metadata: HashMap::new(),
+                size: None,
+            });
+        }
+
+        SbomStage.run(&mut ctx).expect("built-in sbom stage");
+
+        let sboms: Vec<&Artifact> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.kind == ArtifactKind::Sbom)
+            .collect();
+        assert_eq!(
+            sboms.len(),
+            1,
+            "built-in generator + artifacts:archive must emit exactly ONE \
+             workspace SBOM, not one per archive; got {:?}",
+            sboms.iter().map(|a| &a.name).collect::<Vec<_>>()
+        );
+        // The single SBOM is the workspace-level `<project>-<version>.<ext>`
+        // document, not a per-archive filename.
+        assert_eq!(sboms[0].name, "myproj-1.0.0.cdx.json");
+        assert!(sboms[0].path.exists(), "the workspace SBOM must be on disk");
+    }
+
+    /// The external (syft) archive path is UNTOUCHED by the built-in dedupe:
+    /// per-archive scanning produces genuinely-distinct SBOMs, so two archives
+    /// yield two SBOMs (one rendered document each).
+    #[cfg(unix)]
+    #[test]
+    fn external_cmd_archive_emits_one_sbom_per_archive() {
+        let tools = FakeToolDir::new();
+        tools
+            .tool("syft")
+            .script("for a in \"$@\"; do case \"$a\" in *=*) echo '{}' > \"${a#*=}\";; esac; done")
+            .install();
+
+        let tmpdir = tempfile::tempdir().expect("tempdir");
+        let dist = tmpdir.path().to_path_buf();
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myproj")
+            .tag("v1.0.0")
+            .dist(dist.clone())
+            .add_sbom(SbomConfig {
+                id: Some("perarch".into()),
+                cmd: Some(tools.tool_path("syft").to_string_lossy().into_owned()),
+                artifacts: Some("archive".into()),
+                documents: Some(vec!["{{ .ArtifactName }}.spdx.json".into()]),
+                args: Some(vec![
+                    "scan".into(),
+                    "$artifact".into(),
+                    "--output".into(),
+                    "spdx-json=$document".into(),
+                ]),
+                env: Some(vec![]),
+                ..Default::default()
+            })
+            .build();
+
+        for (name, target) in [
+            ("pkg-linux.tar.gz", "x86_64-unknown-linux-gnu"),
+            ("pkg-mac.tar.gz", "aarch64-apple-darwin"),
+        ] {
+            let p = dist.join(name);
+            std::fs::write(&p, b"archive").unwrap();
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Archive,
+                name: name.into(),
+                path: p,
+                target: Some(target.into()),
+                crate_name: "myproj".into(),
+                metadata: HashMap::new(),
+                size: None,
+            });
+        }
+
+        SbomStage.run(&mut ctx).expect("external sbom stage");
+
+        let mut names: Vec<String> = ctx
+            .artifacts
+            .all()
+            .iter()
+            .filter(|a| a.kind == ArtifactKind::Sbom)
+            .map(|a| a.name.clone())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec![
+                "pkg-linux.tar.gz.spdx.json".to_string(),
+                "pkg-mac.tar.gz.spdx.json".to_string(),
+            ],
+            "external (syft) archive path must stay per-archive — one distinct \
+             SBOM per scanned archive"
         );
     }
 

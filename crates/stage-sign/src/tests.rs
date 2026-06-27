@@ -7,7 +7,9 @@ use super::helpers::{
     collapse_doubled_digest, pin_image_ref_to_digest, prepare_stdin_from, resolve_sign_args,
     resolve_signature_path, should_sign_artifact,
 };
-use super::process::{ArtifactFilter, process_sign_configs};
+use super::process::{
+    ArtifactFilter, COSIGN_CONSENT_ENV, ensure_cosign_consent_env, process_sign_configs,
+};
 use super::{DockerSignStage, SignStage};
 
 /// Readability alias for the kind-filter predicate at call sites.
@@ -2273,6 +2275,53 @@ fn keyed_cosign_is_not_skipped_under_harness() {
             .iter()
             .any(|(stage, label)| stage == "sign" && label == "cosign-keyed"),
         "a `--key`-bearing cosign config must still run under the harness: {skips:?}"
+    );
+}
+
+/// cosign invocations must carry the non-interactive consent (`COSIGN_YES`) so
+/// the sigstore privacy banner / `y/N` prompt never blocks or pollutes CI
+/// output. The seam exports it in the child env, idempotently, for any
+/// `cosign`/`cosign-*` basename.
+#[test]
+fn cosign_consent_env_is_injected_for_cosign() {
+    let mut env: Vec<(String, String)> = Vec::new();
+    ensure_cosign_consent_env("cosign", &mut env);
+    assert!(
+        env.iter()
+            .any(|(k, v)| k == COSIGN_CONSENT_ENV && v == "true"),
+        "cosign must carry the non-interactive consent env: {env:?}"
+    );
+
+    // An absolute path and a `cosign-*` variant still resolve to the cosign
+    // basename and get the consent.
+    let mut env_abs: Vec<(String, String)> = Vec::new();
+    ensure_cosign_consent_env("/usr/local/bin/cosign", &mut env_abs);
+    assert!(env_abs.iter().any(|(k, _)| k == COSIGN_CONSENT_ENV));
+}
+
+/// A non-cosign signer (gpg, custom) must NOT have `COSIGN_YES` forced into its
+/// env, and an operator who pinned `COSIGN_YES` explicitly is respected
+/// (idempotent — no duplicate, value untouched).
+#[test]
+fn cosign_consent_env_noop_for_non_cosign_and_respects_explicit() {
+    let mut gpg_env: Vec<(String, String)> = Vec::new();
+    ensure_cosign_consent_env("gpg", &mut gpg_env);
+    assert!(
+        gpg_env.is_empty(),
+        "non-cosign signer must not get the cosign consent env: {gpg_env:?}"
+    );
+
+    let mut pinned: Vec<(String, String)> =
+        vec![(COSIGN_CONSENT_ENV.to_string(), "false".to_string())];
+    ensure_cosign_consent_env("cosign", &mut pinned);
+    assert_eq!(
+        pinned.len(),
+        1,
+        "an explicit COSIGN_YES must not be duplicated: {pinned:?}"
+    );
+    assert_eq!(
+        pinned[0].1, "false",
+        "an operator-set COSIGN_YES value must be respected"
     );
 }
 

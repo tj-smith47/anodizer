@@ -68,7 +68,41 @@ impl RetryPolicy {
         let ms = (self.base_delay.as_millis() as u64).saturating_mul(mult);
         std::cmp::min(Duration::from_millis(ms), self.max_delay)
     }
+
+    /// Raise this policy's `max_attempts` to at least [`IDEMPOTENT_PUT_ATTEMPTS`]
+    /// without disturbing its backoff shape, returning the adjusted policy.
+    ///
+    /// An idempotent PUT/POST to a fixed target (an Artifactory/generic upload,
+    /// a GemFury push, a Snap Store upload, a bucket blob PUT, a GitHub asset
+    /// upload) lands the same bytes at the same path on every re-issue, so a
+    /// transient 5xx/429 or dropped connection must retry a bounded number of
+    /// times even when a stateful mode (`--publish-only`) resolves the
+    /// configured policy down to `attempts: 1`. The floor is a `max()` — it
+    /// only widens the bound for the retriable classes and never lowers an
+    /// operator-set higher value. 4xx responses still fast-fail inside the
+    /// per-attempt classifier regardless of this floor.
+    pub fn with_idempotent_floor(self) -> RetryPolicy {
+        self.with_floor(IDEMPOTENT_PUT_ATTEMPTS)
+    }
+
+    /// Raise this policy's `max_attempts` to at least `min`, leaving the backoff
+    /// shape untouched. A `max()` floor, never a clamp that lowers a higher
+    /// operator-set value.
+    pub fn with_floor(self, min: u32) -> RetryPolicy {
+        RetryPolicy {
+            max_attempts: self.max_attempts.max(min),
+            ..self
+        }
+    }
 }
+
+/// Total attempt floor for an idempotent PUT/POST, single-sourcing the
+/// "3 total attempts" guarantee shared by every idempotent-upload publisher
+/// (HTTP upload, GemFury, Snapcraft, GitHub asset, blob). Applied via
+/// [`RetryPolicy::with_idempotent_floor`] as a `max()` so a stateful mode
+/// (`--publish-only`) that resolves `attempts: 1` still keeps a bounded
+/// transient retry, while an operator-set higher cap is preserved.
+pub const IDEMPOTENT_PUT_ATTEMPTS: u32 = 3;
 
 /// Retry a synchronous operation according to `policy`.
 ///
@@ -631,6 +665,34 @@ mod tests {
             base_delay: Duration::from_millis(1),
             max_delay: Duration::from_millis(5),
         }
+    }
+
+    /// The idempotent floor raises a sub-floor cap to [`IDEMPOTENT_PUT_ATTEMPTS`]
+    /// but never lowers an operator-set higher cap. Fails if the floor constant
+    /// is reverted to 1 (or the `max()` semantics flip to a clamp).
+    #[test]
+    fn idempotent_floor_raises_low_cap_and_preserves_high_cap() {
+        let raised = RetryPolicy {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(5),
+        }
+        .with_idempotent_floor();
+        assert_eq!(
+            raised.max_attempts, IDEMPOTENT_PUT_ATTEMPTS,
+            "a single-attempt cap must be raised to the idempotent floor"
+        );
+
+        let preserved = RetryPolicy {
+            max_attempts: 7,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(5),
+        }
+        .with_idempotent_floor();
+        assert_eq!(
+            preserved.max_attempts, 7,
+            "an operator-set cap above the floor must be preserved, not lowered"
+        );
     }
 
     #[test]

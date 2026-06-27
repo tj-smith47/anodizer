@@ -456,11 +456,25 @@ pub(crate) fn run_github_backend(
         );
         let release_id_raw = release.id.into_inner();
 
+        // Re-touching an already-live release (the publish-pipeline pass that
+        // runs after the release stage already created, uploaded, and
+        // published it) must not re-POST every asset: each one comes back
+        // 422 already_exists, and the redundant burst trips GitHub's
+        // secondary rate limit. The assets are already attached, so skip the
+        // upload loop entirely — UNLESS the operator asked for a real
+        // overwrite (`--replace-existing` / `replace_existing_artifacts`),
+        // in which case the loop runs and DELETEs-then-re-uploads each asset.
+        let skip_upload = skip_upload || (retouch_live && !replace_existing_artifacts);
+
         // Upload artifacts (unless skip_upload is set), with bounded
         // parallelism using a semaphore (context's parallelism setting,
         // minimum 1).
         if skip_upload {
-            log.status("skipped artifact uploads — skip_upload is set");
+            if retouch_live {
+                log.status("skipped artifact uploads — release already live with assets attached");
+            } else {
+                log.status("skipped artifact uploads — skip_upload is set");
+            }
         } else {
             // Upload concurrency cap: env > config > default (4).
             // Separate from ctx.options.parallelism (which governs build
@@ -1743,6 +1757,234 @@ mod orchestrator_tests {
         assert!(
             !messages.iter().any(|m| m.contains("published release")),
             "re-touch must NOT re-emit the publish line; got: {messages:?}"
+        );
+    }
+
+    /// A live release found by tag, carrying its assets, that is re-touched by
+    /// the publish pipeline pass (`--publish-only` → `resume_release=true`) must
+    /// NOT re-POST any asset when no overwrite was requested. Every re-POST
+    /// returns `422 already_exists`; the redundant ~115-asset burst trips
+    /// GitHub's secondary rate limit. With `replace_existing_artifacts=false`,
+    /// the retouch path skips the upload loop entirely (zero `/upload/` POSTs,
+    /// zero DELETEs).
+    #[test]
+    fn publish_only_retouch_live_without_replace_uploads_nothing() {
+        let tmp = TempDir::new().expect("tempdir");
+        let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", b"already-attached");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        // A live (draft=false) release found by tag whose `demo.tar.gz` is
+        // already attached — exactly the shape the publish-only pass sees after
+        // the release stage created, uploaded, and published it.
+        let attached = asset_json(9, "demo.tar.gz", 16);
+        let live_with_asset = serde_json::json!({
+            "id": 77,
+            "node_id": "RL_77",
+            "tag_name": "v1.2.3",
+            "target_commitish": "main",
+            "name": "v1.2.3",
+            "draft": false,
+            "prerelease": false,
+            "created_at": "2026-01-01T00:00:00Z",
+            "published_at": "2026-01-01T00:00:00Z",
+            "author": null,
+            "assets": [serde_json::from_str::<serde_json::Value>(&attached).unwrap()],
+            "tarball_url": null,
+            "zipball_url": null,
+            "body": null,
+            "url": format!("http://{addr}/repos/o/r/releases/77"),
+            "html_url": format!("http://{addr}/o/r/releases/77"),
+            "assets_url": format!("http://{addr}/repos/o/r/releases/77/assets"),
+            "upload_url": format!("http://{addr}/upload/77{{?name,label}}"),
+        })
+        .to_string();
+
+        let routes = vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/tags/v1.2.3",
+                response: http_ok(live_with_asset.clone()),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/repos/o/r/releases/77",
+                response: http_ok(live_with_asset.clone()),
+                times: None,
+            },
+        ];
+        let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let ctx = build_ctx(addr);
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        let artifacts = vec![(artifact_path, Some("demo.tar.gz".to_string()))];
+
+        // keep-existing + live release => retouch_live; publish-only sets
+        // resume_release=true (so the leftover-assets pre-check does not bail).
+        let spec = GithubReleaseSpec {
+            tag: "v1.2.3",
+            name: "v1.2.3",
+            body: "release body",
+            mode: "keep-existing",
+            draft: false,
+            prerelease: false,
+            make_latest: &None,
+            target_commitish: &None,
+            discussion_category: &None,
+        };
+        let mut opts = base_opts();
+        opts.resume_release = true;
+
+        run_backend(&rt, &ctx, &token, &crate_cfg, &spec, &opts, &artifacts)
+            .expect("backend succeeds")
+            .expect("returns Some");
+
+        let entries = log.lock().expect("log mutex");
+        assert!(
+            !entries.iter().any(|e| e.path.starts_with("/upload/")),
+            "retouch of a live release without --replace must NOT re-POST any \
+             asset; calls: {entries:?}",
+        );
+        assert!(
+            !entries.iter().any(|e| e.method == "DELETE"),
+            "no overwrite requested => no asset DELETE; calls: {entries:?}",
+        );
+    }
+
+    /// The same live-release retouch WITH `replace_existing_artifacts=true`
+    /// (operator asked for a real overwrite) keeps the full upload loop: each
+    /// asset is re-uploaded (the 422 already_exists size-mismatch path deletes
+    /// the stale asset and retries). Proves the fix suppresses uploads ONLY on
+    /// the no-replace path.
+    #[test]
+    fn publish_only_retouch_live_with_replace_reuploads() {
+        let tmp = TempDir::new().expect("tempdir");
+        let bytes = b"fresh bytes";
+        let artifact_path = write_artifact(tmp.path(), "demo.tar.gz", bytes);
+        let artifact_len = bytes.len() as u64;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let attached = asset_json(9, "demo.tar.gz", 9999);
+        let live_with_asset = serde_json::json!({
+            "id": 77,
+            "node_id": "RL_77",
+            "tag_name": "v1.2.3",
+            "target_commitish": "main",
+            "name": "v1.2.3",
+            "draft": false,
+            "prerelease": false,
+            "created_at": "2026-01-01T00:00:00Z",
+            "published_at": "2026-01-01T00:00:00Z",
+            "author": null,
+            "assets": [serde_json::from_str::<serde_json::Value>(&attached).unwrap()],
+            "tarball_url": null,
+            "zipball_url": null,
+            "body": null,
+            "url": format!("http://{addr}/repos/o/r/releases/77"),
+            "html_url": format!("http://{addr}/o/r/releases/77"),
+            "assets_url": format!("http://{addr}/repos/o/r/releases/77/assets"),
+            "upload_url": format!("http://{addr}/upload/77{{?name,label}}"),
+        })
+        .to_string();
+        let stale_list = format!("[{}]", asset_json(9, "demo.tar.gz", 9999));
+
+        let routes = vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/tags/v1.2.3",
+                response: http_ok(live_with_asset.clone()),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PATCH",
+                path_pattern: "/repos/o/r/releases/77",
+                response: http_ok(live_with_asset.clone()),
+                times: None,
+            },
+            // readiness probe before uploads.
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/77",
+                response: http_ok(live_with_asset.clone()),
+                times: None,
+            },
+            // First upload 422s (asset already present, size mismatch).
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/upload/77?name=demo.tar.gz",
+                response: http_422_already_exists(),
+                times: Some(1),
+            },
+            // Size-probe lists the stale asset; DELETE clears it.
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/repos/o/r/releases/77/assets?per_page=100&page=1",
+                response: http_ok(stale_list),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "DELETE",
+                path_pattern: "/repos/o/r/releases/assets/9",
+                response: HTTP_204,
+                times: None,
+            },
+            // Retry upload succeeds.
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/upload/77?name=demo.tar.gz",
+                response: http_201(asset_json(11, "demo.tar.gz", artifact_len)),
+                times: Some(1),
+            },
+        ];
+        let (_addr2, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let ctx = build_ctx(addr);
+        let crate_cfg = build_crate_cfg();
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let token = Some("test-token".to_string());
+        let artifacts = vec![(artifact_path, Some("demo.tar.gz".to_string()))];
+
+        let spec = GithubReleaseSpec {
+            tag: "v1.2.3",
+            name: "v1.2.3",
+            body: "release body",
+            mode: "keep-existing",
+            draft: false,
+            prerelease: false,
+            make_latest: &None,
+            target_commitish: &None,
+            discussion_category: &None,
+        };
+        let mut opts = base_opts();
+        opts.resume_release = true;
+        opts.replace_existing_artifacts = true;
+
+        run_backend(&rt, &ctx, &token, &crate_cfg, &spec, &opts, &artifacts)
+            .expect("backend succeeds")
+            .expect("returns Some");
+
+        let entries = log.lock().expect("log mutex");
+        let uploads = entries
+            .iter()
+            .filter(|e| e.method == "POST" && e.path == "/upload/77?name=demo.tar.gz")
+            .count();
+        assert!(
+            uploads >= 1,
+            "with --replace the upload loop must run and re-POST the asset; \
+             calls: {entries:?}",
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "DELETE" && e.path == "/repos/o/r/releases/assets/9"),
+            "with --replace the stale asset must be DELETEd before re-upload; \
+             calls: {entries:?}",
         );
     }
 

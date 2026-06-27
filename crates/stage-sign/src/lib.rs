@@ -9,10 +9,12 @@ use anodizer_core::stage::Stage;
 
 mod expected;
 mod helpers;
+mod keyload;
 mod process;
 
 pub use expected::expected_signature_assets;
 pub use helpers::VALID_SIGN_ARTIFACT_FILTERS;
+pub use keyload::{CosignKeyLoad, verify_cosign_key_loads};
 
 use helpers::{default_sign_cmd, prepare_stdin_from, resolve_sign_args, validate_sign_config_ids};
 use process::{ArtifactFilter, process_sign_configs};
@@ -454,7 +456,7 @@ impl Stage for DockerSignStage {
                         continue;
                     }
 
-                    log.status(&format!("docker-sign [{}] {}", sign_id, signed_ref));
+                    log.verbose(&format!("docker-sign [{}] {}", sign_id, signed_ref));
 
                     // Prepare stdin piping for docker signs.
                     let (stdin_cfg, stdin_data) = prepare_stdin_from(
@@ -473,12 +475,16 @@ impl Stage for DockerSignStage {
                     // Parse and render docker-sign env in one pass; propagate errors
                     // instead of silently falling back to unrendered template strings.
                     // The rendered pairs are reused for redaction below.
-                    let docker_rendered_env: Vec<(String, String)> =
+                    let mut docker_rendered_env: Vec<(String, String)> =
                         anodizer_core::config::render_env_entries(
                             docker_sign_cfg.env.as_deref().unwrap_or(&[]),
                             |v| ctx.render_template(v),
                         )
                         .with_context(|| "docker-sign: render env entries")?;
+
+                    // docker image signing is cosign — suppress the sigstore
+                    // consent prompt so it never blocks/banners in CI.
+                    crate::process::ensure_cosign_consent_env(&cmd, &mut docker_rendered_env);
 
                     for (k, v) in &docker_rendered_env {
                         command.env(k, v);
@@ -529,18 +535,25 @@ impl Stage for DockerSignStage {
                     let stdout_str = anodizer_core::redact::string(&stdout_raw, &docker_env_pairs);
                     let stderr_str = anodizer_core::redact::string(&stderr_raw, &docker_env_pairs);
 
+                    // Raw subprocess stdio is verbose-only detail (the cosign
+                    // tlog lines, sigstore banner): per
+                    // .claude/rules/log-status-vs-verbose.md it never belongs at
+                    // default. An explicit `output:` template that evaluates true
+                    // opts the tee back in; the default is silent (the
+                    // `signed image <ref>` RESULT below is the default signal,
+                    // and a non-zero exit still surfaces via `check_output`).
                     let show_output = match docker_sign_cfg.output.as_ref() {
                         Some(s) => s
                             .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
                             .with_context(|| "docker_sign: render output template")?,
-                        None => true,
+                        None => false,
                     };
                     if show_output {
                         if !stdout_str.is_empty() {
-                            log.status(&format!("[docker-sign stdout] {}", stdout_str.trim()));
+                            log.verbose(&format!("[docker-sign stdout] {}", stdout_str.trim()));
                         }
                         if !stderr_str.is_empty() {
-                            log.status(&format!("[docker-sign stderr] {}", stderr_str.trim()));
+                            log.verbose(&format!("[docker-sign stderr] {}", stderr_str.trim()));
                         }
                     }
 
@@ -552,6 +565,8 @@ impl Stage for DockerSignStage {
 
                     // Now check exit status (bails on non-zero).
                     log.check_output(redacted_output, &cmd)?;
+
+                    log.status(&format!("signed image {signed_ref}")); // status-ok: per-image sign result
                 }
             }
 
@@ -592,10 +607,7 @@ fn entry_env_requirements(
     out.push(anodizer_core::EnvRequirement::Tool {
         name: cmd.to_string(),
     });
-    let is_cosign = std::path::Path::new(cmd)
-        .file_name()
-        .and_then(|b| b.to_str())
-        .is_some_and(|b| b.starts_with("cosign"));
+    let is_cosign = crate::process::is_cosign_cmd(cmd);
     for s in strings {
         let refs = template_env_refs(&s);
         if !refs.is_empty() {

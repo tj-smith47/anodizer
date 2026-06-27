@@ -875,6 +875,80 @@ fn gemfury_recorded_rollback_target_uses_derived_package_name() {
     assert_eq!(pushed[0].account, "acme");
 }
 
+/// The idempotent retry floor must keep a Fury push alive across a transient
+/// 503 even when the operator's resolved policy caps `attempts: 1` (the
+/// `--publish-only` shape). With the floor reverted to 1 this fails: the 503
+/// would surface as a hard error and the responder would be hit only once.
+/// Scripts `[503, 200]` on the push responder under `attempts: 1` and asserts
+/// the push SUCCEEDS and the responder was hit twice.
+#[test]
+fn gemfury_push_transient_503_retries_under_single_attempt_policy() {
+    use anodizer_core::config::{HumanDuration, RetryConfig};
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+    use std::sync::atomic::Ordering;
+    use std::time::Duration;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let art_path = tmp.path().join("demo_1.2.3_amd64.deb");
+    std::fs::write(&art_path, b"fake-deb").unwrap();
+
+    // Probe 404 ⇒ push attempted; first push 503 (transient) ⇒ retry; second
+    // push 200 ⇒ success. The floor (3) makes the second attempt available even
+    // though the resolved policy caps attempts at 1.
+    let probe_404 = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+    let push_503 = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n";
+    let push_200 = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+    let (api_addr, _api_calls) = spawn_oneshot_http_responder(vec![probe_404]);
+    let (push_addr, push_calls) = spawn_oneshot_http_responder(vec![push_503, push_200]);
+
+    let config = Config {
+        project_name: "demo".to_string(),
+        // attempts: 1 is the `--publish-only` resolved shape; tiny delays keep
+        // the test fast. Only the idempotent floor lets attempt 2 run.
+        retry: Some(RetryConfig {
+            attempts: 1,
+            delay: HumanDuration(Duration::from_millis(1)),
+            max_delay: HumanDuration(Duration::from_millis(1)),
+        }),
+        gemfury: Some(vec![GemFuryConfig {
+            account: Some("acme".into()),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .build();
+    ctx.config = config;
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new()
+            .with("FURY_PUSH_TOKEN", "fake-token")
+            .with("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"))
+            .with("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}")),
+    );
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::LinuxPackage,
+        path: art_path.clone(),
+        name: "demo_1.2.3_amd64.deb".to_string(),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "demo".to_string(),
+        metadata: std::collections::HashMap::new(),
+        size: None,
+    });
+
+    let log = StageLogger::new("gemfury", Verbosity::Quiet);
+    let pushed = run_publish(&ctx, &log).expect("transient 503 must be retried to success");
+    assert_eq!(pushed.len(), 1, "the retried push must land one target");
+    assert_eq!(
+        push_calls.load(Ordering::SeqCst),
+        2,
+        "the push responder must be hit twice (503 then 200) — proving the floor retried"
+    );
+}
+
 /// When a mid-loop push fails after an earlier artifact already landed, the
 /// out-param must still hold the partial set so the caller can roll back what
 /// landed. The `?`-on-`Result<Vec<_>>` signature discarded that evidence,
@@ -912,6 +986,12 @@ fn gemfury_partial_push_records_landed_target_on_later_failure() {
         .tag("v1.2.3")
         .build();
     ctx.config = config;
+    // Pin serial so the sequential responder's first-200-then-400 script maps
+    // deterministically to alpha (lands) then beta (fails): this test asserts
+    // the EXACT partial that landed, which only a serial push order fixes.
+    // Concurrent-failure recording (a sibling success kept despite a failing
+    // push) is covered separately and does not depend on which one fails.
+    ctx.options.parallelism = 1;
     ctx.set_env_source(
         anodizer_core::MapEnvSource::new()
             .with("FURY_PUSH_TOKEN", "fake-token")
@@ -950,6 +1030,84 @@ fn gemfury_partial_push_records_landed_target_on_later_failure() {
     assert_eq!(
         pushed[0].package, "alpha",
         "the recorded partial must be the artifact that actually pushed"
+    );
+}
+
+/// Concurrent partial-evidence: with parallel pushes, an artifact that lands
+/// (200) CONCURRENTLY with a sibling that fails (400) must still be recorded
+/// for rollback — the fan-out folds every landed target before surfacing the
+/// first error, so a concurrent success is never dropped. Which artifact gets
+/// the 200 vs 400 is nondeterministic under parallelism, so the assertion is
+/// order-agnostic: exactly one landed, and it is one of the two candidates.
+#[test]
+fn gemfury_concurrent_push_records_landed_target_despite_sibling_failure() {
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let art1 = tmp.path().join("alpha_1.2.3_amd64.deb");
+    let art2 = tmp.path().join("beta_1.2.3_amd64.deb");
+    std::fs::write(&art1, b"fake-deb-1").unwrap();
+    std::fs::write(&art2, b"fake-deb-2").unwrap();
+
+    let probe_404 = "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n";
+    let push_200 = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+    let push_400 = "HTTP/1.1 400 Bad Request\r\nContent-Length: 7\r\n\r\nbad req";
+    let (api_addr, _api_calls) = spawn_oneshot_http_responder(vec![probe_404, probe_404]);
+    let (push_addr, _push_calls) = spawn_oneshot_http_responder(vec![push_200, push_400]);
+
+    let config = Config {
+        project_name: "demo".to_string(),
+        gemfury: Some(vec![GemFuryConfig {
+            account: Some("acme".into()),
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("demo")
+        .tag("v1.2.3")
+        .build();
+    ctx.config = config;
+    // Force concurrency so a landing push overlaps a failing one.
+    ctx.options.parallelism = 4;
+    ctx.set_env_source(
+        anodizer_core::MapEnvSource::new()
+            .with("FURY_PUSH_TOKEN", "fake-token")
+            .with("ANODIZE_GEMFURY_API_BASE", format!("http://{api_addr}"))
+            .with("ANODIZE_GEMFURY_PUSH_BASE", format!("http://{push_addr}")),
+    );
+    for (path, name, krate) in [
+        (&art1, "alpha_1.2.3_amd64.deb", "alpha"),
+        (&art2, "beta_1.2.3_amd64.deb", "beta"),
+    ] {
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::LinuxPackage,
+            path: path.clone(),
+            name: name.to_string(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: krate.to_string(),
+            metadata: std::collections::HashMap::new(),
+            size: None,
+        });
+    }
+
+    let log = StageLogger::new("gemfury", Verbosity::Quiet);
+    let mut pushed: Vec<GemFuryTarget> = Vec::new();
+    let result = publish_to_gemfury(&ctx, &log, &mut pushed);
+
+    assert!(result.is_err(), "the 400 push must surface as an error");
+    assert_eq!(
+        pushed.len(),
+        1,
+        "the concurrently-landed artifact must be recorded for rollback even \
+         though its sibling failed, got {pushed:?}"
+    );
+    assert!(
+        matches!(pushed[0].package.as_str(), "alpha" | "beta"),
+        "the recorded partial must be one of the two candidates, got {:?}",
+        pushed[0].package
     );
 }
 

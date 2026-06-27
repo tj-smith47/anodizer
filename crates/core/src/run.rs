@@ -27,7 +27,7 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result};
@@ -72,25 +72,35 @@ fn set_own_process_group(cmd: &mut Command) {
 #[cfg(not(any(unix, windows)))]
 fn set_own_process_group(_cmd: &mut Command) {}
 
-/// Kill `child` and its entire process subtree, so a forked grandchild holding
-/// an inherited pipe dies too (otherwise the reader threads never EOF and the
-/// timeout fails to bound the call). Best-effort: a child that already exited
-/// yields a benign error.
-fn kill_child_tree(child: &mut Child) {
+/// Kill the process subtree rooted at `pid` (its own process group on Unix,
+/// the `/T` tree walk on Windows), so a forked grandchild holding an inherited
+/// pipe dies too. Signal-safe ONLY on Unix (a bare `libc::kill`); the Windows
+/// arm spawns `taskkill` and must therefore never run from a signal/console
+/// handler — only from a normal watcher thread. Best-effort: an already-reaped
+/// tree yields a benign error.
+///
+/// `signal` selects the disposition: the timeout watchdog passes `SIGKILL`
+/// (unconditional reap); the external-termination watcher passes `SIGTERM` so a
+/// well-behaved child (snapcraft, docker, git) gets a chance to clean up before
+/// anodizer itself re-raises and dies. The Windows arm is always `/F` (no
+/// graceful equivalent for an opaque subtree).
+fn kill_process_tree(pid: i32, signal: i32) {
     #[cfg(unix)]
     {
         // Negative pid targets the process GROUP (pgid == child pid, set at
-        // spawn via `set_own_process_group`). SIGKILL the whole group so no
+        // spawn via `set_own_process_group`). Signal the whole group so no
         // descendant survives holding our pipe ends.
-        let pid = child.id() as i32;
-        // SAFETY: `kill(2)` with a negative pid and SIGKILL has no memory
-        // effects; an already-reaped group yields ESRCH, which is ignored.
+        //
+        // SAFETY: `kill(2)` with a negative pid is async-signal-safe and has no
+        // memory effects; an already-reaped group yields ESRCH, which is
+        // ignored. Callable from a signal handler.
         unsafe {
-            libc::kill(-pid, libc::SIGKILL);
+            libc::kill(-pid, signal);
         }
     }
     #[cfg(windows)]
     {
+        let _ = signal; // no graceful disposition for an opaque Windows subtree
         // `child.kill()` (TerminateProcess) reaps ONLY the direct child;
         // CREATE_NEW_PROCESS_GROUP does not extend termination to descendants.
         // A forked grandchild (the `sh -c <tool>` wrapper shape) would survive
@@ -98,15 +108,11 @@ fn kill_child_tree(child: &mut Child) {
         // blocked until it exits on its own — so the timeout would not actually
         // bound the call. `taskkill /T` walks the process tree (by PPID linkage)
         // and terminates every descendant present at snapshot time, closing
-        // those pipes. It MUST run before `child.kill()` below: Windows never
-        // reparents orphans, so once the parent is killed its PID can be
-        // recycled by an unrelated process — the grandchild's now-stale PPID
-        // would then point the /T walk at the wrong subtree (or miss it
-        // entirely). Keeping the parent alive holds the tree linkage valid for
-        // the walk. Resolved by absolute path (System32) so a sanitized PATH
+        // those pipes. Resolved by absolute path (System32) so a sanitized PATH
         // can't strip the tool and silently drop us back to the 30s-hang bug.
         // Best-effort — an already-exited tree yields a non-zero status we
-        // ignore.
+        // ignore. NOT signal-safe (spawns a subprocess); only the watcher
+        // thread calls this, never a console handler.
         let taskkill = std::env::var_os("SystemRoot")
             .map(|root| {
                 std::path::Path::new(&root)
@@ -115,16 +121,283 @@ fn kill_child_tree(child: &mut Child) {
             })
             .unwrap_or_else(|| std::path::PathBuf::from("taskkill.exe"));
         let _ = std::process::Command::new(taskkill)
-            .args(["/T", "/F", "/PID", &child.id().to_string()])
+            .args(["/T", "/F", "/PID", &pid.to_string()])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status();
     }
+}
+
+/// Kill `child` and its entire process subtree, so a forked grandchild holding
+/// an inherited pipe dies too (otherwise the reader threads never EOF and the
+/// timeout fails to bound the call). The timeout path is unconditional, so it
+/// uses `SIGKILL`. Best-effort: a child that already exited yields a benign
+/// error.
+fn kill_child_tree(child: &mut Child) {
+    #[cfg(unix)]
+    kill_process_tree(child.id() as i32, libc::SIGKILL);
+    #[cfg(windows)]
+    {
+        // The /T tree walk MUST run before `child.kill()` below: Windows never
+        // reparents orphans, so once the parent is killed its PID can be
+        // recycled by an unrelated process — the grandchild's now-stale PPID
+        // would then point the /T walk at the wrong subtree (or miss it
+        // entirely). Keeping the parent alive holds the tree linkage valid.
+        kill_process_tree(child.id() as i32, 0);
+    }
     // The direct child kill is the portable fallback (and the only path on a
     // platform without group/tree semantics): it still reaps the immediate
     // child when the subtree kill above was a no-op or unavailable.
     let _ = child.kill();
+}
+
+/// Process-global registry of live, group-isolated child subtrees, keyed by
+/// the value that targets the whole tree on each platform (Unix: the child's
+/// pgid, equal to its pid; Windows: the child's pid for the `taskkill /T`
+/// walk). Populated only for children spawned in their own process group (the
+/// timeout-bounded path — the long-running snapcraft / docker / git subtrees
+/// that survive a cancel), so the external-termination watcher can group-kill
+/// every one of them before anodizer itself dies.
+///
+/// A plain `Mutex` is safe here because it is locked ONLY from normal threads
+/// (`capture_inner` on spawn/reap, the watcher thread on signal) — never from
+/// the async-signal-safe handler, which touches only the self-pipe.
+static LIVE_CHILD_TREES: OnceLock<Mutex<std::collections::HashSet<i32>>> = OnceLock::new();
+
+fn live_child_trees() -> &'static Mutex<std::collections::HashSet<i32>> {
+    LIVE_CHILD_TREES.get_or_init(|| Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Record a spawned, group-isolated child tree so the external-termination
+/// watcher can reach it. Paired with [`deregister_child_tree`] on reap.
+fn register_child_tree(id: i32) {
+    live_child_trees()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .insert(id);
+}
+
+/// Drop a reaped child tree from the registry so a recycled pid is never
+/// signalled by a later termination.
+fn deregister_child_tree(id: i32) {
+    live_child_trees()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&id);
+}
+
+/// RAII guard that deregisters a registered child tree on every exit edge of
+/// `capture_inner` — the pipe-take `?`s, the watchdog/stdin error returns,
+/// the success return, and an unwinding panic. A manual deregister could only
+/// cover the edges before it and would leak the pid past any earlier `?` or
+/// `thread::scope` panic, after which an OS pid-recycle would let an external
+/// termination signal an unrelated process group.
+struct TreeRegistration(i32);
+
+impl Drop for TreeRegistration {
+    fn drop(&mut self) {
+        deregister_child_tree(self.0);
+    }
+}
+
+/// SIGTERM every registered child subtree. Run by the watcher thread (NOT a
+/// signal handler), so locking the registry and issuing the kills is safe.
+/// Returns the number of trees signalled. On Windows the trees are killed via
+/// `taskkill /T /F`; there is no graceful disposition for an opaque subtree.
+fn terminate_all_child_trees() -> usize {
+    let ids: Vec<i32> = {
+        let guard = live_child_trees().lock().unwrap_or_else(|p| p.into_inner());
+        guard.iter().copied().collect()
+    };
+    for id in &ids {
+        #[cfg(unix)]
+        kill_process_tree(*id, libc::SIGTERM);
+        #[cfg(windows)]
+        kill_process_tree(*id, 0);
+    }
+    ids.len()
+}
+
+/// Install a one-shot handler so an EXTERNAL SIGTERM/SIGINT (a GitHub Actions
+/// job cancel, a runner job-timeout, an operator `Ctrl-C`) propagates to every
+/// group-isolated child subtree before anodizer exits — instead of orphaning a
+/// hung snapcraft/docker subtree that then holds the CI runner open long after
+/// anodizer is gone.
+///
+/// Idempotent and infallible from the caller's view: call once, early, before
+/// the pipeline runs. A second call (or a platform without the primitive) is a
+/// silent no-op. On the unsupported-platform fallback the process keeps its
+/// default signal disposition (terminate), so behavior is unchanged there.
+///
+/// # Mechanism (async-signal-safety)
+///
+/// Unix uses the classic **self-pipe**: the installed `sigaction` handler does
+/// nothing but `write(2)` a single byte to a pipe — the one syscall guaranteed
+/// async-signal-safe — and a normal watcher thread blocked on `read(2)` does
+/// the actual work (lock the registry, group-`SIGTERM` each child tree, then
+/// reset the signal to its default disposition and re-raise so anodizer dies
+/// WITH the right signal exit code, AFTER its children got the signal). The
+/// handler never locks, allocates, or logs.
+pub fn install_termination_handler() {
+    static INSTALLED: OnceLock<()> = OnceLock::new();
+    if INSTALLED.set(()).is_err() {
+        return; // already installed
+    }
+    #[cfg(unix)]
+    unix_termination::install();
+    #[cfg(windows)]
+    windows_termination::install();
+}
+
+#[cfg(unix)]
+mod unix_termination {
+    use super::terminate_all_child_trees;
+    use std::os::unix::io::RawFd;
+    use std::sync::atomic::{AtomicI32, Ordering};
+
+    /// Write end of the self-pipe, set BEFORE the handler is armed so a signal
+    /// can never observe an uninitialized fd. The handler reads it relaxed and
+    /// writes one byte; that is the only work it does.
+    static WAKE_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
+
+    /// Carries which signal fired from the handler to the watcher (for the
+    /// re-raise), so anodizer exits with the same signal that hit it.
+    static FIRED_SIGNAL: AtomicI32 = AtomicI32::new(0);
+
+    /// The `sigaction` handler: async-signal-safe by construction — it records
+    /// the signal number and writes ONE byte to the self-pipe, nothing else.
+    /// No lock, no allocation, no logging.
+    extern "C" fn on_signal(sig: libc::c_int) {
+        FIRED_SIGNAL.store(sig, Ordering::SeqCst);
+        let fd = WAKE_WRITE_FD.load(Ordering::SeqCst);
+        if fd >= 0 {
+            let byte: u8 = 1;
+            // SAFETY: `write(2)` is async-signal-safe; a single-byte write to a
+            // valid pipe fd has no memory effects. A short/failed write (EINTR,
+            // full pipe) is ignored — one queued byte already wakes the watcher.
+            unsafe {
+                let _ = libc::write(fd, &byte as *const u8 as *const libc::c_void, 1);
+            }
+        }
+    }
+
+    pub fn install() {
+        let mut fds: [RawFd; 2] = [-1, -1];
+        // SAFETY: `pipe(2)` fills the two-element array with valid fds or
+        // returns non-zero; on failure the handler is never armed.
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            return;
+        }
+        let (read_fd, write_fd) = (fds[0], fds[1]);
+        // Publish the write fd BEFORE arming the handler so no early signal can
+        // race a -1 fd.
+        WAKE_WRITE_FD.store(write_fd, Ordering::SeqCst);
+
+        // SAFETY: zeroed `sigaction` is a valid empty struct; we then set the
+        // handler and an empty mask. `sigaction(2)` itself is the documented
+        // installation API.
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = on_signal as *const () as usize;
+            libc::sigemptyset(&mut sa.sa_mask);
+            sa.sa_flags = 0;
+            libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut());
+            libc::sigaction(libc::SIGINT, &sa, std::ptr::null_mut());
+        }
+
+        std::thread::Builder::new()
+            .name("anodizer-sigwatch".into())
+            .spawn(move || watcher(read_fd))
+            .ok();
+    }
+
+    /// Normal watcher thread: blocks on the self-pipe, then group-`SIGTERM`s
+    /// every live child tree and re-raises the original signal so anodizer dies
+    /// WITH its children (correct signal exit code), not before them.
+    fn watcher(read_fd: RawFd) -> ! {
+        let mut byte = [0u8; 1];
+        // SAFETY: a blocking `read(2)` of one byte from the read end of our own
+        // pipe; the buffer outlives the call. EINTR is treated as "woken".
+        loop {
+            let n = unsafe { libc::read(read_fd, byte.as_mut_ptr() as *mut libc::c_void, 1) };
+            if n != 0 {
+                break; // a byte (signal) arrived, or EINTR — either way, act
+            }
+        }
+
+        terminate_all_child_trees();
+
+        let sig = FIRED_SIGNAL.load(Ordering::SeqCst);
+        let sig = if sig == 0 { libc::SIGTERM } else { sig };
+        // Reset to default disposition and re-raise so the process terminates
+        // with the SAME signal that hit it (right exit code for CI), now that
+        // its children already received SIGTERM.
+        // SAFETY: restoring SIG_DFL and `raise`ing are async-signal-safe and
+        // have no memory effects.
+        unsafe {
+            let mut sa: libc::sigaction = std::mem::zeroed();
+            sa.sa_sigaction = libc::SIG_DFL;
+            libc::sigemptyset(&mut sa.sa_mask);
+            sa.sa_flags = 0;
+            libc::sigaction(sig, &sa, std::ptr::null_mut());
+            libc::raise(sig);
+        }
+        // `raise` of a default-disposition terminating signal does not return;
+        // the explicit exit is an unreachable belt-and-suspenders.
+        std::process::exit(128 + sig);
+    }
+}
+
+#[cfg(windows)]
+mod windows_termination {
+    use super::terminate_all_child_trees;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    type Bool = i32;
+    type Dword = u32;
+
+    const TRUE: Bool = 1;
+    const CTRL_C_EVENT: Dword = 0;
+    const CTRL_BREAK_EVENT: Dword = 1;
+    const CTRL_CLOSE_EVENT: Dword = 2;
+    const CTRL_LOGOFF_EVENT: Dword = 5;
+    const CTRL_SHUTDOWN_EVENT: Dword = 6;
+
+    static FIRED: AtomicBool = AtomicBool::new(false);
+
+    unsafe extern "system" {
+        fn SetConsoleCtrlHandler(handler: Option<HandlerRoutine>, add: Bool) -> Bool;
+    }
+
+    type HandlerRoutine = unsafe extern "system" fn(ctrl_type: Dword) -> Bool;
+
+    /// Console control handler: Windows runs it on a dedicated thread (NOT a
+    /// Unix-style async-signal context), so locking the registry and spawning
+    /// `taskkill /T /F` from here is safe. Kills every live child tree, then
+    /// returns FALSE so the default handler runs and terminates anodizer —
+    /// children gone first, anodizer second.
+    unsafe extern "system" fn on_ctrl(ctrl_type: Dword) -> Bool {
+        match ctrl_type {
+            CTRL_C_EVENT | CTRL_BREAK_EVENT | CTRL_CLOSE_EVENT | CTRL_LOGOFF_EVENT
+            | CTRL_SHUTDOWN_EVENT => {
+                FIRED.store(true, Ordering::SeqCst);
+                terminate_all_child_trees();
+                // FALSE → fall through to the default handler, which terminates
+                // the process now that its child trees are killed.
+                0
+            }
+            _ => 0,
+        }
+    }
+
+    pub fn install() {
+        // SAFETY: registering a console control handler; the function pointer
+        // is a valid `extern "system"` routine for the lifetime of the process.
+        unsafe {
+            SetConsoleCtrlHandler(Some(on_ctrl), TRUE);
+        }
+    }
 }
 
 /// Run an already-constructed `cmd`, capturing stdout and stderr, and route
@@ -295,6 +568,20 @@ fn capture_inner(
     let mut child = cmd
         .spawn()
         .with_context(|| format!("failed to spawn {label}"))?;
+
+    // Register the group-isolated child tree so an external SIGTERM/SIGINT
+    // (CI cancel, runner job-timeout) reaches its whole subtree before anodizer
+    // dies — otherwise a hung snapcraft/docker tree is orphaned and holds the
+    // runner open. Only the timeout path isolates the child into its own group,
+    // so only it has a tree the watcher can target. The RAII guard deregisters
+    // on every exit edge below (the pipe-take `?`s, the watchdog/stdin error
+    // returns, success, and an unwinding panic), so a recycled pid can never be
+    // signalled by a later external termination.
+    let _registration = timeout.is_some().then(|| {
+        let id = child.id() as i32;
+        register_child_tree(id);
+        TreeRegistration(id)
+    });
 
     let child_stdin = match stdin {
         Some(_) => Some(
@@ -697,6 +984,9 @@ mod tests {
     /// `sendmail -t blocked on an unreachable MX` shape) must be KILLED at the
     /// deadline, not awaited: the call returns promptly with a retriable
     /// timeout error and the child does not outlive it.
+    // Serialized against the watcher broadcast test: that test SIGTERMs every
+    // registered tree, and the timeout path registers this child.
+    #[serial_test::serial(child_tree_registry)]
     #[test]
     fn run_checked_with_stdin_timeout_kills_hung_child() {
         let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
@@ -730,6 +1020,7 @@ mod tests {
 
     /// A child that completes well within its timeout takes the normal success
     /// path: the timeout never fires and the captured stdout round-trips.
+    #[serial_test::serial(child_tree_registry)]
     #[test]
     fn run_checked_with_stdin_timeout_fast_child_succeeds() {
         let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
@@ -752,6 +1043,7 @@ mod tests {
     /// not pre-convert it to an `Err` the way `run_checked` does. The snapcraft
     /// publish path relies on this to classify a failed `snapcraft upload` as a
     /// review-pending success vs. a retriable 5xx from the captured body.
+    #[serial_test::serial(child_tree_registry)]
     #[test]
     fn run_capture_timeout_returns_nonzero_exit_as_ok_output() {
         let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
@@ -780,6 +1072,7 @@ mod tests {
     /// A hung child (the Snap Store-stall analogue) must be killed at the
     /// deadline and surface a retriable timeout — never block forever. This is
     /// the regression guard for the publish-stage hang.
+    #[serial_test::serial(child_tree_registry)]
     #[test]
     fn run_capture_timeout_kills_hung_child() {
         let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
@@ -819,6 +1112,127 @@ mod tests {
         assert!(
             String::from_utf8_lossy(&out.stdout).contains("line99999"),
             "verbose path must capture the full stdout"
+        );
+    }
+
+    /// The live-child-tree registry add/remove is a plain set: register makes a
+    /// pgid visible to the external-termination watcher; deregister removes it so
+    /// a recycled pid is never signalled later. Uses a sentinel pgid that no real
+    /// child would own.
+    #[test]
+    fn child_tree_registry_add_and_remove() {
+        let sentinel = -424_242; // never a real pgid; distinct from any test child
+        register_child_tree(sentinel);
+        assert!(
+            live_child_trees()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains(&sentinel),
+            "register must make the tree visible to the watcher"
+        );
+        deregister_child_tree(sentinel);
+        assert!(
+            !live_child_trees()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .contains(&sentinel),
+            "deregister must drop the tree so a recycled pid is never signalled"
+        );
+    }
+
+    /// A `capture_inner` that returns `Err` (here: a child that outlives its
+    /// timeout, taking the watchdog-kill error edge) must still leave the
+    /// registry at its pre-call baseline. This pins the RAII guard's coverage
+    /// of the error path — the leak window a manual deregister statement (placed
+    /// after the reap, before the error returns) would miss. Unix-only: the
+    /// timeout path relies on process-group kill semantics. Serialized against
+    /// the watcher test, which broadcasts to every registered tree.
+    #[cfg(unix)]
+    #[serial_test::serial(child_tree_registry)]
+    #[test]
+    fn err_path_does_not_leak_registered_child_tree() {
+        let baseline = live_child_trees()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .len();
+        let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        let err = run_capture_timeout(
+            &mut sh("sleep 30"),
+            &log,
+            "leak-probe",
+            Duration::from_millis(50),
+        )
+        .expect_err("a child that outlives its timeout must surface an Err");
+        assert!(
+            format!("{err:#}").contains("did not exit within"),
+            "the error must be the watchdog deadline kill; got: {err:#}"
+        );
+        assert_eq!(
+            live_child_trees()
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .len(),
+            baseline,
+            "the RAII guard must deregister the child tree even on the Err path"
+        );
+    }
+
+    /// The external-termination watcher's kill routine
+    /// ([`terminate_all_child_trees`]) must reach a registered, group-isolated
+    /// child: spawn a real long-lived `sleep` in its own process group, register
+    /// its pgid, fire the routine, and assert the child is reaped (not orphaned
+    /// to outlive us — the CI-cancel hang this fix targets). Unix-only: the
+    /// assertion uses `waitpid`/`kill` semantics.
+    ///
+    /// Serialized against the timeout tests: `terminate_all_child_trees`
+    /// broadcasts to EVERY registered tree process-wide (correct production
+    /// semantics — a real signal kills all children), so it must not run while
+    /// another test has its own timeout child registered.
+    #[cfg(unix)]
+    #[serial_test::serial(child_tree_registry)]
+    #[test]
+    fn watcher_kill_reaps_registered_child_tree() {
+        // Kill-on-drop guard so an assertion failure before the explicit
+        // `wait()` below cannot orphan the 5-minute sleep for the rest of the
+        // test session. The explicit reap takes the child back out of the guard.
+        struct KillOnDrop(Option<std::process::Child>);
+        impl Drop for KillOnDrop {
+            fn drop(&mut self) {
+                if let Some(mut c) = self.0.take() {
+                    let _ = c.kill();
+                    let _ = c.wait();
+                }
+            }
+        }
+
+        let mut cmd = Command::new("sleep");
+        cmd.arg("300");
+        set_own_process_group(&mut cmd); // pgid == child pid
+        let child = cmd.spawn().expect("spawn sleep child");
+        let pid = child.id() as i32;
+        let mut guard = KillOnDrop(Some(child));
+        register_child_tree(pid);
+
+        // Fire the watcher's actual kill routine (the same one the signal-watcher
+        // thread runs). It group-SIGTERMs every registered tree.
+        let killed = terminate_all_child_trees();
+        assert!(killed >= 1, "watcher must report it signalled ≥1 tree");
+
+        // Reap so no zombie leaks and confirm the child actually terminated by
+        // signal — proving the SIGTERM reached the group, not that the child
+        // exited on its own.
+        let status = guard
+            .0
+            .take()
+            .expect("child taken once")
+            .wait()
+            .expect("reap killed child");
+        deregister_child_tree(pid);
+        use std::os::unix::process::ExitStatusExt as _;
+        assert_eq!(
+            status.signal(),
+            Some(libc::SIGTERM),
+            "the registered child must die from the watcher's group SIGTERM, not outlive us; got {status:?}"
         );
     }
 }

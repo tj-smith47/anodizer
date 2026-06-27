@@ -53,7 +53,13 @@ use crate::release_log;
 /// arms inside the loop (Fatal / 422-bail) that still terminate on
 /// the first attempt — those outcomes never consume the extra iterations
 /// this floor makes available.
-pub(crate) const MIN_UPLOAD_TRANSIENT_ATTEMPTS: u32 = 3;
+///
+/// Sourced from the shared [`anodizer_core::retry::IDEMPOTENT_PUT_ATTEMPTS`]
+/// so the "3 total attempts" guarantee is single-sourced across every
+/// idempotent-upload publisher. This bespoke loop floors an integer cap
+/// rather than rebuilding a [`RetryPolicy`], so it cannot use
+/// [`RetryPolicy::with_idempotent_floor`] directly.
+pub(crate) const MIN_UPLOAD_TRANSIENT_ATTEMPTS: u32 = anodizer_core::retry::IDEMPOTENT_PUT_ATTEMPTS;
 
 /// Everything one asset upload needs, borrowed from the backend's
 /// per-task captures. Grouped so the call site stays readable and the

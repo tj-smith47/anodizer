@@ -443,8 +443,15 @@ fn run_uploads(
                     }
 
                     attempted_upload = true;
-                    let max_attempts = retry_policy.max_attempts.max(1);
-                    retry_sync(retry_policy, |attempt| {
+                    // A snapcraft push is idempotent for retry purposes: the
+                    // revision-already-published probe above skips a re-run, so
+                    // re-issuing the upload after a transient 5xx/network blip
+                    // is safe. Keep a transient-error retry floor even when a
+                    // stateful mode (`--publish-only`) resolves `attempts: 1`,
+                    // mirroring the HTTP-upload, blob, and GitHub asset floors.
+                    let upload_policy = retry_policy.with_idempotent_floor();
+                    let max_attempts = upload_policy.max_attempts;
+                    retry_sync(&upload_policy, |attempt| {
                         if attempt > 1 {
                             log.warn(&format!(
                                 "snapcraft upload attempt {}/{} failed (5xx), retrying…",
@@ -618,6 +625,45 @@ mod publish_stage_tests {
             }]),
             ..Default::default()
         }
+    }
+
+    // ---------------------------------------------------------------
+    // Idempotent retry floor — the snapcraft upload is an opaque subprocess
+    // (`run_capture_timeout`) with no in-process retry-mock seam, so the
+    // strongest feasible proof is that the effective upload policy equals
+    // `max(global, IDEMPOTENT_PUT_ATTEMPTS)`. This is the same expression the
+    // production upload site applies (`retry_policy.with_idempotent_floor()`),
+    // so reverting the floor fails this test.
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn upload_policy_applies_idempotent_floor() {
+        use anodizer_core::retry::{IDEMPOTENT_PUT_ATTEMPTS, RetryPolicy};
+        use std::time::Duration;
+
+        // A `--publish-only`-shaped policy (attempts: 1) must be raised to the
+        // shared idempotent floor so a transient 5xx still retries.
+        let capped = RetryPolicy {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(1),
+        };
+        assert_eq!(
+            capped.with_idempotent_floor().max_attempts,
+            IDEMPOTENT_PUT_ATTEMPTS,
+            "a single-attempt snapcraft policy must be floored to the idempotent minimum"
+        );
+
+        // An operator-set cap above the floor must be preserved, never lowered.
+        let generous = RetryPolicy {
+            max_attempts: 9,
+            ..capped
+        };
+        assert_eq!(
+            generous.with_idempotent_floor().max_attempts,
+            9,
+            "an operator cap above the floor must be preserved"
+        );
     }
 
     // ---------------------------------------------------------------

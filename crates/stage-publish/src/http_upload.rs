@@ -8,6 +8,7 @@
 use anodizer_core::artifact::Artifact;
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
+use anodizer_core::parallel::run_parallel_chunks;
 use anodizer_core::retry::RetryPolicy;
 use anyhow::{Context as _, Result, bail};
 
@@ -122,6 +123,15 @@ pub(crate) fn resolve_http_credentials(
     Ok((username, password))
 }
 
+/// Format the single default-verbosity summary line for one HTTP upload entry,
+/// collapsing the per-artifact `uploaded …` / `skipped …` firehose into one
+/// line. `uploaded` counts artifacts this run PUT/POSTed (fresh or
+/// overwritten); `skipped` counts artifacts already present byte-identical (no
+/// request issued). `destination` is the entry name the bytes landed under.
+pub(crate) fn upload_summary(uploaded: usize, skipped: usize, destination: &str) -> String {
+    format!("uploaded {uploaded} artifact(s), skipped {skipped} (already present) → {destination}")
+}
+
 /// Tally of an HTTP upload-entry run, shared by Artifactory + generic uploads.
 ///
 /// `uploaded` counts artifacts PUT/POSTed this run (fresh or overwritten);
@@ -162,6 +172,19 @@ pub(crate) struct UploadEntryRequest<'a> {
 /// goes through
 /// [`crate::artifactory::upload_single_artifact`], which carries the
 /// idempotency probe, retry budget, and checksum/custom-header application.
+/// One serially-prepared upload: the artifact, its fully rendered target URL,
+/// and its rendered custom-header set. Prepared in the serial pre-pass (all
+/// three touch the non-`Sync` `ctx`) so the network PUT can run on a worker
+/// thread.
+type UploadJob<'a> = (&'a Artifact, String, Vec<(String, String)>);
+
+/// `parallelism` bounds how many idempotent PUTs/POSTs run concurrently. Each
+/// upload targets a distinct, independent path and carries its own idempotency
+/// probe + retry budget, so the only safe-ordering concern (Assets→Manager→
+/// Submitter group order) is unaffected — that boundary lives one level up in
+/// the dispatch loop, never inside one entry's artifact set. URL rendering
+/// stays serial (cheap, deterministic) before the network fan-out so the
+/// `rewrite_url` closure never has to cross threads.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn upload_artifact_set(
     ctx: &Context,
@@ -170,32 +193,60 @@ pub(crate) fn upload_artifact_set(
     artifacts: &[Artifact],
     req: &UploadEntryRequest<'_>,
     policy: &RetryPolicy,
+    parallelism: usize,
     log: &StageLogger,
     mut rewrite_url: impl FnMut(&str, &Artifact) -> Result<String>,
 ) -> Result<UploadEntryCounts> {
+    // Idempotent uploads keep a transient-error retry floor even when a
+    // stateful mode (`--publish-only`) resolves `max_attempts` to 1.
+    let policy = policy.with_idempotent_floor();
+
+    // Render every target URL AND custom-header set serially: both touch the
+    // non-`Sync` `ctx` (URL rewrite hook = Artifactory's Debian matrix-param
+    // append; header templates = per-artifact `ctx.template_vars()`), so they
+    // must complete before the network fan-out. The rendered order is
+    // deterministic; only the network PUTs run concurrently below.
+    let jobs: Vec<UploadJob<'_>> = artifacts
+        .iter()
+        .map(|artifact| {
+            let url =
+                render_artifact_url(ctx, target_template, artifact, req.custom_artifact_name)?;
+            let url = rewrite_url(&url, artifact)?;
+            let rendered_headers =
+                crate::artifactory::render_custom_headers(ctx, req.custom_headers, artifact)?;
+            Ok((artifact, url, rendered_headers))
+        })
+        .collect::<Result<_>>()?;
+
+    let outcomes = run_parallel_chunks(
+        &jobs,
+        parallelism,
+        "http upload",
+        |(artifact, url, rendered_headers)| {
+            crate::artifactory::upload_single_artifact_prepared(
+                client,
+                &UploadHeaders {
+                    publisher: req.publisher,
+                    method: req.method,
+                    url,
+                    checksum_header: req.checksum_header,
+                },
+                &UploadAuth {
+                    username: req.username,
+                    password: req.password,
+                },
+                artifact,
+                req.overwrite,
+                rendered_headers,
+                &policy,
+                log,
+            )
+        },
+    )?;
+
     let mut counts = UploadEntryCounts::default();
-    for artifact in artifacts {
-        let url = render_artifact_url(ctx, target_template, artifact, req.custom_artifact_name)?;
-        let url = rewrite_url(&url, artifact)?;
-        match crate::artifactory::upload_single_artifact(
-            client,
-            &UploadHeaders {
-                publisher: req.publisher,
-                method: req.method,
-                url: &url,
-                checksum_header: req.checksum_header,
-                custom_headers: req.custom_headers,
-            },
-            &UploadAuth {
-                username: req.username,
-                password: req.password,
-            },
-            artifact,
-            req.overwrite,
-            ctx,
-            policy,
-            log,
-        )? {
+    for outcome in outcomes {
+        match outcome {
             UploadOutcome::Uploaded => counts.uploaded += 1,
             UploadOutcome::AlreadyPresent => counts.already_present += 1,
         }
@@ -219,4 +270,38 @@ pub(crate) fn validate_mtls_pair(
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use anodizer_core::retry::{IDEMPOTENT_PUT_ATTEMPTS, RetryPolicy};
+    use std::time::Duration;
+
+    /// The HTTP-upload set applies the shared idempotent floor to its resolved
+    /// policy (`upload_artifact_set` calls `policy.with_idempotent_floor()`).
+    /// A `--publish-only`-shaped `attempts: 1` is raised to the floor; an
+    /// operator cap above the floor is preserved. Fails if the floor reverts.
+    #[test]
+    fn idempotent_floor_raises_single_attempt_preserves_higher() {
+        let base = RetryPolicy {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(1),
+        };
+        assert_eq!(
+            base.with_idempotent_floor().max_attempts,
+            IDEMPOTENT_PUT_ATTEMPTS,
+            "a single-attempt upload policy must be floored to the idempotent minimum"
+        );
+        assert_eq!(
+            RetryPolicy {
+                max_attempts: 7,
+                ..base
+            }
+            .with_idempotent_floor()
+            .max_attempts,
+            7,
+            "an operator cap above the floor must be preserved, not lowered"
+        );
+    }
 }

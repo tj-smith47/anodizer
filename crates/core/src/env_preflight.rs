@@ -122,6 +122,20 @@ impl EnvPreflightReport {
     pub fn ok(&self) -> bool {
         self.failures.is_empty()
     }
+
+    /// Record a failure discovered outside the requirement-evaluation engine
+    /// (e.g. the offline cosign key-load verification, which needs to spawn a
+    /// tool and so cannot live in this pure module). Counts toward `checks` and
+    /// flips `ok()` to `false`, so a single non-ok report still drives the
+    /// caller's abort/exit-non-zero decision.
+    pub fn note_failure(&mut self, needed_by: &str, message: &str) {
+        self.checks += 1;
+        self.failures.push(EnvCheckFailure {
+            kind: FailureKind::BadKeyMaterial,
+            message: message.to_string(),
+            needed_by: vec![needed_by.to_string()],
+        });
+    }
 }
 
 impl std::fmt::Display for EnvPreflightReport {

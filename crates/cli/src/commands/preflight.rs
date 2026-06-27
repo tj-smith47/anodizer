@@ -370,6 +370,85 @@ pub fn evaluate_against_environment(
     )
 }
 
+/// Distinct cosign `env://VAR` key references the collected requirements
+/// declare. Each [`anodizer_core::EnvRequirement::KeyEnv`] of kind
+/// [`anodizer_core::KeyKind::Cosign`] originates from an `env://VAR` config
+/// ref, so the scheme ref is reconstructed exactly as `env://{var}`. Used to
+/// drive the offline key-LOAD verification (presence is already checked by the
+/// `KeyEnv` evaluation; loadability — decrypting with `COSIGN_PASSWORD` — is
+/// not, and that is what a future encrypted-key rotation would silently break).
+fn cosign_key_refs(requirements: &[SourcedRequirement]) -> Vec<String> {
+    use anodizer_core::EnvRequirement::KeyEnv;
+    let mut refs: Vec<String> = Vec::new();
+    for sr in requirements {
+        if let KeyEnv {
+            kind: anodizer_core::KeyKind::Cosign,
+            var,
+        } = &sr.requirement
+        {
+            let key_ref = format!("env://{var}");
+            if !refs.contains(&key_ref) {
+                refs.push(key_ref);
+            }
+        }
+    }
+    refs
+}
+
+/// Offline-verify every cosign `env://VAR` signing key the config declares: the
+/// `KeyEnv` evaluation already proved the secret is PRESENT and structurally a
+/// cosign key, but never that it actually LOADS with `COSIGN_PASSWORD`. A future
+/// rotation to an ENCRYPTED key with a wrong/empty password would pass both the
+/// presence and structure checks, then fail later in the sign stage — after a
+/// whole build and determinism run. This runs `cosign public-key --key
+/// env://VAR` (local key decrypt, no tlog, no network) in stage-sign before the
+/// tag is cut.
+///
+/// Returns `true` when every declared cosign key loaded (or none were declared),
+/// `false` when cosign IS installed and a key failed to load (a genuinely bad
+/// secret — a hard preflight failure). When cosign is NOT on PATH the check is
+/// not skipped silently: it WARNs that load verification is deferred to sign
+/// time, and does NOT fail (the runner simply lacks the tool).
+fn verify_cosign_keys_load(requirements: &[SourcedRequirement], log: &StageLogger) -> bool {
+    verify_cosign_keys_load_with(
+        requirements,
+        log,
+        anodizer_stage_sign::verify_cosign_key_loads,
+    )
+}
+
+/// Inner of [`verify_cosign_keys_load`] with the per-ref load resolver injected,
+/// so a test can drive the `CosignUnavailable`/`Failed` branches deterministically
+/// regardless of whether cosign is on the runner's PATH.
+fn verify_cosign_keys_load_with(
+    requirements: &[SourcedRequirement],
+    log: &StageLogger,
+    load: impl Fn(&str) -> anodizer_stage_sign::CosignKeyLoad,
+) -> bool {
+    let mut all_loaded = true;
+    for key_ref in cosign_key_refs(requirements) {
+        match load(&key_ref) {
+            anodizer_stage_sign::CosignKeyLoad::Loaded => {
+                log.status(&format!("cosign key {key_ref} loads (offline verify)"));
+            }
+            anodizer_stage_sign::CosignKeyLoad::CosignUnavailable => {
+                log.warn(&format!(
+                    "cosign not installed; skipping offline {key_ref} load verification \
+                     — the key/password combo will be validated at sign time instead"
+                ));
+            }
+            anodizer_stage_sign::CosignKeyLoad::Failed(detail) => {
+                all_loaded = false;
+                log.error(&format!(
+                    "cosign key {key_ref} failed to load (wrong or missing COSIGN_PASSWORD, \
+                     or malformed key): {detail}"
+                ));
+            }
+        }
+    }
+    all_loaded
+}
+
 /// Run the environment preflight for a release pipeline: collect, evaluate,
 /// and log the full report. Returns the report; the caller decides whether
 /// a non-ok report aborts (release) or just exits non-zero (standalone).
@@ -379,13 +458,19 @@ pub fn run_env_preflight(
     log: &StageLogger,
 ) -> EnvPreflightReport {
     let requirements = collect_requirements(ctx, scope);
-    let report = evaluate_against_environment(ctx, &requirements);
+    let mut report = evaluate_against_environment(ctx, &requirements);
     for line in report.to_string().trim_end_matches('\n').lines() {
         if report.ok() {
             log.status(line);
         } else {
             log.error(line);
         }
+    }
+    if !verify_cosign_keys_load(&requirements, log) {
+        report.note_failure(
+            "stage:sign",
+            "cosign signing key failed offline load verification",
+        );
     }
     report
 }
@@ -441,7 +526,19 @@ pub fn run(opts: PreflightOpts) -> Result<()> {
         PreflightScope::Full
     };
     let requirements = collect_requirements(&ctx, scope);
-    let report = evaluate_against_environment(&ctx, &requirements);
+    let mut report = evaluate_against_environment(&ctx, &requirements);
+
+    // The offline cosign key-LOAD verification is folded into the report BEFORE
+    // it is rendered/serialized, so `--json` consumers and the human report
+    // agree on ok/failure and a bad key drives the non-zero exit below. The
+    // cosign-absent WARN is emitted to the log regardless of `--json`, since it
+    // is advisory (the load is deferred to sign time), not a structured failure.
+    if !verify_cosign_keys_load(&requirements, &log) {
+        report.note_failure(
+            "stage:sign",
+            "cosign signing key failed offline load verification",
+        );
+    }
 
     if opts.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
@@ -1297,5 +1394,115 @@ publish:
                 sr
             );
         }
+    }
+
+    /// A `signs:` cosign config keyed off `env://COSIGN_KEY` must surface as a
+    /// distinct `env://COSIGN_KEY` ref for the offline load verification, and
+    /// duplicate refs (cosign declared on two crates) collapse to one.
+    #[test]
+    fn cosign_key_refs_reconstructs_env_scheme_and_dedups() {
+        let reqs = vec![
+            SourcedRequirement::new(
+                "stage:sign",
+                EnvRequirement::KeyEnv {
+                    kind: anodizer_core::KeyKind::Cosign,
+                    var: "COSIGN_KEY".to_string(),
+                },
+            ),
+            SourcedRequirement::new(
+                "stage:sign",
+                EnvRequirement::KeyEnv {
+                    kind: anodizer_core::KeyKind::Cosign,
+                    var: "COSIGN_KEY".to_string(),
+                },
+            ),
+            // A non-cosign key kind must NOT be picked up by the cosign verify.
+            SourcedRequirement::new(
+                "publish:aur",
+                EnvRequirement::KeyEnv {
+                    kind: anodizer_core::KeyKind::SshPrivate,
+                    var: "AUR_SSH_KEY".to_string(),
+                },
+            ),
+        ];
+        assert_eq!(cosign_key_refs(&reqs), vec!["env://COSIGN_KEY".to_string()]);
+    }
+
+    /// No cosign key in the requirement set ⇒ nothing to verify ⇒ no WARN, no
+    /// error, returns `true` (the gate stays clean for configs without cosign).
+    #[test]
+    fn verify_cosign_keys_load_noop_without_cosign_config() {
+        let reqs = vec![SourcedRequirement::new(
+            "stage:build",
+            EnvRequirement::Tool {
+                name: "cargo".to_string(),
+            },
+        )];
+        let (log, capture) = StageLogger::with_capture("preflight", Verbosity::Normal);
+        assert!(verify_cosign_keys_load(&reqs, &log));
+        assert!(
+            capture.all_messages().is_empty(),
+            "no cosign requirement must emit nothing: {:?}",
+            capture.all_messages()
+        );
+    }
+
+    /// When cosign is NOT on PATH, an active cosign-key config must WARN (load
+    /// verification deferred to sign time) and NOT hard-fail. The absent outcome
+    /// is injected via the load-resolver seam so the WARN branch runs on every
+    /// shard — including CI shards that DO carry cosign — rather than self-skipping.
+    #[test]
+    fn verify_cosign_keys_load_warns_when_cosign_absent() {
+        use anodizer_core::log::LogLevel;
+        let reqs = vec![SourcedRequirement::new(
+            "stage:sign",
+            EnvRequirement::KeyEnv {
+                kind: anodizer_core::KeyKind::Cosign,
+                var: "COSIGN_KEY".to_string(),
+            },
+        )];
+        let (log, capture) = StageLogger::with_capture("preflight", Verbosity::Normal);
+        // Force the cosign-absent outcome deterministically, independent of PATH.
+        let all_loaded = verify_cosign_keys_load_with(&reqs, &log, |_| {
+            anodizer_stage_sign::CosignKeyLoad::CosignUnavailable
+        });
+        // cosign-absent is NOT a failure.
+        assert!(all_loaded, "cosign-absent must not fail the gate");
+        let msgs = capture.all_messages();
+        assert!(
+            msgs.iter()
+                .any(|(lvl, m)| *lvl == LogLevel::Warn && m.contains("cosign not installed")),
+            "cosign-absent must WARN: {msgs:?}"
+        );
+        assert!(
+            !msgs.iter().any(|(lvl, _)| *lvl == LogLevel::Error),
+            "cosign-absent must NOT emit an error: {msgs:?}"
+        );
+    }
+
+    /// A genuinely bad key (cosign installed, load fails) must FAIL the gate
+    /// and emit an Error. Injected via the seam so it runs deterministically
+    /// regardless of PATH.
+    #[test]
+    fn verify_cosign_keys_load_fails_on_bad_key() {
+        use anodizer_core::log::LogLevel;
+        let reqs = vec![SourcedRequirement::new(
+            "stage:sign",
+            EnvRequirement::KeyEnv {
+                kind: anodizer_core::KeyKind::Cosign,
+                var: "COSIGN_KEY".to_string(),
+            },
+        )];
+        let (log, capture) = StageLogger::with_capture("preflight", Verbosity::Normal);
+        let all_loaded = verify_cosign_keys_load_with(&reqs, &log, |_| {
+            anodizer_stage_sign::CosignKeyLoad::Failed("wrong COSIGN_PASSWORD".to_string())
+        });
+        assert!(!all_loaded, "a failing key load must fail the gate");
+        let msgs = capture.all_messages();
+        assert!(
+            msgs.iter()
+                .any(|(lvl, m)| *lvl == LogLevel::Error && m.contains("failed to load")),
+            "a bad key must emit an Error: {msgs:?}"
+        );
     }
 }

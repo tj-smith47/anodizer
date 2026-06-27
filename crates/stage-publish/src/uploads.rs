@@ -328,13 +328,18 @@ pub fn publish_uploads(ctx: &Context, log: &StageLogger) -> Result<UploadsSummar
                 overwrite,
             },
             &policy,
+            ctx.options.parallelism,
             log,
             |url, _artifact| Ok(url.to_string()),
         )?;
         summary.uploaded += counts.uploaded;
         summary.already_present += counts.already_present;
 
-        log.status(&format!("upload complete for '{}'", name));
+        log.status(&crate::http_upload::upload_summary(
+            counts.uploaded,
+            counts.already_present,
+            name,
+        ));
     }
 
     Ok(summary)

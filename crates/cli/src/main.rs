@@ -259,6 +259,13 @@ fn run() {
     enable_ci_colors();
     init_tracing();
 
+    // Propagate an EXTERNAL SIGTERM/SIGINT (GitHub Actions cancel, runner
+    // job-timeout, operator Ctrl-C) to every group-isolated child subtree
+    // before anodizer exits, so a hung snapcraft/docker/git tree is not
+    // orphaned to hold the CI runner open after anodizer is gone. Installed
+    // before any pipeline subprocess spawns.
+    anodizer_core::run::install_termination_handler();
+
     let brontes_cfg = brontes::Config::default().tool_name_prefix("anodizer");
     let augmented = Cli::command().subcommand(brontes::command(Some(&brontes_cfg)));
     let matches = augmented.clone().get_matches();

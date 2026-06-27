@@ -555,20 +555,22 @@ fn append_deb_matrix_params(
 // upload_single_artifact
 // ---------------------------------------------------------------------------
 
-/// HTTP request descriptor for [`upload_single_artifact`].
+/// HTTP request descriptor for [`upload_single_artifact_prepared`].
 ///
 /// Bundles the "what URL / how to address it" fields. The `checksum_header`
 /// slot, when non-empty, names a custom HTTP header (e.g. `X-Checksum-Sha256`)
 /// that is set to the artifact's hex SHA-256 before the request is dispatched.
 /// `publisher` labels error messages so the shared upload path attributes a
-/// failure to the calling publisher (`artifactory` / `uploads`).
+/// failure to the calling publisher (`artifactory` / `uploads`). User-supplied
+/// custom headers are rendered separately (via [`render_custom_headers`]) and
+/// passed alongside, since their rendering needs `ctx` and must run in the
+/// serial pre-pass ahead of the parallel network fan-out.
 #[derive(Clone, Copy)]
 pub(crate) struct UploadHeaders<'a> {
     pub(crate) publisher: &'a str,
     pub(crate) method: &'a str,
     pub(crate) url: &'a str,
     pub(crate) checksum_header: &'a str,
-    pub(crate) custom_headers: &'a HashMap<String, String>,
 }
 
 /// HTTP basic-auth credentials for [`upload_single_artifact`]. Either both
@@ -670,14 +672,80 @@ pub(crate) enum UploadOutcome {
 /// responses, and 429s retry per the user's `retry:` config (mirrors
 /// per-artifact upload); 4xx responses
 /// fast-fail.
+#[cfg(test)]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn upload_single_artifact(
     client: &reqwest::blocking::Client,
     headers: &UploadHeaders<'_>,
     auth: &UploadAuth<'_>,
+    custom_headers: &HashMap<String, String>,
     artifact: &Artifact,
     overwrite: bool,
     ctx: &Context,
+    policy: &RetryPolicy,
+    log: &StageLogger,
+) -> Result<UploadOutcome> {
+    // Header rendering touches `ctx` (not `Sync`); doing it here keeps the
+    // post-render upload free of `ctx` so the shared driver can fan the PUTs
+    // out across threads after rendering serially.
+    let rendered_headers = render_custom_headers(ctx, custom_headers, artifact)?;
+    upload_single_artifact_prepared(
+        client,
+        headers,
+        auth,
+        artifact,
+        overwrite,
+        &rendered_headers,
+        policy,
+        log,
+    )
+}
+
+/// Render each `custom_headers` template value against the artifact-scoped
+/// template vars (`ArtifactName`/`ArtifactExt`/`Os`/`Arch`/`Target`).
+///
+/// A render failure surfaces as a configuration error (bad template syntax,
+/// missing variable, …) rather than pushing `{{ ... }}` literals onto the wire
+/// — Artifactory typically rejects those with a confusing 400. Pulled out of
+/// the upload path so it can run in the serial pre-pass (it needs the non-`Sync`
+/// `ctx`) ahead of the parallel network fan-out.
+pub(crate) fn render_custom_headers(
+    ctx: &Context,
+    custom_headers: &HashMap<String, String>,
+    artifact: &Artifact,
+) -> Result<Vec<(String, String)>> {
+    let mut rendered_headers: Vec<(String, String)> = Vec::with_capacity(custom_headers.len());
+    for (k, v) in custom_headers {
+        let mut vars = ctx.template_vars().clone();
+        vars.set("ArtifactName", artifact.name());
+        vars.set("ArtifactExt", &artifact.ext());
+        if let Some(ref target) = artifact.target {
+            let (os, arch) = anodizer_core::target::map_target(target);
+            vars.set("Os", &os);
+            vars.set("Arch", &arch);
+            vars.set("Target", target);
+        }
+        let rendered_v = anodizer_core::template::render(v, &vars).with_context(|| {
+            format!("rendering custom header '{}' for '{}'", k, artifact.name())
+        })?;
+        rendered_headers.push((k.clone(), rendered_v));
+    }
+    Ok(rendered_headers)
+}
+
+/// Upload a single artifact whose custom headers were already rendered (so this
+/// path is free of the non-`Sync` `ctx` and can run on a worker thread).
+///
+/// Carries the idempotency probe, content-drift bail, and retry budget. See
+/// [`upload_single_artifact`] for the `ctx`-rendering wrapper.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn upload_single_artifact_prepared(
+    client: &reqwest::blocking::Client,
+    headers: &UploadHeaders<'_>,
+    auth: &UploadAuth<'_>,
+    artifact: &Artifact,
+    overwrite: bool,
+    rendered_headers: &[(String, String)],
     policy: &RetryPolicy,
     log: &StageLogger,
 ) -> Result<UploadOutcome> {
@@ -686,7 +754,6 @@ pub(crate) fn upload_single_artifact(
         method,
         url,
         checksum_header,
-        custom_headers,
     } = *headers;
     let UploadAuth { username, password } = *auth;
     let path = &artifact.path;
@@ -708,11 +775,14 @@ pub(crate) fn upload_single_artifact(
     if !overwrite {
         match probe_artifact_presence(client, url, auth, &checksum) {
             ArtifactPresence::PresentMatching => {
-                log.status(&format!(
-                    "skipped {} (already uploaded, sha256 match)",
-                    artifact.name()
+                // Per-artifact skip detail is verbose-only; the entry summary
+                // (default verbosity) reports the aggregate already-present
+                // count.
+                log.verbose(&format!(
+                    "skipped {} (already uploaded, sha256 match) — already present at {}",
+                    artifact.name(),
+                    url
                 ));
-                log.verbose(&format!("{} already present at {}", artifact.name(), url));
                 return Ok(UploadOutcome::AlreadyPresent);
             }
             ArtifactPresence::PresentDiffering { remote_checksum } => {
@@ -741,36 +811,6 @@ pub(crate) fn upload_single_artifact(
         body.len(),
         url
     ));
-
-    // Pre-compute rendered custom-header values to avoid re-rendering on
-    // every retry attempt (and so render failures fail-fast outside the
-    // retry loop, where they belong).
-    //
-    // A render failure here surfaces as a configuration error (bad template
-    // syntax, missing variable, …); silently keeping the unrendered value
-    // would push `{{ ... }}` literals onto the wire as header values, which
-    // Artifactory typically rejects with a confusing 400. Honest fail-fast
-    // matches what the comment above promises.
-    let mut rendered_headers: Vec<(String, String)> = Vec::with_capacity(custom_headers.len());
-    for (k, v) in custom_headers {
-        let mut vars = ctx.template_vars().clone();
-        vars.set("ArtifactName", artifact.name());
-        vars.set("ArtifactExt", &artifact.ext());
-        if let Some(ref target) = artifact.target {
-            let (os, arch) = anodizer_core::target::map_target(target);
-            vars.set("Os", &os);
-            vars.set("Arch", &arch);
-            vars.set("Target", target);
-        }
-        let rendered_v = anodizer_core::template::render(v, &vars).with_context(|| {
-            format!(
-                "{publisher}: rendering custom header '{}' for '{}'",
-                k,
-                artifact.name()
-            )
-        })?;
-        rendered_headers.push((k.clone(), rendered_v));
-    }
 
     // Validate the HTTP method up-front so the per-attempt send closure
     // can't see an unsupported value (and so a typo fails-fast outside
@@ -805,7 +845,7 @@ pub(crate) fn upload_single_artifact(
             if !checksum_header.is_empty() {
                 req = req.header(checksum_header, &checksum);
             }
-            for (k, v) in &rendered_headers {
+            for (k, v) in rendered_headers {
                 req = req.header(k.as_str(), v);
             }
             req = req.header("Content-Length", body.len().to_string());
@@ -823,7 +863,8 @@ pub(crate) fn upload_single_artifact(
         },
     )?;
 
-    log.status(&format!("uploaded {}", artifact.name()));
+    // Per-artifact upload-success detail is verbose-only; the entry summary
+    // (default verbosity) reports the aggregate upload count.
     log.verbose(&format!("uploaded {} ({status}) → {url}", artifact.name()));
     Ok(UploadOutcome::Uploaded)
 }
@@ -1193,13 +1234,18 @@ pub fn publish_to_artifactory(
                 overwrite,
             },
             &policy,
+            ctx.options.parallelism,
             log,
             |url, artifact| append_deb_matrix_params(url, artifact, entry),
         )?;
         summary.uploaded += counts.uploaded;
         summary.already_present += counts.already_present;
 
-        log.status(&format!("artifactory upload complete for '{}'", name));
+        log.status(&crate::http_upload::upload_summary(
+            counts.uploaded,
+            counts.already_present,
+            name,
+        ));
     }
 
     Ok(summary)
@@ -2717,12 +2763,12 @@ mod tests {
                 method: "PUT",
                 url: &url,
                 checksum_header: "X-Checksum-SHA256",
-                custom_headers: &custom,
             },
             &UploadAuth {
                 username: "",
                 password: "",
             },
+            &custom,
             &art,
             true,
             &ctx,
@@ -2764,12 +2810,12 @@ mod tests {
                 method: "POST",
                 url: &url,
                 checksum_header: "",
-                custom_headers: &custom,
             },
             &UploadAuth {
                 username: "",
                 password: "",
             },
+            &custom,
             &art,
             true,
             &ctx,
@@ -2813,12 +2859,12 @@ mod tests {
                 method: "PUT",
                 url: &url,
                 checksum_header: "X-Checksum-SHA256",
-                custom_headers: &custom,
             },
             &UploadAuth {
                 username: "",
                 password: "",
             },
+            &custom,
             &art,
             true,
             &ctx,
@@ -2854,12 +2900,12 @@ mod tests {
                 method: "PUT",
                 url: &url,
                 checksum_header: "X-Checksum-SHA256",
-                custom_headers: &custom,
             },
             &UploadAuth {
                 username: "",
                 password: "",
             },
+            &custom,
             &art,
             true,
             &ctx,
@@ -2907,12 +2953,12 @@ mod tests {
                 method: "PUT",
                 url: &url,
                 checksum_header: "X-Checksum-SHA256",
-                custom_headers: &custom,
             },
             &UploadAuth {
                 username: "",
                 password: "",
             },
+            &custom,
             &art,
             true,
             &ctx,
@@ -2958,12 +3004,12 @@ mod tests {
                 method: "DELETE",
                 url: &url,
                 checksum_header: "",
-                custom_headers: &custom,
             },
             &UploadAuth {
                 username: "",
                 password: "",
             },
+            &custom,
             &art,
             true,
             &ctx,
@@ -3007,12 +3053,12 @@ mod tests {
                 method: "PUT",
                 url: &url,
                 checksum_header: "X-Checksum-SHA256",
-                custom_headers: &custom,
             },
             &UploadAuth {
                 username: "",
                 password: "",
             },
+            &custom,
             &art,
             true,
             &ctx,
@@ -3034,17 +3080,14 @@ mod tests {
             .map(|(_, m)| m)
             .collect();
 
+        // Per-artifact upload detail is verbose-only — the default-verbosity
+        // RESULT for an upload entry is the aggregate count-summary the shared
+        // driver emits (see `upload_summary`), not one line per artifact. So
+        // `upload_single_artifact_prepared` emits nothing at Status.
         assert!(
-            status.iter().any(|m| m == "uploaded myapp.tar.gz"),
-            "default RESULT must be the concise per-artifact line: {status:?}"
-        );
-        assert!(
-            !status.iter().any(|m| m.contains(&url)),
-            "the destination URL must not appear at default: {status:?}"
-        );
-        assert!(
-            !status.iter().any(|m| m.starts_with("uploading ")),
-            "the request echo must not appear at default: {status:?}"
+            status.is_empty(),
+            "no per-artifact line at default; the entry summary carries the \
+             RESULT: {status:?}"
         );
         assert!(
             verbose
@@ -3053,8 +3096,10 @@ mod tests {
             "the request echo (with URL) must ride at verbose: {verbose:?}"
         );
         assert!(
-            verbose.iter().any(|m| m.contains("201")),
-            "the HTTP status code rides at verbose: {verbose:?}"
+            verbose
+                .iter()
+                .any(|m| m.contains("uploaded myapp.tar.gz") && m.contains("201")),
+            "the per-artifact upload (with status code) rides at verbose: {verbose:?}"
         );
     }
 
@@ -3092,12 +3137,12 @@ mod tests {
                 method: "PUT",
                 url: &url,
                 checksum_header: "X-Checksum-SHA256",
-                custom_headers: &custom,
             },
             &UploadAuth {
                 username: "",
                 password: "",
             },
+            &custom,
             &art,
             false,
             &ctx,
@@ -3120,19 +3165,19 @@ mod tests {
             .map(|(_, m)| m)
             .collect();
 
+        // The idempotent-skip detail is verbose-only; the default-verbosity
+        // RESULT is the entry's aggregate count-summary (driver-emitted), so
+        // `upload_single_artifact_prepared` itself emits nothing at Status.
         assert!(
-            status
+            status.is_empty(),
+            "no per-artifact skip line at default; the entry summary carries \
+             the RESULT: {status:?}"
+        );
+        assert!(
+            verbose
                 .iter()
-                .any(|m| m == "skipped dup.tar.gz (already uploaded, sha256 match)"),
-            "default skip RESULT must be concise and URL-free: {status:?}"
-        );
-        assert!(
-            !status.iter().any(|m| m.contains(&url)),
-            "the matched URL must not appear at default: {status:?}"
-        );
-        assert!(
-            verbose.iter().any(|m| m.contains(&url)),
-            "the matched URL rides at verbose: {verbose:?}"
+                .any(|m| m.contains("skipped dup.tar.gz") && m.contains(&url)),
+            "the per-artifact skip (with matched URL) rides at verbose: {verbose:?}"
         );
     }
 
@@ -3159,12 +3204,12 @@ mod tests {
                 method: "PUT",
                 url: "http://127.0.0.1:1/repo/gone.tar.gz",
                 checksum_header: "",
-                custom_headers: &custom,
             },
             &UploadAuth {
                 username: "",
                 password: "",
             },
+            &custom,
             &art,
             true,
             &ctx,
@@ -3203,12 +3248,12 @@ mod tests {
                 method: "PUT",
                 url: "http://127.0.0.1:1/repo/adir",
                 checksum_header: "",
-                custom_headers: &custom,
             },
             &UploadAuth {
                 username: "",
                 password: "",
             },
+            &custom,
             &art,
             true,
             &ctx,
@@ -3251,12 +3296,12 @@ mod tests {
                 method: "PUT",
                 url: &url,
                 checksum_header: "",
-                custom_headers: &custom,
             },
             &UploadAuth {
                 username: "",
                 password: "",
             },
+            &custom,
             &art,
             true,
             &ctx,

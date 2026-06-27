@@ -19,7 +19,11 @@
 #   - a bare HTTP-verb request: `format!("DELETE {}", url)` and kin (the verb
 #     immediately followed by a single `{}` and the closing quote). The outcome
 #     variants — `"DELETE {} already absent"`, `"deleted {}"` — are RESULT
-#     lines, not echoes, and are intentionally NOT matched.
+#     lines, not echoes, and are intentionally NOT matched, OR
+#   - a raw subprocess stdio tee: a `[<stage> stdout]`/`[<stage> stderr]`
+#     literal tag or a `stdout_str`/`stderr_str` capture interpolated into the
+#     line. Raw child stdout/stderr (the cosign tlog lines, the sigstore consent
+#     banner) is verbose-only; demote the tee to `log.verbose(...)`.
 #
 # The scan is multi-line aware: a `.status(&format!(` whose format string sits
 # on the next line (a common rustfmt wrap) is reassembled before matching, so
@@ -61,6 +65,12 @@ awk '
         if (verb && b ~ /--[a-z]/)                                                    return 1
         if (b ~ /(\/tmp\/|--config|--output[= ]|--target[= ]|\.tmp)/)                 return 1
         if (b ~ /"(GET|POST|PUT|DELETE|PATCH|HEAD) [{][}]"/)                          return 1
+        # Raw subprocess stdio tee: a `[<stage> stdout]`/`[<stage> stderr]`
+        # literal tag, or a `stdout_str`/`stderr_str` capture interpolated into
+        # the line. cosign tlog noise + the sigstore consent banner ride out on
+        # these — verbose-only per the contract.
+        if (b ~ /(stdout\]|stderr\])/)                                               return 1
+        if (b ~ /(stdout_str|stderr_str)/)                                           return 1
         return 0
     }
 

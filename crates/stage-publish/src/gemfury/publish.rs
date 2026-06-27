@@ -43,6 +43,12 @@ pub struct GemFuryTarget {
     pub api_token_env_var: String,
 }
 
+/// Upper bound on concurrent Fury pushes within one account entry. Each push
+/// targets a distinct `<package>@<version>` and is independently idempotent,
+/// so they fan out safely; the cap keeps the multipart upload set from
+/// saturating the connection pool or tripping Fury's rate limiter.
+const MAX_PUSH_CONCURRENCY: usize = 4;
+
 /// Default env var name carrying the push token.
 const DEFAULT_PUSH_TOKEN_ENV: &str = "FURY_PUSH_TOKEN";
 /// Default env var name carrying the API (delete) token.
@@ -323,11 +329,174 @@ pub(crate) fn version_already_published<E: anodizer_core::EnvSource + ?Sized>(
     }
 }
 
-/// Top-level publish entrypoint. Iterates each `gemfury[]` entry and
-/// pushes every matching artifact via `POST push.fury.io/<account>` with
-/// HTTP Basic auth.
-/// Push every configured artifact to GemFury, appending one
-/// [`GemFuryTarget`] to `pushed` per artifact that actually landed.
+/// One pre-validated artifact slated for a Fury push. The borrow of `path`
+/// keeps the (large) artifact bytes on disk until the worker reads them, so
+/// only the in-flight chunk holds file contents in memory.
+struct PushJob<'a> {
+    path: &'a std::path::Path,
+    art_name: String,
+    format: String,
+}
+
+/// Terminal state of one artifact's push, folded back into the rollback
+/// `pushed` list in submission order by the caller.
+enum PushOutcome {
+    /// Bytes landed this run — becomes a rollback target.
+    Pushed(GemFuryTarget),
+    /// Already on Fury (idempotency probe hit or 409/422 conflict-as-success);
+    /// NOT a rollback target — this run did not place it.
+    AlreadyPresent,
+}
+
+/// Probe-then-push one artifact to Fury, returning whether it landed (a
+/// rollback target) or was an idempotent no-op. Self-contained so the account
+/// loop can run it under bounded parallelism: it builds its own multipart
+/// body, carries its own retry budget (floored to
+/// [`RetryPolicy::with_idempotent_floor`]), and
+/// touches no shared mutable state.
+#[allow(clippy::too_many_arguments)]
+fn push_one_artifact<E: anodizer_core::EnvSource + ?Sized>(
+    client: &reqwest::blocking::Client,
+    account: &str,
+    version: &str,
+    push_url: &str,
+    push_token: &str,
+    cfg: &GemFuryConfig,
+    job: &PushJob<'_>,
+    policy: &RetryPolicy,
+    log: &StageLogger,
+    env: &E,
+) -> Result<PushOutcome> {
+    let art_name = &job.art_name;
+
+    // Idempotency probe: skip if `<package>@<version>` is already on Fury —
+    // matches the immutable-releases policy (re-run on an already-pushed tag
+    // must not error). Fury exposes a package in /packages/<name>/ under its
+    // control-file name (the artifact filename minus the version+arch+
+    // extension suffix), so the probe keys on the derived name — probing the
+    // raw filename always 404s. A 404 here just means we'll attempt the push
+    // (which has its own 409/422 conflict-as-success guard for the racing
+    // case).
+    let fury_pkg = fury_package_name(art_name, version);
+    if version_already_published(
+        client, account, &fury_pkg, version, push_token, policy, log, env,
+    )? {
+        log.status(&format!(
+            "skipped '{}@{}' — already on gemfury account '{}' (idempotent)",
+            fury_pkg, version, account
+        ));
+        return Ok(PushOutcome::AlreadyPresent);
+    }
+
+    log.status(&format!(
+        "pushing {} ({}) → {} (gemfury account '{}')",
+        art_name, job.format, push_url, account
+    ));
+
+    let file_bytes = std::fs::read(job.path)
+        .with_context(|| format!("gemfury: read '{}'", job.path.display()))?;
+
+    // Idempotent pushes keep a transient-error retry floor even when a
+    // stateful mode (`--publish-only`) resolves `max_attempts` to 1.
+    let push_policy = policy.with_idempotent_floor();
+    let max_attempts = push_policy.max_attempts;
+    let mime = "application/octet-stream";
+    // Set inside the retry closure when the push returns a 409/422
+    // already-exists conflict, so the post-retry code can skip recording a
+    // rollback target. `Cell` because the closure is `FnMut`.
+    let conflict_skipped = std::cell::Cell::new(false);
+    retry_sync(&push_policy, |attempt| {
+        if attempt > 1 {
+            log.warn(&format!(
+                "gemfury push attempt {}/{} failed (transient), retrying…",
+                attempt - 1,
+                max_attempts
+            ));
+        }
+        let file_part = match reqwest::blocking::multipart::Part::bytes(file_bytes.clone())
+            .file_name(art_name.clone())
+            .mime_str(mime)
+        {
+            Ok(p) => p,
+            Err(e) => {
+                return Err(ControlFlow::Break(anyhow::Error::new(e).context(format!(
+                    "gemfury: build multipart part for '{}' (mime '{}')",
+                    art_name, mime
+                ))));
+            }
+        };
+        let form = reqwest::blocking::multipart::Form::new().part("package", file_part);
+        let req = client
+            .post(push_url)
+            .basic_auth(push_token, Some(""))
+            .multipart(form);
+        let resp = match req.send() {
+            Ok(r) => r,
+            Err(e) => {
+                // Transport-level failure — retry.
+                return Err(ControlFlow::Continue(
+                    anyhow::Error::new(e).context(format!("gemfury: send POST {}", push_url)),
+                ));
+            }
+        };
+        let status = resp.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        // Idempotent conflict: a 409 (Conflict) / 422 (Unprocessable) means the
+        // version already exists on Fury — a re-run on an already-published
+        // tag, or a racing concurrent uploader. The operator's intent ("land
+        // this artifact") is satisfied, so treat it as success rather than a
+        // hard failure (mirrors the cloudsmith conflict-as-success guard).
+        if matches!(status.as_u16(), 409 | 422) {
+            conflict_skipped.set(true);
+            return Ok(());
+        }
+        let body = resp.text().unwrap_or_default();
+        let err_msg = format!(
+            "gemfury: POST {} for '{}' returned HTTP {}: {}",
+            push_url,
+            art_name,
+            status,
+            redact_bearer_tokens(body.trim())
+        );
+        let err = anyhow::anyhow!(err_msg);
+        if status.is_server_error() || status.as_u16() == 429 {
+            Err(ControlFlow::Continue(err))
+        } else {
+            Err(ControlFlow::Break(err))
+        }
+    })?;
+
+    // A conflict-as-success push means the version was already present (re-run
+    // / racing uploader); record NO rollback target — this run did not place
+    // it, so rollback must not delete it.
+    if conflict_skipped.get() {
+        log.status(&format!(
+            "'{}@{}' already on gemfury account '{}' (push conflict) — treated as idempotent",
+            fury_pkg, version, account
+        ));
+        return Ok(PushOutcome::AlreadyPresent);
+    }
+
+    Ok(PushOutcome::Pushed(GemFuryTarget {
+        account: account.to_string(),
+        // Record the Fury-visible package name (not the artifact filename) so
+        // rollback's DELETE /packages/<name>/versions/… keys on the same name
+        // the probe / skip-log / conflict-log use — a full-filename key 404s
+        // and orphans the artifact.
+        package: fury_pkg,
+        version: version.to_string(),
+        format: job.format.clone(),
+        push_token_env_var: push_token_env_var(cfg).to_string(),
+        api_token_env_var: api_token_env_var(cfg).to_string(),
+    }))
+}
+
+/// Top-level publish entrypoint. Iterates each `gemfury[]` entry and pushes
+/// every matching artifact via `POST push.fury.io/<account>` with HTTP Basic
+/// auth, appending one [`GemFuryTarget`] to `pushed` per artifact that
+/// actually landed.
 ///
 /// `pushed` is an out-param (rather than the return value) so that on a
 /// mid-loop error the caller still holds the partial set of artifacts that
@@ -462,6 +631,10 @@ pub fn publish_to_gemfury(
         let version = ctx.version();
         let push_url = format!("{}/{}", push_base_from(ctx.env_source()), account);
 
+        // Pre-validate every artifact's existence + format serially so a
+        // missing file or unrecognized extension fails fast before any push
+        // fans out (and before partial pushes can land).
+        let mut jobs: Vec<PushJob<'_>> = Vec::with_capacity(artifacts.len());
         for artifact in &artifacts {
             let path = &artifact.path;
             if !path.exists() {
@@ -482,136 +655,91 @@ pub fn publish_to_gemfury(
                     )
                 })?
                 .to_string();
-
-            // Idempotency probe: skip if `<package>@<version>` is already on
-            // Fury — matches the immutable-releases policy (re-run on an
-            // already-pushed tag must not error). Fury exposes a package in
-            // /packages/<name>/ under its control-file name (the artifact
-            // filename minus the version+arch+extension suffix), so the probe
-            // keys on the derived name — probing the raw filename always 404s.
-            // A 404 here just means we'll attempt the push (which has its own
-            // 409/422 conflict-as-success guard for the racing case).
-            let fury_pkg = fury_package_name(&art_name, &version);
-            if version_already_published(
-                &client,
-                &account,
-                &fury_pkg,
-                &version,
-                &push_token,
-                &policy,
-                log,
-                ctx.env_source(),
-            )? {
-                log.status(&format!(
-                    "skipped '{}@{}' — already on gemfury account '{}' (idempotent)",
-                    fury_pkg, version, account
-                ));
-                continue;
-            }
-
-            log.status(&format!(
-                "pushing {} ({}) → {} (gemfury account '{}')",
-                art_name, format, push_url, account
-            ));
-
-            let file_bytes = std::fs::read(path)
-                .with_context(|| format!("gemfury: read '{}'", path.display()))?;
-
-            let max_attempts = policy.max_attempts.max(1);
-            let mime = "application/octet-stream";
-            // Set inside the retry closure when the push returns a 409/422
-            // already-exists conflict, so the post-retry code can skip
-            // recording a rollback target. `Cell` because the closure is
-            // `FnMut` and the publish loop is single-threaded.
-            let conflict_skipped = std::cell::Cell::new(false);
-            retry_sync(&policy, |attempt| {
-                if attempt > 1 {
-                    log.warn(&format!(
-                        "gemfury push attempt {}/{} failed (transient), retrying…",
-                        attempt - 1,
-                        max_attempts
-                    ));
-                }
-                let file_part = match reqwest::blocking::multipart::Part::bytes(file_bytes.clone())
-                    .file_name(art_name.clone())
-                    .mime_str(mime)
-                {
-                    Ok(p) => p,
-                    Err(e) => {
-                        return Err(ControlFlow::Break(anyhow::Error::new(e).context(format!(
-                            "gemfury: build multipart part for '{}' (mime '{}')",
-                            art_name, mime
-                        ))));
-                    }
-                };
-                let form = reqwest::blocking::multipart::Form::new().part("package", file_part);
-                let req = client
-                    .post(&push_url)
-                    .basic_auth(&push_token, Some(""))
-                    .multipart(form);
-                let resp = match req.send() {
-                    Ok(r) => r,
-                    Err(e) => {
-                        // Transport-level failure — retry.
-                        return Err(ControlFlow::Continue(
-                            anyhow::Error::new(e)
-                                .context(format!("gemfury: send POST {}", push_url)),
-                        ));
-                    }
-                };
-                let status = resp.status();
-                if status.is_success() {
-                    return Ok(());
-                }
-                // Idempotent conflict: a 409 (Conflict) / 422 (Unprocessable)
-                // means the version already exists on Fury — a re-run on an
-                // already-published tag, or a racing concurrent uploader.
-                // The operator's intent ("land this artifact") is satisfied,
-                // so treat it as success rather than a hard failure (mirrors
-                // the cloudsmith conflict-as-success guard).
-                if matches!(status.as_u16(), 409 | 422) {
-                    conflict_skipped.set(true);
-                    return Ok(());
-                }
-                let body = resp.text().unwrap_or_default();
-                let err_msg = format!(
-                    "gemfury: POST {} for '{}' returned HTTP {}: {}",
-                    push_url,
-                    art_name,
-                    status,
-                    redact_bearer_tokens(body.trim())
-                );
-                let err = anyhow::anyhow!(err_msg);
-                if status.is_server_error() || status.as_u16() == 429 {
-                    Err(ControlFlow::Continue(err))
-                } else {
-                    Err(ControlFlow::Break(err))
-                }
-            })?;
-
-            // A conflict-as-success push means the version was already present
-            // (re-run / racing uploader); record NO rollback target — this run
-            // did not place it, so rollback must not delete it.
-            if conflict_skipped.get() {
-                log.status(&format!(
-                    "'{}@{}' already on gemfury account '{}' (push conflict) — treated as idempotent",
-                    fury_pkg, version, account
-                ));
-                continue;
-            }
-
-            pushed.push(GemFuryTarget {
-                account: account.clone(),
-                // Record the Fury-visible package name (not the artifact
-                // filename) so rollback's DELETE /packages/<name>/versions/…
-                // keys on the same name the probe / skip-log / conflict-log
-                // use — a full-filename key 404s and orphans the artifact.
-                package: fury_pkg,
-                version: version.clone(),
+            jobs.push(PushJob {
+                path,
+                art_name,
                 format,
-                push_token_env_var: push_token_env_var(cfg).to_string(),
-                api_token_env_var: api_token_env_var(cfg).to_string(),
             });
+        }
+
+        // Idempotent pushes to distinct `<package>@<version>` paths fan out
+        // bounded by the global parallelism (capped at MAX_PUSH_CONCURRENCY).
+        // The Assets→Manager→Submitter group ordering is untouched: gemfury is
+        // one Assets-group publisher, and only its own independent artifact
+        // pushes run concurrently.
+        //
+        // Unlike the order-preserving-but-fail-fast `run_parallel_chunks`, the
+        // rollback contract here demands EVERY artifact that actually POSTed be
+        // recorded — even a sibling that succeeded concurrently with a failing
+        // push must land in `pushed` so the partial set can be rolled back. So
+        // each chunk runs to completion, ALL `Pushed` outcomes are recorded in
+        // submission order, and only then is the first error surfaced.
+        let parallelism = ctx.options.parallelism.clamp(1, MAX_PUSH_CONCURRENCY);
+        // Surface the clamp under -v when it actually lowers the operator's
+        // global parallelism, so a higher --parallelism that silently has no
+        // effect on Fury pushes is discoverable rather than mysterious.
+        if ctx.options.parallelism > MAX_PUSH_CONCURRENCY {
+            log.verbose(&format!(
+                "gemfury push concurrency clamped to {MAX_PUSH_CONCURRENCY} \
+                 (global parallelism {} is higher; Fury rate limits favor a lower cap)",
+                ctx.options.parallelism
+            ));
+        }
+        // Resolve the env source to a `Sync` `Arc` ahead of the fan-out so the
+        // worker closure captures it (not the non-`Sync` `ctx`).
+        let env = ctx.env_source_arc();
+        let mut first_err: Option<anyhow::Error> = None;
+        'chunks: for chunk in jobs.chunks(parallelism) {
+            let chunk_results: Vec<Result<PushOutcome>> = std::thread::scope(|scope| {
+                let handles: Vec<_> = chunk
+                    .iter()
+                    .map(|job| {
+                        scope.spawn(|| {
+                            push_one_artifact(
+                                &client,
+                                &account,
+                                &version,
+                                &push_url,
+                                &push_token,
+                                cfg,
+                                job,
+                                &policy,
+                                log,
+                                env.as_ref(),
+                            )
+                        })
+                    })
+                    .collect();
+                handles
+                    .into_iter()
+                    .map(|h| {
+                        anodizer_core::parallel::join_panic_to_err(h.join(), "gemfury push")
+                            .and_then(|r| r)
+                    })
+                    .collect()
+            });
+            // Record landed targets in submission order before propagating any
+            // error, so a concurrent success is never dropped from rollback.
+            for result in chunk_results {
+                match result {
+                    Ok(PushOutcome::Pushed(target)) => pushed.push(target),
+                    Ok(PushOutcome::AlreadyPresent) => {}
+                    Err(e) => {
+                        if first_err.is_none() {
+                            first_err = Some(e);
+                        }
+                    }
+                }
+            }
+            // A failure stops launching further chunks (the release is already
+            // doomed); the in-flight chunk's successes are kept above.
+            if first_err.is_some() {
+                break 'chunks;
+            }
+        }
+
+        if let Some(err) = first_err {
+            return Err(err);
         }
 
         log.status(&format!(
