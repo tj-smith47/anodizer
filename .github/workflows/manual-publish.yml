@@ -65,6 +65,7 @@ jobs:
   manual-publish:
     name: Manual publish ${{ inputs.publishers }} @ ${{ inputs.tag }}${{ inputs.dry_run && ' (dry-run)' || '' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
       id-token: write # OIDC for any publisher using Trusted Publishing / SLSA provenance (npm, cargo, mcp)

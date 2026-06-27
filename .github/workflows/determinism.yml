@@ -21,6 +21,10 @@ permissions:
 jobs:
   shard:
     name: Determinism (${{ matrix.shard }})
+    # Double-build-and-byte-compare per shard; observed p100 wall-time ~99.5 min
+    # (Windows shards). 150 = ceil(99.5 * 1.5) headroom, well under the implicit
+    # 6h default that would let a wedged shard burn a full runner-hour budget.
+    timeout-minutes: 150
     strategy:
       fail-fast: false
       matrix:

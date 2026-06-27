@@ -206,6 +206,11 @@ tasks:
     cmds:
       - .claude/scripts/audit-test-spawn-retry.sh
 
+  audit:job-timeouts:
+    desc: "Guard: every .github/workflows job declares a positive-integer timeout-minutes (reusable-workflow callers exempt)."
+    cmds:
+      - .claude/scripts/audit-job-timeouts.sh
+
   lint:
     desc: Local pre-commit check (tidy, clippy, build, snapshot dry-run)
     cmds:
@@ -217,6 +222,7 @@ tasks:
       - task: audit:log-labels
       - task: audit:test-isolation
       - task: audit:test-spawn
+      - task: audit:job-timeouts
 
   ci:
     desc: Run all CI checks (everything except cross-platform builds)

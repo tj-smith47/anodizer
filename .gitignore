@@ -22,5 +22,7 @@ CLAUDE.local.md
 !.claude/scripts/audit-log-status.sh
 !.claude/scripts/audit-log-labels.sh
 !.claude/scripts/audit-test-isolation.sh
+!.claude/scripts/audit-test-spawn-retry.sh
+!.claude/scripts/audit-job-timeouts.sh
 # Coverage artifact emitted by `task coverage:check`.
 cobertura.xml

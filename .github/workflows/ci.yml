@@ -20,6 +20,7 @@ jobs:
   actionlint:
     name: Actionlint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: Install actionlint
@@ -35,10 +36,14 @@ jobs:
       - name: Lint workflows
         run: |
           "${RUNNER_TEMP}/actionlint" -color
+      # yq ships preinstalled on the ubuntu-latest runner image.
+      - name: Audit job timeouts
+        run: .claude/scripts/audit-job-timeouts.sh
 
   fmt:
     name: Formatting
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: ./.github/actions/setup-rust
@@ -53,6 +58,7 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     env:
       RUSTC_WRAPPER: sccache
     steps:
@@ -69,6 +75,7 @@ jobs:
   cargo-audit:
     name: Cargo Audit
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: ./.github/actions/setup-rust
@@ -133,6 +140,7 @@ jobs:
   package:
     name: Package (dry-run)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       RUSTC_WRAPPER: sccache
     steps:
@@ -150,6 +158,7 @@ jobs:
     if: github.ref == 'refs/heads/master'
     needs: [test]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -163,6 +172,7 @@ jobs:
   validate-readme:
     name: Validate README YAML
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     env:
       RUSTC_WRAPPER: sccache
     steps:
@@ -176,6 +186,7 @@ jobs:
   check-config:
     name: Check Config
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     env:
       RUSTC_WRAPPER: sccache
     steps:
@@ -188,10 +199,29 @@ jobs:
       - name: Validate .anodizer.yaml
         run: ./target/release/anodizer check config
 
+  # PR-blocking freshness gate. anodizer generates its CLI / config reference
+  # docs + JSON schema from source (`cargo xtask gen-docs`); a PR that changes
+  # a flag, a config field, or the schema without regenerating would land stale
+  # committed docs. `task docs:check` regenerates into memory and fails on any
+  # diff, so a stale PR cannot merge. Runs on pull_request (and master push) —
+  # docs.yml's own freshness check only fires post-merge on master.
+  docs-check:
+    name: Docs freshness
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ./.github/actions/setup-docs
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check generated docs are up-to-date
+        run: task docs:check
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/master'
+    timeout-minutes: 45
     permissions:
       contents: write
     steps:
