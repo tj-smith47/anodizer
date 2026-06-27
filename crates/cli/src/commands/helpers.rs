@@ -1004,6 +1004,14 @@ pub fn write_metadata_json(
     Ok(metadata_path)
 }
 
+/// Compile-time coupling to the determinism harness's aggregate registry: the
+/// `artifacts.json` manifest this function writes is recognized by
+/// `anodizer_core::determinism::ArtifactsManifest`, whose `id()` is this const.
+/// Referencing it welds the producer to the registry entry so neither can be
+/// renamed without breaking the build (mirrors the combined-checksums coupling
+/// in `anodizer_stage_checksum`).
+const _: &str = anodizer_core::determinism::ARTIFACTS_MANIFEST_AGGREGATE_ID;
+
 /// Write `dist/metadata.json` and `dist/artifacts.json` and apply the
 /// configured `metadata.mod_timestamp` to both files.
 ///

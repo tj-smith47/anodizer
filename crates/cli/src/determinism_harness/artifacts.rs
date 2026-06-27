@@ -58,6 +58,15 @@ pub(super) struct ArtifactInfo {
     /// `"no diff in first 1 KiB"`. Empty when the artifact is smaller
     /// than the head window (the head already covers the whole file).
     pub(super) tail_sample: Vec<u8>,
+    /// Complete bytes, retained ONLY for *aggregate* artifacts (combined
+    /// checksums, `artifacts.json`) per
+    /// [`anodizer_core::determinism::aggregate_kind_for`]. Aggregates are
+    /// small (KB) and the transitive-derivation rule needs their full
+    /// content to reconstruct members from both runs — head/tail sampling
+    /// would force a false fail-closed on any aggregate larger than the
+    /// sampled window. `None` for every non-aggregate artifact (the 50 MB
+    /// binaries never retain their full bytes).
+    pub(super) full: Option<Vec<u8>>,
 }
 
 /// How many leading bytes of each artifact to retain for drift
@@ -327,6 +336,15 @@ pub(super) fn hash_artifacts(
                 .max(HEAD_SAMPLE_BYTES);
             bytes[tail_start..].to_vec()
         };
+        // Retain full bytes for aggregates (so the transitive-derivation rule
+        // can reconstruct their members) plus any small text file — the latter
+        // covers an operator-renamed combined file (`SHA512SUMS`) whose
+        // aggregate identity is only knowable after the manifest is parsed.
+        let full = if should_capture_full(&name, &bytes) {
+            Some(bytes.clone())
+        } else {
+            None
+        };
         out.insert(
             name,
             ArtifactInfo {
@@ -336,6 +354,7 @@ pub(super) fn hash_artifacts(
                 stage,
                 head_sample,
                 tail_sample,
+                full,
             },
         );
     }
@@ -539,8 +558,75 @@ pub(super) fn infer_stage_from_path(rel: &str) -> String {
         "archive".into()
     } else if lower.ends_with(".crate") {
         "cargo-package".into()
+    } else if lower.contains(".app/") {
+        // Contents of a macOS `.app` bundle directory (Info.plist, the
+        // copied binary, Resources). Pure file assembly at a fixed mtime,
+        // produced by stage-appbundle. Attribute the whole subtree so its
+        // files classify as a tracked primary on the macOS shard rather
+        // than falling through to `unknown`.
+        "appbundle".into()
+    } else if is_man_page(&lower) {
+        // A man page (`name.<1-9>` or `name.<1-9>.gz`) emitted by a
+        // `before:` hook (e.g. `cargo run -- man > dist/anodizer.1`).
+        // Byte-stable at a fixed SOURCE_DATE_EPOCH; classify it so it is a
+        // tracked primary, not an unclassified loose file.
+        "man".into()
     } else {
         "unknown".into()
+    }
+}
+
+/// Upper bound on the bytes retained for a non-aggregate text file. Generous
+/// versus any combined checksums / `artifacts.json` (KB-scale even for large
+/// workspaces) yet small enough that retaining a stray text artifact can't
+/// balloon harness memory.
+pub(super) const AGGREGATE_FULL_CAP_BYTES: usize = 512 * 1024;
+
+/// Whether to retain `bytes` in [`ArtifactInfo::full`] for member
+/// reconstruction. Filename-recognized aggregates are always retained; any
+/// other small text file is retained too, so a marker-renamed combined file
+/// (`SHA512SUMS`) — unrecognizable by suffix until the manifest is parsed —
+/// still carries bytes the transitive-derivation rule can reconstruct.
+pub(super) fn should_capture_full(name: &str, bytes: &[u8]) -> bool {
+    if anodizer_core::determinism::aggregate_kind_for(name).is_some() {
+        return true;
+    }
+    bytes.len() <= AGGREGATE_FULL_CAP_BYTES && looks_like_text(bytes)
+}
+
+/// Heuristic text test: a NUL byte in the first 8 KiB marks the file binary.
+/// Combined checksums and `artifacts.json` are NUL-free UTF-8; archives /
+/// packages / binaries are not.
+fn looks_like_text(bytes: &[u8]) -> bool {
+    let probe = &bytes[..bytes.len().min(8192)];
+    !probe.contains(&0)
+}
+
+/// `true` when the basename of `lower` looks like a Unix man page: a
+/// `name.<section>` where `<section>` is a single digit `1`–`9`, with an
+/// optional `.gz` compression suffix (`anodizer.1`, `foo.8.gz`). Conservative
+/// — false negatives only cost a man page its `man` attribution; false
+/// positives would mislabel a real artifact, so the single-digit section is
+/// required (a `v1.2.3`-style tail never matches).
+fn is_man_page(lower: &str) -> bool {
+    let base = lower.rsplit(['/', '\\']).next().unwrap_or(lower);
+    // A versioned shared object (`libfoo.so.1`, `libssl.so.1.1`) has the same
+    // `name.<single-digit>` tail as a man page but is NOT one — exclude it so
+    // its `man` mis-attribution can't hide a real `.so` regression.
+    if base.contains(".so.") {
+        return false;
+    }
+    let stem = base.strip_suffix(".gz").unwrap_or(base);
+    match stem.rsplit_once('.') {
+        Some((name, section)) => {
+            !name.is_empty()
+                && section.len() == 1
+                && section
+                    .chars()
+                    .next()
+                    .is_some_and(|c| ('1'..='9').contains(&c))
+        }
+        None => false,
     }
 }
 
@@ -575,6 +661,38 @@ mod tests {
     /// at `dist/msi/anodize-0.4.0.msi` would have shown up under
     /// `unknown` and the report's `drift` row would not have named
     /// the responsible stage.
+    /// Man pages from a `before:` hook (`dist/anodizer.1`) and the contents
+    /// of a macOS `.app` bundle must classify to a known stage so the
+    /// exhaustive classifier does not flag them as unregistered files.
+    #[test]
+    fn stage_inference_classifies_man_pages_and_app_bundles() {
+        assert_eq!(infer_stage_from_path("dist/anodizer.1"), "man");
+        assert_eq!(infer_stage_from_path("dist/anodizer.8.gz"), "man");
+        assert_eq!(
+            infer_stage_from_path("dist/macos/anodizer.app/Contents/MacOS/anodizer"),
+            "appbundle"
+        );
+        assert_eq!(
+            infer_stage_from_path("dist/macos/anodizer.app/Contents/Info.plist"),
+            "appbundle"
+        );
+        // A version-suffixed binary must NOT be mistaken for a man page —
+        // the section must be a single digit.
+        assert_eq!(
+            infer_stage_from_path("dist/anodizer-0.12.3-linux-amd64"),
+            "unknown"
+        );
+        assert_eq!(infer_stage_from_path("dist/install.sh"), "unknown");
+        // A versioned shared object shares the `name.<single-digit>` tail of a
+        // man page but must NOT be classified `man` (else a `.so.N` drift would
+        // hide behind a man-page attribution).
+        assert_eq!(infer_stage_from_path("dist/lib/libfoo.so.1"), "unknown");
+        assert_eq!(infer_stage_from_path("dist/lib/libssl.so.1.1"), "unknown");
+        assert_eq!(infer_stage_from_path("dist/lib/libc.so.6"), "unknown");
+        // A bare `.so` (no section) was never a man page and stays unknown.
+        assert_eq!(infer_stage_from_path("dist/lib/libfoo.so"), "unknown");
+    }
+
     #[test]
     fn stage_inference_classifies_installer_directory_prefixes() {
         assert_eq!(

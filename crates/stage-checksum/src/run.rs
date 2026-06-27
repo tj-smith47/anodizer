@@ -720,6 +720,14 @@ fn propagate_checksum_metadata(
 // refresh_combined_checksums — recompute and rewrite combined checksum files
 // ---------------------------------------------------------------------------
 
+/// Compile-time coupling to the determinism harness's aggregate registry: the
+/// combined checksums file this module writes is recognized by
+/// `anodizer_core::determinism::CombinedChecksums`, whose `id()` is this const.
+/// Referencing it here means renaming/removing the id breaks this build, so the
+/// producer and the registry entry cannot silently drift apart (mirrors the
+/// `MSVC_DETERMINISM_RUSTFLAGS` ↔ `.cargo/config.toml` coupling in core).
+const _: &str = anodizer_core::determinism::COMBINED_CHECKSUMS_AGGREGATE_ID;
+
 /// Refresh any combined `checksums.txt` files in-place by recomputing hashes
 /// of all non-checksum, non-signature, non-certificate artifacts currently in
 /// the registry. After signing (which produces new signature artifacts),

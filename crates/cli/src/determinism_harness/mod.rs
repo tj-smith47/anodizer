@@ -56,6 +56,7 @@ mod preserve;
 
 pub use installer_detect::installer_stages;
 
+use anodizer_core::determinism::AggregateKind;
 use anodizer_core::git::worktree::Worktree;
 use anodizer_core::harness_signing::EphemeralSigningKeys;
 use anodizer_core::log::{StageLogger, Verbosity};
@@ -65,7 +66,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use artifacts::{
-    ArtifactInfo, copy_artifacts_to_dump, discover_artifacts, hash_artifacts, prune_dump_to_drifted,
+    ArtifactInfo, copy_artifacts_to_dump, discover_artifacts, hash_artifacts,
+    infer_stage_from_path, prune_dump_to_drifted,
 };
 use drift::{inject_drift_byte, pick_first_artifact_for_stage, summarize_drift};
 use env::{BuildSubprocessEnv, build_subprocess_env};
@@ -1335,6 +1337,17 @@ impl Harness {
         let mut drift: Vec<DriftRow> = Vec::new();
         let mut drift_count: u32 = 0;
 
+        // Authoritative produced-artifact set, parsed from the run's
+        // `artifacts.json` manifest. Any dist file whose basename appears
+        // here is a tracked primary — this covers template / extra /
+        // uploadable files whose extension `infer_stage_from_path` cannot
+        // classify (e.g. `install.sh`).
+        let manifest_members = self.produced_member_basenames(&per_run_hashes);
+        // Basenames the manifest flags as combined checksums files via the
+        // `combined = "true"` marker — the authoritative aggregate signal,
+        // independent of the operator's chosen filename (e.g. `SHA512SUMS`).
+        let combined_markers = self.produced_combined_markers(&per_run_hashes);
+
         for name in &all_names {
             let mut hashes: Vec<String> = Vec::with_capacity(per_run_hashes.len());
             // Use the LAST run that produced the artifact as the source
@@ -1354,24 +1367,125 @@ impl Harness {
             let info = last_info.expect("artifact name came from union of run maps");
             let all_equal =
                 hashes.iter().all(|h| h == &hashes[0]) && !hashes.iter().any(|h| h == "<missing>");
+
+            // Exhaustive classification: every produced file must land in a
+            // known category (primary / sidecar / registered-aggregate). An
+            // unclassified file is a HARD FAIL — it could be an unregistered
+            // aggregate that silently masks member drift.
+            let classification =
+                self.classify(name, &all_names, &manifest_members, &combined_markers);
+            if matches!(classification, Classification::Unclassified) {
+                artifacts.push(ArtifactRow {
+                    name: name.clone(),
+                    path: info.relative_path.clone(),
+                    size_bytes: info.size_bytes,
+                    stage: info.stage.clone(),
+                    deterministic: all_equal,
+                    nondeterministic_reason: None,
+                    hash: if all_equal {
+                        Some(hashes[0].clone())
+                    } else {
+                        None
+                    },
+                    hashes: if all_equal { vec![] } else { hashes.clone() },
+                });
+                drift.push(DriftRow {
+                    artifact: name.clone(),
+                    hashes,
+                    differing_bytes_summary: Some(
+                        "unclassified produced file — register as aggregate or tag primary/sidecar"
+                            .into(),
+                    ),
+                });
+                drift_count += 1;
+                continue;
+            }
+
+            // Transitive-derivation rule: a drifting aggregate is excused IFF
+            // every differing member is itself allow-listed. An unexcused
+            // member is a real regression; an aggregate whose members cannot
+            // be reconstructed fails closed (never excused).
+            let mut aggregate_excuse: Option<String> = None;
+            if !all_equal && matches!(classification, Classification::Aggregate) {
+                let kind = self
+                    .aggregate_kind_for_name(name, &combined_markers)
+                    .expect("Aggregate classification ⇒ a registered kind matches");
+                match self.evaluate_aggregate(
+                    kind.as_ref(),
+                    name,
+                    &per_run_hashes,
+                    &combined_markers,
+                ) {
+                    AggregateVerdict::Excused(reason) => aggregate_excuse = Some(reason),
+                    AggregateVerdict::Regression(members) => {
+                        artifacts.push(ArtifactRow {
+                            name: name.clone(),
+                            path: info.relative_path.clone(),
+                            size_bytes: info.size_bytes,
+                            stage: info.stage.clone(),
+                            deterministic: false,
+                            nondeterministic_reason: None,
+                            hash: None,
+                            hashes: hashes.clone(),
+                        });
+                        // One drift row per aggregate (keeps the report's
+                        // `drift_count == drift.len()` invariant); the
+                        // offending members are named in both the artifact
+                        // field and the summary.
+                        let joined = members.join(", ");
+                        drift.push(DriftRow {
+                            artifact: format!("{name} → {joined}"),
+                            hashes,
+                            differing_bytes_summary: Some(format!(
+                                "aggregate member(s) [{joined}] drifted and are not allow-listed; \
+                                 a gated artifact regressed (surfaced via the {name} aggregate)"
+                            )),
+                        });
+                        drift_count += 1;
+                        continue;
+                    }
+                    AggregateVerdict::FailClosed(reason) => {
+                        artifacts.push(ArtifactRow {
+                            name: name.clone(),
+                            path: info.relative_path.clone(),
+                            size_bytes: info.size_bytes,
+                            stage: info.stage.clone(),
+                            deterministic: false,
+                            nondeterministic_reason: None,
+                            hash: None,
+                            hashes: hashes.clone(),
+                        });
+                        drift.push(DriftRow {
+                            artifact: name.clone(),
+                            hashes,
+                            differing_bytes_summary: Some(reason),
+                        });
+                        drift_count += 1;
+                        continue;
+                    }
+                }
+            }
+
             // Sign-stage drift auto-allowlist: cosign sign-blob uses
             // ECDSA P-256 with a random nonce, so its signature bytes
             // can never be byte-identical across runs. Byte-equality is
             // not the right determinism signal for signatures —
             // verification (`cosign verify-blob` / `gpg --verify`) is.
             let signed_artifact_drift = !all_equal && info.stage == "sign";
-            let allow_reason = self.resolve_allow_reason(name).or_else(|| {
-                if signed_artifact_drift {
-                    Some(
-                        "signed artifact: signature bytes vary by signer \
-                         (cosign ECDSA random nonce); validate via \
-                         `cosign verify-blob` / `gpg --verify`"
-                            .into(),
-                    )
-                } else {
-                    None
-                }
-            });
+            let allow_reason = aggregate_excuse
+                .or_else(|| self.resolve_allow_reason(name))
+                .or_else(|| {
+                    if signed_artifact_drift {
+                        Some(
+                            "signed artifact: signature bytes vary by signer \
+                             (cosign ECDSA random nonce); validate via \
+                             `cosign verify-blob` / `gpg --verify`"
+                                .into(),
+                        )
+                    } else {
+                        None
+                    }
+                });
 
             if all_equal {
                 artifacts.push(ArtifactRow {
@@ -1440,11 +1554,325 @@ impl Harness {
         }
         None
     }
+
+    /// Parse the run's `artifacts.json` manifest(s) into the set of produced
+    /// member basenames. This is the authoritative "what did we produce"
+    /// list, so any dist file whose basename appears here is a tracked
+    /// primary regardless of its extension (covers `template_files` /
+    /// `extra_files` / uploadable files). Reads the LAST run's manifest;
+    /// the path set is identical across runs (only member digests drift).
+    /// Best-effort: an absent or unparseable manifest yields an empty set
+    /// (callers fall back to extension- and allow-list-based classification).
+    fn produced_member_basenames(
+        &self,
+        per_run_hashes: &[BTreeMap<String, ArtifactInfo>],
+    ) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        let Some(run) = per_run_hashes.last() else {
+            return out;
+        };
+        for (name, info) in run {
+            if !anodizer_core::determinism::ArtifactsManifest.matches(name) {
+                continue;
+            }
+            let Some(full) = info.full.as_deref() else {
+                continue;
+            };
+            if let Ok(units) = anodizer_core::determinism::ArtifactsManifest.members_by_unit(full) {
+                out.extend(units.into_values());
+            }
+        }
+        out
+    }
+
+    /// Parse the run's `artifacts.json` manifest(s) into the set of basenames
+    /// flagged as combined checksums files via the `combined = "true"` marker.
+    /// This is the authoritative recognizer for the combined-checksums
+    /// aggregate — it catches an operator-renamed file (`SHA512SUMS`) that the
+    /// filename-suffix heuristic cannot. Best-effort: an absent / unparseable
+    /// manifest yields an empty set (callers fall back to the suffix match).
+    fn produced_combined_markers(
+        &self,
+        per_run_hashes: &[BTreeMap<String, ArtifactInfo>],
+    ) -> BTreeSet<String> {
+        let mut out = BTreeSet::new();
+        let Some(run) = per_run_hashes.last() else {
+            return out;
+        };
+        for (name, info) in run {
+            if !anodizer_core::determinism::ArtifactsManifest.matches(name) {
+                continue;
+            }
+            let Some(full) = info.full.as_deref() else {
+                continue;
+            };
+            if let Ok(markers) =
+                anodizer_core::determinism::combined_checksum_members_from_manifest(full)
+            {
+                out.extend(markers);
+            }
+        }
+        out
+    }
+
+    /// Resolve the [`AggregateKind`] for `name`, consulting the manifest's
+    /// `combined = "true"` markers as well as the filename-suffix registry.
+    /// The marker path lets an operator-renamed combined file (`SHA512SUMS`)
+    /// be recognized as a [`CombinedChecksums`] aggregate.
+    fn aggregate_kind_for_name(
+        &self,
+        name: &str,
+        combined_markers: &BTreeSet<String>,
+    ) -> Option<Box<dyn anodizer_core::determinism::AggregateKind>> {
+        if let Some(kind) = anodizer_core::determinism::aggregate_kind_for(name) {
+            return Some(kind);
+        }
+        if combined_markers.contains(basename(name)) {
+            return Some(Box::new(anodizer_core::determinism::CombinedChecksums));
+        }
+        None
+    }
+
+    /// Classify a produced dist file. Order matters: a registered aggregate
+    /// is recognized before the sidecar / primary checks so a combined
+    /// `checksums.txt` is never mislabeled a plain checksum primary.
+    fn classify(
+        &self,
+        name: &str,
+        all_names: &BTreeSet<String>,
+        manifest_members: &BTreeSet<String>,
+        combined_markers: &BTreeSet<String>,
+    ) -> Classification {
+        if self
+            .aggregate_kind_for_name(name, combined_markers)
+            .is_some()
+        {
+            return Classification::Aggregate;
+        }
+        // Sidecar: a `.sha256` / `.sig` whose stripped stem names a primary.
+        if let Some(stem) = strip_sidecar_suffix(name) {
+            let stem_is_primary = self.is_primary(stem, manifest_members)
+                || all_names
+                    .iter()
+                    .any(|n| n.as_str() == stem || basename(n) == basename(stem));
+            if stem_is_primary {
+                return Classification::Sidecar;
+            }
+        }
+        if self.is_primary(name, manifest_members) {
+            return Classification::Primary;
+        }
+        Classification::Unclassified
+    }
+
+    /// A *primary* artifact: a recognized build/stage output (known
+    /// `infer_stage_from_path` attribution), an intrinsically
+    /// non-deterministic allow-listed format, the explicitly-tracked
+    /// `metadata.json`, or any file the run's manifest declares it produced.
+    fn is_primary(&self, name: &str, manifest_members: &BTreeSet<String>) -> bool {
+        let base = basename(name);
+        infer_stage_from_path(name) != "unknown"
+            || self.resolve_allow_reason(name).is_some()
+            // `metadata.json` is a tracked primary (expected byte-stable);
+            // its pass is explicit, not incidental.
+            || base == "metadata.json"
+            || manifest_members.contains(base)
+    }
+
+    /// Apply the transitive-derivation rule to a drifting aggregate.
+    ///
+    /// Reconstructs each run's members from the aggregate's full bytes and
+    /// computes the set of *differing* members (a unit absent from any run —
+    /// added, removed, or value-changed). The aggregate is excused IFF every
+    /// differing member is itself allow-listed; any unexcused member is a
+    /// real regression. Fails closed when the bytes are missing / uncaptured
+    /// / unparseable, or when bytes drifted yet no member unit changed
+    /// (structural drift we cannot attribute).
+    fn evaluate_aggregate(
+        &self,
+        kind: &dyn anodizer_core::determinism::AggregateKind,
+        name: &str,
+        per_run_hashes: &[BTreeMap<String, ArtifactInfo>],
+        combined_markers: &BTreeSet<String>,
+    ) -> AggregateVerdict {
+        let mut visited: BTreeSet<String> = BTreeSet::new();
+        visited.insert(name.to_string());
+        self.evaluate_aggregate_inner(kind, name, per_run_hashes, combined_markers, &mut visited)
+    }
+
+    /// Recursive core of [`Self::evaluate_aggregate`]. `visited` tracks the
+    /// aggregate names already on the evaluation stack so a nested aggregate
+    /// that (pathologically) lists itself fails closed instead of recursing
+    /// forever.
+    fn evaluate_aggregate_inner(
+        &self,
+        kind: &dyn anodizer_core::determinism::AggregateKind,
+        name: &str,
+        per_run_hashes: &[BTreeMap<String, ArtifactInfo>],
+        combined_markers: &BTreeSet<String>,
+        visited: &mut BTreeSet<String>,
+    ) -> AggregateVerdict {
+        let mut maps: Vec<BTreeMap<String, String>> = Vec::with_capacity(per_run_hashes.len());
+        for run in per_run_hashes {
+            let Some(info) = run.get(name) else {
+                return AggregateVerdict::FailClosed(format!(
+                    "aggregate {name} missing from a run — cannot reconstruct members; \
+                     treated as real drift"
+                ));
+            };
+            let Some(full) = info.full.as_deref() else {
+                return AggregateVerdict::FailClosed(format!(
+                    "aggregate {name} full bytes not captured — cannot reconstruct members; \
+                     treated as real drift"
+                ));
+            };
+            match kind.members_by_unit(full) {
+                Ok(m) => maps.push(m),
+                Err(e) => {
+                    return AggregateVerdict::FailClosed(format!(
+                        "aggregate {name} failed to parse ({e:#}); treated as real drift"
+                    ));
+                }
+            }
+        }
+        let n = maps.len();
+        let mut all_keys: BTreeSet<&String> = BTreeSet::new();
+        for m in &maps {
+            all_keys.extend(m.keys());
+        }
+        let mut differing_members: BTreeSet<String> = BTreeSet::new();
+        for key in all_keys {
+            let present = maps.iter().filter(|m| m.contains_key(key)).count();
+            if present < n
+                && let Some(member) = maps.iter().find_map(|m| m.get(key))
+            {
+                differing_members.insert(member.clone());
+            }
+        }
+        if differing_members.is_empty() {
+            return AggregateVerdict::FailClosed(format!(
+                "aggregate {name} bytes drifted but no member unit changed \
+                 (structural / ordering drift); treated as real drift"
+            ));
+        }
+        let mut unexcused: Vec<String> = Vec::new();
+        for member in &differing_members {
+            match self.member_excused(member, per_run_hashes, combined_markers, visited) {
+                Ok(true) => {}
+                Ok(false) => unexcused.push(member.clone()),
+                Err(reason) => return AggregateVerdict::FailClosed(reason),
+            }
+        }
+        if unexcused.is_empty() {
+            AggregateVerdict::Excused(format!(
+                "aggregate of derived rows: every differing member ({}) is allow-listed \
+                 non-deterministic; each member is drift-checked independently",
+                differing_members
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ))
+        } else {
+            AggregateVerdict::Regression(unexcused)
+        }
+    }
+
+    /// Whether a *differing* aggregate member is excused.
+    ///
+    /// A member is excused when it is directly allow-listed, OR when it is
+    /// itself a (nested) aggregate whose own members all resolve as excused —
+    /// the transitive rule applied recursively (`artifacts.json` ⊃
+    /// `checksums.txt` ⊃ per-artifact rows). `Err` is fail-closed: the nested
+    /// aggregate's bytes are missing / unparseable, or a membership cycle was
+    /// hit — the caller treats it as real drift, never an excuse.
+    fn member_excused(
+        &self,
+        member: &str,
+        per_run_hashes: &[BTreeMap<String, ArtifactInfo>],
+        combined_markers: &BTreeSet<String>,
+        visited: &mut BTreeSet<String>,
+    ) -> Result<bool, String> {
+        if self.resolve_allow_reason(member).is_some() {
+            return Ok(true);
+        }
+        let Some(kind) = self.aggregate_kind_for_name(member, combined_markers) else {
+            return Ok(false);
+        };
+        // Resolve the basename `member` back to the actual artifact key so we
+        // can fetch its full bytes (member came from a parent aggregate's
+        // member map, where it is recorded as a bare basename).
+        let agg_name = per_run_hashes
+            .last()
+            .and_then(|run| run.keys().find(|k| basename(k) == member).cloned());
+        let Some(agg_name) = agg_name else {
+            return Err(format!(
+                "nested aggregate member {member} could not be located among produced \
+                 artifacts — cannot verify its members; treated as real drift"
+            ));
+        };
+        if !visited.insert(agg_name.clone()) {
+            return Err(format!(
+                "aggregate membership cycle detected at {agg_name}; treated as real drift"
+            ));
+        }
+        let verdict = self.evaluate_aggregate_inner(
+            kind.as_ref(),
+            &agg_name,
+            per_run_hashes,
+            combined_markers,
+            visited,
+        );
+        match verdict {
+            AggregateVerdict::Excused(_) => Ok(true),
+            AggregateVerdict::Regression(_) => Ok(false),
+            AggregateVerdict::FailClosed(reason) => Err(reason),
+        }
+    }
+}
+
+/// Category a produced dist file falls into under the exhaustive classifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Classification {
+    /// A registered aggregate (combined checksums / `artifacts.json`).
+    Aggregate,
+    /// A `.sha256` / `.sig` derivative of a tracked primary.
+    Sidecar,
+    /// A tracked build/stage output, allow-listed format, or manifest member.
+    Primary,
+    /// None of the above — a hard fail (could mask drift).
+    Unclassified,
+}
+
+/// Verdict of the transitive-derivation rule on a drifting aggregate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AggregateVerdict {
+    /// Every differing member is allow-listed; the carried string is the
+    /// audit reason.
+    Excused(String),
+    /// These members drifted and are NOT allow-listed — a real regression.
+    Regression(Vec<String>),
+    /// The aggregate's members could not be reconstructed/attributed; the
+    /// carried string explains why. Treated as real drift, never excused.
+    FailClosed(String),
+}
+
+/// Strip a `.sha256` / `.sig` sidecar suffix, returning the covered stem.
+fn strip_sidecar_suffix(name: &str) -> Option<&str> {
+    name.strip_suffix(".sha256")
+        .or_else(|| name.strip_suffix(".sig"))
+}
+
+/// Last path component of a `/`- or `\`-separated key.
+fn basename(name: &str) -> &str {
+    name.rsplit(['/', '\\']).next().unwrap_or(name)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::artifacts::{HEAD_SAMPLE_BYTES, TAIL_SAMPLE_BYTES, infer_stage_from_path};
+    use super::artifacts::{
+        HEAD_SAMPLE_BYTES, TAIL_SAMPLE_BYTES, infer_stage_from_path, should_capture_full,
+    };
     use super::*;
     use anodizer_core::AllowListEntry;
 
@@ -1471,6 +1899,24 @@ mod tests {
         }
     }
 
+    /// A harness whose compile-time allow-list excuses the given glob
+    /// patterns (e.g. `*.deb`) — the intrinsically-non-deterministic members
+    /// the transitive-derivation rule should excuse.
+    fn harness_with_allow(patterns: &[&str]) -> Harness {
+        let mut h = empty_harness();
+        h.allowlist = AllowList {
+            compile_time: patterns
+                .iter()
+                .map(|p| AllowListEntry {
+                    artifact: (*p).to_string(),
+                    reason: format!("test: {p} is intrinsically non-deterministic"),
+                })
+                .collect(),
+            runtime: Vec::new(),
+        };
+        h
+    }
+
     fn run_with_files(
         h: &Harness,
         runs: Vec<Vec<(&str, &[u8])>>,
@@ -1493,6 +1939,14 @@ mod tests {
                     } else {
                         Vec::new()
                     };
+                    // Mirror production's full-byte retention so the
+                    // transitive-derivation rule (incl. marker-renamed combined
+                    // files) can reconstruct members.
+                    let full = if should_capture_full(name, bytes) {
+                        Some(bytes.to_vec())
+                    } else {
+                        None
+                    };
                     map.insert(
                         name.into(),
                         ArtifactInfo {
@@ -1502,6 +1956,7 @@ mod tests {
                             stage: infer_stage_from_path(name),
                             head_sample: bytes[..head_len].to_vec(),
                             tail_sample,
+                            full,
                         },
                     );
                 }
@@ -1580,6 +2035,517 @@ mod tests {
         assert!(!drifting.deterministic);
         assert!(drifting.hash.is_none());
         assert_eq!(drifting.hashes.len(), 2);
+    }
+
+    // --- Transitive-derivation rule for aggregate artifacts --------------
+
+    /// No false positive: a combined checksums file drifts solely because an
+    /// allow-listed member (`*.deb`, signed) changed its line. Every
+    /// differing member is allow-listed ⇒ the aggregate is excused ⇒
+    /// `drift_count == 0`.
+    #[test]
+    fn aggregate_excused_when_only_allowlisted_member_drifts() {
+        let h = harness_with_allow(&["*.deb"]);
+        let run0 = b"hashA  bar.tar.gz\ndeb000  app_1.0_amd64.deb\n" as &[u8];
+        let run1 = b"hashA  bar.tar.gz\ndeb111  app_1.0_amd64.deb\n" as &[u8];
+        let runs = run_with_files(
+            &h,
+            vec![
+                vec![("app_checksums.txt", run0), ("bar.tar.gz", b"stable")],
+                vec![("app_checksums.txt", run1), ("bar.tar.gz", b"stable")],
+            ],
+        );
+        let report = h.build_report(runs);
+        assert_eq!(
+            report.drift_count, 0,
+            "aggregate drift caused only by an allow-listed member must not fail"
+        );
+        let agg = report
+            .artifacts
+            .iter()
+            .find(|a| a.name == "app_checksums.txt")
+            .expect("checksums row present");
+        assert!(!agg.deterministic);
+        assert!(
+            agg.nondeterministic_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("app_1.0_amd64.deb")),
+            "excuse must name the differing allow-listed member: {:?}",
+            agg.nondeterministic_reason
+        );
+    }
+
+    /// No masking: a GATED (supposedly byte-reproducible) member's line
+    /// changed in the aggregate. Even with NO separate row for that member
+    /// (only the aggregate is emitted), the aggregate must FAIL and name the
+    /// offending member.
+    #[test]
+    fn aggregate_fails_when_gated_member_drifts_even_if_member_row_suppressed() {
+        let h = harness_with_allow(&["*.deb"]);
+        // Only the checksums file is emitted — the gated `bar.tar.gz` member
+        // has no independent row, so the aggregate is the sole signal.
+        let run0 = b"t000  bar.tar.gz\ndeb000  app_1.0_amd64.deb\n" as &[u8];
+        let run1 = b"t111  bar.tar.gz\ndeb111  app_1.0_amd64.deb\n" as &[u8];
+        let runs = run_with_files(
+            &h,
+            vec![
+                vec![("app_checksums.txt", run0)],
+                vec![("app_checksums.txt", run1)],
+            ],
+        );
+        let report = h.build_report(runs);
+        assert_eq!(
+            report.drift_count, 1,
+            "a gated member drifting inside the aggregate must surface as drift"
+        );
+        assert!(
+            report
+                .drift
+                .iter()
+                .any(|d| d.artifact.contains("bar.tar.gz")),
+            "the offending gated member must be named: {:?}",
+            report.drift
+        );
+        // The allow-listed deb that ALSO changed must NOT be reported.
+        assert!(
+            !report.drift.iter().any(|d| d.artifact.contains(".deb")),
+            "allow-listed member must not be reported as a regression"
+        );
+    }
+
+    /// A member appearing (added) is judged by its own allow-list status: a
+    /// new GATED member fails; a removed ALLOW-LISTED member is excused.
+    #[test]
+    fn aggregate_judges_additions_and_removals_by_member_status() {
+        // Addition of a gated member ⇒ fail.
+        let h = harness_with_allow(&["*.deb"]);
+        let add0 = b"a000  a.tar.gz\ndeb000  x_1.0_amd64.deb\n" as &[u8];
+        let add1 = b"a000  a.tar.gz\ndeb000  x_1.0_amd64.deb\nb000  b.tar.gz\n" as &[u8];
+        let runs = run_with_files(
+            &h,
+            vec![
+                vec![("c_checksums.txt", add0)],
+                vec![("c_checksums.txt", add1)],
+            ],
+        );
+        let report = h.build_report(runs);
+        assert_eq!(report.drift_count, 1, "added gated member must fail");
+        assert!(report.drift.iter().any(|d| d.artifact.contains("b.tar.gz")));
+
+        // Removal of an allow-listed member ⇒ excused.
+        let rem0 = b"a000  a.tar.gz\ndeb000  x_1.0_amd64.deb\n" as &[u8];
+        let rem1 = b"a000  a.tar.gz\n" as &[u8];
+        let runs = run_with_files(
+            &h,
+            vec![
+                vec![("c_checksums.txt", rem0)],
+                vec![("c_checksums.txt", rem1)],
+            ],
+        );
+        let report = h.build_report(runs);
+        assert_eq!(
+            report.drift_count, 0,
+            "removing an allow-listed member must be excused"
+        );
+    }
+
+    /// Fail-closed: an aggregate that drifts but cannot be parsed (or whose
+    /// drift is structural, with no member unit changing) is treated as real
+    /// drift, never excused.
+    #[test]
+    fn aggregate_fails_closed_on_unparseable_or_structural_drift() {
+        let h = harness_with_allow(&["*.deb"]);
+        // Structural drift: identical member set, only line ORDER changed.
+        let s0 = b"a  a.tar.gz\nd  x_1.0_amd64.deb\n" as &[u8];
+        // Reordered but same lines ⇒ parsed unit sets are identical ⇒ no
+        // member differs ⇒ fail closed (cannot attribute the byte drift).
+        let s1 = b"d  x_1.0_amd64.deb\na  a.tar.gz\nz  z\n" as &[u8];
+        let runs = run_with_files(
+            &h,
+            vec![vec![("s_checksums.txt", s0)], vec![("s_checksums.txt", s1)]],
+        );
+        let report = h.build_report(runs);
+        assert_eq!(
+            report.drift_count, 1,
+            "an aggregate whose drift cannot be attributed must fail closed"
+        );
+    }
+
+    /// The artifacts.json manifest aggregate is judged member-by-member: a
+    /// gated archive whose recorded digest changed fails; the same change to
+    /// an allow-listed deb is excused.
+    #[test]
+    fn artifacts_manifest_transitive_rule() {
+        let h = harness_with_allow(&["*.deb"]);
+        let gated0 = br#"[
+          {"kind":"archive","path":"./dist/a.tar.gz","name":"a.tar.gz","metadata":{"sha256":"aaaa"}},
+          {"kind":"linux_package","path":"./dist/a_1.0_amd64.deb","name":"a_1.0_amd64.deb","metadata":{"sha256":"dddd"}}
+        ]"# as &[u8];
+        // The gated archive's recorded digest changed ⇒ regression.
+        let gated1 = br#"[
+          {"kind":"archive","path":"./dist/a.tar.gz","name":"a.tar.gz","metadata":{"sha256":"bbbb"}},
+          {"kind":"linux_package","path":"./dist/a_1.0_amd64.deb","name":"a_1.0_amd64.deb","metadata":{"sha256":"dddd"}}
+        ]"#;
+        let runs = run_with_files(
+            &h,
+            vec![
+                vec![("artifacts.json", gated0)],
+                vec![("artifacts.json", gated1)],
+            ],
+        );
+        let report = h.build_report(runs);
+        assert_eq!(
+            report.drift_count, 1,
+            "gated archive digest drift must fail"
+        );
+        assert!(report.drift.iter().any(|d| d.artifact.contains("a.tar.gz")));
+
+        // Only the allow-listed deb digest changed ⇒ excused.
+        let deb1 = br#"[
+          {"kind":"archive","path":"./dist/a.tar.gz","name":"a.tar.gz","metadata":{"sha256":"aaaa"}},
+          {"kind":"linux_package","path":"./dist/a_1.0_amd64.deb","name":"a_1.0_amd64.deb","metadata":{"sha256":"eeee"}}
+        ]"#;
+        let runs = run_with_files(
+            &h,
+            vec![
+                vec![("artifacts.json", gated0)],
+                vec![("artifacts.json", deb1)],
+            ],
+        );
+        let report = h.build_report(runs);
+        assert_eq!(
+            report.drift_count, 0,
+            "deb-only digest drift must be excused"
+        );
+    }
+
+    /// Finding 1: the combined-checksums aggregate is recognized by the
+    /// `combined = "true"` manifest marker, not the filename suffix. An
+    /// operator-renamed `SHA512SUMS` (which the suffix heuristic misses) is
+    /// still subject to the transitive-derivation rule: excused when only an
+    /// allow-listed member line drifts, failed when a gated member line drifts.
+    #[test]
+    fn marker_named_combined_file_obeys_transitive_rule() {
+        let h = harness_with_allow(&["*.deb"]);
+        // Manifest flags `SHA512SUMS` as combined; identical across runs so the
+        // manifest itself doesn't drift — only the SHA512SUMS file does.
+        let manifest = br#"[
+          {"kind":"archive","path":"./dist/bar.tar.gz","name":"bar.tar.gz","metadata":{"sha256":"barbar"}},
+          {"kind":"linux_package","path":"./dist/app_1.0_amd64.deb","name":"app_1.0_amd64.deb","metadata":{"sha256":"debdeb"}},
+          {"kind":"checksum","path":"./dist/SHA512SUMS","name":"SHA512SUMS","metadata":{"combined":"true"}}
+        ]"# as &[u8];
+        // The suffix heuristic alone does NOT recognize this file.
+        assert!(anodizer_core::determinism::aggregate_kind_for("SHA512SUMS").is_none());
+
+        // Excused: only the allow-listed deb line drifts.
+        let sums0 = b"barbar  bar.tar.gz\ndeb000  app_1.0_amd64.deb\n" as &[u8];
+        let sums1 = b"barbar  bar.tar.gz\ndeb111  app_1.0_amd64.deb\n" as &[u8];
+        let runs = run_with_files(
+            &h,
+            vec![
+                vec![
+                    ("artifacts.json", manifest),
+                    ("SHA512SUMS", sums0),
+                    ("bar.tar.gz", b"stable"),
+                ],
+                vec![
+                    ("artifacts.json", manifest),
+                    ("SHA512SUMS", sums1),
+                    ("bar.tar.gz", b"stable"),
+                ],
+            ],
+        );
+        let report = h.build_report(runs);
+        assert_eq!(
+            report.drift_count, 0,
+            "marker-named combined file drift from an allow-listed member must be excused: {:?}",
+            report.drift
+        );
+        let agg = report
+            .artifacts
+            .iter()
+            .find(|a| a.name == "SHA512SUMS")
+            .expect("SHA512SUMS classified as an aggregate row");
+        assert!(!agg.deterministic);
+        assert!(
+            agg.nondeterministic_reason
+                .as_deref()
+                .is_some_and(|r| r.contains("app_1.0_amd64.deb")),
+            "excuse must name the drifting allow-listed member: {:?}",
+            agg.nondeterministic_reason
+        );
+
+        // Fail: the gated archive line drifts inside the same renamed file.
+        let g0 = b"bar000  bar.tar.gz\ndeb000  app_1.0_amd64.deb\n" as &[u8];
+        let g1 = b"bar111  bar.tar.gz\ndeb000  app_1.0_amd64.deb\n" as &[u8];
+        let runs = run_with_files(
+            &h,
+            vec![
+                vec![
+                    ("artifacts.json", manifest),
+                    ("SHA512SUMS", g0),
+                    ("bar.tar.gz", b"stable"),
+                ],
+                vec![
+                    ("artifacts.json", manifest),
+                    ("SHA512SUMS", g1),
+                    ("bar.tar.gz", b"stable"),
+                ],
+            ],
+        );
+        let report = h.build_report(runs);
+        assert_eq!(
+            report.drift_count, 1,
+            "a gated member drifting inside the renamed combined file must fail"
+        );
+        assert!(
+            report
+                .drift
+                .iter()
+                .any(|d| d.artifact.contains("bar.tar.gz")),
+            "the gated member must be named: {:?}",
+            report.drift
+        );
+    }
+
+    /// Finding 2 (realistic permutation): a cfgd-style recut where the archive
+    /// is byte-stable (gated) but the SBOM, cosign bundle, and detached
+    /// signature drift. Their drift is excused (compile-time `*.cdx.json` +
+    /// runtime `*.cosign.bundle` / `*.sig`), so `artifacts.json` — whose
+    /// recorded digests for those members moved — is excused too. Flipping the
+    /// gated archive then proves a real regression still surfaces.
+    #[test]
+    fn artifacts_manifest_recut_excuses_only_nondeterministic_members() {
+        let mut h = empty_harness();
+        h.allowlist = AllowList {
+            compile_time: vec![
+                AllowListEntry {
+                    artifact: "*.cdx.json".into(),
+                    reason: "CycloneDX SBOM carries a random serial UUID".into(),
+                },
+                AllowListEntry {
+                    artifact: "*.deb".into(),
+                    reason: "GPG-signed nfpm deb".into(),
+                },
+            ],
+            runtime: vec![
+                AllowListEntry {
+                    artifact: "*.cosign.bundle".into(),
+                    reason: "cosign ECDSA random nonce".into(),
+                },
+                AllowListEntry {
+                    artifact: "*.sig".into(),
+                    reason: "cosign detached signature".into(),
+                },
+            ],
+        };
+        let manifest = |arch: &str, sbom: &str, bundle: &str, sig: &str| {
+            format!(
+                r#"[
+  {{"kind":"archive","path":"./dist/app.tar.gz","name":"app.tar.gz","metadata":{{"sha256":"{arch}"}}}},
+  {{"kind":"sbom","path":"./dist/app.cdx.json","name":"app.cdx.json","metadata":{{"sha256":"{sbom}"}}}},
+  {{"kind":"signature","path":"./dist/app.tar.gz.cosign.bundle","name":"app.tar.gz.cosign.bundle","metadata":{{"sha256":"{bundle}"}}}},
+  {{"kind":"signature","path":"./dist/app.tar.gz.sig","name":"app.tar.gz.sig","metadata":{{"sha256":"{sig}"}}}},
+  {{"kind":"checksum","path":"./dist/checksums.txt","name":"checksums.txt","metadata":{{"combined":"true"}}}},
+  {{"kind":"metadata","path":"./dist/metadata.json","name":"metadata.json","metadata":{{}}}},
+  {{"kind":"uploadable_file","path":"./dist/install.sh","name":"install.sh","metadata":{{"sha256":"inst"}}}}
+]"#
+            )
+            .into_bytes()
+        };
+        let checksums = b"arch  app.tar.gz\n" as &[u8];
+        let files = |m: &[u8], sbom: &[u8], bundle: &[u8], sig: &[u8]| -> Vec<(String, Vec<u8>)> {
+            vec![
+                ("artifacts.json".into(), m.to_vec()),
+                ("app.tar.gz".into(), b"archive-stable".to_vec()),
+                ("app.cdx.json".into(), sbom.to_vec()),
+                ("app.tar.gz.cosign.bundle".into(), bundle.to_vec()),
+                ("app.tar.gz.sig".into(), sig.to_vec()),
+                ("checksums.txt".into(), checksums.to_vec()),
+                ("metadata.json".into(), b"meta-stable".to_vec()),
+                ("install.sh".into(), b"#!/bin/sh\n".to_vec()),
+            ]
+        };
+        fn borrow(v: &[(String, Vec<u8>)]) -> Vec<(&str, &[u8])> {
+            v.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect()
+        }
+
+        // Recut: archive stable, SBOM + bundle + sig all drift.
+        let r0 = files(
+            &manifest("ARCH", "SB0", "BUN0", "SIG0"),
+            b"sbom-0",
+            b"bundle-0",
+            b"sig-0",
+        );
+        let r1 = files(
+            &manifest("ARCH", "SB1", "BUN1", "SIG1"),
+            b"sbom-1",
+            b"bundle-1",
+            b"sig-1",
+        );
+        let runs = run_with_files(&h, vec![borrow(&r0), borrow(&r1)]);
+        let report = h.build_report(runs);
+        assert_eq!(
+            report.drift_count, 0,
+            "a recut that only moves SBOM/cosign-bundle/sig must be fully excused: {:?}",
+            report.drift
+        );
+
+        // Regression: the gated archive itself drifts (file + recorded digest).
+        let g0 = files(
+            &manifest("ARCH0", "SB0", "BUN0", "SIG0"),
+            b"sbom-0",
+            b"bundle-0",
+            b"sig-0",
+        );
+        let mut g1 = files(
+            &manifest("ARCH1", "SB0", "BUN0", "SIG0"),
+            b"sbom-0",
+            b"bundle-0",
+            b"sig-0",
+        );
+        // Flip the archive bytes too so the file-level row also drifts.
+        for entry in &mut g1 {
+            if entry.0 == "app.tar.gz" {
+                entry.1 = b"archive-DRIFTED".to_vec();
+            }
+        }
+        let runs = run_with_files(&h, vec![borrow(&g0), borrow(&g1)]);
+        let report = h.build_report(runs);
+        assert!(
+            report.drift_count >= 1,
+            "a gated archive regression must surface"
+        );
+        assert!(
+            report
+                .drift
+                .iter()
+                .any(|d| d.artifact.contains("app.tar.gz")),
+            "the gated archive must be named in drift: {:?}",
+            report.drift
+        );
+    }
+
+    /// Finding 2 (nested recursion): `artifacts.json` lists `checksums.txt` as
+    /// a combined member; the inner `checksums.txt` drifts. The transitive rule
+    /// recurses — excused when the inner drift is an allow-listed member,
+    /// failed when the inner drift is a gated member.
+    #[test]
+    fn nested_aggregate_recursion_judges_inner_members() {
+        let h = harness_with_allow(&["*.cdx.json"]);
+        // Manifest records no digest for checksums.txt, so its content token is
+        // the whole entry; bumping `size` makes the `checksums.txt` member of
+        // artifacts.json drift, forcing the recursion path.
+        let manifest = |size: u32| {
+            format!(
+                r#"[
+  {{"kind":"archive","path":"./dist/app.tar.gz","name":"app.tar.gz","metadata":{{"sha256":"AAAA"}}}},
+  {{"kind":"sbom","path":"./dist/app.cdx.json","name":"app.cdx.json","metadata":{{"sha256":"SB{size}"}}}},
+  {{"kind":"checksum","path":"./dist/checksums.txt","name":"checksums.txt","metadata":{{"combined":"true"}},"size":{size}}}
+]"#
+            )
+            .into_bytes()
+        };
+
+        // Excused: the inner checksums.txt drifts only at its allow-listed SBOM
+        // line.
+        let ck0 = b"arch  app.tar.gz\nsbom0  app.cdx.json\n" as &[u8];
+        let ck1 = b"arch  app.tar.gz\nsbom1  app.cdx.json\n" as &[u8];
+        let m0 = manifest(100);
+        let m1 = manifest(101);
+        let runs = run_with_files(
+            &h,
+            vec![
+                vec![("artifacts.json", m0.as_slice()), ("checksums.txt", ck0)],
+                vec![("artifacts.json", m1.as_slice()), ("checksums.txt", ck1)],
+            ],
+        );
+        let report = h.build_report(runs);
+        assert_eq!(
+            report.drift_count, 0,
+            "nested aggregate excused when inner drift is allow-listed: {:?}",
+            report.drift
+        );
+
+        // Fail: the inner checksums.txt drifts at its GATED archive line.
+        let bad0 = b"arch0  app.tar.gz\nsbom0  app.cdx.json\n" as &[u8];
+        let bad1 = b"arch1  app.tar.gz\nsbom0  app.cdx.json\n" as &[u8];
+        let runs = run_with_files(
+            &h,
+            vec![
+                vec![("artifacts.json", m0.as_slice()), ("checksums.txt", bad0)],
+                vec![("artifacts.json", m1.as_slice()), ("checksums.txt", bad1)],
+            ],
+        );
+        let report = h.build_report(runs);
+        assert!(
+            report.drift_count >= 1,
+            "nested aggregate must fail when an inner gated member drifts"
+        );
+        assert!(
+            report
+                .drift
+                .iter()
+                .any(|d| d.artifact.contains("checksums.txt") || d.artifact.contains("app.tar.gz")),
+            "the failing nested member chain must be named: {:?}",
+            report.drift
+        );
+    }
+
+    /// Every file a normal run emits classifies (zero `Unclassified`), and a
+    /// genuinely unregistered file is a hard fail even when byte-stable.
+    #[test]
+    fn classification_is_exhaustive_for_a_normal_run() {
+        let h = harness_with_allow(&["*.flatpak"]);
+        // artifacts.json declares `install.sh` so it classifies as a tracked
+        // primary via manifest membership (its `.sh` extension is unknown).
+        let manifest = br#"[
+          {"kind":"archive","path":"./dist/foo.tar.gz","name":"foo.tar.gz","metadata":{"sha256":"aaaa"}},
+          {"kind":"uploadable_file","path":"./dist/install.sh","name":"install.sh","metadata":{"sha256":"bbbb"}},
+          {"kind":"metadata","path":"./dist/metadata.json","name":"metadata.json","metadata":{}}
+        ]"# as &[u8];
+        let checksums = b"aaaa  foo.tar.gz\n" as &[u8];
+        let files: Vec<(&str, &[u8])> = vec![
+            ("foo.tar.gz", b"archive-bytes"),       // archive (infer)
+            ("foo.tar.gz.sig", b"sig-bytes"),       // sidecar of a primary
+            ("app_1.0_amd64.deb", b"deb-bytes"),    // nfpm (infer)
+            ("app_1.0_amd64.flatpak", b"fp-bytes"), // allow-listed primary
+            ("anodizer.1", b"man-bytes"),           // man page (infer)
+            ("install.sh", b"sh-bytes"),            // manifest member primary
+            ("metadata.json", b"meta-bytes"),       // explicit tracked primary
+            ("app_checksums.txt", checksums),       // registered aggregate
+            ("artifacts.json", manifest),           // registered aggregate
+        ];
+        let runs = run_with_files(&h, vec![files.clone(), files]);
+        let report = h.build_report(runs);
+        assert_eq!(
+            report.drift_count, 0,
+            "a fully-classified, byte-stable run must not fail. drift={:?}",
+            report.drift
+        );
+        assert!(
+            !report.drift.iter().any(|d| d
+                .differing_bytes_summary
+                .as_deref()
+                .is_some_and(|s| s.contains("unclassified"))),
+            "no file should be unclassified: {:?}",
+            report.drift
+        );
+
+        // Negative control: a genuinely unregistered file is a hard fail even
+        // though it is byte-identical across runs.
+        let stray: Vec<(&str, &[u8])> = vec![("mystery.xyz", b"same")];
+        let runs = run_with_files(&h, vec![stray.clone(), stray]);
+        let report = h.build_report(runs);
+        assert_eq!(report.drift_count, 1, "an unclassified file must hard-fail");
+        assert!(
+            report.drift[0]
+                .differing_bytes_summary
+                .as_deref()
+                .is_some_and(|s| s.contains("unclassified")),
+            "the hard-fail reason must flag the unclassified file: {:?}",
+            report.drift
+        );
     }
 
     #[test]

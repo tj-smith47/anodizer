@@ -20,8 +20,9 @@
 //! artifact field; both entries still appear in the report so the
 //! audit trail is complete.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 
 /// MSVC-only RUSTFLAGS tokens that make a `*-pc-windows-msvc` binary
@@ -313,22 +314,14 @@ impl DeterminismState {
                 format!("derivative of {pattern}: {reason}"),
             ));
         }
-        // `artifacts.json` is anodize's own dist manifest: it records the
-        // `size` and `sha256` of every produced artifact. Its byte-stability
-        // is exactly the conjunction of all indexed artifacts', so it can
-        // only drift when (a) a real build output drifted — already caught
-        // directly on that artifact — or (b) an allow-listed non-deterministic
-        // artifact (SBOM, signature) drifted — intentionally excluded. It
-        // therefore carries no independent determinism signal; comparing its
-        // bytes only re-surfaces drift already accounted for. Exact-match so
-        // no other `.json` is swept in.
-        compile_time_allowlist.push((
-            "artifacts.json".into(),
-            "anodize dist manifest aggregating every artifact's size+digest \
-             (including allow-listed non-deterministic SBOMs/signatures); a derivative \
-             signal — each indexed artifact is drift-checked independently"
-                .into(),
-        ));
+        // `artifacts.json` and the combined `*_checksums.txt` are NOT
+        // blanket-allow-listed here. A blanket entry masks real regressions:
+        // it excuses the manifest even when a GATED (byte-reproducible)
+        // member drifted. They are handled instead by the determinism
+        // harness's aggregate registry (see [`AggregateKind`]), which excuses
+        // an aggregate's drift IFF every differing member is itself
+        // allow-listed — the transitive-derivation rule — and otherwise
+        // surfaces the offending member as a real regression.
 
         Ok(Self {
             sde: commit_ts,
@@ -379,6 +372,227 @@ fn matches_artifact_pattern(pattern: &str, artifact: &str) -> bool {
         return artifact.ends_with(suffix);
     }
     pattern == artifact
+}
+
+// ---------------------------------------------------------------------------
+// Aggregate-artifact registry — the transitive-derivation rule
+// ---------------------------------------------------------------------------
+//
+// An *aggregate* is a file whose bytes are a deterministic function of a set
+// of *member* artifacts (a checksums file lists `<digest>  <name>` per member;
+// `artifacts.json` records each member's path + digest). Such a file drifts
+// whenever ANY listed member drifts — including the allow-listed
+// non-deterministic ones (signed deb/rpm, SBOMs, signatures). A blanket
+// allow-list on the aggregate would therefore MASK a real regression in a
+// gated (byte-reproducible) member.
+//
+// The registry lets the determinism harness reconstruct an aggregate's members
+// from both runs and excuse its drift IFF every *differing* member is itself
+// allow-listed; any differing member that is NOT allow-listed is surfaced as a
+// real regression. The two ids below are the compile-time coupling anchor: each
+// producer references its id (mirroring the `MSVC_DETERMINISM_RUSTFLAGS` ↔
+// `.cargo/config.toml` coupling above), so a producer and its registry entry
+// cannot silently drift apart.
+
+/// Aggregate id of the combined `*_checksums.txt` file produced by
+/// `anodizer_stage_checksum`'s `refresh_combined_checksums`. Referenced by
+/// that producer so the registry entry and the emitter share one symbol.
+pub const COMBINED_CHECKSUMS_AGGREGATE_ID: &str = "combined-checksums";
+
+/// Aggregate id of the `artifacts.json` dist manifest produced by the CLI's
+/// `write_artifacts_and_metadata`. Referenced by that producer so the
+/// registry entry and the emitter share one symbol.
+pub const ARTIFACTS_MANIFEST_AGGREGATE_ID: &str = "artifacts-manifest";
+
+/// A class of aggregate artifact recognized by the determinism harness.
+///
+/// Implementors parse the aggregate's bytes into a `unit_key -> member`
+/// map. A *unit* is one line / one manifest entry; its `unit_key` is
+/// content-sensitive (it folds in the recorded digest) so a value-change
+/// for a stable member identity surfaces as an add/remove pair across
+/// runs. The `member` is the artifact basename the harness resolves
+/// against the determinism allow-list.
+pub trait AggregateKind {
+    /// Stable id (one of the `*_AGGREGATE_ID` consts), the compile-time
+    /// coupling anchor shared with the producing stage.
+    fn id(&self) -> &'static str;
+
+    /// `true` when `name` (a harness artifact key, possibly nested under a
+    /// per-crate subdirectory) is an instance of this aggregate.
+    fn matches(&self, name: &str) -> bool;
+
+    /// Parse `bytes` into `unit_key -> member`. Errors (fail-closed) when
+    /// the bytes are not valid for this aggregate — the caller treats a
+    /// parse failure as real drift, never an excuse.
+    fn members_by_unit(&self, bytes: &[u8]) -> Result<BTreeMap<String, String>>;
+}
+
+/// Basename (last `/`- or `\`-separated component), lowercased — used for
+/// aggregate name matching across single-crate / lockstep / per-crate dist
+/// layouts (per-crate nests the manifest under `<crate>/`).
+fn aggregate_basename(name: &str) -> String {
+    name.rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(name)
+        .to_lowercase()
+}
+
+/// The combined `<name>_<version>_checksums.txt` / `sha256sums` file: one
+/// `<digest>  <filename>` line per primary artifact.
+pub struct CombinedChecksums;
+
+impl AggregateKind for CombinedChecksums {
+    fn id(&self) -> &'static str {
+        COMBINED_CHECKSUMS_AGGREGATE_ID
+    }
+
+    /// SECONDARY heuristic only. The authoritative signal that a file is a
+    /// combined checksums aggregate is its `artifacts.json` entry carrying
+    /// the [`crate::artifact::COMBINED_CHECKSUM_META`] = `"true"` marker —
+    /// resolved by [`combined_checksum_members_from_manifest`]. This
+    /// filename-suffix match is the fallback for callers that lack manifest
+    /// context (or for a combined file emitted with a conventional name);
+    /// it deliberately does NOT recognize an operator-renamed combined file
+    /// such as `SHA512SUMS`, which only the marker can identify.
+    fn matches(&self, name: &str) -> bool {
+        let base = aggregate_basename(name);
+        base.ends_with("checksums.txt")
+            || base.ends_with("sha256sums")
+            || base.ends_with("sha256sum")
+    }
+
+    fn members_by_unit(&self, bytes: &[u8]) -> Result<BTreeMap<String, String>> {
+        let text =
+            std::str::from_utf8(bytes).context("combined checksums file is not valid UTF-8")?;
+        let mut out = BTreeMap::new();
+        for raw in text.lines() {
+            let line = raw.trim_end_matches(['\r', '\n']);
+            if line.trim().is_empty() {
+                continue;
+            }
+            // GNU coreutils format is `<digest>  <filename>` (two spaces).
+            // The filename is the rightmost field; it is the basename the
+            // refresh-combined writer emits, so it resolves directly against
+            // the allow-list.
+            let filename = line
+                .rsplit("  ")
+                .next()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .with_context(|| format!("checksum line missing a filename field: {line:?}"))?;
+            // unit_key = the whole line: a changed digest yields a new line,
+            // surfaced as an add/remove of the same member across runs.
+            out.insert(line.to_string(), filename.to_string());
+        }
+        Ok(out)
+    }
+}
+
+/// The `artifacts.json` dist manifest: a JSON array of entries, each with a
+/// `path` and (after checksumming) a recorded digest in `metadata`.
+pub struct ArtifactsManifest;
+
+impl AggregateKind for ArtifactsManifest {
+    fn id(&self) -> &'static str {
+        ARTIFACTS_MANIFEST_AGGREGATE_ID
+    }
+
+    fn matches(&self, name: &str) -> bool {
+        aggregate_basename(name) == "artifacts.json"
+    }
+
+    fn members_by_unit(&self, bytes: &[u8]) -> Result<BTreeMap<String, String>> {
+        let value: serde_json::Value =
+            serde_json::from_slice(bytes).context("parsing artifacts.json dist manifest")?;
+        let entries = value
+            .as_array()
+            .context("artifacts.json dist manifest must be a JSON array")?;
+        let mut out = BTreeMap::new();
+        for entry in entries {
+            let path = entry
+                .get("path")
+                .and_then(serde_json::Value::as_str)
+                .context("artifacts.json entry missing a string `path` field")?;
+            let member = path
+                .rsplit(['/', '\\'])
+                .next()
+                .filter(|s| !s.is_empty())
+                .unwrap_or(path)
+                .to_string();
+            // Content token: the recorded digest if present, else the entire
+            // canonical entry — so ANY drift in the entry (digest, size,
+            // metadata) is attributed to this member rather than silently
+            // excused.
+            let token = entry
+                .get("metadata")
+                .and_then(|m| {
+                    m.get("sha256")
+                        .or_else(|| m.get("SHA256"))
+                        .or_else(|| m.get("Checksum"))
+                })
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+                .unwrap_or_else(|| serde_json::to_string(entry).unwrap_or_default());
+            // unit_key folds the digest into the path identity so a
+            // value-change (same path, new digest) surfaces as an add/remove
+            // pair judged by `member`'s allow-list status. U+001F is the ASCII
+            // unit separator — it cannot occur in a path or hex digest.
+            let unit_key = format!("{path}\u{1f}{token}");
+            out.insert(unit_key, member);
+        }
+        Ok(out)
+    }
+}
+
+/// Every recognized aggregate kind, in priority order.
+pub fn aggregate_kinds() -> Vec<Box<dyn AggregateKind>> {
+    vec![Box::new(CombinedChecksums), Box::new(ArtifactsManifest)]
+}
+
+/// Return the [`AggregateKind`] that recognizes `name`, if any.
+pub fn aggregate_kind_for(name: &str) -> Option<Box<dyn AggregateKind>> {
+    aggregate_kinds().into_iter().find(|k| k.matches(name))
+}
+
+/// Parse an `artifacts.json` manifest and return the basenames of every entry
+/// flagged as a combined checksums file via the
+/// [`crate::artifact::COMBINED_CHECKSUM_META`] = [`crate::artifact::COMBINED_CHECKSUM_VALUE`]
+/// marker.
+///
+/// This is the AUTHORITATIVE recognizer for the combined-checksums aggregate:
+/// the checksum stage stamps that marker onto the combined file's manifest
+/// entry regardless of the operator's chosen filename, so a renamed
+/// `SHA512SUMS` (which [`CombinedChecksums::matches`]'s filename suffixes
+/// cannot catch) is still recognized. Callers union these basenames with the
+/// filename-suffix heuristic. Returns an error (fail-closed) when the bytes
+/// are not a JSON array of objects — the caller treats that as real drift.
+pub fn combined_checksum_members_from_manifest(bytes: &[u8]) -> Result<BTreeSet<String>> {
+    let value: serde_json::Value =
+        serde_json::from_slice(bytes).context("parsing artifacts.json dist manifest")?;
+    let entries = value
+        .as_array()
+        .context("artifacts.json dist manifest must be a JSON array")?;
+    let mut out = BTreeSet::new();
+    for entry in entries {
+        let is_combined = entry
+            .get("metadata")
+            .and_then(|m| m.get(crate::artifact::COMBINED_CHECKSUM_META))
+            .and_then(serde_json::Value::as_str)
+            .is_some_and(|v| v == crate::artifact::COMBINED_CHECKSUM_VALUE);
+        if !is_combined {
+            continue;
+        }
+        let Some(path) = entry.get("path").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        let base = path
+            .rsplit(['/', '\\'])
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(path);
+        out.insert(base.to_string());
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -670,15 +884,160 @@ mod tests {
     }
 
     #[test]
-    fn compile_time_allowlist_resolves_for_artifacts_manifest() {
+    fn artifacts_manifest_is_not_blanket_allowlisted() {
         let s = DeterminismState::seed_from_commit(0).expect("non-negative");
+        // The dist manifest is NO LONGER blanket-allow-listed — a blanket
+        // entry masked drift in gated (byte-reproducible) members. It is now
+        // handled by the aggregate registry's transitive-derivation rule.
         assert!(
-            s.resolve_reason("artifacts.json").is_some(),
-            "the dist manifest aggregates non-deterministic artifact sizes/digests"
+            s.resolve_reason("artifacts.json").is_none(),
+            "artifacts.json must not be blanket-excused; the registry judges it per-member"
         );
-        // Exact-match: must not sweep in unrelated `.json` files.
+        // The combined checksums file is likewise registry-driven, never
+        // blanket-allow-listed.
+        assert!(s.resolve_reason("anodizer_0.12.0_checksums.txt").is_none());
         assert!(s.resolve_reason("config.json").is_none());
         assert!(s.resolve_reason("metadata.json").is_none());
+    }
+
+    #[test]
+    fn aggregate_registry_matches_checksums_and_manifest() {
+        // Combined checksums: bare, per-crate-nested, and sha256sums spellings.
+        assert_eq!(
+            aggregate_kind_for("anodizer_0.12.0_checksums.txt").map(|k| k.id()),
+            Some(COMBINED_CHECKSUMS_AGGREGATE_ID)
+        );
+        assert_eq!(
+            aggregate_kind_for("anodizer-core/anodizer-core_0.12.0_checksums.txt").map(|k| k.id()),
+            Some(COMBINED_CHECKSUMS_AGGREGATE_ID)
+        );
+        assert_eq!(
+            aggregate_kind_for("SHA256SUMS").map(|k| k.id()),
+            Some(COMBINED_CHECKSUMS_AGGREGATE_ID)
+        );
+        // artifacts.json (root + per-crate-nested).
+        assert_eq!(
+            aggregate_kind_for("artifacts.json").map(|k| k.id()),
+            Some(ARTIFACTS_MANIFEST_AGGREGATE_ID)
+        );
+        assert_eq!(
+            aggregate_kind_for("anodizer-core/artifacts.json").map(|k| k.id()),
+            Some(ARTIFACTS_MANIFEST_AGGREGATE_ID)
+        );
+        // A per-artifact `.sha256` split sidecar is NOT an aggregate.
+        assert!(aggregate_kind_for("anodizer_0.12.0_linux_amd64.tar.gz.sha256").is_none());
+        // metadata.json is a tracked primary, never an aggregate.
+        assert!(aggregate_kind_for("metadata.json").is_none());
+    }
+
+    #[test]
+    fn combined_checksums_members_by_unit_round_trips() {
+        let bytes = b"aaaa  foo_1.0_amd64.deb\nbbbb  bar-1.0.tar.gz\n\ncccc  baz.cdx.json\n";
+        let units = CombinedChecksums.members_by_unit(bytes).expect("parses");
+        let members: std::collections::BTreeSet<&str> =
+            units.values().map(String::as_str).collect();
+        assert_eq!(
+            members,
+            ["foo_1.0_amd64.deb", "bar-1.0.tar.gz", "baz.cdx.json"]
+                .into_iter()
+                .collect()
+        );
+        // Each unit_key is the full line (content-sensitive): a changed digest
+        // yields a distinct key.
+        assert!(units.contains_key("aaaa  foo_1.0_amd64.deb"));
+        // Blank lines are skipped (3 members, not 4).
+        assert_eq!(units.len(), 3);
+    }
+
+    #[test]
+    fn artifacts_manifest_members_by_unit_round_trips_and_keys_on_digest() {
+        let json = br#"[
+          {"kind":"archive","path":"./dist/foo.tar.gz","name":"foo.tar.gz",
+           "metadata":{"sha256":"deadbeef"}},
+          {"kind":"linux_package","path":"./dist/nfpm/foo_1.0_amd64.deb","name":"foo_1.0_amd64.deb",
+           "metadata":{"Checksum":"sha256:cafef00d"}}
+        ]"#;
+        let units = ArtifactsManifest.members_by_unit(json).expect("parses");
+        let members: std::collections::BTreeSet<&str> =
+            units.values().map(String::as_str).collect();
+        assert_eq!(
+            members,
+            ["foo.tar.gz", "foo_1.0_amd64.deb"].into_iter().collect()
+        );
+        // The recorded digest is folded into the unit_key, so re-hashing the
+        // same path with a different digest produces a different key.
+        let drifted = br#"[
+          {"kind":"archive","path":"./dist/foo.tar.gz","name":"foo.tar.gz",
+           "metadata":{"sha256":"00000000"}}
+        ]"#;
+        let drifted_units = ArtifactsManifest.members_by_unit(drifted).expect("parses");
+        let original_key = units
+            .keys()
+            .find(|k| k.starts_with("./dist/foo.tar.gz"))
+            .unwrap();
+        assert!(
+            !drifted_units.contains_key(original_key),
+            "a changed digest must yield a new unit_key (value-change ⇒ add/remove)"
+        );
+    }
+
+    #[test]
+    fn aggregate_members_by_unit_fail_closed_on_garbage() {
+        // Non-UTF-8 checksums bytes and non-array JSON both error so the
+        // harness fails closed (treats the aggregate as real drift).
+        assert!(
+            CombinedChecksums
+                .members_by_unit(&[0xff, 0xfe, 0x00])
+                .is_err()
+        );
+        assert!(ArtifactsManifest.members_by_unit(b"not json").is_err());
+        assert!(ArtifactsManifest.members_by_unit(b"{}").is_err());
+    }
+
+    #[test]
+    fn aggregate_ids_are_distinct_and_stable() {
+        assert_ne!(
+            COMBINED_CHECKSUMS_AGGREGATE_ID,
+            ARTIFACTS_MANIFEST_AGGREGATE_ID
+        );
+        assert_eq!(CombinedChecksums.id(), COMBINED_CHECKSUMS_AGGREGATE_ID);
+        assert_eq!(ArtifactsManifest.id(), ARTIFACTS_MANIFEST_AGGREGATE_ID);
+    }
+
+    #[test]
+    fn combined_checksum_marker_recognizes_operator_renamed_file() {
+        // The combined file is named `SHA512SUMS` — a name the filename-suffix
+        // heuristic deliberately misses — but its manifest entry carries the
+        // `combined = "true"` marker, so the authoritative recognizer finds it.
+        let manifest = br#"[
+          {"kind":"archive","path":"./dist/foo.tar.gz","name":"foo.tar.gz",
+           "metadata":{"sha256":"aaaa"}},
+          {"kind":"checksum","path":"./dist/SHA512SUMS","name":"SHA512SUMS",
+           "metadata":{"combined":"true"}}
+        ]"#;
+        let markers = combined_checksum_members_from_manifest(manifest).expect("parses");
+        assert!(
+            markers.contains("SHA512SUMS"),
+            "marker recognizer must flag the renamed combined file: {markers:?}"
+        );
+        // The filename-suffix fallback alone does NOT recognize it.
+        assert!(!CombinedChecksums.matches("SHA512SUMS"));
+        assert!(aggregate_kind_for("SHA512SUMS").is_none());
+        // A per-artifact split checksum sidecar (no `combined` marker) is NOT
+        // flagged.
+        assert!(!markers.contains("foo.tar.gz"));
+    }
+
+    #[test]
+    fn combined_checksum_marker_fails_closed_on_non_array() {
+        assert!(combined_checksum_members_from_manifest(b"not json").is_err());
+        assert!(combined_checksum_members_from_manifest(b"{}").is_err());
+        // An empty array is valid and yields no markers.
+        assert!(
+            combined_checksum_members_from_manifest(b"[]")
+                .expect("empty array parses")
+                .is_empty()
+        );
     }
 
     #[test]

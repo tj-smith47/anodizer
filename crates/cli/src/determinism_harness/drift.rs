@@ -376,6 +376,7 @@ mod tests {
                         stage: "unknown".into(),
                         head_sample,
                         tail_sample,
+                        full: None,
                     },
                 );
                 map

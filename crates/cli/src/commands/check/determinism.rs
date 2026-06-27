@@ -1098,9 +1098,11 @@ version = "0.0.1"
             "cfgd_0.4.0_linux_arm64.deb.sha256.cosign.bundle",
             "cfgd_0.4.0_linux_arm64.rpm.sha256.cosign.bundle",
             "install.sh.sha256.cosign.bundle",
-            // macOS shard drift set (darwin universal + per-arch), plus the
-            // aggregating manifest.
-            "artifacts.json",
+            // macOS shard drift set (darwin universal + per-arch). NOTE:
+            // `artifacts.json` is intentionally NOT here — it is no longer
+            // blanket-allow-listed (that masked drift in gated members). The
+            // determinism harness now judges it via the aggregate registry's
+            // transitive-derivation rule, member by member.
             "cfgd-0.4.0-darwin-all.tar.gz.cdx.json",
             "cfgd-0.4.0-darwin-all.tar.gz.cdx.json.sha256",
             "cfgd-0.4.0-darwin-all.tar.gz.cdx.json.sha256.cosign.bundle",
