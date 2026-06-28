@@ -140,7 +140,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 ```
 
-anodizer dogfoods this on its own repo with a `workflow_dispatch`-only
-[`nightly.yml`](https://github.com/tj-smith47/anodizer/blob/v0.12.3/.github/workflows/nightly.yml)
-(`from-branch: master`, schedule withheld pending a target-coverage decision),
-while cfgd runs the full scheduled form above.
+anodizer dogfoods this on its own repo with a scheduled
+[`nightly.yml`](https://github.com/tj-smith47/anodizer/blob/v0.13.0/.github/workflows/nightly.yml)
+(`from-branch: master`, daily `0 4 * * *` cron plus on-demand
+`workflow_dispatch`), the same full scheduled form cfgd runs.

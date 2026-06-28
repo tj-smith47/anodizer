@@ -1,11 +1,13 @@
 name: Nightly
 
-# Dispatch-only: the cross-toolchain blocker is resolved — auto-install
+# Scheduled nightly: the cross-toolchain blocker is resolved — auto-install
 # provisions zig + cargo-zigbuild from `cross: auto`, the same path the green
-# ubuntu determinism shard uses to cross-build aarch64-unknown-linux-gnu — but
-# the end-to-end nightly publish path has not yet been observed green, so no
-# scheduled cron fires it unattended.
+# ubuntu determinism shard uses to cross-build aarch64-unknown-linux-gnu — so
+# the daily cron fires the end-to-end publish path unattended. workflow_dispatch
+# stays for on-demand runs.
 on:
+  schedule:
+    - cron: '0 4 * * *'   # 04:00 UTC daily
   workflow_dispatch:
 
 permissions:
