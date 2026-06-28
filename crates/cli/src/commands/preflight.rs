@@ -120,6 +120,11 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
     // Mirrors the publish-loop's `publisher_deselected` lockstep below.
     let runs_selected =
         |stage: &str| -> bool { scope.includes(stage) && !ctx.publisher_deselected(stage) };
+    // The build stage's preflight is split across two sites — the HARD `cargo`
+    // probe here and the ADVISORY cross-toolchain append after the `add`
+    // closure's last use (a borrow-checker constraint). Decide once so the two
+    // halves can never gate on divergent predicates.
+    let build_runs = runs("build");
 
     // Build stage: the run path spawns the literal `cargo` from PATH, so
     // probe exactly that, then add the cross-compilation toolchain the build
@@ -129,12 +134,17 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
     // drops every `Tool` requirement (see `retains`), so these surface only in
     // the full requirement set `anodizer tools` reads — never in the pre-tag
     // secrets gate.
-    if runs("build") {
-        let mut build_reqs = vec![anodizer_core::EnvRequirement::Tool {
-            name: "cargo".to_string(),
-        }];
-        build_reqs.extend(anodizer_stage_build::cross_tool_requirements(ctx));
-        add("stage:build", build_reqs);
+    if build_runs {
+        // `cargo` is HARD-required: the build literally spawns it from PATH.
+        // The cross-compilation toolchain is ADVISORY and appended after the
+        // `add`-closure collection below (the build degrades gracefully without
+        // it, so a missing zig/cargo-zigbuild must warn, not block the gate).
+        add(
+            "stage:build",
+            vec![anodizer_core::EnvRequirement::Tool {
+                name: "cargo".to_string(),
+            }],
+        );
     }
 
     if runs("nfpm") {
@@ -324,6 +334,22 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
         }
     }
 
+    // Cross-compilation toolchain — ADVISORY. The build stage resolves a
+    // strategy per target and degrades gracefully when the preferred tool is
+    // absent (zigbuild → cargo → system gcc; see stage-build's
+    // `detect_cross_strategy`), so a missing `zig`/`cargo-zigbuild` must WARN,
+    // never block a release. `anodizer tools` still self-reports these as the
+    // recommended toolchain. Appended here — after the `add` closure's last use,
+    // so it can push to `out` directly — and BEFORE the scope `retain`, so
+    // SecretsOnly drops it from the pre-tag gate exactly like every other Tool.
+    if build_runs {
+        out.extend(
+            anodizer_stage_build::cross_tool_requirements(ctx)
+                .into_iter()
+                .map(|r| SourcedRequirement::new_advisory("stage:build", r)),
+        );
+    }
+
     out.retain(|sr| scope.retains(&sr.requirement));
     out
 }
@@ -454,6 +480,20 @@ fn verify_cosign_keys_load_with(
     all_loaded
 }
 
+/// Emit each advisory (non-blocking) preflight warning as a `log.warn` line.
+/// These are tools the run would PREFER but does not require — the declaring
+/// stage degrades gracefully without them (e.g. the build's cross-compile
+/// toolchain) — so they surface as a recommendation, never a gate failure.
+fn log_preflight_warnings(report: &EnvPreflightReport, log: &StageLogger) {
+    for w in &report.warnings {
+        log.warn(&format!(
+            "{} [recommended by: {}]",
+            w.message,
+            w.needed_by.join(", ")
+        ));
+    }
+}
+
 /// Run the environment preflight for a release pipeline: collect, evaluate,
 /// and log the full report. Returns the report; the caller decides whether
 /// a non-ok report aborts (release) or just exits non-zero (standalone).
@@ -471,6 +511,7 @@ pub fn run_env_preflight(
             log.error(line);
         }
     }
+    log_preflight_warnings(&report, log);
     if !verify_cosign_keys_load(&requirements, log) {
         report.note_failure(
             "stage:sign",
@@ -551,6 +592,7 @@ pub fn run(opts: PreflightOpts) -> Result<()> {
         for line in report.to_string().trim_end_matches('\n').lines() {
             log.status(line);
         }
+        log_preflight_warnings(&report, &log);
     }
     if !report.ok() {
         anyhow::bail!(
@@ -1439,6 +1481,46 @@ builds:
         assert!(
             build_tools.contains(&"cargo-zigbuild") && build_tools.contains(&"zig"),
             "build block must report cargo-zigbuild + zig for a cross target: {build_tools:?}"
+        );
+
+        // cargo is HARD; the cross toolchain is ADVISORY (the build degrades
+        // gracefully without it). A missing zig must warn, never block a
+        // release — the regression that aborted preflight on any box without it.
+        let advisory_of = |name: &str| -> bool {
+            full.iter()
+                .find(|r| {
+                    r.source == "stage:build"
+                        && matches!(&r.requirement, EnvRequirement::Tool { name: n } if n == name)
+                })
+                .map(|r| r.advisory)
+                .unwrap_or_else(|| panic!("missing build tool {name}"))
+        };
+        assert!(!advisory_of("cargo"), "cargo must stay hard-required");
+        assert!(advisory_of("zig"), "zig must be advisory");
+        assert!(
+            advisory_of("cargo-zigbuild"),
+            "cargo-zigbuild must be advisory"
+        );
+
+        // Gate behaviour: cargo present, cross toolchain absent ⇒ the report is
+        // OK (no failures) with the cross tools demoted to warnings.
+        let report = anodizer_core::env_preflight::evaluate(
+            &full,
+            &|_| None,
+            &anodizer_core::env_preflight::EnvProbes {
+                tool: &|name| name == "cargo",
+                endpoint: &|_| Ok(()),
+                docker: &|| true,
+            },
+        );
+        assert!(
+            report.ok(),
+            "release must not be blocked by a missing cross toolchain: {report}"
+        );
+        assert!(
+            report.warnings.iter().any(|w| w.message.contains("zig")),
+            "missing zig must surface as a warning: {:?}",
+            report.warnings
         );
 
         // SecretsOnly still drops every Tool requirement — the cross toolchain

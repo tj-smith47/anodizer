@@ -74,13 +74,34 @@ pub struct SourcedRequirement {
     /// Declaring surface, e.g. `"publish:aur"` or `"stage:nfpm"`.
     pub source: String,
     pub requirement: EnvRequirement,
+    /// When `true`, a failed probe is a non-fatal WARNING rather than a gate
+    /// failure: the declaring surface degrades gracefully without it. The
+    /// canonical case is the build stage's cross-compilation toolchain, which
+    /// falls back `zigbuild → cargo → system gcc` per target — so a missing
+    /// `zig`/`cargo-zigbuild` must surface as "recommended", never block a
+    /// release. `anodizer tools` still reports advisory requirements; only the
+    /// pass/fail gate treats them as non-blocking.
+    pub advisory: bool,
 }
 
 impl SourcedRequirement {
+    /// A hard requirement: a failed probe fails the preflight gate.
     pub fn new(source: impl Into<String>, requirement: EnvRequirement) -> Self {
         Self {
             source: source.into(),
             requirement,
+            advisory: false,
+        }
+    }
+
+    /// An advisory requirement: a failed probe WARNS instead of failing the
+    /// gate, because the declaring surface degrades gracefully without it (see
+    /// [`SourcedRequirement::advisory`]).
+    pub fn new_advisory(source: impl Into<String>, requirement: EnvRequirement) -> Self {
+        Self {
+            source: source.into(),
+            requirement,
+            advisory: true,
         }
     }
 }
@@ -116,6 +137,12 @@ pub struct EnvPreflightReport {
     /// Distinct checks evaluated (after de-duplication across sources).
     pub checks: usize,
     pub failures: Vec<EnvCheckFailure>,
+    /// Advisory checks that failed: the environment lacks a tool the run would
+    /// PREFER but does not require, because the declaring surface degrades
+    /// gracefully (e.g. a missing cross-compile toolchain that the build stage
+    /// falls back from). Surfaced as warnings; never flips [`ok`](Self::ok).
+    #[serde(default)]
+    pub warnings: Vec<EnvCheckFailure>,
 }
 
 impl EnvPreflightReport {
@@ -140,12 +167,26 @@ impl EnvPreflightReport {
 
 impl std::fmt::Display for EnvPreflightReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // `checks` counts every evaluated requirement; a failed advisory check
+        // is neither a pass nor a hard failure, so it must not inflate the
+        // "passed" count. Detail for each warning is emitted separately by the
+        // caller's warning logger — here we only summarise the count.
+        let warned = self.warnings.len();
+        let advisory_note = if warned > 0 {
+            format!(" ({warned} advisory warning(s))")
+        } else {
+            String::new()
+        };
         if self.failures.is_empty() {
-            return write!(f, "{} preflight check(s) passed", self.checks);
+            return write!(
+                f,
+                "{} preflight check(s) passed{advisory_note}",
+                self.checks.saturating_sub(warned)
+            );
         }
         writeln!(
             f,
-            "{} of {} preflight check(s) failed:",
+            "{} of {} preflight check(s) failed{advisory_note}:",
             self.failures.len(),
             self.checks
         )?;
@@ -195,31 +236,46 @@ pub fn evaluate(
     probes: &EnvProbes<'_>,
 ) -> EnvPreflightReport {
     // De-duplicate while preserving first-seen order; N is small enough
-    // that linear scan beats pulling in an ordered-map dependency.
-    let mut unique: Vec<(EnvRequirement, Vec<String>)> = Vec::new();
+    // that linear scan beats pulling in an ordered-map dependency. A merged
+    // requirement is advisory only when EVERY source that needs it is advisory —
+    // one hard source makes a failed probe a gate failure.
+    let mut unique: Vec<(EnvRequirement, Vec<String>, bool)> = Vec::new();
     for sr in requirements {
-        match unique.iter_mut().find(|(r, _)| *r == sr.requirement) {
-            Some((_, sources)) => {
+        match unique.iter_mut().find(|(r, _, _)| *r == sr.requirement) {
+            Some((_, sources, advisory)) => {
                 if !sources.contains(&sr.source) {
                     sources.push(sr.source.clone());
                 }
+                *advisory = *advisory && sr.advisory;
             }
-            None => unique.push((sr.requirement.clone(), vec![sr.source.clone()])),
+            None => unique.push((sr.requirement.clone(), vec![sr.source.clone()], sr.advisory)),
         }
     }
 
     let mut failures = Vec::new();
+    let mut warnings = Vec::new();
     let checks = unique.len();
-    for (req, needed_by) in unique {
+    for (req, needed_by, advisory) in unique {
         if let Some((kind, message)) = check_one(&req, env, probes) {
-            failures.push(EnvCheckFailure {
+            let failure = EnvCheckFailure {
                 kind,
                 message,
                 needed_by,
-            });
+            };
+            // Advisory failures warn; the surface degrades gracefully without
+            // the tool, so they must not flip `ok()` or block the release gate.
+            if advisory {
+                warnings.push(failure);
+            } else {
+                failures.push(failure);
+            }
         }
     }
-    EnvPreflightReport { checks, failures }
+    EnvPreflightReport {
+        checks,
+        failures,
+        warnings,
+    }
 }
 
 fn present(env: &dyn Fn(&str) -> Option<String>, var: &str) -> bool {
@@ -232,10 +288,14 @@ fn check_one(
     probes: &EnvProbes<'_>,
 ) -> Option<(FailureKind, String)> {
     match req {
+        // No "required" in the message: the same text serves hard failures and
+        // advisory warnings. Required-ness is conveyed by the surrounding frame
+        // (a hard `✗ … [needed by]` vs an advisory `Warning … [recommended by]`),
+        // so "required tool 'zig' … [recommended by]" would self-contradict.
         EnvRequirement::Tool { name } => (!(probes.tool)(name)).then(|| {
             (
                 FailureKind::MissingTool,
-                format!("required tool '{name}' not found on PATH"),
+                format!("tool '{name}' not found on PATH"),
             )
         }),
         EnvRequirement::ToolAnyOf { names } => {
@@ -654,6 +714,98 @@ mod tests {
         let report = evaluate(&[], &no_env, &all_pass_probes());
         assert!(report.ok());
         assert_eq!(report.checks, 0);
+    }
+
+    #[test]
+    fn advisory_tool_failure_warns_and_does_not_fail_the_gate() {
+        // A missing ADVISORY tool (the cross-compile toolchain the build stage
+        // falls back from) must surface as a warning, never a gate failure —
+        // the regression that made `anodizer release` abort on any box without
+        // zig/cargo-zigbuild.
+        let none = EnvProbes {
+            tool: &|_| false,
+            endpoint: &|_| Ok(()),
+            docker: &|| true,
+        };
+        let reqs = vec![SourcedRequirement::new_advisory(
+            "stage:build",
+            EnvRequirement::Tool { name: "zig".into() },
+        )];
+        let report = evaluate(&reqs, &no_env, &none);
+        assert!(report.ok(), "advisory failure must not flip ok()");
+        assert!(report.failures.is_empty());
+        assert_eq!(report.warnings.len(), 1);
+        assert!(report.warnings[0].message.contains("zig"));
+        assert_eq!(report.checks, 1);
+    }
+
+    #[test]
+    fn hard_source_overrides_advisory_for_the_same_tool() {
+        // A tool needed by BOTH a hard and an advisory source is a gate failure
+        // when absent: one hard need is enough. (Guards the dedup's advisory AND.)
+        let none = EnvProbes {
+            tool: &|_| false,
+            endpoint: &|_| Ok(()),
+            docker: &|| true,
+        };
+        let reqs = vec![
+            SourcedRequirement::new_advisory(
+                "stage:build",
+                EnvRequirement::Tool { name: "cc".into() },
+            ),
+            SourcedRequirement::new("stage:other", EnvRequirement::Tool { name: "cc".into() }),
+        ];
+        let report = evaluate(&reqs, &no_env, &none);
+        assert!(
+            !report.ok(),
+            "a hard source makes the merged check blocking"
+        );
+        assert_eq!(report.failures.len(), 1);
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    fn advisory_merge_is_order_independent_and_holds_for_many_advisory_sources() {
+        // The dedup `advisory = advisory && sr.advisory` must be commutative:
+        // hard-THEN-advisory blocks just like advisory-then-hard, and a tool
+        // needed only by several advisory sources stays a warning. `cc` is
+        // hard-first then advisory; `zig` is advisory from two sources.
+        let none = EnvProbes {
+            tool: &|_| false,
+            endpoint: &|_| Ok(()),
+            docker: &|| true,
+        };
+        let reqs = vec![
+            SourcedRequirement::new("stage:other", EnvRequirement::Tool { name: "cc".into() }),
+            SourcedRequirement::new_advisory(
+                "stage:build",
+                EnvRequirement::Tool { name: "cc".into() },
+            ),
+            SourcedRequirement::new_advisory(
+                "stage:build",
+                EnvRequirement::Tool { name: "zig".into() },
+            ),
+            SourcedRequirement::new_advisory(
+                "stage:archive",
+                EnvRequirement::Tool { name: "zig".into() },
+            ),
+        ];
+        let report = evaluate(&reqs, &no_env, &none);
+        assert_eq!(report.checks, 2, "cc and zig dedup to two checks");
+        assert!(
+            !report.ok(),
+            "hard-first cc still blocks regardless of order"
+        );
+        assert_eq!(report.failures.len(), 1);
+        assert!(report.failures[0].message.contains("cc"));
+        assert_eq!(
+            report.warnings.len(),
+            1,
+            "zig stays a single advisory warning"
+        );
+        assert!(report.warnings[0].message.contains("zig"));
+        // Both advisory sources are credited as needing zig.
+        assert_eq!(report.warnings[0].needed_by.len(), 2);
     }
 
     #[test]

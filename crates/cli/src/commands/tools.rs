@@ -21,9 +21,18 @@ use super::preflight::{PreflightScope, collect_requirements};
 /// ANY one to satisfy it (e.g. the dmg stage accepts
 /// `hdiutil` / `genisoimage` / `mkisofs`). A plain single-tool requirement is
 /// a one-element `any_of`, so consumers iterate one uniform shape.
+///
+/// `advisory` is `true` when EVERY contributing requirement is advisory: the
+/// pipeline degrades gracefully without the tool (the canonical case is the
+/// build's cross-compile toolchain, which falls back zigbuild → cargo → system
+/// gcc). The Action installs advisory tools when it can but must not fail a
+/// runner that lacks them; a required tool (`advisory: false`) is mandatory.
+/// One hard need anywhere makes the merged group required — matching the
+/// preflight engine's pass/fail semantics.
 #[derive(serde::Serialize, Debug, PartialEq, Eq)]
 struct ToolRequirement {
     any_of: Vec<String>,
+    advisory: bool,
 }
 
 /// Stable JSON envelope for `anodizer tools --json`. `schema_version` bumps
@@ -51,7 +60,9 @@ pub struct ToolsOpts {
 /// Extract the tool requirements from a collected requirement set: keep only
 /// the [`EnvRequirement::Tool`] / [`EnvRequirement::ToolAnyOf`] kinds, fold
 /// each to a uniform `any_of` group, then de-duplicate (preserving first-seen
-/// order) and sort for stable output.
+/// order) and sort for stable output. A merged group is `advisory` only when
+/// EVERY contributing requirement is advisory — one hard need makes it
+/// required, matching the preflight engine's pass/fail merge.
 fn tool_requirements(reqs: &[anodizer_core::SourcedRequirement]) -> Vec<ToolRequirement> {
     let mut out: Vec<ToolRequirement> = Vec::new();
     for sr in reqs {
@@ -60,9 +71,12 @@ fn tool_requirements(reqs: &[anodizer_core::SourcedRequirement]) -> Vec<ToolRequ
             EnvRequirement::ToolAnyOf { names } => names.clone(),
             _ => continue,
         };
-        let req = ToolRequirement { any_of };
-        if !out.contains(&req) {
-            out.push(req);
+        match out.iter_mut().find(|r| r.any_of == any_of) {
+            Some(existing) => existing.advisory = existing.advisory && sr.advisory,
+            None => out.push(ToolRequirement {
+                any_of,
+                advisory: sr.advisory,
+            }),
         }
     }
     out.sort_by(|a, b| a.any_of.cmp(&b.any_of));
@@ -109,7 +123,8 @@ pub fn run(opts: ToolsOpts) -> Result<()> {
         println!("(no external tools required by this config)");
     } else {
         for t in &tools.tools {
-            println!("{}", t.any_of.join(" | "));
+            let suffix = if t.advisory { "  (recommended)" } else { "" };
+            println!("{}{}", t.any_of.join(" | "), suffix);
         }
     }
 
@@ -248,6 +263,24 @@ builds:
             json.contains(r#"["cargo"]"#),
             "tools JSON must still list cargo: {json}"
         );
+        // The Action's SSOT must distinguish recommended from required: the
+        // cross toolchain is advisory (the build degrades gracefully without
+        // it), cargo is required.
+        let zig = tools
+            .tools
+            .iter()
+            .find(|t| t.any_of == vec!["zig".to_string()])
+            .expect("zig present");
+        assert!(zig.advisory, "zig must be advisory in the tools emit");
+        let cargo = tools
+            .tools
+            .iter()
+            .find(|t| t.any_of == vec!["cargo".to_string()])
+            .expect("cargo present");
+        assert!(
+            !cargo.advisory,
+            "cargo must stay required in the tools emit"
+        );
     }
 
     #[test]
@@ -256,10 +289,36 @@ builds:
             schema_version: SCHEMA_VERSION,
             tools: vec![ToolRequirement {
                 any_of: vec!["cargo".into()],
+                advisory: false,
             }],
         };
         let json = serde_json::to_string(&tools).unwrap();
         assert!(json.contains(r#""schema_version":1"#));
-        assert!(json.contains(r#""tools":[{"any_of":["cargo"]}]"#));
+        assert!(json.contains(r#""tools":[{"any_of":["cargo"],"advisory":false}]"#));
+    }
+
+    #[test]
+    fn advisory_flag_is_anded_across_sources() {
+        // A tool needed by an advisory build source stays advisory; the same
+        // tool also needed by a hard source flips to required. Mirrors the
+        // preflight engine's merge so `anodizer tools` and the gate agree.
+        let reqs = vec![
+            SourcedRequirement::new_advisory("stage:build", tool("zig")),
+            SourcedRequirement::new_advisory("stage:build", tool("cc")),
+            SourcedRequirement::new("stage:other", tool("cc")),
+        ];
+        let tools = tool_requirements(&reqs);
+        let advisory_of = |name: &str| {
+            tools
+                .iter()
+                .find(|t| t.any_of == vec![name.to_string()])
+                .unwrap_or_else(|| panic!("missing tool {name}"))
+                .advisory
+        };
+        assert!(advisory_of("zig"), "zig: only advisory sources ⇒ advisory");
+        assert!(
+            !advisory_of("cc"),
+            "cc: one hard source ⇒ required despite an advisory source"
+        );
     }
 }
