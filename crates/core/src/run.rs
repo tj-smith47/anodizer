@@ -1115,6 +1115,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_checked_success_is_silent_at_default_verbosity() {
         let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
         let out = run_checked(&mut sh("echo hi"), &log, "echo").expect("echo must succeed");
@@ -1137,6 +1138,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_checked_failure_embeds_child_stderr() {
         let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
         let err = run_checked(&mut sh("echo boom >&2; exit 3"), &log, "boomer")
@@ -1153,6 +1155,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_checked_verbose_emits_stdout_line() {
         let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
         run_checked(&mut sh("echo hi"), &log, "echo").expect("echo must succeed");
@@ -1168,6 +1171,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_checked_verbose_failure_no_double_emit() {
         let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
         let _ = run_checked(&mut sh("echo BOOMTOKEN >&2; exit 1"), &log, "boomer")
@@ -1187,6 +1191,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_checked_with_stdin_roundtrips() {
         let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
         let out = run_checked_with_stdin(&mut Command::new("cat"), b"piped-in\n", &log, "cat")
@@ -1199,6 +1204,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_checked_with_stdin_verbose_roundtrips() {
         let (log, cap) = StageLogger::with_capture("test", Verbosity::Verbose);
         let out = run_checked_with_stdin(&mut Command::new("cat"), b"streamed-in\n", &log, "cat")
@@ -1235,6 +1241,7 @@ mod tests {
     /// The test asserts completion (a hang fails the suite by wall-clock) and
     /// that BOTH streams were captured whole.
     #[test]
+    #[cfg(unix)]
     fn run_checked_with_stdin_large_in_and_out_no_deadlock() {
         let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
         let stdin = big_stdin();
@@ -1273,6 +1280,7 @@ mod tests {
     // registered tree, and the timeout path registers this child.
     #[serial_test::serial(child_tree_registry)]
     #[test]
+    #[cfg(unix)]
     fn run_checked_with_stdin_timeout_kills_hung_child() {
         let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
         let start = Instant::now();
@@ -1307,6 +1315,7 @@ mod tests {
     /// path: the timeout never fires and the captured stdout round-trips.
     #[serial_test::serial(child_tree_registry)]
     #[test]
+    #[cfg(unix)]
     fn run_checked_with_stdin_timeout_fast_child_succeeds() {
         let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
         let out = run_checked_with_stdin_timeout(
@@ -1330,6 +1339,7 @@ mod tests {
     /// review-pending success vs. a retriable 5xx from the captured body.
     #[serial_test::serial(child_tree_registry)]
     #[test]
+    #[cfg(unix)]
     fn run_capture_timeout_returns_nonzero_exit_as_ok_output() {
         let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
         let out = run_capture_timeout(
@@ -1359,6 +1369,7 @@ mod tests {
     /// the regression guard for the publish-stage hang.
     #[serial_test::serial(child_tree_registry)]
     #[test]
+    #[cfg(unix)]
     fn run_capture_timeout_kills_hung_child() {
         let (log, _cap) = StageLogger::with_capture("test", Verbosity::Normal);
         let start = Instant::now();
@@ -1487,6 +1498,7 @@ mod tests {
     /// drain concurrently with the stdin write (no deadlock) and still capture
     /// both streams whole.
     #[test]
+    #[cfg(unix)]
     fn run_checked_with_stdin_large_in_and_out_no_deadlock_verbose() {
         let (log, _cap) = StageLogger::with_capture("test", Verbosity::Verbose);
         let stdin = big_stdin();
