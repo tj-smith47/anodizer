@@ -412,33 +412,25 @@ fn produced_archives(ctx: &Context, crate_name: &str) -> Vec<ProducedAsset> {
     out
 }
 
-/// The set of target triples `crate_cfg` is configured to build: the union of
-/// each build's `targets:` (its own list when set, else the global
-/// `defaults.targets`). Used to tell a genuinely bogus override (a triple the
-/// release never builds) from one merely not built in the current snapshot shard.
+/// The set of target triples `crate_cfg`'s builds actually release, routed
+/// through the build-synthesis SSOT
+/// ([`anodizer_core::build_plan::crate_target_list`]): each producing build's
+/// `targets:` (its own list when set, else the effective `defaults.targets`,
+/// which falls back to the canonical default matrix when unset). Used to tell a
+/// genuinely bogus override (a triple the release never builds) from one merely
+/// not built in the current snapshot shard.
+///
+/// The effective-default fallback matters: with `defaults.targets` unset, a
+/// hand-rolled empty fallback would flag a binstall override naming a
+/// default-matrix triple as "never built", which the build stage in fact
+/// produces.
 fn configured_target_set(
     ctx: &Context,
     crate_cfg: &CrateConfig,
 ) -> std::collections::BTreeSet<String> {
-    let default_targets: Vec<String> = ctx
-        .config
-        .defaults
-        .as_ref()
-        .and_then(|d| d.targets.clone())
-        .unwrap_or_default();
-    let mut set = std::collections::BTreeSet::new();
-    match crate_cfg.builds.as_deref() {
-        Some(builds) if !builds.is_empty() => {
-            for build in builds {
-                match build.targets.as_deref() {
-                    Some(ts) => set.extend(ts.iter().cloned()),
-                    None => set.extend(default_targets.iter().cloned()),
-                }
-            }
-        }
-        _ => set.extend(default_targets),
-    }
-    set
+    anodizer_core::build_plan::crate_target_list(crate_cfg, &ctx.config.effective_default_targets())
+        .into_iter()
+        .collect()
 }
 
 fn configured_targets_str(set: &std::collections::BTreeSet<String>) -> String {
@@ -1151,7 +1143,11 @@ mod tests {
             ..Default::default()
         });
         // The crate is configured to build darwin-arm64 (among others) ...
+        // An explicit `binary` clears the compile/artifact gate the configured
+        // target set now routes through (a `binary: None` build on a crate with
+        // no `--bin` would compile nothing and so configure no targets).
         cfg.builds = Some(vec![BuildConfig {
+            binary: Some("cfgd".to_string()),
             targets: Some(vec![
                 "x86_64-unknown-linux-gnu".to_string(),
                 "aarch64-apple-darwin".to_string(),

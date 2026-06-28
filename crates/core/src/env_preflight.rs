@@ -578,27 +578,20 @@ pub fn secret_requirement(
     }
 }
 
-/// The union of build targets this run would compile, mirroring the build
-/// stage's resolution: per-build `targets:` (an explicitly empty list means
-/// "skip this build"), else `defaults.targets`, else the built-in default
-/// matrix; a skipped build (`skip:` truthy) contributes nothing; an
-/// unrenderable `skip:` counts as active (over-collect). `--single-target`
-/// narrows the union to the requested triple (exact match first, then the
-/// same OS/arch alias fallback the build stage applies), so a host-only
-/// release never demands cross-platform bundler tools.
+/// The union of build targets this run would compile, routed through the
+/// build-synthesis SSOT ([`crate::build_plan::planned_builds`] +
+/// [`crate::build_plan::build_produces`]): per-build `targets:` (an explicitly
+/// empty list means "skip this build"), else `defaults.targets`, else the
+/// canonical default matrix (via [`crate::config::Config::effective_default_targets`]).
+/// A build the planner compiles nothing for — a library crate's materialized
+/// `binary: None` build with no matching `--bin` — contributes nothing; a
+/// skipped build (`skip:` truthy) contributes nothing; an unrenderable `skip:`
+/// counts as active (over-collect). `--single-target` narrows the union to the
+/// requested triple (exact match first, then the same OS/arch alias fallback the
+/// build stage applies), so a host-only release never demands cross-platform
+/// bundler tools.
 pub fn configured_build_targets(ctx: &crate::context::Context) -> Vec<String> {
-    let default_targets: Vec<String> = ctx
-        .config
-        .defaults
-        .as_ref()
-        .and_then(|d| d.targets.clone())
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| {
-            crate::target::DEFAULT_TARGETS
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect()
-        });
+    let default_targets: Vec<String> = ctx.config.effective_default_targets();
     let mut out: Vec<String> = Vec::new();
     let mut push = |t: &str| {
         if !out.iter().any(|x| x == t) {
@@ -606,21 +599,22 @@ pub fn configured_build_targets(ctx: &crate::context::Context) -> Vec<String> {
         }
     };
     for krate in crate_universe(&ctx.config) {
-        match krate.builds.as_ref().filter(|b| !b.is_empty()) {
-            Some(builds) => {
-                for build in builds {
-                    if entry_inactive(ctx, build.skip.as_ref(), None, None) {
-                        continue;
-                    }
-                    match build.targets.as_ref() {
-                        Some(targets) => targets.iter().for_each(|t| push(t)),
-                        None => default_targets.iter().for_each(|t| push(t)),
-                    }
-                }
+        // A library crate with no default binary yields no builds, so it
+        // contributes nothing — the planner's compile/artifact gate.
+        let Some(builds) = crate::build_plan::planned_builds(krate) else {
+            continue;
+        };
+        for build in &builds {
+            if entry_inactive(ctx, build.skip.as_ref(), None, None) {
+                continue;
             }
-            // No builds configured: the build stage synthesizes a default
-            // binary build over the default target matrix.
-            None => default_targets.iter().for_each(|t| push(t)),
+            if !crate::build_plan::build_produces(krate, build) {
+                continue;
+            }
+            match build.targets.as_ref() {
+                Some(targets) => targets.iter().for_each(|t| push(t)),
+                None => default_targets.iter().for_each(|t| push(t)),
+            }
         }
     }
     if let Some(single) = ctx.options.single_target.as_deref() {
@@ -1004,9 +998,17 @@ mod tests {
             ..Default::default()
         };
 
-        // No builds anywhere: the default matrix applies.
+        // A producing build with targets unset inherits the default matrix.
+        // (A `binary` clears the planner's compile/artifact gate; a `binary:
+        // None` build on a crate with no `--bin` would compile nothing.)
         let config = Config {
-            crates: vec![krate("app", None)],
+            crates: vec![krate(
+                "app",
+                Some(vec![BuildConfig {
+                    binary: Some("app".to_string()),
+                    ..Default::default()
+                }]),
+            )],
             ..Default::default()
         };
         let ctx = Context::new(config, ContextOptions::default());
@@ -1020,17 +1022,20 @@ mod tests {
 
         // Explicit per-build targets win; a skipped build and an
         // explicitly-empty target list contribute nothing; the union spans
-        // crates.
+        // crates. Each producing build carries a `binary` so it clears the
+        // compile/artifact gate.
         let config = Config {
             crates: vec![
                 krate(
                     "app",
                     Some(vec![
                         BuildConfig {
+                            binary: Some("app".to_string()),
                             targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
                             ..Default::default()
                         },
                         BuildConfig {
+                            binary: Some("app".to_string()),
                             targets: Some(vec!["x86_64-pc-windows-msvc".to_string()]),
                             skip: Some(StringOrBool::Bool(true)),
                             ..Default::default()
@@ -1040,6 +1045,7 @@ mod tests {
                 krate(
                     "helper",
                     Some(vec![BuildConfig {
+                        binary: Some("helper".to_string()),
                         targets: Some(vec![
                             "aarch64-apple-darwin".to_string(),
                             "x86_64-unknown-linux-gnu".to_string(),
@@ -1070,6 +1076,41 @@ mod tests {
         assert_eq!(
             configured_build_targets(&ctx),
             vec!["aarch64-apple-darwin".to_string()]
+        );
+    }
+
+    #[test]
+    fn configured_build_targets_no_bin_crate_with_defaults_builds_template_contributes_nothing() {
+        use crate::config::{BuildConfig, Config, CrateConfig};
+        use crate::context::{Context, ContextOptions};
+
+        // A library crate (no src/main.rs, no [[bin]]) that inherited a
+        // `defaults.builds` template carries a build with `binary: None`. The
+        // planner's compile/artifact gate compiles nothing for it, so the
+        // preflight target union must be empty — no cross bundler tools demanded.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"lib\"\nversion = \"0.0.0\"\n",
+        )
+        .unwrap();
+        let config = Config {
+            crates: vec![CrateConfig {
+                name: "lib".to_string(),
+                path: dir.path().to_string_lossy().into_owned(),
+                builds: Some(vec![BuildConfig {
+                    // binary: None — the materialized template default.
+                    targets: Some(vec!["aarch64-unknown-linux-gnu".to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let ctx = Context::new(config, ContextOptions::default());
+        assert!(
+            configured_build_targets(&ctx).is_empty(),
+            "library crate with a binary:None template build compiles nothing",
         );
     }
 }

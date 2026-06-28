@@ -392,29 +392,15 @@ fn binstallable_archive(crate_cfg: &CrateConfig) -> Option<ArchiveConfig> {
 }
 
 /// Resolve the full set of target triples binstall metadata must cover for
-/// `crate_cfg`: the union of each build's targets (a build's own `targets:`
-/// when set, else the global `default_targets`), de-duplicated and sorted.
-/// Mirrors the build stage's per-build target resolution so the derived
-/// override set equals the released asset set.
+/// `crate_cfg`: the union of each producing build's targets (a build's own
+/// `targets:` when set, else the global `default_targets`), de-duplicated.
+/// Routed through the build-synthesis SSOT
+/// ([`crate::build_plan::crate_target_list`]) so the derived override set equals
+/// the asset set the build stage actually releases — a library crate with no
+/// default binary (or a `binary: None` build with no matching `--bin`) compiles
+/// nothing and so contributes no targets.
 fn derive_target_list(crate_cfg: &CrateConfig, default_targets: &[String]) -> Vec<String> {
-    let mut seen: BTreeMap<String, ()> = BTreeMap::new();
-    let builds = crate_cfg.builds.as_deref().unwrap_or(&[]);
-    if builds.is_empty() {
-        for t in default_targets {
-            seen.insert(t.clone(), ());
-        }
-    } else {
-        for build in builds {
-            let targets: &[String] = match build.targets.as_deref() {
-                Some(ts) => ts,
-                None => default_targets,
-            };
-            for t in targets {
-                seen.insert(t.clone(), ());
-            }
-        }
-    }
-    seen.into_keys().collect()
+    crate::build_plan::crate_target_list(crate_cfg, default_targets)
 }
 
 /// Render the crate's tag template with the version expressed as
@@ -1008,6 +994,11 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
             "[package]\nname = \"anodizer\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
         )
         .unwrap();
+        // A binstallable crate is a binary crate; declare the `--bin` so the
+        // build-synthesis gate the override set now routes through sees a
+        // producing default build (otherwise a no-bin crate derives nothing).
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
 
         // enabled: true, NOTHING else — the whole point.
         let cfg = BinstallConfig {
@@ -1108,6 +1099,10 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
             "[package]\nname = \"anodizer\"\nversion = \"0.9.1\"\nedition = \"2024\"\n",
         )
         .unwrap();
+        // Declare the `--bin` so the build-synthesis gate sees a producing
+        // default build (a no-bin crate derives no binstall targets).
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
 
         let cfg = BinstallConfig {
             enabled: Some(true),
@@ -1286,6 +1281,11 @@ metadata.binstall = { pkg-url = "https://old.example.com/stale", disabled-strate
             "[package]\nname = \"myapp\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
         )
         .unwrap();
+
+        // Declare the `--bin` so the build-synthesis gate sees a producing
+        // default build (a no-bin crate derives no binstall targets).
+        std::fs::create_dir_all(tmp.path().join("src")).unwrap();
+        std::fs::write(tmp.path().join("src/main.rs"), "fn main() {}\n").unwrap();
 
         let mut crate_cfg = anodize_like_crate();
         crate_cfg.name = "myapp".to_string();

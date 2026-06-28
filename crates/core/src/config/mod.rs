@@ -399,9 +399,9 @@ impl Config {
 
     /// The build targets compiled when neither a per-build `targets` nor
     /// `defaults.targets` is set: `defaults.targets` (when non-empty), else the
-    /// canonical `DEFAULT_TARGETS`. Single source of truth for target-set
-    /// fallback — the build planner, target introspection, and cross-toolchain
-    /// reporting MUST all resolve through this so they never diverge.
+    /// canonical `DEFAULT_TARGETS`. Single source of truth for the target-set
+    /// fallback — every target enumeration MUST resolve through this rather than
+    /// re-deriving the fallback, so they never diverge.
     pub fn effective_default_targets(&self) -> Vec<String> {
         self.defaults
             .as_ref()

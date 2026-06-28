@@ -15,7 +15,9 @@ use anodizer_core::EnvRequirement;
 use anodizer_core::config::{BuilderKind, CrossStrategy};
 use anodizer_core::context::Context;
 
-use crate::command::{cross_gnu_cargo_gcc, detect_cross_strategy_for_target_impl, planned_builds};
+use anodizer_core::build_plan::{build_produces, planned_builds};
+
+use crate::command::{cross_gnu_cargo_gcc, detect_cross_strategy_for_target_impl};
 use crate::targets::is_target_ignored;
 
 /// Derive the cross-compilation toolchain every configured build target
@@ -104,6 +106,14 @@ pub fn cross_tool_requirements(ctx: &Context) -> Vec<EnvRequirement> {
                 })
                 .unwrap_or(false);
             if skipped {
+                continue;
+            }
+            // A materialized `binary: None` build on a crate with no matching
+            // `--bin <crate>` target compiles nothing (the planner's gate), so
+            // it needs no cross toolchain. Skip it identically to avoid
+            // over-reporting tools for a library that inherited a
+            // `defaults.builds` template.
+            if !build_produces(krate, build) {
                 continue;
             }
 
@@ -459,6 +469,38 @@ mod tests {
         assert!(
             names.is_empty(),
             "cross_tool must not emit when every target is ignored: {names:?}"
+        );
+    }
+
+    #[test]
+    fn library_crate_with_binary_none_build_emits_no_tool() {
+        // A library crate (no src/main.rs, no [[bin]]) that inherited a
+        // `defaults.builds` template carries a build with `binary: None`. The
+        // planner compiles nothing for it, so the cross-toolchain self-report
+        // must emit nothing — even though the build names a cross target.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"lib\"\nversion = \"0.0.0\"\n",
+        )
+        .unwrap();
+        let build = BuildConfig {
+            // binary: None — the materialized template default.
+            targets: Some(vec!["aarch64-unknown-linux-gnu".to_string()]),
+            ..Default::default()
+        };
+        let crate_cfg = CrateConfig {
+            name: "lib".to_string(),
+            path: dir.path().to_string_lossy().into_owned(),
+            cross: Some(CrossStrategy::Auto),
+            builds: Some(vec![build]),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+        let names = tool_names(&cross_tool_requirements(&ctx));
+        assert!(
+            names.is_empty(),
+            "library crate with binary:None build compiles nothing: {names:?}"
         );
     }
 

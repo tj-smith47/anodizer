@@ -11,10 +11,11 @@ use std::path::{Path, PathBuf};
 // Crate-internal items
 use super::BuildStage;
 use super::command::{
-    BuildContext, build_command, build_lib_command, crate_declares_bin, crate_has_binary_target,
-    detect_crate_type, detect_cross_strategy, detect_cross_strategy_for_target_impl, is_linux_gnu,
+    BuildContext, build_command, build_lib_command, crate_has_binary_target, detect_crate_type,
+    detect_cross_strategy, detect_cross_strategy_for_target_impl, is_linux_gnu,
     resolve_build_program, same_apple_family, same_windows_family, zigbuild_available,
 };
+use anodizer_core::build_plan::crate_declares_bin;
 
 /// Test helper — assembles a [`BuildContext`] from the varying parts most
 /// tests want to vary, defaulting `cross_tool` and `command_override` to

@@ -1708,25 +1708,14 @@ pub(crate) fn cargo_publish_plan(
 }
 
 /// Resolve the project-wide `default_targets` the build stage would use:
-/// `defaults.targets` when non-empty, else the canonical [`DEFAULT_TARGETS`].
+/// `defaults.targets` when non-empty, else the canonical default matrix.
 ///
-/// Kept byte-identical to the build stage's own resolution
-/// (`crates/stage-build/src/run.rs`) so the binstall override set the cargo
-/// publisher emits equals the one the build stage emits for the same config —
-/// any divergence here would surface as a per-target asset mismatch between the
-/// two paths.
+/// Routed through `Config::effective_default_targets` — the same helper the
+/// build stage uses — so the binstall override set the cargo publisher emits
+/// equals the one the build stage emits for the same config; any divergence
+/// would surface as a per-target asset mismatch between the two paths.
 fn resolve_default_targets(ctx: &Context) -> Vec<String> {
-    ctx.config
-        .defaults
-        .as_ref()
-        .and_then(|d| d.targets.clone())
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| {
-            anodizer_core::target::DEFAULT_TARGETS
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect()
-        })
+    ctx.config.effective_default_targets()
 }
 
 /// Guarantee `[package.metadata.binstall]` is present and current in
@@ -7293,6 +7282,11 @@ mod binstall_on_publish_tests {
             format!("[package]\nname = \"{name}\"\nversion = \"{version}\"\nedition = \"2024\"\n"),
         )
         .unwrap();
+        // A binstallable crate is a binary crate; declare the `--bin` so the
+        // build-synthesis gate the override derivation routes through sees a
+        // producing default build (a no-bin crate now derives no targets).
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/main.rs"), "fn main() {}\n").unwrap();
         p
     }
 

@@ -117,6 +117,10 @@ mod tests {
             path: ".".to_string(),
             tag_template: "v{{ Version }}".to_string(),
             builds: Some(vec![BuildConfig {
+                // An explicit `binary` clears the planner's compile/artifact
+                // gate (a bare path="." crate declares no matching `--bin`, so a
+                // `binary: None` build would compile nothing and yield no targets).
+                binary: Some(name.to_string()),
                 targets: Some(triples.iter().map(|s| s.to_string()).collect()),
                 ..Default::default()
             }]),

@@ -1051,10 +1051,15 @@ mod tests {
             crates: vec![CrateConfig {
                 name: "myapp".to_string(),
                 path: ".".to_string(),
-                // A build with no per-build `targets` inherits `defaults.targets`;
-                // an explicit build is what makes the planner compile this crate
-                // (a bare path="." crate declares no `myapp` bin to synthesize one).
-                builds: Some(vec![BuildConfig::default()]),
+                // A build with no per-build `targets` inherits `defaults.targets`.
+                // An explicit `binary` clears the compile/artifact gate so the
+                // planner produces this crate (a bare path="." crate declares no
+                // `myapp` bin to synthesize one, and a `binary: None` build on it
+                // would compile nothing).
+                builds: Some(vec![BuildConfig {
+                    binary: Some("myapp".to_string()),
+                    ..Default::default()
+                }]),
                 ..Default::default()
             }],
             ..Default::default()

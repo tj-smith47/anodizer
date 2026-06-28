@@ -199,24 +199,12 @@ pub fn collect_build_targets(config: &Config, selected_crates: &[String]) -> Vec
         // Enumerate exactly what the planner compiles for this crate via the
         // shared SSOT: a non-empty `builds:` list as-is, else a synthesized
         // default build when the crate declares a `--bin <name>`, else nothing.
-        // A library crate with no default binary contributes no targets — it
-        // builds nothing, so reporting `defaults.targets` for it would
-        // over-report against what the build actually produces.
-        let Some(builds) = anodizer_stage_build::planned_builds(krate) else {
-            continue;
-        };
-        for build in &builds {
-            // Override semantics: when a per-build `targets` is set, it REPLACES
-            // `defaults.targets` for that build. Only when it is None does the
-            // build fall through to the defaults.
-            let chosen = match build.targets.as_deref() {
-                Some(ts) => ts,
-                None => default_targets.as_slice(),
-            };
-            for t in chosen {
-                if !targets.contains(t) {
-                    targets.push(t.clone());
-                }
+        // The compile/artifact gate inside `crate_target_list` drops a library
+        // crate with no default binary — it builds nothing, so reporting
+        // `defaults.targets` for it would over-report what the build produces.
+        for t in anodizer_core::build_plan::crate_target_list(krate, &default_targets) {
+            if !targets.contains(&t) {
+                targets.push(t);
             }
         }
     }
@@ -2173,6 +2161,7 @@ list:
                 path: ".".to_string(),
                 tag_template: "v{{ Version }}".to_string(),
                 builds: Some(vec![BuildConfig {
+                    binary: Some("k1".to_string()),
                     targets: Some(vec!["c".to_string()]),
                     ..Default::default()
                 }]),
@@ -2203,6 +2192,7 @@ list:
                 path: ".".to_string(),
                 tag_template: "v{{ Version }}".to_string(),
                 builds: Some(vec![BuildConfig {
+                    binary: Some("k1".to_string()),
                     targets: None, // not set; should inherit defaults
                     ..Default::default()
                 }]),
@@ -2250,9 +2240,12 @@ list:
     fn test_collect_build_targets_unset_defaults_falls_back_to_canonical_set() {
         use anodizer_core::config::BuildConfig;
 
-        // A build with targets=None and NO defaults.targets inherits the canonical
-        // DEFAULT_TARGETS set the planner compiles over — not an empty list. This
-        // is the fallback the cross-toolchain self-report and host filter rely on.
+        // A producing build with targets=None and NO defaults.targets inherits
+        // the canonical DEFAULT_TARGETS set the planner compiles over — not an
+        // empty list. This is the fallback the cross-toolchain self-report and
+        // host filter rely on. An explicit `binary` clears the compile/artifact
+        // gate so the build produces (a `binary: None` build on a crate with no
+        // `--bin` would correctly compile nothing under the planner's gate).
         let config = Config {
             project_name: "test".to_string(),
             crates: vec![CrateConfig {
@@ -2260,6 +2253,7 @@ list:
                 path: ".".to_string(),
                 tag_template: "v{{ Version }}".to_string(),
                 builds: Some(vec![BuildConfig {
+                    binary: Some("k1".to_string()),
                     targets: None,
                     ..Default::default()
                 }]),

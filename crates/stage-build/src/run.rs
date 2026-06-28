@@ -10,9 +10,10 @@ use anodizer_core::env_expand::expand_env as expand_env_vars;
 use anodizer_core::stage::Stage;
 use anodizer_core::target::map_target;
 
+use anodizer_core::build_plan::{crate_declares_bin, planned_builds};
+
 use super::command::{
-    build_command, build_lib_command, crate_declares_bin, crate_has_binary_target,
-    detect_crate_type, planned_builds,
+    build_command, build_lib_command, crate_has_binary_target, detect_crate_type,
 };
 use super::profile::{detect_amd64_variant, detect_cargo_profile};
 use super::targets::{

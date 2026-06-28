@@ -686,7 +686,8 @@ publish:
                 r#"
 name: app
 builds:
-  - targets: [{targets}]
+  - binary: app
+    targets: [{targets}]
 msis:
   - wxs: app.wxs
     version: v4

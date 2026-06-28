@@ -41,18 +41,7 @@ pub(crate) struct AurSourceRender {
 /// (a source package must advertise at least one architecture); a degenerate
 /// config that builds for no linux target would otherwise emit `arch=()`.
 fn aur_source_arches(ctx: &Context, crate_name: &str) -> Result<Vec<String>> {
-    let default_targets: Vec<String> = ctx
-        .config
-        .defaults
-        .as_ref()
-        .and_then(|d| d.targets.clone())
-        .filter(|t| !t.is_empty())
-        .unwrap_or_else(|| {
-            anodizer_core::target::DEFAULT_TARGETS
-                .iter()
-                .map(|s| (*s).to_string())
-                .collect()
-        });
+    let default_targets: Vec<String> = ctx.config.effective_default_targets();
 
     // Per-crate builds take precedence so per-crate config mode resolves its
     // own target set (no cross-crate leakage); otherwise inherit the defaults.
