@@ -203,6 +203,53 @@ mod tests {
         assert_eq!(names, vec!["cargo", "cosign", "syft"]);
     }
 
+    /// End-to-end through `collect_requirements`: a config that cross-compiles
+    /// to a non-host glibc-Linux target surfaces `cargo-zigbuild` + `zig` in the
+    /// `tools` JSON, so the GitHub Action installs the cross toolchain instead
+    /// of re-deriving it in bash. Skipped off x86_64-linux-gnu (Auto routing
+    /// is host-dependent).
+    #[test]
+    fn cross_config_emits_zigbuild_and_zig_in_json() {
+        use anodizer_core::test_helpers::TestContextBuilder;
+
+        if anodizer_core::partial::detect_host_target()
+            .as_deref()
+            .unwrap_or_default()
+            != "x86_64-unknown-linux-gnu"
+        {
+            return;
+        }
+        let krate: anodizer_core::config::CrateConfig = serde_yaml_ng::from_str(
+            r#"
+name: app
+builds:
+  - binary: app
+    targets: [aarch64-unknown-linux-gnu]
+"#,
+        )
+        .expect("crate config yaml");
+        let ctx = TestContextBuilder::new().crates(vec![krate]).build();
+
+        let reqs = collect_requirements(&ctx, PreflightScope::Full);
+        let tools = Tools {
+            schema_version: SCHEMA_VERSION,
+            tools: tool_requirements(&reqs),
+        };
+        let json = serde_json::to_string(&tools).unwrap();
+        assert!(
+            json.contains(r#"["cargo-zigbuild"]"#),
+            "tools JSON must list cargo-zigbuild: {json}"
+        );
+        assert!(
+            json.contains(r#"["zig"]"#),
+            "tools JSON must list zig: {json}"
+        );
+        assert!(
+            json.contains(r#"["cargo"]"#),
+            "tools JSON must still list cargo: {json}"
+        );
+    }
+
     #[test]
     fn json_envelope_shape() {
         let tools = Tools {

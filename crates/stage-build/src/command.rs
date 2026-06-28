@@ -176,7 +176,30 @@ pub(crate) fn cross_gnu_cargo_fallback_warning(
     target: &str,
     resolved: &CrossStrategy,
 ) -> Option<String> {
-    if *resolved != CrossStrategy::Cargo || !is_linux_gnu(target) || host.is_empty() {
+    if *resolved != CrossStrategy::Cargo {
+        return None;
+    }
+    let gcc = cross_gnu_cargo_gcc(host, target)?;
+    Some(format!(
+        "cross gnu target '{target}' resolved to plain cargo (cargo-zigbuild/cross not \
+         installed); native-code dependencies will need a system cross C toolchain \
+         (e.g. `{gcc}`) — install cargo-zigbuild + zig for a hermetic \
+         cross build"
+    ))
+}
+
+/// The system cross C compiler a plain-`cargo` build of `target` would resolve
+/// through cc-rs: `{arch}-linux-gnu-gcc`, where `arch` is the first `-`-split
+/// component of the glibc-suffix-stripped triple (e.g. `aarch64-linux-gnu-gcc`
+/// for `aarch64-unknown-linux-gnu`).
+///
+/// Returns `None` when no cross gcc is implied: the target is not glibc Linux,
+/// the host triple is unknown, or the target IS the host triple (a native build
+/// links the ambient toolchain, no cross gcc). Shared by
+/// [`cross_gnu_cargo_fallback_warning`] (the runtime warning) and the
+/// `tools`-emit cross-toolchain self-report so both name the same binary.
+pub(crate) fn cross_gnu_cargo_gcc(host: &str, target: &str) -> Option<String> {
+    if !is_linux_gnu(target) || host.is_empty() {
         return None;
     }
     // Glibc-pinned spellings (`x86_64-unknown-linux-gnu.2.17`) of the host
@@ -186,12 +209,7 @@ pub(crate) fn cross_gnu_cargo_fallback_warning(
         return None;
     }
     let arch = bare_target.split('-').next().unwrap_or(bare_target);
-    Some(format!(
-        "cross gnu target '{target}' resolved to plain cargo (cargo-zigbuild/cross not \
-         installed); native-code dependencies will need a system cross C toolchain \
-         (e.g. `{arch}-linux-gnu-gcc`) — install cargo-zigbuild + zig for a hermetic \
-         cross build"
-    ))
+    Some(format!("{arch}-linux-gnu-gcc"))
 }
 
 /// True for glibc-linked Linux triples: `*-linux-gnu`, ABI-suffixed forms

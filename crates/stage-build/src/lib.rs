@@ -13,6 +13,13 @@ mod command;
 pub use command::*;
 
 // ---------------------------------------------------------------------------
+// cross_tool_requirements — cross-toolchain self-report for `anodizer tools`
+// ---------------------------------------------------------------------------
+
+mod cross_requirements;
+pub use cross_requirements::cross_tool_requirements;
+
+// ---------------------------------------------------------------------------
 // detect_cargo_profile — parse --release / --profile flags from cargo flags
 // ---------------------------------------------------------------------------
 

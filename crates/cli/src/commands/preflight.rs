@@ -122,14 +122,19 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
         |stage: &str| -> bool { scope.includes(stage) && !ctx.publisher_deselected(stage) };
 
     // Build stage: the run path spawns the literal `cargo` from PATH, so
-    // probe exactly that.
+    // probe exactly that, then add the cross-compilation toolchain the build
+    // resolves per target (cargo-zigbuild + zig, cross, or a system cross gcc)
+    // so `anodizer tools` reports what a runner must install to cross-compile
+    // instead of the action re-deriving it in bash. The SecretsOnly scope
+    // drops every `Tool` requirement (see `retains`), so these surface only in
+    // the full requirement set `anodizer tools` reads — never in the pre-tag
+    // secrets gate.
     if runs("build") {
-        add(
-            "stage:build",
-            vec![anodizer_core::EnvRequirement::Tool {
-                name: "cargo".to_string(),
-            }],
-        );
+        let mut build_reqs = vec![anodizer_core::EnvRequirement::Tool {
+            name: "cargo".to_string(),
+        }];
+        build_reqs.extend(anodizer_stage_build::cross_tool_requirements(ctx));
+        add("stage:build", build_reqs);
     }
 
     if runs("nfpm") {
@@ -1394,6 +1399,56 @@ publish:
                 sr
             );
         }
+    }
+
+    /// The build block reports the resolved cross toolchain (not just
+    /// `cargo`): a crate cross-compiling to a non-host glibc-Linux target under
+    /// the default `auto` strategy must surface `cargo-zigbuild` + `zig` so
+    /// `anodizer tools` tells the runner what to install. Skipped on non
+    /// x86_64-linux-gnu hosts, where Auto routing differs.
+    #[test]
+    fn build_block_reports_cross_toolchain_for_cross_target() {
+        if anodizer_core::partial::detect_host_target()
+            .as_deref()
+            .unwrap_or_default()
+            != "x86_64-unknown-linux-gnu"
+        {
+            return;
+        }
+        let krate = crate_from_yaml(
+            r#"
+name: app
+builds:
+  - binary: app
+    targets: [aarch64-unknown-linux-gnu]
+"#,
+        );
+        let ctx = TestContextBuilder::new().crates(vec![krate]).build();
+        let full = collect_requirements(&ctx, PreflightScope::Full);
+        let build_tools: Vec<&str> = full
+            .iter()
+            .filter(|r| r.source == "stage:build")
+            .filter_map(|r| match &r.requirement {
+                EnvRequirement::Tool { name } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        // cargo stays first; the cross toolchain is appended.
+        assert_eq!(build_tools.first(), Some(&"cargo"));
+        assert!(
+            build_tools.contains(&"cargo-zigbuild") && build_tools.contains(&"zig"),
+            "build block must report cargo-zigbuild + zig for a cross target: {build_tools:?}"
+        );
+
+        // SecretsOnly still drops every Tool requirement — the cross toolchain
+        // must NOT leak into the pre-tag secrets gate.
+        let secrets = collect_requirements(&ctx, PreflightScope::SecretsOnly);
+        assert!(
+            !secrets
+                .iter()
+                .any(|r| matches!(&r.requirement, EnvRequirement::Tool { .. })),
+            "secrets-only must drop the cross toolchain Tool reqs: {secrets:?}"
+        );
     }
 
     /// A `signs:` cosign config keyed off `env://COSIGN_KEY` must surface as a
