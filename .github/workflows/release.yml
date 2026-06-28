@@ -148,7 +148,8 @@ jobs:
           from-artifact: anodizer-linux
           artifact-workflow: ci.yml
           artifact-run-id: auto
-          args: tag --push --changelog
+          # Tag-only default (lockstep): master is advanced post-publish, below.
+          args: tag --changelog
         env:
           # GITHUB_TOKEN: its pushes do NOT retrigger CI, so the tag push cannot loop the pipeline.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -346,3 +347,29 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  # Fast-forward master onto the published bump commit once publish succeeds.
+  # tag pushed the tag (not the branch); the bump commit is reachable via the
+  # tag, so a failed release advances neither master nor publishes a release.
+  # force=false makes GitHub enforce the fast-forward server-side.
+  advance-master:
+    name: Advance master
+    needs: [tag, release]
+    if: needs.release.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Fast-forward master onto the published bump commit
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ needs.tag.outputs.sha }}
+        run: |
+          if ! gh api -X PATCH "repos/${{ github.repository }}/git/refs/heads/master" \
+                 -f sha="$SHA" -F force=false; then
+            echo "::error::Could not fast-forward master to $SHA (master moved during release?). \
+              The version IS published — do NOT re-cut. Reconcile by hand: \
+              git fetch origin && git push origin $SHA:refs/heads/master"
+            exit 1
+          fi

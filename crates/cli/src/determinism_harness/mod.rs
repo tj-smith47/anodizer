@@ -399,6 +399,15 @@ fn discover_per_triple_binaries(worktree_path: &Path) -> Result<Vec<(String, Pat
                 continue;
             }
             let path = bin.path();
+            // Skip cargo's `.cargo-*-lock` dotfiles (no extension ⇒ the filter
+            // below would mistake them for the binary; a binary is never a dotfile).
+            if path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .is_some_and(|n| n.starts_with('.'))
+            {
+                continue;
+            }
             match path.extension().and_then(|s| s.to_str()) {
                 None | Some("exe") => out.push((triple.to_string(), path)),
                 _ => continue,
@@ -1368,10 +1377,11 @@ impl Harness {
             let all_equal =
                 hashes.iter().all(|h| h == &hashes[0]) && !hashes.iter().any(|h| h == "<missing>");
 
-            // Exhaustive classification: every produced file must land in a
-            // known category (primary / sidecar / registered-aggregate). An
-            // unclassified file is a HARD FAIL — it could be an unregistered
-            // aggregate that silently masks member drift.
+            // Byte-equality is the determinism verdict; classification only
+            // excuses a DRIFTING aggregate (below). An unclassified file fails
+            // only when its bytes drift — a stable one cannot mask member
+            // drift: every member is independently hashed and surfaces its own
+            // drift row regardless of any aggregate that contains it.
             let classification =
                 self.classify(name, &all_names, &manifest_members, &combined_markers);
             if matches!(classification, Classification::Unclassified) {
@@ -1389,15 +1399,19 @@ impl Harness {
                     },
                     hashes: if all_equal { vec![] } else { hashes.clone() },
                 });
-                drift.push(DriftRow {
-                    artifact: name.clone(),
-                    hashes,
-                    differing_bytes_summary: Some(
-                        "unclassified produced file — register as aggregate or tag primary/sidecar"
-                            .into(),
-                    ),
-                });
-                drift_count += 1;
+                if !all_equal {
+                    drift.push(DriftRow {
+                        artifact: name.clone(),
+                        hashes,
+                        differing_bytes_summary: Some(
+                            "unclassified produced file drifted across runs; if it is a \
+                             combined checksums file, mark it combined=true so its members \
+                             can be evaluated — otherwise it is a real regression"
+                                .into(),
+                        ),
+                    });
+                    drift_count += 1;
+                }
                 continue;
             }
 
@@ -2495,7 +2509,7 @@ mod tests {
     /// Every file a normal run emits classifies (zero `Unclassified`), and a
     /// genuinely unregistered file is a hard fail even when byte-stable.
     #[test]
-    fn classification_is_exhaustive_for_a_normal_run() {
+    fn unclassified_gates_on_byte_drift_not_on_classification() {
         let h = harness_with_allow(&["*.flatpak"]);
         // artifacts.json declares `install.sh` so it classifies as a tracked
         // primary via manifest membership (its `.sh` extension is unknown).
@@ -2532,18 +2546,35 @@ mod tests {
             report.drift
         );
 
-        // Negative control: a genuinely unregistered file is a hard fail even
-        // though it is byte-identical across runs.
-        let stray: Vec<(&str, &[u8])> = vec![("mystery.xyz", b"same")];
-        let runs = run_with_files(&h, vec![stray.clone(), stray]);
-        let report = h.build_report(runs);
-        assert_eq!(report.drift_count, 1, "an unclassified file must hard-fail");
+        // A genuinely unregistered file that is BYTE-STABLE passes: the gate
+        // is byte-equality, not classification. A stable file cannot mask
+        // member drift (identical aggregate bytes ⇒ identical members), so
+        // there is nothing to fail.
+        let stable: Vec<(&str, &[u8])> = vec![("mystery.xyz", b"same")];
+        let report = h.build_report(run_with_files(&h, vec![stable.clone(), stable]));
+        assert_eq!(
+            report.drift_count, 0,
+            "a byte-stable unclassified file must NOT fail: {:?}",
+            report.drift
+        );
+
+        // The same unclassified file, now DRIFTING across runs, IS a hard
+        // fail: no aggregate rule can excuse it, so it reads as a real
+        // regression.
+        let drifting: Vec<Vec<(&str, &[u8])>> =
+            vec![vec![("mystery.xyz", b"one")], vec![("mystery.xyz", b"two")]];
+        let report = h.build_report(run_with_files(&h, drifting));
+        assert_eq!(
+            report.drift_count, 1,
+            "a drifting unclassified file must hard-fail: {:?}",
+            report.drift
+        );
         assert!(
             report.drift[0]
                 .differing_bytes_summary
                 .as_deref()
                 .is_some_and(|s| s.contains("unclassified")),
-            "the hard-fail reason must flag the unclassified file: {:?}",
+            "the drift reason must flag the unclassified file: {:?}",
             report.drift
         );
     }

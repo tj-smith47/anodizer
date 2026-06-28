@@ -241,6 +241,16 @@ fn push_release_dir_files(release_dir: &Path, out: &mut Vec<PathBuf>) -> Result<
             continue;
         }
         let path = entry.path();
+        // Skip cargo's `.cargo-*-lock` dotfiles: a leading-dot name has no
+        // extension, so the empty-extension binary filter below would mistake
+        // them for the shipped binary. A shipped binary is never a dotfile.
+        if path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .is_some_and(|n| n.starts_with('.'))
+        {
+            continue;
+        }
         match path.extension().and_then(|s| s.to_str()) {
             None => out.push(path),
             Some("exe") => out.push(path),
