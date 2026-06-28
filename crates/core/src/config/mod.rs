@@ -397,6 +397,34 @@ impl Config {
         self.monorepo.as_ref().and_then(|m| m.dir.as_deref())
     }
 
+    /// The build targets compiled when neither a per-build `targets` nor
+    /// `defaults.targets` is set: `defaults.targets` (when non-empty), else the
+    /// canonical `DEFAULT_TARGETS`. Single source of truth for target-set
+    /// fallback — the build planner, target introspection, and cross-toolchain
+    /// reporting MUST all resolve through this so they never diverge.
+    pub fn effective_default_targets(&self) -> Vec<String> {
+        self.defaults
+            .as_ref()
+            .and_then(|d| d.targets.clone())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| {
+                crate::target::DEFAULT_TARGETS
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect()
+            })
+    }
+
+    /// The cross-compilation strategy applied to a crate that does not set its
+    /// own `cross:` — `defaults.cross`, else `Auto`. SSOT for the per-crate
+    /// strategy fallback.
+    pub fn default_cross_strategy(&self) -> CrossStrategy {
+        self.defaults
+            .as_ref()
+            .and_then(|d| d.cross.clone())
+            .unwrap_or(CrossStrategy::Auto)
+    }
+
     // --- Project metadata defaulting helpers ---
     //
     // Publishers that expose homepage/license/description/maintainer fields

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use anodizer_core::config::CrossStrategy;
+use anodizer_core::config::{BuildConfig, CrateConfig, CrossStrategy};
 use anodizer_core::util::find_binary;
 
 // ---------------------------------------------------------------------------
@@ -491,6 +491,35 @@ pub(crate) fn crate_declares_bin(crate_path: &str, wanted: &str) -> bool {
         return !reclaimed_under_other_name;
     }
     false
+}
+
+/// The build entries the build planner will actually compile for a crate.
+///
+/// Single source of truth for the "what does this crate produce" synthesis
+/// rule, so the planner, the `anodizer tools` cross-toolchain self-report
+/// ([`cross_tool_requirements`](crate::cross_tool_requirements)), and the CLI's
+/// `collect_build_targets` enumeration cannot drift on which crates build and
+/// over which targets:
+///
+/// - a non-empty `builds:` list is used as-is;
+/// - a crate with no `builds:` that declares a `--bin <crate>` target named
+///   after itself gets a single synthesized default build (`binary = <crate>`,
+///   targets inherited from `defaults.targets`);
+/// - a crate with neither — a library, or one carrying only differently-named
+///   helper bins — compiles nothing and yields `None`.
+///
+/// Target resolution (per-build `targets` overriding `defaults.targets`) is the
+/// caller's concern; this answers only which build entries exist.
+pub fn planned_builds(krate: &CrateConfig) -> Option<Vec<BuildConfig>> {
+    match krate.builds.as_deref() {
+        Some(b) if !b.is_empty() => Some(b.to_vec()),
+        _ => crate_declares_bin(&krate.path, &krate.name).then(|| {
+            vec![BuildConfig {
+                binary: Some(krate.name.clone()),
+                ..Default::default()
+            }]
+        }),
+    }
 }
 
 /// Read a crate's Cargo.toml and return the first `crate-type` from [lib],

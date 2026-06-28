@@ -124,14 +124,6 @@ pub(crate) fn find_matching_override<'a>(
 }
 
 // ---------------------------------------------------------------------------
-// Default targets — used when neither build.targets nor defaults.targets is set
-// ---------------------------------------------------------------------------
-
-// Canonical list lives in core so preflight's target derivation can never
-// drift from the build stage's.
-pub(crate) use anodizer_core::target::DEFAULT_TARGETS;
-
-// ---------------------------------------------------------------------------
 // Known Rust target triples (Tier 1 + Tier 2) for validation
 // ---------------------------------------------------------------------------
 

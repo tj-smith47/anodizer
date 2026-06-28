@@ -12,11 +12,11 @@ use anodizer_core::target::map_target;
 
 use super::command::{
     build_command, build_lib_command, crate_declares_bin, crate_has_binary_target,
-    detect_crate_type,
+    detect_crate_type, planned_builds,
 };
 use super::profile::{detect_amd64_variant, detect_cargo_profile};
 use super::targets::{
-    DEFAULT_TARGETS, KNOWN_TARGETS, find_matching_override, is_target_ignored, resolve_target_env,
+    KNOWN_TARGETS, find_matching_override, is_target_ignored, resolve_target_env,
 };
 use super::validation::{strip_glibc_suffix, target_for_validation};
 use super::workspace::{
@@ -105,13 +105,8 @@ impl Stage for super::BuildStage {
         // rather than flat on `defaults`, mirroring `BuildConfig`'s shape.
         let defaults = ctx.config.defaults.as_ref();
         let default_builds = defaults.and_then(|d| d.builds.as_ref());
-        let default_targets: Vec<String> = defaults
-            .and_then(|d| d.targets.clone())
-            .filter(|t| !t.is_empty())
-            .unwrap_or_else(|| DEFAULT_TARGETS.iter().map(|s| (*s).to_string()).collect());
-        let default_strategy = defaults
-            .and_then(|d| d.cross.clone())
-            .unwrap_or(CrossStrategy::Auto);
+        let default_targets: Vec<String> = ctx.config.effective_default_targets();
+        let default_strategy = ctx.config.default_cross_strategy();
         let default_flags: Option<Vec<String>> = default_builds.and_then(|b| b.flags.clone());
         let default_ignores: Vec<BuildIgnore> = default_builds
             .and_then(|b| b.ignore.clone())
@@ -328,34 +323,23 @@ fn plan_build_jobs(
     let mut copy_jobs: Vec<BuildJob> = Vec::new();
 
     for crate_cfg in crates {
-        // Determine builds for this crate
-        let builds: Vec<BuildConfig> = match &crate_cfg.builds {
-            Some(b) if !b.is_empty() => b.clone(),
-            _ => {
-                // No builds configured — only synthesize a default `--bin
-                // <crate>` build when the crate actually declares a binary
-                // target named after itself. A library crate (no bins) OR a
-                // library carrying only differently-named helper bins (e.g.
-                // cfgd-core's renamed src/bin codegen tools) has no default
-                // release binary, so `cargo build --bin <crate>` would fail —
-                // skip instead.
-                if crate_declares_bin(&crate_cfg.path, &crate_cfg.name) {
-                    vec![BuildConfig {
-                        binary: Some(crate_cfg.name.clone()),
-                        ..Default::default()
-                    }]
-                } else {
-                    log.skip_line(
-                        ctx.options.show_skipped,
-                        &format!(
-                            "skipped build for crate '{}' — no builds configured and {}",
-                            crate_cfg.name,
-                            no_default_binary_reason(&crate_cfg.path, &crate_cfg.name)
-                        ),
-                    );
-                    continue;
-                }
-            }
+        // Determine builds for this crate via the shared planner SSOT: a
+        // non-empty `builds:` list as-is, else a synthesized default `--bin
+        // <crate>` build when the crate declares a binary named after itself.
+        // A library crate (no bins) OR a library carrying only differently-named
+        // helper bins (e.g. cfgd-core's renamed src/bin codegen tools) has no
+        // default release binary, so `cargo build --bin <crate>` would fail —
+        // skip instead.
+        let Some(builds) = planned_builds(crate_cfg) else {
+            log.skip_line(
+                ctx.options.show_skipped,
+                &format!(
+                    "skipped build for crate '{}' — no builds configured and {}",
+                    crate_cfg.name,
+                    no_default_binary_reason(&crate_cfg.path, &crate_cfg.name)
+                ),
+            );
+            continue;
         };
 
         // Validate: no duplicate build IDs within this crate

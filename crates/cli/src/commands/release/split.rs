@@ -1037,7 +1037,7 @@ mod tests {
 
     #[test]
     fn test_collect_build_targets_from_defaults() {
-        use anodizer_core::config::Defaults;
+        use anodizer_core::config::{BuildConfig, Defaults};
 
         let config = Config {
             project_name: "test".to_string(),
@@ -1051,6 +1051,10 @@ mod tests {
             crates: vec![CrateConfig {
                 name: "myapp".to_string(),
                 path: ".".to_string(),
+                // A build with no per-build `targets` inherits `defaults.targets`;
+                // an explicit build is what makes the planner compile this crate
+                // (a bare path="." crate declares no `myapp` bin to synthesize one).
+                builds: Some(vec![BuildConfig::default()]),
                 ..Default::default()
             }],
             ..Default::default()

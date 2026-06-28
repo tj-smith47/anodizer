@@ -15,17 +15,17 @@ use anodizer_core::EnvRequirement;
 use anodizer_core::config::{BuilderKind, CrossStrategy};
 use anodizer_core::context::Context;
 
-use crate::command::{cross_gnu_cargo_gcc, detect_cross_strategy_for_target_impl};
+use crate::command::{cross_gnu_cargo_gcc, detect_cross_strategy_for_target_impl, planned_builds};
 use crate::targets::is_target_ignored;
 
 /// Derive the cross-compilation toolchain every configured build target
 /// requires, as install hints for `anodizer tools`.
 ///
 /// For each compiled build entry across `crates` and `workspaces[].crates`
-/// (mirroring `cli::commands::helpers::collect_build_targets`'s enumeration —
-/// per-build `targets` override `defaults.targets`, and `ignore` os/arch pairs
-/// are filtered out), the crate's `cross:` strategy (`auto` when unset) is
-/// resolved per target and mapped to its toolchain:
+/// (enumerated through the shared [`planned_builds`] SSOT so this hint matches
+/// what the planner compiles — per-build `targets` override `defaults.targets`,
+/// and `ignore` os/arch pairs are filtered out), the crate's `cross:` strategy
+/// (`auto` when unset) is resolved per target and mapped to its toolchain:
 ///
 /// - `zigbuild` → `cargo-zigbuild` AND `zig` (zigbuild shells out to zig)
 /// - `cross` → `cross`
@@ -47,12 +47,11 @@ pub fn cross_tool_requirements(ctx: &Context) -> Vec<EnvRequirement> {
     let host = anodizer_core::partial::detect_host_target().unwrap_or_default();
     let selected = &ctx.options.selected_crates;
 
-    let default_targets = ctx
-        .config
-        .defaults
-        .as_ref()
-        .and_then(|d| d.targets.as_deref())
-        .unwrap_or(&[]);
+    // SSOT for the target-set and strategy fallbacks: resolve through the same
+    // `Config` helpers the build planner uses so this hint cannot drift from
+    // what the build actually compiles.
+    let default_targets = ctx.config.effective_default_targets();
+    let default_strategy = ctx.config.default_cross_strategy();
     let default_ignore = ctx
         .config
         .defaults
@@ -76,12 +75,19 @@ pub fn cross_tool_requirements(ctx: &Context) -> Vec<EnvRequirement> {
         if !selected.is_empty() && !selected.contains(&krate.name) {
             continue;
         }
-        let strategy = krate.cross.clone().unwrap_or(CrossStrategy::Auto);
-        let Some(builds) = krate.builds.as_ref() else {
+        let strategy = krate
+            .cross
+            .clone()
+            .unwrap_or_else(|| default_strategy.clone());
+
+        // Enumerate exactly what the build planner will compile for this crate
+        // (non-empty `builds:` as-is, else a synthesized default `--bin <name>`
+        // build, else nothing) via the shared SSOT so this hint cannot drift.
+        let Some(builds) = planned_builds(krate) else {
             continue;
         };
 
-        for build in builds {
+        for build in &builds {
             // Prebuilt imports a staged binary; nothing is compiled.
             if matches!(build.builder, Some(BuilderKind::Prebuilt)) {
                 continue;
@@ -101,6 +107,29 @@ pub fn cross_tool_requirements(ctx: &Context) -> Vec<EnvRequirement> {
                 continue;
             }
 
+            // Per-build targets REPLACE defaults.targets; per-build ignore
+            // falls back to defaults.builds.ignore (mirrors the build stage).
+            // An explicitly empty `targets: []` means "skip this build".
+            let chosen: &[String] = match build.targets.as_deref() {
+                Some(ts) => ts,
+                None => default_targets.as_slice(),
+            };
+            let build_ignore = build
+                .ignore
+                .clone()
+                .unwrap_or_else(|| default_ignore.clone());
+
+            // The targets that survive the ignore filter are the ones the build
+            // actually compiles. If none survive, the build runs nothing, so it
+            // contributes no toolchain — a `cross_tool` override included.
+            let live: Vec<&String> = chosen
+                .iter()
+                .filter(|t| !is_target_ignored(t.as_str(), &build_ignore))
+                .collect();
+            if live.is_empty() {
+                continue;
+            }
+
             // An explicit cross_tool names the binary verbatim and overrides
             // strategy resolution entirely.
             if let Some(tool) = build.cross_tool.as_deref().filter(|s| !s.is_empty()) {
@@ -108,21 +137,7 @@ pub fn cross_tool_requirements(ctx: &Context) -> Vec<EnvRequirement> {
                 continue;
             }
 
-            // Per-build targets REPLACE defaults.targets; per-build ignore
-            // falls back to defaults.builds.ignore (mirrors the build stage).
-            let chosen = match build.targets.as_deref() {
-                Some(ts) => ts,
-                None => default_targets,
-            };
-            let build_ignore = build
-                .ignore
-                .clone()
-                .unwrap_or_else(|| default_ignore.clone());
-
-            for target in chosen {
-                if is_target_ignored(target, &build_ignore) {
-                    continue;
-                }
+            for target in live {
                 let resolved = if strategy == CrossStrategy::Auto {
                     detect_cross_strategy_for_target_impl(&host, target, true, true)
                 } else {
@@ -357,5 +372,107 @@ mod tests {
             ),
         ]);
         assert_eq!(names, vec!["cargo-zigbuild", "zig"]);
+    }
+
+    #[test]
+    fn no_default_targets_falls_back_to_default_set() {
+        if !host_is_x86_64_linux_gnu() {
+            return;
+        }
+        // No defaults.targets and a build with targets:None resolves to the
+        // canonical DEFAULT_TARGETS, which include an aarch64 gnu target →
+        // cargo-zigbuild + zig. Regression guard: an empty `&[]` fallback
+        // silently emitted nothing for exactly this aarch64 cross case.
+        let build = BuildConfig {
+            binary: Some("app".to_string()),
+            ..Default::default()
+        };
+        let names = run(vec![krate("c", Some(CrossStrategy::Auto), build)]);
+        assert!(
+            names.contains(&"cargo-zigbuild".to_string()) && names.contains(&"zig".to_string()),
+            "DEFAULT_TARGETS include an aarch64 gnu target needing zigbuild: {names:?}"
+        );
+    }
+
+    #[test]
+    fn defaults_cross_strategy_applies_when_crate_omits_cross() {
+        // defaults.cross = cross with a crate that sets no `cross:` → the
+        // `cross` strategy applies and its binary is reported. Explicit
+        // strategy bypasses host/target routing, so no host gate is needed.
+        let defaults = Defaults {
+            cross: Some(CrossStrategy::Cross),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .crates(vec![krate(
+                "c",
+                None,
+                build_for(&["aarch64-unknown-linux-gnu"]),
+            )])
+            .defaults(defaults)
+            .build();
+        let names = tool_names(&cross_tool_requirements(&ctx));
+        assert_eq!(names, vec!["cross"]);
+    }
+
+    #[test]
+    fn crate_without_builds_but_declaring_bin_synthesizes_default_build() {
+        if !host_is_x86_64_linux_gnu() {
+            return;
+        }
+        // A crate with no `builds:` but a `--bin <name>` target compiles a
+        // synthesized default build over DEFAULT_TARGETS (mirrors the planner).
+        // crate_declares_bin reads the filesystem, so a real fixture is needed.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"c\"\nversion = \"0.0.0\"\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(dir.path().join("src/main.rs"), "fn main() {}\n").unwrap();
+        let crate_cfg = CrateConfig {
+            name: "c".to_string(),
+            path: dir.path().to_string_lossy().into_owned(),
+            builds: None,
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+        let names = tool_names(&cross_tool_requirements(&ctx));
+        assert!(
+            names.contains(&"cargo-zigbuild".to_string()),
+            "synthesized default build over DEFAULT_TARGETS must report the cross toolchain: {names:?}"
+        );
+    }
+
+    #[test]
+    fn cross_tool_with_all_targets_ignored_emits_nothing() {
+        // Every target ignored → the build runs nothing, so even a literal
+        // cross_tool override contributes no toolchain.
+        let mut build = build_for(&["aarch64-unknown-linux-gnu"]);
+        build.cross_tool = Some("mycross".to_string());
+        build.ignore = Some(vec![BuildIgnore {
+            os: "linux".to_string(),
+            arch: "arm64".to_string(),
+        }]);
+        let names = run(vec![krate("c", Some(CrossStrategy::Auto), build)]);
+        assert!(
+            names.is_empty(),
+            "cross_tool must not emit when every target is ignored: {names:?}"
+        );
+    }
+
+    #[test]
+    fn cross_tool_emits_when_a_live_target_remains() {
+        // Only the aarch64 leg is ignored; the x86_64 leg still builds, so the
+        // cross_tool binary is reported once.
+        let mut build = build_for(&["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"]);
+        build.cross_tool = Some("mycross".to_string());
+        build.ignore = Some(vec![BuildIgnore {
+            os: "linux".to_string(),
+            arch: "arm64".to_string(),
+        }]);
+        let names = run(vec![krate("c", Some(CrossStrategy::Auto), build)]);
+        assert_eq!(names, vec!["mycross"]);
     }
 }

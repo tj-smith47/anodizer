@@ -176,11 +176,11 @@ fn resolve_force_token(config: &Config) -> Option<ForceTokenKind> {
 /// otherwise only crates whose `name` is in the slice contribute.
 pub fn collect_build_targets(config: &Config, selected_crates: &[String]) -> Vec<String> {
     let mut targets: Vec<String> = Vec::new();
-    let default_targets = config
-        .defaults
-        .as_ref()
-        .and_then(|d| d.targets.as_deref())
-        .unwrap_or(&[]);
+    // SSOT for the unset fallback: the canonical DEFAULT_TARGETS set the build
+    // planner uses, not an empty list. A synthesized default build (a crate
+    // with no `builds:` but a declared `--bin`) compiles over this set, so the
+    // host filter / `anodizer targets` must see it too.
+    let default_targets = config.effective_default_targets();
 
     let all_crates = config.crates.iter().chain(
         config
@@ -191,39 +191,32 @@ pub fn collect_build_targets(config: &Config, selected_crates: &[String]) -> Vec
             .flat_map(|w| w.crates.iter()),
     );
 
-    let mut have_any_build = false;
     for krate in all_crates {
         if !selected_crates.is_empty() && !selected_crates.contains(&krate.name) {
             continue;
         }
 
-        if let Some(ref builds) = krate.builds {
-            for build in builds {
-                have_any_build = true;
-                // Override semantics: when a per-build `targets` is set,
-                // it REPLACES `defaults.targets` for that build. Only when
-                // it is None does the build fall through to the defaults.
-                let chosen = match build.targets.as_deref() {
-                    Some(ts) => ts,
-                    None => default_targets,
-                };
-                for t in chosen {
-                    if !targets.contains(t) {
-                        targets.push(t.clone());
-                    }
+        // Enumerate exactly what the planner compiles for this crate via the
+        // shared SSOT: a non-empty `builds:` list as-is, else a synthesized
+        // default build when the crate declares a `--bin <name>`, else nothing.
+        // A library crate with no default binary contributes no targets — it
+        // builds nothing, so reporting `defaults.targets` for it would
+        // over-report against what the build actually produces.
+        let Some(builds) = anodizer_stage_build::planned_builds(krate) else {
+            continue;
+        };
+        for build in &builds {
+            // Override semantics: when a per-build `targets` is set, it REPLACES
+            // `defaults.targets` for that build. Only when it is None does the
+            // build fall through to the defaults.
+            let chosen = match build.targets.as_deref() {
+                Some(ts) => ts,
+                None => default_targets.as_slice(),
+            };
+            for t in chosen {
+                if !targets.contains(t) {
+                    targets.push(t.clone());
                 }
-            }
-        }
-    }
-
-    // No builds at all (e.g. lib-only crates inheriting nothing); the
-    // defaults.targets list is the canonical fallback set so callers like
-    // `anodizer release --single-target` still see something to filter
-    // against.
-    if !have_any_build {
-        for t in default_targets {
-            if !targets.contains(t) {
-                targets.push(t.clone());
             }
         }
     }
@@ -2222,6 +2215,66 @@ list:
             result,
             vec!["a".to_string(), "b".to_string()],
             "build with targets=None should inherit defaults.targets",
+        );
+    }
+
+    #[test]
+    fn test_collect_build_targets_no_bin_crate_contributes_nothing() {
+        use anodizer_core::config::Defaults;
+
+        // A crate with no `builds:` and no `--bin` named after itself (path="."
+        // resolves to package "anodizer", not "lib") compiles nothing in the
+        // planner, so it must contribute no targets — even though defaults.targets
+        // is set. Reporting the defaults here would over-report against the build.
+        let config = Config {
+            project_name: "test".to_string(),
+            defaults: Some(Defaults {
+                targets: Some(vec!["a".to_string(), "b".to_string()]),
+                ..Default::default()
+            }),
+            crates: vec![CrateConfig {
+                name: "lib".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ Version }}".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(
+            collect_build_targets(&config, &[]).is_empty(),
+            "a no-bin/no-builds crate builds nothing, so contributes no targets",
+        );
+    }
+
+    #[test]
+    fn test_collect_build_targets_unset_defaults_falls_back_to_canonical_set() {
+        use anodizer_core::config::BuildConfig;
+
+        // A build with targets=None and NO defaults.targets inherits the canonical
+        // DEFAULT_TARGETS set the planner compiles over — not an empty list. This
+        // is the fallback the cross-toolchain self-report and host filter rely on.
+        let config = Config {
+            project_name: "test".to_string(),
+            crates: vec![CrateConfig {
+                name: "k1".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ Version }}".to_string(),
+                builds: Some(vec![BuildConfig {
+                    targets: None,
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let result = collect_build_targets(&config, &[]);
+        let expected: Vec<String> = anodizer_core::target::DEFAULT_TARGETS
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        assert_eq!(
+            result, expected,
+            "targets=None with no defaults must fall back to DEFAULT_TARGETS",
         );
     }
 

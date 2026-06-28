@@ -9967,3 +9967,73 @@ cloudsmiths:
     assert_eq!(cs[0].keep_versions, Some(3));
     assert_eq!(cs[1].keep_versions, None);
 }
+
+#[test]
+fn effective_default_targets_falls_back_to_canonical_when_unset() {
+    // No `defaults` block at all → the canonical DEFAULT_TARGETS matrix.
+    let cfg = Config::default();
+    assert_eq!(
+        cfg.effective_default_targets(),
+        crate::target::DEFAULT_TARGETS
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
+    );
+}
+
+#[test]
+fn effective_default_targets_falls_back_when_defaults_targets_empty() {
+    // An explicitly-empty `defaults.targets` is treated as "unset" so the
+    // build still has a target matrix to compile.
+    let mut cfg = Config::default();
+    cfg.defaults = Some(super::Defaults {
+        targets: Some(vec![]),
+        ..Default::default()
+    });
+    assert_eq!(
+        cfg.effective_default_targets(),
+        crate::target::DEFAULT_TARGETS
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
+    );
+}
+
+#[test]
+fn effective_default_targets_uses_configured_targets_when_set() {
+    let mut cfg = Config::default();
+    cfg.defaults = Some(super::Defaults {
+        targets: Some(vec![
+            "aarch64-unknown-linux-gnu".to_string(),
+            "x86_64-apple-darwin".to_string(),
+        ]),
+        ..Default::default()
+    });
+    assert_eq!(
+        cfg.effective_default_targets(),
+        vec![
+            "aarch64-unknown-linux-gnu".to_string(),
+            "x86_64-apple-darwin".to_string(),
+        ],
+    );
+}
+
+#[test]
+fn default_cross_strategy_is_auto_when_unset() {
+    let cfg = Config::default();
+    assert_eq!(cfg.default_cross_strategy(), CrossStrategy::Auto);
+    // A `defaults` block that omits `cross:` still resolves to Auto.
+    let mut cfg2 = Config::default();
+    cfg2.defaults = Some(super::Defaults::default());
+    assert_eq!(cfg2.default_cross_strategy(), CrossStrategy::Auto);
+}
+
+#[test]
+fn default_cross_strategy_uses_configured_strategy() {
+    let mut cfg = Config::default();
+    cfg.defaults = Some(super::Defaults {
+        cross: Some(CrossStrategy::Cross),
+        ..Default::default()
+    });
+    assert_eq!(cfg.default_cross_strategy(), CrossStrategy::Cross);
+}

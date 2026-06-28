@@ -42,11 +42,12 @@ fn ctx_for_test<'a>(
     }
 }
 use super::profile::{detect_amd64_variant, parse_amd64_variant_from_rustflags};
-use super::targets::{DEFAULT_TARGETS, KNOWN_TARGETS};
+use super::targets::KNOWN_TARGETS;
 use super::targets::{find_matching_override, is_target_ignored, resolve_target_env};
 use super::universal::build_universal_binary;
 use super::validation::{is_dynamically_linked, strip_glibc_suffix, target_for_validation};
 use super::workspace::check_workspace_package;
+use anodizer_core::target::DEFAULT_TARGETS;
 
 fn test_logger() -> StageLogger {
     StageLogger::new("build", Verbosity::Normal)
