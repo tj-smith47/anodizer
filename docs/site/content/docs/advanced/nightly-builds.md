@@ -15,10 +15,20 @@ anodizer release --nightly
 
 ## Behavior
 
-- Version becomes `0.1.0-nightly.20260327`
+- Version is rendered from `nightly.version_template`. The default
+  (`{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly`) bumps the patch of
+  the current tag and appends the short commit — e.g. tag `v0.13.0` →
+  `0.13.1-a1b2c3d-nightly` — so two same-day commits yield two distinct,
+  commit-immutable nightly versions.
 - Creates or replaces the `nightly` tag and GitHub release
 - All normal pipeline stages run (build, archive, checksum, release, publish)
 - Distinct from `--snapshot` — nightlies publish, snapshots don't
+- `--nightly` does **not** skip the env-preflight check. Preflight still runs
+  as the first step unless you pass `--no-preflight` (or use `--snapshot` /
+  `--dry-run` / `--split` / `--publish-only`, which skip it implicitly). The
+  dogfood nightly below pairs `--no-preflight` with the action's
+  `auto-install` so the toolchain is provisioned from `anodizer tools` rather
+  than gated by a second credential check at release time.
 
 ## Config
 
@@ -120,8 +130,11 @@ jobs:
       - uses: tj-smith47/anodizer-action@v1
         with:
           install-rust: true
+          # auto-install queries `anodizer tools` for the exact toolchain this
+          # config needs and installs it — including the cross-compile tools
+          # (cargo-zigbuild + zig, or `cross`) resolved from each build's
+          # target and `cross:` strategy. No need to hand-list them.
           auto-install: true
-          install: cargo-zigbuild
           args: release --nightly
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
