@@ -80,11 +80,13 @@ launch_mbp() {
   scp -q "$BUNDLE" mbp:gate.bundle || return 1
   # Run clone/fetch/checkout SYNCHRONOUSLY (set -e) so a setup failure surfaces
   # as a non-zero ssh exit (→ FAIL(launch)) instead of a one-hour timeout;
-  # hard-verify HEAD==$SHA; background ONLY cargo test. caffeinate holds the Mac
-  # awake; nohup detaches the build from this ssh.
+  # hard-verify HEAD==$SHA; background ONLY the suite. The runner script ships
+  # inside the bundle (it lives in-repo), so the checkout makes it available at
+  # `.claude/scripts/test-os-suite.sh` — no separate copy. caffeinate holds the
+  # Mac awake; nohup detaches the build from this ssh.
   # SC2029: $SHA is MEANT to expand client-side (inject this commit into checkout).
   # shellcheck disable=SC2029
-  ssh mbp "set -e; cd ~; [ -d anodizer/.git ] || git clone -q gate.bundle anodizer; cd anodizer; git fetch -q ~/gate.bundle HEAD; git checkout -q -f $SHA; [ \"\$(git rev-parse HEAD)\" = $SHA ]; rm -f mac_test_gate.rc; nohup caffeinate -is bash -lc 'cd ~/anodizer && CARGO_BUILD_JOBS=4 cargo test --workspace --no-fail-fast > mac_test_gate.log 2>&1; echo \$? > mac_test_gate.rc' >/dev/null 2>&1 &" >"$CACHE/launch-mbp.err" 2>&1
+  ssh mbp "set -e; cd ~; [ -d anodizer/.git ] || git clone -q gate.bundle anodizer; cd anodizer; git fetch -q ~/gate.bundle HEAD; git checkout -q -f $SHA; [ \"\$(git rev-parse HEAD)\" = $SHA ]; rm -f mac_test_gate.rc; nohup caffeinate -is bash -lc 'cd ~/anodizer && CARGO_BUILD_JOBS=4 bash .claude/scripts/test-os-suite.sh > mac_test_gate.log 2>&1; echo \$? > mac_test_gate.rc' >/dev/null 2>&1 &" >"$CACHE/launch-mbp.err" 2>&1
 }
 poll_mbp() { ssh mbp "cat ~/anodizer/mac_test_gate.rc 2>/dev/null" 2>/dev/null | rc_of; }
 
@@ -104,13 +106,16 @@ for h in $HOSTS; do
   esac
 done
 
-# Local leg runs while the remote builds churn. `cargo test` (not nextest) to
-# match the remotes — identical coverage incl. doctests on every leg.
+# Local leg runs while the remote builds churn. Delegates to the shared
+# per-host runner (`test-os-suite.sh`): nextest where present (process-per-test
+# — avoids the `cargo test` shared-process ETXTBSY flake) plus a `cargo test
+# --doc` pass, else plain `cargo test`. Same script the remotes run, so every
+# leg applies an identical runner policy.
 if [ "${TEST_OS_SKIP_LOCAL:-0}" = 1 ]; then
   R[local]="SKIP(opt-out)"
 else
-  say "local: cargo test --workspace"
-  if cargo test --workspace --no-fail-fast; then R[local]=PASS; else R[local]=FAIL; fi
+  say "local: test-os-suite.sh"
+  if bash .claude/scripts/test-os-suite.sh; then R[local]=PASS; else R[local]=FAIL; fi
 fi
 
 # Poll each still-running remote host to completion.

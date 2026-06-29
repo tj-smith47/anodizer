@@ -38,8 +38,40 @@ $user = [Environment]::GetEnvironmentVariable('PATH', 'User')
 $env:PATH = "C:\upx-pinned;C:\Program Files\GnuPG\bin;C:\Program Files (x86)\WiX Toolset v3.14\bin;C:\Program Files (x86)\NSIS;C:\cosign-pinned;C:\Program Files\Git\cmd;C:\Program Files\Git\usr\bin;$machine;$user"
 $env:CARGO_BUILD_JOBS = '4'
 
+# Fail-fast if cargo is not reachable on the (now-pinned) PATH. A PowerShell
+# CommandNotFoundException does NOT update $LASTEXITCODE, so without this an
+# absent cargo would leave the nextest probe's $LASTEXITCODE at the prior
+# (git rev-parse, 0) value, enter the nextest branch, find nothing to run, and
+# report rc=0 — a PASS with zero tests. rc 201 is a sentinel distinct from the
+# 200 checkout-mismatch case.
+if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+  "=== ABORT: cargo not on PATH $(Get-Date -Format o) ===" | Out-File $log -Encoding ascii
+  '201' | Out-File $rcf -Encoding ascii
+  exit 1
+}
+
 "=== WIN TEST GATE sha=$head $(Get-Date -Format o) ===" | Out-File $log -Encoding ascii
-cargo test --workspace --no-fail-fast 2>&1 | Out-File $log -Append -Encoding ascii
-$code = $LASTEXITCODE
+
+# Prefer `cargo nextest` (process-per-test) over `cargo test`: the latter runs
+# every test as a thread in one process, so a fake-tool stub exec'd by
+# production code races sibling threads' fork and flakes with ETXTBSY under
+# load. nextest isolates each test in its own process; a second `cargo test
+# --doc` pass covers the doctests nextest skips. Falls back to plain
+# `cargo test` when nextest isn't installed. Mirrors test-os-suite.sh on the
+# bash legs; `*> $null` swallows the probe's "no such command" output.
+cargo nextest --version *> $null
+if ($LASTEXITCODE -eq 0) {
+  "[suite] cargo nextest run --workspace + cargo test --doc" | Out-File $log -Append -Encoding ascii
+  cargo nextest run --workspace --no-fail-fast 2>&1 | Out-File $log -Append -Encoding ascii
+  $code = $LASTEXITCODE
+  if ($code -eq 0) {
+    cargo test --workspace --doc 2>&1 | Out-File $log -Append -Encoding ascii
+    $code = $LASTEXITCODE
+  }
+} else {
+  "[suite] cargo nextest not found — falling back to cargo test --workspace" | Out-File $log -Append -Encoding ascii
+  cargo test --workspace --no-fail-fast 2>&1 | Out-File $log -Append -Encoding ascii
+  $code = $LASTEXITCODE
+}
 "=== DONE rc=$code $(Get-Date -Format o) ===" | Out-File $log -Append -Encoding ascii
 "$code" | Out-File $rcf -Encoding ascii

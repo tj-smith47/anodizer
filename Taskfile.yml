@@ -114,8 +114,9 @@ tasks:
 
   test:os:
     desc: "Run the workspace suite on every REACHABLE OS host (this box + winserver + mbp); offline hosts SKIP loudly; fail if any reachable host fails. Ships HEAD via git bundle (proves the un-pushed commit)."
-    # The local leg runs `cargo test`; guard tmpfs headroom like every other
-    # cargo task so a standalone `task test:os` can't OOM the linker.
+    # The local leg runs the workspace suite via test-os-suite.sh (nextest where
+    # present, else cargo test); guard tmpfs headroom like every other cargo
+    # task so a standalone `task test:os` can't OOM the linker.
     deps: [_check:tmp-headroom]
     cmds:
       - bash .claude/scripts/test-os.sh
