@@ -270,6 +270,9 @@ impl anodizer_core::Publisher for GemFuryPublisher {
         Ok(())
     }
 
+    /// No live probe: GemFury pushes are overwritable with a `DELETE` rollback,
+    /// and `requirements()` gates the push token — an invalid token fails the
+    /// first, recoverable step.
     fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         Ok(anodizer_core::PreflightCheck::Pass)
     }

@@ -41,22 +41,24 @@ use anodizer_core::stage::Stage;
 
 /// Build the linuxdeploy argument vector for one AppDir.
 ///
-/// The order mirrors helix's continuous-build invocation:
-/// `linuxdeploy --appdir <AppDir> -d <desktop> -i <icon> --output appimage`,
-/// with any user `extra_args` appended last.
-fn linuxdeploy_args(
-    appdir: &Path,
-    desktop: &Path,
-    icon: &Path,
-    extra_args: &[String],
-) -> Vec<OsString> {
+/// `linuxdeploy --appdir <AppDir> -d <desktop> --output appimage`, with any
+/// user `extra_args` appended last.
+///
+/// The icon is deliberately NOT passed via `-i`: [`assemble_appdir`] pre-places
+/// it into the AppDir's icon-theme tree under the exact `Icon=` name from the
+/// desktop file, and linuxdeploy resolves it from there. Passing `-i` instead
+/// would (a) deploy under the icon FILE's basename, which need not match the
+/// desktop `Icon=` key, and (b) hard-reject any icon whose pixel resolution is
+/// outside linuxdeploy's fixed accepted set (max 512x512) — a perfectly
+/// ordinary 1024x1024 source icon would abort the build. An icon already
+/// present in the theme tree is not resolution-checked, so pre-placing accepts
+/// any size verbatim.
+fn linuxdeploy_args(appdir: &Path, desktop: &Path, extra_args: &[String]) -> Vec<OsString> {
     let mut args: Vec<OsString> = vec![
         "--appdir".into(),
         appdir.as_os_str().to_os_string(),
         "-d".into(),
         desktop.as_os_str().to_os_string(),
-        "-i".into(),
-        icon.as_os_str().to_os_string(),
         "--output".into(),
         "appimage".into(),
     ];
@@ -68,20 +70,28 @@ fn linuxdeploy_args(
 
 /// Build the env map linuxdeploy reads for one AppImage.
 ///
-/// `VERSION` / `ARCH` / `APP` / `OUTPUT` are always set; `UPDATE_INFORMATION`
-/// is set only when `update_information` is configured (absent otherwise, so
-/// the AppImage carries no zsync metadata — matching linuxdeploy's default).
+/// `VERSION` / `ARCH` / `APP` are always set, plus the output filename under
+/// BOTH `OUTPUT` (legacy) and `LDAI_OUTPUT` (the appimage plugin's current
+/// name for it) so the plugin writes the AppImage directly under `out_filename`
+/// in linuxdeploy's cwd. The plugin is selected by the `--output appimage` CLI
+/// arg (see [`linuxdeploy_args`]); `OUTPUT` is the output FILENAME, not a plugin
+/// selector — setting it to `appimage` makes the plugin emit a file literally
+/// named `appimage` with no `.AppImage` extension. `UPDATE_INFORMATION` is set
+/// only when configured (absent otherwise, so the AppImage carries no zsync
+/// metadata — matching linuxdeploy's default).
 fn linuxdeploy_env(
     version: &str,
     arch: &str,
     app: &str,
+    out_filename: &str,
     update_information: Option<&str>,
 ) -> Vec<(String, String)> {
     let mut env = vec![
         ("VERSION".to_string(), version.to_string()),
         ("ARCH".to_string(), arch.to_string()),
         ("APP".to_string(), app.to_string()),
-        ("OUTPUT".to_string(), "appimage".to_string()),
+        ("OUTPUT".to_string(), out_filename.to_string()),
+        ("LDAI_OUTPUT".to_string(), out_filename.to_string()),
     ];
     if let Some(ui) = update_information {
         env.push(("UPDATE_INFORMATION".to_string(), ui.to_string()));
@@ -388,7 +398,44 @@ fn assemble_appdir(appdir: &Path, job: &AppImageJob) -> Result<(PathBuf, PathBuf
         )
     })?;
 
-    let icon_dst = appdir.join(file_basename(&job.icon_src, "app.png"));
+    // Icon: deploy under the EXACT `Icon=` name from the desktop entry (so
+    // linuxdeploy's theme resolution finds it) into both the icon-theme tree
+    // and the AppDir root. See [`linuxdeploy_args`] for why the stage places
+    // the icon itself instead of handing linuxdeploy a `-i` it may reject.
+    let icon_ext = job
+        .icon_src
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("png");
+    let icon_stem =
+        desktop_icon_name(&desktop_dst).unwrap_or_else(|| file_stem(&job.icon_src, &job.app_name));
+    let icon_file = format!("{icon_stem}.{icon_ext}");
+
+    let theme_apps_dir = appdir
+        .join("usr")
+        .join("share")
+        .join("icons")
+        .join("hicolor")
+        .join(icon_theme_subdir(&job.icon_src))
+        .join("apps");
+    std::fs::create_dir_all(&theme_apps_dir).with_context(|| {
+        format!(
+            "appimage: create icon theme dir {}",
+            theme_apps_dir.display()
+        )
+    })?;
+    let theme_icon = theme_apps_dir.join(&icon_file);
+    std::fs::copy(&job.icon_src, &theme_icon).with_context(|| {
+        format!(
+            "appimage: copy icon {} → {}",
+            job.icon_src.display(),
+            theme_icon.display()
+        )
+    })?;
+
+    // Root copy: linuxdeploy symlinks `.DirIcon` from the top-level icon, so a
+    // root copy named for the `Icon=` key matches its own successful-run layout.
+    let icon_dst = appdir.join(&icon_file);
     std::fs::copy(&job.icon_src, &icon_dst).with_context(|| {
         format!(
             "appimage: copy icon {} → {}",
@@ -402,6 +449,76 @@ fn assemble_appdir(appdir: &Path, job: &AppImageJob) -> Result<(PathBuf, PathBuf
     }
 
     Ok((desktop_dst, icon_dst))
+}
+
+/// Extract the `Icon=` value from a `.desktop` file so the AppDir icon is
+/// deployed under the exact name linuxdeploy resolves the entry against.
+///
+/// Returns the trimmed value with any trailing image extension stripped (the
+/// freedesktop `Icon=` key is conventionally a bare name); `None` when the file
+/// is unreadable or carries no non-empty `Icon=` key, in which case the caller
+/// falls back to a derived stem.
+fn desktop_icon_name(desktop: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(desktop).ok()?;
+    let raw = text
+        .lines()
+        .map(str::trim)
+        .find_map(|line| line.strip_prefix("Icon="))?
+        .trim();
+    let name = Path::new(raw)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(raw)
+        .trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// The freedesktop icon-theme subdirectory an icon belongs under: `scalable`
+/// for SVG, else `<W>x<H>` read from the PNG header, falling back to `256x256`
+/// when the dimensions can't be read.
+///
+/// linuxdeploy does not resolution-validate an icon already present in the
+/// AppDir's theme tree (unlike one passed via `-i`), so a non-standard size
+/// such as `1024x1024` is deployed verbatim — the property that lets the stage
+/// accept any source icon resolution.
+fn icon_theme_subdir(icon_src: &Path) -> String {
+    let ext = icon_src
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if ext == "svg" || ext == "svgz" {
+        return "scalable".to_string();
+    }
+    png_dimensions(icon_src)
+        .map(|(w, h)| format!("{w}x{h}"))
+        .unwrap_or_else(|| "256x256".to_string())
+}
+
+/// Read a PNG's pixel dimensions from its IHDR chunk (width then height, both
+/// big-endian u32 immediately after the 8-byte signature + 8-byte chunk
+/// header). `None` for a non-PNG or a file too short to carry an IHDR.
+///
+/// No image-decoding dependency: the IHDR sits at a fixed offset, so the two
+/// u32s are a direct slice read.
+fn png_dimensions(path: &Path) -> Option<(u32, u32)> {
+    const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.len() < 24 || &bytes[0..8] != PNG_SIGNATURE || &bytes[12..16] != b"IHDR" {
+        return None;
+    }
+    let w = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+    let h = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+    Some((w, h))
+}
+
+/// The file stem of `path` (basename without extension), or `fallback` when it
+/// has none.
+fn file_stem(path: &Path, fallback: &str) -> String {
+    path.file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or(fallback)
+        .to_string()
 }
 
 /// Copy one [`AppDirEntry`] (file or directory) into the AppDir at its `dst`.
@@ -560,7 +677,10 @@ fn execute_appimage_job(
 ) -> Result<Artifact> {
     let thread_log = anodizer_core::log::StageLogger::new("appimage", verbosity);
 
-    let (desktop_dst, icon_dst) = assemble_appdir(&job.appdir_root, job)?;
+    // The root icon path is returned for parity with the staged layout but is
+    // not handed to linuxdeploy: the icon is resolved from the pre-placed theme
+    // tree (see [`linuxdeploy_args`]).
+    let (desktop_dst, _icon_dst) = assemble_appdir(&job.appdir_root, job)?;
 
     // Reproducibility: pin every staged file's mtime to SOURCE_DATE_EPOCH so
     // the squashfs payload is byte-stable across runs (mirrors the sibling
@@ -569,21 +689,37 @@ fn execute_appimage_job(
         pin_appdir_mtimes(&job.appdir_root, epoch)?;
     }
 
-    let args = linuxdeploy_args(&job.appdir_root, &desktop_dst, &icon_dst, &job.extra_args);
+    // linuxdeploy runs with the AppDir's parent as cwd: it writes the output
+    // `.AppImage` into the current dir, so a per-job dir keeps parallel jobs
+    // from clobbering one another's output (each AppDir lives under
+    // `dist/appimage/<id>/<platform>/`). The `--appdir` / `-d` paths it
+    // receives MUST be relative to THAT cwd, not the process cwd: `appdir_root`
+    // is `dist/appimage/<id>/<platform>/<app>.AppDir` relative to the worktree
+    // root, and passing it verbatim while cwd is its own parent would re-resolve
+    // it under work_dir and double the prefix — linuxdeploy then can't find the
+    // staged AppDir / desktop file. The AppDir basename and
+    // `<basename>/<desktop>` are the correct work_dir-relative forms.
+    let work_dir = job.appdir_root.parent().unwrap_or(&job.appdir_root);
+    let appdir_rel: PathBuf = job
+        .appdir_root
+        .file_name()
+        .map(PathBuf::from)
+        .unwrap_or_else(|| job.appdir_root.clone());
+    let desktop_rel = match desktop_dst.file_name() {
+        Some(name) => appdir_rel.join(name),
+        None => appdir_rel.clone(),
+    };
+    let args = linuxdeploy_args(&appdir_rel, &desktop_rel, &job.extra_args);
     let env = linuxdeploy_env(
         &job.version,
         &job.arch_token,
         &job.app_name,
+        &job.filename,
         job.update_information.as_deref(),
     );
 
     thread_log.status(&format!("creating AppImage {}", job.filename));
 
-    // Run with the AppDir's parent as cwd: linuxdeploy writes the output
-    // `.AppImage` into the current dir, so a per-job dir keeps parallel jobs
-    // from clobbering one another's output (each AppDir lives under
-    // `dist/appimage/<id>/<platform>/`).
-    let work_dir = job.appdir_root.parent().unwrap_or(&job.appdir_root);
     let mut command = Command::new("linuxdeploy");
     command.args(&args).current_dir(work_dir);
     for (k, v) in &env {

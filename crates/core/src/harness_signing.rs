@@ -138,53 +138,112 @@ pub fn provision_ephemeral_keys(sde: i64) -> Result<EphemeralSigningKeys> {
     })
 }
 
-/// Render `path` as the string we pass to subprocess env vars. The
-/// runner's gpg on Windows is Git-for-Windows' MSYS2 build, which
-/// treats a leading drive-letter colon (`C:`) as a filename — it does
-/// not anchor an absolute path — so gpg prepends its CWD and the
-/// resulting path doesn't exist. MSYS expects `/c/...` instead. The
-/// backslash-separator misparse is the same root cause.
+/// Render `path` as the string we pass to gpg's subprocess env vars
+/// (`GNUPGHOME`, `GPG_KEY_PATH`) on the host the harness runs on.
+///
+/// Windows ships gpg in two builds whose accepted path conventions do
+/// not overlap, so a single static form cannot satisfy both:
+///   * Git-for-Windows' MSYS2 gpg understands only a POSIX drive root
+///     (`/c/Users/...`); a leading drive-letter colon (`C:`) is treated
+///     as a filename, so gpg anchors it to its CWD and the path doesn't
+///     exist.
+///   * native Gpg4win understands only the drive-letter form
+///     (`C:\` / `C:/`); a `/c/...` path is "No such file or directory".
+///
+/// We detect which build is on `PATH` ([`gpg_on_path_is_msys`], from
+/// `gpg --version`'s `Home:` line) and emit the matching form. The
+/// drive-letter forward-slash form is also what native cosign/openssl
+/// accept, so it is the correct default for every non-MSYS case.
+/// Non-Windows hosts pass the path through verbatim.
 pub fn path_for_subprocess_env(path: &Path) -> String {
     let raw = path.to_string_lossy().into_owned();
     if !cfg!(windows) {
         return raw;
     }
     let forward = crate::util::normalize_path_separators(&raw);
+    #[cfg(windows)]
+    {
+        if gpg_on_path_is_msys() {
+            return to_msys_drive_form(&forward);
+        }
+    }
+    forward
+}
+
+/// Rewrite a drive-letter forward-slash path (`C:/Users/x`) into the
+/// MSYS2 drive-root form (`/c/Users/x`). Any path without a `<drive>:/`
+/// prefix (already-POSIX, UNC, relative) is returned unchanged.
+#[cfg(any(windows, test))]
+fn to_msys_drive_form(forward: &str) -> String {
     let mut chars = forward.chars();
     match (chars.next(), chars.next(), chars.next()) {
         (Some(drive), Some(':'), Some('/')) if drive.is_ascii_alphabetic() => {
             format!("/{}/{}", drive.to_ascii_lowercase(), chars.as_str())
         }
-        _ => forward,
+        _ => forward.to_string(),
     }
+}
+
+/// Whether the `gpg` resolved on `PATH` is the MSYS2 (Git-for-Windows)
+/// build, which needs POSIX `/c/...` paths rather than drive-letter
+/// ones. Decided once and cached: `gpg --version` prints `Home: <dir>`
+/// in the build's own convention — MSYS reports a POSIX root
+/// (`/c/Users/...`), native Gpg4win reports a drive letter
+/// (`C:\Users\...`). A gpg that is absent or whose output can't be
+/// parsed defaults to "not MSYS" (the native/drive-letter form);
+/// `provision_gpg`'s own `gpg --version` precheck is what surfaces a
+/// genuinely missing gpg with an actionable error.
+#[cfg(windows)]
+fn gpg_on_path_is_msys() -> bool {
+    use std::sync::OnceLock;
+    static IS_MSYS: OnceLock<bool> = OnceLock::new();
+    *IS_MSYS.get_or_init(|| {
+        std::process::Command::new("gpg")
+            .arg("--version")
+            .output()
+            .ok()
+            .and_then(|out| {
+                String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .find_map(|line| line.trim().strip_prefix("Home:"))
+                    .map(|home| home.trim().starts_with('/'))
+            })
+            .unwrap_or(false)
+    })
 }
 
 #[cfg(test)]
 mod path_tests {
-    use super::path_for_subprocess_env;
+    use super::{path_for_subprocess_env, to_msys_drive_form};
     use std::path::Path;
 
     #[test]
     fn unix_path_passes_through() {
-        // Even compiled on Windows host, /tmp-style input has no drive
+        // Even compiled on a Windows host, /tmp-style input has no drive
         // letter to transform and returns unchanged content.
         let out = path_for_subprocess_env(Path::new("/tmp/foo/bar"));
         assert_eq!(out, "/tmp/foo/bar");
     }
 
-    #[cfg(windows)]
     #[test]
-    fn windows_drive_colon_becomes_msys_root() {
-        let out =
-            path_for_subprocess_env(Path::new(r"C:\Users\RUNNER~1\AppData\Local\Temp\agpg-x"));
-        assert_eq!(out, "/c/Users/RUNNER~1/AppData/Local/Temp/agpg-x");
+    fn msys_drive_form_rewrites_drive_root() {
+        // Pure transform (flavor-independent): drive-letter forward-slash
+        // input becomes the MSYS2 `/c/...` root with a lowercased drive.
+        assert_eq!(
+            to_msys_drive_form("C:/Users/RUNNER~1/AppData/Local/Temp/agpg-x"),
+            "/c/Users/RUNNER~1/AppData/Local/Temp/agpg-x"
+        );
+        assert_eq!(to_msys_drive_form("D:/foo"), "/d/foo");
     }
 
-    #[cfg(windows)]
     #[test]
-    fn windows_lowercases_drive_letter() {
-        let out = path_for_subprocess_env(Path::new(r"D:\foo"));
-        assert_eq!(out, "/d/foo");
+    fn msys_drive_form_passes_through_posix() {
+        // No `<drive>:/` prefix => returned unchanged (native gpg + cosign
+        // consume this drive-letter/POSIX form directly).
+        assert_eq!(
+            to_msys_drive_form("/already/posix/path"),
+            "/already/posix/path"
+        );
     }
 }
 

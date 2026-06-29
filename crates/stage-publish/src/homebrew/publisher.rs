@@ -443,8 +443,55 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         Ok(())
     }
 
-    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
-        Ok(anodizer_core::PreflightCheck::Pass)
+    /// Probe every active tap repo (formula + cask) for existence + push scope
+    /// before any publisher runs: a missing tap or a token without push access
+    /// fails the `git push` after sibling publishers may already have shipped.
+    fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        // Best-effort pre-publish gate uses the shallow probe policy.
+        let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let mut acc = anodizer_core::PreflightCheck::Pass;
+        for c in anodizer_core::env_preflight::crate_universe(&ctx.config) {
+            let Some(h) = c.publish.as_ref().and_then(|p| p.homebrew.as_ref()) else {
+                continue;
+            };
+            if crate::publisher_helpers::entry_inactive(
+                ctx,
+                None,
+                h.skip_upload.as_ref(),
+                h.if_condition.as_deref(),
+            ) {
+                continue;
+            }
+            acc = crate::publisher_preflight::merge(
+                acc,
+                crate::publisher_preflight::github_repo_config_check(
+                    ctx,
+                    h.repository.as_ref(),
+                    "HOMEBREW_TAP_TOKEN",
+                    &policy,
+                ),
+            );
+        }
+        for cask in ctx.config.homebrew_casks.iter().flatten() {
+            if crate::publisher_helpers::entry_inactive(
+                ctx,
+                None,
+                cask.skip_upload.as_ref(),
+                cask.if_condition.as_deref(),
+            ) {
+                continue;
+            }
+            acc = crate::publisher_preflight::merge(
+                acc,
+                crate::publisher_preflight::github_repo_config_check(
+                    ctx,
+                    cask.repository.as_ref(),
+                    "HOMEBREW_TAP_TOKEN",
+                    &policy,
+                ),
+            );
+        }
+        Ok(acc)
     }
 }
 

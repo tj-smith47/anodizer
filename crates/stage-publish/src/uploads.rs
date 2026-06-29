@@ -401,6 +401,27 @@ pub(crate) fn collect_upload_targets(ctx: &Context) -> Vec<ArtifactoryTarget> {
     out
 }
 
+/// Reduce a target URL template to its `scheme://host[:port]` origin, dropping
+/// any userinfo, path, query, and fragment. Operates on the RAW template so a
+/// `{{ .Version }}` (or any other expression) in the PATH is discarded before
+/// rendering — only the scheme + authority survive, and those are the parts a
+/// reachability probe needs. Returns `None` when the string has no `scheme://`
+/// authority to extract (a relative/path-only target a probe cannot use).
+fn target_origin(target: &str) -> Option<String> {
+    let (scheme, rest) = target.split_once("://")?;
+    if scheme.is_empty() {
+        return None;
+    }
+    // Authority runs to the first path/query/fragment delimiter.
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or(rest);
+    // Drop any `user:pass@` userinfo prefix — only host[:port] is probed.
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    if host_port.is_empty() {
+        return None;
+    }
+    Some(format!("{scheme}://{host_port}"))
+}
+
 // ---------------------------------------------------------------------------
 // UploadsPublisher (Publisher trait wrapper)
 // ---------------------------------------------------------------------------
@@ -442,12 +463,52 @@ impl anodizer_core::Publisher for UploadsPublisher {
     }
 
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        // Mirrors `resolve_http_credentials` (anonymous_ok = true): per entry,
-        // each of username/password comes from the templated config value or
-        // the `UPLOAD_<NAME>_{USERNAME,SECRET}` env pair. Anonymous entries
-        // (neither config value set) demand nothing.
+        use anodizer_core::env_preflight::template_env_refs;
         let mut out = Vec::new();
         for entry in ctx.config.uploads.iter().flatten() {
+            // Endpoint reachability is emitted for EVERY entry carrying a
+            // `target`, regardless of `skip`/`if` — exactly mirroring the blob
+            // stage, which probes its endpoint unconditionally. This is
+            // load-bearing, not incidental: the standalone `preflight` command
+            // forces `snapshot = true` so the canary can run from any untagged
+            // commit, so an entry that skips on `{{ .IsSnapshot }}` (the real
+            // `.anodizer.yaml` mirror does) would look INACTIVE under that
+            // artificial snapshot and hide the very reachability gap this gate
+            // exists to catch — on the irreversible publish leg, after a tag is
+            // cut. The probe only verifies the SERVICE answers; it is
+            // independent of whether THIS run would actually upload, so gating
+            // it on the entry's skip state is wrong.
+            if !entry.target.is_empty() {
+                // Host vars the target interpolates (e.g. `{{ Env.HOST }}`) must
+                // be present for the endpoint to resolve; `default(`-guarded
+                // refs are already filtered out by `template_env_refs`.
+                let refs = template_env_refs(&entry.target);
+                if !refs.is_empty() {
+                    out.push(anodizer_core::EnvRequirement::EnvAllOf { vars: refs });
+                }
+                // Reduce to scheme://host[:port] from the RAW template, then
+                // render ONLY that origin. A generic upload target is a
+                // per-version object path (`…/anodizer/{{ .Version }}/`), and at
+                // preflight time — before the tag is cut — `{{ .Version }}` is
+                // unresolved; excluding the path by construction means an empty
+                // Version can never break host extraction, while rendering the
+                // origin keeps a templated host (`{{ Env.HOST }}`) resolvable.
+                if let Some(origin_template) = target_origin(&entry.target)
+                    && let Ok(rendered) = ctx.render_template(&origin_template)
+                    && !rendered.trim().is_empty()
+                {
+                    out.push(anodizer_core::EnvRequirement::Endpoint { url: rendered });
+                }
+            }
+
+            // Credentials are gated on the entry being ACTIVE: a skipped /
+            // if-false entry never authenticates this run, so demanding its
+            // creds would false-fail. Mirrors `resolve_http_credentials`
+            // (anonymous_ok = true): each of username/password comes from the
+            // templated config value or the `UPLOAD_<NAME>_{USERNAME,SECRET}`
+            // env pair, and anonymous entries (neither config value set) demand
+            // nothing — a hard `EnvAllOf` would false-fail a valid anonymous
+            // (public mirror / pre-signed URL) setup.
             if crate::publisher_helpers::entry_inactive(
                 ctx,
                 entry.skip.as_ref(),
@@ -583,6 +644,9 @@ impl anodizer_core::Publisher for UploadsPublisher {
         Ok(())
     }
 
+    /// No live probe: uploads are overwritable with a `DELETE` rollback, and
+    /// `requirements()` already gates the credential and probes endpoint
+    /// reachability — invalid creds fail the first, recoverable step.
     fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         Ok(anodizer_core::PreflightCheck::Pass)
     }
@@ -811,6 +875,168 @@ mod tests {
         let log = ctx.logger("uploads");
         let summary = publish_uploads(&ctx, &log).expect("anonymous upload allowed");
         assert_eq!(summary.uploaded, 0);
+    }
+
+    // --- requirements (preflight endpoint reachability) ---------------------
+
+    /// Collect the `Endpoint` URLs the publisher's `requirements` emits for a
+    /// config (dry-run ctx with NO Version seeded — the pre-tag state).
+    fn endpoint_reqs(config: Config) -> Vec<String> {
+        let ctx = dry_run_ctx(config);
+        anodizer_core::Publisher::requirements(&UploadsPublisher::new(), &ctx)
+            .into_iter()
+            .filter_map(|r| match r {
+                anodizer_core::EnvRequirement::Endpoint { url } => Some(url),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// A configured upload target yields an `Endpoint` reachability requirement
+    /// reduced to `scheme://host[:port]` — the path (and its unresolved
+    /// `{{ .Version }}`) is stripped. No Version is seeded, exactly as at
+    /// preflight time before a tag is cut.
+    #[test]
+    fn requirements_emit_host_only_endpoint() {
+        let mut config = Config::default();
+        config.uploads = Some(vec![UploadConfig {
+            name: Some("jarvispro".to_string()),
+            target: "http://api-server.jarvispro.svc.cluster.local:8478/anodizer/{{ .Version }}/"
+                .to_string(),
+            ..Default::default()
+        }]);
+        let endpoints = endpoint_reqs(config);
+        assert_eq!(
+            endpoints,
+            vec!["http://api-server.jarvispro.svc.cluster.local:8478".to_string()],
+            "endpoint must be the scheme://host:port origin, path stripped"
+        );
+        let url = &endpoints[0];
+        assert!(
+            !url.contains("/anodizer"),
+            "path leaked into endpoint: {url}"
+        );
+        assert!(
+            !url.contains("{{") && !url.contains("Version"),
+            "unresolved Version leaked into endpoint: {url}"
+        );
+    }
+
+    /// An entry with an empty `target` contributes no `Endpoint` (nothing to
+    /// probe).
+    #[test]
+    fn requirements_no_target_emits_no_endpoint() {
+        let mut config = Config::default();
+        config.uploads = Some(vec![UploadConfig {
+            name: Some("mirror".to_string()),
+            target: String::new(),
+            ..Default::default()
+        }]);
+        assert!(
+            endpoint_reqs(config).is_empty(),
+            "an empty target must not emit an Endpoint"
+        );
+    }
+
+    /// A RESOLVED `{{ .Version }}` in the path is still excluded from the
+    /// endpoint — host extraction reduces to the origin regardless of whether
+    /// the path renders.
+    #[test]
+    fn requirements_endpoint_excludes_resolved_version_path() {
+        let mut config = Config::default();
+        config.uploads = Some(vec![UploadConfig {
+            name: Some("mirror".to_string()),
+            target: "https://mirror.example.com:9000/anodizer/{{ .Version }}/sub".to_string(),
+            ..Default::default()
+        }]);
+        // Version IS seeded here (1.2.3); the endpoint must still be host-only.
+        let ctx = dry_run_ctx_versioned(config);
+        let endpoints: Vec<String> =
+            anodizer_core::Publisher::requirements(&UploadsPublisher::new(), &ctx)
+                .into_iter()
+                .filter_map(|r| match r {
+                    anodizer_core::EnvRequirement::Endpoint { url } => Some(url),
+                    _ => None,
+                })
+                .collect();
+        assert_eq!(
+            endpoints,
+            vec!["https://mirror.example.com:9000".to_string()]
+        );
+        assert!(
+            !endpoints[0].contains("1.2.3"),
+            "resolved Version leaked into endpoint: {}",
+            endpoints[0]
+        );
+    }
+
+    /// A host var the target interpolates (`{{ .Env.HOST }}`) is emitted as an
+    /// `EnvAllOf` requirement so it is validated up front — even when the
+    /// endpoint render is deferred because the var is not yet set.
+    #[test]
+    fn requirements_emit_env_ref_for_templated_host() {
+        let mut config = Config::default();
+        config.uploads = Some(vec![UploadConfig {
+            name: Some("dyn".to_string()),
+            target: "https://{{ .Env.UPLOAD_HOST }}/anodizer/{{ .Version }}/".to_string(),
+            ..Default::default()
+        }]);
+        let ctx = dry_run_ctx(config);
+        let has_host_var = anodizer_core::Publisher::requirements(&UploadsPublisher::new(), &ctx)
+            .into_iter()
+            .any(|r| match r {
+                anodizer_core::EnvRequirement::EnvAllOf { vars } => {
+                    vars.iter().any(|v| v == "UPLOAD_HOST")
+                }
+                _ => false,
+            });
+        assert!(
+            has_host_var,
+            "a templated host var must be validated via EnvAllOf"
+        );
+    }
+
+    /// A `skip`-ed entry STILL emits its endpoint — reachability is independent
+    /// of the entry's skip state, exactly like the blob stage. This is the
+    /// load-bearing case: the standalone `preflight` command forces
+    /// `snapshot = true`, so the real mirror's `skip: {{ .IsSnapshot }}` would
+    /// otherwise mark the entry inactive and hide the reachability gap the gate
+    /// exists to catch. The entry's CREDENTIALS, by contrast, stay gated (a
+    /// skipped entry never authenticates) — asserted separately below.
+    #[test]
+    fn requirements_skipped_entry_still_emits_endpoint() {
+        let mut config = Config::default();
+        config.uploads = Some(vec![UploadConfig {
+            name: Some("mirror".to_string()),
+            target: "https://mirror.example.com/anodizer/{{ .Version }}/".to_string(),
+            // Mirrors the real config's snapshot guard; preflight forces
+            // snapshot=true, so this evaluates truthy → entry "inactive".
+            skip: Some(StringOrBool::Bool(true)),
+            // A credential the skipped entry must NOT be required to provide.
+            username: Some("{{ .Env.MIRROR_USER }}".to_string()),
+            password: Some("{{ .Env.MIRROR_PASS }}".to_string()),
+            ..Default::default()
+        }]);
+        let reqs =
+            anodizer_core::Publisher::requirements(&UploadsPublisher::new(), &dry_run_ctx(config));
+        assert!(
+            reqs.iter().any(|r| matches!(
+                r,
+                anodizer_core::EnvRequirement::Endpoint { url } if url == "https://mirror.example.com"
+            )),
+            "a skipped entry must STILL emit its endpoint: {reqs:?}"
+        );
+        // Its credentials are suppressed (the entry is skip-inactive). The
+        // target carries no `{{ Env.* }}`, so the only way a `MIRROR_*` var
+        // could surface is the cred cascade — which must stay gated.
+        assert!(
+            !reqs.iter().any(|r| matches!(
+                r,
+                anodizer_core::EnvRequirement::EnvAllOf { vars }
+                    if vars.iter().any(|v| v.contains("MIRROR_"))
+            )),
+            "a skipped entry must NOT demand its credentials: {reqs:?}"
+        );
     }
 
     #[test]

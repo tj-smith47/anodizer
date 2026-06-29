@@ -779,6 +779,9 @@ impl anodizer_core::Publisher for DockerhubPublisher {
         Ok(())
     }
 
+    /// No live probe: this publisher only syncs the repo description (with a
+    /// description-restore rollback), and `requirements()` gates the login
+    /// credential — an invalid login fails the first, recoverable step.
     fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         Ok(anodizer_core::PreflightCheck::Pass)
     }

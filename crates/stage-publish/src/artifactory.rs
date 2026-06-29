@@ -1600,6 +1600,9 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
         Ok(())
     }
 
+    /// No live probe: Artifactory versions are overwritable with a `DELETE`
+    /// rollback, and `requirements()` gates the per-entry credential — invalid
+    /// creds fail the first, recoverable step.
     fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         Ok(anodizer_core::PreflightCheck::Pass)
     }

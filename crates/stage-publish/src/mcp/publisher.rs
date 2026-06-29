@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anodizer_core::retry::{HttpError, SuccessClass, retry_http_blocking};
+use anodizer_core::retry::{SuccessClass, http_status, retry_http_blocking};
 use anodizer_core::url::percent_encode_unreserved;
 use anyhow::Context as _;
 
@@ -144,11 +144,7 @@ fn rollback_one_target(
             Ok(RollbackOutcome::Restored)
         }
         Err(err) => {
-            // Walk the anyhow chain looking for HttpError to extract the HTTP status.
-            let status = err
-                .chain()
-                .find_map(|e| e.downcast_ref::<HttpError>().map(|h| h.status))
-                .unwrap_or(0);
+            let status = http_status(&err);
 
             let reason = match status {
                 501 => format!(
@@ -298,8 +294,44 @@ impl anodizer_core::Publisher for McpPublisher {
         Ok(())
     }
 
-    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
-        Ok(anodizer_core::PreflightCheck::Pass)
+    /// Validate the registry credential before any irreversible publisher runs
+    /// by performing the same auth round-trip the publish path does
+    /// (`provider.login()` + `get_token()`). A definitive registry rejection
+    /// (401/403) blocks; an indeterminate outcome (missing OIDC context off a
+    /// runner, transport error) warns rather than false-blocking a config that
+    /// is valid in its real environment.
+    fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        use anodizer_core::PreflightCheck;
+        let mcp_rendered = match super::render_mcp_config(ctx)? {
+            super::McpRenderOutcome::Rendered(cfg) => *cfg,
+            super::McpRenderOutcome::Skipped(_) => return Ok(PreflightCheck::Pass),
+        };
+        // Best-effort pre-publish gate uses the shallow probe policy.
+        let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let registry_url = ctx
+            .render_template(super::resolve_registry_url(&mcp_rendered))
+            .unwrap_or_else(|_| super::resolve_registry_url(&mcp_rendered).to_string());
+        let provider = provider_for(
+            mcp_rendered.auth.method,
+            &registry_url,
+            &mcp_rendered.auth.token,
+            &policy,
+        );
+        let probe = provider.login().and_then(|()| provider.get_token());
+        Ok(match probe {
+            Ok(_) => PreflightCheck::Pass,
+            Err(err) => {
+                let status = http_status(&err);
+                match status {
+                    401 | 403 => PreflightCheck::Blocker(format!(
+                        "mcp registry rejected the credential (HTTP {status})"
+                    )),
+                    _ => {
+                        PreflightCheck::Warning(format!("could not verify mcp credential: {err:#}"))
+                    }
+                }
+            }
+        })
     }
 
     fn skips_on_nightly(&self) -> bool {

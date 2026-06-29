@@ -28,79 +28,86 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # det_stages: the harness `--stages=` list is ALSO the build filter —
-        # any produce-stage not named lands in the child release's `--skip=`
-        # complement and never builds. Each installer is therefore routed to
-        # the shard that already holds its payload binary, because Linux cannot
-        # cross-compile a darwin/windows-msvc binary (the very reason this
-        # harness is sharded):
+        # The per-OS stage partition is no longer named here: the harness owns
+        # it. `anodize check determinism` with no `--stages` builds the
+        # OS-native partition via `default_stages_for_host()`
+        # (crates/cli/src/commands/check/determinism.rs) — the single source of
+        # truth for which producers each shard byte-verifies and WHY (the
+        # payload-binary shard routing AND the per-format reproducibility
+        # verdicts now live in that fn's doc comment). This keeps each
+        # installer on the shard that natively builds its payload binary
+        # (appbundle/dmg/pkg -> macOS, msi/nsis -> Windows, docker/appimage/
+        # flatpak/nfpm/... -> Linux) without a hand-written list that drifts.
         #
-        #   appbundle / dmg / pkg  -> macOS shard   (needs the darwin binary)
-        #   msi / nsis             -> Windows shards (need the windows binary)
-        #
-        # A stage that runs on a shard without its payload binary no-ops
-        # silently — exactly how these five formats shipped in NO release for
-        # so long (they were listed on the linux-only ubuntu shard, which
-        # produces no darwin/windows binary to package). So each shard lists
-        # the core produce set PLUS only the installers whose payload it
-        # natively builds. On the macOS shard appbundle precedes dmg/pkg so
-        # their `use: appbundle` finds a source `.app` artifact.
-        #
-        # Reproducibility verdict per format (the harness byte-compares the
-        # GATED ones and counts any drift as a regression; the ALLOWLISTED
-        # ones are intrinsically non-reproducible — see crates/core/src/
-        # determinism.rs seed_from_commit — and the harness excludes them from
-        # drift_count while still surfacing them in the report):
-        #
-        #   appbundle  GATED       pure file assembly, byte-reproducible
-        #                          (appbundle_is_byte_reproducible_across_time)
-        #   nsis       GATED       makensis honors SOURCE_DATE_EPOCH, byte-
-        #                          reproducible (nsis_setup_is_byte_-
-        #                          reproducible_across_time)
-        #   dmg        ALLOWLISTED hdiutil writes a fresh UDIF koly SegmentID
-        #                          GUID per run; native, non-reproducible
-        #   pkg        ALLOWLISTED macOS-native pkgbuild stamps a wall-clock
-        #                          xar TOC and ignores SOURCE_DATE_EPOCH
-        #   msi        ALLOWLISTED WiX regenerates a random PackageCode GUID +
-        #                          Created/LastModified (wixtoolset/issues#8978)
-        #
-        # Installer-tool provisioning is by-shard, driven by the action's
-        # `auto-install` (which reads .anodizer.yaml and installs each
-        # configured stage's tools). macOS runners ship hdiutil + pkgbuild
-        # built-in and appbundle needs no external tool, so the macOS shard
-        # keeps auto_install off — no install is needed and skipping it avoids
-        # unnecessary install risk. The Windows shards enable auto_install so
-        # the action provisions the msi + nsis tools: WiX v3 (candle+light, via
-        # the action's dialect-aware install — anodizer's packaging/anodizer.wxs
-        # is v3-dialect) and makensis. Because each installer stage is
-        # EXPLICITLY named in det_stages, the harness HARD-FAILS (not
-        # warn-skips) if its tool is missing — a silent skip is the exact
-        # false coverage that hid these formats.
-        #
-        # `docker` is Linux-only and present ONLY on the ubuntu shard. It
-        # drives the `--output=type=oci,rewrite-timestamp=true` BuildKit
-        # exporter and byte-compares the OCI tarball + image digest across
-        # runs, so a drifting docker image cannot ship undetected. The OCI
-        # exporter is unsupported by the default `docker` buildx driver, so
-        # the ubuntu shard provisions a `docker-container` driver below
-        # before the harness runs. Because docker is explicitly requested
-        # here, the harness HARD-FAILS (not warn-skips) if buildx is
-        # unreachable — a silent skip would be false coverage.
+        # The action runs the harness with `--require-tools`, so a missing
+        # OS-native tool HARD-FAILS the shard instead of warn-skipping — a
+        # silent skip is the exact false coverage that once hid the installer
+        # formats from every release. Installer-tool provisioning stays
+        # by-shard: the action's `auto-install` reads .anodizer.yaml and
+        # installs each configured stage's tools (macOS keeps it off — hdiutil
+        # + pkgbuild are built-in and appbundle needs none; Windows enables it
+        # for the WiX v3 + makensis toolchain), and the action separately
+        # provisions linuxdeploy + flatpak-builder for the Linux shard. The
+        # windows-aarch64 shard still needs its explicit cross `targets`.
         include:
           - os: ubuntu-latest
             shard: ubuntu-latest
             targets: ''
-            det_stages: 'build,source,upx,archive,nfpm,makeself,snapcraft,srpm,sbom,sign,checksum,docker'
             auto_install: 'true'
-          - { os: macos-latest,   shard: macos-latest,     targets: '', det_stages: 'build,source,upx,archive,sbom,sign,checksum,appbundle,dmg,pkg', auto_install: 'false' }
-          - { os: windows-latest, shard: windows-x86_64,   targets: 'x86_64-pc-windows-msvc',  det_stages: 'build,source,upx,archive,sbom,sign,checksum,msi,nsis', auto_install: 'true' }
-          - { os: windows-latest, shard: windows-aarch64,  targets: 'aarch64-pc-windows-msvc', det_stages: 'build,source,upx,archive,sbom,sign,checksum,msi,nsis', auto_install: 'true' }
+          - { os: macos-latest,   shard: macos-latest,     targets: '', auto_install: 'false' }
+          - { os: windows-latest, shard: windows-x86_64,   targets: 'x86_64-pc-windows-msvc',  auto_install: 'true' }
+          - { os: windows-latest, shard: windows-aarch64,  targets: 'aarch64-pc-windows-msvc', auto_install: 'true' }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           ref: ${{ inputs.head_sha }}
+
+      # macOS-14 runners ship ~14 GB free, but the darwin determinism build
+      # rebuilds the full pipeline twice (universal binary = both arches, then
+      # archive/sbom/sign/dmg/pkg) and `hdiutil` stages a temp R/W image before
+      # compressing, peaking above that and tipping the second run into the
+      # opaque `hdiutil: create failed - No space left on device`. The
+      # iOS/tvOS/watchOS simulator runtimes (tens of GB) and the Android SDK are
+      # never touched by a Rust + installer build, so reclaiming them is the
+      # safe, high-yield headroom the dmg peak needs. The harness's own
+      # peak-measured guard (crates/core/src/disk.rs) stays the backstop: if a
+      # run is still short it fails fast with the measured numbers rather than a
+      # corrupt release, so this step only needs to clear the common case.
+      - name: Reclaim disk for the darwin determinism build
+        if: matrix.os == 'macos-latest'
+        # Best-effort headroom only; the harness's peak-measured guard
+        # (crates/core/src/disk.rs) is the real gate. A bug in this reclaim
+        # script must never fail the shard — the build proceeds and, if disk is
+        # genuinely short, the guard fails fast with the measured numbers.
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          echo "::group::free space before reclaim"
+          df -h / /System/Volumes/Data 2>/dev/null || df -h /
+          echo "::endgroup::"
+          # Fixed runner paths only — no `${VAR:-default}` indirection, so a
+          # surprise env value can never widen the `rm -rf` target.
+          sudo rm -rf /Library/Developer/CoreSimulator/Profiles/Runtimes/* 2>/dev/null || true
+          xcrun simctl delete unavailable 2>/dev/null || true
+          sudo rm -rf /Users/runner/Library/Android/sdk 2>/dev/null || true
+          sudo rm -rf ~/Library/Caches/Homebrew ~/.cocoapods 2>/dev/null || true
+          # Drop the non-selected Xcode versions. The darwin build needs only the
+          # ACTIVE toolchain — clang, the macOS SDK, hdiutil and pkgbuild all come
+          # from it — so every other Xcode_*.app on the image is dead weight. Keep
+          # exactly the `xcode-select -p` toolchain; if its path can't be resolved,
+          # remove nothing (never risk deleting the live SDK).
+          active_xcode="$(xcode-select -p 2>/dev/null | sed 's#/Contents/Developer##')"
+          if [ -n "$active_xcode" ]; then
+            for xc in /Applications/Xcode*.app; do
+              [ -e "$xc" ] || continue
+              [ "$xc" = "$active_xcode" ] || sudo rm -rf "$xc" 2>/dev/null || true
+            done
+          fi
+          echo "::group::free space after reclaim"
+          df -h / /System/Volumes/Data 2>/dev/null || df -h /
+          echo "::endgroup::"
 
       # The harness's docker stage drives `--output=type=oci`, which the
       # default `docker` buildx driver cannot serve; provision a
@@ -116,7 +123,6 @@ jobs:
         with:
           determinism: 'true'
           determinism-targets: ${{ matrix.targets }}
-          determinism-stages: ${{ matrix.det_stages }}
           auto-install: ${{ matrix.auto_install }}
           preserve-dist: 'true'
           shard-label: ${{ matrix.shard }}

@@ -326,7 +326,155 @@ impl anodizer_core::Publisher for NpmPublisher {
         Ok(())
     }
 
-    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
-        Ok(anodizer_core::PreflightCheck::Pass)
+    /// Live pre-publish gate. npm has no companion state-query checker, so this
+    /// is its only guard against the two irreversible failure modes:
+    ///
+    /// * token invalid/expired — `GET {registry}/-/whoami` 401/403 ⇒ Blocker.
+    /// * version already published — `GET {registry}/{pkg}/{version}` 200 ⇒
+    ///   Warning (npm forbids republishing a version; unpublish is a 72h window).
+    ///
+    /// The token probe runs only when a token resolves: an OIDC-only entry has
+    /// no long-lived token to validate here (Trusted Publishing mints its
+    /// credential at publish time), so probing it would false-block.
+    fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        use crate::publisher_preflight::{
+            TokenAuth, merge, probe_token_auth, probe_version_published,
+        };
+        use anodizer_core::PreflightCheck;
+
+        // Shallow probe policy: best-effort pre-publish gate, not a write that
+        // must land (see `RetryPolicy::PREFLIGHT`).
+        let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let crate_name = ctx
+            .config
+            .crates
+            .first()
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| ctx.config.project_name.clone());
+        let version = ctx.version();
+
+        let mut acc = PreflightCheck::Pass;
+        for cfg in ctx.config.npms.iter().flatten() {
+            if crate::publisher_helpers::entry_inactive(
+                ctx,
+                cfg.skip.as_ref(),
+                None,
+                cfg.if_condition.as_deref(),
+            ) {
+                continue;
+            }
+            let Ok(registry) = crate::npm::manifest::resolve_registry(ctx, cfg) else {
+                continue;
+            };
+            let token = super::publish::resolve_token(ctx, cfg).unwrap_or_default();
+            if !token.is_empty() {
+                let outcome = match probe_token_auth(
+                    &format!("{registry}/-/whoami"),
+                    &format!("Bearer {token}"),
+                    "preflight: npm whoami",
+                    &policy,
+                ) {
+                    TokenAuth::Valid => PreflightCheck::Pass,
+                    TokenAuth::Invalid => {
+                        PreflightCheck::Blocker("npm token invalid or expired".into())
+                    }
+                    TokenAuth::Indeterminate(reason) => {
+                        PreflightCheck::Warning(format!("could not verify npm token ({reason})"))
+                    }
+                };
+                acc = merge(acc, outcome);
+            }
+            let name = crate::npm::manifest::resolve_name(cfg, &crate_name);
+            let url = format!(
+                "{registry}/{}/{version}",
+                super::publish::encode_package_path(name)
+            );
+            if probe_version_published(&url, "preflight: npm version", &policy) {
+                acc = merge(
+                    acc,
+                    PreflightCheck::Warning(format!(
+                        "npm {name}@{version} already published; republish will be rejected"
+                    )),
+                );
+            }
+        }
+        Ok(acc)
+    }
+}
+
+#[cfg(test)]
+mod preflight_tests {
+    use anodizer_core::Publisher;
+    use anodizer_core::config::{Config, NpmAuthMode, NpmConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+
+    fn http(status_line: &str, body: &str) -> &'static str {
+        Box::leak(
+            format!(
+                "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        )
+    }
+
+    fn ctx_with_npm(registry: String, token: &str) -> Context {
+        let npm = NpmConfig {
+            registry: Some(registry),
+            token: Some(token.to_string()),
+            auth: NpmAuthMode::Token,
+            name: Some("pkg".to_string()),
+            ..Default::default()
+        };
+        let config = Config {
+            project_name: "proj".to_string(),
+            npms: Some(vec![npm]),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx
+    }
+
+    /// End-to-end wiring proof: an invalid token must surface through the full
+    /// path (config enumeration → registry/token resolution → `/-/whoami`) as a
+    /// Blocker. The whoami probe is served 401; the follow-up version probe 404.
+    #[test]
+    fn npm_preflight_blocks_on_invalid_token() {
+        let (addr, _c) = spawn_oneshot_http_responder(vec![
+            http("401 Unauthorized", ""),
+            http("404 Not Found", ""),
+        ]);
+        let ctx = ctx_with_npm(format!("http://{addr}"), "bad-token");
+        match super::NpmPublisher::new()
+            .preflight(&ctx)
+            .expect("preflight ok")
+        {
+            anodizer_core::PreflightCheck::Blocker(m) => {
+                assert!(m.contains("npm token invalid"), "{m}")
+            }
+            other => panic!("expected Blocker, got {other:?}"),
+        }
+    }
+
+    /// A valid token + an already-published version must surface as a Warning
+    /// (not a Blocker): the publish would be rejected but the credential is good.
+    #[test]
+    fn npm_preflight_warns_on_already_published() {
+        let (addr, _c) = spawn_oneshot_http_responder(vec![
+            http("200 OK", r#"{"username":"me"}"#),
+            http("200 OK", r#"{"name":"pkg","version":"1.0.0"}"#),
+        ]);
+        let ctx = ctx_with_npm(format!("http://{addr}"), "good-token");
+        match super::NpmPublisher::new()
+            .preflight(&ctx)
+            .expect("preflight ok")
+        {
+            anodizer_core::PreflightCheck::Warning(m) => {
+                assert!(m.contains("already published"), "{m}")
+            }
+            other => panic!("expected Warning, got {other:?}"),
+        }
     }
 }

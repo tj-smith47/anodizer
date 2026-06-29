@@ -1674,9 +1674,73 @@ impl anodizer_core::Publisher for AurOurPublisher {
         Ok(())
     }
 
-    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
-        Ok(anodizer_core::PreflightCheck::Pass)
+    /// Probe AUR maintainer-key reachability before any publisher runs. The
+    /// `requirements()` check only proves the key *parses*; this proves the
+    /// remote *accepts* it. Warning-only: an overwritable git push is
+    /// recoverable and an SSH handshake is flaky.
+    fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        let entries = anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.aur.as_ref())
+            .filter(|a| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    a.skip.as_ref(),
+                    a.skip_upload.as_ref(),
+                    a.if_condition.as_deref(),
+                )
+            })
+            .map(|a| (a.private_key.as_deref(), a.git_ssh_command.as_deref()))
+            .collect::<Vec<_>>();
+        Ok(aur_ssh_auth_preflight(ctx, entries, "aur"))
     }
+}
+
+/// AUR host the maintainer SSH key authenticates against.
+pub(crate) const AUR_SSH_USER_HOST: &str = "aur@aur.archlinux.org";
+
+/// Best-effort SSH-auth preflight shared by the `aur` and `upstream-aur`
+/// publishers. Renders each entry's `(private_key, git_ssh_command)`, dedups by
+/// rendered key so a shared maintainer key handshakes once, and probes
+/// `aur@aur.archlinux.org`. Always degrades a failure to
+/// [`PreflightCheck::Warning`](anodizer_core::PreflightCheck) — never a hard
+/// block.
+pub(crate) fn aur_ssh_auth_preflight(
+    ctx: &Context,
+    entries: Vec<(Option<&str>, Option<&str>)>,
+    publisher: &str,
+) -> anodizer_core::PreflightCheck {
+    let log = ctx.logger("preflight");
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut acc = anodizer_core::PreflightCheck::Pass;
+    for (pk, ssh_cmd) in entries {
+        // A render failure is config-validation territory (surfaced by the
+        // publish path's own strict render); skip rather than warn here.
+        let Some(raw_key) = pk else { continue };
+        let Ok(key) = ctx.render_template(raw_key) else {
+            continue;
+        };
+        if key.is_empty() || !seen.insert(key.clone()) {
+            continue;
+        }
+        let rendered_ssh = ssh_cmd.and_then(|c| ctx.render_template(c).ok());
+        if let Err(e) = crate::util::ssh_auth_probe(
+            AUR_SSH_USER_HOST,
+            Some(&key),
+            rendered_ssh.as_deref(),
+            &format!("preflight: {publisher} ssh"),
+            &log,
+        ) {
+            log.verbose(&format!("{publisher} ssh auth probe failed: {e}"));
+            acc = crate::publisher_preflight::merge(
+                acc,
+                anodizer_core::PreflightCheck::Warning(format!(
+                    "AUR SSH key may not be authorized for {publisher}; the push could fail"
+                )),
+            );
+        }
+    }
+    acc
 }
 
 #[cfg(test)]

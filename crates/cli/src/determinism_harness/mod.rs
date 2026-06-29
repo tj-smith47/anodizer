@@ -82,7 +82,7 @@ use preserve::{
 /// pipeline and look at the artifacts that stage produces". The harness
 /// shells to `anodize release --snapshot --skip=...` which runs the full
 /// build-side pipeline; finer-grained per-stage gating is a follow-up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum StageId {
     Build,
     Source,
@@ -209,6 +209,20 @@ pub enum StageId {
     /// `use: appbundle` would find no appbundle artifact and silently
     /// produce nothing during a determinism run.
     Appbundle,
+    /// AppImage reproducibility probe (Linux).
+    ///
+    /// Drives the `anodizer_stage_appimage` crate. Primary gating tool is
+    /// `linuxdeploy`; skipped at the harness gate when it is not on `PATH`
+    /// so the harness stays usable on hosts (and CI shards) without the
+    /// AppImage toolchain installed.
+    Appimage,
+    /// Flatpak reproducibility probe (Linux).
+    ///
+    /// Drives the `anodizer_stage_flatpak` crate. Primary gating tool is
+    /// `flatpak-builder`; skipped at the harness gate when it is not on
+    /// `PATH` so the harness stays usable on hosts (and CI shards) without
+    /// the Flatpak toolchain installed.
+    Flatpak,
 }
 
 impl StageId {
@@ -234,6 +248,8 @@ impl StageId {
             StageId::Pkg => "pkg",
             StageId::Srpm => "srpm",
             StageId::Appbundle => "appbundle",
+            StageId::Appimage => "appimage",
+            StageId::Flatpak => "flatpak",
         }
     }
 }
@@ -251,10 +267,58 @@ impl StageId {
 /// why the harness's complement-set calculation subtracts them.
 const PRESERVE_SET: &[&str] = &["validate", "before", "templatefiles"];
 
+/// Whether a stage consumes the compiled release binary as input, so the
+/// child release pipeline MUST run the `build` stage to produce it.
+///
+/// `--stages=` is the harness's "what to diff" filter; it does not name
+/// `build` when the operator only wants, say, `appimage,flatpak`. But every
+/// binary-wrapping stage (AppImage, flatpak, nfpm, the OS installers, the
+/// archive/upx/sign/checksum chain, docker) needs a compiled binary on disk.
+/// If [`compute_extra_skip`] let the child skip `build` in that case, the run
+/// either trips [`anodizer_core::binary_artifact_guard`] (for guard-armed
+/// surfaces like `flatpak`/`nfpm`) or silently produces nothing — a false
+/// determinism pass. So `build` is force-retained whenever any requested stage
+/// returns `true` here.
+///
+/// Exhaustive by construction: a new [`StageId`] forces a deliberate
+/// classification here rather than defaulting into a silent skip.
+fn stage_requires_binary(stage: StageId) -> bool {
+    match stage {
+        // Source-only stages — they archive / package the source tree and
+        // need no compiled binary. (`cargo package` does its own build-less
+        // packaging; the source RPM ships a spec + source tarball, compiled
+        // later on the target.)
+        StageId::Source | StageId::Srpm | StageId::CargoPackage => false,
+        // `build` is itself the producer; when requested it is already kept
+        // by `requested_names`, so its answer here is immaterial.
+        StageId::Build => false,
+        // Everything else wraps, packs, compresses, signs, checksums, or
+        // images the compiled binary.
+        StageId::Upx
+        | StageId::Archive
+        | StageId::Nfpm
+        | StageId::Makeself
+        | StageId::Snapcraft
+        | StageId::Sbom
+        | StageId::Sign
+        | StageId::Checksum
+        | StageId::Docker
+        | StageId::Msi
+        | StageId::Nsis
+        | StageId::Dmg
+        | StageId::Pkg
+        | StageId::Appbundle
+        | StageId::Appimage
+        | StageId::Flatpak => true,
+    }
+}
+
 /// Compute the harness's child-subprocess "extra skip" set — every stage
 /// name in [`anodizer_core::context::VALID_RELEASE_SKIPS`] that is NOT:
 ///
 /// - in the operator's requested-stages list (`requested`), OR
+/// - `build` when any requested stage consumes a compiled binary
+///   (see [`stage_requires_binary`]), OR
 /// - in [`PRESERVE_SET`] (preamble helpers the pipeline needs), OR
 /// - already in
 ///   [`anodizer_core::determinism_runner::SIDE_EFFECT_STAGES`] (the
@@ -269,14 +333,21 @@ const PRESERVE_SET: &[&str] = &["validate", "before", "templatefiles"];
 /// `srpm`, `upx`, `makeself`, `notarize`. On macOS / Windows shards
 /// those binaries aren't installed; on Linux shards some are but the
 /// target artifacts don't exist on a non-native shard.
+///
+/// The `build` carve-out is what lets an EXPLICIT binary-consuming subset
+/// (`--stages=appimage,flatpak`, `--stages=nfpm`, ...) work without the
+/// operator also having to remember to type `build`: a required input the
+/// harness can derive is never imposed as operator config.
 fn compute_extra_skip(requested: &[StageId]) -> Vec<String> {
     use anodizer_core::context::VALID_RELEASE_SKIPS;
     use anodizer_core::determinism_runner::SIDE_EFFECT_STAGES;
     let requested_names: BTreeSet<&str> = requested.iter().map(|s| s.as_str()).collect();
+    let force_build = requested.iter().copied().any(stage_requires_binary);
     VALID_RELEASE_SKIPS
         .iter()
         .copied()
         .filter(|name| !requested_names.contains(name))
+        .filter(|name| !(force_build && *name == "build"))
         .filter(|name| !PRESERVE_SET.contains(name))
         .filter(|name| !SIDE_EFFECT_STAGES.contains(name))
         .map(str::to_string)
@@ -427,9 +498,29 @@ pub struct Harness {
     /// Full commit SHA the harness rebuilds. Each run does
     /// `git worktree add --detach <tmp> <commit>`.
     pub commit: String,
-    /// Stage subset under test. Surfaced into the report's
-    /// `stages_under_test` field.
+    /// Resolved stage set under test — the operator's `--stages=` subset
+    /// when given, otherwise [`super::commands::check::determinism::default_stages_for_host`]'s
+    /// OS-native partition. Surfaced into the report's `stages_under_test`
+    /// field and drives what the child release subprocess builds.
     pub stages: Vec<StageId>,
+    /// The stages the operator EXPLICITLY typed into `--stages=` (empty when
+    /// the set was resolved from the host default). Distinct from [`Self::stages`]
+    /// because tool-absence handling forks on operator intent: an explicitly
+    /// requested installer/docker stage whose tool is missing is a HARD ERROR
+    /// (a silent skip would be false coverage), whereas a host-default stage
+    /// whose tool is absent warn-skips so the harness stays usable on hosts
+    /// lacking that toolchain. Threaded into [`Harness::gate_installer_stages`]
+    /// and the docker fork.
+    pub explicit_stages: Vec<StageId>,
+    /// CI strict-tools mode (`--require-tools`). When `true`, the tool gate
+    /// treats the ENTIRE resolved stage set as hard-fail-on-missing — a
+    /// host-default OS-native producer whose tool is absent fails the run
+    /// instead of warn-skipping. CI sets this so a `default_stages_for_host`
+    /// run (no `--stages`) cannot silently under-cover a release the way the
+    /// removed per-shard `det_stages` naming used to guard against. When
+    /// `false` (dev default), only operator-typed [`Self::explicit_stages`]
+    /// hard-fail; host-default stages warn-skip so dev boxes stay usable.
+    pub require_tools: bool,
     /// Number of from-clean rebuilds to perform.
     pub runs: u32,
     /// `SOURCE_DATE_EPOCH` value to export into every run's subprocess
@@ -516,19 +607,27 @@ pub struct Harness {
     ///
     /// When `preserve_dist` is `None`, this field has no effect.
     pub crate_name: Option<String>,
-    /// WiX binaries the `msi` stage needs on `PATH`, resolved from the
-    /// project's `msis:` config by the SAME policy the build runs
-    /// (`anodizer_stage_msi::required_msi_tools`): WiX v3 → `candle`+`light`,
-    /// v4 → `wix`, the Linux path → `wixl`. Threaded into
-    /// [`Harness::gate_installer_stages`] so the gate's MSI tool requirement
-    /// can never drift from the version the build would use — the canonical
-    /// case being a `version: v3` config (candle+light) whose Windows shard a
-    /// hardcoded `wix` probe would have wrongly skipped.
+    /// External tool requirements that can only be known from the loaded
+    /// config, keyed by the stage that needs them. Threaded into
+    /// [`Harness::gate_installer_stages`] so the gate can hard-fail a
+    /// host-default producer whose backing binary is absent — never a
+    /// host-static guess that could drift from what the build actually spawns.
     ///
-    /// Empty when no active MSI config exists (the stage emits nothing, so it
-    /// carries no requirement). The dispatcher resolves it once from the
-    /// loaded config; tests inject the list directly.
-    pub msi_tools: Vec<String>,
+    /// Current members, both resolved once by the dispatcher from the loaded
+    /// config (tests insert entries directly):
+    /// - [`StageId::Msi`] → the WiX binaries the resolved version spawns,
+    ///   via `anodizer_stage_msi::required_msi_tools` (v3 → `candle`+`light`,
+    ///   v4 → `wix`, the Linux path → `wixl`). The canonical drift case is a
+    ///   `version: v3` config (candle+light) that a hardcoded `wix` probe
+    ///   would have wrongly skipped.
+    /// - [`StageId::Upx`] → each enabled `upx:` entry's binary (default
+    ///   `upx`), via `anodizer_stage_upx::required_upx_tools` (the same SSOT
+    ///   release preflight consults), so a configured host-default upx run
+    ///   hard-fails under `--require-tools` instead of warn-skipping.
+    ///
+    /// A stage absent from this map carries no config-resolved requirement and
+    /// falls back to the host-static probe table (or passes through).
+    pub config_tools: BTreeMap<StageId, Vec<String>>,
     /// Absolute free-space floor (bytes) the headroom guard requires before
     /// each determinism run starts. The SOLE gate before run-0 (no prior
     /// peak measured yet, so a liveness backstop, not a peak guarantee) and
@@ -551,15 +650,30 @@ pub struct Harness {
 }
 
 impl Harness {
-    /// Apply the installer-tool availability gate to `effective_stages`,
+    /// Apply the external-tool availability gate to `effective_stages`,
     /// returning the stages whose backing tool is reachable.
     ///
-    /// The pipeline would otherwise fail mid-run at `Command::new("wix")`
-    /// / `Command::new("rpmbuild")`, surfacing a confusing build error
-    /// instead of an honest "tool absent". An explicitly-requested
-    /// installer stage whose tool is missing is a HARD ERROR (a silent
-    /// skip would be false determinism coverage). A non-explicit missing
-    /// tool warns and drops the stage. Non-installer stages pass through.
+    /// Covers every tool-gated producer: the installer family (`wix`,
+    /// `rpmbuild`, `makensis`, …), the Linux package formats (`appimage`,
+    /// `flatpak`), and the config-resolved stages (`msi`'s WiX version,
+    /// `upx`'s binary — see [`Self::config_tools`]). The pipeline would
+    /// otherwise fail mid-run at `Command::new("wix")` /
+    /// `Command::new("rpmbuild")`, or — for `upx` — silently warn-skip the
+    /// stage at runtime, surfacing a confusing error or false coverage
+    /// instead of an honest "tool absent". A stage the operator EXPLICITLY
+    /// typed into `--stages` (tracked in [`Self::explicit_stages`]) whose
+    /// tool is missing is a HARD ERROR (a silent skip would be false
+    /// determinism coverage). A host-default stage (resolved into
+    /// [`Self::stages`] but never typed) whose tool is missing — e.g.
+    /// `appimage` without `linuxdeploy` on the Linux default — warns and
+    /// drops the stage so the harness stays usable. Stages with no tool
+    /// requirement pass through.
+    ///
+    /// Under [`Self::require_tools`] (CI's `--require-tools`) the hard-fail
+    /// contract widens to the ENTIRE resolved set: a host-default OS-native
+    /// producer with a missing tool fails the run too, closing the silent-
+    /// under-coverage hole that the removed per-shard `det_stages` naming
+    /// used to guard.
     ///
     /// `probe` is injected so the hard-fail wiring is unit-testable
     /// without depending on which tools the host has installed.
@@ -571,20 +685,36 @@ impl Harness {
     where
         P: Fn(&str) -> bool,
     {
-        let gate =
-            installer_detect::filter_available_with_probe(effective_stages, &self.msi_tools, probe);
-        let explicitly_skipped = gate.explicitly_skipped(&self.stages);
-        if !explicitly_skipped.is_empty() {
-            anyhow::bail!(installer_detect::missing_tool_error(&explicitly_skipped));
+        let gate = installer_detect::filter_available_with_probe(
+            effective_stages,
+            &self.config_tools,
+            probe,
+        );
+        // The hard-fail set: under `--require-tools` (CI) the WHOLE resolved
+        // stage set must have its tools present, so a host-default OS-native
+        // producer with a missing tool fails the run. Otherwise only the
+        // operator-typed explicit stages hard-fail; host-default stages warn-
+        // skip below so dev boxes without the full toolchain stay usable.
+        let hard_fail_set: &[StageId] = if self.require_tools {
+            effective_stages
+        } else {
+            &self.explicit_stages
+        };
+        let hard_failed = gate.explicitly_skipped(hard_fail_set);
+        if !hard_failed.is_empty() {
+            anyhow::bail!(installer_detect::missing_tool_error(
+                &hard_failed,
+                self.require_tools
+            ));
         }
         // Routed through the harness logger (not a bare eprintln) so
         // `-q` silences these like every other harness line. Only
-        // auto-included / non-explicit installer skips reach here now;
-        // an explicitly-requested missing tool already hard-failed above.
+        // non-hard-fail (host-default, no `--require-tools`) skips reach
+        // here; a hard-fail set member already errored above.
         let warn_log = StageLogger::new("check-determinism", self.verbosity);
         for (stage, tool) in &gate.skipped {
             warn_log.warn(&format!(
-                "skipped installer stage `{}` for this run — `{}` is not on PATH \
+                "skipped stage `{}` for this run — `{}` is not on PATH \
                  (no artifacts emitted)",
                 stage.as_str(),
                 tool
@@ -779,12 +909,17 @@ impl Harness {
                     })?;
             }
             if effective_stages.contains(&StageId::Docker) {
-                // `docker` is never auto-included: it is absent from the
-                // parser's default set and from the `installers` umbrella,
-                // so its presence here means the operator typed it. A gate
-                // that silently skips an explicitly-requested stage is
-                // false coverage, hence the hard-error skip contract below.
-                let docker_explicitly_requested = self.stages.contains(&StageId::Docker);
+                // Fork on operator INTENT, not mere set membership: the Linux
+                // host default now includes `docker`, so `self.stages` holds
+                // it on a bare run too. An explicitly typed `--stages=…,docker`
+                // (tracked in `explicit_stages`) — or any docker under CI's
+                // `--require-tools` — hard-fails when buildx is unreachable; a
+                // plain host-default docker warn-skips so the harness stays
+                // usable where Docker is absent. A gate that silently skips a
+                // required stage is false coverage, hence the hard-error
+                // contract for that case below.
+                let docker_explicitly_requested =
+                    self.require_tools || self.explicit_stages.contains(&StageId::Docker);
                 self.run_docker_stage(worktree.path(), &env, docker_explicitly_requested)
                     .with_context(|| {
                         format!("running docker stage for determinism run {}", run_idx)
@@ -1199,12 +1334,13 @@ impl Harness {
     ///   shard requests docker explicitly and provisions a
     ///   `docker-container` buildx driver, so this error fires only when
     ///   that provisioning regressed.
-    /// - `false` (auto-included): a warning through the harness logger (so
-    ///   `-q` silences it). The harness also runs on minimal images (e.g.
-    ///   the docs build container) that legitimately lack Docker; failing
-    ///   the whole harness there would block unrelated stages. `docker` is
-    ///   never in the default or `installers` stage sets today, so this
-    ///   branch is reserved for any future auto-inclusion path.
+    /// - `false` (host-default, not operator-typed): a warning through the
+    ///   harness logger (so `-q` silences it). `docker` IS in the Linux host
+    ///   default, so a bare `anodize check determinism` on a Linux box without
+    ///   `docker buildx` reaches this branch and warn-skips rather than failing
+    ///   the whole harness — the harness also runs on minimal images (e.g. the
+    ///   docs build container) that legitimately lack Docker, where failing
+    ///   would block unrelated stages.
     fn run_docker_stage(
         &self,
         worktree_path: &Path,
@@ -1895,6 +2031,8 @@ mod tests {
             repo_root: PathBuf::from("/tmp/unused"),
             commit: "deadbeef".into(),
             stages: vec![StageId::Archive, StageId::Checksum],
+            explicit_stages: vec![StageId::Archive, StageId::Checksum],
+            require_tools: false,
             runs: 2,
             sde: 1_715_000_000,
             allowlist: AllowList::default(),
@@ -1907,7 +2045,7 @@ mod tests {
             docker_backend_hint: None,
             crate_name: None,
             verbosity: Verbosity::Normal,
-            msi_tools: Vec::new(),
+            config_tools: BTreeMap::new(),
             disk_abs_floor_bytes: anodizer_core::disk::DEFAULT_ABS_FLOOR_BYTES,
             disk_safety_factor: anodizer_core::disk::DEFAULT_SAFETY_FACTOR,
         }
@@ -2638,12 +2776,15 @@ mod tests {
         assert_eq!(StageId::Checksum.as_str(), "checksum");
     }
 
-    /// Default `--stages=build,archive,sbom,sign,checksum` MUST drive
-    /// `compute_extra_skip` to emit produce-stages like `nfpm`, `nsis`,
-    /// `msi`, `dmg`, `pkg`, `snapcraft`, `source`, `flatpak`,
-    /// `appbundle`, `srpm`, `upx`, `makeself`, `notarize`. Without this,
-    /// the child release subprocess attempts e.g. `nfpm pkg --packager
-    /// deb` on a macOS shard and dies with `No such file or directory`.
+    /// A minimal requested set (`build,archive,sbom,sign,checksum`) MUST
+    /// drive `compute_extra_skip` to emit produce-stages like `nfpm`,
+    /// `nsis`, `msi`, `dmg`, `pkg`, `snapcraft`, `source`, `flatpak`,
+    /// `appbundle`, `srpm`, `upx`, `makeself`. Without this, the child
+    /// release subprocess attempts e.g. `nfpm pkg --packager deb` on a
+    /// macOS shard and dies with `No such file or directory`. `notarize`
+    /// is NOT expected here — it is a `SIDE_EFFECT_STAGES` member, added
+    /// to the child `--skip=` unconditionally by `compute_skip_arg`, so
+    /// `compute_extra_skip` deliberately filters it out of the complement.
     #[test]
     fn harness_extra_skip_with_default_stages_includes_nfpm() {
         let stages = vec![
@@ -2667,13 +2808,18 @@ mod tests {
             "srpm",
             "upx",
             "makeself",
-            "notarize",
         ] {
             assert!(
                 extra.iter().any(|s| s == name),
                 "compute_extra_skip(default-stages) missing `{name}`: {extra:?}"
             );
         }
+        // notarize is a side-effect stage now; compute_extra_skip must not
+        // double-list it (compute_skip_arg adds it from SIDE_EFFECT_STAGES).
+        assert!(
+            !extra.iter().any(|s| s == "notarize"),
+            "notarize must not appear in the complement set: {extra:?}"
+        );
     }
 
     /// PRESERVE_SET stages MUST never appear in the extra skip list,
@@ -2721,6 +2867,45 @@ mod tests {
             assert!(
                 !extra.iter().any(|s| s == name),
                 "compute_extra_skip dropped requested stage `{name}`: {extra:?}"
+            );
+        }
+    }
+
+    /// An EXPLICIT binary-consuming subset (`--stages=appimage,flatpak`)
+    /// MUST keep `build` enabled in the child pipeline even though the
+    /// operator did not type `build`. Skipping it produces no binary, which
+    /// trips the binary-artifact guard (flatpak is guard-armed) and aborts
+    /// the run before either AppImage or flatpak is ever diffed.
+    #[test]
+    fn harness_extra_skip_retains_build_for_binary_consuming_subset() {
+        for stages in [
+            vec![StageId::Appimage, StageId::Flatpak],
+            vec![StageId::Flatpak],
+            vec![StageId::Nfpm],
+            vec![StageId::Archive],
+        ] {
+            let extra = compute_extra_skip(&stages);
+            assert!(
+                !extra.iter().any(|s| s == "build"),
+                "compute_extra_skip skipped `build` for binary-consuming subset {stages:?}: {extra:?}"
+            );
+        }
+    }
+
+    /// A source-only subset (`--stages=source`) needs no compiled binary,
+    /// so `build` stays a normal skip candidate — the harness must not pay
+    /// for a full release build it does not diff.
+    #[test]
+    fn harness_extra_skip_skips_build_for_source_only_subset() {
+        for stages in [
+            vec![StageId::Source],
+            vec![StageId::CargoPackage],
+            vec![StageId::Srpm],
+        ] {
+            let extra = compute_extra_skip(&stages);
+            assert!(
+                extra.iter().any(|s| s == "build"),
+                "compute_extra_skip kept `build` for source-only subset {stages:?}: {extra:?}"
             );
         }
     }
@@ -2813,6 +2998,9 @@ mod tests {
     fn installer_explicit_request_missing_tool_is_hard_error() {
         let mut h = empty_harness();
         h.stages = vec![StageId::Build, StageId::Nsis];
+        // Operator typed these stages, so they enter the explicit set that the
+        // hard-fail gate keys on.
+        h.explicit_stages = h.stages.clone();
         let err = h
             .gate_installer_stages(&h.stages.clone(), |_tool| false)
             .expect_err(
@@ -2849,6 +3037,106 @@ mod tests {
         );
     }
 
+    /// Under CI's `--require-tools` the SAME host-default (non-explicit) stage
+    /// that `installer_non_explicit_missing_tool_warns_and_drops` lets warn-skip
+    /// must instead HARD-FAIL — closing the silent under-coverage hole left by
+    /// removing the per-shard `det_stages` naming. `explicit_stages` stays empty
+    /// (the operator typed nothing); only `require_tools` flips the contract.
+    #[test]
+    fn require_tools_hard_fails_host_default_missing_tool() {
+        let mut h = empty_harness();
+        h.explicit_stages = Vec::new();
+        h.require_tools = true;
+        let effective = vec![StageId::Build, StageId::Nsis];
+        let err = h
+            .gate_installer_stages(&effective, |_tool| false)
+            .expect_err("--require-tools must hard-fail a host-default missing tool");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("nsis") && msg.contains("makensis"),
+            "error must name the missing host-default stage and its tool: {msg}"
+        );
+    }
+
+    /// `--require-tools` must NOT punish a host-default stage whose tool IS
+    /// present — strict mode only fails on genuine absence, it does not force
+    /// every OS-native producer to exist regardless.
+    #[test]
+    fn require_tools_keeps_host_default_when_tool_present() {
+        let mut h = empty_harness();
+        h.explicit_stages = Vec::new();
+        h.require_tools = true;
+        let effective = vec![StageId::Build, StageId::Nsis];
+        let available = h
+            .gate_installer_stages(&effective, |_tool| true)
+            .expect("present tool must pass even under --require-tools");
+        assert_eq!(available, vec![StageId::Build, StageId::Nsis]);
+    }
+
+    /// Release-blocker regression: `upx` is a host-default producer whose
+    /// tool-presence was historically checked only by stage-upx's lenient
+    /// runtime guard, which warn-skips even under `--require-tools`. With its
+    /// resolved binary threaded into [`Harness::config_tools`], `--require-tools`
+    /// must HARD-FAIL a host-default upx run whose binary is absent — naming
+    /// the stage and the missing `upx` binary — instead of silently emitting
+    /// no compressed artifact (false determinism coverage). `explicit_stages`
+    /// stays empty (the operator typed nothing); only `require_tools` flips the
+    /// contract, exactly as it does for the installer family.
+    #[test]
+    fn require_tools_hard_fails_host_default_missing_upx() {
+        let mut h = empty_harness();
+        h.explicit_stages = Vec::new();
+        h.require_tools = true;
+        h.config_tools.insert(StageId::Upx, vec!["upx".to_string()]);
+        let effective = vec![StageId::Build, StageId::Upx];
+        let err = h
+            .gate_installer_stages(&effective, |_tool| false)
+            .expect_err("--require-tools must hard-fail a host-default missing upx");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("upx"),
+            "error must name the missing upx stage and its tool: {msg}"
+        );
+    }
+
+    /// The flip side: `--require-tools` must NOT punish a host-default upx run
+    /// whose binary IS present — the stage stays in the effective set and runs
+    /// in the child release subprocess.
+    #[test]
+    fn require_tools_keeps_host_default_upx_when_tool_present() {
+        let mut h = empty_harness();
+        h.explicit_stages = Vec::new();
+        h.require_tools = true;
+        h.config_tools.insert(StageId::Upx, vec!["upx".to_string()]);
+        let effective = vec![StageId::Build, StageId::Upx];
+        let available = h
+            .gate_installer_stages(&effective, |_tool| true)
+            .expect("present upx must pass even under --require-tools");
+        assert_eq!(available, vec![StageId::Build, StageId::Upx]);
+    }
+
+    /// Dev mode (no `--require-tools`, upx not in `explicit_stages`): a missing
+    /// upx binary must warn-and-DROP, never error — so a dev box lacking upx
+    /// stays usable, mirroring the installer family's host-default warn-skip.
+    /// The stage's own lenient runtime guard still applies in the child; here
+    /// the harness gate simply removes it from the effective set.
+    #[test]
+    fn dev_mode_warn_skips_host_default_upx_when_tool_absent() {
+        let mut h = empty_harness();
+        h.explicit_stages = Vec::new();
+        h.require_tools = false;
+        h.config_tools.insert(StageId::Upx, vec!["upx".to_string()]);
+        let effective = vec![StageId::Build, StageId::Upx];
+        let available = h
+            .gate_installer_stages(&effective, |_tool| false)
+            .expect("dev-mode host-default missing upx must warn-and-drop, not error");
+        assert_eq!(
+            available,
+            vec![StageId::Build],
+            "missing-tool upx must be dropped in dev mode; non-gated stages pass through"
+        );
+    }
+
     /// Release-blocker regression: a `version: v3` MSI (candle+light) on a
     /// Windows shard that HAS candle+light must NOT skip/hard-fail. Before
     /// the fix the gate hardcoded `wix` (the v4 CLI) for `msi` on Windows, so
@@ -2860,7 +3148,10 @@ mod tests {
         let mut h = empty_harness();
         h.stages = vec![StageId::Build, StageId::Msi];
         // Resolved v3 tool set; both probe as present.
-        h.msi_tools = vec!["candle".to_string(), "light".to_string()];
+        h.config_tools.insert(
+            StageId::Msi,
+            vec!["candle".to_string(), "light".to_string()],
+        );
         let available = h
             .gate_installer_stages(&h.stages.clone(), |tool| matches!(tool, "candle" | "light"))
             .expect("v3 msi with candle+light present must pass the gate");
@@ -2878,7 +3169,11 @@ mod tests {
     fn msi_v3_gate_hard_fails_when_a_resolved_tool_absent() {
         let mut h = empty_harness();
         h.stages = vec![StageId::Build, StageId::Msi];
-        h.msi_tools = vec!["candle".to_string(), "light".to_string()];
+        h.explicit_stages = h.stages.clone();
+        h.config_tools.insert(
+            StageId::Msi,
+            vec!["candle".to_string(), "light".to_string()],
+        );
         // `candle` present, `light` missing — v3 needs both, so msi skips.
         let err = h
             .gate_installer_stages(&h.stages.clone(), |tool| tool == "candle")

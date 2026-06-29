@@ -228,6 +228,9 @@ impl anodizer_core::Publisher for BlobPublisher {
         Ok(())
     }
 
+    /// No live probe: blob uploads are overwritable with an `ObjectStore::delete`
+    /// rollback, and provider credentials are validated at upload time — an
+    /// invalid credential fails the first, recoverable step.
     fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         Ok(anodizer_core::PreflightCheck::Pass)
     }

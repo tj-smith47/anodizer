@@ -59,6 +59,23 @@ impl RetryPolicy {
         max_delay: Duration::from_secs(30),
     };
 
+    /// Shallow policy for best-effort pre-publish probes: 3 attempts, 200ms
+    /// base, 1s cap.
+    ///
+    /// Pre-publish probes (token `whoami`, registry index GET, GitHub repo
+    /// scope, npm duplicate-version) are an advisory warning gate, not a
+    /// write that must land. They run sequentially across every configured
+    /// publisher, so the production write-ladder (10 attempts / 10s base /
+    /// 5m cap) would let a single wedged endpoint stall the gate for tens of
+    /// minutes. A shallow bound keeps the probe responsive while still
+    /// absorbing a transient blip; the per-request HTTP timeout still bounds
+    /// each individual attempt.
+    pub const PREFLIGHT: RetryPolicy = RetryPolicy {
+        max_attempts: 3,
+        base_delay: Duration::from_millis(200),
+        max_delay: Duration::from_secs(1),
+    };
+
     pub fn delay_for(&self, next_attempt: u32) -> Duration {
         // `next_attempt` is the attempt we're about to run (≥2). The wait
         // before attempt 2 uses base_delay; before attempt 3 uses base_delay*2;
@@ -439,6 +456,17 @@ impl HttpError {
     }
 }
 
+/// Extract the upstream HTTP status from an [`anyhow::Error`] chain produced by
+/// [`retry_http_blocking`] / [`retry_http_async`].
+///
+/// Returns `0` when no [`HttpError`] is present in the chain — a transport-level
+/// failure that never received a response, or a non-HTTP error.
+pub fn http_status(err: &anyhow::Error) -> u16 {
+    err.chain()
+        .find_map(|e| e.downcast_ref::<HttpError>().map(|h| h.status))
+        .unwrap_or(0)
+}
+
 impl fmt::Display for HttpError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Defer to the inner error so messages stay focused on the cause.
@@ -665,6 +693,38 @@ mod tests {
             base_delay: Duration::from_millis(1),
             max_delay: Duration::from_millis(5),
         }
+    }
+
+    /// Locks the shallow shape of the best-effort pre-publish probe policy so a
+    /// future edit cannot silently re-point preflight probes at the production
+    /// write-ladder (10 attempts / 10s base / 5m cap), which would let one
+    /// wedged endpoint stall the gate for tens of minutes.
+    #[test]
+    fn preflight_policy_is_shallow() {
+        let p = RetryPolicy::PREFLIGHT;
+        assert_eq!(p.max_attempts, 3);
+        assert_eq!(p.base_delay, Duration::from_millis(200));
+        assert_eq!(p.max_delay, Duration::from_secs(1));
+        // Sub-second base + low cap: the whole probe ladder must stay well
+        // under a second of sleeps even when every attempt is exhausted.
+        let total_sleep: Duration = (2..=p.max_attempts).map(|n| p.delay_for(n)).sum();
+        assert!(
+            total_sleep < Duration::from_secs(1),
+            "preflight backoff sleeps must stay sub-second, got {total_sleep:?}"
+        );
+    }
+
+    #[test]
+    fn http_status_extracts_status_from_chain() {
+        let wrapped = anyhow::Error::new(HttpError::new(std::io::Error::other("boom"), 429))
+            .context("outer context");
+        assert_eq!(http_status(&wrapped), 429);
+    }
+
+    #[test]
+    fn http_status_is_zero_without_http_error() {
+        let plain = anyhow::anyhow!("not an http error");
+        assert_eq!(http_status(&plain), 0);
     }
 
     /// The idempotent floor raises a sub-floor cap to [`IDEMPOTENT_PUT_ATTEMPTS`]

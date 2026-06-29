@@ -1655,6 +1655,9 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
         Ok(())
     }
 
+    /// No live probe: Cloudsmith versions are re-uploadable with a `DELETE`
+    /// rollback, and `requirements()` gates the token — an invalid token fails
+    /// the first, recoverable step.
     fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         Ok(anodizer_core::PreflightCheck::Pass)
     }

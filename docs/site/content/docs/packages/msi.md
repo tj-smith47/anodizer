@@ -106,7 +106,8 @@ The `.wxs` file is rendered through the Tera template engine before being passed
 | Variable | Description |
 |----------|-------------|
 | `{{ ProjectName }}` | Project/crate name. |
-| `{{ Version }}` | Release version. |
+| `{{ Version }}` | Full release version (may include a pre-release / build-metadata suffix). Use for display fields (Description, Comments) — **not** for `Product/@Version`. |
+| `{{ MsiVersion }}` | Numeric `major.minor.patch` core of `Version`, each field clamped to WiX's `0..=65534`. Use this for `Product/@Version` (v3) / `Package/@Version` (v4): WiX rejects a non-numeric version (`candle CNDL0108`), so a pre-release like `1.0.0-rc.1` (or a determinism snapshot) must be coerced. |
 | `{{ Arch }}` | Architecture: `amd64`, `arm64`, etc. |
 | `{{ MsiArch }}` | MSI architecture identifier: `x64`, `x86`, `arm64`. |
 | `{{ BinaryPath }}` | Full path to the binary being packaged. |
@@ -186,7 +187,7 @@ Windows Installer uses GUIDs to identify products and track upgrade history. Get
 ```xml
 <!-- WiX v4 -->
 <Package Name="{{ ProjectName }}"
-         Version="{{ Version }}"
+         Version="{{ MsiVersion }}"
          Manufacturer="My Company"
          UpgradeCode="XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX">
   <MajorUpgrade DowngradeErrorMessage="A newer version is already installed." />
@@ -198,7 +199,7 @@ Windows Installer uses GUIDs to identify products and track upgrade history. Get
 <!-- WiX v3 -->
 <Product Id="YYYYYYYY-YYYY-YYYY-YYYY-YYYYYYYYYYYY"
          Name="{{ ProjectName }}"
-         Version="{{ Version }}"
+         Version="{{ MsiVersion }}"
          Manufacturer="My Company"
          UpgradeCode="XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX">
   <MajorUpgrade />

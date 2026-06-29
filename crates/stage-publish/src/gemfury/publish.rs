@@ -17,7 +17,9 @@ use anodizer_core::config::{ArchivesConfig, GemFuryConfig};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::redact::redact_bearer_tokens;
-use anodizer_core::retry::{HttpError, RetryPolicy, SuccessClass, retry_http_blocking, retry_sync};
+use anodizer_core::retry::{
+    RetryPolicy, SuccessClass, http_status, retry_http_blocking, retry_sync,
+};
 use anyhow::{Context as _, Result, bail};
 
 /// Outcome of [`publish_to_gemfury`]: one [`GemFuryTarget`] per artifact
@@ -301,16 +303,12 @@ pub(crate) fn version_already_published<E: anodizer_core::EnvSource + ?Sized>(
     match result {
         Ok((status, _body)) => Ok(status.is_success() || status.is_redirection()),
         Err(err) => {
-            // Walk the anyhow chain looking for the wrapped HTTP status.
             // 404 is the documented "not present" response — the only shape
             // that proves the version is absent, surfaced as `false` so the
             // publish proceeds. Any other shape (5xx, auth, rate-limit) or a
             // transport failure leaves presence UNKNOWN; bail rather than
             // publish blind to a registry that is irreversible for up to 72h.
-            let status_in_chain: Option<u16> = err
-                .chain()
-                .find_map(|e| e.downcast_ref::<HttpError>().map(|h| h.status));
-            if matches!(status_in_chain, Some(404)) {
+            if http_status(&err) == 404 {
                 return Ok(false);
             }
             log.warn(&format!(

@@ -298,13 +298,17 @@ impl Stage for UpxStage {
     }
 }
 
-/// Environment requirements for the upx stage: each enabled `upx:` entry's
-/// binary (default `upx`). `enabled` defaults to false, matching `run`;
-/// a template that fails to render is treated as enabled so a broken
-/// expression surfaces in the stage, not as a silently skipped preflight.
-pub fn env_requirements(
-    ctx: &anodizer_core::context::Context,
-) -> Vec<anodizer_core::EnvRequirement> {
+/// The upx binaries the configured `upx:` stages need on `PATH` to run:
+/// each enabled `upx:` entry contributes its `binary` (default `upx`).
+/// `enabled` defaults to false, matching [`UpxStage::run`]; a template that
+/// fails to render is treated as enabled so a broken expression surfaces in
+/// the stage, not as a silently dropped requirement.
+///
+/// The single source of truth for the upx tool requirement: both
+/// [`env_requirements`] (release preflight) and the determinism harness's
+/// tool gate consult it, so the two surfaces can never disagree about
+/// whether upx must be present.
+pub fn required_upx_tools(ctx: &anodizer_core::context::Context) -> Vec<String> {
     let mut out = Vec::new();
     for cfg in &ctx.config.upx {
         let enabled = match cfg.enabled.as_ref() {
@@ -314,12 +318,22 @@ pub fn env_requirements(
             None => false,
         };
         if enabled {
-            out.push(anodizer_core::EnvRequirement::Tool {
-                name: cfg.binary.clone(),
-            });
+            out.push(cfg.binary.clone());
         }
     }
     out
+}
+
+/// Environment requirements for the upx stage: each enabled `upx:` entry's
+/// binary (default `upx`), derived from [`required_upx_tools`] so the
+/// preflight surface and the determinism tool gate can never drift.
+pub fn env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    required_upx_tools(ctx)
+        .into_iter()
+        .map(|name| anodizer_core::EnvRequirement::Tool { name })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------

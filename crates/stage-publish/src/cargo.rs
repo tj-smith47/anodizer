@@ -2452,13 +2452,60 @@ impl anodizer_core::Publisher for CargoPublisher {
         Ok(())
     }
 
-    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
-        // crates.io publishing requires CARGO_REGISTRY_TOKEN at run-time;
-        // the existing publish_to_cargo path emits its own loud failure
-        // on a missing token, so this check defaults to Pass for now.
-        // A future tightening can surface a Warning when the token is
-        // absent AND best-effort rollback was requested.
-        Ok(anodizer_core::PreflightCheck::Pass)
+    fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        // Token VALIDITY only — duplicate-version and partial-publish are
+        // already caught by the state-query checker + `cargo publish
+        // --dry-run`. `requirements()` gates token PRESENCE; this proves the
+        // present token is accepted before the irreversible first publish.
+        // Only probe crates.io when an ACTIVE cargo publisher targets the
+        // default registry. An entry with `registry:`/`index:` set publishes
+        // to a private registry whose credential is `CARGO_REGISTRIES_<NAME>_TOKEN`,
+        // NOT the `CARGO_REGISTRY_TOKEN` this probe presents to
+        // `crates.io/api/v1/me` — probing crates.io for it would false-Blocker a
+        // perfectly valid private-registry release. Holds across single-crate,
+        // lockstep, and per-crate modes (per-crate entries may each pick a
+        // different registry).
+        let probes_crates_io = anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.cargo.as_ref())
+            .filter(|cargo| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    cargo.skip.as_ref(),
+                    None,
+                    cargo.if_condition.as_deref(),
+                )
+            })
+            .any(|cargo| cargo.registry.is_none() && cargo.index.is_none());
+        if !probes_crates_io {
+            return Ok(anodizer_core::PreflightCheck::Pass);
+        }
+        let token = ctx
+            .env_source()
+            .var("CARGO_REGISTRY_TOKEN")
+            .unwrap_or_default();
+        if token.is_empty() {
+            return Ok(anodizer_core::PreflightCheck::Pass);
+        }
+        let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        Ok(
+            match crate::publisher_preflight::probe_token_auth(
+                "https://crates.io/api/v1/me",
+                &token,
+                "preflight: crates.io token",
+                &policy,
+            ) {
+                crate::publisher_preflight::TokenAuth::Valid => anodizer_core::PreflightCheck::Pass,
+                crate::publisher_preflight::TokenAuth::Invalid => {
+                    anodizer_core::PreflightCheck::Blocker("crates.io token invalid".into())
+                }
+                crate::publisher_preflight::TokenAuth::Indeterminate(reason) => {
+                    anodizer_core::PreflightCheck::Warning(format!(
+                        "could not verify crates.io token ({reason})"
+                    ))
+                }
+            },
+        )
     }
 
     fn rollback_scope_needed(&self) -> Option<&'static str> {
@@ -2584,10 +2631,44 @@ mod publisher_tests {
     }
 
     #[test]
-    fn cargo_preflight_defaults_to_pass() {
-        // stub: when preflight gains CARGO_REGISTRY_TOKEN logic this test
-        // gets replaced.
+    fn cargo_preflight_passes_when_unconfigured() {
+        // No `publish.cargo` block ⇒ the token-validity probe is skipped
+        // (nothing to publish), so no network round-trip occurs. The live
+        // 401⇒Blocker / 2xx⇒Pass mapping is covered by
+        // `publisher_preflight::tests::token_auth_*`.
         let ctx = TestContextBuilder::new().build();
+        let p = CargoPublisher::new();
+        assert!(matches!(
+            p.preflight(&ctx).expect("preflight ok"),
+            PreflightCheck::Pass
+        ));
+    }
+
+    #[test]
+    fn cargo_preflight_skips_crates_io_probe_for_alternate_registry() {
+        use anodizer_core::config::{CargoPublishConfig, CrateConfig, PublishConfig};
+
+        // A non-default registry publishes with `CARGO_REGISTRIES_<NAME>_TOKEN`,
+        // NOT the crates.io `CARGO_REGISTRY_TOKEN` this probe presents. Even
+        // with a token present, the crates.io `/me` probe must be skipped
+        // (returns Pass without a network hit) so a private-registry release is
+        // never false-Blockered.
+        let crate_cfg = CrateConfig {
+            name: "mytool".to_string(),
+            publish: Some(PublishConfig {
+                cargo: Some(CargoPublishConfig {
+                    registry: Some("my-corp".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .project_name("mytool")
+            .crates(vec![crate_cfg])
+            .env("CARGO_REGISTRY_TOKEN", "present-but-for-another-registry")
+            .build();
         let p = CargoPublisher::new();
         assert!(matches!(
             p.preflight(&ctx).expect("preflight ok"),

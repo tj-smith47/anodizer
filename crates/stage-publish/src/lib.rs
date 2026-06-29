@@ -3,6 +3,7 @@
 // namespace only for siblings that come AFTER it textually.
 #[macro_use]
 pub(crate) mod publisher_helpers;
+pub(crate) mod publisher_preflight;
 
 pub mod artifactory;
 pub mod aur;

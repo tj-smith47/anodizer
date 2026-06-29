@@ -11,6 +11,8 @@
 //! 4. Invoking [`crate::determinism_harness::Harness::run`].
 //! 5. Writing the report JSON and exiting non-zero on drift.
 
+use std::collections::BTreeMap;
+
 use crate::determinism_harness::{Harness, StageId, installer_stages};
 use anodizer_cli::CheckDeterminismArgs;
 use anodizer_core::{
@@ -47,7 +49,40 @@ pub fn run(args: CheckDeterminismArgs, verbose: bool, debug: bool, quiet: bool) 
     };
 
     let commit = head_commit_hash_in(&repo_root)?;
-    let stages = parse_stages(args.stages.as_deref()).map_err(|e| anyhow::anyhow!(e))?;
+
+    // One config load for every best-effort probe below (the stage-default
+    // intersection here, signature allow-list, all-prebuilt short-circuit,
+    // docker-backend hint). Loading once means the load-time legacy-alias
+    // warnings print once per invocation instead of once per probe.
+    // Best-effort: a missing/unparseable config yields `None` and the real
+    // error surfaces from the pipeline itself.
+    // `apply_defaults` materializes `defaults:` producer blocks onto crates, so
+    // every consumer below — the configured-producer detection AND the docker /
+    // msi / signing / prebuilt probes — reads the SAME resolved view the
+    // pipeline's stage gates see. A raw config would miss a producer declared
+    // only under `defaults:`, silently diverging the determinism stage set (and
+    // its tool probes) from what the pipeline actually runs.
+    let repo_config = crate::pipeline::load_repo_config(&repo_root)
+        .ok()
+        .map(|mut c| {
+            anodizer_core::defaults_merge::apply_defaults(&mut c);
+            c
+        });
+
+    // Absent / empty `--stages` resolves to the host-OS partition INTERSECTED
+    // with the producers this config configures; an explicit selection passes
+    // through unchanged.
+    let stages = resolve_stages(args.stages.as_deref(), repo_config.as_ref())
+        .map_err(|e| anyhow::anyhow!(e))?;
+    // The operator's EXPLICIT selection (empty when the set came from the host
+    // default). The harness hard-fails a missing tool only for explicitly typed
+    // stages; host-default stages warn-skip. `--stages=""` (all-empty tokens)
+    // resolves to the host default, so it is treated as non-explicit too.
+    let explicit_stages = if is_explicit_stage_selection(args.stages.as_deref()) {
+        stages.clone()
+    } else {
+        Vec::new()
+    };
     let targets = parse_targets(args.targets.as_deref()).map_err(|e| anyhow::anyhow!(e))?;
 
     let report_path = args.report.clone().unwrap_or_else(|| {
@@ -92,12 +127,6 @@ pub fn run(args: CheckDeterminismArgs, verbose: bool, debug: bool, quiet: bool) 
         args.crate_name.as_deref(),
     );
 
-    // One config load for every best-effort probe below (signature
-    // allow-list, all-prebuilt short-circuit, docker-backend hint).
-    // Loading once means the load-time legacy-alias warnings print once per
-    // invocation instead of once per probe. Best-effort: a missing/unparseable
-    // config yields `None` and the real error surfaces from the pipeline itself.
-    let repo_config = crate::pipeline::load_repo_config(&repo_root).ok();
     // Submitter moderation-queue advisories are verbose-only; emit them once
     // here off the single load (hidden at the default log level).
     if let Some(ref cfg) = repo_config {
@@ -178,21 +207,38 @@ pub fn run(args: CheckDeterminismArgs, verbose: bool, debug: bool, quiet: bool) 
     // soft: the docker stage falls through to its existing buildx path.
     let docker_backend_hint = repo_config.as_ref().and_then(detect_docker_backend_hint);
 
-    // Resolve the WiX tool requirement for the `msi` stage from config (the
-    // SAME policy the build runs, via the helper env-preflight consults) so
-    // the harness gate's MSI tool probe can never drift from the version the
-    // build would use — a `version: v3` config needs candle+light, not the v4
-    // `wix` CLI. Only resolved when `msi` is actually in the stage set.
-    let msi_tools = if stages.contains(&StageId::Msi) {
-        resolve_msi_tools(repo_config.as_ref())
-    } else {
-        Vec::new()
-    };
+    // Resolve the config-only tool requirements for the gate, so a
+    // host-default producer whose backing binary is absent hard-fails under
+    // `--require-tools` instead of failing mid-run (msi) or silently
+    // warn-skipping (upx). Each is resolved from config by the SAME helper the
+    // build / release preflight consults, so the gate probe can never drift
+    // from the binary the build spawns. Only resolved when the stage is
+    // actually in the set; an empty resolution is not inserted (the stage then
+    // carries no requirement).
+    //
+    // - `msi`: the WiX binaries the resolved version needs — a `version: v3`
+    //   config needs candle+light, not the v4 `wix` CLI.
+    // - `upx`: each enabled `upx:` entry's binary (default `upx`).
+    let mut config_tools: BTreeMap<StageId, Vec<String>> = BTreeMap::new();
+    if stages.contains(&StageId::Msi) {
+        let tools = resolve_msi_tools(repo_config.as_ref());
+        if !tools.is_empty() {
+            config_tools.insert(StageId::Msi, tools);
+        }
+    }
+    if stages.contains(&StageId::Upx) {
+        let tools = resolve_upx_tools(repo_config.as_ref());
+        if !tools.is_empty() {
+            config_tools.insert(StageId::Upx, tools);
+        }
+    }
 
     let harness = Harness {
         repo_root: repo_root.clone(),
         commit: commit.clone(),
         stages,
+        explicit_stages,
+        require_tools: args.require_tools,
         runs: args.runs,
         sde,
         allowlist,
@@ -205,7 +251,7 @@ pub fn run(args: CheckDeterminismArgs, verbose: bool, debug: bool, quiet: bool) 
         docker_backend_hint,
         crate_name: args.crate_name.clone(),
         verbosity,
-        msi_tools,
+        config_tools,
         disk_abs_floor_bytes: anodizer_core::disk::abs_floor_bytes_from_env(),
         disk_safety_factor: anodizer_core::disk::safety_factor_from_env(),
     };
@@ -274,19 +320,10 @@ pub fn run(args: CheckDeterminismArgs, verbose: bool, debug: bool, quiet: bool) 
 /// `--stages=archve,checksum` (note the missing `i`) is a UX trap that
 /// quietly under-verifies the release; the operator typed a stage they
 /// expected to be exercised. Empty / whitespace-only tokens (e.g. a
-/// trailing comma) are tolerated. An empty selection (`--stages=""`)
-/// falls back to the canonical build-side set. Spec calls out "build,
-/// archive, sbom, sign, checksum" as the legal vocabulary.
+/// trailing comma) are tolerated. Both an absent flag and an empty
+/// selection (`--stages=""`) fall back to [`default_stages_for_host`] —
+/// the OS-native partition the harness builds when no filter is given.
 fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
-    let default = || {
-        vec![
-            StageId::Build,
-            StageId::Archive,
-            StageId::Sbom,
-            StageId::Sign,
-            StageId::Checksum,
-        ]
-    };
     // Umbrella selector for every installer-family stage. Operators
     // type `--stages=installers` to exercise the full set in one shot;
     // individual family stages (`msi`, `nsis`, ...) remain available
@@ -294,7 +331,7 @@ fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
     // `installer_detect::installer_stages` keeps the CLI parser and
     // harness gate consulting the same source of truth.
     match s {
-        None => Ok(default()),
+        None => Ok(default_stages_for_host()),
         Some(list) => {
             let mut parsed: Vec<StageId> = Vec::new();
             let mut unknown: Vec<String> = Vec::new();
@@ -325,6 +362,8 @@ fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
                     "pkg" => parsed.push(StageId::Pkg),
                     "srpm" => parsed.push(StageId::Srpm),
                     "appbundle" => parsed.push(StageId::Appbundle),
+                    "appimage" => parsed.push(StageId::Appimage),
+                    "flatpak" => parsed.push(StageId::Flatpak),
                     "installers" => parsed.extend(installer_stages()),
                     other => unknown.push(other.to_string()),
                 }
@@ -332,7 +371,7 @@ fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
             if !unknown.is_empty() {
                 return Err(format!(
                     "--stages contained unknown stage(s): {}. \
-                     Known stages: build, source, upx, archive, nfpm, makeself, snapcraft, sbom, sign, checksum, cargo-package, docker, msi, nsis, dmg, pkg, srpm, appbundle, installers.",
+                     Known stages: build, source, upx, archive, nfpm, makeself, snapcraft, sbom, sign, checksum, cargo-package, docker, msi, nsis, dmg, pkg, srpm, appbundle, appimage, flatpak, installers.",
                     unknown.join(", ")
                 ));
             }
@@ -349,11 +388,170 @@ fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
                 }
             }
             Ok(if deduped.is_empty() {
-                default()
+                default_stages_for_host()
             } else {
                 deduped
             })
         }
+    }
+}
+
+/// The OS-appropriate stage partition the harness builds when `--stages` is
+/// absent — "no filter" means "byte-verify everything this host can natively
+/// produce", never a minimal subset that silently under-covers a release.
+///
+/// This encodes the partition that USED to live as a hand-written
+/// `det_stages:` key per shard in `.github/workflows/determinism.yml`; the
+/// per-OS "what is appropriate to build here" decision is intrinsic to the
+/// tool, not a CI concern, so it belongs in the harness. `--stages=` remains
+/// a USER filter layered on top.
+///
+/// ## Why the partition is per-OS (payload-binary routing)
+///
+/// The determinism harness is sharded by host precisely because one host
+/// cannot cross-compile every target's binary, and a produce-stage emits
+/// nothing on a shard that lacks its payload binary — so each installer must
+/// run on the shard that natively builds what it packages:
+///
+/// - `appbundle` / `dmg` / `pkg` → **macOS** (need the darwin binary). On
+///   macOS `appbundle` precedes `dmg`/`pkg` so their `use: appbundle` finds a
+///   source `.app`.
+/// - `msi` / `nsis` → **Windows** (need the windows-msvc binary).
+/// - `docker` / `appimage` / `flatpak` / `nfpm` / `makeself` / `snapcraft` /
+///   `srpm` → **Linux**.
+///
+/// Routing an installer to a shard without its payload binary is how these
+/// formats silently shipped in NO release for so long (they were listed only
+/// on the linux-only ubuntu shard, which produces no darwin/windows binary).
+///
+/// ## Per-format reproducibility verdict
+///
+/// The harness byte-compares the GATED formats and counts any drift as a
+/// regression; the ALLOWLISTED ones are intrinsically non-reproducible (see
+/// `anodizer_core::DeterminismState::seed_from_commit`) and excluded from
+/// `drift_count` while still surfaced in the report:
+///
+/// - `appbundle` — **GATED**: pure file assembly, byte-reproducible
+///   (`appbundle_is_byte_reproducible_across_time`).
+/// - `nsis` — **GATED**: `makensis` honors `SOURCE_DATE_EPOCH`, byte-
+///   reproducible (`nsis_setup_is_byte_reproducible_across_time`).
+/// - `dmg` — **ALLOWLISTED**: `hdiutil` writes a fresh UDIF koly SegmentID
+///   GUID per run; native, non-reproducible.
+/// - `pkg` — **ALLOWLISTED**: macOS-native `pkgbuild` stamps a wall-clock xar
+///   TOC and ignores `SOURCE_DATE_EPOCH`.
+/// - `msi` — **ALLOWLISTED**: WiX regenerates a random PackageCode GUID plus
+///   Created/LastModified (wixtoolset/issues#8978).
+///
+/// ## Tool gate
+///
+/// The tool gate (see [`crate::determinism_harness`]'s
+/// `gate_installer_stages` / the docker fork) further prunes any stage in
+/// this default whose backing tool is absent on the host. By default a
+/// host-default stage warn-skips so the harness stays usable everywhere (only
+/// an explicitly typed `--stages=<stage>` hard-fails). Under CI's
+/// `--require-tools` the WHOLE resolved set is promoted to hard-fail, so a
+/// missing OS-native producer tool fails the shard rather than silently
+/// under-covering the release.
+///
+/// `cargo-package` is intentionally NOT in this default: it is a harness-only
+/// cross-platform probe of `cargo package` byte-stability, not a shipped
+/// artifact, so it stays opt-in via `--stages=cargo-package`.
+///
+/// This returns the config-INDEPENDENT OS partition; the resolved default
+/// applied when `--stages` is absent is this set intersected with the
+/// config-configured producers — see [`host_default_for_config`].
+fn default_stages_for_host() -> Vec<StageId> {
+    let mut stages = ALWAYS_ON_STAGES.to_vec();
+    if cfg!(target_os = "linux") {
+        stages.extend([
+            StageId::Nfpm,
+            StageId::Makeself,
+            StageId::Snapcraft,
+            StageId::Srpm,
+            StageId::Docker,
+            StageId::Appimage,
+            StageId::Flatpak,
+        ]);
+    } else if cfg!(target_os = "macos") {
+        stages.extend([StageId::Appbundle, StageId::Dmg, StageId::Pkg]);
+    } else if cfg!(target_os = "windows") {
+        stages.extend([StageId::Msi, StageId::Nsis]);
+    }
+    stages
+}
+
+/// Stages produced for ANY config — they carry no installer tool and emit
+/// nothing when unconfigured, so the host default keeps them unconditionally
+/// rather than gating on config. Everything else in
+/// [`default_stages_for_host`] is a config-gated producer pruned by
+/// [`host_default_for_config`].
+const ALWAYS_ON_STAGES: &[StageId] = &[
+    StageId::Build,
+    StageId::Source,
+    StageId::Upx,
+    StageId::Archive,
+    StageId::Sbom,
+    StageId::Sign,
+    StageId::Checksum,
+];
+
+/// The resolved DEFAULT stage set (the `--stages`-absent path): the OS-native
+/// partition ([`default_stages_for_host`]) with each config-gated producer
+/// kept only when the loaded config actually configures it.
+///
+/// Determinism can only byte-verify artifacts the config PRODUCES, so a
+/// generic consumer whose `.anodizer.yaml` has no `flatpaks:` block must not
+/// get `flatpak` in its default — otherwise `--require-tools` would hard-fail
+/// on a missing `flatpak-builder` for an artifact that project never builds.
+/// The configured-producer set is the core SSOT
+/// [`anodizer_core::env_preflight::configured_producer_stages`] (the same
+/// `Config`/`CrateConfig` fields the pipeline's stage gates read); the
+/// always-on base ([`ALWAYS_ON_STAGES`]) is never gated.
+///
+/// `config` must already have `apply_defaults` run on it (producers declared
+/// under `defaults:` materialize onto crates). `None` (config failed to load)
+/// falls back to the full OS partition — the conservative "do not silently
+/// under-verify" choice; a genuine config-load failure surfaces from the
+/// pipeline itself.
+///
+/// Only the DEFAULT path is intersected: an EXPLICIT `--stages=<x>` is the
+/// operator's typed intent and is left exactly as parsed (it still hard-fails
+/// on a missing tool, config notwithstanding).
+fn host_default_for_config(config: Option<&anodizer_core::config::Config>) -> Vec<StageId> {
+    let full = default_stages_for_host();
+    let Some(config) = config else {
+        return full;
+    };
+    let configured = anodizer_core::env_preflight::configured_producer_stages(config);
+    full.into_iter()
+        .filter(|s| ALWAYS_ON_STAGES.contains(s) || configured.contains(s.as_str()))
+        .collect()
+}
+
+/// Whether `--stages` carries an EXPLICIT operator selection — at least one
+/// non-blank token. `None`, `Some("")`, and `Some(",, ")` are all non-explicit
+/// (they resolve to the host default). The single predicate behind both the
+/// stage-set resolution ([`resolve_stages`]) and the explicit-stages hard-fail
+/// set, so the two cannot disagree about what counts as "operator typed it".
+fn is_explicit_stage_selection(stages_arg: Option<&str>) -> bool {
+    matches!(stages_arg, Some(list) if list.split(',').any(|t| !t.trim().is_empty()))
+}
+
+/// Resolve the stage set under test from the `--stages` argument and the
+/// loaded (defaults-applied) config.
+///
+/// An EXPLICIT selection (≥1 real token) is the operator's typed intent and
+/// passes straight through [`parse_stages`], unchanged by config. An absent or
+/// all-empty `--stages` resolves to the config-intersected host default
+/// ([`host_default_for_config`]).
+fn resolve_stages(
+    stages_arg: Option<&str>,
+    config: Option<&anodizer_core::config::Config>,
+) -> Result<Vec<StageId>, String> {
+    if is_explicit_stage_selection(stages_arg) {
+        parse_stages(stages_arg)
+    } else {
+        Ok(host_default_for_config(config))
     }
 }
 
@@ -583,6 +781,16 @@ fn detect_docker_backend_hint(cfg: &anodizer_core::config::Config) -> Option<Str
 /// A missing/unparseable config (`None`) yields an empty list: the gate then
 /// treats `msi` as carrying no tool requirement and the real config error
 /// surfaces from the pipeline itself.
+///
+/// `required_msi_tools` renders each entry's `skip:` / `if:` in this bare
+/// gate context, which lacks the `--snapshot` child's `.Version` /
+/// `IsSnapshot` / `.Env` vars — so a context-dependent skip/if could resolve
+/// an entry inactive here yet active in the child, leaving `msi` ungated.
+/// Unlike `upx`, that is benign: when no WiX binary is on PATH the stage's
+/// version probe falls back to v4 and the child hard-fails at `wix build`
+/// spawn (`run_checked`), surfacing the missing tool loudly. There is no
+/// silent warn-skip to under-cover, so `msi` needs no conservative
+/// over-require (contrast [`resolve_upx_tools`], whose stage warn-skips).
 fn resolve_msi_tools(repo_config: Option<&anodizer_core::config::Config>) -> Vec<String> {
     let Some(cfg) = repo_config else {
         return Vec::new();
@@ -592,6 +800,47 @@ fn resolve_msi_tools(repo_config: Option<&anodizer_core::config::Config>) -> Vec
         anodizer_core::context::ContextOptions::default(),
     );
     anodizer_stage_msi::required_msi_tools(&ctx)
+}
+
+/// Resolve the upx binaries the `upx` stage requires from the loaded config
+/// via [`anodizer_stage_upx::required_upx_tools`] — the SAME helper release
+/// preflight consults, so the determinism gate's upx requirement can never
+/// drift from what the build runs. Each enabled `upx:` entry contributes its
+/// `binary` (default `upx`).
+///
+/// A missing/unparseable config (`None`) yields an empty list: the gate then
+/// treats `upx` as carrying no tool requirement and the stage's own runtime
+/// guard governs.
+///
+/// ## Conservative over-require for a templated `enabled:`
+///
+/// `required_upx_tools` renders each `enabled:` in this bare gate context,
+/// which lacks the `--snapshot` child's `.Version` / `IsSnapshot` /
+/// `IsHarness` / `.Env` template vars. A context-DEPENDENT `enabled:` can
+/// therefore render `false` here yet `true` in the child — and the upx stage
+/// WARN-SKIPS a missing binary at default strictness (`UpxStage::run` →
+/// `Context::strict_guard`, which only bails under `options.strict`; the
+/// determinism child release is not strict). That under-resolution is exactly
+/// the silent false coverage `--require-tools` exists to forbid. So any entry
+/// whose `enabled:` is a template forces its binary into the requirement set:
+/// the gate must never UNDER-require. A literal `enabled: true` / `false` is
+/// context-free and stays precisely resolved by the SSOT.
+fn resolve_upx_tools(repo_config: Option<&anodizer_core::config::Config>) -> Vec<String> {
+    let Some(cfg) = repo_config else {
+        return Vec::new();
+    };
+    let ctx = anodizer_core::context::Context::new(
+        cfg.clone(),
+        anodizer_core::context::ContextOptions::default(),
+    );
+    let mut tools = anodizer_stage_upx::required_upx_tools(&ctx);
+    for entry in &cfg.upx {
+        if entry.enabled.as_ref().is_some_and(|e| e.is_template()) && !tools.contains(&entry.binary)
+        {
+            tools.push(entry.binary.clone());
+        }
+    }
+    tools
 }
 
 /// Read the target project's release version from `<repo>/Cargo.toml`.
@@ -657,12 +906,263 @@ mod tests {
     }
 
     #[test]
-    fn parse_stages_default_returns_full_build_side_set() {
+    fn resolve_upx_tools_threads_enabled_binary_from_config() {
+        use anodizer_core::config::{Config, StringOrBool, UpxConfig};
+
+        // The dispatcher must thread each enabled `upx:` entry's binary into
+        // the harness gate so `--require-tools` can hard-fail a host-default
+        // upx run whose binary is absent. A disabled entry contributes nothing.
+        let config = Config {
+            project_name: "myapp".to_string(),
+            upx: vec![
+                UpxConfig {
+                    enabled: Some(StringOrBool::Bool(true)),
+                    binary: "upx".to_string(),
+                    ..Default::default()
+                },
+                UpxConfig {
+                    enabled: Some(StringOrBool::Bool(false)),
+                    binary: "other-upx".to_string(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        assert_eq!(resolve_upx_tools(Some(&config)), vec!["upx".to_string()]);
+    }
+
+    #[test]
+    fn resolve_upx_tools_none_config_is_empty() {
+        assert!(resolve_upx_tools(None).is_empty());
+    }
+
+    #[test]
+    fn resolve_upx_tools_force_requires_templated_enabled() {
+        use anodizer_core::config::{Config, StringOrBool, UpxConfig};
+
+        // A context-dependent `enabled:` can render false in the bare gate
+        // context yet true in the `--snapshot` child. Because the upx stage
+        // WARN-SKIPS a missing binary (silent false coverage), the gate must
+        // over-require: a templated `enabled` forces its binary in even when
+        // the bare-context render is false. This template renders literally
+        // `false` here (no vars), so `required_upx_tools` alone would drop it —
+        // proving the conservative pass, not the SSOT, is what adds it.
+        let config = Config {
+            project_name: "myapp".to_string(),
+            upx: vec![UpxConfig {
+                enabled: Some(StringOrBool::String(
+                    "{{ if false }}true{{ else }}false{{ end }}".to_string(),
+                )),
+                binary: "upx".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert_eq!(resolve_upx_tools(Some(&config)), vec!["upx".to_string()]);
+    }
+
+    #[test]
+    fn resolve_upx_tools_omits_literal_false_enabled() {
+        use anodizer_core::config::{Config, StringOrBool, UpxConfig};
+
+        // The conservative pass must fire ONLY for templates: a literal
+        // `enabled: false` is context-free, so the gate trusts the SSOT and
+        // carries no requirement (no spurious hard-fail under --require-tools).
+        let config = Config {
+            project_name: "myapp".to_string(),
+            upx: vec![UpxConfig {
+                enabled: Some(StringOrBool::Bool(false)),
+                binary: "upx".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(resolve_upx_tools(Some(&config)).is_empty());
+    }
+
+    #[test]
+    fn parse_stages_default_returns_host_native_partition() {
+        // No `--stages` resolves to the OS-native partition (the encoded
+        // `det_stages` that used to live per-shard in determinism.yml), not a
+        // minimal subset that would silently under-cover the release.
         let stages = parse_stages(None).expect("None is always Ok");
-        assert_eq!(
-            stages.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-            vec!["build", "archive", "sbom", "sign", "checksum"]
+        assert_eq!(stages, default_stages_for_host());
+        // The common base is present on every OS.
+        for base in [
+            StageId::Build,
+            StageId::Source,
+            StageId::Upx,
+            StageId::Archive,
+            StageId::Sbom,
+            StageId::Sign,
+            StageId::Checksum,
+        ] {
+            assert!(stages.contains(&base), "base stage {base:?} missing");
+        }
+    }
+
+    #[test]
+    fn default_stages_for_host_includes_os_native_producers() {
+        let stages = default_stages_for_host();
+        // cargo-package is harness-only and stays opt-in on every OS.
+        assert!(
+            !stages.contains(&StageId::CargoPackage),
+            "cargo-package must never be in the host default"
         );
+        #[cfg(target_os = "linux")]
+        for s in [
+            StageId::Nfpm,
+            StageId::Makeself,
+            StageId::Snapcraft,
+            StageId::Srpm,
+            StageId::Docker,
+            StageId::Appimage,
+            StageId::Flatpak,
+        ] {
+            assert!(stages.contains(&s), "linux default missing {s:?}");
+        }
+        #[cfg(target_os = "macos")]
+        for s in [StageId::Appbundle, StageId::Dmg, StageId::Pkg] {
+            assert!(stages.contains(&s), "macos default missing {s:?}");
+        }
+        #[cfg(target_os = "windows")]
+        for s in [StageId::Msi, StageId::Nsis] {
+            assert!(stages.contains(&s), "windows default missing {s:?}");
+        }
+    }
+
+    #[test]
+    fn parse_stages_accepts_appimage_and_flatpak() {
+        let stages = parse_stages(Some("appimage,flatpak")).expect("both are known stages");
+        assert_eq!(stages, vec![StageId::Appimage, StageId::Flatpak]);
+    }
+
+    /// A minimal config (one crate, no producer blocks) must resolve the
+    /// `--stages`-absent default to the always-on base ONLY — every config-
+    /// gated producer is pruned, so `--require-tools` cannot hard-fail on a
+    /// tool for an artifact this project never builds.
+    #[test]
+    fn host_default_excludes_unconfigured_producers() {
+        use anodizer_core::config::{Config, CrateConfig};
+        let config = Config {
+            project_name: "minimal".to_string(),
+            crates: vec![CrateConfig {
+                name: "minimal".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let stages = host_default_for_config(Some(&config));
+        // Base stays unconditionally.
+        for base in ALWAYS_ON_STAGES {
+            assert!(stages.contains(base), "base stage {base:?} must remain");
+        }
+        // No config-gated producer survives on any OS.
+        for gated in [
+            StageId::Nfpm,
+            StageId::Makeself,
+            StageId::Snapcraft,
+            StageId::Srpm,
+            StageId::Docker,
+            StageId::Appimage,
+            StageId::Flatpak,
+            StageId::Appbundle,
+            StageId::Dmg,
+            StageId::Pkg,
+            StageId::Msi,
+            StageId::Nsis,
+        ] {
+            assert!(
+                !stages.contains(&gated),
+                "unconfigured producer {gated:?} must be pruned from the default"
+            );
+        }
+    }
+
+    /// A config that DOES configure the Linux producers must keep them in the
+    /// resolved default (so they are byte-verified, and `--require-tools`
+    /// legitimately requires their tools). Mixes per-crate blocks (nfpm /
+    /// snapcraft / flatpak / docker) and top-level blocks (appimage / makeself
+    /// / srpm) to cover both detection paths.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn host_default_includes_configured_linux_producers() {
+        use anodizer_core::config::{
+            AppImageConfig, Config, CrateConfig, DockerV2Config, FlatpakConfig, MakeselfConfig,
+            NfpmConfig, SnapcraftConfig, SrpmConfig,
+        };
+        let config = Config {
+            project_name: "full".to_string(),
+            crates: vec![CrateConfig {
+                name: "full".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                nfpms: Some(vec![NfpmConfig::default()]),
+                snapcrafts: Some(vec![SnapcraftConfig::default()]),
+                flatpaks: Some(vec![FlatpakConfig::default()]),
+                dockers_v2: Some(vec![DockerV2Config::default()]),
+                ..Default::default()
+            }],
+            appimages: vec![AppImageConfig::default()],
+            makeselfs: vec![MakeselfConfig::default()],
+            srpms: Some(SrpmConfig::default()),
+            ..Default::default()
+        };
+        let stages = host_default_for_config(Some(&config));
+        for producer in [
+            StageId::Nfpm,
+            StageId::Makeself,
+            StageId::Snapcraft,
+            StageId::Srpm,
+            StageId::Docker,
+            StageId::Appimage,
+            StageId::Flatpak,
+        ] {
+            assert!(
+                stages.contains(&producer),
+                "configured producer {producer:?} must stay in the default"
+            );
+        }
+    }
+
+    /// `None` config (load failed) falls back to the full OS partition — the
+    /// conservative "do not silently under-verify" choice.
+    #[test]
+    fn host_default_none_config_is_full_partition() {
+        assert_eq!(host_default_for_config(None), default_stages_for_host());
+    }
+
+    /// An EXPLICIT `--stages` is the operator's typed intent and ignores the
+    /// config intersection entirely — `--stages=nfpm` resolves to `[nfpm]`
+    /// even when the config configures no nfpm.
+    #[test]
+    fn resolve_stages_explicit_ignores_config() {
+        use anodizer_core::config::{Config, CrateConfig};
+        let bare = Config {
+            crates: vec![CrateConfig {
+                name: "x".to_string(),
+                path: ".".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let stages = resolve_stages(Some("nfpm"), Some(&bare)).expect("nfpm is a known stage");
+        assert_eq!(stages, vec![StageId::Nfpm]);
+    }
+
+    #[test]
+    fn is_explicit_stage_selection_matches_nonblank_token_only() {
+        // The single predicate behind both the stage-set resolution and the
+        // explicit-stages hard-fail set: a real token is explicit; absent or
+        // all-blank is the host default. Drift between the two call sites would
+        // let a stage hard-fail in one path and warn-skip in the other.
+        assert!(is_explicit_stage_selection(Some("msi")));
+        assert!(is_explicit_stage_selection(Some(" archive , checksum ")));
+        assert!(!is_explicit_stage_selection(None));
+        assert!(!is_explicit_stage_selection(Some("")));
+        assert!(!is_explicit_stage_selection(Some(" , , ")));
     }
 
     #[test]
@@ -795,12 +1295,13 @@ mod tests {
 
     #[test]
     fn parse_stages_empty_string_falls_back_to_default() {
-        // An empty / all-whitespace selection picks the canonical build-
-        // side set so `--stages=""` doesn't degrade into a no-op.
+        // An empty / all-whitespace selection picks the OS-native host
+        // partition so `--stages=""` doesn't degrade into a no-op.
+        let expected = default_stages_for_host();
         let stages = parse_stages(Some("")).expect("empty list returns default");
-        assert_eq!(stages.len(), 5);
+        assert_eq!(stages, expected);
         let stages = parse_stages(Some(" , , ")).expect("whitespace-only returns default");
-        assert_eq!(stages.len(), 5);
+        assert_eq!(stages, expected);
     }
 
     #[test]
@@ -881,6 +1382,7 @@ mod tests {
             inject_drift: None,
             preserve_dist: None,
             crate_name: None,
+            require_tools: false,
         };
     }
 

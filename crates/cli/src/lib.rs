@@ -874,7 +874,7 @@ pub struct CheckDeterminismArgs {
     #[arg(
         long,
         value_name = "stages",
-        help = "Optional stage subset (build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum,cargo-package,docker,msi,nsis,dmg,pkg,srpm,appbundle, plus the `installers` family selector expanding to nfpm,makeself,srpm,msi,nsis,dmg,pkg). The list is also the build filter: stages NOT named here are added to the child release's `--skip=` set, so a stage must be requested to be byte-verified. `cargo-package` is harness-only — drives `cargo package --no-verify --allow-dirty` per workspace member to probe `.crate` byte-stability without hitting a registry. `docker` is harness-only — drives `docker buildx build --output=type=oci,rewrite-timestamp=true,dest=…` against `<repo>/Dockerfile` to probe OCI image byte-stability without pushing to a registry; skipped when `docker buildx` is unavailable or no Dockerfile exists. Installer stages (msi/nsis/dmg/pkg/srpm) are skipped at the gate when their backing tool is absent; `appbundle` is pure file assembly and always runs when requested."
+        help = "Optional stage subset (build,source,upx,archive,nfpm,makeself,snapcraft,sbom,sign,checksum,cargo-package,docker,msi,nsis,dmg,pkg,srpm,appbundle,appimage,flatpak, plus the `installers` family selector expanding to nfpm,makeself,srpm,msi,nsis,dmg,pkg). Omit the flag to byte-verify the full OS-native partition for this host (Linux adds nfpm/makeself/snapcraft/srpm/docker/appimage/flatpak; macOS adds appbundle/dmg/pkg; Windows adds msi/nsis). The list is also the build filter: stages NOT named here are added to the child release's `--skip=` set, so a stage must be requested (or in the host default) to be byte-verified. `cargo-package` is harness-only — drives `cargo package --no-verify --allow-dirty` per workspace member to probe `.crate` byte-stability without hitting a registry; it is NOT in the host default and stays opt-in. `docker` is harness-only — drives `docker buildx build --output=type=oci,rewrite-timestamp=true,dest=…` against `<repo>/Dockerfile` to probe OCI image byte-stability without pushing to a registry; skipped when `docker buildx` is unavailable or no Dockerfile exists. Installer stages (msi/nsis/dmg/pkg/srpm) plus appimage (needs `linuxdeploy`) and flatpak (needs `flatpak-builder`) are skipped at the gate when their backing tool is absent — a host-default stage warn-skips, an explicitly typed one hard-fails; `appbundle` is pure file assembly and always runs when requested."
     )]
     pub stages: Option<String>,
     #[arg(
@@ -924,6 +924,23 @@ pub struct CheckDeterminismArgs {
                 dist/ without context.json collision."
     )]
     pub crate_name: Option<String>,
+    /// Fail (not warn-skip) if any selected stage's backing tool is missing —
+    /// used by CI so a default host-OS run cannot silently skip an OS-native
+    /// producer.
+    ///
+    /// Without `--stages`, the harness builds the full host-OS partition
+    /// ([`crate::commands::check::determinism`]'s `default_stages_for_host`),
+    /// and a host-default stage whose tool is absent normally warn-skips so dev
+    /// boxes stay usable. CI provisions every OS-native tool and must treat a
+    /// missing one as a hard failure: a silent skip is the exact false coverage
+    /// that once hid the installer formats from every release. This flag
+    /// promotes the WHOLE resolved stage set to the hard-fail contract that
+    /// explicitly typed stages already get.
+    #[arg(
+        long = "require-tools",
+        help = "Fail (not warn-skip) if any selected stage's backing tool is missing — used by CI so a default host-OS run cannot silently skip an OS-native producer."
+    )]
+    pub require_tools: bool,
 }
 
 /// Clap `value_parser` for `--from-run=<id>`.

@@ -49,7 +49,9 @@ pub(crate) use artifacts::{
     find_artifacts_by_os_with_variant,
 };
 pub(crate) use branch::resolve_branch;
-pub(crate) use clone::{aur_default_git_url, clone_repo, clone_repo_ssh, clone_repo_with_auth};
+pub(crate) use clone::{
+    aur_default_git_url, clone_repo, clone_repo_ssh, clone_repo_with_auth, ssh_auth_probe,
+};
 pub(crate) use cmd::run_cmd_in;
 pub(crate) use commit::{CommitOutcome, commit_and_push_with_opts, resolve_commit_opts};
 pub(crate) use config::{

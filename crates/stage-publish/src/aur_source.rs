@@ -1277,8 +1277,43 @@ impl anodizer_core::Publisher for AurSourcePublisher {
         Ok(())
     }
 
-    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
-        Ok(anodizer_core::PreflightCheck::Pass)
+    /// Probe AUR maintainer-key reachability before any publisher runs. This
+    /// publisher has no companion state-query checker and force-pushes (the
+    /// destructive variant), so an unauthorized key is worth surfacing early —
+    /// but the SSH handshake is flaky, so a failure warns rather than blocks.
+    fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        let per_crate = anodizer_core::env_preflight::crate_universe(&ctx.config)
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.aur_source.as_ref())
+            .filter(|a| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    a.skip.as_ref(),
+                    a.skip_upload.as_ref(),
+                    a.if_condition.as_deref(),
+                )
+            })
+            .map(|a| (a.private_key.as_deref(), a.git_ssh_command.as_deref()));
+        let top_level = ctx
+            .config
+            .aur_sources
+            .iter()
+            .flatten()
+            .filter(|a| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    a.skip.as_ref(),
+                    a.skip_upload.as_ref(),
+                    a.if_condition.as_deref(),
+                )
+            })
+            .map(|a| (a.private_key.as_deref(), a.git_ssh_command.as_deref()));
+        let entries: Vec<_> = per_crate.chain(top_level).collect();
+        Ok(crate::aur::aur_ssh_auth_preflight(
+            ctx,
+            entries,
+            "upstream-aur",
+        ))
     }
 }
 

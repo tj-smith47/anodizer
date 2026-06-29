@@ -512,6 +512,109 @@ pub fn crate_universe(config: &crate::config::Config) -> Vec<&crate::config::Cra
     out
 }
 
+/// The artifact-producing stage tokens a resolved config actually
+/// configures — i.e. carries a non-empty config block for. Tokens match the
+/// determinism harness's stage names (`nfpm`, `flatpak`, `dmg`, …) and the
+/// `--skip=`/preflight vocabulary.
+///
+/// Each token gates on the SAME `Config` / `CrateConfig` field the matching
+/// stage crate's `env_requirements` reads (per-crate blocks unioned across
+/// [`crate_universe`]; top-level blocks read directly), so a consumer of this
+/// set cannot drift from which producers the pipeline will actually run. The
+/// determinism harness intersects its OS-native default partition with this
+/// set so a `--stages`-absent run only byte-verifies — and, under
+/// `--require-tools`, only requires the tools for — producers the project
+/// configures.
+///
+/// Pass a config that has already had [`crate::defaults_merge::apply_defaults`]
+/// run on it: `defaults:` materializes producer blocks onto crates, and the
+/// stage gates read the post-merge config, so a raw (pre-merge) config would
+/// miss any producer declared only under `defaults:`.
+///
+/// Block PRESENCE (≥1 entry) is the predicate; per-entry `skip:` conditions
+/// are not evaluated (a declared block is intent-to-produce — over-covering
+/// the determinism set is safe, silently under-covering is the bug this
+/// guards). The always-on stages (`build` / `source` / `archive` / `checksum`
+/// / `sbom` / `sign` / `upx`) are deliberately NOT enumerated: they carry no
+/// installer tool and emit nothing when unconfigured, so the determinism
+/// default keeps them unconditionally rather than gating on config.
+pub fn configured_producer_stages(
+    config: &crate::config::Config,
+) -> std::collections::BTreeSet<&'static str> {
+    let crates = crate_universe(config);
+    let mut out = std::collections::BTreeSet::new();
+
+    // Per-crate producer blocks (unioned across the full crate universe so
+    // per-crate workspace mode sees the same surface the pipeline runs).
+    if crates
+        .iter()
+        .any(|c| c.nfpms.iter().flatten().next().is_some())
+    {
+        out.insert("nfpm");
+    }
+    if crates
+        .iter()
+        .any(|c| c.snapcrafts.iter().flatten().next().is_some())
+    {
+        out.insert("snapcraft");
+    }
+    if crates
+        .iter()
+        .any(|c| c.dmgs.iter().flatten().next().is_some())
+    {
+        out.insert("dmg");
+    }
+    if crates
+        .iter()
+        .any(|c| c.msis.iter().flatten().next().is_some())
+    {
+        out.insert("msi");
+    }
+    if crates
+        .iter()
+        .any(|c| c.pkgs.iter().flatten().next().is_some())
+    {
+        out.insert("pkg");
+    }
+    if crates
+        .iter()
+        .any(|c| c.nsis.iter().flatten().next().is_some())
+    {
+        out.insert("nsis");
+    }
+    if crates
+        .iter()
+        .any(|c| c.app_bundles.iter().flatten().next().is_some())
+    {
+        out.insert("appbundle");
+    }
+    if crates
+        .iter()
+        .any(|c| c.flatpaks.iter().flatten().next().is_some())
+    {
+        out.insert("flatpak");
+    }
+    if crates
+        .iter()
+        .any(|c| c.dockers_v2.iter().flatten().next().is_some())
+    {
+        out.insert("docker");
+    }
+
+    // Top-level producer blocks.
+    if !config.appimages.is_empty() {
+        out.insert("appimage");
+    }
+    if !config.makeselfs.is_empty() {
+        out.insert("makeself");
+    }
+    if config.srpms.is_some() {
+        out.insert("srpm");
+    }
+
+    out
+}
+
 /// When the entire string is a single `{{ [.]Env.NAME }}` expression,
 /// return `NAME`. Used to decide whether a templated secret field maps to
 /// validatable key material from one env var (vs. a composite template,
@@ -692,6 +795,57 @@ pub fn configured_build_targets(ctx: &crate::context::Context) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_producer_stages_reports_only_present_blocks() {
+        use crate::config::{Config, CrateConfig, FlatpakConfig, NfpmConfig, SrpmConfig};
+
+        // Empty config configures no producers.
+        let empty = Config {
+            crates: vec![CrateConfig {
+                name: "x".to_string(),
+                path: ".".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(configured_producer_stages(&empty).is_empty());
+
+        // A per-crate block (nfpm/flatpak) and a top-level block (srpm) each
+        // surface their token; nothing else does.
+        let configured = Config {
+            crates: vec![CrateConfig {
+                name: "x".to_string(),
+                path: ".".to_string(),
+                nfpms: Some(vec![NfpmConfig::default()]),
+                flatpaks: Some(vec![FlatpakConfig::default()]),
+                ..Default::default()
+            }],
+            srpms: Some(SrpmConfig::default()),
+            ..Default::default()
+        };
+        let got = configured_producer_stages(&configured);
+        assert!(got.contains("nfpm"));
+        assert!(got.contains("flatpak"));
+        assert!(got.contains("srpm"));
+        assert!(!got.contains("docker"));
+        assert!(!got.contains("appimage"));
+        // Always-on base stages are never enumerated here.
+        assert!(!got.contains("build"));
+        assert!(!got.contains("archive"));
+
+        // A `Some(empty vec)` block is NOT "configured".
+        let empty_vec = Config {
+            crates: vec![CrateConfig {
+                name: "x".to_string(),
+                path: ".".to_string(),
+                nfpms: Some(vec![]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(!configured_producer_stages(&empty_vec).contains("nfpm"));
+    }
 
     fn no_env(_: &str) -> Option<String> {
         None

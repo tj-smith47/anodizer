@@ -4,10 +4,12 @@
   (schemas.microsoft.com/wix/2006/wi) is the dialect understood by BOTH the
   Linux-native `wixl` (msitools) builder used on CI and a real WiX v3 toolchain
   on Windows, so one source file covers every host. anodizer renders this through
-  its template engine first: {{ ProjectName }}, {{ Version }}, {{ MsiArch }}
-  (x64/x86/arm64), {{ BinaryPath }} (absolute path to the built .exe) and
-  {{ MsiProductCode }} (deterministic ProductCode GUID) are substituted per
-  published crate/target before the MSI is built.
+  its template engine first: {{ ProjectName }}, {{ Version }}, {{ MsiVersion }}
+  (the numeric major.minor.patch core of Version — WiX rejects a pre-release /
+  build-metadata suffix in Product/@Version), {{ MsiArch }} (x64/x86/arm64),
+  {{ BinaryPath }} (absolute path to the built .exe) and {{ MsiProductCode }}
+  (deterministic ProductCode GUID) are substituted per published crate/target
+  before the MSI is built.
 
   UpgradeCode is a FIXED GUID: it must stay stable across releases so Windows
   Installer recognises a new .msi as an upgrade of the prior install.
@@ -27,7 +29,7 @@
   <Product Id="{{ MsiProductCode }}"
            Name="{{ ProjectName }}"
            Language="1033"
-           Version="{{ Version }}.0"
+           Version="{{ MsiVersion }}.0"
            Manufacturer="TJ Smith"
            UpgradeCode="6f3a2b1c-0d4e-5a6b-7c8d-9e0f1a2b3c4d">
 

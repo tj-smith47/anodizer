@@ -26,13 +26,49 @@ pub fn render_wxs_template(ctx: &Context, wxs_path: &str) -> Result<String> {
         .with_context(|| format!("msi: render .wxs template: {wxs_path}"))
 }
 
+/// Coerce a release version into a WiX-legal `Product/@Version` value:
+/// the numeric `major.minor.patch` core, each field clamped to WiX's
+/// `0..=65534` range.
+///
+/// WiX's `Product/@Version` (v3) and `Package/@Version` (v4) reject anything
+/// that is not a `x.x.x[.x]` numeric tuple — a pre-release release such as
+/// `1.0.0-rc.1`, a build-metadata version such as `1.2.3+ci.7`, or a
+/// determinism-harness snapshot such as `0.12.1-SNAPSHOT-abc123.0` all make
+/// `candle` fail `CNDL0108`. The pre-release / build-metadata suffix carries no
+/// meaning to the Windows Installer version comparison (only the numeric tuple
+/// is significant), so dropping it is the correct coercion. Exposed to `.wxs`
+/// authors as `{{ MsiVersion }}` so the full `{{ Version }}` string stays
+/// available for display fields (Description, comments) where WiX permits it.
+pub(super) fn msi_legal_version(version: &str) -> String {
+    // Strip build metadata (`+...`) then the pre-release (`-...`), leaving the
+    // numeric core; a non-numeric or absent field collapses to 0.
+    let core = version
+        .split('+')
+        .next()
+        .unwrap_or(version)
+        .split('-')
+        .next()
+        .unwrap_or(version);
+    let mut fields = core.split('.');
+    let mut field = || {
+        fields
+            .next()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0)
+            .min(65534)
+    };
+    format!("{}.{}.{}", field(), field(), field())
+}
+
 // ---------------------------------------------------------------------------
 // Artifact creation helper
 // ---------------------------------------------------------------------------
 
 /// Populate per-binary template variables. `BinaryPath` exposes the path
 /// to user `.wxs` templates; `MsiProductCode` exposes the deterministic
-/// per-version ProductCode so a `.wxs` can pin `Product Id="{{ MsiProductCode }}"`.
+/// per-version ProductCode so a `.wxs` can pin `Product Id="{{ MsiProductCode }}"`;
+/// `MsiVersion` exposes the WiX-legal numeric version for `Product/@Version`
+/// (see [`msi_legal_version`]).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn set_msi_template_vars(
     ctx: &mut Context,
@@ -42,12 +78,14 @@ pub(super) fn set_msi_template_vars(
     binary_path: &str,
     product_code: &str,
 ) {
+    let msi_version = msi_legal_version(&ctx.version());
     ctx.template_vars_mut().set("Os", "windows");
     ctx.template_vars_mut().set("Arch", arch);
     ctx.template_vars_mut().set("Target", target.unwrap_or(""));
     ctx.template_vars_mut().set("MsiArch", msi_arch);
     ctx.template_vars_mut().set("BinaryPath", binary_path);
     ctx.template_vars_mut().set("MsiProductCode", product_code);
+    ctx.template_vars_mut().set("MsiVersion", &msi_version);
 }
 
 /// Default output filename template.
@@ -133,4 +171,50 @@ pub(super) fn clear_msi_template_vars(ctx: &mut Context) {
     ctx.template_vars_mut().set("MsiArch", "");
     ctx.template_vars_mut().set("BinaryPath", "");
     ctx.template_vars_mut().set("MsiProductCode", "");
+    ctx.template_vars_mut().set("MsiVersion", "");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::msi_legal_version;
+
+    #[test]
+    fn plain_release_passes_through() {
+        assert_eq!(msi_legal_version("0.13.0"), "0.13.0");
+        assert_eq!(msi_legal_version("1.2.3"), "1.2.3");
+    }
+
+    #[test]
+    fn prerelease_suffix_is_dropped() {
+        assert_eq!(msi_legal_version("1.0.0-rc.1"), "1.0.0");
+        // The determinism harness snapshot that triggered candle CNDL0108.
+        assert_eq!(msi_legal_version("0.12.1-SNAPSHOT-d6ccf57.0"), "0.12.1");
+    }
+
+    #[test]
+    fn build_metadata_is_dropped() {
+        assert_eq!(msi_legal_version("1.2.3+ci.7"), "1.2.3");
+        // Build metadata precedes any `-` split, so it strips even when both
+        // suffixes are present.
+        assert_eq!(msi_legal_version("1.2.3-rc.1+build.9"), "1.2.3");
+    }
+
+    #[test]
+    fn missing_fields_collapse_to_zero() {
+        assert_eq!(msi_legal_version("1"), "1.0.0");
+        assert_eq!(msi_legal_version("1.2"), "1.2.0");
+        assert_eq!(msi_legal_version(""), "0.0.0");
+    }
+
+    #[test]
+    fn out_of_range_fields_are_clamped() {
+        // WiX caps each field at 65534.
+        assert_eq!(msi_legal_version("70000.1.2"), "65534.1.2");
+        assert_eq!(msi_legal_version("1.99999.0"), "1.65534.0");
+    }
+
+    #[test]
+    fn non_numeric_core_field_collapses_to_zero() {
+        assert_eq!(msi_legal_version("x.y.z"), "0.0.0");
+    }
 }

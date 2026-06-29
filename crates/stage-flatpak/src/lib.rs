@@ -486,6 +486,16 @@ fn build_subprocess_args(
     let builder_args = vec![
         "flatpak-builder".to_string(),
         "--force-clean".to_string(),
+        // Disable the rofiles-fuse read-only overlay flatpak-builder mounts
+        // under `.flatpak-builder/rofiles/` during the build. It is purely a
+        // build-time guard against modifying cached sources (the produced
+        // ostree/bundle bytes are identical with or without it), but the FUSE
+        // mount is unreliable in containers/CI and can leak past the build —
+        // a stale `fuse.rofiles-fuse` mount inside the determinism harness's
+        // per-run git worktree makes `git worktree remove` fail with "Device
+        // or resource busy" and aborts the second run. Disabling it keeps the
+        // build hermetic without leaving a mount behind.
+        "--disable-rofiles-fuse".to_string(),
         format!("--arch={flatpak_arch}"),
         format!("--default-branch={version}"),
         "--repo=repo".to_string(),
@@ -603,6 +613,23 @@ fn run_flatpak_job(job: &FlatpakJob, verbosity: anodizer_core::log::Verbosity) -
             )
         })?;
     thread_log.check_output(output, "flatpak build-bundle")?;
+
+    // Remove the flatpak-builder scratch tree (ostree `repo/`, the
+    // `.flatpak-builder/` object cache, the `build/` checkout, the staged
+    // manifest + binary). The self-contained `.flatpak` bundle is already
+    // written to `output_path`, which sits OUTSIDE this dir, so the scratch is
+    // pure build intermediate with no downstream consumer. Leaving it under
+    // `dist/` both clutters the output and — because ostree commit objects,
+    // refs, and summaries embed per-build timestamps and member ordering —
+    // makes the determinism harness's artifact walker diff non-reproducible
+    // intermediates that never ship. Best-effort: a failed cleanup must not
+    // fail an otherwise-successful bundle.
+    if let Err(e) = std::fs::remove_dir_all(&job.work_dir) {
+        thread_log.verbose(&format!(
+            "flatpak: could not remove build scratch {}: {e}",
+            job.work_dir.display()
+        ));
+    }
 
     if let (Some(mtime), Some(repr)) = (job.output_mtime, job.output_mtime_repr.as_deref())
         && job.output_path.exists()
@@ -2220,6 +2247,9 @@ finish_args:
 
         assert_eq!(builder[0], "flatpak-builder");
         assert!(builder.contains(&"--force-clean".to_string()));
+        // rofiles-fuse disabled so the build leaves no FUSE mount that would
+        // wedge the determinism harness's per-run worktree teardown.
+        assert!(builder.contains(&"--disable-rofiles-fuse".to_string()));
         assert!(builder.contains(&"--arch=x86_64".to_string()));
         assert!(builder.contains(&"--default-branch=1.0.0".to_string()));
         assert!(builder.contains(&"--repo=repo".to_string()));

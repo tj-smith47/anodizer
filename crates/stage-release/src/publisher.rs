@@ -533,6 +533,9 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
         Ok(())
     }
 
+    /// No live probe: a GitHub release has a delete-release + delete-tag
+    /// rollback, and an invalid token fails release creation — fully reversible,
+    /// so a pre-publish credential probe would add little.
     fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         Ok(anodizer_core::PreflightCheck::Pass)
     }

@@ -199,6 +199,68 @@ fn stage_bootstrap_key(
     Ok((key_dir, key_path))
 }
 
+/// Wall-clock bound on the best-effort SSH auth probe. Short, since the probe
+/// is only a handshake — a wedged host must not stall the pre-publish gate.
+const SSH_PROBE_TIMEOUT: Duration = Duration::from_secs(25);
+
+/// Best-effort AUR maintainer-key SSH authentication probe.
+///
+/// Writes `private_key` to a per-invocation temp file and runs a
+/// non-interactive `ssh -T <user_host>` to confirm the key authenticates with
+/// the remote before the publish path attempts a push. Returns `Ok(())` when no
+/// authentication rejection was observed.
+///
+/// AUR's `git-shell` exits non-zero even on a *successful* auth (it refuses the
+/// interactive `-T` request after authenticating), so exit status alone is not
+/// a verdict — the probe fails only when `ssh` reports an actual key rejection
+/// (`Permission denied (publickey)` / `error in libcrypto`). When a custom
+/// `ssh_command` is configured the probe is skipped (`Ok`): that opt-in command
+/// cannot be reconstructed into a bare `ssh` invocation reliably.
+pub(crate) fn ssh_auth_probe(
+    user_host: &str,
+    private_key: Option<&str>,
+    ssh_command: Option<&str>,
+    label: &str,
+    log: &StageLogger,
+) -> Result<()> {
+    let Some(key_content) = private_key.filter(|k| !k.is_empty()) else {
+        return Ok(());
+    };
+    if ssh_command.is_some_and(|c| !c.is_empty()) {
+        return Ok(());
+    }
+    let (_key_dir, key_path) = stage_bootstrap_key(key_content, label)?;
+    let key_arg = key_path.to_string_lossy();
+    let mut cmd = Command::new("ssh");
+    cmd.args([
+        "-i",
+        key_arg.as_ref(),
+        "-o",
+        "StrictHostKeyChecking=accept-new",
+        "-o",
+        "BatchMode=yes",
+        "-F",
+        "/dev/null",
+        "-T",
+        user_host,
+    ]);
+    let output = run_capture_timeout(&mut cmd, log, label, SSH_PROBE_TIMEOUT)
+        .with_context(|| format!("{label}: ssh auth probe spawn"))?;
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let lower = stderr.to_ascii_lowercase();
+    if lower.contains("permission denied")
+        || lower.contains("publickey")
+        || lower.contains("error in libcrypto")
+        || lower.contains("too many authentication failures")
+    {
+        anyhow::bail!(
+            "{label}: SSH key not accepted by {user_host}: {}",
+            stderr.trim()
+        );
+    }
+    Ok(())
+}
+
 /// `GIT_SSH_COMMAND` string that authenticates with the key at `key_path`.
 ///
 /// The path is single-quoted: git hands this string to a shell, and an

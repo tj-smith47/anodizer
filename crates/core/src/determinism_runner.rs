@@ -36,6 +36,14 @@ use std::time::Duration;
 /// `starts_with` / glob matching) so a new stage with a similar name
 /// (e.g. `docker-extra`) doesn't accidentally inherit the skip.
 pub const SIDE_EFFECT_STAGES: &[&str] = &[
+    // Build phase — network + credential side effect. notarization is an
+    // Apple-server round-trip (`notarytool` submit + an Apple-issued ticket
+    // stapled to the artifact): the ticket is server-generated so the output
+    // can never be byte-reproduced in a hermetic rebuild, and the submit is
+    // credential-gated (App Store Connect API key). Listed here (matching its
+    // build-phase position in `build_release_pipeline`, before the publish
+    // group) so the harness never fires it from inside the sealed build.
+    "notarize",
     // Publish phase — upstream side effects.
     "release",
     "docker",

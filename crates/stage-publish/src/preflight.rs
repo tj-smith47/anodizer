@@ -509,6 +509,7 @@ pub fn run_preflight(ctx: &mut Context, log: &StageLogger) -> Result<PreflightRe
         &RealCheckerFactory,
         anodizer_core::signing::gpg_supports_faked_system_time,
         &dry_run_runner,
+        true,
     )
 }
 
@@ -534,6 +535,7 @@ pub fn run_preflight_with_factory(
         factory,
         anodizer_core::signing::gpg_supports_faked_system_time,
         &noop_dry_run_runner,
+        false,
     )
 }
 
@@ -550,7 +552,7 @@ pub fn run_preflight_with_factory_and_gpg_probe(
     factory: &dyn CheckerFactory,
     gpg_probe: fn() -> bool,
 ) -> Result<PreflightReport> {
-    run_preflight_inner(ctx, log, factory, gpg_probe, &noop_dry_run_runner)
+    run_preflight_inner(ctx, log, factory, gpg_probe, &noop_dry_run_runner, false)
 }
 
 /// A dry-run runner that never spawns and always reports the simulation
@@ -572,9 +574,14 @@ fn run_preflight_inner(
     factory: &dyn CheckerFactory,
     gpg_probe: fn() -> bool,
     dry_run_runner: &DryRunRunner<'_>,
+    live_publisher_preflight: bool,
 ) -> Result<PreflightReport> {
     let mut report = PreflightReport::new();
-    let policy = ctx.retry_policy();
+    // Pre-publish state queries are an advisory gate, not a write that must
+    // land; the shallow probe policy keeps a wedged endpoint from stalling the
+    // gate across every configured publisher (the prod ladder is ~27min worst
+    // case). Per-request HTTP timeouts still bound each attempt.
+    let policy = RetryPolicy::PREFLIGHT;
     let version = ctx.version();
 
     // Walk every crate in the universe and collect per-publisher entries.
@@ -664,7 +671,7 @@ fn run_preflight_inner(
         }
     }
 
-    run_publisher_preflight_extension(ctx, &mut report)?;
+    run_publisher_preflight_extension(ctx, &mut report, live_publisher_preflight)?;
 
     run_gpg_capability_probe(ctx, &mut report, gpg_probe);
 
@@ -739,7 +746,7 @@ fn run_cargo_publish_simulation(
         return;
     }
 
-    let policy = ctx.retry_policy();
+    let policy = RetryPolicy::PREFLIGHT;
     let checker = factory.cargo(policy);
     let index_query = |krate: &str, version: &str| checker.check(krate, version);
 
@@ -1197,11 +1204,27 @@ fn run_gpg_capability_probe(
 fn run_publisher_preflight_extension(
     ctx: &anodizer_core::context::Context,
     report: &mut PreflightReport,
+    // Publisher `preflight()` hooks can perform live credential / repo probes
+    // (cargo/npm token validity, GitHub-repo write scope, AUR ssh auth). The
+    // production `run_preflight` enables them; the injected-factory test seams
+    // disable them so unit tests stay hermetic (the rollback-scope branch below
+    // is pure and always runs).
+    live_publisher_preflight: bool,
 ) -> Result<()> {
     let publishers = crate::registry::configured_publishers(ctx);
     let mut required_missing_scope: Vec<String> = Vec::new();
 
     for p in &publishers {
+        // Mirror the run path's skip set (`dispatch::dispatch`): a publisher
+        // the release will not run must contribute nothing to the gate — no
+        // live credential/repo probe AND no rollback-scope blocker. Probing a
+        // deselected (`--skip`/`--publishers`) or nightly-skipped publisher can
+        // manufacture a false Blocker against an irreversible door that never
+        // opens this run.
+        if ctx.publisher_deselected(p.name()) || (ctx.is_nightly() && p.skips_on_nightly()) {
+            continue;
+        }
+
         // ---- rollback scope check ------------------------------------
         if let Some(label) = p.rollback_scope_needed()
             && !crate::scope::scope_available_with_env(label, ctx.env_source())
@@ -1218,6 +1241,9 @@ fn run_publisher_preflight_extension(
         }
 
         // ---- publisher self-check ------------------------------------
+        if !live_publisher_preflight {
+            continue;
+        }
         match p.preflight(ctx) {
             Ok(anodizer_core::PreflightCheck::Pass) => {}
             Ok(anodizer_core::PreflightCheck::Warning(msg)) => {
@@ -2041,6 +2067,57 @@ mod tests {
             msg.contains("cargo"),
             "error message must name the offending publisher: {}",
             msg
+        );
+    }
+
+    #[test]
+    fn deselected_publisher_is_not_preflighted() {
+        use anodizer_core::context::RollbackMode;
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        // Same fixture that bails in
+        // `preflight_bails_when_required_publisher_missing_scope_and_rollback_best_effort`
+        // — except cargo is now deselected via `--skip cargo`, so the run path
+        // would never run it and the gate must not bail (nor warn) on it.
+        let mut ctx = fixture_cargo_publisher(false, Some(RollbackMode::BestEffort));
+        ctx.set_env_source(anodizer_core::MapEnvSource::new());
+        ctx.options.skip_stages = vec!["cargo".to_string()];
+        let log = StageLogger::new("preflight", Verbosity::Normal);
+        let factory = empty_factory();
+
+        let report = run_preflight_with_factory(&mut ctx, &log, &factory)
+            .expect("a deselected required publisher must not bail the rollback-scope gate");
+        assert!(
+            report.blockers.is_empty(),
+            "deselected cargo must contribute no blocker: {:?}",
+            report.blockers
+        );
+        assert!(
+            !report.warnings.iter().any(|w| w.contains("cargo")),
+            "deselected cargo must contribute no scope warning: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn nightly_skipped_publisher_is_not_preflighted() {
+        use anodizer_core::context::RollbackMode;
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        // cargo `skips_on_nightly() == true`; under `--nightly` it never runs,
+        // so its missing rollback scope must not bail the best-effort gate.
+        let mut ctx = fixture_cargo_publisher(false, Some(RollbackMode::BestEffort));
+        ctx.set_env_source(anodizer_core::MapEnvSource::new());
+        ctx.options.nightly = true;
+        let log = StageLogger::new("preflight", Verbosity::Normal);
+        let factory = empty_factory();
+
+        let report = run_preflight_with_factory(&mut ctx, &log, &factory)
+            .expect("a nightly-skipped required publisher must not bail the rollback-scope gate");
+        assert!(
+            report.blockers.is_empty(),
+            "nightly-skipped cargo must contribute no blocker: {:?}",
+            report.blockers
         );
     }
 

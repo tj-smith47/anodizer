@@ -114,10 +114,54 @@ jobs:
           UPLOAD_JARVISPRO_SECRET: ${{ secrets.UPLOAD_JARVISPRO_SECRET }}
           UPLOAD_JARVISPRO_USERNAME: ${{ secrets.UPLOAD_JARVISPRO_USERNAME }}
 
+  # Pre-tag in-cluster reachability gate. The github-hosted `preflight` job
+  # above cannot route to the in-cluster endpoints — the blob store
+  # (minio.jarvispro.svc.cluster.local) and the uploads mirror
+  # (api-server.jarvispro.svc.cluster.local) — and so `--skip=blob`s the former
+  # while the latter's reachability goes unchecked, leaving BOTH unverified
+  # until publish time, on the one irreversible leg of the run. This job closes
+  # that gap on arc-anodizer, the ONLY runner that can reach the cluster, so an
+  # unreachable MinIO OR upload host fails BEFORE a tag is cut (fully reversible
+  # — nothing has shipped).
+  #
+  # It runs the standalone `preflight` command, NOT `release
+  # --preflight-secrets`: the secrets-only scope retains only credential
+  # requirements and DROPS endpoint reachability, so it can never probe an
+  # endpoint. The publish-only scope here keeps the `Endpoint` requirements the
+  # blob stage and the uploads publisher emit, driving a real HTTP round-trip
+  # per endpoint (any response — incl 403/404 — is reachable; a transport
+  # failure is not). `--publishers blob,uploads` selects only those two
+  # endpoint-bearing surfaces; `--skip sign,verify-release` drops the two other
+  # publish-time stages that would otherwise demand cosign/GPG (blob consumes
+  # detached signatures) and docker (install_smoke), neither of which bears on
+  # endpoint reachability. AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY /
+  # MINIO_ENDPOINT are ambient on arc-anodizer, so no secret env block is
+  # needed — the same reason the github-hosted gate cannot validate them.
+  blob-preflight:
+    name: Preflight in-cluster endpoints
+    if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
+    runs-on: arc-anodizer
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read # cross-run download of the CI-built anodizer-linux artifact
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          ref: ${{ inputs.tag || github.event.workflow_run.head_sha || github.sha }}
+      - name: Probe in-cluster blob + upload endpoint reachability
+        uses: tj-smith47/anodizer-action@v1
+        with:
+          from-artifact: anodizer-linux
+          artifact-workflow: ci.yml
+          artifact-run-id: auto
+          args: preflight --publish-only --publishers blob,uploads --skip sign,verify-release
+
   tag:
     name: Auto-tag
-    needs: [preflight]
-    if: ${{ needs.preflight.result == 'success' && (github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch') }}
+    needs: [preflight, blob-preflight]
+    if: ${{ needs.preflight.result == 'success' && needs.blob-preflight.result == 'success' && (github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch') }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

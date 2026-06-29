@@ -21,13 +21,14 @@ fn linuxdeploy_args_canonical_order() {
     let args = linuxdeploy_args(
         Path::new("/dist/MyApp.AppDir"),
         Path::new("/dist/MyApp.AppDir/MyApp.desktop"),
-        Path::new("/dist/MyApp.AppDir/MyApp.png"),
         &[],
     );
     let strs: Vec<String> = args
         .iter()
         .map(|a| a.to_string_lossy().to_string())
         .collect();
+    // No `-i`: the icon is pre-placed into the AppDir icon-theme tree and
+    // resolved from the desktop `Icon=` key (see `linuxdeploy_args` docs).
     assert_eq!(
         strs,
         vec![
@@ -35,11 +36,13 @@ fn linuxdeploy_args_canonical_order() {
             "/dist/MyApp.AppDir",
             "-d",
             "/dist/MyApp.AppDir/MyApp.desktop",
-            "-i",
-            "/dist/MyApp.AppDir/MyApp.png",
             "--output",
             "appimage",
         ]
+    );
+    assert!(
+        !strs.iter().any(|s| s == "-i"),
+        "icon must not be passed via -i (linuxdeploy would resolution-reject it)"
     );
 }
 
@@ -48,7 +51,6 @@ fn linuxdeploy_args_appends_extra_args() {
     let args = linuxdeploy_args(
         Path::new("/a/X.AppDir"),
         Path::new("/a/X.desktop"),
-        Path::new("/a/X.png"),
         &["--custom-arg".to_string(), "value".to_string()],
     );
     let strs: Vec<String> = args
@@ -65,12 +67,24 @@ fn linuxdeploy_args_appends_extra_args() {
 
 #[test]
 fn linuxdeploy_env_sets_required_vars() {
-    let env = linuxdeploy_env("1.2.3", "x86_64", "MyApp", None);
+    let env = linuxdeploy_env(
+        "1.2.3",
+        "x86_64",
+        "MyApp",
+        "MyApp-1.2.3-x86_64.AppImage",
+        None,
+    );
     let map: std::collections::HashMap<_, _> = env.into_iter().collect();
     assert_eq!(map.get("VERSION").unwrap(), "1.2.3");
     assert_eq!(map.get("ARCH").unwrap(), "x86_64");
     assert_eq!(map.get("APP").unwrap(), "MyApp");
-    assert_eq!(map.get("OUTPUT").unwrap(), "appimage");
+    // OUTPUT / LDAI_OUTPUT are the output FILENAME (both names for plugin
+    // version compat), NOT a plugin selector.
+    assert_eq!(map.get("OUTPUT").unwrap(), "MyApp-1.2.3-x86_64.AppImage");
+    assert_eq!(
+        map.get("LDAI_OUTPUT").unwrap(),
+        "MyApp-1.2.3-x86_64.AppImage"
+    );
     assert!(
         !map.contains_key("UPDATE_INFORMATION"),
         "UPDATE_INFORMATION must be absent when update_information is unset"
@@ -80,7 +94,13 @@ fn linuxdeploy_env_sets_required_vars() {
 #[test]
 fn linuxdeploy_env_sets_update_information_when_present() {
     let ui = "gh-releases-zsync|helix-editor|helix|latest|helix-*.AppImage.zsync";
-    let env = linuxdeploy_env("1.2.3", "aarch64", "helix", Some(ui));
+    let env = linuxdeploy_env(
+        "1.2.3",
+        "aarch64",
+        "helix",
+        "helix-1.2.3-aarch64.AppImage",
+        Some(ui),
+    );
     let map: std::collections::HashMap<_, _> = env.into_iter().collect();
     assert_eq!(map.get("UPDATE_INFORMATION").unwrap(), ui);
     assert_eq!(map.get("ARCH").unwrap(), "aarch64");
@@ -226,6 +246,90 @@ fn assemble_appdir_places_core_files() {
     assert_eq!(desktop_dst, job.appdir_root.join("MyApp.desktop"));
     assert!(icon_dst.is_file());
     assert_eq!(icon_dst, job.appdir_root.join("myapp.png"));
+    // Icon also pre-placed into the icon-theme tree (no real PNG header in the
+    // fixture → 256x256 fallback dir) so linuxdeploy resolves it without `-i`.
+    assert!(
+        job.appdir_root
+            .join("usr/share/icons/hicolor/256x256/apps/myapp.png")
+            .is_file()
+    );
+}
+
+#[test]
+fn assemble_appdir_deploys_icon_under_desktop_icon_key() {
+    // Real-config shape: the icon FILE basename (logo) differs from the desktop
+    // `Icon=` key (myapp). The icon must deploy under the `Icon=` name, both at
+    // the AppDir root and in the theme tree, or linuxdeploy can't resolve it.
+    let tmp = TempDir::new().unwrap();
+    let mut job = sample_job(tmp.path(), vec![]);
+    let desktop = tmp.path().join("src/MyApp.desktop");
+    write(&desktop, b"[Desktop Entry]\nName=MyApp\nIcon=myapp\n");
+    let icon = tmp.path().join("src/logo.png");
+    write(&icon, b"PNG-not-a-real-header");
+    job.desktop_src = desktop;
+    job.icon_src = icon;
+
+    let (_desktop_dst, icon_dst) = assemble_appdir(&job.appdir_root, &job).unwrap();
+
+    assert_eq!(icon_dst, job.appdir_root.join("myapp.png"));
+    assert!(
+        job.appdir_root
+            .join("usr/share/icons/hicolor/256x256/apps/myapp.png")
+            .is_file(),
+        "icon must land in the theme tree under the desktop Icon= key"
+    );
+    assert!(
+        !job.appdir_root.join("logo.png").exists(),
+        "icon must NOT keep its source basename when Icon= differs"
+    );
+}
+
+#[test]
+fn png_dimensions_reads_real_header() {
+    // Minimal valid PNG header: signature + IHDR length + "IHDR" + 1024x1024.
+    let tmp = TempDir::new().unwrap();
+    let mut bytes = b"\x89PNG\r\n\x1a\n".to_vec();
+    bytes.extend_from_slice(&[0, 0, 0, 13]); // IHDR chunk length
+    bytes.extend_from_slice(b"IHDR");
+    bytes.extend_from_slice(&1024u32.to_be_bytes()); // width
+    bytes.extend_from_slice(&1024u32.to_be_bytes()); // height
+    bytes.extend_from_slice(&[8, 6, 0, 0, 0]); // bit depth + color type + rest
+    let p = tmp.path().join("logo.png");
+    write(&p, &bytes);
+
+    assert_eq!(png_dimensions(&p), Some((1024, 1024)));
+    assert_eq!(icon_theme_subdir(&p), "1024x1024");
+}
+
+#[test]
+fn png_dimensions_none_for_non_png() {
+    let tmp = TempDir::new().unwrap();
+    let p = tmp.path().join("x.png");
+    write(&p, b"not a png");
+    assert_eq!(png_dimensions(&p), None);
+    assert_eq!(icon_theme_subdir(&p), "256x256");
+}
+
+#[test]
+fn icon_theme_subdir_scalable_for_svg() {
+    assert_eq!(icon_theme_subdir(Path::new("/a/logo.svg")), "scalable");
+    assert_eq!(icon_theme_subdir(Path::new("/a/logo.SVG")), "scalable");
+}
+
+#[test]
+fn desktop_icon_name_parses_and_strips_extension() {
+    let tmp = TempDir::new().unwrap();
+    let bare = tmp.path().join("bare.desktop");
+    write(&bare, b"[Desktop Entry]\nName=X\nIcon=anodizer\n");
+    assert_eq!(desktop_icon_name(&bare).as_deref(), Some("anodizer"));
+
+    let withext = tmp.path().join("ext.desktop");
+    write(&withext, b"[Desktop Entry]\nIcon=logo.png\n");
+    assert_eq!(desktop_icon_name(&withext).as_deref(), Some("logo"));
+
+    let none = tmp.path().join("none.desktop");
+    write(&none, b"[Desktop Entry]\nName=X\n");
+    assert_eq!(desktop_icon_name(&none), None);
 }
 
 #[test]
@@ -856,6 +960,7 @@ fn update_information_threads_into_job() {
         &jobs[0].version,
         &jobs[0].arch_token,
         &jobs[0].app_name,
+        &jobs[0].filename,
         jobs[0].update_information.as_deref(),
     );
     let map: std::collections::HashMap<_, _> = env.into_iter().collect();

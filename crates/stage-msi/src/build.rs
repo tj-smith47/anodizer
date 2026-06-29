@@ -27,6 +27,12 @@ use super::wix::{
 /// disambiguates two amd64 builds of one target in the rendered name.
 type MsiBinarySelection = (Option<String>, Option<String>, String);
 
+/// Actionable hint appended when candle rejects Product/@Version (CNDL0108).
+const MSI_VERSION_HINT: &str = "WiX rejected Product/@Version as non-numeric — the version likely carries a \
+     pre-release or build-metadata suffix (e.g. `-rc.1`, `-SNAPSHOT-…`, `+build`). \
+     Use `{{ MsiVersion }}` (numeric major.minor.patch) for Product/@Version / \
+     Package/@Version in your .wxs; reserve `{{ Version }}` for display fields.";
+
 /// Build an MSI `Artifact` and collect archive paths to remove when `replace` is set.
 #[allow(clippy::too_many_arguments)]
 fn make_msi_artifact(
@@ -618,7 +624,24 @@ fn execute_msi_build(
                 commands.primary[0], crate_name, target
             )
         })?;
-    log.check_output(output, &commands.primary[0])?;
+    // WiX rejects a non-numeric Product/@Version with CNDL0108 (and the
+    // cascading CNDL0010 "Version not found"); the usual cause is a `.wxs`
+    // interpolating `{{ Version }}` — which may carry a pre-release / build
+    // suffix — where `{{ MsiVersion }}` is required. Translate candle's opaque
+    // exit code into the actionable fix before surfacing the failure.
+    let version_rejected = !output.status.success() && {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        ["CNDL0108", "CNDL0010"]
+            .iter()
+            .any(|code| stdout.contains(code) || stderr.contains(code))
+    };
+    let checked = log.check_output(output, &commands.primary[0]);
+    if version_rejected {
+        checked.context(MSI_VERSION_HINT)?;
+    } else {
+        checked?;
+    }
 
     if let Some(link_cmd) = &commands.link {
         log.verbose(&format!("running {}", link_cmd.join(" ")));
