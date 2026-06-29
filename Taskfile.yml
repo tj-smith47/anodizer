@@ -71,11 +71,13 @@ tasks:
       - cargo run -p anodizer --release -- release --snapshot --clean --host-targets --summary-json=dist/snapshot-summary.json
 
   prepush:
-    # Discoverable alias for the canonical full gate; reuses `release:snapshot`
-    # rather than duplicating its flag set so the two can never drift.
-    desc: "Run before pushing: FULL real build across all host-buildable targets + emission-validate. Alias of `release:snapshot`."
+    # The canonical pre-push gate: the full real build + emission check AND the
+    # workspace suite on every reachable OS, so a push is proven cross-platform
+    # rather than on this box alone. `test:os` SKIPs unreachable hosts loudly.
+    desc: "Run before pushing: FULL real build + emission-validate (release:snapshot) AND the workspace suite on every reachable OS (test:os)."
     cmds:
       - task: release:snapshot
+      - task: test:os
 
   summary:show:
     desc: "Pretty-print the most recent run summary."
@@ -109,6 +111,14 @@ tasks:
     deps: [_check:tmp-headroom]
     cmds:
       - cargo nextest run --workspace --no-fail-fast --lib
+
+  test:os:
+    desc: "Run the workspace suite on every REACHABLE OS host (this box + winserver + mbp); offline hosts SKIP loudly; fail if any reachable host fails. Ships HEAD via git bundle (proves the un-pushed commit)."
+    # The local leg runs `cargo test`; guard tmpfs headroom like every other
+    # cargo task so a standalone `task test:os` can't OOM the linker.
+    deps: [_check:tmp-headroom]
+    cmds:
+      - bash .claude/scripts/test-os.sh
 
   docs:
     desc: Generate reference docs (CLI + configuration)
