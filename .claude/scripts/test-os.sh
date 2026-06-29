@@ -69,10 +69,15 @@ launch_winserver() {
   # any stale rc; (re)start the detached S4U task (survives ssh logout / the
   # ~39-min Windows session cap that reaps channel-held child process trees).
   # Launch stderr is captured (SUG4) so a FAIL(launch) is diagnosable.
+  # The runner is written UTF-8 WITH a BOM (the 3-arg WriteAllText overload):
+  # Windows PowerShell 5.1 reads a BOM-less file as ANSI, so any non-ASCII byte
+  # in the script (e.g. an em-dash) corrupts a string literal and the whole file
+  # fails to parse — powershell exits 1 before running a line, leaving no rc and
+  # a stale log that the gate can only resolve as a one-hour timeout.
   # SC2029: $b64/$SHA are MEANT to expand client-side — we inject this commit's
   # bundled runner + SHA into the remote command.
   # shellcheck disable=SC2029
-  ssh winserver "Stop-ScheduledTask -TaskName 'anodizer-test-gate' -ea 0; Copy-Item (Join-Path \$env:USERPROFILE 'gate.bundle') 'C:\gate.bundle' -Force; if (-not (Test-Path 'C:\anodizer\.git')) { git clone -q 'C:\gate.bundle' 'C:\anodizer' }; [IO.File]::WriteAllText('C:\anodizer\test-os-winserver.ps1',[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$b64'))); Remove-Item C:\anodizer\win_test_gate.rc -ea 0; \$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -File C:\anodizer\test-os-winserver.ps1 -Sha $SHA'; \$p=New-ScheduledTaskPrincipal -UserId 'administrator' -LogonType S4U -RunLevel Highest; Register-ScheduledTask -TaskName 'anodizer-test-gate' -Action \$a -Principal \$p -Force | Out-Null; Start-ScheduledTask -TaskName 'anodizer-test-gate'" >"$CACHE/launch-winserver.err" 2>&1
+  ssh winserver "Stop-ScheduledTask -TaskName 'anodizer-test-gate' -ea 0; Copy-Item (Join-Path \$env:USERPROFILE 'gate.bundle') 'C:\gate.bundle' -Force; if (-not (Test-Path 'C:\anodizer\.git')) { git clone -q 'C:\gate.bundle' 'C:\anodizer' }; [IO.File]::WriteAllText('C:\anodizer\test-os-winserver.ps1',[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$b64')),[Text.Encoding]::UTF8); Remove-Item C:\anodizer\win_test_gate.rc -ea 0; \$a=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -File C:\anodizer\test-os-winserver.ps1 -Sha $SHA'; \$p=New-ScheduledTaskPrincipal -UserId 'administrator' -LogonType S4U -RunLevel Highest; Register-ScheduledTask -TaskName 'anodizer-test-gate' -Action \$a -Principal \$p -Force | Out-Null; Start-ScheduledTask -TaskName 'anodizer-test-gate'" >"$CACHE/launch-winserver.err" 2>&1
 }
 poll_winserver() { ssh winserver "Get-Content C:\anodizer\win_test_gate.rc -ea 0" 2>/dev/null | rc_of; }
 
