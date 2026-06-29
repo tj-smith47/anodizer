@@ -7,7 +7,7 @@ use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::run::run_capture_timeout;
 use anyhow::{Context as _, Result};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
@@ -20,6 +20,27 @@ use super::template::render_or_warn;
 /// expiry the clone subtree is killed and the error surfaces (redacted). Sized
 /// as a remote clone/fetch, matching the release-backend/bucket bound.
 const GIT_CLONE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Directory a `git clone` should run *from*.
+///
+/// A clone touches only absolute paths (the remote URL and the absolute clone
+/// target), so it must never depend on the inherited process CWD. git calls
+/// `getcwd()` at startup and aborts with exit 128 if that CWD was deleted —
+/// which a peer `cargo test` thread does whenever it drops a
+/// `set_current_dir`-ed `TempDir`, leaving the shared process CWD dangling
+/// (tests are threads in one process under the default schedule). The clone
+/// target's parent is guaranteed to exist (git creates only the final path
+/// component) and is the natural anchor; the system temp dir is the fallback
+/// when the target has no usable parent — both a filesystem root (`parent()`
+/// is `None`) and a relative single-component path (`parent()` is `Some("")`,
+/// which would `chdir("")` → `ENOENT`), so the empty parent is filtered out.
+fn clone_cwd(tmp_dir: &Path) -> PathBuf {
+    tmp_dir
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(std::env::temp_dir)
+}
 
 /// Clone a git repo into `tmp_dir` with token-based auth.
 ///
@@ -50,6 +71,7 @@ pub(crate) fn clone_repo_with_auth(
     let mut cmd = Command::new("git");
     cmd.args(&clone_args)
         .arg(repo_path_str.as_ref())
+        .current_dir(clone_cwd(tmp_dir))
         .env("GIT_TERMINAL_PROMPT", "0");
     // Bounded: the clone hits the remote, so a stalled host must not hang the
     // release with no deadline. A deadline kill surfaces as a Retriable error.
@@ -68,7 +90,7 @@ pub(crate) fn clone_repo_with_auth(
     log.check_output(output, &format!("{label}: git clone"))?;
 
     // Configure the remote URL for subsequent push operations with auth.
-    // The push URL embeds the token in `argv`, so we route through the
+    // The push URL embeds the token in `argv`, so it routes through the
     // `_redacted` variant so failures don't leak it via the error message.
     if let Some(tok) = token {
         let push_url = inject_token_in_url(repo_url, tok);
@@ -110,10 +132,10 @@ pub(crate) fn clone_repo_ssh(
     cmd.args(["clone", "--depth=1", git_url]);
     let repo_path_str = tmp_dir.to_string_lossy();
     cmd.arg(repo_path_str.as_ref());
+    cmd.current_dir(clone_cwd(tmp_dir));
 
-    // Determine the GIT_SSH_COMMAND to use.
-    // We may need to persist the SSH command string for configuring the repo
-    // after clone, so track it here.
+    // Determine the GIT_SSH_COMMAND to use. The SSH command string may need to
+    // be persisted for configuring the repo after clone, so track it here.
     let mut ssh_cmd_for_config: Option<String> = None;
     // Guard for the bootstrap key's tempdir. Holding it here keeps the key
     // alive for the clone; dropping it on EVERY exit path (success, clone
@@ -148,8 +170,8 @@ pub(crate) fn clone_repo_ssh(
     )
     .with_context(|| format!("{label}: git clone via SSH: spawn"))?;
     // SSH credentials are passed via `GIT_SSH_COMMAND` env / sidecar key
-    // file — they never appear in `argv` or in git's stdio. We still call
-    // through `redact_output_token` with `None` to keep the call shape
+    // file — they never appear in `argv` or in git's stdio. The output still
+    // routes through `redact_output_token` with `None` to keep the call shape
     // symmetric with `clone_repo_with_auth` and to make the absence of a
     // secret-on-argv contract explicit at the read-site.
     let output = redact_output_token(output, None);
@@ -244,6 +266,10 @@ pub(crate) fn ssh_auth_probe(
         "-T",
         user_host,
     ]);
+    // Probe uses only absolute paths (`-i <abs key>`, `-F /dev/null`); anchor
+    // its CWD too so the whole module stays uniformly independent of the
+    // (test-deletable) inherited process CWD.
+    cmd.current_dir(std::env::temp_dir());
     let output = run_capture_timeout(&mut cmd, log, label, SSH_PROBE_TIMEOUT)
         .with_context(|| format!("{label}: ssh auth probe spawn"))?;
     let stderr = String::from_utf8_lossy(&output.stderr);
@@ -982,9 +1008,9 @@ mod tests {
 
     /// A non-"github" `token_type` triggers a warn but does NOT abort
     /// dispatch — anodizer currently only implements GitHub, but the
-    /// user-facing contract is "warn, don't fail". We assert the warn
+    /// user-facing contract is "warn, don't fail". Asserts the warn
     /// landed in the capture sink, AND that the call proceeded into the
-    /// SSH path (succeeds with our local bare remote).
+    /// SSH path (succeeds against the local bare remote).
     #[test]
     fn clone_repo_warns_on_non_github_token_type_but_proceeds() {
         let (url, _bare, _work) = make_bare_remote();
@@ -1045,5 +1071,92 @@ mod tests {
                 "expected no warn for token_type={tt:?}"
             );
         }
+    }
+
+    /// Regression: a clone must not depend on the inherited process CWD.
+    ///
+    /// Under `cargo test`'s default schedule, tests are threads in one process
+    /// sharing a single CWD; a peer test that `set_current_dir`-ed into a
+    /// `TempDir` which then dropped leaves that CWD dangling. `git clone` calls
+    /// `getcwd()` at startup and aborts with exit 128 ("cannot access parent
+    /// directories" → "must be run in a work tree") when the inherited CWD is
+    /// gone, even though a clone only ever touches absolute paths (the URL and
+    /// the absolute target). Anchoring the clone at the target's parent
+    /// (`clone_cwd`) makes both helpers CWD-independent. `cargo nextest` masks
+    /// the bug by running each test in its own process; this reproduces it
+    /// in-process.
+    ///
+    /// Marked `#[serial(cwd)]` so it is mutually exclusive with any other
+    /// CWD-mutating test in the workspace-canonical cwd group (it is currently
+    /// the only one in this binary). serial_test cannot exclude *unkeyed*
+    /// parallel tests, so the interval in which the process CWD is dangling is
+    /// kept to a single clone call and restored immediately between the two —
+    /// best-effort under the in-process `cargo test` runner; `cargo nextest`
+    /// isolates each test in its own process.
+    #[test]
+    #[serial_test::serial(cwd)]
+    fn clone_does_not_depend_on_process_cwd() {
+        let (url, _bare, _work) = make_bare_remote();
+        let log = StageLogger::new("test", Verbosity::Quiet);
+
+        // The clone target's PARENT must outlive the clone (git creates only
+        // the final path component); hold its tempdir for the whole test.
+        let target_parent = tempfile::tempdir().unwrap();
+
+        // Capture a valid CWD to restore between/after clones. Taken BEFORE the
+        // process CWD is made dangling, since `current_dir()` itself fails once
+        // the inherited CWD is gone.
+        let original = std::env::current_dir().unwrap();
+
+        // Dangle the process CWD (enter a fresh tempdir, drop it) for ONLY the
+        // duration of one clone, then restore — exactly the state a peer test
+        // leaves behind, but keeping the dangling window to a single call so a
+        // parallel unkeyed reader can't observe a dead CWD across both.
+        let with_dangling_cwd = |f: &mut dyn FnMut()| {
+            let scratch = tempfile::tempdir().unwrap();
+            std::env::set_current_dir(scratch.path()).unwrap(); // cwd-ok: serialised by #[serial(cwd)]
+            drop(scratch);
+            f();
+            std::env::set_current_dir(&original).unwrap(); // cwd-ok: restore immediately
+        };
+
+        // With the CWD dangling, both helpers must still clone because they
+        // anchor at the target's parent rather than inheriting the dead CWD.
+        let https_dest = target_parent.path().join("https-clone");
+        let mut https = Ok(());
+        with_dangling_cwd(&mut || {
+            https = clone_repo_with_auth(&url, None, &https_dest, "https", &log)
+        });
+        let ssh_dest = target_parent.path().join("ssh-clone");
+        let mut ssh = Ok(());
+        with_dangling_cwd(&mut || ssh = clone_repo_ssh(&url, None, None, &ssh_dest, "ssh", &log));
+
+        https.expect("HTTPS clone must succeed with a dangling process CWD");
+        ssh.expect("SSH clone must succeed with a dangling process CWD");
+        assert!(
+            https_dest.join("README").exists(),
+            "HTTPS clone should have populated the work tree"
+        );
+        assert!(
+            ssh_dest.join("README").exists(),
+            "SSH clone should have populated the work tree"
+        );
+    }
+
+    /// `clone_cwd` must yield a directory that always exists, for every shape
+    /// of target — including the two that a naive `parent()` mishandles: a
+    /// relative single-component path (`parent()` is `Some("")`, which would
+    /// `chdir("")` → ENOENT) and a filesystem root (`parent()` is `None`).
+    #[test]
+    fn clone_cwd_falls_back_when_target_has_no_usable_parent() {
+        // Absolute target with a real parent → that parent.
+        assert_eq!(
+            clone_cwd(Path::new("/var/anodizer-stage/clone-target")),
+            Path::new("/var/anodizer-stage")
+        );
+        // Relative single-component target → empty parent → temp-dir fallback.
+        assert_eq!(clone_cwd(Path::new("clone-target")), std::env::temp_dir());
+        // Filesystem root → no parent → temp-dir fallback.
+        assert_eq!(clone_cwd(Path::new("/")), std::env::temp_dir());
     }
 }
