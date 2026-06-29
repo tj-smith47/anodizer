@@ -782,12 +782,16 @@ fn run_sbom(ctx: &mut Context, dist: &Path, sbom_cfg: &SbomConfig) -> Result<()>
 ///   `<project>-<version>.<ext>` legacy filename, no per-artifact template
 ///   rendering.
 /// * `artifacts: archive|binary|source|package|diskimage|installer` →
-///   one SBOM per matched artifact, rendered through `documents[0]` so
-///   the user gets the same per-archive layout (`<artifact>.cdx.json`)
-///   syft would have produced. The SBOM *contents* are Cargo.lock-derived
-///   and byte-identical across the iteration (every archive shares the
-///   same workspace dependency graph), so the harness sees stable bytes
-///   while consumers keep the per-artifact filename contract.
+///   STILL one workspace SBOM at `<project>-<version>.<ext>`, NOT one per
+///   matched artifact. The built-in output is Cargo.lock-derived (it catalogs
+///   the workspace dependency graph), so it is archive-independent; emitting N
+///   differently-named copies of identical bytes would only multiply the
+///   downstream checksum + signature object count. The matched-artifact scan
+///   is still load-bearing: it gates the strict-guard (an `archive` SBOM
+///   configured against a build that produced none is a config bug) and the
+///   first match supplies the subject verdict record the release `ids:` filter
+///   inherits. The emitted document is target-independent (`target: None`) for
+///   the same reason — see the registration site below.
 fn run_sbom_builtin(
     ctx: &mut Context,
     dist: &Path,
@@ -963,7 +967,10 @@ fn run_sbom_builtin(
     // produced none is a config bug) and the first matched subject carries the
     // verdict record the release `ids:` filter inherits. External (syft)
     // scanning DOES vary per archive and never reaches this function.
-    let (_, subject_meta, subject_target, subject_kind) = &matching_artifacts[0];
+    // Only the first match's metadata + kind are consumed (verdict record /
+    // `ids:` inheritance); its `target` is deliberately NOT propagated — the
+    // workspace SBOM is target-independent (registered `target: None` below).
+    let (_, subject_meta, _subject_target, subject_kind) = &matching_artifacts[0];
 
     let filename = format!("{}-{}.{}", project_name, version, extension);
     let output_path = dist.join(filename);
@@ -1001,7 +1008,15 @@ fn run_sbom_builtin(
         kind: ArtifactKind::Sbom,
         name,
         path: output_path,
-        target: subject_target.clone(),
+        // Target-INDEPENDENT by construction: this document catalogs the
+        // workspace dependency graph, not any one archive, and every shard of
+        // a sharded release produces byte-identical output. Stamping it with
+        // `subject_target` would give each shard a different target on the
+        // same path, so the per-shard manifest merge's
+        // `dedupe_targetless_duplicates` (which only collapses `None`) leaves
+        // N copies and the duplicate-path guard rejects them. Subject
+        // provenance the `ids:` filter needs is carried in `metadata`, not here.
+        target: None,
         crate_name: project_name.to_string(),
         metadata,
         size: None,
@@ -1853,6 +1868,17 @@ mod tests {
         // document, not a per-archive filename.
         assert_eq!(sboms[0].name, "myproj-1.0.0.cdx.json");
         assert!(sboms[0].path.exists(), "the workspace SBOM must be on disk");
+        // Target-independent: it must NOT inherit the first matched archive's
+        // target. A per-archive target makes each shard of a sharded release
+        // stamp this byte-identical document with a different target, defeating
+        // the per-shard merge's `dedupe_targetless_duplicates` and tripping its
+        // duplicate-path guard.
+        assert_eq!(
+            sboms[0].target, None,
+            "workspace SBOM must be target-independent so cross-shard merge \
+             collapses the identical per-shard copies; got {:?}",
+            sboms[0].target
+        );
     }
 
     /// The external (syft) archive path is UNTOUCHED by the built-in dedupe:
