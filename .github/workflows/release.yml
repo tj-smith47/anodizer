@@ -91,6 +91,10 @@ jobs:
         uses: tj-smith47/anodizer-action@v1
         with:
           from-source: true
+          # Explicit (not auto-install): --preflight-secrets is a secrets/
+          # key-load check, not the publish pipeline, so its tool set is a
+          # deliberate narrow pick (cosign for the offline key-load) rather than
+          # the config-derived set the sibling publish jobs auto-install.
           install: cosign
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
@@ -292,7 +296,7 @@ jobs:
           version: ${{ needs.tag.outputs.publish_version }}
           artifact-run-id: auto
           artifact-workflow: ci.yml
-          install: nfpm,makeself,snapcraft,rpmbuild,cosign,syft,alejandra,nsis,create-dmg,wix,pkgbuild,node
+          auto-install: true
           gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
           # npm is peeled onto the github-hosted publish-npm job below: npm
@@ -379,7 +383,7 @@ jobs:
           version: ${{ needs.tag.outputs.publish_version }}
           artifact-run-id: auto
           artifact-workflow: ci.yml
-          install: node
+          auto-install: true
           # No --skip: `--publishers npm` auto-determines the surface. The
           # allowlist deselects every non-npm PUBLISHER — including
           # github-release (so the GitHub Release the main job owns is not
