@@ -299,8 +299,11 @@ pub(crate) fn repo_token_requirement(
     if let Some(p) = preferred_env {
         vars.push(p.to_string());
     }
-    vars.push("ANODIZER_GITHUB_TOKEN".to_string());
-    vars.push("GITHUB_TOKEN".to_string());
+    vars.extend(
+        anodizer_core::git::GITHUB_TOKEN_ENV_LADDER
+            .iter()
+            .map(|v| v.to_string()),
+    );
     Some(anodizer_core::EnvRequirement::EnvAnyOf { vars })
 }
 

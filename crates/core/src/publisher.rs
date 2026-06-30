@@ -34,6 +34,23 @@ pub enum PreflightCheck {
     Blocker(String),
 }
 
+impl PreflightCheck {
+    /// Fold two pre-flight outcomes into the most severe, escalating
+    /// `Blocker` > `Warning` > `Pass`. Within a severity the first-seen
+    /// message (`self`'s) wins, so a left-fold over many targets yields a
+    /// stable, deterministic line rather than whichever target iterated last.
+    pub fn merge(self, next: Self) -> Self {
+        use PreflightCheck::{Blocker, Pass, Warning};
+        match (self, next) {
+            (Blocker(m), _) => Blocker(m),
+            (_, Blocker(m)) => Blocker(m),
+            (Warning(m), _) => Warning(m),
+            (_, Warning(m)) => Warning(m),
+            (Pass, Pass) => Pass,
+        }
+    }
+}
+
 /// Publisher contract — one implementer per upstream registry / channel.
 ///
 /// Required methods describe the publisher's identity, behavior, and how
@@ -373,5 +390,39 @@ mod tests {
         assert_eq!(cloned, PreflightCheck::Blocker("no tap".into()));
         // Clone must not collapse a Warning into the same value as a Blocker.
         assert_ne!(warn, blocker);
+    }
+
+    #[test]
+    fn merge_escalates_to_worst_severity_keeping_first_message() {
+        use PreflightCheck::{Blocker, Pass, Warning};
+
+        // Blocker dominates regardless of position, keeping its own message.
+        assert_eq!(
+            Blocker("b".into()).merge(Warning("w".into())),
+            Blocker("b".into())
+        );
+        assert_eq!(
+            Warning("w".into()).merge(Blocker("b".into())),
+            Blocker("b".into())
+        );
+        assert_eq!(Pass.merge(Blocker("b".into())), Blocker("b".into()));
+        assert_eq!(Blocker("b".into()).merge(Pass), Blocker("b".into()));
+
+        // Warning dominates Pass.
+        assert_eq!(Warning("w".into()).merge(Pass), Warning("w".into()));
+        assert_eq!(Pass.merge(Warning("w".into())), Warning("w".into()));
+
+        // Pass + Pass stays Pass.
+        assert_eq!(Pass.merge(Pass), Pass);
+
+        // Within a severity the first-seen (left) message wins.
+        assert_eq!(
+            Blocker("first".into()).merge(Blocker("second".into())),
+            Blocker("first".into())
+        );
+        assert_eq!(
+            Warning("first".into()).merge(Warning("second".into())),
+            Warning("first".into())
+        );
     }
 }

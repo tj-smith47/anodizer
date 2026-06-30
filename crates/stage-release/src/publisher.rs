@@ -314,12 +314,7 @@ fn preflight_merge(
     acc: anodizer_core::PreflightCheck,
     next: anodizer_core::PreflightCheck,
 ) -> anodizer_core::PreflightCheck {
-    use anodizer_core::PreflightCheck::{Blocker, Pass, Warning};
-    match (acc, next) {
-        (Blocker(m), _) | (_, Blocker(m)) => Blocker(m),
-        (Warning(m), _) | (_, Warning(m)) => Warning(m),
-        (Pass, Pass) => Pass,
-    }
+    acc.merge(next)
 }
 
 /// (owner, repo) per selected, non-skipped crate carrying a `release.github`
@@ -498,10 +493,10 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
             return Vec::new();
         }
         vec![anodizer_core::EnvRequirement::EnvAnyOf {
-            vars: vec![
-                "ANODIZER_GITHUB_TOKEN".to_string(),
-                "GITHUB_TOKEN".to_string(),
-            ],
+            vars: anodizer_core::git::GITHUB_TOKEN_ENV_LADDER
+                .iter()
+                .map(|v| v.to_string())
+                .collect(),
         }]
     }
 

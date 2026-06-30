@@ -1571,14 +1571,7 @@ pub(crate) fn gate_required_failures(ctx: &Context) -> Result<()> {
     let failed: Vec<&str> = report
         .results
         .iter()
-        .filter(|r| {
-            r.required
-                && matches!(
-                    r.outcome,
-                    anodizer_core::publish_report::PublisherOutcome::Failed(_)
-                        | anodizer_core::publish_report::PublisherOutcome::RollbackFailed(_)
-                )
-        })
+        .filter(|r| r.required && r.outcome.is_required_release_failure())
         .map(|r| r.name.as_str())
         .collect();
     if failed.is_empty() {

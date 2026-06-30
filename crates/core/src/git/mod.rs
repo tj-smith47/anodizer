@@ -39,8 +39,8 @@ pub use commits::{
 };
 pub use detect::{GitInfo, detect_git_info, detect_git_info_in};
 pub use github_api::{
-    commit_author_login, commit_author_login_with_binary, create_tag_via_github_api,
-    create_tag_via_github_api_in, gh_api_get, gh_api_get_paginated,
+    GITHUB_TOKEN_ENV_LADDER, commit_author_login, commit_author_login_with_binary,
+    create_tag_via_github_api, create_tag_via_github_api_in, gh_api_get, gh_api_get_paginated,
     gh_api_get_paginated_with_binary, gh_api_get_with_binary, resolve_github_token,
     resolve_github_token_with_env,
 };

@@ -983,13 +983,7 @@ fn bail_on_required_failures(ctx: &Context) -> Result<()> {
     let failed: Vec<&str> = report
         .results
         .iter()
-        .filter(|r| {
-            r.required
-                && matches!(
-                    r.outcome,
-                    PublisherOutcome::Failed(_) | PublisherOutcome::RollbackFailed(_)
-                )
-        })
+        .filter(|r| r.required && r.outcome.is_required_release_failure())
         .map(|r| r.name.as_str())
         .collect();
     if failed.is_empty() {

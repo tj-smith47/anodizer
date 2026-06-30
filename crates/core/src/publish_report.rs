@@ -60,6 +60,31 @@ pub enum PublisherOutcome {
     PublishedNoRollback,
 }
 
+impl PublisherOutcome {
+    /// Whether this outcome is a terminal failure of a *required* publisher —
+    /// the failure class that must fail the release and close the submitter
+    /// gate. True for [`PublisherOutcome::Failed`] (the publish itself failed)
+    /// and [`PublisherOutcome::RollbackFailed`] (the publish ran, rollback was
+    /// attempted, and the rollback also failed, leaving a half-published
+    /// surface needing manual intervention).
+    ///
+    /// Written as an exhaustive `match` (not `matches!`) so a future
+    /// hard-failure variant cannot silently slip past a gate: adding one
+    /// forces a compile error here and a conscious classification decision.
+    pub fn is_required_release_failure(&self) -> bool {
+        match self {
+            PublisherOutcome::Failed(_) | PublisherOutcome::RollbackFailed(_) => true,
+            PublisherOutcome::Succeeded
+            | PublisherOutcome::Skipped(_)
+            | PublisherOutcome::RolledBack
+            | PublisherOutcome::RollbackSkippedNoScope
+            | PublisherOutcome::PendingModeration
+            | PublisherOutcome::PendingValidation
+            | PublisherOutcome::PublishedNoRollback => false,
+        }
+    }
+}
+
 /// Reason a publisher was [`PublisherOutcome::Skipped`]. Serialized as
 /// kebab-case (e.g. `"submitter-gated"`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -136,7 +161,7 @@ impl PublishReport {
     pub fn required_failures(&self) -> usize {
         self.results
             .iter()
-            .filter(|r| r.required && matches!(r.outcome, PublisherOutcome::Failed(_)))
+            .filter(|r| r.required && r.outcome.is_required_release_failure())
             .count()
     }
 
@@ -207,6 +232,36 @@ mod tests {
             evidence: None,
         });
         assert_eq!(r.required_failures(), 1);
+    }
+
+    #[test]
+    fn required_failures_counts_rollback_failed() {
+        // Regression: a required publisher whose publish succeeded but whose
+        // rollback then failed leaves a half-published surface and MUST count
+        // as a required failure. The prior `matches!(Failed(_))`-only filter
+        // silently dropped it.
+        let mut r = PublishReport::default();
+        r.results.push(PublisherResult {
+            name: "required-rollback-failed".to_string(),
+            group: PublisherGroup::Submitter,
+            required: true,
+            outcome: PublisherOutcome::RollbackFailed("manual cleanup needed".to_string()),
+            evidence: None,
+        });
+        assert_eq!(r.required_failures(), 1);
+    }
+
+    #[test]
+    fn is_required_release_failure_classifies_terminal_failures() {
+        assert!(PublisherOutcome::Failed("boom".into()).is_required_release_failure());
+        assert!(PublisherOutcome::RollbackFailed("boom".into()).is_required_release_failure());
+        assert!(!PublisherOutcome::Succeeded.is_required_release_failure());
+        assert!(!PublisherOutcome::RolledBack.is_required_release_failure());
+        assert!(!PublisherOutcome::RollbackSkippedNoScope.is_required_release_failure());
+        assert!(!PublisherOutcome::PendingModeration.is_required_release_failure());
+        assert!(!PublisherOutcome::PendingValidation.is_required_release_failure());
+        assert!(!PublisherOutcome::PublishedNoRollback.is_required_release_failure());
+        assert!(!PublisherOutcome::Skipped(SkipReason::DryRun).is_required_release_failure());
     }
 
     #[test]

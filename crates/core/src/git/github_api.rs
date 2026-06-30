@@ -128,11 +128,20 @@ pub fn commit_author_login_with_binary(
     resolved
 }
 
+/// The ordered env-var ladder consulted (after any explicit CLI/context
+/// value) when resolving a GitHub token: `ANODIZER_GITHUB_TOKEN` is preferred,
+/// then `GITHUB_TOKEN`. This is the single source of truth for the ladder —
+/// [`resolve_github_token_with_env`] (the only real reader) consumes it, and
+/// the config-aware preflight builds its `EnvAnyOf` lists from it so the
+/// validated set cannot drift from the set the resolver actually reads.
+pub const GITHUB_TOKEN_ENV_LADDER: &[&str] = &["ANODIZER_GITHUB_TOKEN", "GITHUB_TOKEN"];
+
 /// Resolve the GitHub token for API calls through the codebase-standard
-/// chain: explicit value (CLI flag / context option) → `ANODIZER_GITHUB_TOKEN`
-/// → `GITHUB_TOKEN`. Empty strings count as absent at every link — GitHub
-/// Actions materializes missing secrets as `""`, which must not
-/// short-circuit the fallback to the next link.
+/// chain: explicit value (CLI flag / context option) → the
+/// [`GITHUB_TOKEN_ENV_LADDER`] (`ANODIZER_GITHUB_TOKEN` → `GITHUB_TOKEN`).
+/// Empty strings count as absent at every link — GitHub Actions materializes
+/// missing secrets as `""`, which must not short-circuit the fallback to the
+/// next link.
 ///
 /// `env` is the injectable env source (pass `Context::env_var` or a
 /// map-backed closure in tests) so the chain is testable without mutating
@@ -142,11 +151,10 @@ pub fn resolve_github_token_with_env(
     env: &dyn Fn(&str) -> Option<String>,
 ) -> Option<String> {
     let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
-    explicit
-        .filter(|t| !t.is_empty())
-        .map(str::to_string)
-        .or_else(|| env("ANODIZER_GITHUB_TOKEN").and_then(non_empty))
-        .or_else(|| env("GITHUB_TOKEN").and_then(non_empty))
+    let explicit = explicit.filter(|t| !t.is_empty()).map(str::to_string);
+    GITHUB_TOKEN_ENV_LADDER.iter().fold(explicit, |acc, var| {
+        acc.or_else(|| env(var).and_then(non_empty))
+    })
 }
 
 /// Process-env wrapper of [`resolve_github_token_with_env`] for call sites

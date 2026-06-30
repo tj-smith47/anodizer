@@ -333,17 +333,9 @@ fn classify_probe(label: &str, required: bool, result: Result<()>) -> PreflightC
 }
 
 /// Keep the most severe of two checks (Blocker > Warning > Pass), preserving
-/// the first message at a given severity. Mirrors
-/// `stage_publish::publisher_preflight::merge`.
+/// the first message at a given severity.
 fn merge(acc: PreflightCheck, next: PreflightCheck) -> PreflightCheck {
-    use PreflightCheck::{Blocker, Pass, Warning};
-    match (acc, next) {
-        (Blocker(m), _) => Blocker(m),
-        (_, Blocker(m)) => Blocker(m),
-        (Warning(m), _) => Warning(m),
-        (_, Warning(m)) => Warning(m),
-        (Pass, Pass) => Pass,
-    }
+    acc.merge(next)
 }
 
 #[cfg(test)]

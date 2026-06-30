@@ -39,14 +39,7 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 /// `Pass`. The first-seen message wins within a severity so the operator sees
 /// a stable, deterministic line rather than whichever target iterated last.
 pub(crate) fn merge(acc: PreflightCheck, next: PreflightCheck) -> PreflightCheck {
-    use PreflightCheck::{Blocker, Pass, Warning};
-    match (acc, next) {
-        (Blocker(m), _) => Blocker(m),
-        (_, Blocker(m)) => Blocker(m),
-        (Warning(m), _) => Warning(m),
-        (_, Warning(m)) => Warning(m),
-        (Pass, Pass) => Pass,
-    }
+    acc.merge(next)
 }
 
 /// Outcome of an authenticated token probe against a registry `whoami`.
