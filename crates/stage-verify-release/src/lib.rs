@@ -69,6 +69,16 @@ const STAGE_NAME: &str = "verify-release";
 /// than re-running a publish.
 const PUBLISHED_NOTE: &str = "the release IS published — investigate";
 
+/// Publishers whose published artifacts this gate verifies. When EVERY one is
+/// deselected by the active `--publishers`/`--skip` surface, this run did not
+/// (re)create a release to check, so the stage self-skips — the same
+/// consumer-aware gating `signs:` uses ([`anodizer_stage_sign::signs_consumers`]).
+/// asset-existence fetches the GitHub Release's asset list, so github-release is
+/// the sole consumer; a future asset-bearing target is a one-line edit here.
+pub fn verify_release_consumers() -> &'static [&'static str] {
+    &["github-release"]
+}
+
 impl Stage for VerifyReleaseStage {
     fn name(&self) -> &str {
         STAGE_NAME
@@ -80,6 +90,16 @@ impl Stage for VerifyReleaseStage {
             return Ok(());
         }
         if ctx.should_skip(STAGE_NAME) {
+            return Ok(());
+        }
+        // A `--publishers npm`-style run never touched github-release, so its
+        // assets are out of the selected surface — nothing to verify here.
+        if verify_release_consumers()
+            .iter()
+            .all(|p| ctx.publisher_deselected(p))
+        {
+            ctx.logger(STAGE_NAME)
+                .status("skipped — github-release not in the selected publish surface");
             return Ok(());
         }
         // The gate verifies a real, published release; dry-run / snapshot

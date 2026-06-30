@@ -187,6 +187,32 @@ fn skip_flag_is_noop() {
 }
 
 #[test]
+fn github_release_deselected_self_skips() {
+    // github-release out of the `--publishers` surface (e.g. `--publishers npm`)
+    // means no published release was touched, so the gate has nothing in-surface
+    // to verify and short-circuits — the same consumer-aware self-skip `signs:`
+    // performs. Without it, an npm-only publish job re-runs the whole asset /
+    // smoke suite against a release it never published.
+    let mut ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![published_crate("myapp", None)])
+        .build();
+    ctx.config.verify_release = VerifyReleaseConfig {
+        enabled: true,
+        ..Default::default()
+    };
+    ctx.options.publisher_allowlist = vec!["npm".to_string()];
+    assert!(
+        VerifyReleaseStage.run(&mut ctx).is_ok(),
+        "github-release deselected must short-circuit before any fetch/smoke"
+    );
+    assert!(
+        ctx.verify_release.is_none(),
+        "self-skip verifies nothing, so it must not stamp a verdict"
+    );
+}
+
+#[test]
 fn no_published_crates_is_noop() {
     // A crate with no release block is not "published"; the gate finds
     // nothing to verify and returns Ok without touching the network.
