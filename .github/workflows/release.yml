@@ -348,7 +348,12 @@ jobs:
   publish-npm:
     name: Publish npm (provenance)
     needs: [tag, release]
-    if: needs.release.result == 'success'
+    # always() defeats GitHub's skipped-need propagation: a re-publish /
+    # skip_determinism dispatch skips determinism-check, and without always()
+    # this job is auto-skipped even when `release` succeeded — which silently
+    # dropped npm from the release set since 0.12.3. The explicit
+    # `&& result == 'success'` keeps it gated on a real publish.
+    if: ${{ always() && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -399,7 +404,9 @@ jobs:
   advance-master:
     name: Advance master
     needs: [tag, release]
-    if: needs.release.result == 'success'
+    # always() for the same reason as publish-npm: a skipped determinism-check
+    # must not auto-skip this job when `release` itself succeeded.
+    if: ${{ always() && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
