@@ -203,7 +203,7 @@ npm provenance is minted from a GitHub Actions OIDC token, and the registry only
       - uses: tj-smith47/anodizer-action@v1
         with:
           download-dist: true
-          install: node
+          auto-install: true
           # --publishers npm auto-determines the surface: it deselects every
           # non-npm publisher (including github-release) and self-skips the
           # sign loops, so this runner is never asked for cosign/GPG material.
