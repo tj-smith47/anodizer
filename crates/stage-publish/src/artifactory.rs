@@ -1600,11 +1600,99 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
         Ok(())
     }
 
-    /// No live probe: Artifactory versions are overwritable with a `DELETE`
-    /// rollback, and `requirements()` gates the per-entry credential — invalid
-    /// creds fail the first, recoverable step.
-    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
-        Ok(anodizer_core::PreflightCheck::Pass)
+    /// Live pre-publish gate. For every active `artifactories[]` entry, probe the
+    /// target's `scheme://host[:port]` origin (path/`{{ .Version }}` stripped so
+    /// the probe needs no resolved tag) through the same mTLS client + basic-auth
+    /// credential cascade the upload uses. A rejected credential (401/403) or an
+    /// unreachable host surfaces as a Warning (this publisher is OPTIONAL — a
+    /// failed upload must not abort the release). A 404/405/redirect at the
+    /// origin root still proves the host is reachable and is treated as a pass.
+    /// Severity follows [`required()`](anodizer_core::Publisher::required).
+    ///
+    /// Credentials are resolved with `anonymous_ok = false` (matching `run()`);
+    /// an unresolved pair is `requirements()`'s domain and is skipped here.
+    fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        use crate::publisher_preflight::{
+            FailSeverity, ProbeAuth, ProbeMethod, classify_http_endpoint, merge,
+            reachability_outcome,
+        };
+        use anodizer_core::PreflightCheck;
+
+        let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let fail = FailSeverity::for_required(Self::resolved_required(self));
+
+        let mut acc = PreflightCheck::Pass;
+        for entry in ctx.config.artifactories.iter().flatten() {
+            if crate::publisher_helpers::entry_inactive(
+                ctx,
+                entry.skip.as_ref(),
+                None,
+                entry.if_condition.as_deref(),
+            ) {
+                continue;
+            }
+            let Some(name) = entry.name.as_deref().filter(|n| !n.is_empty()) else {
+                continue;
+            };
+            let Some(target) = entry.target.as_deref().filter(|t| !t.is_empty()) else {
+                continue;
+            };
+            let Some(origin_template) = crate::uploads::target_origin(target) else {
+                continue;
+            };
+            let url = match ctx.render_template(&origin_template) {
+                Ok(u) if !u.trim().is_empty() => u,
+                _ => continue,
+            };
+            let (username, password) = match crate::http_upload::resolve_http_credentials(
+                ctx,
+                &crate::http_upload::CredentialResolveSpec {
+                    publisher: "artifactory",
+                    entry_name: name,
+                    config_username: entry.username.as_deref(),
+                    config_password: entry.password.as_deref(),
+                    env_prefix: "ARTIFACTORY",
+                    anonymous_ok: false,
+                },
+            ) {
+                Ok(creds) => creds,
+                Err(_) => continue,
+            };
+            let auth = if username.is_empty() && password.is_empty() {
+                ProbeAuth::None
+            } else {
+                ProbeAuth::Basic { username, password }
+            };
+            let client = match build_reqwest_client(
+                entry.client_x509_cert.as_deref(),
+                entry.client_x509_key.as_deref(),
+                entry.trusted_certificates.as_deref(),
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    acc = merge(
+                        acc,
+                        PreflightCheck::Warning(format!(
+                            "artifactory: entry '{name}' HTTP client build failed in preflight ({e})"
+                        )),
+                    );
+                    continue;
+                }
+            };
+            let status = classify_http_endpoint(
+                &client,
+                ProbeMethod::Get,
+                &url,
+                &auth,
+                "preflight: artifactory",
+                &policy,
+            );
+            acc = merge(
+                acc,
+                reachability_outcome(status, &url, "preflight: artifactory", fail),
+            );
+        }
+        Ok(acc)
     }
 
     fn skips_on_nightly(&self) -> bool {
@@ -4103,5 +4191,73 @@ mod publisher_tests {
         assert_eq!(entries.len(), 1, "{entries:?}");
         assert_eq!(entries[0].method, "DELETE");
         assert_eq!(entries[0].path, "/repo/foo.tar.gz");
+    }
+}
+
+#[cfg(test)]
+mod preflight_live_tests {
+    use super::*;
+    use anodizer_core::Publisher;
+    use anodizer_core::config::{ArtifactoryConfig, Config};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+
+    fn make_ctx(addr: std::net::SocketAddr, deselect: bool) -> Context {
+        let cfg = ArtifactoryConfig {
+            name: Some("prod".into()),
+            target: Some(format!("http://{addr}/repo/app.tar.gz")),
+            username: Some("deployer".into()),
+            password: Some("hunter2".into()),
+            if_condition: if deselect { Some("false".into()) } else { None },
+            ..Default::default()
+        };
+        let config = Config {
+            project_name: "app".into(),
+            artifactories: Some(vec![cfg]),
+            ..Default::default()
+        };
+        Context::new(config, ContextOptions::default())
+    }
+
+    #[test]
+    fn artifactory_preflight_warns_on_auth_rejected() {
+        let (addr, _c) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let ctx = make_ctx(addr, false);
+        match ArtifactoryPublisher::new()
+            .preflight(&ctx)
+            .expect("preflight ok")
+        {
+            anodizer_core::PreflightCheck::Warning(m) => assert!(m.contains("artifactory"), "{m}"),
+            other => panic!("expected Warning, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn artifactory_preflight_passes_on_reachable_origin() {
+        let (addr, _c) =
+            spawn_oneshot_http_responder(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"]);
+        let ctx = make_ctx(addr, false);
+        assert!(matches!(
+            ArtifactoryPublisher::new()
+                .preflight(&ctx)
+                .expect("preflight ok"),
+            anodizer_core::PreflightCheck::Pass
+        ));
+    }
+
+    #[test]
+    fn artifactory_preflight_skips_deselected_without_request() {
+        let (addr, calls) =
+            spawn_oneshot_http_responder(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"]);
+        let ctx = make_ctx(addr, true);
+        assert!(matches!(
+            ArtifactoryPublisher::new()
+                .preflight(&ctx)
+                .expect("preflight ok"),
+            anodizer_core::PreflightCheck::Pass
+        ));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }

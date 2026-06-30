@@ -222,6 +222,11 @@ tasks:
     cmds:
       - .claude/scripts/audit-job-timeouts.sh
 
+  audit:repo-identity:
+    desc: "Guard: owner/repo slug + GitHub token resolve through their one canonical path (no ad-hoc remote re-parse / unfiltered token read)."
+    cmds:
+      - .claude/scripts/audit-repo-identity.sh
+
   lint:
     desc: Local pre-commit check (tidy, clippy, build, snapshot dry-run)
     cmds:
@@ -234,6 +239,7 @@ tasks:
       - task: audit:test-isolation
       - task: audit:test-spawn
       - task: audit:job-timeouts
+      - task: audit:repo-identity
 
   ci:
     desc: Run all CI checks (everything except cross-platform builds)

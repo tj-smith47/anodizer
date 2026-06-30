@@ -673,8 +673,12 @@ pub fn generate_v2_image_tags(images: &[String], tags: &[String]) -> Vec<String>
 }
 
 /// Resolve whether to skip push based on `SkipPushConfig` and prerelease status.
-pub fn resolve_skip_push(skip_push: &Option<SkipPushConfig>, ctx: &Context) -> bool {
-    match skip_push {
+///
+/// A malformed `skip_push` template is propagated as an error rather than
+/// resolved to "do not skip" — silently pushing on a render failure is the
+/// wrong-and-irreversible direction. Mirrors `is_docker_v2_skipped`.
+pub fn resolve_skip_push(skip_push: &Option<SkipPushConfig>, ctx: &Context) -> Result<bool> {
+    Ok(match skip_push {
         Some(SkipPushConfig::Bool(b)) => *b,
         Some(SkipPushConfig::Auto) => {
             // Skip push for prereleases
@@ -686,19 +690,18 @@ pub fn resolve_skip_push(skip_push: &Option<SkipPushConfig>, ctx: &Context) -> b
         Some(SkipPushConfig::Template(tmpl)) => {
             // Exact `"true"` / `"auto"` string match on the trimmed render,
             // case-sensitive. `"TRUE"` or `"True"` must NOT skip push.
-            ctx.render_template(tmpl)
-                .map(|rendered| {
-                    let trimmed = rendered.trim();
-                    trimmed == "true"
-                        || (trimmed == "auto"
-                            && ctx
-                                .template_vars()
-                                .get("Prerelease")
-                                .map(|p| !p.is_empty())
-                                .unwrap_or(false))
-                })
-                .unwrap_or(false)
+            let rendered = ctx
+                .render_template(tmpl)
+                .with_context(|| format!("dockers_v2: render skip_push template '{tmpl}'"))?;
+            let trimmed = rendered.trim();
+            trimmed == "true"
+                || (trimmed == "auto"
+                    && ctx
+                        .template_vars()
+                        .get("Prerelease")
+                        .map(|p| !p.is_empty())
+                        .unwrap_or(false))
         }
         None => false,
-    }
+    })
 }

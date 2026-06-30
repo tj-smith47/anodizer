@@ -130,7 +130,7 @@ pub(crate) fn build_octocrab_client(
         // minutes until TCP keepalive gives up.
         let connector = hyper_rustls::HttpsConnectorBuilder::new()
             .with_native_roots()
-            .expect("release: load native TLS root certificates")
+            .context("release: load native TLS root certificates")?
             .https_or_http()
             .enable_http1()
             .build();

@@ -1221,14 +1221,12 @@ pub fn publish_to_krew(
         .and_then(|pr| pr.enabled)
         .unwrap_or(false);
 
-    let update_existing_pr = krew_cfg
-        .update_existing_pr
-        .as_ref()
-        .map(|v| {
-            v.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-                .unwrap_or(false)
-        })
-        .unwrap_or(false);
+    let update_existing_pr = match krew_cfg.update_existing_pr.as_ref() {
+        Some(v) => v
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+            .context("krew: render update_existing_pr condition")?,
+        None => false,
+    };
 
     // Clone the repository config so the PR submission helpers no
     // longer borrow from `ctx.config` (via `krew_cfg`). NLL then

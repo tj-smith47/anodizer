@@ -19,7 +19,8 @@ use std::time::Duration;
 use anodizer_core::context::Context;
 
 use super::publish::{
-    GemFuryTarget, api_token_env_var, delete_version, publish_to_gemfury, resolve_api_token,
+    GemFuryTarget, api_base_from, api_token_env_var, delete_version, publish_to_gemfury,
+    resolve_api_token, resolve_push_token,
 };
 
 simple_publisher!(
@@ -270,14 +271,168 @@ impl anodizer_core::Publisher for GemFuryPublisher {
         Ok(())
     }
 
-    /// No live probe: GemFury pushes are overwritable with a `DELETE` rollback,
-    /// and `requirements()` gates the push token — an invalid token fails the
-    /// first, recoverable step.
-    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
-        Ok(anodizer_core::PreflightCheck::Pass)
+    /// Live pre-publish gate. For every active `gemfury[]` entry whose push
+    /// token resolves, issue an authed `GET
+    /// {api_base}/{account}/packages/{pkg}/versions/{version}` with HTTP Basic
+    /// auth (the push token as username, empty password — Fury's documented
+    /// scheme, identical to the publish path). A rejected token (401/403) or an
+    /// unreachable host proves the push cannot proceed; a 404 only means the
+    /// probed version is absent (the normal pre-publish state) and proves the
+    /// host + token are good. Severity follows
+    /// [`required()`](anodizer_core::Publisher::required) (Gemfury defaults
+    /// required ⇒ Blocker on failure).
+    ///
+    /// Entries with no resolvable token are left to `requirements()` (which
+    /// gates token *presence*); this probe only proves a *present* token works.
+    fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        use crate::publisher_preflight::{
+            FailSeverity, ProbeAuth, ProbeMethod, classify_http_endpoint, default_probe_client,
+            merge, reachability_outcome,
+        };
+        use anodizer_core::PreflightCheck;
+
+        let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let fail = FailSeverity::for_required(Self::resolved_required(self));
+        let api_base = api_base_from(ctx.env_source());
+        // The package/version path component is only an auth + reachability
+        // surface — a 404 (version absent) is treated as reachable — so the
+        // project name + pending version are a fine, harmless sentinel.
+        let package = ctx.config.project_name.clone();
+        let version = ctx.version();
+
+        let mut acc = PreflightCheck::Pass;
+        for cfg in ctx.config.gemfury.iter().flatten() {
+            if crate::publisher_helpers::entry_inactive(
+                ctx,
+                cfg.skip.as_ref(),
+                None,
+                cfg.if_condition.as_deref(),
+            ) {
+                continue;
+            }
+            // An absent account is config-validation territory the push path
+            // already fails loud on; don't manufacture a duplicate blocker.
+            let Some(account_raw) = cfg.account.as_deref().filter(|a| !a.trim().is_empty()) else {
+                continue;
+            };
+            let account = ctx
+                .render_template(account_raw)
+                .unwrap_or_else(|_| account_raw.to_string());
+            if account.trim().is_empty() {
+                continue;
+            }
+            let token = resolve_push_token(ctx, cfg).unwrap_or_default();
+            if token.is_empty() {
+                continue;
+            }
+            let client = match default_probe_client() {
+                Ok(c) => c,
+                Err(e) => {
+                    acc = merge(
+                        acc,
+                        PreflightCheck::Warning(format!(
+                            "gemfury: could not build HTTP client for preflight ({e})"
+                        )),
+                    );
+                    continue;
+                }
+            };
+            let url = format!("{api_base}/{account}/packages/{package}/versions/{version}");
+            let status = classify_http_endpoint(
+                &client,
+                ProbeMethod::Get,
+                &url,
+                &ProbeAuth::Basic {
+                    username: token,
+                    password: String::new(),
+                },
+                "preflight: gemfury",
+                &policy,
+            );
+            acc = merge(
+                acc,
+                reachability_outcome(status, &url, "preflight: gemfury", fail),
+            );
+        }
+        Ok(acc)
     }
 
     fn retain_on_rollback(&self) -> bool {
         Self::resolved_retain_on_rollback(self)
+    }
+}
+
+#[cfg(test)]
+mod preflight_live_tests {
+    use super::*;
+    use anodizer_core::Publisher;
+    use anodizer_core::config::{Config, GemFuryConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+
+    fn make_ctx(base: &str, token: Option<&str>, deselect: bool) -> Context {
+        let cfg = GemFuryConfig {
+            account: Some("acme".into()),
+            if_condition: if deselect { Some("false".into()) } else { None },
+            ..Default::default()
+        };
+        let config = Config {
+            project_name: "app".into(),
+            gemfury: Some(vec![cfg]),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        let mut env =
+            anodizer_core::MapEnvSource::new().with("ANODIZE_GEMFURY_API_BASE", base.to_string());
+        if let Some(t) = token {
+            env = env.with("FURY_PUSH_TOKEN", t.to_string());
+        }
+        ctx.set_env_source(env);
+        ctx
+    }
+
+    #[test]
+    fn gemfury_preflight_blocks_on_invalid_token() {
+        let (addr, _c) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let ctx = make_ctx(&format!("http://{addr}"), Some("bad-token"), false);
+        match GemFuryPublisher::new()
+            .preflight(&ctx)
+            .expect("preflight ok")
+        {
+            anodizer_core::PreflightCheck::Blocker(m) => assert!(m.contains("gemfury"), "{m}"),
+            other => panic!("expected Blocker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gemfury_preflight_passes_when_version_absent() {
+        let (addr, _c) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let ctx = make_ctx(&format!("http://{addr}"), Some("good-token"), false);
+        assert!(matches!(
+            GemFuryPublisher::new()
+                .preflight(&ctx)
+                .expect("preflight ok"),
+            anodizer_core::PreflightCheck::Pass
+        ));
+    }
+
+    #[test]
+    fn gemfury_preflight_skips_deselected_without_request() {
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let ctx = make_ctx(&format!("http://{addr}"), Some("good-token"), true);
+        assert!(matches!(
+            GemFuryPublisher::new()
+                .preflight(&ctx)
+                .expect("preflight ok"),
+            anodizer_core::PreflightCheck::Pass
+        ));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }

@@ -3440,9 +3440,16 @@ fn publish_cask_name_override_does_not_mask_crate_in_errors() {
 /// being on `PATH`; prints a visible skip marker and returns when absent so a
 /// machine without ruby reports SKIP rather than a false PASS.
 fn assert_ruby_syntax_ok(label: &str, source: &str) {
-    if !anodizer_core::tool_detect::tool_available("ruby").unwrap_or(false) {
-        eprintln!("SKIP {label}: ruby not on PATH; cannot run `ruby -c`");
-        return;
+    match anodizer_core::tool_detect::tool_available("ruby") {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!("SKIP {label}: ruby not on PATH; cannot run `ruby -c`");
+            return;
+        }
+        Err(e) => {
+            eprintln!("SKIP {label}: ruby probe failed ({e}); cannot run `ruby -c`");
+            return;
+        }
     }
     let dir = tempfile::tempdir().expect("create temp dir for ruby -c");
     let path = dir.path().join("artifact.rb");
@@ -3715,9 +3722,16 @@ fn uninstall_zap_debug_format_stays_valid_ruby() {
 /// prove the escaping is load-bearing: the un-escaped equivalent must be
 /// rejected by the same validator that accepts the escaped form.
 fn assert_ruby_syntax_err(label: &str, source: &str) {
-    if !anodizer_core::tool_detect::tool_available("ruby").unwrap_or(false) {
-        eprintln!("SKIP {label}: ruby not on PATH; cannot run `ruby -c`");
-        return;
+    match anodizer_core::tool_detect::tool_available("ruby") {
+        Ok(true) => {}
+        Ok(false) => {
+            eprintln!("SKIP {label}: ruby not on PATH; cannot run `ruby -c`");
+            return;
+        }
+        Err(e) => {
+            eprintln!("SKIP {label}: ruby probe failed ({e}); cannot run `ruby -c`");
+            return;
+        }
     }
     let dir = tempfile::tempdir().expect("create temp dir for ruby -c");
     let path = dir.path().join("artifact.rb");

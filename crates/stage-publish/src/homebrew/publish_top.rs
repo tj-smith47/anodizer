@@ -692,14 +692,12 @@ pub fn publish_top_level_homebrew_casks(
 
         // Submit a PR if pull_request.enabled is set.
         let pr_branch = branch.as_deref().unwrap_or("main");
-        let update_existing_pr = cask_cfg
-            .update_existing_pr
-            .as_ref()
-            .map(|v| {
-                v.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-                    .unwrap_or(false)
-            })
-            .unwrap_or(false);
+        let update_existing_pr = match cask_cfg.update_existing_pr.as_ref() {
+            Some(v) => v
+                .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                .context("homebrew cask: render update_existing_pr condition")?,
+            None => false,
+        };
         let pr_outcome = crate::util::maybe_submit_pr(
             repo_path,
             repo_cfg,

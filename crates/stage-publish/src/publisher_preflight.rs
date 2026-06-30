@@ -24,13 +24,11 @@ use std::time::Duration;
 
 use anodizer_core::PreflightCheck;
 use anodizer_core::context::Context;
+use anodizer_core::git::{RepoProbe, github_repo_probe};
 use anodizer_core::http::blocking_client;
 use anodizer_core::redact::redact_bearer_tokens;
-use std::ops::ControlFlow;
 
-use anodizer_core::retry::{
-    RetryPolicy, SuccessClass, http_status, is_retriable, retry_http_blocking, retry_sync,
-};
+use anodizer_core::retry::{RetryPolicy, SuccessClass, http_status, retry_http_blocking};
 
 /// Per-probe HTTP timeout. Generous enough to tolerate a cold TLS handshake to
 /// crates.io / npm / the GitHub API, short enough that a wedged endpoint cannot
@@ -130,6 +128,218 @@ pub(crate) fn probe_version_published(url: &str, label: &str, policy: &RetryPoli
     .is_ok()
 }
 
+/// HTTP verb for a [`classify_http_endpoint`] reachability check. `Get` for a
+/// health/whoami/repo GET; `PostJson` for an endpoint (Docker Hub `users/login`)
+/// whose credentials travel in a JSON body rather than a header.
+pub(crate) enum ProbeMethod {
+    Get,
+    PostJson(serde_json::Value),
+}
+
+/// Credential to attach to a [`classify_http_endpoint`] request. Each publisher
+/// supplies the scheme its own publish path uses so the probe authenticates
+/// identically to the real upload.
+pub(crate) enum ProbeAuth {
+    /// No credential — anonymous reachability only (Docker Hub login carries its
+    /// credentials in the request body instead).
+    None,
+    /// `Authorization: Token <token>` (Cloudsmith API scheme).
+    Token(String),
+    /// HTTP Basic — username + password (generic uploads / Artifactory) or
+    /// Gemfury's token-as-username, empty-password scheme.
+    Basic { username: String, password: String },
+}
+
+/// Severity a *definitive* probe failure maps to. A REQUIRED publisher passes
+/// [`FailSeverity::Blocker`] (a proven-unpublishable endpoint must abort before
+/// the tag/one-way doors); an OPTIONAL publisher passes
+/// [`FailSeverity::Warning`] (surface loudly but don't fail the whole release
+/// for an optional surface).
+///
+/// Only the *definitive* failures (credentials rejected, endpoint unreachable,
+/// resource missing) honour this severity; an *indeterminate* result (5xx or an
+/// unexpected status — endpoint reachable but not answering cleanly) always
+/// degrades to [`PreflightCheck::Warning`] regardless, so a transient upstream
+/// hiccup never aborts a release whose credentials are actually valid.
+#[derive(Clone, Copy)]
+pub(crate) enum FailSeverity {
+    Blocker,
+    Warning,
+}
+
+impl FailSeverity {
+    /// A REQUIRED publisher's probe failure must abort before the one-way doors
+    /// ([`FailSeverity::Blocker`]); an OPTIONAL one's must surface but not abort
+    /// ([`FailSeverity::Warning`]). Derived from the publisher's own
+    /// [`required()`](anodizer_core::Publisher::required) so preflight severity
+    /// can never be stricter than the publish gate it precedes.
+    pub(crate) fn for_required(required: bool) -> Self {
+        if required {
+            FailSeverity::Blocker
+        } else {
+            FailSeverity::Warning
+        }
+    }
+
+    /// Wrap `msg` in the [`PreflightCheck`] severity this maps to. Lets a
+    /// publisher with a bespoke probe (chocolatey's `ChocoKeyProbe`) route its
+    /// definitive failures through the same required→Blocker / optional→Warning
+    /// policy the shared HTTP probes use.
+    pub(crate) fn apply(self, msg: String) -> PreflightCheck {
+        match self {
+            FailSeverity::Blocker => PreflightCheck::Blocker(msg),
+            FailSeverity::Warning => PreflightCheck::Warning(msg),
+        }
+    }
+}
+
+/// Build the blocking HTTP client used by the credential-less probes
+/// (cloudsmith / gemfury / dockerhub). The mTLS-capable publishers
+/// (uploads / artifactory) build their own client via `build_reqwest_client`
+/// and pass it to [`probe_http_endpoint`] directly.
+pub(crate) fn default_probe_client() -> anyhow::Result<reqwest::blocking::Client> {
+    blocking_client(PROBE_TIMEOUT)
+}
+
+/// Terminal classification of a single [`classify_http_endpoint`] probe.
+pub(crate) enum EndpointStatus {
+    /// 2xx / 3xx — host reachable and (if a credential was sent) accepted.
+    Reachable,
+    /// 401 / 403 — the credential was rejected.
+    AuthRejected,
+    /// 404 — the probed resource does not exist. For a *resource* probe this is
+    /// a failure; for a bare base-URL *reachability* probe it still proves the
+    /// host is up (the caller decides — see [`probe_http_endpoint`] vs the
+    /// uploads publisher).
+    NotFound,
+    /// Transport failure (connection refused / DNS / TLS) after the retry policy
+    /// is exhausted — the endpoint is unreachable.
+    Unreachable(String),
+    /// 5xx or an unexpected status — host reachable but not answering cleanly;
+    /// verdict indeterminate.
+    Indeterminate(String),
+}
+
+/// Issue ONE authenticated request against `url` under `policy` and classify the
+/// outcome into an [`EndpointStatus`]. `client` is supplied by the caller so an
+/// mTLS / custom-CA publisher probes through the same client its publish path
+/// uses; `url` is passed in full so a unit test can point at a local responder.
+pub(crate) fn classify_http_endpoint(
+    client: &reqwest::blocking::Client,
+    method: ProbeMethod,
+    url: &str,
+    auth: &ProbeAuth,
+    label: &str,
+    policy: &RetryPolicy,
+) -> EndpointStatus {
+    let result = retry_http_blocking(
+        label,
+        policy,
+        // A base-URL HEAD/GET may legitimately 301/302 to a canonical path;
+        // a redirect proves reachability, not an auth failure.
+        SuccessClass::AllowRedirects,
+        |_| {
+            let mut req = match &method {
+                ProbeMethod::Get => client.get(url),
+                ProbeMethod::PostJson(body) => client.post(url).json(body),
+            };
+            req = req.header("Accept", "application/json");
+            req = match auth {
+                ProbeAuth::None => req,
+                ProbeAuth::Token(t) => req.header("Authorization", format!("Token {t}")),
+                ProbeAuth::Basic { username, password } => req.basic_auth(username, Some(password)),
+            };
+            req.send()
+        },
+        |status, body| format!("{status}: {}", redact_bearer_tokens(body)),
+    );
+    match result {
+        Ok(_) => EndpointStatus::Reachable,
+        Err(err) => match http_status(&err) {
+            401 | 403 => EndpointStatus::AuthRejected,
+            404 => EndpointStatus::NotFound,
+            0 => EndpointStatus::Unreachable(format!("{err}")),
+            other => EndpointStatus::Indeterminate(format!("HTTP {other}")),
+        },
+    }
+}
+
+/// Probe a *resource* endpoint (a health/whoami/repo URL the publish path
+/// expects to exist) and map the outcome to a [`PreflightCheck`]:
+///
+/// * reachable ⇒ [`PreflightCheck::Pass`].
+/// * credential rejected (401/403) ⇒ `fail` severity — the publish would fail
+///   with the same auth error.
+/// * resource missing (404) ⇒ `fail` severity — the target repo/endpoint does
+///   not exist.
+/// * unreachable (connection refused / DNS / TLS) ⇒ `fail` severity — the exact
+///   failure mode a no-op preflight let slip past the one-way doors.
+/// * indeterminate (5xx / unexpected) ⇒ [`PreflightCheck::Warning`] — likely
+///   transient, must not abort a release whose credentials are actually valid.
+///
+/// A bare base-URL reachability probe (whose root path legitimately 404s on a
+/// healthy host) must NOT use this — it should call [`classify_http_endpoint`]
+/// directly and treat [`EndpointStatus::NotFound`] as reachable.
+pub(crate) fn probe_http_endpoint(
+    client: &reqwest::blocking::Client,
+    method: ProbeMethod,
+    url: &str,
+    auth: &ProbeAuth,
+    label: &str,
+    fail: FailSeverity,
+    policy: &RetryPolicy,
+) -> PreflightCheck {
+    match classify_http_endpoint(client, method, url, auth, label, policy) {
+        EndpointStatus::Reachable => PreflightCheck::Pass,
+        EndpointStatus::AuthRejected => fail.apply(format!(
+            "{label}: endpoint {url} rejected the configured credentials (HTTP 401/403); \
+             the publish would fail with the same auth error"
+        )),
+        EndpointStatus::NotFound => {
+            fail.apply(format!("{label}: endpoint {url} not found (HTTP 404)"))
+        }
+        EndpointStatus::Unreachable(e) => {
+            fail.apply(format!("{label}: endpoint {url} unreachable ({e})"))
+        }
+        EndpointStatus::Indeterminate(e) => PreflightCheck::Warning(format!(
+            "{label}: could not verify {url} ({e}); verify the endpoint manually"
+        )),
+    }
+}
+
+/// Map a *reachability* probe against a bare base URL (or an endpoint that
+/// legitimately 404s on a healthy host, e.g. a not-yet-published Gemfury
+/// version) to a [`PreflightCheck`]. Only two outcomes are actionable:
+///
+/// * credential rejected (401/403) ⇒ `fail` severity.
+/// * host unreachable (connection refused / DNS / TLS) ⇒ `fail` severity — the
+///   failure mode a no-op preflight let slip past the one-way doors.
+///
+/// A 2xx/3xx, a 404 (host up, resource simply absent), and any 5xx (degraded to
+/// a Warning) all prove the host is reachable, so the probe must not abort on
+/// them. Use this — not [`probe_http_endpoint`] — whenever a 404 does NOT mean a
+/// misconfigured target.
+pub(crate) fn reachability_outcome(
+    status: EndpointStatus,
+    url: &str,
+    label: &str,
+    fail: FailSeverity,
+) -> PreflightCheck {
+    match status {
+        EndpointStatus::Reachable | EndpointStatus::NotFound => PreflightCheck::Pass,
+        EndpointStatus::AuthRejected => fail.apply(format!(
+            "{label}: endpoint {url} rejected the configured credentials (HTTP 401/403); \
+             the publish would fail with the same auth error"
+        )),
+        EndpointStatus::Unreachable(e) => fail.apply(format!(
+            "{label}: endpoint {url} unreachable ({e}); the publish would fail to connect"
+        )),
+        EndpointStatus::Indeterminate(e) => PreflightCheck::Warning(format!(
+            "{label}: could not verify {url} ({e}); verify the endpoint manually"
+        )),
+    }
+}
+
 /// Probe `GET https://api.github.com/repos/{owner}/{repo}` to prove the target
 /// index/fork repo exists and `token` can push to it. See
 /// [`github_repo_check_at`] for the outcome mapping.
@@ -141,37 +351,6 @@ pub(crate) fn github_repo_check(
 ) -> PreflightCheck {
     let url = format!("https://api.github.com/repos/{owner}/{repo}");
     github_repo_check_at(&url, owner, repo, token, policy)
-}
-
-/// Terminal classification of a single `GET /repos/{owner}/{repo}` probe,
-/// carrying enough to distinguish a transient rate-limit 403 from an auth 403.
-enum RepoProbe {
-    /// 2xx — carries the response body for `permissions.push` inspection.
-    Body(String),
-    /// 404 — repo missing under an otherwise-good token.
-    Missing,
-    /// 401 / 403 with NO rate-limit signal — the token cannot read the repo.
-    AuthDenied,
-    /// 429, or a 401 / 403 carrying a rate-limit signal (GitHub returns 403
-    /// for both secondary-rate-limit and auth denial, distinguishable only by
-    /// the `Retry-After` / `X-RateLimit-Remaining: 0` headers) — transient.
-    RateLimited,
-    /// 5xx, an unexpected status, or a transport failure — verdict unknown.
-    Inconclusive(String),
-}
-
-/// Whether a GitHub response's headers mark it as rate-limited: a `Retry-After`
-/// header (primary or secondary limit) or `X-RateLimit-Remaining: 0`. Header
-/// lookups are case-insensitive ([`reqwest::header::HeaderMap`]).
-fn response_is_rate_limited(headers: &reqwest::header::HeaderMap) -> bool {
-    if headers.contains_key("retry-after") {
-        return true;
-    }
-    headers
-        .get("x-ratelimit-remaining")
-        .and_then(|v| v.to_str().ok())
-        .map(|v| v.trim() == "0")
-        .unwrap_or(false)
 }
 
 /// `url`-taking core of [`github_repo_check`] so a unit test can drive the
@@ -235,66 +414,6 @@ pub(crate) fn github_repo_check_at(
         RepoProbe::Inconclusive(reason) => PreflightCheck::Warning(format!(
             "could not probe {owner}/{repo} write access ({reason}); verify the repo and token manually"
         )),
-    }
-}
-
-/// Run the `GET /repos/{owner}/{repo}` request under the shallow probe policy,
-/// reading response headers (not just the status) so a secondary-rate-limit 403
-/// is separable from an auth 403. 5xx and retriable transport errors retry
-/// within `policy`; everything else resolves on the first response.
-fn github_repo_probe(
-    client: &reqwest::blocking::Client,
-    url: &str,
-    token: Option<&str>,
-    policy: &RetryPolicy,
-) -> RepoProbe {
-    let token = token.map(str::to_string);
-    let outcome = retry_sync(policy, |_attempt| {
-        let mut b = client
-            .get(url)
-            .header("Accept", "application/vnd.github+json")
-            .header("X-GitHub-Api-Version", "2022-11-28");
-        if let Some(ref tok) = token
-            && !tok.is_empty()
-        {
-            b = b.header("Authorization", format!("Bearer {tok}"));
-        }
-        match b.send() {
-            Ok(resp) => {
-                let code = resp.status().as_u16();
-                // Capture the rate-limit verdict from headers BEFORE `text()`
-                // consumes the response.
-                let rate_limited = response_is_rate_limited(resp.headers());
-                if resp.status().is_success() {
-                    Ok(RepoProbe::Body(resp.text().unwrap_or_default()))
-                } else if resp.status().is_server_error() {
-                    Err(ControlFlow::Continue(RepoProbe::Inconclusive(format!(
-                        "HTTP {code}"
-                    ))))
-                } else if code == 429 || ((code == 403 || code == 401) && rate_limited) {
-                    Ok(RepoProbe::RateLimited)
-                } else if code == 404 {
-                    Ok(RepoProbe::Missing)
-                } else if code == 403 || code == 401 {
-                    Ok(RepoProbe::AuthDenied)
-                } else {
-                    Ok(RepoProbe::Inconclusive(format!("unexpected HTTP {code}")))
-                }
-            }
-            Err(e) => {
-                let msg = format!("network failure: {e}");
-                if is_retriable(&e) {
-                    Err(ControlFlow::Continue(RepoProbe::Inconclusive(msg)))
-                } else {
-                    Err(ControlFlow::Break(RepoProbe::Inconclusive(msg)))
-                }
-            }
-        }
-    });
-    // Both the success and the retries-exhausted arm collapse to the same
-    // terminal `RepoProbe`.
-    match outcome {
-        Ok(p) | Err(p) => p,
     }
 }
 
@@ -585,5 +704,180 @@ mod tests {
             github_repo_check_at(&url, "o", "r", Some("tok"), &fast_retry()),
             PreflightCheck::Warning(_)
         ));
+    }
+
+    #[test]
+    fn classify_reachable_on_200() {
+        let (addr, _c) =
+            spawn_oneshot_http_responder(vec![Box::leak(http("200 OK", "ok").into_boxed_str())]);
+        let client = default_probe_client().expect("client");
+        let url = format!("http://{addr}/health");
+        assert!(matches!(
+            classify_http_endpoint(
+                &client,
+                ProbeMethod::Get,
+                &url,
+                &ProbeAuth::Token("t".into()),
+                "test",
+                &fast_retry()
+            ),
+            EndpointStatus::Reachable
+        ));
+    }
+
+    #[test]
+    fn classify_auth_rejected_on_401() {
+        let (addr, _c) = spawn_oneshot_http_responder(vec![Box::leak(
+            http("401 Unauthorized", "").into_boxed_str(),
+        )]);
+        let client = default_probe_client().expect("client");
+        let url = format!("http://{addr}/health");
+        assert!(matches!(
+            classify_http_endpoint(
+                &client,
+                ProbeMethod::Get,
+                &url,
+                &ProbeAuth::Basic {
+                    username: "bad".into(),
+                    password: String::new()
+                },
+                "test",
+                &fast_retry()
+            ),
+            EndpointStatus::AuthRejected
+        ));
+    }
+
+    #[test]
+    fn classify_not_found_on_404() {
+        let (addr, _c) = spawn_oneshot_http_responder(vec![Box::leak(
+            http("404 Not Found", "").into_boxed_str(),
+        )]);
+        let client = default_probe_client().expect("client");
+        let url = format!("http://{addr}/missing");
+        assert!(matches!(
+            classify_http_endpoint(
+                &client,
+                ProbeMethod::Get,
+                &url,
+                &ProbeAuth::None,
+                "test",
+                &fast_retry()
+            ),
+            EndpointStatus::NotFound
+        ));
+    }
+
+    #[test]
+    fn classify_unreachable_on_closed_port() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+        drop(listener);
+        let client = default_probe_client().expect("client");
+        let url = format!("http://{addr}/health");
+        assert!(matches!(
+            classify_http_endpoint(
+                &client,
+                ProbeMethod::Get,
+                &url,
+                &ProbeAuth::None,
+                "test",
+                &fast_retry()
+            ),
+            EndpointStatus::Unreachable(_)
+        ));
+    }
+
+    #[test]
+    fn probe_http_endpoint_blocks_on_404_when_required() {
+        let (addr, _c) = spawn_oneshot_http_responder(vec![Box::leak(
+            http("404 Not Found", "").into_boxed_str(),
+        )]);
+        let client = default_probe_client().expect("client");
+        let url = format!("http://{addr}/repo");
+        match probe_http_endpoint(
+            &client,
+            ProbeMethod::Get,
+            &url,
+            &ProbeAuth::Token("t".into()),
+            "test",
+            FailSeverity::Blocker,
+            &fast_retry(),
+        ) {
+            PreflightCheck::Blocker(m) => assert!(m.contains("not found"), "{m}"),
+            other => panic!("expected Blocker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn probe_http_endpoint_warns_on_404_when_optional() {
+        let (addr, _c) = spawn_oneshot_http_responder(vec![Box::leak(
+            http("404 Not Found", "").into_boxed_str(),
+        )]);
+        let client = default_probe_client().expect("client");
+        let url = format!("http://{addr}/repo");
+        assert!(matches!(
+            probe_http_endpoint(
+                &client,
+                ProbeMethod::Get,
+                &url,
+                &ProbeAuth::Token("t".into()),
+                "test",
+                FailSeverity::Warning,
+                &fast_retry(),
+            ),
+            PreflightCheck::Warning(_)
+        ));
+    }
+
+    #[test]
+    fn reachability_outcome_passes_on_not_found() {
+        // A bare base-URL / not-yet-published-version 404 still proves the host
+        // is reachable — never a failure for a reachability probe.
+        assert!(matches!(
+            reachability_outcome(
+                EndpointStatus::NotFound,
+                "http://x/y",
+                "test",
+                FailSeverity::Blocker
+            ),
+            PreflightCheck::Pass
+        ));
+    }
+
+    #[test]
+    fn reachability_outcome_blocks_on_auth_when_required() {
+        match reachability_outcome(
+            EndpointStatus::AuthRejected,
+            "http://x/y",
+            "test",
+            FailSeverity::Blocker,
+        ) {
+            PreflightCheck::Blocker(m) => assert!(m.contains("rejected"), "{m}"),
+            other => panic!("expected Blocker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn probe_post_json_reaches_login_endpoint() {
+        let (addr, calls) = spawn_oneshot_http_responder(vec![Box::leak(
+            http("200 OK", r#"{"token":"jwt"}"#).into_boxed_str(),
+        )]);
+        let client = default_probe_client().expect("client");
+        let url = format!("http://{addr}/v2/users/login/");
+        let body = serde_json::json!({ "username": "u", "password": "p" });
+        assert!(matches!(
+            probe_http_endpoint(
+                &client,
+                ProbeMethod::PostJson(body),
+                &url,
+                &ProbeAuth::None,
+                "test",
+                FailSeverity::Warning,
+                &fast_retry(),
+            ),
+            PreflightCheck::Pass
+        ));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

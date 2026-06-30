@@ -1655,11 +1655,91 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
         Ok(())
     }
 
-    /// No live probe: Cloudsmith versions are re-uploadable with a `DELETE`
-    /// rollback, and `requirements()` gates the token — an invalid token fails
-    /// the first, recoverable step.
-    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
-        Ok(anodizer_core::PreflightCheck::Pass)
+    /// Live pre-publish gate. For every active `cloudsmiths[]` entry whose
+    /// upload token resolves, probe `GET {api_base}/packages/{org}/{repo}/` with
+    /// `Authorization: token <key>` — the same coordinates + auth header the
+    /// upload path uses. A rejected token (401/403) or a missing repo (404)
+    /// proves the publish cannot proceed; an unreachable host is the failure a
+    /// no-op preflight let slip past the one-way doors. Severity follows
+    /// [`required()`](anodizer_core::Publisher::required) so the gate is never
+    /// stricter than the publish it precedes.
+    ///
+    /// Entries with no resolvable token are left to `requirements()` (which
+    /// gates token *presence*); this probe only proves a *present* token is
+    /// actually accepted.
+    fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        use crate::publisher_preflight::{
+            FailSeverity, ProbeAuth, ProbeMethod, default_probe_client, merge, probe_http_endpoint,
+        };
+        use anodizer_core::PreflightCheck;
+
+        let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let fail = FailSeverity::for_required(Self::resolved_required(self));
+        let api_base = cloudsmith_api_base_from(ctx.env_source());
+
+        let mut acc = PreflightCheck::Pass;
+        for entry in ctx.config.cloudsmiths.iter().flatten() {
+            if crate::publisher_helpers::entry_inactive(
+                ctx,
+                entry.skip.as_ref(),
+                None,
+                entry.if_condition.as_deref(),
+            ) {
+                continue;
+            }
+            // An absent org/repo is config-validation territory the upload path
+            // already fails loud on; don't manufacture a duplicate blocker here.
+            let (Some(org_raw), Some(repo_raw)) =
+                (entry.organization.as_deref(), entry.repository.as_deref())
+            else {
+                continue;
+            };
+            let org = ctx
+                .render_template(org_raw)
+                .unwrap_or_else(|_| org_raw.to_string());
+            let repo = ctx
+                .render_template(repo_raw)
+                .unwrap_or_else(|_| repo_raw.to_string());
+            if org.trim().is_empty() || repo.trim().is_empty() {
+                continue;
+            }
+            let token_env = crate::util::resolve_secret_name(
+                ctx,
+                entry.secret_name.as_deref(),
+                "CLOUDSMITH_TOKEN",
+            );
+            let Some(token) = ctx.env_var(&token_env).filter(|t| !t.is_empty()) else {
+                continue;
+            };
+            let client = match default_probe_client() {
+                Ok(c) => c,
+                Err(e) => {
+                    acc = merge(
+                        acc,
+                        PreflightCheck::Warning(format!(
+                            "cloudsmith: could not build HTTP client for preflight ({e})"
+                        )),
+                    );
+                    continue;
+                }
+            };
+            // `?page_size=1` keeps the authed list cheap; the repo coordinate is
+            // the auth + existence surface (401/403 = bad token, 404 = bad repo).
+            let url = format!("{api_base}/packages/{org}/{repo}/?page_size=1");
+            acc = merge(
+                acc,
+                probe_http_endpoint(
+                    &client,
+                    ProbeMethod::Get,
+                    &url,
+                    &ProbeAuth::Token(token),
+                    "preflight: cloudsmith",
+                    fail,
+                    &policy,
+                ),
+            );
+        }
+        Ok(acc)
     }
 
     fn skips_on_nightly(&self) -> bool {
@@ -4128,5 +4208,78 @@ mod publisher_tests {
         assert!(msg.contains("acme/widget"), "{msg}");
         assert!(msg.contains("per-package slug not surfaced"), "{msg}");
         assert!(msg.contains("Cloudsmith dashboard"), "{msg}");
+    }
+}
+
+#[cfg(test)]
+mod preflight_live_tests {
+    use super::*;
+    use anodizer_core::Publisher;
+    use anodizer_core::config::{CloudSmithConfig, Config};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+
+    fn make_ctx(base: &str, token: Option<&str>, deselect: bool) -> Context {
+        let cfg = CloudSmithConfig {
+            organization: Some("myorg".into()),
+            repository: Some("myrepo".into()),
+            if_condition: if deselect { Some("false".into()) } else { None },
+            ..Default::default()
+        };
+        let config = Config {
+            project_name: "app".into(),
+            cloudsmiths: Some(vec![cfg]),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let mut env = anodizer_core::MapEnvSource::new()
+            .with("ANODIZE_CLOUDSMITH_API_BASE", base.to_string());
+        if let Some(t) = token {
+            env = env.with("CLOUDSMITH_TOKEN", t.to_string());
+        }
+        ctx.set_env_source(env);
+        ctx
+    }
+
+    #[test]
+    fn cloudsmith_preflight_blocks_on_invalid_token_when_required() {
+        let (addr, _c) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let ctx = make_ctx(&format!("http://{addr}"), Some("bad-token"), false);
+        match CloudsmithPublisher::with_overrides(Some(true), None)
+            .preflight(&ctx)
+            .expect("preflight ok")
+        {
+            anodizer_core::PreflightCheck::Blocker(m) => assert!(m.contains("cloudsmith"), "{m}"),
+            other => panic!("expected Blocker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cloudsmith_preflight_passes_on_reachable() {
+        let (addr, _c) =
+            spawn_oneshot_http_responder(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]"]);
+        let ctx = make_ctx(&format!("http://{addr}"), Some("good-token"), false);
+        assert!(matches!(
+            CloudsmithPublisher::new()
+                .preflight(&ctx)
+                .expect("preflight ok"),
+            anodizer_core::PreflightCheck::Pass
+        ));
+    }
+
+    #[test]
+    fn cloudsmith_preflight_skips_deselected_without_request() {
+        let (addr, calls) =
+            spawn_oneshot_http_responder(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n[]"]);
+        let ctx = make_ctx(&format!("http://{addr}"), Some("good-token"), true);
+        assert!(matches!(
+            CloudsmithPublisher::new()
+                .preflight(&ctx)
+                .expect("preflight ok"),
+            anodizer_core::PreflightCheck::Pass
+        ));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }

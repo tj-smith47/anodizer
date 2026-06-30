@@ -921,7 +921,19 @@ fn run_formatter(nix_cfg: &NixConfig, nix_file: &Path, log: &StageLogger) -> Res
     // Detect-and-fail-loud (no runtime auto-install) — consistent with
     // cosign/syft being required-present. The CI base image
     // (anodizer-action `install:`) provisions the formatter.
-    if !anodizer_core::tool_detect::tool_available(formatter).unwrap_or(false) {
+    //
+    // `tool_available` reports a missing-on-PATH binary as `Err(NotFound)` (the
+    // probe could not spawn it), so a genuine probe error is ONLY a non-NotFound
+    // I/O failure (e.g. permission denied). Surface that real error rather than
+    // the misleading "not found on PATH" remedy; fold NotFound back into the
+    // not-on-PATH bail alongside `Ok(false)` (probe ran but exited non-zero).
+    let probe = anodizer_core::tool_detect::tool_available(formatter);
+    if let Err(e) = &probe {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            anyhow::bail!("nix: could not probe formatter '{formatter}' availability ({e})");
+        }
+    }
+    if !matches!(probe, Ok(true)) {
         anyhow::bail!(
             "nix: formatter '{formatter}' not found on PATH — install it \
              (anodizer-action install: list / CI base image) so the generated \

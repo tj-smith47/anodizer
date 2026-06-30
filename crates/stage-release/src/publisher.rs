@@ -299,6 +299,174 @@ fn capture_release_ids(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Pre-tag probe — github-release write-access gate
+// ---------------------------------------------------------------------------
+
+/// Per-probe HTTP timeout. Long enough for a cold TLS handshake to
+/// api.github.com, short enough that a wedged endpoint cannot stall the
+/// pre-tag gate.
+const PREFLIGHT_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Keep the most severe of two outcomes: `Blocker` > `Warning` > `Pass`. The
+/// first-seen message wins within a severity so the operator sees a stable line.
+fn preflight_merge(
+    acc: anodizer_core::PreflightCheck,
+    next: anodizer_core::PreflightCheck,
+) -> anodizer_core::PreflightCheck {
+    use anodizer_core::PreflightCheck::{Blocker, Pass, Warning};
+    match (acc, next) {
+        (Blocker(m), _) | (_, Blocker(m)) => Blocker(m),
+        (Warning(m), _) | (_, Warning(m)) => Warning(m),
+        (Pass, Pass) => Pass,
+    }
+}
+
+/// (owner, repo) per selected, non-skipped crate carrying a `release.github`
+/// (or default release) block. Mirrors [`collect_release_targets`] minus tag
+/// resolution — the probe needs only the repo coordinates and must not depend
+/// on a version being stamped yet (preflight runs before the tag).
+fn release_repo_targets_for_preflight(ctx: &Context) -> Vec<(String, String)> {
+    use crate::resolve_release_repo;
+    let selected = &ctx.options.selected_crates;
+    let mut out = Vec::new();
+    for c in &ctx.config.crates {
+        if !selected.is_empty() && !selected.contains(&c.name) {
+            continue;
+        }
+        let Some(release_cfg) = c.release.as_ref() else {
+            continue;
+        };
+        if let Some(ref d) = release_cfg.skip {
+            let off = d
+                .try_evaluates_to_true(|s| ctx.render_template(s))
+                .unwrap_or(false);
+            if off {
+                continue;
+            }
+        }
+        if let Ok(Some(ScmRepoConfig { owner, name })) =
+            resolve_release_repo(release_cfg, ScmTokenType::GitHub, ctx)
+        {
+            out.push((owner, name));
+        }
+    }
+    out
+}
+
+/// Live pre-tag gate for the REQUIRED github-release publisher: prove the
+/// resolved GitHub token can create a release (push access) in every
+/// configured release repo. Pass (no network) when no release is
+/// configured/selected; Blocker when the token is missing or a target repo is
+/// unwritable; Warning on a transient rate-limit / transport blip.
+fn github_release_preflight(ctx: &Context) -> anodizer_core::PreflightCheck {
+    use anodizer_core::PreflightCheck;
+    let targets = release_repo_targets_for_preflight(ctx);
+    if targets.is_empty() {
+        return PreflightCheck::Pass;
+    }
+    let token =
+        anodizer_core::git::resolve_github_token_with_env(ctx.options.token.as_deref(), &|k| {
+            ctx.env_var(k)
+        });
+    let Some(token) = token else {
+        let (owner, repo) = &targets[0];
+        return PreflightCheck::Blocker(format!(
+            "no GitHub token resolved (set ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN, or pass --token); \
+             cannot create the release in {owner}/{repo}"
+        ));
+    };
+    let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
+    let mut acc = PreflightCheck::Pass;
+    for (owner, repo) in targets {
+        if !seen.insert((owner.clone(), repo.clone())) {
+            continue;
+        }
+        acc = preflight_merge(acc, repo_push_check(&owner, &repo, &token, &policy));
+    }
+    acc
+}
+
+/// Probe `GET https://api.github.com/repos/{owner}/{repo}` for push access.
+/// See [`repo_push_check_at`] for the status/permission mapping.
+fn repo_push_check(
+    owner: &str,
+    repo: &str,
+    token: &str,
+    policy: &anodizer_core::retry::RetryPolicy,
+) -> anodizer_core::PreflightCheck {
+    let url = format!("https://api.github.com/repos/{owner}/{repo}");
+    repo_push_check_at(&url, owner, repo, token, policy)
+}
+
+/// `url`-taking core of [`repo_push_check`] so a unit test can drive the
+/// status/permission mapping against a local responder.
+///
+/// github-release is REQUIRED and creates the release + uploads assets, so a
+/// definitively-unwritable target is a hard prerequisite the run cannot
+/// satisfy — those map to Blocker. A transient rate-limit / transport blip must
+/// not abort a release that would otherwise succeed — those warn.
+///
+/// * 200 + `permissions.push == true` ⇒ Pass
+/// * 200 + `permissions.push == false` ⇒ Blocker (token lacks `contents:write`)
+/// * 200 + `permissions` absent ⇒ Warning (push scope undeterminable)
+/// * 404 / 401 / 403 without a rate-limit signal ⇒ Blocker
+/// * 429, or 401 / 403 carrying a rate-limit header ⇒ Warning
+/// * 5xx / transport failure / unexpected status ⇒ Warning
+fn repo_push_check_at(
+    url: &str,
+    owner: &str,
+    repo: &str,
+    token: &str,
+    policy: &anodizer_core::retry::RetryPolicy,
+) -> anodizer_core::PreflightCheck {
+    use anodizer_core::PreflightCheck;
+    use anodizer_core::git::{RepoProbe, github_repo_probe};
+    let client = match anodizer_core::http::blocking_client(PREFLIGHT_PROBE_TIMEOUT) {
+        Ok(c) => c,
+        Err(e) => {
+            return PreflightCheck::Warning(format!(
+                "could not probe {owner}/{repo} write access ({e}); verify the repo and token manually"
+            ));
+        }
+    };
+    match github_repo_probe(&client, url, Some(token), policy) {
+        RepoProbe::Body(body) => match serde_json::from_str::<serde_json::Value>(&body) {
+            Ok(v) => match v.pointer("/permissions/push").and_then(|p| p.as_bool()) {
+                Some(true) => PreflightCheck::Pass,
+                Some(false) => PreflightCheck::Blocker(format!(
+                    "GitHub token cannot push to {owner}/{repo} (needs contents:write); \
+                     the release create / asset upload will fail"
+                )),
+                None => PreflightCheck::Warning(format!(
+                    "could not determine push access to {owner}/{repo} (no permissions in API \
+                     response); verify the token scope manually"
+                )),
+            },
+            Err(_) => PreflightCheck::Warning(format!(
+                "could not parse {owner}/{repo} API response; verify the repo and token manually"
+            )),
+        },
+        // A missing repo or a token that cannot access it is a hard
+        // prerequisite the release-create path cannot satisfy — block.
+        RepoProbe::Missing | RepoProbe::AuthDenied => PreflightCheck::Blocker(format!(
+            "release repo {owner}/{repo} not found or the GitHub token lacks access; \
+             cannot create the release"
+        )),
+        // A secondary-rate-limit 403 is indistinguishable from auth denial by
+        // status alone; the headers prove it transient, so warn rather than
+        // abort a release whose token is actually fine.
+        RepoProbe::RateLimited => PreflightCheck::Warning(format!(
+            "GitHub API rate-limited while probing {owner}/{repo}; could not verify write access \
+             — verify the repo and token manually"
+        )),
+        RepoProbe::Inconclusive(reason) => PreflightCheck::Warning(format!(
+            "could not probe {owner}/{repo} write access ({reason}); verify the repo and token manually"
+        )),
+    }
+}
+
 impl anodizer_core::Publisher for GithubReleasePublisher {
     fn name(&self) -> &str {
         Self::PUBLISHER_NAME
@@ -533,11 +701,15 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
         Ok(())
     }
 
-    /// No live probe: a GitHub release has a delete-release + delete-tag
-    /// rollback, and an invalid token fails release creation — fully reversible,
-    /// so a pre-publish credential probe would add little.
-    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
-        Ok(anodizer_core::PreflightCheck::Pass)
+    /// Live pre-tag gate. github-release is REQUIRED and creates the release +
+    /// uploads assets; a token that is missing, invalid, or lacks
+    /// `contents:write` to a configured release repo would fail release
+    /// creation AFTER one-way-door publishers (cargo / chocolatey / …) may have
+    /// already fired. Probe every configured release repo for push access
+    /// BEFORE the tag is cut. Pass (no network) when no release is
+    /// configured/selected. See [`github_release_preflight`].
+    fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        Ok(github_release_preflight(ctx))
     }
 
     fn skips_on_nightly(&self) -> bool {
@@ -718,6 +890,117 @@ mod publisher_tests {
             p.preflight(&ctx).expect("preflight ok"),
             PreflightCheck::Pass
         ));
+    }
+
+    fn one_attempt_policy() -> anodizer_core::retry::RetryPolicy {
+        anodizer_core::retry::RetryPolicy {
+            max_attempts: 1,
+            base_delay: std::time::Duration::from_millis(1),
+            max_delay: std::time::Duration::from_millis(1),
+        }
+    }
+
+    fn http(status_line: &str, body: &str) -> &'static str {
+        Box::leak(
+            format!(
+                "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        )
+    }
+
+    #[test]
+    fn repo_push_check_passes_when_push_true() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        let (addr, _c) =
+            spawn_oneshot_http_responder(vec![http("200 OK", r#"{"permissions":{"push":true}}"#)]);
+        let url = format!("http://{addr}/repos/acme/widget");
+        assert!(matches!(
+            repo_push_check_at(&url, "acme", "widget", "tok", &one_attempt_policy()),
+            PreflightCheck::Pass
+        ));
+    }
+
+    #[test]
+    fn repo_push_check_blocks_when_push_false() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        let (addr, _c) =
+            spawn_oneshot_http_responder(vec![http("200 OK", r#"{"permissions":{"push":false}}"#)]);
+        let url = format!("http://{addr}/repos/acme/widget");
+        match repo_push_check_at(&url, "acme", "widget", "tok", &one_attempt_policy()) {
+            PreflightCheck::Blocker(m) => assert!(m.contains("contents:write"), "{m}"),
+            _ => panic!("expected Blocker when permissions.push is false"),
+        }
+    }
+
+    #[test]
+    fn repo_push_check_blocks_on_auth_denied() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        // A 401 with no rate-limit header ⇒ the token cannot access the repo.
+        let (addr, _c) = spawn_oneshot_http_responder(vec![http("401 Unauthorized", "")]);
+        let url = format!("http://{addr}/repos/acme/widget");
+        match repo_push_check_at(&url, "acme", "widget", "bad", &one_attempt_policy()) {
+            PreflightCheck::Blocker(m) => assert!(m.contains("acme/widget"), "{m}"),
+            _ => panic!("expected Blocker on a 401"),
+        }
+    }
+
+    fn http_with_header(status_line: &str, header: &str, body: &str) -> &'static str {
+        Box::leak(
+            format!(
+                "HTTP/1.1 {status_line}\r\n{header}\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        )
+    }
+
+    #[test]
+    fn repo_push_check_warns_on_rate_limited_403() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        // A secondary-rate-limit 403 carries `X-RateLimit-Remaining: 0`; it is
+        // transient (RepoProbe::RateLimited) and must NOT block a release whose
+        // token is actually valid.
+        let (addr, _c) = spawn_oneshot_http_responder(vec![http_with_header(
+            "403 Forbidden",
+            "X-RateLimit-Remaining: 0",
+            "",
+        )]);
+        let url = format!("http://{addr}/repos/acme/widget");
+        match repo_push_check_at(&url, "acme", "widget", "tok", &one_attempt_policy()) {
+            PreflightCheck::Warning(m) => assert!(m.contains("rate-limited"), "{m}"),
+            other => panic!("rate-limited 403 must degrade to Warning, not {other:?}"),
+        }
+    }
+
+    #[test]
+    fn repo_push_check_warns_on_inconclusive_5xx() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        // A 5xx is host-reachable-but-not-answering-cleanly
+        // (RepoProbe::Inconclusive); it must warn rather than abort a release
+        // whose token is fine.
+        let (addr, _c) = spawn_oneshot_http_responder(vec![http("503 Service Unavailable", "")]);
+        let url = format!("http://{addr}/repos/acme/widget");
+        match repo_push_check_at(&url, "acme", "widget", "tok", &one_attempt_policy()) {
+            PreflightCheck::Warning(m) => assert!(m.contains("acme/widget"), "{m}"),
+            other => panic!("inconclusive 5xx must degrade to Warning, not {other:?}"),
+        }
+    }
+
+    #[test]
+    fn github_release_preflight_blocks_when_token_missing() {
+        // A configured release repo + sealed env (no GITHUB_TOKEN) ⇒ Blocker
+        // with no network call.
+        let ctx = TestContextBuilder::new()
+            .crates(vec![github_release_crate("demo")])
+            .sealed_env()
+            .build();
+        let p = GithubReleasePublisher::new();
+        match p.preflight(&ctx).expect("preflight") {
+            PreflightCheck::Blocker(m) => assert!(m.contains("no GitHub token"), "{m}"),
+            _ => panic!("expected Blocker when no token resolves"),
+        }
     }
 
     #[test]

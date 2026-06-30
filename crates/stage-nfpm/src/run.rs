@@ -1395,7 +1395,7 @@ fn build_nfpm_job(
     let (mtime, mtime_repr) = if let Some(ref raw_mtime) = nfpm_cfg.mtime {
         let rendered_mtime = ctx
             .render_template(raw_mtime)
-            .unwrap_or_else(|_| raw_mtime.clone());
+            .with_context(|| format!("nfpm: render mtime template '{raw_mtime}'"))?;
         match anodizer_core::util::parse_mod_timestamp(&rendered_mtime) {
             Ok(mt) => (Some(mt), Some(rendered_mtime)),
             Err(e) => {

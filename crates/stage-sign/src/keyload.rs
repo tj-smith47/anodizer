@@ -29,6 +29,16 @@ pub enum CosignKeyLoad {
     /// attempted. The caller should WARN (not fail): the key/password combo is
     /// validated at sign time on a runner that does carry cosign.
     CosignUnavailable,
+    /// The probe for `cosign` itself errored with a non-`NotFound` I/O failure
+    /// (e.g. permission denied spawning the version check), so its presence
+    /// could NOT be determined — distinct from a definitive "absent" (a
+    /// not-on-PATH `NotFound` folds into [`CosignKeyLoad::CosignUnavailable`]).
+    /// Carries the probe error so the caller can name it
+    /// instead of masquerading the failure as a clean absence. Like
+    /// [`CosignKeyLoad::CosignUnavailable`] the caller WARNs (sign time
+    /// re-validates), but the surfaced reason tells the operator the precheck
+    /// was skipped because the probe broke, not because cosign is missing.
+    CosignProbeFailed(String),
     /// `cosign` is installed but the key failed to load — a genuinely bad
     /// secret (wrong or missing password for an encrypted key, malformed key
     /// material). Carries cosign's diagnostic for the operator. The caller
@@ -66,11 +76,30 @@ pub fn verify_cosign_key_loads(key_ref: &str) -> CosignKeyLoad {
 /// exported so the run is non-interactive. No tlog, no network, no publish.
 ///
 /// Returns [`CosignKeyLoad::CosignUnavailable`] when cosign is absent (caller
-/// WARNs), [`CosignKeyLoad::Loaded`] on a successful load, and
-/// [`CosignKeyLoad::Failed`] with cosign's stderr when the key fails to load.
+/// WARNs), [`CosignKeyLoad::CosignProbeFailed`] when the availability probe
+/// itself errored (caller WARNs, naming the probe error), [`CosignKeyLoad::Loaded`]
+/// on a successful load, and [`CosignKeyLoad::Failed`] with cosign's stderr when
+/// the key fails to load.
 pub fn verify_cosign_key_loads_with_env(key_ref: &str, env: &dyn EnvSource) -> CosignKeyLoad {
-    if !anodizer_core::tool_detect::tool_available("cosign").unwrap_or(false) {
-        return CosignKeyLoad::CosignUnavailable;
+    match anodizer_core::tool_detect::tool_available("cosign") {
+        Ok(true) => {}
+        // Definitively absent: the version probe ran but exited non-zero, or
+        // (the common case) cosign is not on PATH so the probe could not spawn
+        // it (`NotFound`). Either way the load can't be attempted; sign time
+        // re-validates on a runner that carries cosign.
+        Ok(false) => return CosignKeyLoad::CosignUnavailable,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return CosignKeyLoad::CosignUnavailable;
+        }
+        // A non-NotFound spawn failure (e.g. permission denied) means presence
+        // is UNKNOWN, not "absent": surface the I/O error so the caller's WARN
+        // names it rather than masquerading a broken probe as a clean skip of
+        // this security-relevant precheck.
+        Err(e) => {
+            return CosignKeyLoad::CosignProbeFailed(format!(
+                "could not probe cosign availability: {e}"
+            ));
+        }
     }
 
     // `--key=<ref>` (single-token form) so a `key_ref` that itself contains a
@@ -121,8 +150,15 @@ mod tests {
     use super::*;
     use anodizer_core::{MapEnvSource, harness_signing};
 
-    fn cosign_present() -> bool {
-        anodizer_core::tool_detect::tool_available("cosign").unwrap_or(false)
+    /// Probe cosign for a gated test: `true` when present. A probe ERROR is
+    /// surfaced through `reason` (never silently collapsed into a bare
+    /// "absent"), so a skipped test records why cosign was unusable.
+    fn cosign_present() -> (bool, String) {
+        match anodizer_core::tool_detect::tool_available("cosign") {
+            Ok(true) => (true, "cosign=present".to_string()),
+            Ok(false) => (false, "cosign=absent".to_string()),
+            Err(e) => (false, format!("cosign=probe-error({e})")),
+        }
     }
 
     /// Generates an ephemeral ENCRYPTED cosign keypair (the harness uses a
@@ -132,8 +168,9 @@ mod tests {
     /// stays green.
     #[test]
     fn correct_password_loads_wrong_password_fails() {
-        if !cosign_present() {
-            eprintln!("skipping: cosign not on PATH");
+        let (present, reason) = cosign_present();
+        if !present {
+            eprintln!("skipping correct_password_loads_wrong_password_fails: {reason}");
             return;
         }
         // Provisioning writes the ephemeral cosign.key into a tempdir and
@@ -174,8 +211,9 @@ mod tests {
     #[test]
     fn unencrypted_key_loads_with_empty_password() {
         use std::process::Command;
-        if !cosign_present() {
-            eprintln!("skipping: cosign not on PATH");
+        let (present, reason) = cosign_present();
+        if !present {
+            eprintln!("skipping unencrypted_key_loads_with_empty_password: {reason}");
             return;
         }
         let tmp = tempfile::tempdir().expect("tempdir for unencrypted keygen");

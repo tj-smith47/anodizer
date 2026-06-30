@@ -48,6 +48,9 @@ impl PublisherSchemaValidator for ChocolateySchemaValidator {
         resolve_tag: TagResolver<'_>,
     ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
+        // Chocolatey's community feed is a moderation one-way door: on the strict
+        // pre-publish gate a missing `xmllint` must FAIL the floor, not skip it.
+        let strict = ctx.render_is_strict();
         let mut findings = Vec::new();
 
         // Walk exactly the crate set the live chocolatey publisher iterates
@@ -73,7 +76,7 @@ impl PublisherSchemaValidator for ChocolateySchemaValidator {
                     return Ok(Vec::new());
                 };
                 let mut out = validate_nuspec_structural(&nuspec);
-                out.extend(validate_nuspec_xmllint(&nuspec, &log)?);
+                out.extend(validate_nuspec_xmllint(&nuspec, strict, &log)?);
                 Ok(out)
             })?;
             findings.extend(crate_findings);
@@ -184,9 +187,16 @@ pub(crate) fn validate_nuspec_structural(xml: &str) -> Vec<SchemaFinding> {
 /// the vendored XSD and the rendered nuspec to a tempdir and run
 /// `xmllint --noout --schema <xsd> <nuspec>`, parsing each
 /// `Schemas validity error` stderr line into a [`SchemaFinding`]. When
-/// `xmllint` is absent, log a `verbose` note and return no findings — the
-/// structural floor stands; a missing tool is never a manifest defect.
-fn validate_nuspec_xmllint(xml: &str, log: &StageLogger) -> Result<Vec<SchemaFinding>> {
+/// `xmllint` is absent and the floor is lenient (local check / dry-run), log a
+/// note and return no findings — the structural floor stands. On the STRICT
+/// pre-publish gate, an absent `xmllint` instead fails the floor: chocolatey is
+/// a moderation one-way door, so a missing XSD layer there would let a malformed
+/// nuspec reach the irreversible queue unchecked (`tool_required: true`).
+fn validate_nuspec_xmllint(
+    xml: &str,
+    strict: bool,
+    log: &StageLogger,
+) -> Result<Vec<SchemaFinding>> {
     super::run_external_validator(
         &super::ExternalValidator {
             publisher: "chocolatey",
@@ -200,9 +210,11 @@ fn validate_nuspec_xmllint(xml: &str, log: &StageLogger) -> Result<Vec<SchemaFin
             skip_message: "xmllint not on PATH — relying on the structural nuspec floor \
                  for schema validation",
             empty_fallback: "xmllint reported the nuspec schema-invalid but emitted no parseable validity line",
+            tool_required: true,
         },
         parse_xmllint_stderr,
         log,
+        strict,
     )
 }
 
@@ -958,17 +970,26 @@ mod tests {
         scope_version(&mut ctx, "1.0.0");
         let log = ctx.logger("publish");
 
-        if !anodizer_core::tool_detect::tool_available("xmllint").unwrap_or(false) {
-            log.status(
-                "SKIP xmllint_accepts_every_option_nuspec: xmllint not on PATH (XSD layer unexercised)",
-            );
-            return;
+        match anodizer_core::tool_detect::tool_available("xmllint") {
+            Ok(true) => {}
+            Ok(false) => {
+                log.status(
+                    "SKIP xmllint_accepts_every_option_nuspec: xmllint not on PATH (XSD layer unexercised)",
+                );
+                return;
+            }
+            Err(e) => {
+                log.status(&format!(
+                    "SKIP xmllint_accepts_every_option_nuspec: xmllint probe failed ({e}) (XSD layer unexercised)"
+                ));
+                return;
+            }
         }
 
         let nuspec = render_nuspec_for_crate(&ctx, "widget", &log)
             .expect("render ok")
             .expect("not skipped");
-        let findings = validate_nuspec_xmllint(&nuspec, &log).expect("xmllint runs");
+        let findings = validate_nuspec_xmllint(&nuspec, false, &log).expect("xmllint runs");
         assert!(
             findings.is_empty(),
             "the every-option nuspec must validate against the vendored XSD, got: {findings:?}"
@@ -984,11 +1005,20 @@ mod tests {
         let ctx = TestContextBuilder::new().snapshot(true).build();
         let log = ctx.logger("publish");
 
-        if !anodizer_core::tool_detect::tool_available("xmllint").unwrap_or(false) {
-            log.status(
-                "SKIP xmllint_rejects_unknown_element: xmllint not on PATH (XSD layer unexercised)",
-            );
-            return;
+        match anodizer_core::tool_detect::tool_available("xmllint") {
+            Ok(true) => {}
+            Ok(false) => {
+                log.status(
+                    "SKIP xmllint_rejects_unknown_element: xmllint not on PATH (XSD layer unexercised)",
+                );
+                return;
+            }
+            Err(e) => {
+                log.status(&format!(
+                    "SKIP xmllint_rejects_unknown_element: xmllint probe failed ({e}) (XSD layer unexercised)"
+                ));
+                return;
+            }
         }
 
         let invalid = r#"<?xml version="1.0" encoding="utf-8"?>
@@ -1002,7 +1032,7 @@ mod tests {
   </metadata>
 </package>
 "#;
-        let findings = validate_nuspec_xmllint(invalid, &log).expect("xmllint runs");
+        let findings = validate_nuspec_xmllint(invalid, false, &log).expect("xmllint runs");
         assert!(
             !findings.is_empty(),
             "an unknown element must be rejected by the XSD layer, got no findings"

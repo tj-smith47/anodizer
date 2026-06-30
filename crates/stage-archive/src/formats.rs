@@ -35,15 +35,22 @@ pub(crate) fn parse_mtime(s: &str) -> Option<u64> {
 fn apply_file_info_to_header(
     header: &mut tar::Header,
     info: &anodizer_core::config::ArchiveFileInfo,
-) {
+) -> Result<()> {
     if let Some(mode) = info.mode {
         header.set_mode(mode.value());
     }
+    // A configured owner/group that overflows the 32-byte ustar field (or
+    // carries an interior NUL) must fail loudly rather than be silently dropped
+    // to the default — the user asked for an ownership we cannot honor.
     if let Some(ref owner) = info.owner {
-        header.set_username(owner).ok();
+        header
+            .set_username(owner)
+            .with_context(|| format!("archive: owner '{owner}' invalid for tar header"))?;
     }
     if let Some(ref group) = info.group {
-        header.set_groupname(group).ok();
+        header
+            .set_groupname(group)
+            .with_context(|| format!("archive: group '{group}' invalid for tar header"))?;
     }
     if let Some(ref mtime_str) = info.mtime {
         if let Some(ts) = parse_mtime(mtime_str) {
@@ -54,6 +61,7 @@ fn apply_file_info_to_header(
             ));
         }
     }
+    Ok(())
 }
 
 /// Append a single file to a tar archive, optionally overriding mtime and
@@ -80,7 +88,7 @@ pub(crate) fn append_tar_entry<W: std::io::Write>(
             header.set_groupname("").ok();
         }
         if let Some(info) = file_info {
-            apply_file_info_to_header(&mut header, info);
+            apply_file_info_to_header(&mut header, info)?;
         }
         header
             .set_path(archive_name)

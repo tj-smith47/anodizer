@@ -27,7 +27,7 @@ use serde_json::Value as JsonValue;
 
 use crate::fetch::relative_filter;
 use crate::group::{
-    CommitInfo, GroupedCommits, apply_filters, apply_include_filters,
+    CommitInfo, GroupedCommits, apply_filters, apply_include_filters, compile_group_regexes,
     exclude_filters_with_version_sync, extract_co_authors, group_commits, parse_commit_message,
     sort_commits,
 };
@@ -2149,7 +2149,7 @@ fn promote_subsection(args: PromoteArgs<'_>) -> Result<Option<String>> {
     // Build the promoted section body. Curated bullets are bucketed verbatim;
     // an absent / empty subsection falls back to the generated grouped body.
     let body = if !curated.is_empty() {
-        bucket_curated_bullets(&curated, groups)
+        bucket_curated_bullets(&curated, groups)?
     } else if !generated_body.is_empty() {
         generated_body.to_string()
     } else {
@@ -2234,24 +2234,17 @@ fn rebuild_unreleased(
 /// no group and no catch-all is appended at the end under no heading so curated
 /// content is never silently dropped. With no groups configured, bullets are
 /// emitted flat in their original order.
-fn bucket_curated_bullets(curated: &[&str], groups: &[ChangelogGroup]) -> String {
+fn bucket_curated_bullets(curated: &[&str], groups: &[ChangelogGroup]) -> Result<String> {
     if groups.is_empty() {
-        return curated.join("\n");
+        return Ok(curated.join("\n"));
     }
 
     // Compile group regexes in config order; an empty/absent regexp marks the
-    // catch-all. Mirrors `group_commits`' first-match-wins + catch-all rules.
-    let compiled: Vec<(Option<regex::Regex>, &ChangelogGroup)> = groups
-        .iter()
-        .map(|g| {
-            let re = g
-                .regexp
-                .as_deref()
-                .filter(|p| !p.is_empty())
-                .and_then(|p| regex::Regex::new(p).ok());
-            (re, g)
-        })
-        .collect();
+    // catch-all. Shares `compile_group_regexes` with `group_commits` so the
+    // two paths agree on first-match-wins, the empty≡absent catch-all sentinel,
+    // and the hard-fail on an invalid pattern — otherwise a typo'd regexp would
+    // silently become a catch-all and shadow the real one.
+    let compiled = compile_group_regexes(groups)?;
     let catch_all_idx = compiled.iter().position(|(re, _)| re.is_none());
 
     let mut buckets: Vec<Vec<&str>> = vec![Vec::new(); compiled.len()];
@@ -2310,7 +2303,7 @@ fn bucket_curated_bullets(curated: &[&str], groups: &[ChangelogGroup]) -> String
     // Curated bullets that matched no group and had no catch-all to absorb them
     // are preserved at the end under no heading rather than dropped.
     out.extend(unmatched.iter().map(|s| s.to_string()));
-    out.join("\n")
+    Ok(out.join("\n"))
 }
 
 /// Strip a leading Markdown list marker (`- ` or `* `, with optional
@@ -4604,7 +4597,10 @@ mod render_extra_tests {
     #[test]
     fn bucket_curated_bullets_no_groups_joins_verbatim() {
         let curated = vec!["- feat: a", "- fix: b"];
-        assert_eq!(bucket_curated_bullets(&curated, &[]), "- feat: a\n- fix: b");
+        assert_eq!(
+            bucket_curated_bullets(&curated, &[]).unwrap(),
+            "- feat: a\n- fix: b"
+        );
     }
 
     #[test]
@@ -4614,7 +4610,7 @@ mod render_extra_tests {
         // Emitted in config `order`: Features (0) before Bug Fixes (1),
         // regardless of bullet order.
         assert_eq!(
-            bucket_curated_bullets(&curated, &groups),
+            bucket_curated_bullets(&curated, &groups).unwrap(),
             "### Features\n- feat: add man\n### Bug Fixes\n- fix: env scope"
         );
     }
@@ -4625,7 +4621,7 @@ mod render_extra_tests {
         // The wrapped second line (no marker) belongs to the feat bullet.
         let curated = vec!["- feat: add man", "  with detail", "- fix: bug"];
         assert_eq!(
-            bucket_curated_bullets(&curated, &groups),
+            bucket_curated_bullets(&curated, &groups).unwrap(),
             "### Features\n- feat: add man\n  with detail\n### Bug Fixes\n- fix: bug"
         );
     }
@@ -4637,8 +4633,37 @@ mod render_extra_tests {
         // at the end under no heading.
         let curated = vec!["- feat: a", "- chore: deps"];
         assert_eq!(
-            bucket_curated_bullets(&curated, &groups),
+            bucket_curated_bullets(&curated, &groups).unwrap(),
             "### Features\n- feat: a\n- chore: deps"
+        );
+    }
+
+    #[test]
+    fn bucket_curated_bullets_empty_regexp_is_catch_all_not_greedy_regex() {
+        // A group with `regexp: ""` is the catch-all (equivalent to omitting
+        // `regexp`): it collects only bullets that no specific group matched,
+        // rather than greedily swallowing everything as a literal
+        // `Regex::new("")` (which matches every string) would. With the
+        // catch-all last, `feat:` stays in Features and only `chore:` falls
+        // through to the empty-regexp group.
+        let groups = vec![
+            ChangelogGroup {
+                title: "Features".into(),
+                regexp: Some("^feat".into()),
+                order: Some(0),
+                groups: None,
+            },
+            ChangelogGroup {
+                title: "Other".into(),
+                regexp: Some(String::new()),
+                order: Some(1),
+                groups: None,
+            },
+        ];
+        let curated = vec!["- feat: add man", "- chore: deps"];
+        assert_eq!(
+            bucket_curated_bullets(&curated, &groups).unwrap(),
+            "### Features\n- feat: add man\n### Other\n- chore: deps"
         );
     }
 

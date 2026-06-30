@@ -448,7 +448,18 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
                 .repository
                 .as_ref()
                 .and_then(|r| r.token.as_deref())
-                .map(|t| ctx.render_template(t).unwrap_or_else(|_| t.to_string()));
+                .and_then(|t| match ctx.render_template(t) {
+                    Ok(rendered) => Some(rendered),
+                    // On render failure, drop to the env fallback rather than
+                    // feeding the raw `{{...}}` template as a literal bearer
+                    // token (which would yield an opaque poll auth-failure).
+                    Err(e) => {
+                        ctx.logger("publish").warn(&format!(
+                            "winget post-publish poll: could not render repository.token template ({e}); using environment token"
+                        ));
+                        None
+                    }
+                });
             // Canonical resolver: empty-filters the rendered token AND the env
             // fallbacks (a missing-secret `""` must not be taken as the token).
             let token =

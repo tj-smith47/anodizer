@@ -486,14 +486,21 @@ fn prepare_v2_config(
         return Ok(());
     }
 
-    // Template-render platforms and filter empty results.
-    let platforms: Vec<String> = v2_cfg
-        .platforms
-        .clone()
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|p| ctx.render_template(&p).ok().filter(|r| !r.is_empty()))
-        .collect();
+    // Template-render platforms, propagating render errors (a typo'd
+    // `linux/{{ .BadVar }}` must fail, not silently shrink the build matrix and
+    // ship fewer arches) and dropping only genuinely-empty renders.
+    let mut platforms: Vec<String> = Vec::new();
+    for p in v2_cfg.platforms.clone().unwrap_or_default() {
+        let rendered = ctx.render_template(&p).with_context(|| {
+            format!(
+                "dockers_v2: render platform '{}' for crate {}",
+                p, krate.name
+            )
+        })?;
+        if !rendered.is_empty() {
+            platforms.push(rendered);
+        }
+    }
 
     // V2 always uses buildx.
     resolve_backend(Some("buildx"), platforms.len() > 1)?;
@@ -1269,20 +1276,29 @@ pub(crate) fn process_docker_manifest(
     // for the validation rationale).
     let manifest_bin = resolve_manifester(manifest_cfg.use_backend.as_deref())?;
 
+    // Propagate flag-template render errors rather than feeding the raw,
+    // unrendered `{{...}}` string to the manifest tool (which rejects it with an
+    // opaque error far from the cause).
     let rendered_create_flags: Vec<String> = manifest_cfg
         .create_flags
         .as_deref()
         .unwrap_or(&[])
         .iter()
-        .map(|f| ctx.render_template(f).unwrap_or_else(|_| f.clone()))
-        .collect();
+        .map(|f| {
+            ctx.render_template(f)
+                .with_context(|| format!("dockers_v2: render manifest create_flag '{f}'"))
+        })
+        .collect::<Result<_>>()?;
     let rendered_push_flags: Vec<String> = manifest_cfg
         .push_flags
         .as_deref()
         .unwrap_or(&[])
         .iter()
-        .map(|f| ctx.render_template(f).unwrap_or_else(|_| f.clone()))
-        .collect();
+        .map(|f| {
+            ctx.render_template(f)
+                .with_context(|| format!("dockers_v2: render manifest push_flag '{f}'"))
+        })
+        .collect::<Result<_>>()?;
 
     let create_cmd = build_manifest_create_cmd(
         log,
@@ -1293,7 +1309,7 @@ pub(crate) fn process_docker_manifest(
         new_artifacts,
     );
 
-    let manifest_skip_push = resolve_skip_push(&manifest_cfg.skip_push, ctx);
+    let manifest_skip_push = resolve_skip_push(&manifest_cfg.skip_push, ctx)?;
     let mut manifest_digest: Option<String> = None;
 
     if dry_run {

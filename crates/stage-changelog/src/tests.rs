@@ -215,6 +215,61 @@ fn test_group_commits_empty_group_omitted() {
 }
 
 #[test]
+fn test_group_commits_empty_regexp_is_catch_all_like_absent() {
+    // A group with `regexp: ""` is the catch-all (equivalent to omitting
+    // `regexp` entirely): it collects only the commits no specific group
+    // matched, rather than greedily swallowing everything as a literal
+    // `Regex::new("")` (which matches every string) would. With the catch-all
+    // last, `feat:` stays in Features and only `chore:` falls through.
+    let commits = vec![
+        ci("feat: a", "feat", "a", "1"),
+        ci("chore: b", "chore", "b", "2"),
+    ];
+    let with_empty = vec![
+        ChangelogGroup {
+            title: "Features".into(),
+            regexp: Some("^feat".into()),
+            order: Some(0),
+            groups: None,
+        },
+        ChangelogGroup {
+            title: "Other".into(),
+            regexp: Some(String::new()),
+            order: Some(1),
+            groups: None,
+        },
+    ];
+    // `regexp: ""` must behave identically to omitting `regexp` (both catch-all).
+    let with_absent = vec![
+        ChangelogGroup {
+            title: "Features".into(),
+            regexp: Some("^feat".into()),
+            order: Some(0),
+            groups: None,
+        },
+        ChangelogGroup {
+            title: "Other".into(),
+            regexp: None,
+            order: Some(1),
+            groups: None,
+        },
+    ];
+
+    let r_empty = group_commits(&commits, &with_empty, &test_logger()).unwrap();
+    assert_eq!(r_empty.len(), 2);
+    assert_eq!(r_empty[0].title, "Features");
+    assert_eq!(r_empty[0].commits.len(), 1);
+    assert_eq!(r_empty[0].commits[0].hash, "1");
+    assert_eq!(r_empty[1].title, "Other");
+    assert_eq!(r_empty[1].commits.len(), 1);
+    assert_eq!(r_empty[1].commits[0].hash, "2");
+
+    let r_absent = group_commits(&commits, &with_absent, &test_logger()).unwrap();
+    assert_eq!(r_absent[0].commits[0].hash, "1");
+    assert_eq!(r_absent[1].commits[0].hash, "2");
+}
+
+#[test]
 fn test_render_changelog_short_hash() {
     // When hash is exactly 7 chars, it should appear as-is
     let grouped = vec![GroupedCommits {

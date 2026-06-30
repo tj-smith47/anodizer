@@ -144,7 +144,10 @@ impl anodizer_core::Publisher for NpmPublisher {
                         any.extend(oidc_vars());
                         out.push(anodizer_core::EnvRequirement::EnvAnyOf { vars: any });
                     }
-                    Some(_) => unreachable!("secret_requirement yields EnvAllOf or None"),
+                    // `secret_requirement` only yields `EnvAllOf`/`None` today; if a
+                    // future core change returns another shape, forward it verbatim
+                    // (a slightly over-broad preflight gate) rather than panicking.
+                    Some(other) => out.push(other),
                 },
             }
         }

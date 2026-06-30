@@ -221,14 +221,12 @@ pub fn publish_cask(ctx: &mut Context, crate_name: &str, log: &StageLogger) -> R
 
     // Submit a PR if pull_request.enabled is set.
     let pr_branch = branch.as_deref().unwrap_or("main");
-    let update_existing_pr = cask_cfg
-        .update_existing_pr
-        .as_ref()
-        .map(|v| {
-            v.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-                .unwrap_or(false)
-        })
-        .unwrap_or(false);
+    let update_existing_pr = match cask_cfg.update_existing_pr.as_ref() {
+        Some(v) => v
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+            .context("homebrew cask: render update_existing_pr condition")?,
+        None => false,
+    };
     // Clone the repository config so the `maybe_submit_pr` call no
     // longer borrows from `ctx.config` (via `hb_cfg`). NLL then drops
     // the immutable borrow, making the subsequent `&mut ctx` call legal.

@@ -1036,16 +1036,18 @@ fn process_authenticode_config(
     // per-artifact carry of crate_name/target means single-crate,
     // workspace-lockstep, and workspace per-crate all flow through unchanged.
     let config_filter = authenticode.resolved_artifacts();
-    let matched: Vec<std::path::PathBuf> = ctx
-        .artifacts
-        .all()
-        .iter()
-        .filter(|a| {
-            should_sign_artifact(a.kind, config_filter).unwrap_or(false)
-                && windows_artifact_extension_matches(&a.path)
-        })
-        .map(|a| a.path.clone())
-        .collect();
+    // Propagate a bad `authenticode.artifacts` filter rather than `.unwrap_or(false)`-ing
+    // it to "matched nothing": an unrecognized selector must fail the stage, not silently
+    // sign zero binaries and report success (which would ship unsigned .exe/.msi). Mirrors
+    // the detached-signature path's `should_sign_artifact(...)?`.
+    let mut matched: Vec<std::path::PathBuf> = Vec::new();
+    for a in ctx.artifacts.all().iter() {
+        if should_sign_artifact(a.kind, config_filter)?
+            && windows_artifact_extension_matches(&a.path)
+        {
+            matched.push(a.path.clone());
+        }
+    }
 
     if matched.is_empty() {
         log.verbose(&format!(

@@ -45,6 +45,10 @@ impl PublisherSchemaValidator for AurSchemaValidator {
         resolve_tag: TagResolver<'_>,
     ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
+        // Threaded into the `bash -n` layer: an AUR push is a force-push, not a
+        // moderation queue, so its validator is not `tool_required` and `strict`
+        // leaves a missing `bash` a warn+skip — but the signal is wired uniformly.
+        let strict = ctx.render_is_strict();
         let mut findings = Vec::new();
 
         // BINARY AUR (`publish.aur`). Walk exactly the crate set the live
@@ -90,7 +94,7 @@ impl PublisherSchemaValidator for AurSchemaValidator {
                 if let Some(rendered) =
                     render_aur_pkgbuild_and_srcinfo_for_crate(ctx, crate_name, &log)?
                 {
-                    validate_rendered(&mut out, &rendered, &log)?;
+                    validate_rendered(&mut out, &rendered, strict, &log)?;
                 }
                 Ok(out)
             })?;
@@ -115,7 +119,7 @@ impl PublisherSchemaValidator for AurSchemaValidator {
                 if let Some(rendered) =
                     render_aur_source_pkgbuild_and_srcinfo_for_crate(ctx, crate_name, &log)?
                 {
-                    validate_rendered(&mut out, &rendered, &log)?;
+                    validate_rendered(&mut out, &rendered, strict, &log)?;
                 }
                 Ok(out)
             })?;
@@ -125,7 +129,7 @@ impl PublisherSchemaValidator for AurSchemaValidator {
         // Top-level `aur_sources:` array (not per-crate). Empty when unset or
         // every entry is skipped.
         for rendered in render_top_level_aur_source(ctx, &log)? {
-            validate_rendered(&mut findings, &rendered, &log)?;
+            validate_rendered(&mut findings, &rendered, strict, &log)?;
         }
 
         Ok(findings)
@@ -137,11 +141,12 @@ impl PublisherSchemaValidator for AurSchemaValidator {
 fn validate_rendered(
     findings: &mut Vec<SchemaFinding>,
     rendered: &AurRendered,
+    strict: bool,
     log: &StageLogger,
 ) -> Result<()> {
     findings.extend(validate_pkgbuild_structural(&rendered.pkgbuild));
     findings.extend(validate_srcinfo_structural(&rendered.srcinfo));
-    findings.extend(validate_pkgbuild_syntax(&rendered.pkgbuild, log)?);
+    findings.extend(validate_pkgbuild_syntax(&rendered.pkgbuild, strict, log)?);
     Ok(())
 }
 
@@ -315,7 +320,11 @@ pub(crate) fn validate_srcinfo_structural(text: &str) -> Vec<SchemaFinding> {
 /// yields a `(root)` finding (never silent-pass). When `bash` is absent, log a
 /// visible skip marker and return no findings — the structural floor stands; a
 /// missing tool is never a manifest defect.
-fn validate_pkgbuild_syntax(pkgbuild: &str, log: &StageLogger) -> Result<Vec<SchemaFinding>> {
+fn validate_pkgbuild_syntax(
+    pkgbuild: &str,
+    strict: bool,
+    log: &StageLogger,
+) -> Result<Vec<SchemaFinding>> {
     super::run_external_validator(
         &super::ExternalValidator {
             publisher: "aur",
@@ -325,9 +334,13 @@ fn validate_pkgbuild_syntax(pkgbuild: &str, log: &StageLogger) -> Result<Vec<Sch
             skip_message: "bash not on PATH — relying on the structural PKGBUILD floor for \
                  syntax validation",
             empty_fallback: "bash -n reported the generated PKGBUILD invalid but emitted no parseable diagnostic",
+            // An AUR push is a force-push (reversible), not a moderation queue —
+            // a missing `bash` stays a warn+skip even under strict.
+            tool_required: false,
         },
         parse_bash_n_stderr,
         log,
+        strict,
     )
 }
 
@@ -1151,15 +1164,23 @@ mod tests {
         add_linux_archive(&mut ctx, "widget", "1.0.0");
         let log = ctx.logger("publish");
 
-        if !anodizer_core::tool_detect::tool_available("bash").unwrap_or(false) {
-            log.status("SKIP bash_n_accepts_every_option_pkgbuild: bash not on PATH (syntax layer unexercised)");
-            return;
+        match anodizer_core::tool_detect::tool_available("bash") {
+            Ok(true) => {}
+            Ok(false) => {
+                log.status("SKIP bash_n_accepts_every_option_pkgbuild: bash not on PATH (syntax layer unexercised)");
+                return;
+            }
+            Err(e) => {
+                log.status(&format!("SKIP bash_n_accepts_every_option_pkgbuild: bash probe failed ({e}) (syntax layer unexercised)"));
+                return;
+            }
         }
 
         let rendered = render_aur_pkgbuild_and_srcinfo_for_crate(&ctx, "widget", &log)
             .expect("render ok")
             .expect("not skipped");
-        let findings = validate_pkgbuild_syntax(&rendered.pkgbuild, &log).expect("bash -n runs");
+        let findings =
+            validate_pkgbuild_syntax(&rendered.pkgbuild, false, &log).expect("bash -n runs");
         assert!(
             findings.is_empty(),
             "the every-option PKGBUILD must pass bash -n, got: {findings:?}"
@@ -1174,15 +1195,24 @@ mod tests {
         let ctx = TestContextBuilder::new().snapshot(true).build();
         let log = ctx.logger("publish");
 
-        if !anodizer_core::tool_detect::tool_available("bash").unwrap_or(false) {
-            log.status(
-                "SKIP bash_n_rejects_broken_pkgbuild: bash not on PATH (syntax layer unexercised)",
-            );
-            return;
+        match anodizer_core::tool_detect::tool_available("bash") {
+            Ok(true) => {}
+            Ok(false) => {
+                log.status(
+                    "SKIP bash_n_rejects_broken_pkgbuild: bash not on PATH (syntax layer unexercised)",
+                );
+                return;
+            }
+            Err(e) => {
+                log.status(&format!(
+                    "SKIP bash_n_rejects_broken_pkgbuild: bash probe failed ({e}) (syntax layer unexercised)"
+                ));
+                return;
+            }
         }
 
         let broken = "pkgname='widget'\npkgver=1.0.0\npkgrel=1\narch=('x86_64')\npackage() {\n  install -Dm755 x y\n";
-        let findings = validate_pkgbuild_syntax(broken, &log).expect("bash -n runs");
+        let findings = validate_pkgbuild_syntax(broken, false, &log).expect("bash -n runs");
         assert!(
             !findings.is_empty(),
             "a syntactically-broken PKGBUILD must produce a bash -n finding"

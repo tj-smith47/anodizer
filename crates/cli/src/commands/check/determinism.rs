@@ -24,13 +24,15 @@ use anyhow::{Context, Result};
 
 pub fn run(args: CheckDeterminismArgs, verbose: bool, debug: bool, quiet: bool) -> Result<()> {
     let verbosity = Verbosity::from_flags(quiet, verbose, debug);
-    let repo_root = std::env::current_dir().context("resolving repo root")?;
 
     // `--inject-drift` is a test-only flag gated by
     // `ANODIZE_TEST_HARNESS=1`. The flag is hidden from `--help`, so the
     // only way for an operator to trip the rejection branch is to type
     // it deliberately; the hard error keeps the surface from being
-    // exercised accidentally on production releases.
+    // exercised accidentally on production releases. Gated FIRST — a
+    // forbidden hidden flag must reject independent of any other arg's
+    // value, so the operator gets the actionable "this flag is gated"
+    // error rather than a complaint about `--runs`.
     let inject_drift = if std::env::var("ANODIZE_TEST_HARNESS").as_deref() == Ok("1") {
         args.inject_drift.clone()
     } else if args.inject_drift.is_some() {
@@ -38,6 +40,21 @@ pub fn run(args: CheckDeterminismArgs, verbose: bool, debug: bool, quiet: bool) 
     } else {
         None
     };
+
+    // A determinism check needs at least two rebuilds to compare: with `--runs=1`
+    // every artifact's hash list is trivially self-equal, and `--runs=0` compares
+    // nothing — both would print "N/N byte-identical" and exit 0 while verifying
+    // nothing. Reject rather than silently clamp so the operator's intent isn't
+    // rewritten under them.
+    if args.runs < 2 {
+        anyhow::bail!(
+            "check determinism: --runs must be >= 2 (a determinism check compares at least two \
+             rebuilds); got {}",
+            args.runs
+        );
+    }
+
+    let repo_root = std::env::current_dir().context("resolving repo root")?;
 
     // SDE source — snapshot resolver under --snapshot (handles dirty
     // tree); HEAD commit timestamp otherwise. Both routes converge on

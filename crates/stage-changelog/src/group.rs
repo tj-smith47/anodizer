@@ -241,6 +241,36 @@ pub(crate) fn sort_commits(commits: &mut [CommitInfo], order: &str) -> Result<()
 // group_commits
 // ---------------------------------------------------------------------------
 
+/// Compile each group's `regexp` in config order, returning the compiled regex
+/// paired with its source group. An **absent OR empty** `regexp` maps to `None`
+/// — the catch-all sentinel — so `regexp: ""` is equivalent to omitting
+/// `regexp`: both mark the catch-all bucket regardless of the group's position,
+/// rather than `Regex::new("")` (which is valid and matches everything,
+/// greedily stealing commits from more-specific later groups).
+///
+/// Callers derive the catch-all index from the `None` entries
+/// (`.position(|(re, _)| re.is_none())`) and match commits against the `Some`
+/// entries in order. This is the single compile point shared by `group_commits`
+/// (full-commit grouping) and `render::bucket_curated_bullets` (curated-bullet
+/// grouping) so the two cannot drift on the catch-all or hard-fail rules.
+///
+/// Returns an error if any non-empty pattern fails to compile.
+pub(crate) fn compile_group_regexes(
+    groups: &[ChangelogGroup],
+) -> Result<Vec<(Option<Regex>, &ChangelogGroup)>> {
+    let mut compiled: Vec<(Option<Regex>, &ChangelogGroup)> = Vec::with_capacity(groups.len());
+    for g in groups {
+        let re = match g.regexp.as_deref().filter(|p| !p.is_empty()) {
+            Some(p) => Some(Regex::new(p).map_err(|e| {
+                anyhow::anyhow!("invalid group regex {:?} for group {:?}: {}", p, g.title, e)
+            })?),
+            None => None,
+        };
+        compiled.push((re, g));
+    }
+    Ok(compiled)
+}
+
 /// Group commits by matching `raw_message` against each group's `regexp`.
 /// Commits are matched against groups in config order, then groups are sorted
 /// by `order` (ascending) for display. Commits that do not match any group
@@ -281,19 +311,7 @@ fn group_commits_inner(
     // Compile regexes once in CONFIG order for matching. Invalid patterns are
     // hard errors. Commits are matched against groups in config order,
     // then sorts by `order` for display only.
-    let mut compiled: Vec<(Option<Regex>, &ChangelogGroup)> = Vec::with_capacity(groups.len());
-    for g in groups {
-        let re = match g.regexp.as_deref() {
-            Some(p) => {
-                let re = Regex::new(p).map_err(|e| {
-                    anyhow::anyhow!("invalid group regex {:?} for group {:?}: {}", p, g.title, e)
-                })?;
-                Some(re)
-            }
-            None => None,
-        };
-        compiled.push((re, g));
-    }
+    let compiled = compile_group_regexes(groups)?;
 
     let mut buckets: Vec<Vec<CommitInfo>> = vec![Vec::new(); compiled.len()];
     let mut others: Vec<CommitInfo> = Vec::new();

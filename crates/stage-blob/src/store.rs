@@ -105,10 +105,27 @@ pub(crate) fn build_store(
     ctx: &Context,
 ) -> Result<Box<dyn ObjectStore>> {
     let retry = ctx.config.retry.unwrap_or_default();
+    build_store_with_retry(provider, config, rendered_bucket, ctx, &retry)
+}
+
+/// [`build_store`] with an explicit retry policy instead of the config-derived
+/// one. The preflight canary uses this with the shallow
+/// [`anodizer_core::retry::RetryPolicy::PREFLIGHT`]-derived policy so an
+/// unreachable endpoint fails the probe fast instead of riding the full
+/// publish-time retry ladder; credentials and addressing
+/// (region/endpoint/path-style/SSL/ACL) are resolved identically to the
+/// publish path so the probe and the upload talk to the same store.
+pub(crate) fn build_store_with_retry(
+    provider: Provider,
+    config: &BlobConfig,
+    rendered_bucket: &str,
+    ctx: &Context,
+    retry: &RetryConfig,
+) -> Result<Box<dyn ObjectStore>> {
     match provider {
-        Provider::S3 => build_s3_store(config, rendered_bucket, ctx, &retry),
-        Provider::Gcs => build_gcs_store(rendered_bucket, config, &retry),
-        Provider::AzBlob => build_azure_store(rendered_bucket, &retry),
+        Provider::S3 => build_s3_store(config, rendered_bucket, ctx, retry),
+        Provider::Gcs => build_gcs_store(rendered_bucket, config, retry),
+        Provider::AzBlob => build_azure_store(rendered_bucket, retry),
     }
 }
 

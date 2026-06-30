@@ -51,6 +51,10 @@ impl PublisherSchemaValidator for NixSchemaValidator {
         resolve_tag: TagResolver<'_>,
     ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
+        // Threaded into the `nix-instantiate` layer: a nix publish writes a git
+        // repo (reversible), so its validator is not `tool_required` and `strict`
+        // leaves a missing tool a warn+skip — but the signal is wired uniformly.
+        let strict = ctx.render_is_strict();
         let mut findings = Vec::new();
 
         // Walk exactly the crate set the live nix publisher's `run` iterates
@@ -120,6 +124,7 @@ impl PublisherSchemaValidator for NixSchemaValidator {
                     out.extend(validate_nix_syntax(
                         NixKind::Derivation,
                         &render.expr,
+                        strict,
                         &log,
                     )?);
 
@@ -146,7 +151,7 @@ impl PublisherSchemaValidator for NixSchemaValidator {
         if !flake_pkgs.is_empty() {
             let flake = nix::generate_flake(&flake_pkgs)?;
             findings.extend(validate_flake_structural(&flake));
-            findings.extend(validate_nix_syntax(NixKind::Flake, &flake, &log)?);
+            findings.extend(validate_nix_syntax(NixKind::Flake, &flake, strict, &log)?);
         }
 
         Ok(findings)
@@ -323,6 +328,7 @@ pub(crate) fn validate_flake_structural(text: &str) -> Vec<SchemaFinding> {
 fn validate_nix_syntax(
     kind: NixKind,
     nix_src: &str,
+    strict: bool,
     log: &StageLogger,
 ) -> Result<Vec<SchemaFinding>> {
     let file_name = match kind {
@@ -339,9 +345,13 @@ fn validate_nix_syntax(
                  for syntax validation",
             empty_fallback: "nix-instantiate --parse reported the generated Nix invalid but \
                  emitted no parseable diagnostic",
+            // A nix publish writes a git repo (reversible), not a moderation
+            // queue — a missing `nix-instantiate` stays a warn+skip under strict.
+            tool_required: false,
         },
         parse_nix_instantiate_stderr,
         log,
+        strict,
     )
 }
 
@@ -1008,9 +1018,18 @@ stdenvNoCC.mkDerivation {
     #[test]
     fn nix_instantiate_layer_is_tool_gated() {
         let log = StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
-        let available =
-            anodizer_core::tool_detect::tool_available("nix-instantiate").unwrap_or(false);
-        let findings = validate_nix_syntax(NixKind::Derivation, &good_derivation(), &log)
+        // A probe ERROR is not a definitive "absent": surface why so a skip
+        // records the broken probe rather than masquerading it as a clean miss.
+        let available = match anodizer_core::tool_detect::tool_available("nix-instantiate") {
+            Ok(present) => present,
+            Err(e) => {
+                eprintln!(
+                    "SKIP: nix-instantiate probe failed ({e}); structural floor carries the assertions"
+                );
+                false
+            }
+        };
+        let findings = validate_nix_syntax(NixKind::Derivation, &good_derivation(), false, &log)
             .expect("syntax layer runs");
         if available {
             assert!(
@@ -1037,19 +1056,28 @@ stdenvNoCC.mkDerivation {
     #[test]
     fn nix_instantiate_layer_bites_on_malformed_input() {
         let log = StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
-        if !anodizer_core::tool_detect::tool_available("nix-instantiate").unwrap_or(false) {
-            eprintln!(
-                "SKIP: nix-instantiate not on PATH; cannot exercise the parse-error bite path"
-            );
-            return;
+        match anodizer_core::tool_detect::tool_available("nix-instantiate") {
+            Ok(true) => {}
+            Ok(false) => {
+                eprintln!(
+                    "SKIP: nix-instantiate not on PATH; cannot exercise the parse-error bite path"
+                );
+                return;
+            }
+            Err(e) => {
+                eprintln!(
+                    "SKIP: nix-instantiate probe failed ({e}); cannot exercise the parse-error bite path"
+                );
+                return;
+            }
         }
 
         // A `version = ;` with no value on line 4 is a syntax error
         // `nix-instantiate --parse` rejects with a `<file>:<line>:<col>:`
         // position — the exact shape the stderr parser extracts into a finding.
         let malformed = "{ lib, stdenvNoCC }:\nstdenvNoCC.mkDerivation {\n  pname = \"widget\";\n  version = ;\n}\n";
-        let findings =
-            validate_nix_syntax(NixKind::Derivation, malformed, &log).expect("syntax layer runs");
+        let findings = validate_nix_syntax(NixKind::Derivation, malformed, false, &log)
+            .expect("syntax layer runs");
         assert!(
             !findings.is_empty(),
             "the gated nix-instantiate layer must report a finding for malformed Nix, got none"

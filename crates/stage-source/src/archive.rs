@@ -398,13 +398,25 @@ pub(crate) fn create_source_archive(inputs: &SourceArchiveInputs<'_>) -> Result<
                     header.set_groupname("").ok();
                 }
 
-                // Apply info overrides if present
+                // Apply info overrides if present. A configured owner/group that
+                // overflows the 32-byte ustar field must fail loudly rather than
+                // be silently dropped to the default.
                 if let Some(ref info) = entry.info {
                     if let Some(ref owner) = info.owner {
-                        header.set_username(owner).ok();
+                        header.set_username(owner).with_context(|| {
+                            format!(
+                                "source: owner '{owner}' invalid for tar header on '{}'",
+                                entry.src
+                            )
+                        })?;
                     }
                     if let Some(ref group) = info.group {
-                        header.set_groupname(group).ok();
+                        header.set_groupname(group).with_context(|| {
+                            format!(
+                                "source: group '{group}' invalid for tar header on '{}'",
+                                entry.src
+                            )
+                        })?;
                     }
                     if let Some(mode) = info.mode {
                         header.set_mode(mode.value());

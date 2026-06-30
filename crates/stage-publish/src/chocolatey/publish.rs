@@ -947,14 +947,12 @@ fn handle_feed_state(
                 // `republish_in_moderation: true` opts into replacing the
                 // queued nupkg. The Chocolatey API accepts re-pushes of
                 // in-moderation versions; the new nupkg displaces the old one.
-                let do_republish = choco_cfg
-                    .republish_in_moderation
-                    .as_ref()
-                    .map(|v| {
-                        v.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-                            .unwrap_or(false)
-                    })
-                    .unwrap_or(false);
+                let do_republish = match choco_cfg.republish_in_moderation.as_ref() {
+                    Some(v) => v
+                        .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                        .context("chocolatey: render republish_in_moderation condition")?,
+                    None => false,
+                };
                 if do_republish {
                     log.status(&format!(
                         "chocolatey package '{}-{}' {} (PackageStatus={}, Published={}); \

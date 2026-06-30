@@ -407,7 +407,7 @@ pub(crate) fn collect_upload_targets(ctx: &Context) -> Vec<ArtifactoryTarget> {
 /// rendering — only the scheme + authority survive, and those are the parts a
 /// reachability probe needs. Returns `None` when the string has no `scheme://`
 /// authority to extract (a relative/path-only target a probe cannot use).
-fn target_origin(target: &str) -> Option<String> {
+pub(crate) fn target_origin(target: &str) -> Option<String> {
     let (scheme, rest) = target.split_once("://")?;
     if scheme.is_empty() {
         return None;
@@ -644,11 +644,96 @@ impl anodizer_core::Publisher for UploadsPublisher {
         Ok(())
     }
 
-    /// No live probe: uploads are overwritable with a `DELETE` rollback, and
-    /// `requirements()` already gates the credential and probes endpoint
-    /// reachability — invalid creds fail the first, recoverable step.
-    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
-        Ok(anodizer_core::PreflightCheck::Pass)
+    /// Live pre-publish gate. For every active `uploads[]` entry, probe the
+    /// target's `scheme://host[:port]` origin (path/`{{ .Version }}` stripped so
+    /// the probe needs no resolved tag) through the same mTLS client + basic-auth
+    /// credential cascade the upload uses. A rejected credential (401/403) or an
+    /// unreachable host surfaces as a Warning (this publisher is OPTIONAL — a
+    /// failed upload must not abort the release). A 404/405/redirect at the
+    /// origin root still proves the host is reachable and is treated as a pass.
+    /// Severity follows [`required()`](anodizer_core::Publisher::required).
+    fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        use crate::publisher_preflight::{
+            FailSeverity, ProbeAuth, ProbeMethod, classify_http_endpoint, merge,
+            reachability_outcome,
+        };
+        use anodizer_core::PreflightCheck;
+
+        let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let fail = FailSeverity::for_required(Self::resolved_required(self));
+
+        let mut acc = PreflightCheck::Pass;
+        for entry in ctx.config.uploads.iter().flatten() {
+            if crate::publisher_helpers::entry_inactive(
+                ctx,
+                entry.skip.as_ref(),
+                None,
+                entry.if_condition.as_deref(),
+            ) {
+                continue;
+            }
+            // A missing name/target is config-validation territory the upload
+            // path already fails loud on — skip rather than double-report.
+            let Some(name) = entry.name.as_deref().filter(|n| !n.is_empty()) else {
+                continue;
+            };
+            let Some(origin_template) = target_origin(&entry.target) else {
+                continue;
+            };
+            let url = match ctx.render_template(&origin_template) {
+                Ok(u) if !u.trim().is_empty() => u,
+                _ => continue,
+            };
+            let (username, password) = match crate::http_upload::resolve_http_credentials(
+                ctx,
+                &crate::http_upload::CredentialResolveSpec {
+                    publisher: "uploads",
+                    entry_name: name,
+                    config_username: entry.username.as_deref(),
+                    config_password: entry.password.as_deref(),
+                    env_prefix: "UPLOAD",
+                    anonymous_ok: true,
+                },
+            ) {
+                Ok(creds) => creds,
+                // A credential-resolution error is `requirements()`'s domain.
+                Err(_) => continue,
+            };
+            let auth = if username.is_empty() && password.is_empty() {
+                ProbeAuth::None
+            } else {
+                ProbeAuth::Basic { username, password }
+            };
+            let client = match build_reqwest_client(
+                entry.client_x509_cert.as_deref(),
+                entry.client_x509_key.as_deref(),
+                entry.trusted_certificates.as_deref(),
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    acc = merge(
+                        acc,
+                        PreflightCheck::Warning(format!(
+                            "uploads: entry '{name}' HTTP client build failed in preflight ({e})"
+                        )),
+                    );
+                    continue;
+                }
+            };
+            let status = classify_http_endpoint(
+                &client,
+                ProbeMethod::Get,
+                &url,
+                &auth,
+                "preflight: uploads",
+                &policy,
+            );
+            acc = merge(
+                acc,
+                reachability_outcome(status, &url, "preflight: uploads", fail),
+            );
+        }
+        Ok(acc)
     }
 
     fn skips_on_nightly(&self) -> bool {
@@ -1683,5 +1768,73 @@ mod live_http_tests {
             1,
             "PUT routed to the rendered (Version-substituted) target: {entries:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod preflight_live_tests {
+    use super::*;
+    use anodizer_core::Publisher;
+    use anodizer_core::config::{Config, UploadConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+
+    fn make_ctx(addr: std::net::SocketAddr, deselect: bool) -> Context {
+        let cfg = UploadConfig {
+            name: Some("jarvispro".into()),
+            target: format!("http://{addr}/repo/app.tar.gz"),
+            username: Some("ci-bot".into()),
+            password: Some("s3cret".into()),
+            if_condition: if deselect { Some("false".into()) } else { None },
+            ..Default::default()
+        };
+        let config = Config {
+            project_name: "app".into(),
+            uploads: Some(vec![cfg]),
+            ..Default::default()
+        };
+        Context::new(config, ContextOptions::default())
+    }
+
+    #[test]
+    fn uploads_preflight_warns_on_auth_rejected() {
+        let (addr, _c) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let ctx = make_ctx(addr, false);
+        match UploadsPublisher::new()
+            .preflight(&ctx)
+            .expect("preflight ok")
+        {
+            anodizer_core::PreflightCheck::Warning(m) => assert!(m.contains("uploads"), "{m}"),
+            other => panic!("expected Warning, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn uploads_preflight_passes_on_reachable_origin() {
+        let (addr, _c) =
+            spawn_oneshot_http_responder(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"]);
+        let ctx = make_ctx(addr, false);
+        assert!(matches!(
+            UploadsPublisher::new()
+                .preflight(&ctx)
+                .expect("preflight ok"),
+            anodizer_core::PreflightCheck::Pass
+        ));
+    }
+
+    #[test]
+    fn uploads_preflight_skips_deselected_without_request() {
+        let (addr, calls) =
+            spawn_oneshot_http_responder(vec!["HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok"]);
+        let ctx = make_ctx(addr, true);
+        assert!(matches!(
+            UploadsPublisher::new()
+                .preflight(&ctx)
+                .expect("preflight ok"),
+            anodizer_core::PreflightCheck::Pass
+        ));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }

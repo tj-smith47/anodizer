@@ -14,16 +14,20 @@ pub const SECRET_KEY_SUFFIXES: &[&str] = &["_KEY", "_SECRET", "_PASSWORD", "_TOK
 /// Value prefixes that indicate a secret regardless of key name.
 ///
 /// Catches provider API keys (`sk-...`, `sk-ant-...`) regardless of the
-/// variable name they happen to be exported under.
+/// variable name they happen to be exported under. Matching is
+/// case-sensitive, so prefixes must reproduce the issuer's exact casing
+/// (`AIza`, not `AIZA`).
 const SECRET_VALUE_PREFIXES: &[&str] = &[
     "sk-",
     "ghp_",
     "ghs_",
     "gho_",
     "ghu_",
+    "github_pat_",
     "dckr_pat_",
     "glpat-",
-    "AIZA",
+    "AIza",
+    "ya29.",
     "xox",
 ];
 
@@ -338,6 +342,19 @@ mod tests {
         assert!(is_secret("ANYTHING", "sk-1234567890"));
         assert!(is_secret("ANYTHING", "dckr_pat_1234567890"));
         assert!(is_secret("ANYTHING", "glpat-1234567890"));
+        // Fine-grained GitHub PAT and Google API/OAuth keys, exported under a
+        // name the suffix list does not catch, are matched by exact-case value
+        // prefix. `AIza`/`ya29.` casing is load-bearing: the match is
+        // case-sensitive, so an `AIZA` prefix would catch zero real keys.
+        assert!(is_secret("GH_PAT", "github_pat_11ABCDE0000000000"));
+        assert!(is_secret(
+            "GOOGLE_CREDS",
+            "AIzaSyA00000000000000000000000000000000"
+        ));
+        assert!(is_secret(
+            "GOOGLE_CREDS",
+            "ya29.a0Af00000000000000000000000"
+        ));
         assert!(!is_secret("ANYTHING", "regular_value1234"));
     }
 

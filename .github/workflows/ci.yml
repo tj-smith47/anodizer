@@ -124,7 +124,11 @@ jobs:
         shell: bash
         run: |
           printf '%s\n' 'C:\Program Files (x86)\WiX Toolset v3.14\bin' >> "$GITHUB_PATH"
-          dotnet tool install --global wix || true
+          # `install` errors if the tool is already present; fall back to `update`
+          # (a no-op success when current) so a genuine install failure still fails
+          # the step instead of being swallowed by `|| true` — which would let the
+          # MSI determinism test silently revert to its skip-with-pass path.
+          dotnet tool install --global wix || dotnet tool update --global wix
       - name: Tests
         run: task test
       - name: Build release binary

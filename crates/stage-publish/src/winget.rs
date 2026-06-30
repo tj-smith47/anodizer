@@ -1707,14 +1707,12 @@ fn submit_winget_manifests(
         }
     }
 
-    let update_existing_pr = winget_cfg
-        .update_existing_pr
-        .as_ref()
-        .map(|v| {
-            v.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-                .unwrap_or(false)
-        })
-        .unwrap_or(false);
+    let update_existing_pr = match winget_cfg.update_existing_pr.as_ref() {
+        Some(v) => v
+            .try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+            .context("winget: render update_existing_pr condition")?,
+        None => false,
+    };
 
     let pr_outcome = submit_winget_pr(
         repo_path,

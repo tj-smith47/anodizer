@@ -304,17 +304,228 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
         Ok(())
     }
 
-    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
-        Ok(anodizer_core::PreflightCheck::Pass)
+    /// Live pre-tag gate. Chocolatey's community feed is a moderation-queue
+    /// one-way door (no programmatic withdraw), so a bad push is expensive and
+    /// must be caught BEFORE the tag is cut. Probes every active
+    /// `publish.chocolatey` entry: a missing API key, a key the feed rejects,
+    /// or a feed it cannot reach all block; a 5xx / ambiguous read warns.
+    /// Inactive (`skip:`/`if:`) or unconfigured entries pass without a network
+    /// call.
+    fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        use crate::publisher_preflight::{FailSeverity, merge};
+        use anodizer_core::PreflightCheck;
+
+        // Shallow probe policy: best-effort pre-publish gate, not a write that
+        // must land (see `RetryPolicy::PREFLIGHT`).
+        let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        // Severity for a DEFINITIVE failure (no key, key rejected, feed
+        // unreachable) is the publisher's own required→Blocker / optional→Warning
+        // policy — identical to every sibling preflight (gemfury/cloudsmith/…).
+        // The community feed being a one-way door does NOT make an OPTIONAL
+        // chocolatey entry block the whole release: only a `required:true` entry
+        // (or a transient, which always degrades to Warning below) aborts pre-tag.
+        let fail = FailSeverity::for_required(Self::resolved_required(self));
+        let mut acc = PreflightCheck::Pass;
+        for c in anodizer_core::env_preflight::crate_universe(&ctx.config) {
+            let Some(ch) = c.publish.as_ref().and_then(|p| p.chocolatey.as_ref()) else {
+                continue;
+            };
+            if crate::publisher_helpers::entry_inactive(
+                ctx,
+                ch.skip.as_ref(),
+                None,
+                ch.if_condition.as_deref(),
+            ) {
+                continue;
+            }
+            // Same source default + URL normalization the push path uses
+            // (`publish_to_chocolatey` → `push_nupkg`): probe the exact endpoint
+            // the PUT will hit.
+            let feed = ch
+                .source_repo
+                .as_deref()
+                .unwrap_or("https://push.chocolatey.org/");
+            let api_key = resolve_choco_api_key(ctx, ch);
+            if api_key.is_empty() {
+                acc = merge(
+                    acc,
+                    fail.apply(format!(
+                        "no chocolatey API key for the push to {feed}; set CHOCOLATEY_API_KEY \
+                         or publish.chocolatey.api_key (the community feed is a one-way \
+                         moderation queue)"
+                    )),
+                );
+                continue;
+            }
+            acc = merge(
+                acc,
+                choco_key_check(&choco_push_url(feed), feed, &api_key, &policy, fail),
+            );
+        }
+        Ok(acc)
+    }
+}
+
+/// Per-probe HTTP timeout — long enough for a cold TLS handshake to
+/// push.chocolatey.org, short enough that a wedged endpoint cannot stall the
+/// pre-tag gate.
+const CHOCO_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Resolve the push API key the same way [`super::publish`] does: the
+/// template-rendered `api_key` config, else the `CHOCOLATEY_API_KEY` env var.
+/// Empty string when neither resolves.
+fn resolve_choco_api_key(ctx: &Context, ch: &anodizer_core::config::ChocolateyConfig) -> String {
+    ch.api_key
+        .as_deref()
+        .and_then(|k| ctx.render_template(k).ok())
+        .filter(|k| !k.is_empty())
+        .or_else(|| ctx.env_var("CHOCOLATEY_API_KEY"))
+        .unwrap_or_default()
+}
+
+/// Normalize a NuGet V2 source URL to its `…/api/v2/package` push endpoint —
+/// the same normalization [`super::package::push_nupkg`] applies so the probe
+/// hits exactly the URL the PUT will.
+fn choco_push_url(source: &str) -> String {
+    let base = source.trim_end_matches('/');
+    if base.ends_with("/api/v2/package") {
+        base.to_string()
+    } else if base.ends_with("/api/v2") {
+        format!("{base}/package")
+    } else {
+        format!("{base}/api/v2/package")
+    }
+}
+
+/// Verdict of an authenticated probe against the chocolatey push endpoint.
+enum ChocoKeyProbe {
+    /// 2xx — the feed accepted the `X-NuGet-ApiKey` header.
+    Valid,
+    /// 401 / 403 — the feed rejected the key.
+    Rejected,
+    /// Transport failure (DNS / connect / TLS) after the bounded retries —
+    /// the feed could not be reached at all.
+    Unreachable(String),
+    /// 5xx, or an unexpected status (e.g. a feed that disallows GET on the
+    /// push route) — reachable, but the verdict is indeterminate.
+    Ambiguous(String),
+}
+
+/// Map a [`ChocoKeyProbe`] to a [`PreflightCheck`](anodizer_core::PreflightCheck).
+/// A DEFINITIVE failure (key rejected, feed unreachable) takes `fail`'s severity
+/// — `Blocker` for a `required:true` entry, `Warning` for the default optional
+/// config — so a transient DNS/TLS blip on an optional chocolatey never aborts
+/// the whole release. An AMBIGUOUS (indeterminate) read always warns regardless,
+/// since a reachable-but-cloudy feed is not proof the key is bad.
+fn choco_key_check(
+    push_url: &str,
+    feed: &str,
+    api_key: &str,
+    policy: &anodizer_core::retry::RetryPolicy,
+    fail: crate::publisher_preflight::FailSeverity,
+) -> anodizer_core::PreflightCheck {
+    use anodizer_core::PreflightCheck;
+    match probe_choco_key(push_url, api_key, policy) {
+        ChocoKeyProbe::Valid => PreflightCheck::Pass,
+        ChocoKeyProbe::Rejected => fail.apply(format!(
+            "chocolatey API key rejected by {feed} (HTTP 401/403); the push will fail. \
+             Check CHOCOLATEY_API_KEY / publish.chocolatey.api_key"
+        )),
+        ChocoKeyProbe::Unreachable(reason) => fail.apply(format!(
+            "chocolatey feed {feed} unreachable ({reason}); cannot verify the API key before \
+             pushing to a one-way moderation queue"
+        )),
+        ChocoKeyProbe::Ambiguous(reason) => PreflightCheck::Warning(format!(
+            "could not verify the chocolatey API key against {feed} ({reason}); \
+             verify CHOCOLATEY_API_KEY manually"
+        )),
+    }
+}
+
+/// Authenticated GET against the chocolatey push endpoint carrying the
+/// `X-NuGet-ApiKey` header (the same header the PUT push uses). 2xx ⇒ key
+/// accepted, 401/403 ⇒ rejected, transport failure ⇒ unreachable, anything
+/// else ⇒ ambiguous. `push_url` is passed in full so a unit test can point the
+/// probe at a local responder without a network round-trip.
+///
+/// NuGet V2 has no dedicated key-validation endpoint, so this proves the feed
+/// is reachable and the key is not outright rejected at the read layer — the
+/// strongest pre-push signal obtainable without performing the (one-way) write
+/// itself.
+fn probe_choco_key(
+    push_url: &str,
+    api_key: &str,
+    policy: &anodizer_core::retry::RetryPolicy,
+) -> ChocoKeyProbe {
+    use anodizer_core::retry::{SuccessClass, http_status, retry_http_blocking};
+    let client = match anodizer_core::http::blocking_client(CHOCO_PROBE_TIMEOUT) {
+        Ok(c) => c,
+        Err(e) => return ChocoKeyProbe::Unreachable(format!("could not build HTTP client: {e}")),
+    };
+    let key = api_key.to_string();
+    let result = retry_http_blocking(
+        "preflight: chocolatey api key",
+        policy,
+        SuccessClass::Strict,
+        |_| {
+            client
+                .get(push_url)
+                .header("X-NuGet-ApiKey", &key)
+                .header("Accept", "application/json")
+                .send()
+        },
+        |status, body| {
+            format!(
+                "{status}: {}",
+                anodizer_core::redact::redact_bearer_tokens(body)
+            )
+        },
+    );
+    match result {
+        Ok(_) => ChocoKeyProbe::Valid,
+        Err(err) => match http_status(&err) {
+            401 | 403 => ChocoKeyProbe::Rejected,
+            0 => ChocoKeyProbe::Unreachable(format!("network failure: {err}")),
+            other => ChocoKeyProbe::Ambiguous(format!("unexpected HTTP {other}")),
+        },
     }
 }
 
 #[cfg(test)]
 mod publisher_tests {
     use super::*;
-    use anodizer_core::config::{ChocolateyConfig, CrateConfig, PublishConfig};
+    use anodizer_core::config::{ChocolateyConfig, CrateConfig, PublishConfig, StringOrBool};
     use anodizer_core::test_helpers::TestContextBuilder;
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
     use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
+
+    /// A crate carrying a `publish.chocolatey` block whose `source_repo` points
+    /// the preflight probe at `source` (a local responder in tests).
+    fn choco_crate_src(name: &str, source: &str) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                chocolatey: Some(ChocolateyConfig {
+                    source_repo: Some(source.to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn http(status_line: &str, body: &str) -> &'static str {
+        Box::leak(
+            format!(
+                "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .into_boxed_str(),
+        )
+    }
 
     fn choco_crate(crate_name: &str, package_name: Option<&str>) -> CrateConfig {
         CrateConfig {
@@ -347,6 +558,148 @@ mod publisher_tests {
         let p = ChocolateyPublisher::new();
         assert!(matches!(
             p.preflight(&ctx).expect("preflight ok"),
+            PreflightCheck::Pass
+        ));
+    }
+
+    #[test]
+    fn chocolatey_preflight_passes_when_key_accepted() {
+        // 2xx from the push endpoint with the key header ⇒ Pass.
+        let (addr, _c) = spawn_oneshot_http_responder(vec![http("200 OK", "")]);
+        let ctx = TestContextBuilder::new()
+            .crates(vec![choco_crate_src("demo", &format!("http://{addr}/"))])
+            .env("CHOCOLATEY_API_KEY", "good-key")
+            .build();
+        let p = ChocolateyPublisher::new();
+        assert!(matches!(
+            p.preflight(&ctx).expect("preflight"),
+            PreflightCheck::Pass
+        ));
+    }
+
+    /// The DEFAULT chocolatey config is OPTIONAL (`required()==false`). A
+    /// definitive 403 (key rejected) must therefore WARN, not Blocker — an
+    /// optional surface never aborts the whole release pre-tag. The severity now
+    /// routes through `FailSeverity::for_required` like every sibling publisher.
+    #[test]
+    fn chocolatey_preflight_optional_warns_when_key_rejected() {
+        let (addr, _c) = spawn_oneshot_http_responder(vec![http("403 Forbidden", "")]);
+        let ctx = TestContextBuilder::new()
+            .crates(vec![choco_crate_src("demo", &format!("http://{addr}/"))])
+            .env("CHOCOLATEY_API_KEY", "bad-key")
+            .build();
+        let p = ChocolateyPublisher::new();
+        match p.preflight(&ctx).expect("preflight") {
+            PreflightCheck::Warning(m) => assert!(m.contains("rejected"), "{m}"),
+            other => panic!("expected Warning on a 403 for an optional choco entry, got {other:?}"),
+        }
+    }
+
+    /// When the operator sets `chocolatey.required: true`, a rejected key MUST
+    /// Blocker — the genuine one-way-door-must-not-fire-on-bad-key case the
+    /// docstring defends. Same probe, severity flipped by the required override.
+    #[test]
+    fn chocolatey_preflight_required_blocks_when_key_rejected() {
+        let (addr, _c) = spawn_oneshot_http_responder(vec![http("403 Forbidden", "")]);
+        let ctx = TestContextBuilder::new()
+            .crates(vec![choco_crate_src("demo", &format!("http://{addr}/"))])
+            .env("CHOCOLATEY_API_KEY", "bad-key")
+            .build();
+        let p = ChocolateyPublisher::with_overrides(Some(true), None);
+        match p.preflight(&ctx).expect("preflight") {
+            PreflightCheck::Blocker(m) => assert!(m.contains("rejected"), "{m}"),
+            other => panic!("expected Blocker on a 403 for a required choco entry, got {other:?}"),
+        }
+    }
+
+    /// An OPTIONAL choco entry with no resolvable key ⇒ Warning (the push would
+    /// no-op/skip; do not abort the release for an optional surface).
+    #[test]
+    fn chocolatey_preflight_optional_warns_when_key_missing() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![choco_crate_src(
+                "demo",
+                "https://push.chocolatey.org/",
+            )])
+            .sealed_env()
+            .build();
+        let p = ChocolateyPublisher::new();
+        match p.preflight(&ctx).expect("preflight") {
+            PreflightCheck::Warning(m) => assert!(m.contains("no chocolatey API key"), "{m}"),
+            other => panic!("expected Warning when an optional choco key is absent, got {other:?}"),
+        }
+    }
+
+    /// A REQUIRED choco entry with no resolvable key ⇒ Blocker, with no network
+    /// call — the operator asked for chocolatey, so a missing key must abort.
+    #[test]
+    fn chocolatey_preflight_required_blocks_when_key_missing() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![choco_crate_src(
+                "demo",
+                "https://push.chocolatey.org/",
+            )])
+            .sealed_env()
+            .build();
+        let p = ChocolateyPublisher::with_overrides(Some(true), None);
+        match p.preflight(&ctx).expect("preflight") {
+            PreflightCheck::Blocker(m) => assert!(m.contains("no chocolatey API key"), "{m}"),
+            other => panic!("expected Blocker when a required choco key is absent, got {other:?}"),
+        }
+    }
+
+    /// The exact bug: a transient UNREACHABLE feed (closed port / DNS blip) on
+    /// the DEFAULT optional config must WARN, never abort the whole release. The
+    /// old hardcoded Blocker turned every feed-side hiccup into a release-killer.
+    #[test]
+    fn chocolatey_preflight_optional_warns_when_feed_unreachable() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![choco_crate_src("demo", "http://127.0.0.1:1/")])
+            .env("CHOCOLATEY_API_KEY", "some-key")
+            .build();
+        let p = ChocolateyPublisher::new();
+        match p.preflight(&ctx).expect("preflight") {
+            PreflightCheck::Warning(m) => assert!(m.contains("unreachable"), "{m}"),
+            other => {
+                panic!("expected Warning on an unreachable optional feed, got {other:?}")
+            }
+        }
+    }
+
+    /// A REQUIRED entry whose feed is unreachable still Blocks — the key cannot
+    /// be verified before pushing to a one-way moderation queue.
+    #[test]
+    fn chocolatey_preflight_required_blocks_when_feed_unreachable() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![choco_crate_src("demo", "http://127.0.0.1:1/")])
+            .env("CHOCOLATEY_API_KEY", "some-key")
+            .build();
+        let p = ChocolateyPublisher::with_overrides(Some(true), None);
+        match p.preflight(&ctx).expect("preflight") {
+            PreflightCheck::Blocker(m) => assert!(m.contains("unreachable"), "{m}"),
+            other => panic!("expected Blocker on an unreachable required feed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chocolatey_preflight_passes_when_skip_truthy() {
+        // skip:true ⇒ inactive entry ⇒ Pass with no probe (the source points at
+        // a closed port that would otherwise surface as unreachable).
+        let mut crate_cfg = choco_crate_src("demo", "http://127.0.0.1:1/");
+        if let Some(ch) = crate_cfg
+            .publish
+            .as_mut()
+            .and_then(|p| p.chocolatey.as_mut())
+        {
+            ch.skip = Some(StringOrBool::Bool(true));
+        }
+        let ctx = TestContextBuilder::new()
+            .crates(vec![crate_cfg])
+            .env("CHOCOLATEY_API_KEY", "good-key")
+            .build();
+        let p = ChocolateyPublisher::new();
+        assert!(matches!(
+            p.preflight(&ctx).expect("preflight"),
             PreflightCheck::Pass
         ));
     }

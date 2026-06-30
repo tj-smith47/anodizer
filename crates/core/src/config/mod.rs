@@ -1274,7 +1274,8 @@ pub fn validate_winget_upgrade_behavior(config: &Config) -> Result<(), String> {
 ///
 /// The per-installer dependency emitter matches a scope value against each
 /// installer's WinGet architecture by exact, case-sensitive equality. A value
-/// outside the canonical set (`amd64`, `X64`, `aarch64`, …) therefore matches
+/// outside the canonical set ([`WINGET_ARCHITECTURES`]: `x64`, `arm64`, `x86`)
+/// therefore matches
 /// no installer, so the dependency would silently disappear from the generated
 /// manifest. Reject it at config-validate instead of shipping a manifest that
 /// quietly omits a declared dependency. An empty list (or absent
@@ -1328,16 +1329,11 @@ pub fn validate_winget_dependency_architectures(config: &Config) -> Result<(), S
 ///   itself is vacuously true; not walked here.
 ///
 pub fn validate_id_uniqueness(config: &Config) -> Result<(), String> {
-    fn check_unique<F>(
+    fn check_unique(
         location: &str,
         kind: &str,
         ids: impl IntoIterator<Item = (usize, Option<String>)>,
-        empty_ok: F,
-    ) -> Result<(), String>
-    where
-        F: Fn() -> bool,
-    {
-        let _ = empty_ok;
+    ) -> Result<(), String> {
         let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
         for (idx, maybe_id) in ids {
             // Empty is stored as "default" for archives via Default-time
@@ -1362,7 +1358,6 @@ pub fn validate_id_uniqueness(config: &Config) -> Result<(), String> {
             location,
             "archives",
             archives.iter().enumerate().map(|(i, a)| (i, a.id.clone())),
-            || true,
         )
     };
     let check_unibins = |location: &str, ubs: &[UniversalBinaryConfig]| -> Result<(), String> {
@@ -1370,7 +1365,6 @@ pub fn validate_id_uniqueness(config: &Config) -> Result<(), String> {
             location,
             "universal_binaries",
             ubs.iter().enumerate().map(|(i, u)| (i, u.id.clone())),
-            || true,
         )
     };
 

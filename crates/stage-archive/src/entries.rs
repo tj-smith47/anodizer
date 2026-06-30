@@ -65,6 +65,10 @@ pub(crate) fn write_archive_entries<W: std::io::Write>(
 ) -> Result<()> {
     for entry in entries {
         if !entry.src.exists() {
+            archive_log().warn(&format!(
+                "{label}: '{}' no longer exists — omitted from the archive",
+                entry.src.display()
+            ));
             continue;
         }
         formats::append_tar_entry(
@@ -118,6 +122,10 @@ pub(crate) fn write_zip_entries<W: std::io::Write + std::io::Seek>(
 
     for entry in entries {
         if !entry.src.exists() {
+            archive_log().warn(&format!(
+                "zip archive: '{}' no longer exists — omitted from the archive",
+                entry.src.display()
+            ));
             continue;
         }
         let mut options = base_options;

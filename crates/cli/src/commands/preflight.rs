@@ -468,6 +468,16 @@ fn verify_cosign_keys_load_with(
                      — the key/password combo will be validated at sign time instead"
                 ));
             }
+            anodizer_stage_sign::CosignKeyLoad::CosignProbeFailed(detail) => {
+                // A broken probe is NOT a clean "cosign absent": name why the
+                // precheck was skipped so an I/O failure isn't masqueraded as a
+                // tool-missing skip. Sign time still re-validates, so WARN (not
+                // a hard gate failure), mirroring the unavailable case.
+                log.warn(&format!(
+                    "{detail}; skipping offline {key_ref} load verification \
+                     — the key/password combo will be validated at sign time instead"
+                ));
+            }
             anodizer_stage_sign::CosignKeyLoad::Failed(detail) => {
                 all_loaded = false;
                 log.error(&format!(

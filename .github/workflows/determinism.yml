@@ -39,10 +39,14 @@ jobs:
         # (appbundle/dmg/pkg -> macOS, msi/nsis -> Windows, docker/appimage/
         # flatpak/nfpm/... -> Linux) without a hand-written list that drifts.
         #
-        # The action runs the harness with `--require-tools`, so a missing
-        # OS-native tool HARD-FAILS the shard instead of warn-skipping — a
-        # silent skip is the exact false coverage that once hid the installer
-        # formats from every release. Installer-tool provisioning stays
+        # The action runs the harness with `--require-tools` (enforced at
+        # tj-smith47/anodizer-action `scripts/determinism/run-harness.sh` — the
+        # flag is unconditional, not an input that could be omitted here), so a
+        # missing OS-native tool HARD-FAILS the shard instead of warn-skipping —
+        # a silent skip is the exact false coverage that once hid the installer
+        # formats from every release. The `@v1` pin below is the trust anchor for
+        # that guarantee; it moves only via the action's own update-major-tag
+        # gate. Installer-tool provisioning stays
         # by-shard: the action's `auto-install` reads .anodizer.yaml and
         # installs each configured stage's tools (macOS keeps it off — hdiutil
         # + pkgbuild are built-in and appbundle needs none; Windows enables it

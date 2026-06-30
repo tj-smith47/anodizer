@@ -629,7 +629,7 @@ fn test_resolve_skip_push_auto_prerelease() {
     let mut ctx = Context::new(config, ContextOptions::default());
     ctx.template_vars_mut().set("Prerelease", "rc.1");
 
-    let skip = resolve_skip_push(&Some(SkipPushConfig::Auto), &ctx);
+    let skip = resolve_skip_push(&Some(SkipPushConfig::Auto), &ctx).unwrap();
     assert!(skip, "auto should skip push when Prerelease is non-empty");
 }
 
@@ -642,7 +642,7 @@ fn test_resolve_skip_push_auto_no_prerelease() {
     let mut ctx = Context::new(config, ContextOptions::default());
     ctx.template_vars_mut().set("Prerelease", "");
 
-    let skip = resolve_skip_push(&Some(SkipPushConfig::Auto), &ctx);
+    let skip = resolve_skip_push(&Some(SkipPushConfig::Auto), &ctx).unwrap();
     assert!(!skip, "auto should NOT skip push when Prerelease is empty");
 }
 
@@ -654,7 +654,7 @@ fn test_resolve_skip_push_auto_prerelease_unset() {
     let config = Config::default();
     let ctx = Context::new(config, ContextOptions::default());
 
-    let skip = resolve_skip_push(&Some(SkipPushConfig::Auto), &ctx);
+    let skip = resolve_skip_push(&Some(SkipPushConfig::Auto), &ctx).unwrap();
     assert!(
         !skip,
         "auto should NOT skip push when Prerelease is not set"
@@ -669,7 +669,7 @@ fn test_resolve_skip_push_bool_true() {
     let config = Config::default();
     let ctx = Context::new(config, ContextOptions::default());
 
-    let skip = resolve_skip_push(&Some(SkipPushConfig::Bool(true)), &ctx);
+    let skip = resolve_skip_push(&Some(SkipPushConfig::Bool(true)), &ctx).unwrap();
     assert!(skip);
 }
 
@@ -681,7 +681,7 @@ fn test_resolve_skip_push_bool_false() {
     let config = Config::default();
     let ctx = Context::new(config, ContextOptions::default());
 
-    let skip = resolve_skip_push(&Some(SkipPushConfig::Bool(false)), &ctx);
+    let skip = resolve_skip_push(&Some(SkipPushConfig::Bool(false)), &ctx).unwrap();
     assert!(!skip);
 }
 
@@ -693,7 +693,7 @@ fn test_resolve_skip_push_none() {
     let config = Config::default();
     let ctx = Context::new(config, ContextOptions::default());
 
-    let skip = resolve_skip_push(&None, &ctx);
+    let skip = resolve_skip_push(&None, &ctx).unwrap();
     assert!(!skip, "None should not skip push");
 }
 

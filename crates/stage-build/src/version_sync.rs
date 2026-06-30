@@ -205,11 +205,25 @@ pub fn sync_workspace_deps(
     for path in &cargo_tomls {
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
-            Err(_) => continue,
+            Err(e) => {
+                // A manifest we cannot read may hold a path-dep pin to the bumped
+                // crate; skipping it silently would ship a stale version pin.
+                log.warn(&format!(
+                    "version sync: skipping unreadable manifest {}: {e}",
+                    path.display()
+                ));
+                continue;
+            }
         };
         let mut doc = match content.parse::<toml_edit::DocumentMut>() {
             Ok(d) => d,
-            Err(_) => continue,
+            Err(e) => {
+                log.warn(&format!(
+                    "version sync: skipping unparseable manifest {}: {e}",
+                    path.display()
+                ));
+                continue;
+            }
         };
 
         let mut changed = false;

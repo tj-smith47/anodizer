@@ -324,22 +324,24 @@ pub fn generate_nfpm_yaml_with_env(
         }
     });
 
-    // Convert serde_json::Value overrides to serde_yaml_ng::Value
-    let overrides = config
-        .overrides
-        .as_ref()
-        .filter(|m| !m.is_empty())
-        .map(|m| {
-            m.iter()
-                .filter_map(|(k, v)| {
-                    // Convert JSON Value -> string -> YAML Value.
-                    // Skip entries that fail serialisation rather than panicking.
-                    let json_str = serde_json::to_string(v).ok()?;
-                    let yaml_val: serde_yaml_ng::Value = serde_yaml_ng::from_str(&json_str).ok()?;
-                    Some((k.clone(), yaml_val))
-                })
-                .collect()
-        });
+    // Convert serde_json::Value overrides to serde_yaml_ng::Value. A conversion
+    // failure propagates rather than silently dropping a user's per-format
+    // override (JSON ⊂ YAML makes this effectively infallible, but a dropped
+    // override would otherwise vanish with no diagnostic).
+    let overrides = match config.overrides.as_ref().filter(|m| !m.is_empty()) {
+        Some(m) => {
+            let mut out: HashMap<String, serde_yaml_ng::Value> = HashMap::with_capacity(m.len());
+            for (k, v) in m {
+                let json_str = serde_json::to_string(v)
+                    .with_context(|| format!("nfpm: serialize override '{k}'"))?;
+                let yaml_val: serde_yaml_ng::Value = serde_yaml_ng::from_str(&json_str)
+                    .with_context(|| format!("nfpm: convert override '{k}' to YAML"))?;
+                out.insert(k.clone(), yaml_val);
+            }
+            Some(out)
+        }
+        None => None,
+    };
 
     // Flatten the format-keyed dependencies HashMap into a flat Vec<String>.
     // When a target format is supplied we take only deps for that format;

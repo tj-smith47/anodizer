@@ -6,8 +6,8 @@
 //!
 //! - `config` — validate `.anodizer.yaml` (the historic body of this
 //!   command, now relocated under its own subcommand).
-//! - `determinism` — run the determinism harness (stubbed; harness body
-//!   lands in a follow-up task).
+//! - `determinism` — run the determinism harness (rebuilds N times and
+//!   byte-compares produced artifacts); see `determinism.rs`.
 //! - `version_files` — read-only drift guard for the repo-committed files
 //!   enrolled under `version_files`.
 

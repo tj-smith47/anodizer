@@ -6,6 +6,7 @@
 //!   parallel upload, so credential/KMS errors surface before any bytes leave.
 
 mod kms;
+mod preflight;
 mod provider;
 pub mod publisher;
 mod run;

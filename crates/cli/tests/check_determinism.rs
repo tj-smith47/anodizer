@@ -79,8 +79,11 @@ fn check_determinism_help_lists_every_flag() {
 #[test]
 fn check_determinism_errors_cleanly_outside_git_repo() {
     let tmp = TempDir::new().unwrap();
+    // `--runs 2` clears the runs>=2 gate so the dispatcher proceeds to HEAD
+    // resolution, which is the path this test pins; `--runs 1` would bail at
+    // the gate and pass vacuously without ever touching git.
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .args(["check", "determinism", "--runs", "1"])
+        .args(["check", "determinism", "--runs", "2"])
         .current_dir(tmp.path())
         .output()
         .expect("invoking anodize check determinism");
@@ -103,8 +106,11 @@ fn check_determinism_errors_cleanly_outside_git_repo() {
 fn check_determinism_respects_report_flag_in_error_path() {
     let tmp = TempDir::new().unwrap();
     let report = tmp.path().join("custom-report.json");
+    // `--runs 2` clears the runs>=2 gate so the dispatcher proceeds to the SDE
+    // resolver (the path this test pins); `--runs 1` would bail at the gate
+    // before the resolver is ever reached, passing vacuously.
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .args(["check", "determinism", "--runs", "1", "--report"])
+        .args(["check", "determinism", "--runs", "2", "--report"])
         .arg(&report)
         .current_dir(tmp.path())
         .output()
@@ -454,7 +460,7 @@ fn quiet_flag_silences_harness_run_bullets_and_children() {
             "check",
             "determinism",
             "--runs",
-            "1",
+            "2",
             "--stages",
             "build",
             "--report",
@@ -479,7 +485,7 @@ fn quiet_flag_silences_harness_run_bullets_and_children() {
     );
     for needle in [
         "Checking determinism",
-        "run 1 of 1",
+        "run 1 of 2",
         "Building binaries",
         "running cargo",
         "wrote determinism report",

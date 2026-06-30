@@ -398,22 +398,38 @@ fn run_uploads(
                 for artifact in &matching {
                     let snap_path = artifact.path.to_string_lossy();
 
-                    // Each channel template is rendered through the
-                    // template engine, filtering out empty results.
+                    // Each channel template is rendered through the template
+                    // engine, dropping only empty results. A render error
+                    // propagates rather than silently vanishing a channel from
+                    // the --release set (which would mis-route the upload).
                     let rendered_channels: Option<Vec<String>> =
-                        snap_cfg.channel_templates.as_ref().map(|templates| {
-                            templates
-                                .iter()
-                                .filter_map(|tmpl| {
-                                    ctx.render_template(tmpl).ok().filter(|s| !s.is_empty())
-                                })
-                                .collect()
-                        });
-                    // grade is also rendered through the template engine
+                        match snap_cfg.channel_templates.as_ref() {
+                            Some(templates) => {
+                                let mut out = Vec::new();
+                                for tmpl in templates {
+                                    let rendered =
+                                        ctx.render_template(tmpl).with_context(|| {
+                                            format!("snapcraft: render channel template '{tmpl}'")
+                                        })?;
+                                    if !rendered.is_empty() {
+                                        out.push(rendered);
+                                    }
+                                }
+                                Some(out)
+                            }
+                            None => None,
+                        };
+                    // grade is also rendered through the template engine; a
+                    // malformed grade must fail, not feed a raw `{{...}}` string
+                    // into channel resolution.
                     let rendered_grade: Option<String> = snap_cfg
                         .grade
                         .as_deref()
-                        .map(|g| ctx.render_template(g).unwrap_or_else(|_| g.to_string()));
+                        .map(|g| {
+                            ctx.render_template(g)
+                                .with_context(|| format!("snapcraft: render grade template '{g}'"))
+                        })
+                        .transpose()?;
                     let effective_channels = resolve_effective_channels(
                         rendered_channels.as_deref(),
                         rendered_grade.as_deref(),

@@ -259,6 +259,23 @@ pub(super) fn check_notarize_output(
     let combined_lower = combined.to_lowercase();
 
     if output.status.success() {
+        // Defense-in-depth: a zero exit is the documented accepted signal, but
+        // never trust it past a body that explicitly says invalid/rejected.
+        // Treat exit-0-with-rejection as a failure rather than stapling an
+        // un-notarized artifact.
+        if combined_lower.contains("status: invalid")
+            || combined_lower.contains("invalid submission")
+        {
+            bail!(
+                "notarize: {}: exited 0 but reported status invalid — the submitted artifact did not pass Apple's checks",
+                label
+            );
+        }
+        if combined_lower.contains("status: rejected")
+            || combined_lower.contains("submission rejected")
+        {
+            bail!("notarize: {}: exited 0 but reported status rejected", label);
+        }
         // Even on success, check for status keywords to provide accurate logging
         if combined_lower.contains("status: accepted") || combined_lower.contains("status: success")
         {

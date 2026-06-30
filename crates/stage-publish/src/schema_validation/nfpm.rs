@@ -228,26 +228,42 @@ fn validate_built_packages(
 
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
         match ext {
-            "deb" => {
-                if anodizer_core::tool_detect::tool_available("dpkg-deb").unwrap_or(false) {
-                    findings.extend(check_deb_control(path, &expected)?);
-                } else {
-                    log.verbose(
-                        "dpkg-deb not on PATH — relying on the nfpm config schema floor \
-                         for .deb validation",
-                    );
-                }
-            }
-            "rpm" => {
-                if anodizer_core::tool_detect::tool_available("rpm").unwrap_or(false) {
-                    findings.extend(check_rpm_control(path, &expected)?);
-                } else {
-                    log.verbose(
-                        "rpm not on PATH — relying on the nfpm config schema floor \
-                         for .rpm validation",
-                    );
-                }
-            }
+            // `tool_available` reports a binary missing from PATH as
+            // `Err(NotFound)`, not `Ok(false)` — so fold `NotFound` in with the
+            // clean "not on PATH" skip (`Ok(false)` = installed but the version
+            // probe exited non-zero). Only a GENUINE probe I/O failure warns;
+            // nfpm is reversible so the end state is skip either way, but the
+            // error is never swallowed into a silent false.
+            "deb" => match anodizer_core::tool_detect::tool_available("dpkg-deb") {
+                Ok(true) => findings.extend(check_deb_control(path, &expected)?),
+                Ok(false) => log.verbose(
+                    "dpkg-deb not on PATH — relying on the nfpm config schema floor \
+                     for .deb validation",
+                ),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => log.verbose(
+                    "dpkg-deb not on PATH — relying on the nfpm config schema floor \
+                     for .deb validation",
+                ),
+                Err(e) => log.warn(&format!(
+                    "could not probe dpkg-deb availability ({e}); relying on the nfpm \
+                     config schema floor for .deb validation"
+                )),
+            },
+            "rpm" => match anodizer_core::tool_detect::tool_available("rpm") {
+                Ok(true) => findings.extend(check_rpm_control(path, &expected)?),
+                Ok(false) => log.verbose(
+                    "rpm not on PATH — relying on the nfpm config schema floor \
+                     for .rpm validation",
+                ),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => log.verbose(
+                    "rpm not on PATH — relying on the nfpm config schema floor \
+                     for .rpm validation",
+                ),
+                Err(e) => log.warn(&format!(
+                    "could not probe rpm availability ({e}); relying on the nfpm \
+                     config schema floor for .rpm validation"
+                )),
+            },
             // Other packagers (apk, archlinux, ipk) have no portable
             // always-present inspector here; the primary schema floor stands.
             _ => {}
@@ -538,6 +554,17 @@ mod tests {
     use serde_json::Value;
 
     use super::*;
+
+    /// Probe an inspection tool for a gated test: `true` when present. A probe
+    /// ERROR is surfaced through `reason` (never silently collapsed into a bare
+    /// "absent"), so a skipped test records why the tool was unusable.
+    fn test_tool_probe(tool: &str) -> (bool, String) {
+        match anodizer_core::tool_detect::tool_available(tool) {
+            Ok(true) => (true, format!("{tool}=present")),
+            Ok(false) => (false, format!("{tool}=absent")),
+            Err(e) => (false, format!("{tool}=probe-error({e})")),
+        }
+    }
 
     /// An `NfpmConfig` exercising every YAML-affecting field with values nfpm's
     /// schema accepts.
@@ -1272,12 +1299,12 @@ mod tests {
     #[test]
     fn dpkg_deb_control_matches_then_bites() {
         let log = StageLogger::new("publish", anodizer_core::log::Verbosity::Normal);
-        let nfpm_present = anodizer_core::tool_detect::tool_available("nfpm").unwrap_or(false);
-        let dpkg_present = anodizer_core::tool_detect::tool_available("dpkg-deb").unwrap_or(false);
+        let (nfpm_present, nfpm_why) = test_tool_probe("nfpm");
+        let (dpkg_present, dpkg_why) = test_tool_probe("dpkg-deb");
         if !nfpm_present || !dpkg_present {
             log.status(&format!(
-                "SKIP dpkg_deb_control_matches_then_bites: nfpm={nfpm_present} \
-                 dpkg-deb={dpkg_present} (gated .deb layer unexercised)"
+                "SKIP dpkg_deb_control_matches_then_bites: {nfpm_why} \
+                 {dpkg_why} (gated .deb layer unexercised)"
             ));
             return;
         }
@@ -1326,12 +1353,12 @@ mod tests {
     #[test]
     fn rpm_control_matches_then_bites() {
         let log = StageLogger::new("publish", anodizer_core::log::Verbosity::Normal);
-        let nfpm_present = anodizer_core::tool_detect::tool_available("nfpm").unwrap_or(false);
-        let rpm_present = anodizer_core::tool_detect::tool_available("rpm").unwrap_or(false);
+        let (nfpm_present, nfpm_why) = test_tool_probe("nfpm");
+        let (rpm_present, rpm_why) = test_tool_probe("rpm");
         if !nfpm_present || !rpm_present {
             log.status(&format!(
-                "SKIP rpm_control_matches_then_bites: nfpm={nfpm_present} \
-                 rpm={rpm_present} (gated .rpm layer unexercised)"
+                "SKIP rpm_control_matches_then_bites: {nfpm_why} \
+                 {rpm_why} (gated .rpm layer unexercised)"
             ));
             return;
         }
@@ -1453,8 +1480,11 @@ mod tests {
     #[test]
     fn nfpm_builds_deb_with_arch_variant() {
         let log = StageLogger::new("publish", anodizer_core::log::Verbosity::Normal);
-        if !anodizer_core::tool_detect::tool_available("nfpm").unwrap_or(false) {
-            log.status("SKIP nfpm_builds_deb_with_arch_variant: nfpm not on PATH");
+        let (nfpm_present, nfpm_why) = test_tool_probe("nfpm");
+        if !nfpm_present {
+            log.status(&format!(
+                "SKIP nfpm_builds_deb_with_arch_variant: {nfpm_why}"
+            ));
             return;
         }
 

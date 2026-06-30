@@ -248,6 +248,18 @@ pub fn gh_api_get_paginated_with_binary(
             );
         }
     }
+
+    // A non-empty body that yielded zero items means the whole-parse failed AND
+    // every chunk failed to parse — garbled stdout from a zero-exit `gh`. Returning
+    // an empty vec here would be indistinguishable from a genuine "no results",
+    // letting a caller wrongly conclude a release/asset is absent. Fail loud instead.
+    if all_items.is_empty() && !stdout.trim().is_empty() {
+        let raw = format!(
+            "gh api GET {endpoint} exited 0 but returned a body that could not be parsed as JSON"
+        );
+        bail!("{}", redact_gh_stderr(&raw, token));
+    }
+
     Ok(all_items)
 }
 

@@ -24,9 +24,10 @@
 #      `.env_var("ANODIZER_GITHUB_TOKEN")` read OUTSIDE that file re-introduces
 #      the missing-filter bug. Route through the canonical resolver instead.
 #
-# This audit is INTENTIONALLY UNWIRED from Taskfile/CI — the primary
-# enforcement is type-level (private fields + crate-private detectors). It
-# exists as a grep backstop; wire it into `task lint` in a later batch.
+# Wired into `task lint` (and thus `task commit`) as `audit:repo-identity`.
+# Class A is additionally backstopped at the type level (crate-private
+# detectors won't compile outside `core::git`); Class B (the token
+# empty-filter) has NO compiler enforcement, so this grep is its only guard.
 #
 # Comment lines, `crates/*/tests/**` integration tests, and unit-test module
 # files (`*/tests.rs`) are exempt — test scaffolding routinely reads the raw

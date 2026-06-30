@@ -603,6 +603,20 @@ fn check_sign_artifact_filters(config: &Config, warnings: &mut Vec<String>) {
                 valid_artifact_filters.join(", ")
             ));
         }
+        // The authenticode block carries its own `artifacts` selector, resolved
+        // through the same `should_sign_artifact` vocabulary. An unrecognized
+        // value here matches no artifact and (now that the stage propagates the
+        // error) fails the run — surface it at check time too.
+        if let Some(ref auth) = sign_cfg.authenticode
+            && let Some(ref filter) = auth.artifacts
+            && !valid_artifact_filters.contains(&filter.as_str())
+        {
+            warnings.push(format!(
+                "unrecognized signs authenticode artifacts filter '{}' (valid: {})",
+                filter,
+                valid_artifact_filters.join(", ")
+            ));
+        }
     }
 }
 

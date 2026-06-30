@@ -779,11 +779,83 @@ impl anodizer_core::Publisher for DockerhubPublisher {
         Ok(())
     }
 
-    /// No live probe: this publisher only syncs the repo description (with a
-    /// description-restore rollback), and `requirements()` gates the login
-    /// credential — an invalid login fails the first, recoverable step.
-    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
-        Ok(anodizer_core::PreflightCheck::Pass)
+    /// Live pre-publish gate. For every active `dockerhub[]` entry whose login
+    /// credentials resolve, POST `{api_base}/v2/users/login/` with
+    /// `{username, password}` — the exact login the publish path performs to mint
+    /// its JWT. A rejected login (401/403) or an unreachable host surfaces as a
+    /// Warning (this publisher is OPTIONAL — a failed description sync must not
+    /// abort the release). Logins are de-duplicated per `(username, secret_name)`
+    /// so N entries sharing one credential probe once.
+    ///
+    /// Entries with no resolvable credential are left to `requirements()` (which
+    /// gates credential *presence*); this probe only proves a *present* login
+    /// is accepted.
+    fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        use crate::publisher_preflight::{
+            FailSeverity, ProbeAuth, ProbeMethod, default_probe_client, merge, probe_http_endpoint,
+        };
+        use anodizer_core::PreflightCheck;
+        use std::collections::HashSet;
+
+        let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let fail = FailSeverity::for_required(Self::resolved_required(self));
+        let api_base = dockerhub_api_base(ctx.env_source());
+        let login_url = format!("{api_base}/v2/users/login/");
+
+        let mut acc = PreflightCheck::Pass;
+        let mut probed: HashSet<(String, String)> = HashSet::new();
+        for entry in ctx.config.dockerhub.iter().flatten() {
+            if crate::publisher_helpers::entry_inactive(
+                ctx,
+                entry.skip.as_ref(),
+                None,
+                entry.if_condition.as_deref(),
+            ) {
+                continue;
+            }
+            let username = match entry.username.as_deref().filter(|u| !u.is_empty()) {
+                Some(u) => ctx.render_template(u).unwrap_or_else(|_| u.to_string()),
+                None => ctx.env_var("DOCKER_USERNAME").unwrap_or_default(),
+            };
+            let secret_name = entry.secret_name.as_deref().unwrap_or("DOCKER_PASSWORD");
+            // An unresolved credential is `requirements()`'s job to flag; this
+            // probe only validates a credential that IS present.
+            let (Some(username), Some(password)) = (
+                Some(username).filter(|u| !u.is_empty()),
+                ctx.env_var(secret_name).filter(|p| !p.is_empty()),
+            ) else {
+                continue;
+            };
+            if !probed.insert((username.clone(), secret_name.to_string())) {
+                continue;
+            }
+            let client = match default_probe_client() {
+                Ok(c) => c,
+                Err(e) => {
+                    acc = merge(
+                        acc,
+                        PreflightCheck::Warning(format!(
+                            "dockerhub: could not build HTTP client for preflight ({e})"
+                        )),
+                    );
+                    continue;
+                }
+            };
+            let body = serde_json::json!({ "username": username, "password": password });
+            acc = merge(
+                acc,
+                probe_http_endpoint(
+                    &client,
+                    ProbeMethod::PostJson(body),
+                    &login_url,
+                    &ProbeAuth::None,
+                    "preflight: dockerhub login",
+                    fail,
+                    &policy,
+                ),
+            );
+        }
+        Ok(acc)
     }
 
     fn skips_on_nightly(&self) -> bool {
@@ -2759,5 +2831,79 @@ mod publisher_tests {
             chain.contains(env_var),
             "error chain should name the unset env var: {chain}"
         );
+    }
+}
+
+#[cfg(test)]
+mod preflight_live_tests {
+    use super::*;
+    use anodizer_core::Publisher;
+    use anodizer_core::config::{Config, DockerHubConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+
+    fn make_ctx(base: &str, deselect: bool) -> Context {
+        let cfg = DockerHubConfig {
+            username: Some("ci-bot".into()),
+            images: Some(vec!["lib/app".into()]),
+            if_condition: if deselect { Some("false".into()) } else { None },
+            ..Default::default()
+        };
+        let config = Config {
+            project_name: "app".into(),
+            dockerhub: Some(vec![cfg]),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.set_env_source(
+            anodizer_core::MapEnvSource::new()
+                .with("ANODIZER_DOCKERHUB_API_BASE", base.to_string())
+                .with("DOCKER_PASSWORD", "s3cret"),
+        );
+        ctx
+    }
+
+    #[test]
+    fn dockerhub_preflight_warns_on_invalid_login() {
+        let (addr, _c) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n",
+        ]);
+        let ctx = make_ctx(&format!("http://{addr}"), false);
+        match DockerhubPublisher::new()
+            .preflight(&ctx)
+            .expect("preflight ok")
+        {
+            anodizer_core::PreflightCheck::Warning(m) => assert!(m.contains("dockerhub"), "{m}"),
+            other => panic!("expected Warning, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dockerhub_preflight_passes_on_successful_login() {
+        let (addr, _c) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n{\"token\":\"jwt\"}",
+        ]);
+        let ctx = make_ctx(&format!("http://{addr}"), false);
+        assert!(matches!(
+            DockerhubPublisher::new()
+                .preflight(&ctx)
+                .expect("preflight ok"),
+            anodizer_core::PreflightCheck::Pass
+        ));
+    }
+
+    #[test]
+    fn dockerhub_preflight_skips_deselected_without_request() {
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n{\"token\":\"jwt\"}",
+        ]);
+        let ctx = make_ctx(&format!("http://{addr}"), true);
+        assert!(matches!(
+            DockerhubPublisher::new()
+                .preflight(&ctx)
+                .expect("preflight ok"),
+            anodizer_core::PreflightCheck::Pass
+        ));
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
     }
 }

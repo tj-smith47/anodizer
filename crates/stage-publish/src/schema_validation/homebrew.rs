@@ -47,6 +47,10 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
         resolve_tag: TagResolver<'_>,
     ) -> Result<Vec<SchemaFinding>> {
         let log = ctx.logger("publish");
+        // Threaded into the `ruby -c` layer: a homebrew tap publish is a git
+        // commit/PR (reversible), so its validator is not `tool_required` and
+        // `strict` leaves a missing `ruby` a warn+skip — wired uniformly.
+        let strict = ctx.render_is_strict();
         let mut findings = Vec::new();
 
         // Walk exactly the crate set the live homebrew publisher's `run`
@@ -97,7 +101,7 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
                             RubyKind::Formula,
                             &rendered.formula,
                         ));
-                        findings.extend(validate_ruby_syntax(&rendered.formula, &log)?);
+                        findings.extend(validate_ruby_syntax(&rendered.formula, strict, &log)?);
                     }
 
                     // SAME-TAP CASK path. The render needs a macOS artifact. Gate
@@ -110,7 +114,7 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
                         && let Some(cask) =
                             render_same_tap_cask_for_crate(ctx, hb_cfg, crate_name, &log)?
                     {
-                        validate_cask_and_versioned(&mut findings, &cask, &log)?;
+                        validate_cask_and_versioned(&mut findings, &cask, strict, &log)?;
                     }
                 }
 
@@ -120,7 +124,7 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
                 if crate_has_macos_cask_artifact(ctx, crate_name)
                     && let Some(cask) = render_homebrew_cask_for_crate(ctx, crate_name, &log)?
                 {
-                    validate_cask_and_versioned(&mut findings, &cask, &log)?;
+                    validate_cask_and_versioned(&mut findings, &cask, strict, &log)?;
                 }
                 Ok(findings)
             })?;
@@ -131,7 +135,7 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
         // or no entry is applicable in this shard.
         for ruby in render_top_level_homebrew_casks(ctx, &log)? {
             findings.extend(validate_ruby_structural(RubyKind::Cask, &ruby));
-            findings.extend(validate_ruby_syntax(&ruby, &log)?);
+            findings.extend(validate_ruby_syntax(&ruby, strict, &log)?);
         }
 
         Ok(findings)
@@ -160,13 +164,14 @@ fn validate_ruby_structural(kind: RubyKind, ruby: &str) -> Vec<SchemaFinding> {
 fn validate_cask_and_versioned(
     findings: &mut Vec<SchemaFinding>,
     cask: &CaskGenResult,
+    strict: bool,
     log: &StageLogger,
 ) -> Result<()> {
     findings.extend(validate_ruby_structural(RubyKind::Cask, &cask.content));
-    findings.extend(validate_ruby_syntax(&cask.content, log)?);
+    findings.extend(validate_ruby_syntax(&cask.content, strict, log)?);
     for (_alt, body) in &cask.versioned_files {
         findings.extend(validate_ruby_structural(RubyKind::Cask, body));
-        findings.extend(validate_ruby_syntax(body, log)?);
+        findings.extend(validate_ruby_syntax(body, strict, log)?);
     }
     Ok(())
 }
@@ -313,7 +318,7 @@ fn validate_cask_structural(ruby: &str) -> Vec<SchemaFinding> {
 /// `(root)` finding (never silent-pass). When `ruby` is absent, log a visible
 /// skip marker and return no findings — the structural floor stands; a missing
 /// tool is never a manifest defect.
-fn validate_ruby_syntax(ruby: &str, log: &StageLogger) -> Result<Vec<SchemaFinding>> {
+fn validate_ruby_syntax(ruby: &str, strict: bool, log: &StageLogger) -> Result<Vec<SchemaFinding>> {
     super::run_external_validator(
         &super::ExternalValidator {
             publisher: "homebrew",
@@ -323,9 +328,13 @@ fn validate_ruby_syntax(ruby: &str, log: &StageLogger) -> Result<Vec<SchemaFindi
             skip_message: "ruby not on PATH — relying on the structural Ruby floor for \
                  syntax validation",
             empty_fallback: "ruby -c reported the generated Ruby invalid but emitted no parseable diagnostic",
+            // A homebrew tap publish is a git commit/PR (reversible), not a
+            // moderation queue — a missing `ruby` stays a warn+skip under strict.
+            tool_required: false,
         },
         parse_ruby_c_stderr,
         log,
+        strict,
     )
 }
 
@@ -887,15 +896,23 @@ end
         add_macos_archive(&mut ctx, "widget", "1.0.0");
         let log = ctx.logger("publish");
 
-        if !anodizer_core::tool_detect::tool_available("ruby").unwrap_or(false) {
-            log.status("SKIP ruby_c_accepts_every_option_formula_and_cask: ruby not on PATH (syntax layer unexercised)");
-            return;
+        match anodizer_core::tool_detect::tool_available("ruby") {
+            Ok(true) => {}
+            Ok(false) => {
+                log.status("SKIP ruby_c_accepts_every_option_formula_and_cask: ruby not on PATH (syntax layer unexercised)");
+                return;
+            }
+            Err(e) => {
+                log.status(&format!("SKIP ruby_c_accepts_every_option_formula_and_cask: ruby probe failed ({e}) (syntax layer unexercised)"));
+                return;
+            }
         }
 
         let formula = render_homebrew_formula_for_crate(&ctx, "widget", &log)
             .expect("render ok")
             .expect("not skipped");
-        let formula_findings = validate_ruby_syntax(&formula.formula, &log).expect("ruby -c runs");
+        let formula_findings =
+            validate_ruby_syntax(&formula.formula, false, &log).expect("ruby -c runs");
         assert!(
             formula_findings.is_empty(),
             "the every-option formula must pass ruby -c, got: {formula_findings:?}"
@@ -905,7 +922,7 @@ end
         let cask = render_same_tap_cask_for_crate(&ctx, &hb_cfg, "widget", &log)
             .expect("render ok")
             .expect("cask configured");
-        let cask_findings = validate_ruby_syntax(&cask.content, &log).expect("ruby -c runs");
+        let cask_findings = validate_ruby_syntax(&cask.content, false, &log).expect("ruby -c runs");
         assert!(
             cask_findings.is_empty(),
             "the every-option cask must pass ruby -c, got: {cask_findings:?}"
@@ -921,23 +938,32 @@ end
         let ctx = TestContextBuilder::new().snapshot(true).build();
         let log = ctx.logger("publish");
 
-        if !anodizer_core::tool_detect::tool_available("ruby").unwrap_or(false) {
-            log.status(
-                "SKIP ruby_c_rejects_broken_ruby: ruby not on PATH (syntax layer unexercised)",
-            );
-            return;
+        match anodizer_core::tool_detect::tool_available("ruby") {
+            Ok(true) => {}
+            Ok(false) => {
+                log.status(
+                    "SKIP ruby_c_rejects_broken_ruby: ruby not on PATH (syntax layer unexercised)",
+                );
+                return;
+            }
+            Err(e) => {
+                log.status(&format!(
+                    "SKIP ruby_c_rejects_broken_ruby: ruby probe failed ({e}) (syntax layer unexercised)"
+                ));
+                return;
+            }
         }
 
         // An unclosed `do` block — valid stanzas, invalid Ruby syntax.
         let broken = "cask \"widget\" do\n  version \"1.0.0\"\n";
-        let findings = validate_ruby_syntax(broken, &log).expect("ruby -c runs");
+        let findings = validate_ruby_syntax(broken, false, &log).expect("ruby -c runs");
         assert!(
             !findings.is_empty(),
             "broken Ruby must be rejected by ruby -c, got no findings"
         );
 
         let fixed = "cask \"widget\" do\n  version \"1.0.0\"\nend\n";
-        let fixed_findings = validate_ruby_syntax(fixed, &log).expect("ruby -c runs");
+        let fixed_findings = validate_ruby_syntax(fixed, false, &log).expect("ruby -c runs");
         assert!(
             fixed_findings.is_empty(),
             "the corrected Ruby must pass ruby -c, got: {fixed_findings:?}"

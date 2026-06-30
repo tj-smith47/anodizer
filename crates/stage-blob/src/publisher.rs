@@ -228,11 +228,15 @@ impl anodizer_core::Publisher for BlobPublisher {
         Ok(())
     }
 
-    /// No live probe: blob uploads are overwritable with an `ObjectStore::delete`
-    /// rollback, and provider credentials are validated at upload time — an
-    /// invalid credential fails the first, recoverable step.
-    fn preflight(&self, _ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
-        Ok(anodizer_core::PreflightCheck::Pass)
+    /// Live object-store probe, run before any tag is cut: construct the same
+    /// store the publish uses and perform a PUT → HEAD → DELETE canary
+    /// round-trip against every deduplicated destination. A failure to a
+    /// `required` destination Blocks the release (blob is an irreversible
+    /// upload that gates the one-way-door publishers); a failure to an
+    /// optional one Warns. Pass when blob is deselected or no destination is
+    /// configured. See [`crate::preflight`] for the round-trip details.
+    fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
+        crate::preflight::run_preflight(ctx)
     }
 
     fn rollback_scope_needed(&self) -> Option<&'static str> {
