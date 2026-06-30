@@ -104,14 +104,7 @@ fn sync_fork(
 
 /// Check whether the `gh` CLI is available in PATH.
 fn gh_is_available() -> bool {
-    Command::new("gh")
-        .arg("--version")
-        .current_dir(anodizer_core::path_util::probe_dir())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    anodizer_core::tool_detect::tool_available("gh").unwrap_or(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -758,7 +751,7 @@ mod tests {
     use super::maybe_submit_pr_with_env;
     use super::{
         PrOrigin, PrSpec, PrTransport, Upstream, classify_pr_transport, create_pr_via_api_with_env,
-        maybe_submit_pr, sync_fork,
+        gh_is_available, maybe_submit_pr, sync_fork,
     };
     use anodizer_core::MapEnvSource;
     use anodizer_core::PublisherOutcome;
@@ -808,6 +801,14 @@ mod tests {
     /// gh on PATH wins regardless of whether a token is also present —
     /// gh can force-push to update an existing PR's branch, the API
     /// transport cannot.
+    /// The probe delegates to `core::tool_detect::tool_available("gh")`; the
+    /// outcome depends on whether gh is on PATH, so only assert it returns a
+    /// bool without panicking.
+    #[test]
+    fn gh_is_available_returns_a_bool_without_panicking() {
+        let _: bool = gh_is_available();
+    }
+
     #[test]
     fn classify_pr_transport_prefers_gh_when_available() {
         assert_eq!(classify_pr_transport(true, false), PrTransport::GhCli);

@@ -1451,30 +1451,24 @@ impl anodizer_core::Publisher for ScoopPublisher {
     fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         // Best-effort pre-publish gate uses the shallow probe policy.
         let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
-        let mut acc = anodizer_core::PreflightCheck::Pass;
-        for c in anodizer_core::env_preflight::crate_universe(&ctx.config) {
-            let Some(s) = c.publish.as_ref().and_then(|p| p.scoop.as_ref()) else {
-                continue;
-            };
-            if crate::publisher_helpers::entry_inactive(
-                ctx,
-                None,
-                s.skip_upload.as_ref(),
-                s.if_condition.as_deref(),
-            ) {
-                continue;
-            }
-            acc = crate::publisher_preflight::merge(
-                acc,
-                crate::publisher_preflight::github_repo_config_check(
+        Ok(crate::publisher_preflight::for_each_active_github_repo(
+            ctx,
+            &policy,
+            "SCOOP_BUCKET_TOKEN",
+            anodizer_core::env_preflight::crate_universe(&ctx.config)
+                .into_iter()
+                .filter_map(|c| c.publish.as_ref().and_then(|p| p.scoop.as_ref())),
+            |s| {
+                // Scoop has no `skip` field; gate on skip_upload + if only.
+                !crate::publisher_helpers::entry_inactive(
                     ctx,
-                    s.repository.as_ref(),
-                    "SCOOP_BUCKET_TOKEN",
-                    &policy,
-                ),
-            );
-        }
-        Ok(acc)
+                    None,
+                    s.skip_upload.as_ref(),
+                    s.if_condition.as_deref(),
+                )
+            },
+            |s| s.repository.as_ref(),
+        ))
     }
 }
 

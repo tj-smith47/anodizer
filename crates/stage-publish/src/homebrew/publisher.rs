@@ -414,49 +414,43 @@ impl anodizer_core::Publisher for HomebrewPublisher {
     fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         // Best-effort pre-publish gate uses the shallow probe policy.
         let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
-        let mut acc = anodizer_core::PreflightCheck::Pass;
-        for c in anodizer_core::env_preflight::crate_universe(&ctx.config) {
-            let Some(h) = c.publish.as_ref().and_then(|p| p.homebrew.as_ref()) else {
-                continue;
-            };
-            if crate::publisher_helpers::entry_inactive(
-                ctx,
-                None,
-                h.skip_upload.as_ref(),
-                h.if_condition.as_deref(),
-            ) {
-                continue;
-            }
-            acc = crate::publisher_preflight::merge(
-                acc,
-                crate::publisher_preflight::github_repo_config_check(
+        // Formula entries are crate-keyed; cask entries are a top-level list —
+        // two universes, both probed against the same tap token.
+        let formulae = crate::publisher_preflight::for_each_active_github_repo(
+            ctx,
+            &policy,
+            "HOMEBREW_TAP_TOKEN",
+            anodizer_core::env_preflight::crate_universe(&ctx.config)
+                .into_iter()
+                .filter_map(|c| c.publish.as_ref().and_then(|p| p.homebrew.as_ref())),
+            |h| {
+                // Homebrew formula has no `skip` field; gate on skip_upload + if.
+                !crate::publisher_helpers::entry_inactive(
                     ctx,
-                    h.repository.as_ref(),
-                    "HOMEBREW_TAP_TOKEN",
-                    &policy,
-                ),
-            );
-        }
-        for cask in ctx.config.homebrew_casks.iter().flatten() {
-            if crate::publisher_helpers::entry_inactive(
-                ctx,
-                None,
-                cask.skip_upload.as_ref(),
-                cask.if_condition.as_deref(),
-            ) {
-                continue;
-            }
-            acc = crate::publisher_preflight::merge(
-                acc,
-                crate::publisher_preflight::github_repo_config_check(
+                    None,
+                    h.skip_upload.as_ref(),
+                    h.if_condition.as_deref(),
+                )
+            },
+            |h| h.repository.as_ref(),
+        );
+        let casks = crate::publisher_preflight::for_each_active_github_repo(
+            ctx,
+            &policy,
+            "HOMEBREW_TAP_TOKEN",
+            ctx.config.homebrew_casks.iter().flatten(),
+            |cask| {
+                // Casks have no `skip` field; gate on skip_upload + if only.
+                !crate::publisher_helpers::entry_inactive(
                     ctx,
-                    cask.repository.as_ref(),
-                    "HOMEBREW_TAP_TOKEN",
-                    &policy,
-                ),
-            );
-        }
-        Ok(acc)
+                    None,
+                    cask.skip_upload.as_ref(),
+                    cask.if_condition.as_deref(),
+                )
+            },
+            |cask| cask.repository.as_ref(),
+        );
+        Ok(formulae.merge(casks))
     }
 }
 

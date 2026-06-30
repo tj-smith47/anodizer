@@ -276,30 +276,24 @@ impl anodizer_core::Publisher for NixPublisher {
     fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
         // Best-effort pre-publish gate uses the shallow probe policy.
         let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
-        let mut acc = anodizer_core::PreflightCheck::Pass;
-        for c in anodizer_core::env_preflight::crate_universe(&ctx.config) {
-            let Some(n) = c.publish.as_ref().and_then(|p| p.nix.as_ref()) else {
-                continue;
-            };
-            if crate::publisher_helpers::entry_inactive(
-                ctx,
-                n.skip.as_ref(),
-                n.skip_upload.as_ref(),
-                n.if_condition.as_deref(),
-            ) {
-                continue;
-            }
-            acc = crate::publisher_preflight::merge(
-                acc,
-                crate::publisher_preflight::github_repo_config_check(
+        Ok(crate::publisher_preflight::for_each_active_github_repo(
+            ctx,
+            &policy,
+            "NIX_PKGS_TOKEN",
+            anodizer_core::env_preflight::crate_universe(&ctx.config)
+                .into_iter()
+                .filter_map(|c| c.publish.as_ref().and_then(|p| p.nix.as_ref())),
+            |n| {
+                // Nix carries a `skip` field, unlike scoop/homebrew/winget.
+                !crate::publisher_helpers::entry_inactive(
                     ctx,
-                    n.repository.as_ref(),
-                    "NIX_PKGS_TOKEN",
-                    &policy,
-                ),
-            );
-        }
-        Ok(acc)
+                    n.skip.as_ref(),
+                    n.skip_upload.as_ref(),
+                    n.if_condition.as_deref(),
+                )
+            },
+            |n| n.repository.as_ref(),
+        ))
     }
 }
 

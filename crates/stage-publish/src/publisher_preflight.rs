@@ -448,6 +448,57 @@ pub(crate) fn github_repo_config_check(
     github_repo_check(&owner, &name, token.as_deref(), policy)
 }
 
+/// Run [`github_repo_config_check`] over every active entry of a
+/// GitHub-repo-backed publisher and merge the per-entry outcomes into a
+/// single [`PreflightCheck`] (worst severity wins).
+///
+/// `entries` is the publisher's pre-selected entry stream (each publisher
+/// supplies its own crate-universe / flat-list projection so the iterated
+/// universe — crate-keyed configs vs. top-level casks — stays at the call
+/// site). `is_active` is the per-entry gate; it is caller-supplied because
+/// the publisher schemas disagree on whether a `skip` field exists, so no
+/// single predicate fits every caller. `repo` extracts the entry's
+/// repository coordinates. Inactive entries are skipped without probing.
+pub(crate) fn for_each_active_github_repo<'e, E, G, R>(
+    ctx: &Context,
+    policy: &RetryPolicy,
+    token_env: &str,
+    entries: impl Iterator<Item = E>,
+    is_active: G,
+    repo: R,
+) -> PreflightCheck
+where
+    E: Copy,
+    G: Fn(E) -> bool,
+    R: Fn(E) -> Option<&'e anodizer_core::config::RepositoryConfig>,
+{
+    fold_active_checks(entries, is_active, |entry| {
+        github_repo_config_check(ctx, repo(entry), token_env, policy)
+    })
+}
+
+/// Iterate `entries`, run `check` on each active entry, and merge the
+/// outcomes (worst severity wins). The IO-bound check is injected so the
+/// gate/merge orchestration can be unit-tested without a live probe.
+fn fold_active_checks<E, G, C>(
+    entries: impl Iterator<Item = E>,
+    is_active: G,
+    check: C,
+) -> PreflightCheck
+where
+    E: Copy,
+    G: Fn(E) -> bool,
+    C: Fn(E) -> PreflightCheck,
+{
+    let mut acc = PreflightCheck::Pass;
+    for entry in entries {
+        if is_active(entry) {
+            acc = acc.merge(check(entry));
+        }
+    }
+    acc
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,6 +517,38 @@ mod tests {
             "HTTP/1.1 {status_line}\r\nContent-Length: {}\r\n\r\n{body}",
             body.len()
         )
+    }
+
+    #[test]
+    fn fold_active_checks_merges_active_entries_to_worst_severity() {
+        // Two active entries; the second's check fails (Blocker). The merge
+        // must surface the worst severity across the active universe.
+        let entries = [
+            (true, PreflightCheck::Warning("w".into())),
+            (true, PreflightCheck::Blocker("missing repo".into())),
+        ];
+        let out = fold_active_checks(
+            entries.iter(),
+            |e: &(bool, PreflightCheck)| e.0,
+            |e: &(bool, PreflightCheck)| e.1.clone(),
+        );
+        assert!(matches!(out, PreflightCheck::Blocker(_)));
+    }
+
+    #[test]
+    fn fold_active_checks_skips_inactive_entries() {
+        // The only Blocker lives on an inactive entry; the gate must skip it so
+        // it never reaches the merge — result stays Pass.
+        let entries = [
+            (true, PreflightCheck::Pass),
+            (false, PreflightCheck::Blocker("must-not-count".into())),
+        ];
+        let out = fold_active_checks(
+            entries.iter(),
+            |e: &(bool, PreflightCheck)| e.0,
+            |e: &(bool, PreflightCheck)| e.1.clone(),
+        );
+        assert!(matches!(out, PreflightCheck::Pass));
     }
 
     #[test]
