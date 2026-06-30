@@ -476,7 +476,7 @@ fn assemble_artifact_entries(
 
     if include_meta {
         let dist_dir = &ctx.config.dist;
-        let meta_name = "metadata.json";
+        let meta_name = anodizer_core::dist::METADATA_JSON;
         let meta_path = dist_dir.join(meta_name);
         if meta_path.exists() {
             artifact_entries.push((meta_path, None));

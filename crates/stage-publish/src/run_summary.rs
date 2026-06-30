@@ -418,12 +418,7 @@ pub fn summary_path(ctx: &Context) -> Option<std::path::PathBuf> {
         return None;
     }
     let run_id = crate::derive_run_id(ctx);
-    Some(
-        ctx.config
-            .dist
-            .join(format!("run-{run_id}"))
-            .join("summary.json"),
-    )
+    Some(crate::run_dir(ctx, &run_id).join(anodizer_core::dist::SUMMARY_JSON))
 }
 
 /// Persist a point-in-time summary for an in-progress publish run.
@@ -459,7 +454,7 @@ pub fn collect_run_summary_paths(dist: &Path) -> Vec<std::path::PathBuf> {
         entries
             .flatten()
             .filter(|e| e.file_name().to_string_lossy().starts_with("run-"))
-            .map(|e| e.path().join("summary.json"))
+            .map(|e| e.path().join(anodizer_core::dist::SUMMARY_JSON))
             .filter(|p| p.is_file())
             .collect()
     }

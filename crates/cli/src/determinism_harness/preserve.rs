@@ -141,7 +141,9 @@ fn guard_preserve_dest(dest: &Path) -> Result<()> {
         return Ok(()); // empty dir — safe
     }
     // Non-empty: only proceed if it's plainly a prior preserve target.
-    if dest.join("context.json").exists() || dest.join("artifacts.json").exists() {
+    if dest.join(anodizer_core::dist::CONTEXT_JSON).exists()
+        || dest.join(anodizer_core::dist::ARTIFACTS_JSON).exists()
+    {
         return Ok(());
     }
     anyhow::bail!(
@@ -281,7 +283,7 @@ pub(super) fn preserve_raw_binaries(
     dest: &Path,
     log: &StageLogger,
 ) -> Result<()> {
-    let manifest_path = dest.join("artifacts.json");
+    let manifest_path = dest.join(anodizer_core::dist::ARTIFACTS_JSON);
     let bytes = match std::fs::read(&manifest_path) {
         Ok(b) => b,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -494,7 +496,7 @@ pub(super) fn write_preserved_dist_context(
     // Optional + tolerant of corruption — fall back to defaults so a
     // malformed sibling JSON can't kill the manifest write.
     let artifacts_json: Option<serde_json::Value> =
-        read_optional_json(&dest.join("artifacts.json"), log);
+        read_optional_json(&dest.join(anodizer_core::dist::ARTIFACTS_JSON), log);
     let mut targets: Vec<String> = artifacts_json
         .as_ref()
         .and_then(|v| v.as_array())
@@ -527,15 +529,16 @@ pub(super) fn write_preserved_dist_context(
     }
 
     // ── dist/metadata.json: { project_name, tag, version, commit } ───
-    let version: String = match read_optional_json(&dest.join("metadata.json"), log) {
-        Some(v) => v
-            .get("version")
-            .and_then(|s| s.as_str())
-            .map(str::to_string)
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| inputs.version_hint.to_string()),
-        None => inputs.version_hint.to_string(),
-    };
+    let version: String =
+        match read_optional_json(&dest.join(anodizer_core::dist::METADATA_JSON), log) {
+            Some(v) => v
+                .get("version")
+                .and_then(|s| s.as_str())
+                .map(str::to_string)
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| inputs.version_hint.to_string()),
+            None => inputs.version_hint.to_string(),
+        };
 
     // ── Per-file walk of <dest>/** ───────────────────────────────────
     // Use the report's recorded hashes when available (the harness
@@ -568,7 +571,7 @@ pub(super) fn write_preserved_dist_context(
     // (OOM, SIGKILL, runner timeout) never leaves a truncated
     // context.json that a publish-only reader would silently
     // mis-deserialize into `Default::default()`-shaped values.
-    let ctx_path = dest.join("context.json");
+    let ctx_path = dest.join(anodizer_core::dist::CONTEXT_JSON);
     let tmp_path = ctx_path.with_extension("json.tmp");
     std::fs::write(&tmp_path, &json)
         .with_context(|| format!("writing context.json tmp to {}", tmp_path.display()))?;
@@ -657,15 +660,13 @@ fn collect_preserved_entries(
         // discovers the renamed manifests directly via
         // `discover_artifacts_manifests` and does not need them in the
         // hash-verify set.
-        if matches!(
-            name.as_str(),
-            "context.json"
-                | "context.json.tmp"
-                | "artifacts.json"
-                | "artifacts.json.tmp"
-                | "metadata.json"
-                | "metadata.json.tmp"
-        ) {
+        // Strip the atomic-write `.tmp` sibling suffix so a committed
+        // sidecar and its in-flight `.tmp` are both excluded by the same
+        // const set the writers emit — the allow-list cannot drift from
+        // the basenames in `anodizer_core::dist`.
+        use anodizer_core::dist::{ARTIFACTS_JSON, CONTEXT_JSON, METADATA_JSON};
+        let base = name.as_str().strip_suffix(".tmp").unwrap_or(name.as_str());
+        if matches!(base, CONTEXT_JSON | ARTIFACTS_JSON | METADATA_JSON) {
             continue;
         }
         let rel = path
@@ -931,13 +932,18 @@ mod tests {
     /// `discover_artifacts_manifests`.
     #[test]
     fn context_excludes_harness_sidecar_manifests() {
+        use anodizer_core::dist::{ARTIFACTS_JSON, CONTEXT_JSON, METADATA_JSON};
         let tmp = TempDir::new().unwrap();
         let dest = tmp.path();
-        // Plant the three harness sidecars + one real artifact so
-        // the test asserts both "sidecars excluded" and "real
-        // artifacts still included" rather than just "no entries".
-        std::fs::write(dest.join("artifacts.json"), b"[]").unwrap();
-        std::fs::write(dest.join("metadata.json"), b"{}").unwrap();
+        // Plant the three harness sidecars (named via the shared
+        // `anodizer_core::dist` consts the writers emit) + their atomic
+        // `.tmp` siblings + one real artifact. The test then asserts the
+        // allow-list excludes exactly the const-named sidecars: if a
+        // writer rename desynced from the allow-list, this guard fails.
+        std::fs::write(dest.join(ARTIFACTS_JSON), b"[]").unwrap();
+        std::fs::write(dest.join(METADATA_JSON), b"{}").unwrap();
+        std::fs::write(dest.join(format!("{CONTEXT_JSON}.tmp")), b"half-written").unwrap();
+        std::fs::write(dest.join(format!("{METADATA_JSON}.tmp")), b"half-written").unwrap();
         std::fs::write(dest.join("foo.tar.gz"), b"real artifact bytes").unwrap();
         let report = empty_report("c0ffee");
         write_preserved_dist_context(
@@ -951,16 +957,21 @@ mod tests {
         )
         .unwrap();
         let ctx: PreservedDistContext =
-            serde_json::from_slice(&std::fs::read(dest.join("context.json")).unwrap()).unwrap();
+            serde_json::from_slice(&std::fs::read(dest.join(CONTEXT_JSON)).unwrap()).unwrap();
         let names: Vec<&str> = ctx.artifacts.iter().map(|a| a.name.as_str()).collect();
-        assert!(
-            !names.contains(&"artifacts.json"),
-            "artifacts.json must not appear as a preserved artifact (would dangle after rename): {names:?}"
-        );
-        assert!(
-            !names.contains(&"metadata.json"),
-            "metadata.json must not appear as a preserved artifact (would dangle after rename): {names:?}"
-        );
+        let sidecars = [
+            ARTIFACTS_JSON.to_string(),
+            METADATA_JSON.to_string(),
+            CONTEXT_JSON.to_string(),
+            format!("{CONTEXT_JSON}.tmp"),
+            format!("{METADATA_JSON}.tmp"),
+        ];
+        for sidecar in &sidecars {
+            assert!(
+                !names.contains(&sidecar.as_str()),
+                "sidecar {sidecar:?} must not appear as a preserved artifact (would dangle after rename): {names:?}"
+            );
+        }
         assert!(
             names.contains(&"foo.tar.gz"),
             "real artifacts must still be preserved: {names:?}"

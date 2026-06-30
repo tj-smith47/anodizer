@@ -1825,7 +1825,7 @@ impl Harness {
             || self.resolve_allow_reason(name).is_some()
             // `metadata.json` is a tracked primary (expected byte-stable);
             // its pass is explicit, not incidental.
-            || base == "metadata.json"
+            || base == anodizer_core::dist::METADATA_JSON
             || manifest_members.contains(base)
     }
 

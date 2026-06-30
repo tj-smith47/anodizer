@@ -498,7 +498,7 @@ impl AggregateKind for ArtifactsManifest {
     }
 
     fn matches(&self, name: &str) -> bool {
-        aggregate_basename(name) == "artifacts.json"
+        aggregate_basename(name) == crate::dist::ARTIFACTS_JSON
     }
 
     fn members_by_unit(&self, bytes: &[u8]) -> Result<BTreeMap<String, String>> {

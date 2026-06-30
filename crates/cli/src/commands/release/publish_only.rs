@@ -67,7 +67,7 @@ pub(super) enum DistLayout {
 /// The flat layout is detected by `dist/context.json` or
 /// `dist/context-*.json` at the root itself.
 pub(super) fn detect_dist_layout(dist: &Path, log: &StageLogger) -> Result<DistLayout> {
-    let has_flat = !discover_sharded_manifests(dist, "context")?.is_empty();
+    let has_flat = !discover_sharded_manifests(dist, anodizer_core::dist::CONTEXT_JSON)?.is_empty();
 
     let mut crate_subdirs: Vec<String> = Vec::new();
     let entries = std::fs::read_dir(dist).with_context(|| {
@@ -98,7 +98,7 @@ pub(super) fn detect_dist_layout(dist: &Path, log: &StageLogger) -> Result<DistL
         let subdir = entry.path();
         // A subdir counts as a per-crate preserve if it contains context.json
         // or context-<shard>.json.
-        if !discover_sharded_manifests(&subdir, "context")?.is_empty()
+        if !discover_sharded_manifests(&subdir, anodizer_core::dist::CONTEXT_JSON)?.is_empty()
             && let Some(name) = entry.file_name().to_str()
         {
             crate_subdirs.push(name.to_string());
@@ -123,7 +123,7 @@ pub(super) fn crate_subdir_has_manifest(dist: &Path, crate_name: &str, log: &Sta
     if !subdir.is_dir() {
         return false;
     }
-    match discover_sharded_manifests(&subdir, "context") {
+    match discover_sharded_manifests(&subdir, anodizer_core::dist::CONTEXT_JSON) {
         Ok(manifests) => !manifests.is_empty(),
         Err(e) => {
             // A real read error (permissions, transient IO) routes the
@@ -1122,11 +1122,13 @@ struct PreservedArtifact {
     size: u64,
 }
 
-/// Find every `<base>.json` and `<base>-*.json` entry at the dist root
-/// (non-recursive). `*.tmp` siblings are skipped — those are leftover
-/// atomic-write scratch files from the harness's rename-into-place
-/// writer and never represent a committed manifest. Returns the
-/// matching paths sorted by filename for reproducible output.
+/// Find every `<base>` and `<stem>-*.json` entry at the dist root
+/// (non-recursive), where `base` is the canonical `<stem>.json` basename
+/// (an `anodizer_core::dist` const, e.g. [`anodizer_core::dist::CONTEXT_JSON`]).
+/// `*.tmp` siblings are skipped — those are leftover atomic-write scratch
+/// files from the harness's rename-into-place writer and never represent a
+/// committed manifest. Returns the matching paths sorted by filename for
+/// reproducible output.
 ///
 /// Single source of truth for the two sharded-manifest families
 /// (`context.json` / `context-<shard>.json` and `artifacts.json` /
@@ -1139,8 +1141,11 @@ fn discover_sharded_manifests(dist: &Path, base: &str) -> Result<Vec<PathBuf>> {
             base,
         )
     })?;
-    let exact = format!("{base}.json");
-    let prefix = format!("{base}-");
+    // `base` is the canonical `<name>.json` basename; sharded variants
+    // swap the extension for `-<shard>.json`.
+    let stem = base.strip_suffix(".json").unwrap_or(base);
+    let exact = base;
+    let prefix = format!("{stem}-");
     let mut found: Vec<PathBuf> = Vec::new();
     for entry in entries {
         let entry = entry.with_context(|| {
@@ -1178,7 +1183,7 @@ fn discover_sharded_manifests(dist: &Path, base: &str) -> Result<Vec<PathBuf>> {
 /// Empty result is an error — `publish-only` cannot proceed without at
 /// least one manifest pinning the preserved commit.
 fn discover_preserved_contexts(dist: &Path) -> Result<Vec<(PathBuf, PreservedDistContext)>> {
-    let found = discover_sharded_manifests(dist, "context")?;
+    let found = discover_sharded_manifests(dist, anodizer_core::dist::CONTEXT_JSON)?;
     if found.is_empty() {
         anyhow::bail!(
             "publish-only: no context.json (or context-<shard>.json) found at {}. \
@@ -1202,7 +1207,7 @@ fn discover_preserved_contexts(dist: &Path) -> Result<Vec<(PathBuf, PreservedDis
 /// legacy nor any sharded manifest is present — callers decide whether
 /// that's fatal.
 fn discover_artifacts_manifests(dist: &Path) -> Result<Vec<PathBuf>> {
-    discover_sharded_manifests(dist, "artifacts")
+    discover_sharded_manifests(dist, anodizer_core::dist::ARTIFACTS_JSON)
 }
 
 /// Detect the upload-artifact merge-collision symptom: both
@@ -1631,14 +1636,16 @@ mod tests {
         std::fs::write(tmp.path().join("artifacts-linux.json"), "[]").unwrap();
         std::fs::write(tmp.path().join("artifacts-linux.json.tmp"), "garbage").unwrap();
 
-        let ctx = discover_sharded_manifests(tmp.path(), "context").unwrap();
+        let ctx =
+            discover_sharded_manifests(tmp.path(), anodizer_core::dist::CONTEXT_JSON).unwrap();
         let names: Vec<String> = ctx
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
             .collect();
         assert_eq!(names, vec!["context.json"], "tmp siblings must be skipped");
 
-        let arts = discover_sharded_manifests(tmp.path(), "artifacts").unwrap();
+        let arts =
+            discover_sharded_manifests(tmp.path(), anodizer_core::dist::ARTIFACTS_JSON).unwrap();
         let names: Vec<String> = arts
             .iter()
             .map(|p| p.file_name().unwrap().to_string_lossy().to_string())

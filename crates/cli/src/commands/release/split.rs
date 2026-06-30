@@ -285,7 +285,7 @@ pub(super) fn run_split(
         artifacts: split_artifacts,
     };
 
-    let ctx_path = split_dist.join("context.json");
+    let ctx_path = split_dist.join(anodizer_core::dist::CONTEXT_JSON);
     let json = serde_json::to_string_pretty(&split_ctx).context("serialize split context")?;
     // Atomic write: stage to `.tmp` then rename so a mid-write runner death
     // never leaves a truncated/partial context.json for the merge step.
@@ -778,7 +778,7 @@ pub fn find_split_contexts(dist: &Path) -> Result<Vec<PathBuf>> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                let ctx_file = path.join("context.json");
+                let ctx_file = path.join(anodizer_core::dist::CONTEXT_JSON);
                 if ctx_file.exists() {
                     files.push(ctx_file);
                 }
@@ -797,7 +797,7 @@ pub fn find_split_contexts(dist: &Path) -> Result<Vec<PathBuf>> {
 fn find_split_artifacts(dist: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
 
-    let top = dist.join("artifacts.json");
+    let top = dist.join(anodizer_core::dist::ARTIFACTS_JSON);
     if top.exists() {
         files.push(top);
     }
@@ -808,7 +808,7 @@ fn find_split_artifacts(dist: &Path) -> Result<Vec<PathBuf>> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                let sub_artifacts = path.join("artifacts.json");
+                let sub_artifacts = path.join(anodizer_core::dist::ARTIFACTS_JSON);
                 if sub_artifacts.exists() {
                     files.push(sub_artifacts);
                 }

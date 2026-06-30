@@ -941,7 +941,7 @@ pub fn write_metadata_json(
     std::fs::create_dir_all(dist)
         .with_context(|| format!("failed to create dist directory: {}", dist.display()))?;
 
-    let metadata_path = dist.join("metadata.json");
+    let metadata_path = dist.join(anodizer_core::dist::METADATA_JSON);
     let goos = anodizer_core::context::map_os_to_goos(std::env::consts::OS);
     let goarch = anodizer_core::context::map_arch_to_goarch(std::env::consts::ARCH);
 
@@ -1017,7 +1017,7 @@ pub fn write_metadata_and_artifacts(
 
     ctx.artifacts.add(anodizer_core::artifact::Artifact {
         kind: ArtifactKind::Metadata,
-        name: "metadata.json".to_string(),
+        name: anodizer_core::dist::METADATA_JSON.to_string(),
         path: metadata_path.clone(),
         target: None,
         crate_name: config.project_name.clone(),
@@ -1025,7 +1025,7 @@ pub fn write_metadata_and_artifacts(
         size: None,
     });
 
-    let artifacts_path = dist.join("artifacts.json");
+    let artifacts_path = dist.join(anodizer_core::dist::ARTIFACTS_JSON);
     let artifacts_json = ctx
         .artifacts
         .to_artifacts_json()
@@ -1261,7 +1261,7 @@ pub fn init_merge_stage_ctx(
 /// Load artifacts from dist/artifacts.json into the context's artifact registry.
 /// Used by `publish` and `announce` commands that run from a completed dist/.
 pub fn load_artifacts_from_dist(ctx: &mut Context, dist: &Path) -> Result<()> {
-    let artifacts_path = dist.join("artifacts.json");
+    let artifacts_path = dist.join(anodizer_core::dist::ARTIFACTS_JSON);
     load_artifacts_from_manifest(ctx, dist, &artifacts_path)
 }
 

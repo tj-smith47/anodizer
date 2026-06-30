@@ -108,16 +108,22 @@ pub fn derive_run_id(ctx: &Context) -> String {
     "local".to_string()
 }
 
+/// Resolve `<dist>/run-<id>/` for a derived `run_id`. Single source of the
+/// `run-<id>` prefix shared by [`report_path_for`], [`run_summary::summary_path`],
+/// [`rollback_only`], and the writer in [`write_report_to_run_dir`]. Anchors on
+/// `ctx.config.dist`, which per-crate workspace mode re-anchors onto
+/// `dist/<crate>/`, so the helper composes correctly across every config mode.
+pub fn run_dir(ctx: &Context, run_id: &str) -> PathBuf {
+    ctx.config.dist.join(format!("run-{run_id}"))
+}
+
 /// Resolve `<dist>/run-<id>/report.json` for a derived `run_id`. Pure
 /// path helper kept alongside [`derive_run_id`] so consumers driving
 /// the announce-only flow share the same path-shape contract as the
 /// writer in [`write_report_to_run_dir`] and the reader in
 /// [`rollback_only::run`].
 pub fn report_path_for(ctx: &Context, run_id: &str) -> PathBuf {
-    ctx.config
-        .dist
-        .join(format!("run-{}", run_id))
-        .join("report.json")
+    run_dir(ctx, run_id).join(anodizer_core::dist::REPORT_JSON)
 }
 
 /// Load the prior run's `<dist>/run-<id>/report.json` into a
@@ -246,8 +252,8 @@ pub fn write_report_to_run_dir(ctx: &Context, log: &StageLogger) {
         return;
     }
 
-    let path = report_path_for(ctx, &run_id);
-    let dir: PathBuf = ctx.config.dist.join(format!("run-{}", run_id));
+    let dir: PathBuf = run_dir(ctx, &run_id);
+    let path = dir.join(anodizer_core::dist::REPORT_JSON);
 
     if let Err(e) = std::fs::create_dir_all(&dir) {
         log.warn(&format!(

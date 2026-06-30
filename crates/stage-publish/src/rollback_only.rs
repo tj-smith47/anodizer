@@ -112,10 +112,7 @@ fn report_path(ctx: &Context, run_id: &str) -> PathBuf {
 /// Resolve the path the replay writes its updated state to:
 /// `<ctx.config.dist>/run-<id>/rollback.json`.
 fn rollback_path(ctx: &Context, run_id: &str) -> PathBuf {
-    ctx.config
-        .dist
-        .join(format!("run-{}", run_id))
-        .join("rollback.json")
+    crate::run_dir(ctx, run_id).join(anodizer_core::dist::ROLLBACK_JSON)
 }
 
 /// Load the prior run state (preferring `<dist>/run-<id>/rollback.json`

@@ -368,13 +368,13 @@ fn write_pre_release_metadata(ctx: &mut anodizer_core::context::Context) -> anyh
         "commit": commit,
     });
     std::fs::write(
-        dist.join("metadata.json"),
+        dist.join(anodizer_core::dist::METADATA_JSON),
         serde_json::to_string_pretty(&metadata)?,
     )?;
 
     let artifacts_json = ctx.artifacts.to_artifacts_json()?;
     std::fs::write(
-        dist.join("artifacts.json"),
+        dist.join(anodizer_core::dist::ARTIFACTS_JSON),
         serde_json::to_string_pretty(&artifacts_json)?,
     )?;
 
