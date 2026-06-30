@@ -154,28 +154,28 @@ impl Stage for BlobStage {
         }
 
         // BlobStage is Assets-group and writes its own outcome into
-        // `ctx.publish_report` so the SnapcraftPublishStage submitter
-        // gate (which runs AFTER BlobStage per the pipeline order) sees
-        // a required-blob failure via the standard `any_failed(Assets,
-        // required_only=true)` path. The publisher dispatch in
-        // `PublishStage::run` runs BEFORE BlobStage so `ctx.publish_report`
-        // is already initialized in the common case; the `None` branch
-        // covers `--publish` subset runs where the publish stage was
-        // skipped.
+        // `ctx.publish_report`. It runs BEFORE PublishStage (and the
+        // SnapcraftPublishStage submitter) so a required-blob failure is
+        // already recorded when the Submitter loop and snapcraft consult
+        // `submitter_gate_closed()` (via `any_failed(Assets,
+        // required_only=true)`) and gate the one-way doors. Because blob is
+        // first, `ctx.publish_report` is normally `None` at entry; the
+        // `record_blob_*` helpers create it on demand. The dispatcher then
+        // SEEDS its report from this blob outcome rather than starting empty.
         //
         // Per-target failure becomes `PublisherOutcome::Failed(_)` + Ok(()).
         // Catastrophic errors (missing required config, malformed
         // provider, IO impossible at the stage boundary) still bubble up
         // via the `?` operator in `run_with_evidence` -> `prepare_jobs`.
 
-        // Gate check: BlobStage runs after the trait-based publisher
-        // dispatch, so a required failure from any earlier publisher is
-        // already recorded in `ctx.publish_report`. Skip the upload when the
-        // authoritative gate predicate has closed — uploading more bytes to
-        // an already-broken release just leaves orphaned assets pointing at
-        // a release that will not complete. Uses the same
-        // `submitter_gate_closed` predicate as every other gate site so the
-        // rule has a single source of truth.
+        // Gate check: defends against any required failure already recorded in
+        // `ctx.publish_report` before blob runs (none in the standard pipeline,
+        // where blob is first; non-`None` only if a future earlier Assets stage
+        // records one). Skip the upload when the authoritative gate predicate
+        // has closed — pushing more bytes to an already-broken release just
+        // leaves orphaned assets pointing at a release that will not complete.
+        // Uses the same `submitter_gate_closed` predicate as every other gate
+        // site so the rule has a single source of truth.
         let gate_submitter = ctx.options.gate_submitter.unwrap_or(true);
         if gate_submitter
             && let Some(report) = ctx.publish_report()
@@ -189,6 +189,14 @@ impl Stage for BlobStage {
 
         let report = self.run_report(ctx)?;
         if let Some(exec_result) = report.exec {
+            // Surface the real cause at default visibility: a failed upload
+            // otherwise recorded only `blob  Assets  required  failed` with no
+            // reason in the log (the cause lived solely in report.json). A
+            // failure banner stays at `status` per the log register.
+            if let Err(err) = &exec_result {
+                ctx.logger("blob")
+                    .status(&format!("blob upload failed: {err:#}")); // status-ok: failure banner
+            }
             // Aggregated `required` across every blob config on every
             // selected crate: when ANY blob config opts in
             // (`required: true`), the recorded outcome carries

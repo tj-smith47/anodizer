@@ -68,8 +68,8 @@ impl Pipeline {
 
     /// Returns the registered stage names in pipeline order. Used by the
     /// pipeline-construction tests to assert stage ordering invariants
-    /// (e.g. blob runs before snapcraft-publish so the submitter gate
-    /// sees blob's outcome via `ctx.publish_report`).
+    /// (e.g. blob runs before publish so the submitter gate sees a
+    /// required-blob failure via `ctx.publish_report`).
     #[cfg(test)]
     pub fn stage_names(&self) -> Vec<&str> {
         self.stages.iter().map(|s| s.name()).collect()

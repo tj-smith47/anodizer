@@ -3,9 +3,9 @@
 //!
 //! Each `build_*_pipeline` assembles a [`super::Pipeline`] by pushing the
 //! stages for that command in dependency order. The ordering invariants
-//! (blob before snapcraft-publish, sign before release in publish-only,
-//! announce/verify terminal) are asserted by the tests at the foot of this
-//! module.
+//! (blob before publish so a required-blob failure gates the one-way doors,
+//! sign before release in publish-only, announce/verify terminal) are
+//! asserted by the tests at the foot of this module.
 
 use super::Pipeline;
 
@@ -14,8 +14,9 @@ use super::Pipeline;
 /// `before_publish:` gate through the terminal post-publish verification.
 ///
 /// Centralizing it means the publish-side ordering — the one-way-door guard
-/// after release, docker before publish, blob before snapcraft, announce then
-/// verify-release terminal — exists in ONE place and cannot drift between the
+/// after release, docker before publish, blob before publish (so a required
+/// blob failure gates the doors), announce then verify-release terminal —
+/// exists in ONE place and cannot drift between the
 /// from-scratch and rehydrated-dist builders. The integrity prefix
 /// (sign/checksum/attest order, emission-validate presence) is NOT shared: it
 /// legitimately differs between builders and each pushes its own.
@@ -48,12 +49,17 @@ fn push_publish_tail(p: &mut Pipeline) {
     // built and pushed first. DockerSignStage follows so the image exists.
     p.add(Box::new(DockerStage::new()));
     p.add(Box::new(DockerSignStage));
-    p.add(Box::new(PublishStage));
-    // BlobStage runs before SnapcraftPublishStage so a required-blob failure
-    // can short-circuit the snapcraft upload via the same
-    // `any_failed(Assets, required_only=true)` check that already gates every
-    // other Submitter publisher.
+    // BlobStage runs BEFORE PublishStage (and SnapcraftPublishStage) so a
+    // required-blob upload failure is already recorded in `ctx.publish_report`
+    // when the Submitter loop consults `submitter_gate_closed()`, gating the
+    // one-way-door publishers (cargo / chocolatey / winget / snapcraft) via the
+    // same `any_failed(Assets, required_only=true)` check. A blob failure could
+    // otherwise NEVER reach the doors: ordered after PublishStage it only gated
+    // stages that ran later still (snapcraft), while cargo/choco/winget had
+    // already fired irreversibly. Blob needs only the built dist (present from
+    // the build pipeline), so running it ahead of the doors is safe.
     p.add(Box::new(BlobStage));
+    p.add(Box::new(PublishStage));
     p.add(Box::new(SnapcraftPublishStage));
     p.add(Box::new(AnnounceStage));
     // VerifyReleaseStage runs LAST — after the release exists and every
@@ -175,7 +181,7 @@ pub fn build_split_pipeline() -> Pipeline {
     p
 }
 
-/// Build a publish-only pipeline: release, publish, blob, snapcraft-publish stages.
+/// Build a publish-only pipeline: release, blob, publish, snapcraft-publish stages.
 ///
 /// **Note**: this is the pipeline consumed by the LEGACY `anodize
 /// publish` subcommand, which assumes the input dist was produced by
@@ -204,17 +210,20 @@ pub fn build_publish_pipeline() -> Pipeline {
     // announce template must abort after the release exists but before any
     // irreversible publisher fires.
     p.add(Box::new(PrePublishGuardStage));
-    p.add(Box::new(PublishStage));
-    // BlobStage before SnapcraftPublishStage so the snapcraft submitter
-    // gate sees blob's outcome via `ctx.publish_report`.
+    // BlobStage before PublishStage so a required-blob upload failure is
+    // recorded in `ctx.publish_report` before the Submitter loop runs, gating
+    // the one-way-door publishers (cargo / chocolatey / winget) AND the later
+    // snapcraft submitter via `submitter_gate_closed()`. Ordered after publish,
+    // a blob failure could never gate the doors that already fired.
     p.add(Box::new(BlobStage));
+    p.add(Box::new(PublishStage));
     p.add(Box::new(SnapcraftPublishStage));
     p
 }
 
 /// Build the pipeline for `anodize release --publish-only`:
-/// `[ChangelogStage, SignStage, ReleaseStage, PublishStage,
-/// BlobStage, SnapcraftPublishStage, AnnounceStage]`. The head
+/// `[ChangelogStage, SignStage, ReleaseStage, BlobStage,
+/// PublishStage, SnapcraftPublishStage, AnnounceStage]`. The head
 /// `SignStage` is the production-keys re-sign pass — the preserved
 /// dist's archive bytes are byte-stable (the determinism check
 /// verified that) but their `.sig`/`.asc` signatures are either
@@ -399,6 +408,44 @@ mod tests {
         let p = build_release_pipeline();
         let names = p.stage_names();
         assert_blob_before_snapcraft(&names, "build_release_pipeline");
+    }
+
+    fn assert_blob_before_publish(names: &[&str], pipeline: &str) {
+        let blob_idx = names
+            .iter()
+            .position(|n| *n == "blob")
+            .unwrap_or_else(|| panic!("{pipeline}: missing blob stage; got {names:?}"));
+        let publish_idx = names
+            .iter()
+            .position(|n| *n == "publish")
+            .unwrap_or_else(|| panic!("{pipeline}: missing publish stage; got {names:?}"));
+        assert!(
+            blob_idx < publish_idx,
+            "{pipeline}: blob (idx {blob_idx}) must precede publish (idx {publish_idx}) so a \
+             required-blob upload failure is recorded before the Submitter loop and gates the \
+             one-way doors (cargo/chocolatey/winget); got {names:?}"
+        );
+    }
+
+    /// Release-critical: the blob upload must land BEFORE PublishStage in every
+    /// publishing pipeline. Ordered after publish, a required-blob failure can
+    /// only gate stages that run later still — never the one-way-door publishers
+    /// that already fired — which burned three production releases. This test
+    /// goes red if BlobStage is reordered back after PublishStage in any of the
+    /// four publishing builders.
+    #[test]
+    fn blob_precedes_publish_in_every_publishing_pipeline() {
+        type NamedBuilder = (fn() -> Pipeline, &'static str);
+        let builders: [NamedBuilder; 4] = [
+            (build_release_pipeline, "build_release_pipeline"),
+            (build_publish_pipeline, "build_publish_pipeline"),
+            (build_publish_only_pipeline, "build_publish_only_pipeline"),
+            (build_merge_pipeline, "build_merge_pipeline"),
+        ];
+        for (build, name) in builders {
+            let p = build();
+            assert_blob_before_publish(&p.stage_names(), name);
+        }
     }
 
     /// The publish-side tail must be byte-identical across all three builders.

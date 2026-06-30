@@ -93,7 +93,14 @@ pub fn dispatch(
         }
     };
 
-    let mut report = PublishReport::default();
+    // Seed from any report an earlier Assets-group stage already wrote (the
+    // BlobStage outcome, which now runs BEFORE PublishStage), rather than
+    // discarding it with a fresh `default()`. A required-blob failure recorded
+    // upstream must be visible to `submitter_gate_closed()` so the Submitter
+    // loop gates the one-way doors (cargo / chocolatey / winget). `take()`
+    // leaves `ctx.publish_report` `None`; `run_with_publishers` writes the
+    // merged report back via `set_publish_report` after dispatch.
+    let mut report = ctx.publish_report.take().unwrap_or_default();
     let group_order = crate::registry::group_dispatch_order();
 
     'outer: for group in group_order {
@@ -459,6 +466,104 @@ mod tests {
             "winget must be gated by the earlier required-cargo failure, got {:?}",
             winget.outcome
         );
+    }
+
+    #[test]
+    fn seeded_required_assets_failure_gates_all_submitter_doors() {
+        // The release-critical ordering invariant: BlobStage (Assets, required)
+        // runs BEFORE PublishStage and records its outcome into
+        // `ctx.publish_report`. The dispatcher must SEED its report from that
+        // recorded outcome (not start from a fresh `default()`), so a
+        // required-blob upload failure closes `submitter_gate_closed()` and
+        // every one-way door — cargo, chocolatey, winget — is
+        // `Skipped(SubmitterGated)` and never runs against a release whose
+        // required blob upload already failed.
+        //
+        // Reverting the dispatch seed (`PublishReport::default()`) OR reordering
+        // BlobStage back after PublishStage both regress the burned-release bug;
+        // this test goes red the moment the seed is dropped — the doors run.
+        let mut ctx = Context::test_fixture();
+        let mut seeded = PublishReport::default();
+        seeded.results.push(PublisherResult {
+            name: "blob".into(),
+            group: PublisherGroup::Assets,
+            required: true,
+            outcome: PublisherOutcome::Failed("minio upload refused: connection reset".into()),
+            evidence: None,
+        });
+        ctx.publish_report = Some(seeded);
+
+        let publishers = vec![
+            fake(
+                "cargo",
+                PublisherGroup::Submitter,
+                true,
+                FakeOutcome::Succeed,
+            ),
+            fake(
+                "chocolatey",
+                PublisherGroup::Submitter,
+                false,
+                FakeOutcome::Succeed,
+            ),
+            fake(
+                "winget",
+                PublisherGroup::Submitter,
+                false,
+                FakeOutcome::Succeed,
+            ),
+        ];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+        assert!(
+            report.submitter_gated,
+            "a required-blob (Assets) failure recorded before dispatch must close the gate"
+        );
+
+        for door in ["cargo", "chocolatey", "winget"] {
+            let r = report
+                .results
+                .iter()
+                .find(|r| r.name == door)
+                .unwrap_or_else(|| panic!("{door} entry present"));
+            assert!(
+                matches!(
+                    r.outcome,
+                    PublisherOutcome::Skipped(SkipReason::SubmitterGated)
+                ),
+                "{door} must be submitter-gated by the seeded required-blob failure, got {:?}",
+                r.outcome
+            );
+        }
+
+        // The seeded blob row survives into the merged report (the dispatcher
+        // appends to it rather than discarding it).
+        let blob = report
+            .results
+            .iter()
+            .find(|r| r.name == "blob")
+            .expect("seeded blob row preserved in merged report");
+        assert!(matches!(blob.outcome, PublisherOutcome::Failed(_)));
+    }
+
+    #[test]
+    fn dispatch_starts_empty_when_no_report_seeded() {
+        // Counterpart to the seed test: with no report already in ctx (the
+        // `--publish` subset / no-blob case), the dispatcher starts empty and
+        // an all-success Submitter run leaves the gate open.
+        let mut ctx = Context::test_fixture();
+        assert!(ctx.publish_report.is_none());
+        let publishers = vec![fake(
+            "cargo",
+            PublisherGroup::Submitter,
+            true,
+            FakeOutcome::Succeed,
+        )];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+        assert!(!report.submitter_gated);
+        assert_eq!(report.results.len(), 1);
+        assert_eq!(report.results[0].name, "cargo");
     }
 
     #[test]
