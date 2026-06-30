@@ -187,11 +187,24 @@ impl anodizer_core::Publisher for NixPublisher {
                 )
             })
             .flat_map(|n| {
-                crate::publisher_helpers::git_repo_requirements(
+                let mut reqs = crate::publisher_helpers::git_repo_requirements(
                     ctx,
                     n.repository.as_ref(),
                     Some("NIX_PKGS_TOKEN"),
-                )
+                );
+                // A configured formatter binary (alejandra/nixfmt) is MANDATORY
+                // at publish time: `run_formatter` bails if it is absent on
+                // PATH, so a clean auto-install runner must provision it. No
+                // formatter set is a no-op, matching `run_formatter`. Declared
+                // REQUIRED (not advisory) — the caller wraps publisher
+                // requirements via `SourcedRequirement::new`, same frame that
+                // makes `git`/`npm` hard requirements.
+                if let Some(formatter) = n.formatter.as_ref().filter(|f| !f.is_empty()) {
+                    reqs.push(anodizer_core::EnvRequirement::Tool {
+                        name: formatter.clone(),
+                    });
+                }
+                reqs
             })
             .collect()
     }
@@ -452,6 +465,69 @@ mod publisher_tests {
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].target, "demo");
         assert_eq!(targets[0].branch.as_deref(), Some("master"));
+    }
+
+    fn nix_crate_with_formatter(name: &str, formatter: Option<&str>) -> CrateConfig {
+        let mut c = nix_crate(name);
+        if let Some(p) = c.publish.as_mut() {
+            if let Some(n) = p.nix.as_mut() {
+                n.formatter = formatter.map(str::to_string);
+            }
+        }
+        c
+    }
+
+    #[test]
+    fn nix_requirements_emit_formatter_tool_when_set() {
+        // A configured formatter is mandatory at publish time (run_formatter
+        // bails if it is absent), so requirements() must report it — otherwise
+        // the action's auto-install (driven by `anodizer tools`) drops it from
+        // a clean runner.
+        let ctx = TestContextBuilder::new()
+            .crates(vec![nix_crate_with_formatter("demo", Some("alejandra"))])
+            .build();
+        let reqs = NixPublisher::new().requirements(&ctx);
+        assert!(
+            reqs.iter().any(|r| matches!(
+                r,
+                anodizer_core::EnvRequirement::Tool { name } if name == "alejandra"
+            )),
+            "expected a mandatory Tool{{name:\"alejandra\"}} requirement; got: {reqs:?}"
+        );
+    }
+
+    #[test]
+    fn nix_requirements_emit_nixfmt_tool_when_set() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![nix_crate_with_formatter("demo", Some("nixfmt"))])
+            .build();
+        let reqs = NixPublisher::new().requirements(&ctx);
+        assert!(
+            reqs.iter().any(|r| matches!(
+                r,
+                anodizer_core::EnvRequirement::Tool { name } if name == "nixfmt"
+            )),
+            "expected a mandatory Tool{{name:\"nixfmt\"}} requirement; got: {reqs:?}"
+        );
+    }
+
+    #[test]
+    fn nix_requirements_omit_formatter_tool_when_unset() {
+        // No formatter configured → no formatter Tool requirement (only the
+        // git/token requirements from git_repo_requirements remain). Mirrors
+        // run_formatter's opt-in no-op when `formatter` is None.
+        let ctx = TestContextBuilder::new()
+            .crates(vec![nix_crate_with_formatter("demo", None)])
+            .build();
+        let reqs = NixPublisher::new().requirements(&ctx);
+        assert!(
+            !reqs.iter().any(|r| matches!(
+                r,
+                anodizer_core::EnvRequirement::Tool { name }
+                    if name == "alejandra" || name == "nixfmt"
+            )),
+            "expected NO formatter Tool requirement when formatter unset; got: {reqs:?}"
+        );
     }
 
     #[test]
