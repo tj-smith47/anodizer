@@ -202,6 +202,18 @@ pub(crate) fn run_with_publishers(
         }
     })?;
 
+    // Stage-owned publishers (blob) are absent from `configured_publishers`
+    // but own reversible remote state; resolve their seeded rows here so a
+    // `--rollback-only` replay deletes the mirrored objects instead of marking
+    // the row `RollbackFailed("publisher not found")`. Mirrors `rollback::run`.
+    let aux = crate::registry::rollback_publishers(ctx);
+    let find_publisher = |name: &str| {
+        publishers
+            .iter()
+            .chain(aux.iter())
+            .find(|p| p.name() == name)
+    };
+
     // Re-attempt rollback for every Succeeded or RollbackFailed entry in
     // the Assets / Manager groups, mirroring the live `rollback::run`
     // policy. ALSO replay a *failed* required Submitter (cargo) that
@@ -227,10 +239,7 @@ pub(crate) fn run_with_publishers(
                     PublisherOutcome::Failed(_) | PublisherOutcome::RollbackFailed(_)
                 )
                 && r.evidence.as_ref().is_some_and(|ev| {
-                    publishers
-                        .iter()
-                        .find(|p| p.name() == r.name)
-                        .is_some_and(|p| p.programmatic_rollback_on_failure(ev))
+                    find_publisher(&r.name).is_some_and(|p| p.programmatic_rollback_on_failure(ev))
                 });
             if asset_or_manager || failed_submitter_with_rollback {
                 Some(i)
@@ -271,61 +280,28 @@ pub(crate) fn run_with_publishers(
             continue;
         };
 
-        let Some(publisher) = publishers.iter().find(|p| p.name() == name) else {
-            log.warn(&format!(
-                "skipped rollback for '{}' — publisher not in current registry",
-                name,
-            ));
-            not_found += 1;
-            report.results[i].outcome =
-                PublisherOutcome::RollbackFailed("publisher not found in current registry".into());
-            continue;
-        };
-
-        // honor `rollback_scope_needed()` just like the live `rollback::run`
-        // path. Without this check, replaying against a host that lost
-        // its credential between the original run and the replay would
-        // invoke `publisher.rollback(...)`, which itself would fail
-        // hard rather than recording `RollbackSkippedNoScope`. The
-        // operator-visible outcome is identical to what the original
-        // run would have recorded had the credential been missing
-        // there: a clear "not enough scope to roll this back; fix the
-        // env and retry" signal in the replay state file.
-        if let Some(label) = publisher.rollback_scope_needed()
-            && !crate::scope::scope_available_with_env(label, ctx.env_source())
-        {
-            skipped_no_scope += 1;
-            report.results[i].outcome = PublisherOutcome::RollbackSkippedNoScope;
-            log.warn(&crate::scope::warn_scope_unavailable_msg(
-                "rollback-only",
-                &name,
-                label,
-            ));
-            continue;
+        // Resolution, retain-opt-out, scope gating, the rollback call, and the
+        // `Failed`-keeps-its-outcome-on-successful-yank rule are shared with the
+        // live path via `rollback::execute_rollback_step` so the two cannot
+        // drift (the replay path previously skipped `retain_on_rollback`).
+        let current = report.results[i].outcome.clone();
+        let (outcome, disposition) = crate::rollback::execute_rollback_step(
+            &name,
+            &evidence,
+            &current,
+            publishers,
+            &aux,
+            ctx,
+            "rollback-only",
+        );
+        match disposition {
+            crate::rollback::RollbackDisposition::RolledBack => rolled_back += 1,
+            crate::rollback::RollbackDisposition::Failed => failed += 1,
+            crate::rollback::RollbackDisposition::NotFound => not_found += 1,
+            crate::rollback::RollbackDisposition::SkippedNoScope => skipped_no_scope += 1,
+            crate::rollback::RollbackDisposition::Retained => {}
         }
-
-        // A failed Submitter (cargo) keeps its `Failed` outcome on a
-        // SUCCESSFUL yank — the original release failed and must not be
-        // reported as a clean `RolledBack`. A yank FAILURE still
-        // transitions to `RollbackFailed` (a live crate we could not
-        // pull). See the matching logic in `rollback::run`.
-        let was_failure = matches!(report.results[i].outcome, PublisherOutcome::Failed(_));
-
-        log.status(&format!("invoking rollback for '{}'", name));
-        match publisher.rollback(ctx, &evidence) {
-            Ok(()) => {
-                rolled_back += 1;
-                if !was_failure {
-                    report.results[i].outcome = PublisherOutcome::RolledBack;
-                }
-            }
-            Err(err) => {
-                let msg = format!("{:#}", err);
-                failed += 1;
-                report.results[i].outcome = PublisherOutcome::RollbackFailed(msg.clone());
-                log.warn(&format!("rollback for '{}' failed: {}", name, msg));
-            }
-        }
+        report.results[i].outcome = outcome;
     }
 
     log.status(&format!(
@@ -447,6 +423,60 @@ mod tests {
             }
             other => panic!("expected RollbackFailed, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn rollback_only_honors_retain_on_rollback() {
+        // Regression: the replay path once had its OWN rollback loop that did
+        // NOT consult `retain_on_rollback`, so an operator `--rollback-only`
+        // replay would tear down a publisher its config explicitly asked to
+        // retain — diverging from the live path. Both paths now share
+        // `rollback::execute_rollback_step`, so a retain publisher must keep
+        // its `Succeeded` outcome and never have `rollback()` invoked.
+        struct RetainPublisher;
+        impl Publisher for RetainPublisher {
+            fn name(&self) -> &str {
+                "retain-pub"
+            }
+            fn group(&self) -> PublisherGroup {
+                PublisherGroup::Assets
+            }
+            fn required(&self) -> bool {
+                false
+            }
+            fn skips_on_nightly(&self) -> bool {
+                false
+            }
+            fn run(&self, _ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
+                Ok(PublishEvidence::new("retain-pub"))
+            }
+            fn rollback(
+                &self,
+                _ctx: &mut Context,
+                _evidence: &PublishEvidence,
+            ) -> anyhow::Result<()> {
+                panic!("rollback() invoked on a retain_on_rollback=true publisher during replay")
+            }
+            fn retain_on_rollback(&self) -> bool {
+                true
+            }
+        }
+
+        let (mut ctx, _tmp) = ctx_with_dist();
+        let mut report = PublishReport::default();
+        report
+            .results
+            .push(succeeded_entry("retain-pub", PublisherGroup::Assets, false));
+        write_fixture_report(&ctx, "fixt", &report);
+
+        let publishers: Vec<Box<dyn Publisher>> = vec![Box::new(RetainPublisher)];
+        let updated = run_with_publishers(&mut ctx, "fixt", &publishers).expect("rollback-only");
+
+        assert!(
+            matches!(updated.results[0].outcome, PublisherOutcome::Succeeded),
+            "retain_on_rollback publisher must keep Succeeded on replay, got {:?}",
+            updated.results[0].outcome,
+        );
     }
 
     #[test]

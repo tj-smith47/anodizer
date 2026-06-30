@@ -45,6 +45,20 @@ pub fn run(
         return;
     }
 
+    // Publishers that own a dedicated stage (blob) are absent from the
+    // dispatch `publishers` list but still own reversible remote state. Resolve
+    // their seeded report rows here so a successful blob upload that must be
+    // torn down deletes its mirrored objects instead of being marked
+    // `RollbackFailed("publisher not found")`. Built before the report is taken
+    // so the immutable `ctx` borrow ends here.
+    let aux = crate::registry::rollback_publishers(ctx);
+    let find_publisher = |name: &str| {
+        publishers
+            .iter()
+            .chain(aux.iter())
+            .find(|p| p.name() == name)
+    };
+
     let log = ctx.logger("publish");
 
     // Iterate indices so we can mutate result.outcome in place while
@@ -69,9 +83,7 @@ pub fn run(
             // recorded evidence.
             let failed_submitter_with_rollback = matches!(r.outcome, PublisherOutcome::Failed(_))
                 && r.group == PublisherGroup::Submitter
-                && publishers
-                    .iter()
-                    .find(|p| p.name() == r.name)
+                && find_publisher(&r.name)
                     .is_some_and(|p| p.programmatic_rollback_on_failure(evidence));
             if asset_or_manager_succeeded || failed_submitter_with_rollback {
                 Some(i)
@@ -96,85 +108,134 @@ pub fn run(
     let mut skipped_no_scope = 0usize;
 
     for i in target_indices {
-        // Clone the data we need to call rollback() so we can later
-        // mutate `report.results[i].outcome` without overlapping
-        // borrows.
-        let (name_owned, evidence_owned) = {
+        // Clone the data we need so we can mutate `report.results[i].outcome`
+        // afterward without overlapping borrows. Evidence is guaranteed
+        // present by the target filter above.
+        let (name, evidence, current) = {
             let r = &report.results[i];
             (
                 r.name.clone(),
                 r.evidence
                     .clone()
                     .expect("evidence present per filter above"),
+                r.outcome.clone(),
             )
         };
 
-        // Find the publisher by name.
-        let Some(publisher) = publishers.iter().find(|p| p.name() == name_owned) else {
-            log.warn(&format!(
-                "skipped rollback for '{}' — publisher not in current registry",
-                name_owned,
-            ));
-            failed += 1;
-            report.results[i].outcome =
-                PublisherOutcome::RollbackFailed("publisher not found in current registry".into());
-            continue;
-        };
-
-        // Publisher opted out of rollback — leave its work in place.
-        if publisher.retain_on_rollback() {
-            log.status(&format!(
-                "skipped rollback for '{}' — retain_on_rollback is set",
-                name_owned
-            ));
-            continue;
+        let (outcome, disposition) = execute_rollback_step(
+            &name, &evidence, &current, publishers, &aux, ctx, "rollback",
+        );
+        match disposition {
+            RollbackDisposition::RolledBack => rolled_back += 1,
+            // The live summary folds "publisher not found" into `failed` (the
+            // pre-unification behavior); the replay path counts it separately.
+            RollbackDisposition::Failed | RollbackDisposition::NotFound => failed += 1,
+            RollbackDisposition::SkippedNoScope => skipped_no_scope += 1,
+            RollbackDisposition::Retained => {}
         }
-
-        // If rollback_scope_needed() returns Some but the scope isn't
-        // available, skip with the RollbackSkippedNoScope outcome.
-        if let Some(label) = publisher.rollback_scope_needed()
-            && !crate::scope::scope_available_with_env(label, ctx.env_source())
-        {
-            skipped_no_scope += 1;
-            report.results[i].outcome = PublisherOutcome::RollbackSkippedNoScope;
-            log.warn(&crate::scope::warn_scope_unavailable_msg(
-                "rollback",
-                &name_owned,
-                label,
-            ));
-            continue;
-        }
-
-        // A failed Submitter (cargo) keeps its `Failed` outcome on a
-        // SUCCESSFUL yank: the release genuinely failed (crate B never
-        // went live) and reporting `RolledBack` would mask that. Only a
-        // succeeded-then-reverted Assets/Manager publisher transitions to
-        // `RolledBack`. A yank FAILURE still transitions to
-        // `RollbackFailed` for both — a crate is live we could not pull,
-        // which is the manual-intervention signal.
-        let was_failure = matches!(report.results[i].outcome, PublisherOutcome::Failed(_));
-
-        log.status(&format!("invoking rollback for '{}'", name_owned));
-        match publisher.rollback(ctx, &evidence_owned) {
-            Ok(()) => {
-                rolled_back += 1;
-                if !was_failure {
-                    report.results[i].outcome = PublisherOutcome::RolledBack;
-                }
-            }
-            Err(err) => {
-                failed += 1;
-                let msg = format!("{:#}", err);
-                report.results[i].outcome = PublisherOutcome::RollbackFailed(msg.clone());
-                log.warn(&format!("rollback for '{}' failed: {}", name_owned, msg));
-            }
-        }
+        report.results[i].outcome = outcome;
     }
 
     log.status(&format!(
         "rollback complete — {} rolled back, {} failed, {} skipped-no-scope",
         rolled_back, failed, skipped_no_scope,
     ));
+}
+
+/// How a single target resolved, so each caller can keep its own summary
+/// counters (the live path folds `NotFound` into "failed"; the replay path
+/// reports it separately) without re-deriving them from the lossy
+/// [`PublisherOutcome`] mapping.
+pub(crate) enum RollbackDisposition {
+    RolledBack,
+    Failed,
+    NotFound,
+    SkippedNoScope,
+    Retained,
+}
+
+/// Roll back ONE recorded publisher result and return its new outcome plus a
+/// disposition for counting.
+///
+/// Resolves the publisher by name across the dispatch `publishers` list AND the
+/// stage-owned `aux` list (blob, which owns `BlobStage` rather than a dispatch
+/// entry), honors `retain_on_rollback`, gates on `rollback_scope_needed`, then
+/// invokes [`Publisher::rollback`] and maps the result. Shared by the live
+/// ([`run`]) and replay ([`crate::rollback_only`]) paths so publisher
+/// resolution, retain-opt-out, scope gating, and the
+/// `Failed`-keeps-its-outcome-on-successful-yank rule cannot drift between
+/// them. `prefix` labels the scope-unavailable warning (`"rollback"` /
+/// `"rollback-only"`).
+pub(crate) fn execute_rollback_step(
+    name: &str,
+    evidence: &anodizer_core::PublishEvidence,
+    current: &PublisherOutcome,
+    publishers: &[Box<dyn Publisher>],
+    aux: &[Box<dyn Publisher>],
+    ctx: &mut Context,
+    prefix: &str,
+) -> (PublisherOutcome, RollbackDisposition) {
+    let log = ctx.logger("publish");
+    let Some(publisher) = publishers
+        .iter()
+        .chain(aux.iter())
+        .find(|p| p.name() == name)
+    else {
+        log.warn(&format!(
+            "skipped rollback for '{name}' — publisher not in current registry"
+        ));
+        return (
+            PublisherOutcome::RollbackFailed("publisher not found in current registry".into()),
+            RollbackDisposition::NotFound,
+        );
+    };
+
+    // Publisher opted out of rollback — leave its work (and outcome) in place.
+    if publisher.retain_on_rollback() {
+        log.status(&format!(
+            "skipped rollback for '{name}' — retain_on_rollback is set"
+        ));
+        return (current.clone(), RollbackDisposition::Retained);
+    }
+
+    if let Some(label) = publisher.rollback_scope_needed()
+        && !crate::scope::scope_available_with_env(label, ctx.env_source())
+    {
+        log.warn(&crate::scope::warn_scope_unavailable_msg(
+            prefix, name, label,
+        ));
+        return (
+            PublisherOutcome::RollbackSkippedNoScope,
+            RollbackDisposition::SkippedNoScope,
+        );
+    }
+
+    // A failed Submitter (cargo) keeps its `Failed` outcome on a SUCCESSFUL
+    // yank: the release genuinely failed (crate B never went live) and
+    // reporting `RolledBack` would mask that. Only a succeeded-then-reverted
+    // Assets/Manager publisher transitions to `RolledBack`. A yank FAILURE
+    // transitions to `RollbackFailed` for both — a live artifact we could not
+    // pull, the manual-intervention signal.
+    let was_failure = matches!(current, PublisherOutcome::Failed(_));
+    log.status(&format!("invoking rollback for '{name}'"));
+    match publisher.rollback(ctx, evidence) {
+        Ok(()) => {
+            let outcome = if was_failure {
+                current.clone()
+            } else {
+                PublisherOutcome::RolledBack
+            };
+            (outcome, RollbackDisposition::RolledBack)
+        }
+        Err(err) => {
+            let msg = format!("{:#}", err);
+            log.warn(&format!("rollback for '{name}' failed: {msg}"));
+            (
+                PublisherOutcome::RollbackFailed(msg),
+                RollbackDisposition::Failed,
+            )
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -484,6 +545,72 @@ mod tests {
             .push(succeeded("orphan", PublisherGroup::Manager, true));
 
         run(&publishers, &mut report, &mut ctx, RollbackMode::BestEffort);
+
+        match &report.results[0].outcome {
+            PublisherOutcome::RollbackFailed(msg) => {
+                assert!(msg.contains("not found in current registry"))
+            }
+            other => panic!("expected RollbackFailed, got {:?}", other),
+        }
+    }
+
+    /// Build a `Context` whose config declares a `blobs:` block so
+    /// `registry::rollback_publishers` instantiates a `BlobPublisher`.
+    fn ctx_with_blob_configured() -> Context {
+        use anodizer_core::config::{BlobConfig, CrateConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
+        let crate_cfg = CrateConfig {
+            name: "app".to_string(),
+            blobs: Some(vec![BlobConfig {
+                provider: "s3".to_string(),
+                bucket: "mirror".to_string(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        TestContextBuilder::new().crates(vec![crate_cfg]).build()
+    }
+
+    #[test]
+    fn blob_row_resolves_via_rollback_publishers_not_marked_not_found() {
+        // The blob-before-doors ordering seeds a Succeeded `blob` (Assets) row
+        // into the report before rollback runs. `blob` is deliberately absent
+        // from the dispatch registry (it owns BlobStage), so without
+        // `registry::rollback_publishers` the loop would mark this row
+        // RollbackFailed("publisher not found") and orphan the mirrored
+        // objects. With blob configured it must resolve and roll back. (The
+        // `succeeded` helper's evidence carries no structured blob_targets, so
+        // BlobPublisher::rollback takes its hermetic empty-targets warn path —
+        // no network — and returns Ok, flipping the row to RolledBack.)
+        let mut ctx = ctx_with_blob_configured();
+        let mut report = PublishReport::default();
+        report
+            .results
+            .push(succeeded("blob", PublisherGroup::Assets, true));
+
+        // No dispatch publishers: blob must be resolved from the aux list.
+        run(&[], &mut report, &mut ctx, RollbackMode::BestEffort);
+
+        assert!(
+            matches!(report.results[0].outcome, PublisherOutcome::RolledBack),
+            "blob must resolve via rollback_publishers and roll back, got {:?}",
+            report.results[0].outcome
+        );
+    }
+
+    #[test]
+    fn blob_row_marked_not_found_when_blob_not_configured() {
+        // Symmetry guard: `rollback_publishers` only instantiates a
+        // BlobPublisher when blob is configured. With no `blobs:` block a
+        // stray `blob` row genuinely has no owner and must surface as
+        // RollbackFailed rather than silently passing.
+        let mut ctx = Context::test_fixture();
+        let mut report = PublishReport::default();
+        report
+            .results
+            .push(succeeded("blob", PublisherGroup::Assets, true));
+
+        run(&[], &mut report, &mut ctx, RollbackMode::BestEffort);
 
         match &report.results[0].outcome {
             PublisherOutcome::RollbackFailed(msg) => {

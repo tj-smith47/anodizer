@@ -15,7 +15,7 @@
 //! `Signature` / `Certificate` artifacts the harness may have produced
 //! with ephemeral keys, then runs an extended publish pipeline that
 //! prepends `SignStage` (production-keys sign pass) ahead of the usual
-//! release / publish / blob / snapcraft-publish chain.
+//! release / blob / publish / snapcraft-publish chain.
 //!
 //! Idempotence: the harness skips its in-loop `SignStage` when
 //! production keys are exported on the runner (`COSIGN_KEY` /
@@ -967,7 +967,7 @@ fn run_one_crate_dist(
 
     // ── Run the extended publish pipeline ──────────────────────────────
     // `build_publish_only_pipeline` prepends `SignStage` ahead of the
-    // usual release / publish / blob / snapcraft-publish chain — the
+    // usual release / blob / publish / snapcraft-publish chain — the
     // head SignStage is the production-keys re-sign pass that overlays
     // shippable signatures on the byte-stable preserved archives.
     // Distinct from `build_publish_pipeline` (consumed by `anodize

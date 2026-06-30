@@ -12,16 +12,16 @@ Anodizer's release pipeline is one ordered list of stages. Most operators run it
 | Invocation | Stages run | Stages skipped | Use case |
 |---|---|---|---|
 | `anodizer release` | all | none | normal release |
-| `anodizer release --snapshot` | local stages | publish, snapcraft-publish, blob, announce | local dry-run (no upstream side effects) |
-| `anodizer release --prepare` (alias `--prepare-only`) | build, archive, nfpm, sbom, checksum, sign | release, publish, blob, snapcraft-publish, announce | split-merge flow: prepare artifacts locally before manual review |
-| `anodizer release --publish-only` | sign, release, publish, blob, snapcraft-publish, announce | build, archive, nfpm, sbom, checksum | resume from prepared `dist/` after manual review or after the Determinism Harness preserved `dist/` |
+| `anodizer release --snapshot` | local stages | blob, publish, snapcraft-publish, announce | local dry-run (no upstream side effects) |
+| `anodizer release --prepare` (alias `--prepare-only`) | build, archive, nfpm, sbom, checksum, sign | release, blob, publish, snapcraft-publish, announce | split-merge flow: prepare artifacts locally before manual review |
+| `anodizer release --publish-only` | sign, release, blob, publish, snapcraft-publish, announce | build, archive, nfpm, sbom, checksum | resume from prepared `dist/` after manual review or after the Determinism Harness preserved `dist/` |
 | `anodizer release --announce-only` | announce, after-hooks | every other stage | re-fire announcers after a transient announce failure (Slack 502, Discord 5xx) |
-| `anodizer publish` | release, publish, blob, snapcraft-publish | every other stage | publish-only subcommand; overlaps with `release --publish-only` (see below) |
-| `anodizer publish --merge` | shard-merge → release, publish, blob, snapcraft-publish | every other stage | split-merge multi-host flow (mirrors GR Pro `goreleaser publish --merge`) |
+| `anodizer publish` | release, blob, publish, snapcraft-publish | every other stage | publish-only subcommand; overlaps with `release --publish-only` (see below) |
+| `anodizer publish --merge` | shard-merge → release, blob, publish, snapcraft-publish | every other stage | split-merge multi-host flow (mirrors GR Pro `goreleaser publish --merge`) |
 | `anodizer announce` | announce | every other stage | announce-only subcommand |
 | `anodizer announce --merge` | shard-merge → announce | every other stage | split-merge multi-host flow (mirrors GR Pro `goreleaser announce --merge`) |
-| `anodizer continue` | release, publish, blob, snapcraft-publish, announce, after-hooks | build, archive, nfpm, sbom, checksum, sign | single-host stage-resume (paused release, transient publish failure) |
-| `anodizer continue --merge` | shard-merge → sign, checksum, sbom, release, publish, announce | build, archive, nfpm | multi-host split-merge resume (mirrors GR Pro `goreleaser continue --merge`) |
+| `anodizer continue` | release, blob, publish, snapcraft-publish, announce, after-hooks | build, archive, nfpm, sbom, checksum, sign | single-host stage-resume (paused release, transient publish failure) |
+| `anodizer continue --merge` | shard-merge → sign, checksum, sbom, release, blob, publish, snapcraft-publish, announce | build, archive, nfpm | multi-host split-merge resume (mirrors GR Pro `goreleaser continue --merge`) |
 
 `anodizer release --rollback-only --from-run=<id>` is an additional escape hatch for the post-failure recovery flow; see [recovery flags](@/docs/advanced/recovery-flags.md) for the surrounding context.
 
@@ -63,11 +63,11 @@ Both honor the nightly short-circuit — announcers never fire on a nightly tag,
 
 ## `publish` vs `continue`
 
-Both consume a populated `dist/` and run the release / publish / blob chain. They differ in framing and post-hooks:
+Both consume a populated `dist/` and run the release / blob / publish chain. They differ in framing and post-hooks:
 
 | Aspect | `anodizer publish` | `anodizer continue` |
 |---|---|---|
-| Stages | release, publish, blob, snapcraft-publish | release, publish, blob, snapcraft-publish, announce, after-hooks |
+| Stages | release, blob, publish, snapcraft-publish | release, blob, publish, snapcraft-publish, announce, after-hooks |
 | Framing | "run the publish chain" | "resume a stalled release" |
 | GR Pro analog | `goreleaser publish` | `goreleaser continue` |
 | `--merge` mode | shard-merge then publish | shard-merge then full post-build pipeline |

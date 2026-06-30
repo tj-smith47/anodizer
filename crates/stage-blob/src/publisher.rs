@@ -1,9 +1,13 @@
 //! [`anodizer_core::Publisher`] wrapper around [`BlobStage`]'s `run`.
 //!
 //! Lives in `stage-blob` (not `stage-publish`) so the cloud-storage upload
-//! path can implement the trait without dragging `stage-publish` into the
-//! dependency graph. `stage-publish`'s registry adds `anodizer-stage-blob`
-//! as a dep and pushes `BlobPublisher` into the configured publisher list.
+//! path can implement the trait without a `stage-publish` → `stage-blob`
+//! upload-time coupling. The upload itself runs via [`BlobStage`] and is NOT
+//! registered in `stage-publish`'s `configured_publishers` (that would fire
+//! the object-store upload twice). `stage-publish` DOES depend on
+//! `anodizer-stage-blob` so `registry::rollback_publishers` can construct a
+//! `BlobPublisher` for the rollback paths alone — resolving the seeded `blob`
+//! report row to delete its mirrored objects on a teardown.
 //!
 //! Group: [`anodizer_core::PublisherGroup::Assets`] (uploadable bytes,
 //! server-side deletable). `required = false`.
@@ -240,7 +244,17 @@ impl anodizer_core::Publisher for BlobPublisher {
     }
 
     fn rollback_scope_needed(&self) -> Option<&'static str> {
-        Some("provider credentials delete-object")
+        // No single env-var gate: blob credentials are provider-specific
+        // (S3 `AWS_*`, GCS `GOOGLE_APPLICATION_CREDENTIALS`, Azure
+        // `AZURE_STORAGE_*`), and `rollback_scope_needed` is a static `&str`
+        // with no access to the active provider. A scope label here would be
+        // matched against its first whitespace token as an env-var name (see
+        // `scope::scope_available_with_env`), so any human-readable phrase
+        // would gate to a var that is never set and silently skip every blob
+        // rollback. `rollback_via_object_store` already degrades gracefully on
+        // a missing/invalid credential (per-target `build_store` / `delete`
+        // failure → warn, best-effort `Ok`), so the right scope answer is None.
+        None
     }
 
     fn skips_on_nightly(&self) -> bool {
@@ -408,10 +422,10 @@ mod publisher_tests {
         assert_eq!(p.name(), "blob");
         assert_eq!(p.group(), PublisherGroup::Assets);
         assert!(!p.required());
-        assert_eq!(
-            p.rollback_scope_needed(),
-            Some("provider credentials delete-object")
-        );
+        // No static scope gate: blob creds are provider-specific, so rollback
+        // is best-effort (see the rollback_scope_needed impl) rather than gated
+        // on one env var that would never resolve.
+        assert_eq!(p.rollback_scope_needed(), None);
     }
 
     #[test]

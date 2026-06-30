@@ -1,5 +1,5 @@
 //! `anodizer publish` command.
-//! Runs only the publish stages (release, publish, blob) from a completed dist/.
+//! Runs only the publish stages (release, blob, publish) from a completed dist/.
 //! Runs the publish-only pipeline (and `publish --merge`).
 
 use super::helpers;

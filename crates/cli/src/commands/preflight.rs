@@ -36,7 +36,7 @@ pub enum PreflightScope {
     /// Full `anodizer release` pipeline: every configured stage.
     Full,
     /// `anodizer release --publish-only`: sign/checksum/release/docker/
-    /// publish/blob/snapcraft-publish/announce/verify-release only
+    /// blob/publish/snapcraft-publish/announce/verify-release only
     /// (mirrors `build_publish_only_pipeline`).
     PublishOnly,
     /// `anodizer release --announce-only`: re-fires announcers against a

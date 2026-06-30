@@ -10,7 +10,7 @@
 //! - **no flag** — single-host stage-resume: load artifacts from a populated
 //!   `dist/` (typically left over from a `release --prepare` run or a
 //!   previous release that failed in publish/announce) and run the
-//!   publish-only pipeline (release + publish + blob), then run the announce
+//!   publish-only pipeline (release + blob + publish), then run the announce
 //!   stage and after-hooks. The single-host resume mode and
 //!   the long-standing flow for "transient publish failure, retry without
 //!   re-building".
@@ -78,7 +78,7 @@ pub fn run(opts: ContinueOpts) -> Result<()> {
     }
 
     // Single-host stage-resume: load artifacts from dist/ and run the
-    // publish-only pipeline (release + publish + blob), matching the
+    // publish-only pipeline (release + blob + publish), matching the
     // `publish` command's behaviour. This is the single-host
     // continue` (no `--merge`) path: a prior release stalled mid-publish
     // (e.g. expired token, transient 5xx) and the user wants to resume

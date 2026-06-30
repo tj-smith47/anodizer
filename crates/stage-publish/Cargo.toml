@@ -26,6 +26,10 @@ strum.workspace = true
 anodizer-stage-nfpm.workspace = true
 anodizer-stage-release.workspace = true
 anodizer-stage-snapcraft.workspace = true
+# Rollback-only: blob owns its own BlobStage (NOT registered for upload
+# dispatch), but the rollback paths must resolve its seeded report row to
+# delete the mirrored objects. See registry::rollback_publishers.
+anodizer-stage-blob.workspace = true
 anyhow.workspace = true
 flate2.workspace = true
 glob.workspace = true

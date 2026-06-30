@@ -51,9 +51,10 @@ fn collapse_required(overrides: impl Iterator<Item = Option<bool>>) -> Option<bo
 /// `crates/stage-snapcraft/src/publish_stage.rs::record_snapcraft_result`
 /// for the precedent.
 ///
-/// The `BlobPublisher` trait impl in `stage-blob` stays for forward-compat
-/// (and as a vocabulary entry the dispatch path can consult once the
-/// publisher dispatch path can replace the dedicated stage entirely).
+/// The `BlobPublisher` trait impl in `stage-blob` is NOT in this upload list
+/// (registering it would fire the object-store upload a second time), but
+/// [`rollback_publishers`] DOES instantiate it so the rollback paths can
+/// resolve the `blob` report row and delete the mirrored objects.
 pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     let mut v: Vec<Box<dyn Publisher>> = Vec::new();
     if is_cargo_configured(ctx) {
@@ -367,6 +368,48 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     // Snapcraft is intentionally NOT registered here — see the
     // doc comment on `configured_publishers` above.
     // `SnapcraftPublishStage` writes its own `PublisherResult`.
+    v
+}
+
+/// Publishers that own a dedicated pipeline stage (so they are NOT dispatched
+/// for upload via [`configured_publishers`]) but DO own reversible remote
+/// state a teardown must undo.
+///
+/// Currently only `blob`: [`anodizer_stage_blob::BlobStage`] mirrors release
+/// assets to object storage and records a `Succeeded` `blob` row directly into
+/// `ctx.publish_report`. Because that row carries structured
+/// `blob_targets` evidence, its rollback is a real
+/// [`object_store::ObjectStore`] `delete`. The rollback paths
+/// ([`crate::rollback::run`] and [`crate::rollback_only::run_with_publishers`])
+/// resolve a report row to a publisher by name; without this list neither could
+/// find a `blob` publisher (it is deliberately absent from
+/// [`configured_publishers`] to avoid a second upload), so a teardown after a
+/// successful blob upload would mark the row
+/// `RollbackFailed("publisher not found")` and orphan the mirrored objects.
+///
+/// These are merged into the rollback lookup ONLY — never the upload dispatch
+/// list — so the upload still fires exactly once (via `BlobStage`).
+pub fn rollback_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
+    let mut v: Vec<Box<dyn Publisher>> = Vec::new();
+    if anodizer_stage_blob::publisher::is_configured(ctx) {
+        // Escalate-to-true is wrong here (this is `retain`, an opt-OUT): a
+        // single crate opting its blobs out of rollback should not force every
+        // crate's blobs to be retained. `collapse_required` escalates `true`,
+        // which for `retain` means "any crate that says retain → retain all".
+        // That matches the single aggregated `blob` row: there is one row for
+        // the whole run, so the safest collapse keeps objects in place when ANY
+        // contributing config asked to retain them.
+        let retain = collapse_required(
+            ctx.config
+                .crates
+                .iter()
+                .flat_map(|c| c.blobs.iter().flatten())
+                .map(|b| b.retain_on_rollback),
+        );
+        v.push(Box::new(
+            anodizer_stage_blob::BlobPublisher::with_retain_on_rollback(retain),
+        ));
+    }
     v
 }
 

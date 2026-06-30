@@ -30,9 +30,10 @@
 //! `Err` is reserved for catastrophic non-publisher errors (impossible
 //! IO, malformed config); per-publisher failures land in the report.
 //!
-//! The existing `PublishStage::run` body is unchanged in this module; the
-//! new [`dispatch`] path is exercised only by tests until per-publisher
-//! migrations land.
+//! [`dispatch`] is the production publish path: `PublishStage::run` →
+//! `run_with_publishers` calls it for every release, seeding its report from
+//! any prior `ctx.publish_report` (e.g. the blob row) so the Submitter gate
+//! observes upstream required failures.
 
 use anodizer_core::context::Context;
 use anodizer_core::{

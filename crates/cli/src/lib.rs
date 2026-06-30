@@ -545,12 +545,12 @@ pub enum Commands {
     /// (sign / checksum / sbom / release / publish / announce).
     ///
     /// Without `--merge`: load existing `dist/` artifacts and run the
-    /// publish-only pipeline (release / publish / blob). Use this to resume
+    /// publish-only pipeline (release / blob / publish). Use this to resume
     /// a single-host release that stalled during publish (e.g. expired
     /// token, transient 5xx) without rebuilding.
     ///
     /// `continue` vs `publish`: both consume a populated `dist/` and run
-    /// the release / publish / blob chain. `continue` is the recommended
+    /// the release / blob / publish chain. `continue` is the recommended
     /// alias for "resume a stalled single-host release" — the
     /// `continue` command and the in-repo `--prepare` → `continue`
     /// flow. `publish` is the lower-level entry point that does the same
@@ -583,10 +583,10 @@ pub enum Commands {
         )]
         token: Option<String>,
     },
-    /// Run only the publish stages (release, publish, blob) from a completed dist/
+    /// Run only the publish stages (release, blob, publish) from a completed dist/
     ///
     /// `publish` vs `continue`: both consume a populated `dist/` and run
-    /// the same release / publish / blob chain. `publish` is the
+    /// the same release / blob / publish chain. `publish` is the
     /// lower-level entry point — no resume framing, no after-hooks /
     /// milestone closure. `continue` is the recommended alias when
     /// resuming a stalled single-host release (the
