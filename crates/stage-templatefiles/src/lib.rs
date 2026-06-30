@@ -33,6 +33,14 @@ impl Stage for TemplateFilesStage {
             )
         })?;
 
+        // Engine-derived `os-arch -> asset` case table for a `curl | sh`
+        // installer, so its download URLs track the archive stage's real asset
+        // names instead of a hand-rolled shell derivation that silently 404s.
+        let installer_cases = anodizer_core::installer::render_asset_case_table(ctx)
+            .context("templatefiles: derive installer asset case table")?;
+        ctx.template_vars_mut()
+            .set("InstallerAssetCases", &installer_cases);
+
         for entry in &entries {
             let id = entry.id.as_deref().unwrap_or("default");
             let label = format!("templatefiles: id '{}'", id);
@@ -555,6 +563,108 @@ mod tests {
 
         TemplateFilesStage.run(&mut ctx).unwrap();
         assert!(ctx.artifacts.all().is_empty());
+    }
+
+    /// End-to-end proof: rendering anodize's OWN `scripts/install.sh.tpl`
+    /// against an anodize-shaped (lockstep) config materializes a `case` table
+    /// whose `ARCHIVE` values are the byte-exact asset names the archive stage
+    /// uploads — every `curl | sh` URL resolves. Pins installer↔asset-name
+    /// agreement so a future `name_template` / `format_overrides` change can't
+    /// silently 404 the installer.
+    #[test]
+    fn test_real_install_sh_tpl_renders_engine_asset_names() {
+        use anodizer_core::config::{
+            ArchiveConfig, ArchivesConfig, BuildConfig, CrateConfig, Defaults, FormatOverride,
+        };
+
+        let tmp = TempDir::new().unwrap();
+        let mut ctx = build_ctx(&tmp);
+        // Re-key to anodize's own identity (build_ctx seeds "myapp"/"1.0.0").
+        ctx.config.project_name = "anodizer".to_string();
+        ctx.template_vars_mut().set("ProjectName", "anodizer");
+        ctx.template_vars_mut().set("Version", "0.13.0");
+
+        let targets: Vec<String> = [
+            "x86_64-unknown-linux-gnu",
+            "aarch64-unknown-linux-gnu",
+            "x86_64-apple-darwin",
+            "aarch64-apple-darwin",
+            "x86_64-pc-windows-msvc",
+            "aarch64-pc-windows-msvc",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+
+        ctx.config.defaults = Some(Defaults {
+            targets: Some(targets),
+            ..Default::default()
+        });
+        ctx.config.crates = vec![CrateConfig {
+            name: "anodizer".to_string(),
+            path: "crates/cli".to_string(),
+            builds: Some(vec![BuildConfig {
+                id: Some("anodizer".to_string()),
+                binary: Some("anodizer".to_string()),
+                ..Default::default()
+            }]),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                name_template: Some(
+                    "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}".to_string(),
+                ),
+                formats: Some(vec!["tar.gz".to_string()]),
+                format_overrides: Some(vec![FormatOverride {
+                    os: "windows".to_string(),
+                    formats: Some(vec!["zip".to_string()]),
+                }]),
+                ids: Some(vec!["anodizer".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }];
+
+        // The repo's real installer template, two levels up from this crate.
+        let tpl = format!(
+            "{}/../../scripts/install.sh.tpl",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        ctx.config.template_files = Some(vec![anodizer_core::config::TemplateFileConfig {
+            id: Some("install".to_string()),
+            src: tpl,
+            dst: "install.sh".to_string(),
+            mode: Some("0755".to_string()),
+            skip: None,
+        }]);
+
+        TemplateFilesStage.run(&mut ctx).unwrap();
+
+        let rendered =
+            fs::read_to_string(ctx.config.dist.join("install.sh")).expect("install.sh written");
+
+        // Every released target's arm carries the engine's real asset name.
+        for (key, asset) in [
+            ("linux-amd64", "anodizer-0.13.0-linux-amd64.tar.gz"),
+            ("linux-arm64", "anodizer-0.13.0-linux-arm64.tar.gz"),
+            ("darwin-amd64", "anodizer-0.13.0-darwin-amd64.tar.gz"),
+            ("darwin-arm64", "anodizer-0.13.0-darwin-arm64.tar.gz"),
+            ("windows-amd64", "anodizer-0.13.0-windows-amd64.zip"),
+            ("windows-arm64", "anodizer-0.13.0-windows-arm64.zip"),
+        ] {
+            assert!(
+                rendered.contains(&format!("{key})")),
+                "missing case arm for {key}"
+            );
+            assert!(
+                rendered.contains(&format!("ARCHIVE=\"{asset}\"")),
+                "missing ARCHIVE for {key}: expected {asset}"
+            );
+        }
+        // No HTML-escaping of the embedded quotes, and the fallback arm survives.
+        assert!(!rendered.contains("&quot;"), "quotes must not be escaped");
+        assert!(
+            rendered.contains("no prebuilt ${PROJECT} binary"),
+            "fallback error arm must be present"
+        );
     }
 
     #[test]

@@ -280,54 +280,36 @@ fn derive_overrides(
     let Some((owner, repo, download_base)) = release_repo(crate_cfg, ctx) else {
         return Ok(None);
     };
-    let Some(archive) = binstallable_archive(crate_cfg) else {
+
+    // Per-target asset filenames rendered with the sentinel stamped as the
+    // version, so each name's version positions can be swapped for
+    // cargo-binstall's `{ version }` token below. Shared with the `curl | sh`
+    // installer's case table via [`crate_archive_asset_names`], so a binstall
+    // `pkg_url` and an installer URL for the same target can never disagree.
+    let prior = stamp_sentinel_version(ctx);
+    let assets = crate_archive_asset_names(crate_cfg, default_targets, ctx);
+    restore_version(ctx, prior);
+    let Some(assets) = assets? else {
         return Ok(None);
     };
-
-    let targets = derive_target_list(crate_cfg, default_targets);
-    if targets.is_empty() {
-        return Ok(None);
-    }
 
     // The tag the release uploads under, with the version expressed as the
     // cargo-binstall `{ version }` token. Rendered once (target-independent) by
     // stamping the sentinel as the version, then swapping it for `{ version }`.
     let tag_with_token = render_tag_with_version_token(crate_cfg, ctx)?;
 
-    // The name template the archive stage will use for this crate (user's
-    // `name_template:` wins; otherwise the canonical default — multi-crate when
-    // the workspace has more than one crate, matching the archive stage's own
-    // single-vs-multi default selection).
-    let name_template = archive
-        .name_template
-        .clone()
-        .unwrap_or_else(|| default_archive_name_template(ctx));
-
-    let global_default_format = global_default_archive_format(ctx);
-
     let mut map: BTreeMap<String, BinstallOverride> = BTreeMap::new();
-    for target in &targets {
-        let format = archive_format_for_target(&archive, target, &global_default_format);
-        let Some(pkg_fmt) = binstall_pkg_fmt(&format) else {
+    for (target, asset) in &assets {
+        let Some(pkg_fmt) = binstall_pkg_fmt(&asset.format) else {
             // A format cargo-binstall cannot binstall (binary / none): no usable
             // override for this target. Skip it rather than emit an unresolvable
             // pkg_fmt.
             continue;
         };
-
-        // Render the asset name with the sentinel version, then swap the
-        // sentinel for cargo-binstall's `{ version }` token so the URL resolves
-        // for whatever version is being installed.
-        let prior = stamp_sentinel_version(ctx);
-        let asset = render_archive_asset_name(ctx, &name_template, target, &format);
-        restore_version(ctx, prior);
-        let asset = asset?;
-        let asset_with_token = asset.replace(VERSION_SENTINEL, "{ version }");
-
+        let asset_with_token = asset.asset_name.replace(VERSION_SENTINEL, "{ version }");
         let pkg_url = format!(
             "{download_base}/{owner}/{repo}/releases/download/{tag_with_token}/{asset_with_token}"
         );
-
         map.insert(
             target.clone(),
             BinstallOverride {
@@ -340,6 +322,61 @@ fn derive_overrides(
 
     if map.is_empty() {
         return Ok(None);
+    }
+    Ok(Some(map))
+}
+
+/// One released archive asset: the configured archive `format` string and the
+/// byte-exact filename the archive stage uploads for a single build target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArchiveAssetName {
+    /// The archive format string (`tar.gz`, `zip`, …) — its file extension.
+    pub format: String,
+    /// The full asset filename (`name_template` stem + format extension),
+    /// byte-identical to what the archive stage writes.
+    pub asset_name: String,
+}
+
+/// Render the byte-exact archive asset filename the archive stage will upload
+/// for every released target of `crate_cfg`'s primary (binstallable) archive,
+/// keyed by target triple, using the version/project template vars currently
+/// set on `ctx`.
+///
+/// This is the single source of truth shared by cargo-binstall `pkg_url`
+/// derivation ([`derive_overrides`]) and the `curl | sh` remote installer's
+/// per-`os-arch` `case` table ([`crate::installer::render_asset_case_table`]):
+/// both must resolve to the same asset or a consumer hits a 404, so both render
+/// through the *same* `archive.name_template` + `format_overrides` the archive
+/// stage uses (via [`crate::archive_name`]). Returns `None` when the crate
+/// exposes no binstallable archive or produces no targets.
+pub fn crate_archive_asset_names(
+    crate_cfg: &CrateConfig,
+    default_targets: &[String],
+    ctx: &mut Context,
+) -> Result<Option<BTreeMap<String, ArchiveAssetName>>> {
+    let Some(archive) = binstallable_archive(crate_cfg) else {
+        return Ok(None);
+    };
+    let targets = derive_target_list(crate_cfg, default_targets);
+    if targets.is_empty() {
+        return Ok(None);
+    }
+
+    // The name template the archive stage will use for this crate (user's
+    // `name_template:` wins; otherwise the canonical default — multi-crate when
+    // the workspace has more than one crate, matching the archive stage's own
+    // single-vs-multi default selection).
+    let name_template = archive
+        .name_template
+        .clone()
+        .unwrap_or_else(|| default_archive_name_template(ctx));
+    let global_default_format = global_default_archive_format(ctx);
+
+    let mut map: BTreeMap<String, ArchiveAssetName> = BTreeMap::new();
+    for target in &targets {
+        let format = archive_format_for_target(&archive, target, &global_default_format);
+        let asset_name = render_archive_asset_name(ctx, &name_template, target, &format)?;
+        map.insert(target.clone(), ArchiveAssetName { format, asset_name });
     }
     Ok(Some(map))
 }
@@ -374,7 +411,7 @@ fn release_repo(crate_cfg: &CrateConfig, ctx: &Context) -> Option<(String, Strin
 /// whose default format is binstallable (tar.gz / zip / …),
 /// the primary archive is the one consumers fetch; auxiliary entries (e.g. a
 /// `tar.xz`/`tar.zst` `-extra` entry) are skipped.
-fn binstallable_archive(crate_cfg: &CrateConfig) -> Option<ArchiveConfig> {
+pub(crate) fn binstallable_archive(crate_cfg: &CrateConfig) -> Option<ArchiveConfig> {
     let ArchivesConfig::Configs(configs) = &crate_cfg.archives else {
         return None;
     };
