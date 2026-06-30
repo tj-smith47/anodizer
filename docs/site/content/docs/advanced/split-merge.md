@@ -56,7 +56,7 @@ anodizer release --split
 
 ### `anodizer release --merge`
 
-Loads all `context.json` files from `dist/*/` subdirectories, merges the artifact lists, and runs the full post-build pipeline (archives, checksums, signing, release, publish, blob storage, announce).
+Loads all `context.json` files from `dist/*/` subdirectories, merges the artifact lists, and runs the full post-build pipeline (archives, checksums, signing, release, blob storage, publish, announce).
 
 ```
 anodizer release --merge

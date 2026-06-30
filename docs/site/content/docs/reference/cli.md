@@ -297,7 +297,7 @@ Resume a release after a transient failure or after `--prepare`/`--split`
 
 ### `anodizer publish`
 
-Run only the publish stages (release, publish, blob) from a completed dist/
+Run only the publish stages (release, blob, publish) from a completed dist/
 
 
 | Flag | Short | Default | Description |

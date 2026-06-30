@@ -18,7 +18,7 @@ This page documents `before_publish:`. For the broader lifecycle hooks see
 ## When `before_publish:` fires
 
 ```
-build → archive → sbom → checksum → sign → [ before_publish ] → release → publish → blob → announce
+build → archive → sbom → checksum → sign → [ before_publish ] → release → blob → publish → announce
 ```
 
 The hook is the last gate before any publisher writes to a registry. A

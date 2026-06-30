@@ -10,8 +10,10 @@ When you run `anodizer release`, the following stages execute in order:
 ## Pipeline stages
 
 ```
-build → archive → nfpm → checksum → changelog → release → publish → docker → sign → announce
+build → changelog → archive → nfpm → checksum → sign → release → docker → blob → publish → announce
 ```
+
+Artifacts are signed **before** the release stage uploads them, and Docker images and blob uploads land **before** the package-manager publishers — so a required blob or image failure gates the one-way-door registries (crates.io, chocolatey, winget) rather than firing after they have already published.
 
 Each stage is independent — if you skip a stage with `--skip`, downstream stages still work with whatever artifacts exist.
 
@@ -25,42 +27,46 @@ Compiles your Rust binary for each configured target triple. Anodizer auto-detec
 
 You can override with `cross: zigbuild` or `cross: cross` in your config.
 
-### 2. Archive
-
-Packages each built binary into an archive. Supported formats: `tar.gz`, `tar.xz`, `tar.zst`, `zip`, `binary` (raw, no archive). You can set format overrides per OS — e.g., `zip` for Windows, `tar.gz` for everything else.
-
-### 3. nFPM
-
-Generates Linux packages (`.deb`, `.rpm`, `.apk`) using nFPM. Includes package metadata, install scripts, file contents, and dependencies.
-
-### 4. Checksum
-
-Computes checksums for all artifacts. Supported algorithms: SHA-1, SHA-224, SHA-256 (default), SHA-384, SHA-512, BLAKE2b, BLAKE2s.
-
-### 5. Changelog
+### 2. Changelog
 
 Generates a changelog from git commits between the previous tag and the current tag. Supports conventional commit parsing, regex filters, and custom grouping.
 
-### 6. Release
+### 3. Archive
 
-Creates a GitHub release (or updates an existing draft). Uploads all artifacts as release assets. Supports draft mode, prerelease detection, `make_latest`, and custom release names with header/footer templates.
+Packages each built binary into an archive. Supported formats: `tar.gz`, `tar.xz`, `tar.zst`, `zip`, `binary` (raw, no archive). You can set format overrides per OS — e.g., `zip` for Windows, `tar.gz` for everything else.
 
-### 7. Publish
+### 4. nFPM
+
+Generates Linux packages (`.deb`, `.rpm`, `.apk`) using nFPM. Includes package metadata, install scripts, file contents, and dependencies.
+
+### 5. Checksum
+
+Computes checksums for all artifacts. Supported algorithms: SHA-1, SHA-224, SHA-256 (default), SHA-384, SHA-512, BLAKE2b, BLAKE2s.
+
+### 6. Sign
+
+Signs artifacts using GPG or cosign before they are uploaded. Supports multiple signing configs with different artifact filters.
+
+### 7. Release
+
+Creates a GitHub release (or updates an existing draft). Uploads all artifacts — including their signatures — as release assets. Supports draft mode, prerelease detection, `make_latest`, and custom release names with header/footer templates.
+
+### 8. Docker
+
+Builds and pushes Docker images via `docker buildx`. Supports multi-arch builds, tag templates, build flags, and extra files. Runs before the package-manager publishers so an image-dependent publisher (e.g. the MCP registry) sees a pushed image.
+
+### 9. Blob
+
+Uploads artifacts to cloud object storage (S3, GCS, Azure). Runs before the package-manager publishers so a required-blob failure gates the irreversible registries downstream.
+
+### 10. Publish
 
 Publishes to package managers:
 - **crates.io** — with dependency-aware ordering for workspace crates
 - **Homebrew** — generates a Ruby formula and pushes to your tap repo
 - **Scoop** — generates a JSON manifest and pushes to your bucket repo
 
-### 8. Docker
-
-Builds and pushes Docker images via `docker buildx`. Supports multi-arch builds, tag templates, build flags, and extra files.
-
-### 9. Sign
-
-Signs artifacts using GPG or cosign. Supports multiple signing configs with different artifact filters.
-
-### 10. Announce
+### 11. Announce
 
 Sends notifications to Discord, Slack, or generic webhooks with templated messages.
 

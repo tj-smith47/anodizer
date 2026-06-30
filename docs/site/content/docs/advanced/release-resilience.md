@@ -51,9 +51,14 @@ Order inside a group matches the existing (per-publisher) dispatch order.
 Snapcraft stays in its own stage running after `PublishStage`; it is Submitter
 group and has no rollback, so the existing stage boundary is fine.
 
-Blob runs as its own stage between `PublishStage` and `SnapcraftPublishStage`
-so that a blob upload failure can short-circuit Snapcraft via the same gate
-logic.
+Blob runs as its own stage BEFORE `PublishStage` (and `SnapcraftPublishStage`)
+so that a required-blob upload failure is recorded in the publish report before
+the Submitter gate evaluates — gating the one-way-door publishers
+(cargo / chocolatey / winget) as well as Snapcraft via the same gate logic.
+Ordered after `PublishStage`, a blob failure could only ever gate the
+still-later Snapcraft stage while cargo / chocolatey / winget had already fired
+irreversibly. Blob needs only the built dist, so running it ahead of the doors
+is safe.
 
 ## Per-publisher classification
 

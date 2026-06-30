@@ -116,16 +116,20 @@ anodizer check determinism \
 | Flag | Default | Description |
 |---|---|---|
 | `--runs=<N>` | `2` | Number of from-clean rebuilds to diff against each other. |
-| `--stages=<subset>` | full set | Restrict to a stage subset (`build,archive,sbom,sign,checksum`). |
+| `--stages=<subset>` | host-OS partition | Absent or empty resolves to every produce-stage the host can natively build, intersected with the producers your config configures: the always-on `build,archive,sbom,sign,checksum` plus the OS-native installer/package formats. Pass a comma-separated subset (e.g. `build,archive,sbom,sign,checksum`) to restrict. An explicitly typed stage hard-fails on a missing tool; host-default stages warn-skip. |
 | `--targets=<csv>` | (all) | Restrict the harness to a comma-separated subset of configured target triples (forwarded to the child `anodizer release` subprocess). Used by the sharded release matrix so each runner only validates targets it can natively build. |
 | `--report=<path>` | `dist/run-<id>/determinism.json` | JSON report destination. |
 | `--preserve-dist=<path>` | off | On green, copy run-0's `<worktree>/dist/**` to `<path>` and emit `<path>/context.json`. The release workflow's `release --publish-only` step consumes this directly — eliminating a separate recompile job. See [Preserved raw binaries layout](#preserved-raw-binaries-layout) for how `binary_signs:` source binaries are mirrored alongside dist. |
 | `--snapshot` / `--no-snapshot` | auto | Force snapshot mode on or off for the child release subprocess. Default: auto — `--no-snapshot` when HEAD is at a tag (`git describe --tags --exact-match HEAD` succeeds), `--snapshot` otherwise. Mutually exclusive. |
 
-Scope: build-side only. The harness runs the pipeline up to and including
-`checksum`. It never invokes `release`, `publish`, `blob`, `snapcraft-publish`,
-or `announce`. Doubling `--runs=N` is safe in any environment because no
-external side effects fire.
+Scope: build-side only. The harness runs every produce-stage the host can
+natively build and byte-compares the result — archives, checksums, SBOMs,
+signatures, and the OS-native package/installer formats (Linux:
+nfpm/snapcraft/srpm/appimage/flatpak/makeself; macOS: appbundle/dmg/pkg;
+Windows: msi/nsis). It never fires the credential- or registry-touching
+publish-side stages (`notarize`, `release`, `publish`, `blob`,
+`snapcraft-publish`, `announce`, `verify-release`). Doubling `--runs=N` is
+safe in any environment because no external side effects fire.
 
 Each run executes inside a freshly-constructed environment:
 
