@@ -1180,20 +1180,16 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
 // ScoopPublisher — Publisher trait wrapper (git-revert rollback)
 // ---------------------------------------------------------------------------
 
-/// Scoop bucket publisher. Mirrors the `homebrew` shape: each pushed
-/// manifest is recorded so a `--rollback-only` re-clones the bucket,
-/// runs `git revert HEAD --no-edit`, and pushes the revert.
-///
-/// Scoop is always per-crate (no top-level Scoop config block), so
-/// the run loop only walks `ctx.config.crates`.
-///
-/// CREDENTIAL HANDLING: [`ScoopTarget`] stores `token_env_var` — the
-/// NAME of the env var — not the resolved token VALUE. The token is
-/// read from the live env at rollback time so persisted evidence
-/// carries no secret material. Same rule applies to the homebrew /
-/// nix git-revert publishers.
-use crate::util::{RevertTarget, run_revert_targets_parallel};
-
+// Scoop bucket publisher. Mirrors the `homebrew` shape: each pushed
+// manifest is recorded so a `--rollback-only` re-clones the bucket,
+// runs `git revert HEAD --no-edit`, and pushes the revert. Scoop is
+// always per-crate (no top-level Scoop config block), so the run loop
+// only walks `ctx.config.crates`.
+//
+// CREDENTIAL HANDLING: ScoopTarget stores `token_env_var` — the NAME of
+// the env var — not the resolved token VALUE. The token is read from the
+// live env at rollback time so persisted evidence carries no secret
+// material. Same rule applies to the homebrew / nix git-revert publishers.
 simple_publisher!(
     ScoopPublisher,
     "scoop",
@@ -1437,42 +1433,16 @@ impl anodizer_core::Publisher for ScoopPublisher {
         ctx: &mut Context,
         evidence: &anodizer_core::PublishEvidence,
     ) -> anyhow::Result<()> {
-        let log = ctx.logger("publish");
         let targets = decode_scoop_targets(&evidence.extra);
-        if targets.is_empty() {
-            log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
-                "scoop",
-                "bucket clone targets",
-            ));
-            return Ok(());
-        }
         let unique = dedup_scoop_targets(&targets);
-        let env = ctx.env_source();
-        let prepared: Vec<RevertTarget> = unique
-            .iter()
-            .map(|t| {
-                let token = util::resolve_rollback_token(env, t.token_env_var.as_deref());
-                RevertTarget {
-                    target: t.target.clone(),
-                    repo_url: t.repo_url.clone(),
-                    branch: t.branch.clone(),
-                    token,
-                    private_key: None,
-                    ssh_command: None,
-                }
-            })
-            .collect();
-        let env_hint = unique
-            .first()
-            .and_then(|t| t.token_env_var.as_deref())
-            .unwrap_or("SCOOP_BUCKET_TOKEN");
-        let (reverted, failed) =
-            run_revert_targets_parallel(&prepared, "scoop", Some(env_hint), &log);
-        log.status(&format!(
-            "scoop rollback reverted {} bucket(s), {} failure(s)",
-            reverted, failed
-        ));
-        Ok(())
+        util::run_token_revert_rollback(
+            ctx,
+            &unique,
+            "scoop",
+            "SCOOP_BUCKET_TOKEN",
+            "bucket clone targets",
+            "bucket",
+        )
     }
 
     /// Probe every active bucket repo for existence + push scope before any

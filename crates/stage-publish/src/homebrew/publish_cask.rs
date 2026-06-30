@@ -23,12 +23,12 @@ fn cask_skip_gates_trip(
         .skip_upload
         .as_ref()
         .or(hb_cfg.skip_upload.as_ref());
-    if crate::util::should_skip_upload(effective_skip, ctx, log)? {
-        log.status(&format!(
-            "skipped homebrew cask upload for '{}' — skip_upload={}",
-            crate_name,
-            effective_skip.map(|v| v.as_str()).unwrap_or("")
-        ));
+    if crate::util::should_skip_upload(
+        effective_skip,
+        ctx,
+        log,
+        Some(&format!("homebrew cask for '{crate_name}'")),
+    )? {
         return Ok(true);
     }
 

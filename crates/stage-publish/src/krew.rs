@@ -804,7 +804,7 @@ pub(crate) fn render_krew_manifest_for_crate(
     if !proceed {
         return Ok(None);
     }
-    if util::should_skip_upload(krew_cfg.skip_upload.as_ref(), ctx, log)? {
+    if util::should_skip_upload(krew_cfg.skip_upload.as_ref(), ctx, log, None)? {
         return Ok(None);
     }
 
@@ -1029,16 +1029,12 @@ pub fn publish_to_krew(
         ));
         return Ok(KrewPublishOutcome::skipped());
     }
-    if util::should_skip_upload(krew_cfg.skip_upload.as_ref(), ctx, log)? {
-        log.status(&format!(
-            "skipped krew upload for '{}' — skip_upload={}",
-            crate_name,
-            krew_cfg
-                .skip_upload
-                .as_ref()
-                .map(|v| v.as_str())
-                .unwrap_or("")
-        ));
+    if util::should_skip_upload(
+        krew_cfg.skip_upload.as_ref(),
+        ctx,
+        log,
+        Some(&format!("krew for '{crate_name}'")),
+    )? {
         return Ok(KrewPublishOutcome::skipped());
     }
 

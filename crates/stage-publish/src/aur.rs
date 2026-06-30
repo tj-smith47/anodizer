@@ -469,16 +469,12 @@ fn aur_check_skip_and_resolve_git_url(
         return Ok(None);
     }
 
-    if crate::util::should_skip_upload(aur_cfg.skip_upload.as_ref(), ctx, log)? {
-        log.status(&format!(
-            "skipped aur upload for '{}' — skip_upload={}",
-            crate_name,
-            aur_cfg
-                .skip_upload
-                .as_ref()
-                .map(|v| v.as_str())
-                .unwrap_or("")
-        ));
+    if crate::util::should_skip_upload(
+        aur_cfg.skip_upload.as_ref(),
+        ctx,
+        log,
+        Some(&format!("aur for '{crate_name}'")),
+    )? {
         return Ok(None);
     }
 
@@ -1172,11 +1168,12 @@ pub(crate) fn render_aur_pkgbuild_and_srcinfo_for_crate(
         return Ok(None);
     }
 
-    if crate::util::should_skip_upload(aur_cfg.skip_upload.as_ref(), ctx, log)? {
-        log.status(&format!(
-            "skipped aur upload for '{}' — skip_upload is set",
-            crate_name
-        ));
+    if crate::util::should_skip_upload(
+        aur_cfg.skip_upload.as_ref(),
+        ctx,
+        log,
+        Some(&format!("aur for '{crate_name}'")),
+    )? {
         return Ok(None);
     }
 

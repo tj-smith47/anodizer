@@ -620,7 +620,7 @@ fn test_should_skip_upload_true_string() {
     use anodizer_core::context::{Context, ContextOptions};
     let ctx = Context::new(Config::default(), ContextOptions::default());
     let val = StringOrBool::String("true".to_string());
-    assert!(should_skip_upload(Some(&val), &ctx, &test_log()).unwrap());
+    assert!(should_skip_upload(Some(&val), &ctx, &test_log(), None).unwrap());
 }
 
 #[test]
@@ -629,7 +629,7 @@ fn test_should_skip_upload_true_bool() {
     use anodizer_core::context::{Context, ContextOptions};
     let ctx = Context::new(Config::default(), ContextOptions::default());
     let val = StringOrBool::Bool(true);
-    assert!(should_skip_upload(Some(&val), &ctx, &test_log()).unwrap());
+    assert!(should_skip_upload(Some(&val), &ctx, &test_log(), None).unwrap());
 }
 
 #[test]
@@ -637,7 +637,7 @@ fn test_should_skip_upload_false_when_none() {
     use anodizer_core::config::Config;
     use anodizer_core::context::{Context, ContextOptions};
     let ctx = Context::new(Config::default(), ContextOptions::default());
-    assert!(!should_skip_upload(None, &ctx, &test_log()).unwrap());
+    assert!(!should_skip_upload(None, &ctx, &test_log(), None).unwrap());
 }
 
 #[test]
@@ -646,7 +646,7 @@ fn test_should_skip_upload_explicit_false_string() {
     use anodizer_core::context::{Context, ContextOptions};
     let ctx = Context::new(Config::default(), ContextOptions::default());
     let val = StringOrBool::String("false".to_string());
-    assert!(!should_skip_upload(Some(&val), &ctx, &test_log()).unwrap());
+    assert!(!should_skip_upload(Some(&val), &ctx, &test_log(), None).unwrap());
 }
 
 #[test]
@@ -655,7 +655,7 @@ fn test_should_skip_upload_explicit_false_bool() {
     use anodizer_core::context::{Context, ContextOptions};
     let ctx = Context::new(Config::default(), ContextOptions::default());
     let val = StringOrBool::Bool(false);
-    assert!(!should_skip_upload(Some(&val), &ctx, &test_log()).unwrap());
+    assert!(!should_skip_upload(Some(&val), &ctx, &test_log(), None).unwrap());
 }
 
 #[test]
@@ -665,7 +665,7 @@ fn test_should_skip_upload_auto_skips_prerelease() {
     let mut ctx = Context::new(Config::default(), ContextOptions::default());
     ctx.template_vars_mut().set("Prerelease", "rc.1");
     let val = StringOrBool::String("auto".to_string());
-    assert!(should_skip_upload(Some(&val), &ctx, &test_log()).unwrap());
+    assert!(should_skip_upload(Some(&val), &ctx, &test_log(), None).unwrap());
 }
 
 #[test]
@@ -675,7 +675,7 @@ fn test_should_skip_upload_auto_does_not_skip_stable() {
     let mut ctx = Context::new(Config::default(), ContextOptions::default());
     ctx.template_vars_mut().set("Prerelease", "");
     let val = StringOrBool::String("auto".to_string());
-    assert!(!should_skip_upload(Some(&val), &ctx, &test_log()).unwrap());
+    assert!(!should_skip_upload(Some(&val), &ctx, &test_log(), None).unwrap());
 }
 
 #[test]
@@ -684,7 +684,7 @@ fn test_should_skip_upload_auto_does_not_skip_when_no_prerelease_var() {
     use anodizer_core::context::{Context, ContextOptions};
     let ctx = Context::new(Config::default(), ContextOptions::default());
     let val = StringOrBool::String("auto".to_string());
-    assert!(!should_skip_upload(Some(&val), &ctx, &test_log()).unwrap());
+    assert!(!should_skip_upload(Some(&val), &ctx, &test_log(), None).unwrap());
 }
 
 #[test]
@@ -716,13 +716,55 @@ fn should_skip_publisher_with_if_honors_skip_upload_auto_on_prerelease() {
 }
 
 #[test]
+fn should_skip_upload_emits_canonical_line_once_when_labeled() {
+    // The skip-upload wording lives in `should_skip_upload`: a skip with a
+    // `Some(label)` emits exactly one `skipped <label> upload — skip_upload
+    // is set` line, matching `should_skip_publisher_with_if`'s phrasing.
+    use anodizer_core::config::{Config, StringOrBool};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::{LogLevel, StageLogger, Verbosity};
+
+    let ctx = Context::new(Config::default(), ContextOptions::default());
+    let val = StringOrBool::Bool(true);
+    let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
+    assert!(should_skip_upload(Some(&val), &ctx, &log, Some("nix for 'foo'")).unwrap());
+
+    let status_lines: Vec<String> = cap
+        .all_messages()
+        .into_iter()
+        .filter(|(lvl, _)| *lvl == LogLevel::Status)
+        .map(|(_, m)| m)
+        .collect();
+    assert_eq!(
+        status_lines,
+        vec!["skipped nix for 'foo' upload — skip_upload is set".to_string()],
+        "exactly one canonical skip-upload line, emitted by the helper"
+    );
+}
+
+#[test]
+fn should_skip_upload_stays_silent_when_label_is_none() {
+    // Render/validation call sites pass `None` so the offline validators
+    // re-render an artifact without emitting an operator-facing skip line.
+    use anodizer_core::config::{Config, StringOrBool};
+    use anodizer_core::context::{Context, ContextOptions};
+    use anodizer_core::log::{StageLogger, Verbosity};
+
+    let ctx = Context::new(Config::default(), ContextOptions::default());
+    let val = StringOrBool::Bool(true);
+    let (log, cap) = StageLogger::with_capture("publish", Verbosity::Normal);
+    assert!(should_skip_upload(Some(&val), &ctx, &log, None).unwrap());
+    assert_eq!(cap.status_count(), 0, "None label must emit no status line");
+}
+
+#[test]
 fn test_should_skip_upload_template_rendered() {
     use anodizer_core::config::{Config, StringOrBool};
     use anodizer_core::context::{Context, ContextOptions};
     let mut ctx = Context::new(Config::default(), ContextOptions::default());
     ctx.template_vars_mut().set_env("SKIP", "true");
     let val = StringOrBool::String("{{ .Env.SKIP }}".to_string());
-    assert!(should_skip_upload(Some(&val), &ctx, &test_log()).unwrap());
+    assert!(should_skip_upload(Some(&val), &ctx, &test_log(), None).unwrap());
 }
 
 #[test]
@@ -732,7 +774,7 @@ fn test_should_skip_upload_template_rendered_false() {
     let mut ctx = Context::new(Config::default(), ContextOptions::default());
     ctx.template_vars_mut().set_env("SKIP", "false");
     let val = StringOrBool::String("{{ .Env.SKIP }}".to_string());
-    assert!(!should_skip_upload(Some(&val), &ctx, &test_log()).unwrap());
+    assert!(!should_skip_upload(Some(&val), &ctx, &test_log(), None).unwrap());
 }
 
 // -----------------------------------------------------------------------

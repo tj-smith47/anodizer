@@ -334,16 +334,12 @@ fn check_skip_guards(
         ));
         return Ok(true);
     }
-    if util::should_skip_upload(nix_cfg.skip_upload.as_ref(), ctx, log)? {
-        log.status(&format!(
-            "skipped nix upload for '{}' — skip_upload={}",
-            crate_name,
-            nix_cfg
-                .skip_upload
-                .as_ref()
-                .map(|v| v.as_str())
-                .unwrap_or("")
-        ));
+    if util::should_skip_upload(
+        nix_cfg.skip_upload.as_ref(),
+        ctx,
+        log,
+        Some(&format!("nix for '{crate_name}'")),
+    )? {
         return Ok(true);
     }
     Ok(false)

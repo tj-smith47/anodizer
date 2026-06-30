@@ -132,11 +132,12 @@ pub(crate) fn render_top_level_cask_entry(
     let project_name = &ctx.config.project_name;
     let cask_name = cask_cfg.name.as_deref().unwrap_or(project_name);
 
-    if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log)? {
-        log.status(&format!(
-            "skipped cask upload for '{}' — skip_upload is set",
-            cask_name
-        ));
+    if crate::util::should_skip_upload(
+        cask_cfg.skip_upload.as_ref(),
+        ctx,
+        log,
+        Some(&format!("cask for '{cask_name}'")),
+    )? {
         return Ok(None);
     }
 
@@ -535,11 +536,12 @@ pub fn publish_top_level_homebrew_casks(
         let version = ctx.version();
 
         // Check skip_upload.
-        if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log)? {
-            log.status(&format!(
-                "skipped cask upload for '{}' — skip_upload is set",
-                cask_name
-            ));
+        if crate::util::should_skip_upload(
+            cask_cfg.skip_upload.as_ref(),
+            ctx,
+            log,
+            Some(&format!("cask for '{cask_name}'")),
+        )? {
             continue;
         }
 

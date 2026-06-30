@@ -10,6 +10,7 @@
 //! See [`crate::util::git_revert`] for the per-target work the
 //! git-revert publishers drive through this primitive.
 
+use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use std::sync::Mutex;
 use std::thread::ScopedJoinHandle;
@@ -132,6 +133,116 @@ pub(crate) fn run_revert_targets_parallel(
             poisoned.into_inner()
         }
     }
+}
+
+/// Read-only view of a token-authenticated git-revert rollback target.
+///
+/// Every "token publisher" (scoop / homebrew / nix) records the same field
+/// set in its evidence snapshot — `target` / `repo_url` / `branch` /
+/// `token_env_var` — and reverts via an HTTPS clone authenticated by a
+/// `token_env_var`-named secret. This trait lets
+/// [`run_token_revert_rollback`] map any such snapshot into the shared
+/// [`RevertTarget`] without re-typing the conversion per publisher.
+///
+/// The AUR publisher is deliberately NOT a `TokenRevertTarget`: it
+/// authenticates with SSH key material (`private_key` + `ssh_command`)
+/// resolved from config at rollback time, not an HTTPS token env var, so it
+/// keeps its own `rollback()` body while still sharing the
+/// [`run_revert_targets_parallel`] fan-out core.
+pub(crate) trait TokenRevertTarget {
+    /// Per-target label (crate / formula / cask / manifest name) surfaced in
+    /// rollback warn lines.
+    fn target(&self) -> &str;
+    /// HTTPS clone URL of the publisher-owned repo to revert.
+    fn repo_url(&self) -> &str;
+    /// Branch the publish pushed to; `None` means the cloned default branch.
+    fn branch(&self) -> Option<&str>;
+    /// NAME of the env var holding the rollback re-clone token (never the
+    /// token VALUE — that is resolved from the live env at rollback time).
+    fn token_env_var(&self) -> Option<&str>;
+}
+
+macro_rules! impl_token_revert_target {
+    ($t:ty) => {
+        impl TokenRevertTarget for $t {
+            fn target(&self) -> &str {
+                &self.target
+            }
+            fn repo_url(&self) -> &str {
+                &self.repo_url
+            }
+            fn branch(&self) -> Option<&str> {
+                self.branch.as_deref()
+            }
+            fn token_env_var(&self) -> Option<&str> {
+                self.token_env_var.as_deref()
+            }
+        }
+    };
+}
+
+impl_token_revert_target!(anodizer_core::publish_evidence::ScoopTargetSnapshot);
+impl_token_revert_target!(anodizer_core::publish_evidence::HomebrewTargetSnapshot);
+impl_token_revert_target!(anodizer_core::publish_evidence::NixTargetSnapshot);
+
+/// Drive the full token-publisher rollback for a set of already-deduped
+/// [`TokenRevertTarget`]s: resolve each target's token from the live env,
+/// map to [`RevertTarget`], fan out [`run_revert_targets_parallel`], and
+/// emit the per-publisher summary line.
+///
+/// Collapses the byte-identical `rollback()` bodies of scoop / homebrew /
+/// nix into one call. The caller supplies the decode + dedup (its evidence
+/// variant and `(repo_url, branch)` dedup are publisher-typed) plus the
+/// publisher's nouns:
+/// - `default_env_hint` — token env var named in failure warns when a
+///   target carries none (e.g. `HOMEBREW_TAP_TOKEN`).
+/// - `empty_evidence_noun` — what the empty-evidence warn calls the missing
+///   targets (e.g. `tap clone targets`).
+/// - `reverted_noun` — the unit pluralized in the summary line (e.g. `tap`
+///   → `reverted N tap(s)`).
+pub(crate) fn run_token_revert_rollback<T: TokenRevertTarget>(
+    ctx: &Context,
+    deduped_targets: &[T],
+    publisher: &str,
+    default_env_hint: &str,
+    empty_evidence_noun: &str,
+    reverted_noun: &str,
+) -> anyhow::Result<()> {
+    let log = ctx.logger("publish");
+    if deduped_targets.is_empty() {
+        log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
+            publisher,
+            empty_evidence_noun,
+        ));
+        return Ok(());
+    }
+    // Resolve auth tokens at rollback time — never persisted in evidence.
+    // `token_env_var` is only the NAME of the env var; the value lives in
+    // the injected env source.
+    let env = ctx.env_source();
+    let prepared: Vec<RevertTarget> = deduped_targets
+        .iter()
+        .map(|t| RevertTarget {
+            target: t.target().to_string(),
+            repo_url: t.repo_url().to_string(),
+            branch: t.branch().map(str::to_string),
+            token: crate::util::resolve_rollback_token(env, t.token_env_var()),
+            private_key: None,
+            ssh_command: None,
+        })
+        .collect();
+    // Every target in one publisher's rollback carries the same env-var hint
+    // by construction; the first target's is representative.
+    let env_hint = deduped_targets
+        .first()
+        .and_then(|t| t.token_env_var())
+        .unwrap_or(default_env_hint);
+    let (reverted, failed) =
+        run_revert_targets_parallel(&prepared, publisher, Some(env_hint), &log);
+    log.status(&format!(
+        "{publisher} rollback reverted {reverted} {reverted_noun}(s), {failed} failure(s)"
+    ));
+    Ok(())
 }
 
 #[cfg(test)]
@@ -429,6 +540,171 @@ mod tests {
         assert!(
             msg.contains("boom-from-worker"),
             "warn must surface the panic payload, got: {msg}"
+        );
+    }
+
+    /// `run_token_revert_rollback` delegates to the shared fan-out: every
+    /// deduped [`TokenRevertTarget`] (here `ScoopTargetSnapshot`) is
+    /// reverted exactly once and the per-publisher summary line is emitted
+    /// with the supplied `reverted_noun`.
+    #[test]
+    fn run_token_revert_rollback_reverts_each_target_and_summarizes() {
+        use anodizer_core::log::LogLevel;
+        use anodizer_core::publish_evidence::ScoopTargetSnapshot;
+        use anodizer_core::test_helpers::TestContextBuilder;
+
+        let r0 = bare_with_one_commit();
+        let r1 = bare_with_one_commit();
+        let targets = vec![
+            ScoopTargetSnapshot {
+                target: "a".into(),
+                repo_url: r0.0.clone(),
+                branch: Some("master".into()),
+                token_env_var: None,
+            },
+            ScoopTargetSnapshot {
+                target: "b".into(),
+                repo_url: r1.0.clone(),
+                branch: Some("master".into()),
+                token_env_var: None,
+            },
+        ];
+
+        let mut ctx = TestContextBuilder::new().build();
+        let cap = anodizer_core::log::LogCapture::new();
+        ctx.with_log_capture(cap.clone());
+
+        run_token_revert_rollback(
+            &ctx,
+            &targets,
+            "scoop",
+            "SCOOP_BUCKET_TOKEN",
+            "bucket clone targets",
+            "bucket",
+        )
+        .expect("rollback should succeed on clean bare remotes");
+
+        for url in [&r0.0, &r1.0] {
+            let verify = tempfile::tempdir().unwrap();
+            assert!(
+                anodizer_core::test_helpers::output_with_spawn_retry(
+                    || {
+                        let mut cmd = Command::new("git");
+                        cmd.args(["clone", "--depth=2", url])
+                            .arg(verify.path().join("repo"));
+                        cmd
+                    },
+                    "git",
+                )
+                .status
+                .success()
+            );
+            let out = anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["log", "-1", "--pretty=%s"])
+                        .current_dir(verify.path().join("repo"));
+                    cmd
+                },
+                "git",
+            );
+            let subject = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            assert!(
+                subject.starts_with("Revert"),
+                "expected a revert commit on {url}, got subject={subject:?}"
+            );
+        }
+
+        let status: Vec<String> = cap
+            .all_messages()
+            .into_iter()
+            .filter_map(|(lvl, m)| (lvl == LogLevel::Status).then_some(m))
+            .collect();
+        assert!(
+            status
+                .iter()
+                .any(|m| m == "scoop rollback reverted 2 bucket(s), 0 failure(s)"),
+            "expected the canonical summary line, got: {status:?}"
+        );
+    }
+
+    /// Empty (deduped) evidence emits the canonical empty-evidence warn —
+    /// naming the publisher and the supplied clone-target noun — and no
+    /// summary line, without spawning any clone.
+    #[test]
+    fn run_token_revert_rollback_empty_evidence_warns() {
+        use anodizer_core::log::LogLevel;
+        use anodizer_core::publish_evidence::NixTargetSnapshot;
+        use anodizer_core::test_helpers::TestContextBuilder;
+
+        let mut ctx = TestContextBuilder::new().build();
+        let cap = anodizer_core::log::LogCapture::new();
+        ctx.with_log_capture(cap.clone());
+
+        let empty: Vec<NixTargetSnapshot> = Vec::new();
+        run_token_revert_rollback(
+            &ctx,
+            &empty,
+            "nix",
+            "NIX_PKGS_TOKEN",
+            "overlay clone targets",
+            "overlay",
+        )
+        .expect("empty rollback is a no-op success");
+
+        let warns: Vec<String> = cap
+            .all_messages()
+            .into_iter()
+            .filter_map(|(lvl, m)| (lvl == LogLevel::Warn).then_some(m))
+            .collect();
+        assert_eq!(warns.len(), 1, "exactly one empty-evidence warn: {warns:?}");
+        assert!(
+            warns[0].contains("nix") && warns[0].contains("overlay clone targets"),
+            "warn must name publisher + noun, got: {warns:?}"
+        );
+        assert_eq!(cap.status_count(), 0, "empty path emits no summary line");
+    }
+
+    /// A target carrying no `token_env_var` falls back to the supplied
+    /// `default_env_hint`, which must surface in the per-failure warn so the
+    /// operator knows which credential to restore.
+    #[test]
+    fn run_token_revert_rollback_failure_warn_uses_default_env_hint() {
+        use anodizer_core::log::LogLevel;
+        use anodizer_core::publish_evidence::ScoopTargetSnapshot;
+        use anodizer_core::test_helpers::TestContextBuilder;
+
+        let mut ctx = TestContextBuilder::new().build();
+        let cap = anodizer_core::log::LogCapture::new();
+        ctx.with_log_capture(cap.clone());
+
+        let targets = vec![ScoopTargetSnapshot {
+            target: "bad".into(),
+            // Local path that does not exist — clone fails, surfacing a
+            // per-target failure warn.
+            repo_url: "/this/path/must/not/exist/anywhere/zzz.git".into(),
+            branch: Some("master".into()),
+            token_env_var: None,
+        }];
+
+        run_token_revert_rollback(
+            &ctx,
+            &targets,
+            "scoop",
+            "SCOOP_BUCKET_TOKEN",
+            "bucket clone targets",
+            "bucket",
+        )
+        .expect("a per-target failure is a warn, not a hard error");
+
+        let warns: Vec<String> = cap
+            .all_messages()
+            .into_iter()
+            .filter_map(|(lvl, m)| (lvl == LogLevel::Warn).then_some(m))
+            .collect();
+        assert!(
+            warns.iter().any(|m| m.contains("SCOOP_BUCKET_TOKEN")),
+            "default env hint must appear in the failure warn, got: {warns:?}"
         );
     }
 }

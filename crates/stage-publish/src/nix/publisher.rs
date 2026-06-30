@@ -15,8 +15,6 @@
 
 use anodizer_core::context::Context;
 
-use crate::util::{RevertTarget, run_revert_targets_parallel};
-
 simple_publisher!(
     NixPublisher,
     "nix",
@@ -260,42 +258,16 @@ impl anodizer_core::Publisher for NixPublisher {
         ctx: &mut Context,
         evidence: &anodizer_core::PublishEvidence,
     ) -> anyhow::Result<()> {
-        let log = ctx.logger("publish");
         let targets = decode_nix_targets(&evidence.extra);
-        if targets.is_empty() {
-            log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
-                "nix",
-                "overlay clone targets",
-            ));
-            return Ok(());
-        }
         let unique = dedup_nix_targets(&targets);
-        let env = ctx.env_source();
-        let prepared: Vec<RevertTarget> = unique
-            .iter()
-            .map(|t| {
-                let token = crate::util::resolve_rollback_token(env, t.token_env_var.as_deref());
-                RevertTarget {
-                    target: t.target.clone(),
-                    repo_url: t.repo_url.clone(),
-                    branch: t.branch.clone(),
-                    token,
-                    private_key: None,
-                    ssh_command: None,
-                }
-            })
-            .collect();
-        let env_hint = unique
-            .first()
-            .and_then(|t| t.token_env_var.as_deref())
-            .unwrap_or("NIX_PKGS_TOKEN");
-        let (reverted, failed) =
-            run_revert_targets_parallel(&prepared, "nix", Some(env_hint), &log);
-        log.status(&format!(
-            "nix rollback reverted {} overlay(s), {} failure(s)",
-            reverted, failed
-        ));
-        Ok(())
+        crate::util::run_token_revert_rollback(
+            ctx,
+            &unique,
+            "nix",
+            "NIX_PKGS_TOKEN",
+            "overlay clone targets",
+            "overlay",
+        )
     }
 
     /// Probe every active overlay repo for existence + push scope before any

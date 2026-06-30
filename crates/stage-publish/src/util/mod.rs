@@ -76,6 +76,7 @@ pub(crate) use github_pr::{
 };
 pub(crate) use parallelism::{
     ROLLBACK_PARALLELISM, join_or_warn, lock_recover, run_revert_targets_parallel,
+    run_token_revert_rollback,
 };
 pub(crate) use pr::{
     PrOrigin, SubmitPrOpts, maybe_submit_pr, maybe_submit_pr_with_env, submit_pr_via_gh_with_opts,

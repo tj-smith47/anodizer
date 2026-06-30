@@ -483,16 +483,12 @@ pub(crate) fn render_same_tap_cask_for_crate(
     let Some(cask_cfg) = hb_cfg.cask.as_ref() else {
         return Ok(None);
     };
-    if crate::util::should_skip_upload(cask_cfg.skip_upload.as_ref(), ctx, log)? {
-        log.status(&format!(
-            "skipped homebrew cask upload for '{}' — skip_upload={}",
-            crate_name,
-            cask_cfg
-                .skip_upload
-                .as_ref()
-                .map(|v| v.as_str())
-                .unwrap_or("")
-        ));
+    if crate::util::should_skip_upload(
+        cask_cfg.skip_upload.as_ref(),
+        ctx,
+        log,
+        Some(&format!("homebrew cask for '{crate_name}'")),
+    )? {
         return Ok(None);
     }
     let cask_result = generate_cask_from_context(ctx, crate_name, hb_cfg, cask_cfg, log)?;
@@ -726,16 +722,12 @@ pub(crate) fn render_homebrew_formula_for_crate(
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("homebrew: no homebrew config for '{}'", crate_name))?;
 
-    if crate::util::should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx, log)? {
-        log.status(&format!(
-            "skipped homebrew upload for '{}' — skip_upload={}",
-            crate_name,
-            hb_cfg
-                .skip_upload
-                .as_ref()
-                .map(|v| v.as_str())
-                .unwrap_or("")
-        ));
+    if crate::util::should_skip_upload(
+        hb_cfg.skip_upload.as_ref(),
+        ctx,
+        log,
+        Some(&format!("homebrew for '{crate_name}'")),
+    )? {
         return Ok(None);
     }
 
@@ -909,16 +901,12 @@ pub fn publish_to_homebrew(ctx: &mut Context, crate_name: &str, log: &StageLogge
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("homebrew: no homebrew config for '{}'", crate_name))?;
 
-    if crate::util::should_skip_upload(hb_cfg.skip_upload.as_ref(), ctx, log)? {
-        log.status(&format!(
-            "skipped homebrew upload for '{}' — skip_upload={}",
-            crate_name,
-            hb_cfg
-                .skip_upload
-                .as_ref()
-                .map(|v| v.as_str())
-                .unwrap_or("")
-        ));
+    if crate::util::should_skip_upload(
+        hb_cfg.skip_upload.as_ref(),
+        ctx,
+        log,
+        Some(&format!("homebrew for '{crate_name}'")),
+    )? {
         return Ok(false);
     }
 

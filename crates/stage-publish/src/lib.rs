@@ -54,7 +54,7 @@ pub use dispatch::{DispatchOptions, dispatch};
 pub use registry::{configured_publishers, group_dispatch_order};
 pub use schema_validation::{TagResolver, validate_publisher_schemas};
 
-use anodizer_core::config::PublishConfig;
+use anodizer_core::config::{ChocolateyConfig, PostPublishPollConfig, PublishConfig, WingetConfig};
 use anodizer_core::context::{Context, RollbackMode};
 use anodizer_core::log::StageLogger;
 use anodizer_core::stage::Stage;
@@ -313,6 +313,106 @@ where
         .collect()
 }
 
+/// Read access to a publisher config's optional `post_publish_poll` block,
+/// so [`poll_eligibility`] can gate moderation polling generically across
+/// the chocolatey and winget arms (whose ladders are otherwise identical).
+trait HasPostPublishPoll {
+    fn post_publish_poll(&self) -> Option<PostPublishPollConfig>;
+}
+
+impl HasPostPublishPoll for ChocolateyConfig {
+    fn post_publish_poll(&self) -> Option<PostPublishPollConfig> {
+        self.post_publish_poll
+    }
+}
+
+impl HasPostPublishPoll for WingetConfig {
+    fn post_publish_poll(&self) -> Option<PostPublishPollConfig> {
+        self.post_publish_poll
+    }
+}
+
+/// One crate's resolved post-publish poll eligibility, yielded by
+/// [`poll_eligibility`].
+///
+/// `poll_cfg` is `Some` when a poll job should run, and `None` when the
+/// crate is eligible but polling was skipped via `--no-post-publish-poll`
+/// (the caller still records a `NotPolled` summary entry for it).
+struct PollCandidate<C> {
+    crate_name: String,
+    cfg: C,
+    poll_cfg: Option<PostPublishPollConfig>,
+}
+
+/// Walk the shared chocolatey/winget poll-eligibility ladder and return one
+/// [`PollCandidate`] per crate that should be considered for moderation
+/// polling.
+///
+/// Identical semantics for both publishers (divergence here gates
+/// irreversible-publisher moderation polling, so it would be a correctness
+/// gap): the publisher must not be deselected (`--skip` / `--publishers`),
+/// the crate must carry the publisher's config block, and that block's
+/// `post_publish_poll.enabled` must not be `false`. `--no-post-publish-poll`
+/// (`skip_via_cli`) yields candidates with `poll_cfg: None`; otherwise
+/// [`post_publish::resolve_poll_config`] supplies the effective config.
+///
+/// `selector` picks the per-publisher config off a [`PublishConfig`]
+/// (`|p| p.chocolatey.clone()` / `|p| p.winget.clone()`); each arm builds
+/// its own `PollJob` payload (package name, token) from the yielded tuples.
+fn poll_eligibility<C, F>(
+    ctx: &Context,
+    selected: &[String],
+    publisher: &str,
+    skip_via_cli: bool,
+    selector: F,
+) -> Vec<PollCandidate<C>>
+where
+    C: HasPostPublishPoll,
+    F: Fn(&PublishConfig) -> Option<C>,
+{
+    let mut out = Vec::new();
+    if ctx.publisher_deselected(publisher) {
+        return out;
+    }
+    for crate_name in crates_with_publisher(ctx, selected, |p| selector(p).is_some()) {
+        let cfg_opt = util::all_crates(ctx)
+            .into_iter()
+            .find(|c| c.name == crate_name)
+            .and_then(|c| c.publish)
+            .and_then(|p| selector(&p));
+        let Some(cfg) = cfg_opt else {
+            continue;
+        };
+        // Per-publisher `enabled: false` opts out entirely — distinct from
+        // the global `--no-post-publish-poll` skip — so emit no candidate at
+        // all (otherwise the renderer would misreport the disabled publisher
+        // as "skipped via flag").
+        if !cfg.post_publish_poll().unwrap_or_default().enabled {
+            continue;
+        }
+        if skip_via_cli {
+            out.push(PollCandidate {
+                crate_name,
+                cfg,
+                poll_cfg: None,
+            });
+            continue;
+        }
+        // `resolve_poll_config` collapses the CLI + per-pub gates into one
+        // `Option`; the enabled case is already filtered above, so a `None`
+        // here can only be the CLI flag — handled by the branch above.
+        let Some(poll_cfg) = post_publish::resolve_poll_config(ctx, cfg.post_publish_poll()) else {
+            continue;
+        };
+        out.push(PollCandidate {
+            crate_name,
+            cfg,
+            poll_cfg: Some(poll_cfg),
+        });
+    }
+    out
+}
+
 /// Build the post-publish polling job list from the active context and run
 /// every job in parallel. Writes typed `PostPublishResult` entries (as JSON
 /// values) into `ctx.stage_outputs.post_publish_results` for the deferred
@@ -346,139 +446,93 @@ fn run_post_publish_pollers(ctx: &mut Context, selected: &[String], log: &StageL
     let mut skipped: Vec<(&'static str, String, String)> = Vec::new();
     let skip_via_cli = ctx.options.skip_post_publish_poll;
 
-    // Chocolatey eligibility — collect a job per per-crate `chocolatey:`
-    // block when the publisher isn't deselected. `publisher_deselected`
-    // folds in both selectors keyed on the canonical publisher name
-    // `chocolatey`: `--skip=chocolatey` (the denylist; the skip token now
-    // equals the publisher name with no `choco` short alias) and a
-    // `--publishers` allowlist that excludes chocolatey. A publisher the
-    // dispatch loop never ran must never be polled.
-    if !ctx.publisher_deselected("chocolatey") {
-        for crate_name in
-            &crates_with_publisher(ctx, selected, |p: &PublishConfig| p.chocolatey.is_some())
-        {
-            let cfg_opt = util::all_crates(ctx)
-                .into_iter()
-                .find(|c| &c.name == crate_name)
-                .and_then(|c| c.publish)
-                .and_then(|p| p.chocolatey);
-            let Some(choco) = cfg_opt else {
-                continue;
-            };
-            // Per-publisher `enabled: false` opts a publisher out
-            // *entirely* (not the same surface as `--no-post-publish-poll`,
-            // which is a global skip). Detect that here so the skip-path
-            // doesn't emit `NotPolled` for a publisher the operator
-            // explicitly turned off in config (which the renderer would
-            // otherwise misreport as "skipped via flag").
-            let per_pub_cfg = choco.post_publish_poll.unwrap_or_default();
-            if !per_pub_cfg.enabled {
-                continue;
-            }
-            let pkg_name = choco.name.unwrap_or_else(|| crate_name.clone());
-            if skip_via_cli {
-                skipped.push(("chocolatey", pkg_name, version.clone()));
-                continue;
-            }
-            // `resolve_poll_config` collapses both gates (CLI + per-pub)
-            // into one `Option`. We've already filtered the per-pub
-            // `enabled` case, so a `None` here can only mean the CLI
-            // flag — caught by the `skip_via_cli` branch above.
-            let Some(poll_cfg) = post_publish::resolve_poll_config(ctx, choco.post_publish_poll)
-            else {
-                continue;
-            };
-            jobs.push(post_publish::PollJob::Chocolatey {
+    // Chocolatey eligibility — `poll_eligibility` owns the shared ladder
+    // (deselected → per-crate `chocolatey:` block → `enabled` → skip_via_cli
+    // → `resolve_poll_config`). `publisher_deselected("chocolatey")` folds in
+    // both `--skip=chocolatey` and a `--publishers` allowlist that excludes
+    // it — a publisher the dispatch loop never ran must never be polled.
+    for cand in poll_eligibility(ctx, selected, "chocolatey", skip_via_cli, |p| {
+        p.chocolatey.clone()
+    }) {
+        let PollCandidate {
+            crate_name,
+            cfg,
+            poll_cfg,
+        } = cand;
+        let pkg_name = cfg.name.unwrap_or(crate_name);
+        match poll_cfg {
+            None => skipped.push(("chocolatey", pkg_name, version.clone())),
+            Some(poll_cfg) => jobs.push(post_publish::PollJob::Chocolatey {
                 package: pkg_name,
                 version: version.clone(),
                 page_base_url: "https://community.chocolatey.org".to_string(),
                 cfg: poll_cfg,
-            });
+            }),
         }
     }
 
-    // WinGet eligibility — the PR is rediscovered via the GitHub search API
-    // (mirroring `preflight::Winget`), so no PR URL needs threading from the
-    // publish step. A single `publisher_deselected("winget")`
-    // gate folds in both `--skip=winget` and the `--publishers` allowlist,
-    // the same shape as the chocolatey arm above (both skip tokens now equal
-    // the canonical publisher name).
-    if !ctx.publisher_deselected("winget") {
-        for crate_name in
-            &crates_with_publisher(ctx, selected, |p: &PublishConfig| p.winget.is_some())
-        {
-            let cfg_opt = util::all_crates(ctx)
-                .into_iter()
-                .find(|c| &c.name == crate_name)
-                .and_then(|c| c.publish)
-                .and_then(|p| p.winget);
-            let Some(winget) = cfg_opt else {
-                continue;
-            };
-            // Per-publisher disable check — same rationale as the
-            // chocolatey arm above.
-            let per_pub_cfg = winget.post_publish_poll.unwrap_or_default();
-            if !per_pub_cfg.enabled {
-                continue;
+    // WinGet eligibility — same shared ladder via `poll_eligibility`. The PR
+    // is rediscovered via the GitHub search API (mirroring `preflight::Winget`),
+    // so no PR URL needs threading from the publish step.
+    for cand in poll_eligibility(ctx, selected, "winget", skip_via_cli, |p| p.winget.clone()) {
+        let PollCandidate {
+            crate_name,
+            cfg,
+            poll_cfg,
+        } = cand;
+        // PackageIdentifier resolution: prefer explicit `package_identifier`,
+        // fall back to `<publisher>.<name>` (the upstream convention enforced
+        // by winget validation), then to the crate name as a last resort.
+        let pkg_id = cfg.package_identifier.clone().unwrap_or_else(|| {
+            let publisher = cfg.publisher.as_deref().unwrap_or("");
+            let name = cfg
+                .name
+                .as_deref()
+                .or(cfg.package_name.as_deref())
+                .unwrap_or(crate_name.as_str());
+            if publisher.is_empty() {
+                name.to_string()
+            } else {
+                format!("{}.{}", publisher, name)
             }
-            // PackageIdentifier resolution: prefer explicit
-            // `package_identifier`, fall back to `<publisher>.<name>`
-            // (the upstream convention enforced by winget validation),
-            // then to the crate name as a last resort.
-            let pkg_id = winget.package_identifier.clone().unwrap_or_else(|| {
-                let publisher = winget.publisher.as_deref().unwrap_or("");
-                let name = winget
-                    .name
-                    .as_deref()
-                    .or(winget.package_name.as_deref())
-                    .unwrap_or(crate_name);
-                if publisher.is_empty() {
-                    name.to_string()
-                } else {
-                    format!("{}.{}", publisher, name)
-                }
-            });
-            if skip_via_cli {
-                skipped.push(("winget", pkg_id, version.clone()));
-                continue;
+        });
+        match poll_cfg {
+            None => skipped.push(("winget", pkg_id, version.clone())),
+            Some(poll_cfg) => {
+                // Render a configured `repository.token` before use — a
+                // templated `{{ .Env.GH_PAT }}` must become the resolved
+                // credential, not the literal template string, for the poll's
+                // GitHub API auth.
+                let explicit = cfg
+                    .repository
+                    .as_ref()
+                    .and_then(|r| r.token.as_deref())
+                    .and_then(|t| match ctx.render_template(t) {
+                        Ok(rendered) => Some(rendered),
+                        // On render failure, drop to the env fallback rather than
+                        // feeding the raw `{{...}}` template as a literal bearer
+                        // token (which would yield an opaque poll auth-failure).
+                        Err(e) => {
+                            ctx.logger("publish").warn(&format!(
+                                "winget post-publish poll: could not render repository.token template ({e}); using environment token"
+                            ));
+                            None
+                        }
+                    });
+                // Canonical resolver: empty-filters the rendered token AND the
+                // env fallbacks (a missing-secret `""` must not be the token).
+                let token = anodizer_core::git::resolve_github_token_with_env(
+                    explicit.as_deref(),
+                    &|key| ctx.env_var(key),
+                );
+                jobs.push(post_publish::PollJob::Winget {
+                    package_identifier: pkg_id,
+                    version: version.clone(),
+                    api_base_url: "https://api.github.com".to_string(),
+                    token,
+                    cfg: poll_cfg,
+                });
             }
-            let Some(poll_cfg) = post_publish::resolve_poll_config(ctx, winget.post_publish_poll)
-            else {
-                continue;
-            };
-            // Render a configured `repository.token` before use — a
-            // templated `{{ .Env.GH_PAT }}` must become the resolved
-            // credential, not the literal template string, for the poll's
-            // GitHub API auth.
-            let explicit = winget
-                .repository
-                .as_ref()
-                .and_then(|r| r.token.as_deref())
-                .and_then(|t| match ctx.render_template(t) {
-                    Ok(rendered) => Some(rendered),
-                    // On render failure, drop to the env fallback rather than
-                    // feeding the raw `{{...}}` template as a literal bearer
-                    // token (which would yield an opaque poll auth-failure).
-                    Err(e) => {
-                        ctx.logger("publish").warn(&format!(
-                            "winget post-publish poll: could not render repository.token template ({e}); using environment token"
-                        ));
-                        None
-                    }
-                });
-            // Canonical resolver: empty-filters the rendered token AND the env
-            // fallbacks (a missing-secret `""` must not be taken as the token).
-            let token =
-                anodizer_core::git::resolve_github_token_with_env(explicit.as_deref(), &|key| {
-                    ctx.env_var(key)
-                });
-            jobs.push(post_publish::PollJob::Winget {
-                package_identifier: pkg_id,
-                version: version.clone(),
-                api_base_url: "https://api.github.com".to_string(),
-                token,
-                cfg: poll_cfg,
-            });
         }
     }
 
@@ -2144,6 +2198,106 @@ mod tests {
         assert!(
             !results.iter().any(|r| r["publisher"] == "chocolatey"),
             "chocolatey is excluded by the allowlist and must never be polled (got {results:?})"
+        );
+    }
+
+    /// The chocolatey and winget arms share one `poll_eligibility` ladder, so
+    /// for an equivalent config they must yield identical eligibility —
+    /// divergence here would gate moderation polling differently on two
+    /// irreversible publishers. Asserts parity across the enabled/disabled
+    /// filter and both the poll branch and the `--no-post-publish-poll` skip
+    /// branch.
+    #[test]
+    fn choco_and_winget_poll_eligibility_are_identical_for_equivalent_config() {
+        use anodizer_core::config::{ChocolateyConfig, PostPublishPollConfig, WingetConfig};
+
+        let enabled = || {
+            Some(PostPublishPollConfig {
+                enabled: true,
+                ..Default::default()
+            })
+        };
+        let disabled = || {
+            Some(PostPublishPollConfig {
+                enabled: false,
+                ..Default::default()
+            })
+        };
+
+        let mut config = Config::default();
+        config.crates = vec![
+            CrateConfig {
+                name: "alpha".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig {
+                    chocolatey: Some(ChocolateyConfig {
+                        post_publish_poll: enabled(),
+                        ..Default::default()
+                    }),
+                    winget: Some(WingetConfig {
+                        post_publish_poll: enabled(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            // Polling disabled on both — each arm must filter it out.
+            CrateConfig {
+                name: "beta".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                publish: Some(PublishConfig {
+                    chocolatey: Some(ChocolateyConfig {
+                        post_publish_poll: disabled(),
+                        ..Default::default()
+                    }),
+                    winget: Some(WingetConfig {
+                        post_publish_poll: disabled(),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ];
+        let ctx = Context::new(config, ContextOptions::default());
+
+        // `(crate_name, polls?)` is the observable eligibility shape shared by
+        // both publishers (the `cfg` payload type differs by construction).
+        fn shape<C>(v: &[PollCandidate<C>]) -> Vec<(String, bool)> {
+            v.iter()
+                .map(|c| (c.crate_name.clone(), c.poll_cfg.is_some()))
+                .collect()
+        }
+
+        // Poll branch: only the enabled crate, with a resolved poll config.
+        let choco = poll_eligibility(&ctx, &[], "chocolatey", false, |p| p.chocolatey.clone());
+        let winget = poll_eligibility(&ctx, &[], "winget", false, |p| p.winget.clone());
+        assert_eq!(
+            shape(&choco),
+            vec![("alpha".to_string(), true)],
+            "only the enabled crate is eligible, with a poll config"
+        );
+        assert_eq!(
+            shape(&choco),
+            shape(&winget),
+            "choco and winget poll eligibility must be identical"
+        );
+
+        // Skip branch (`--no-post-publish-poll`): same crate set, no poll cfg.
+        let choco_skip = poll_eligibility(&ctx, &[], "chocolatey", true, |p| p.chocolatey.clone());
+        let winget_skip = poll_eligibility(&ctx, &[], "winget", true, |p| p.winget.clone());
+        assert_eq!(
+            shape(&choco_skip),
+            vec![("alpha".to_string(), false)],
+            "skip_via_cli keeps the crate eligible but yields no poll config"
+        );
+        assert_eq!(
+            shape(&choco_skip),
+            shape(&winget_skip),
+            "choco and winget skip eligibility must be identical"
         );
     }
 

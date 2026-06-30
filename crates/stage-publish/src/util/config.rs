@@ -183,7 +183,8 @@ pub(crate) fn resolve_repo_owner_name(
 // Skip-gate evaluation
 // ---------------------------------------------------------------------------
 
-/// Resolve `skip_upload` to a boolean for publisher entry-points.
+/// Resolve `skip_upload` to a boolean for publisher entry-points, emitting
+/// the canonical skip-upload log line when the upload is skipped.
 ///
 /// Accepts the StringOrBool field directly. Templates are rendered via
 /// `ctx.render_template`. Returns:
@@ -192,19 +193,27 @@ pub(crate) fn resolve_repo_owner_name(
 /// - `false` if `None`, or renders to "false"/"".
 /// - `false` with a warn if the value is an unrecognized string.
 ///
+/// When the decision is `true` and `label` is `Some`, this emits the single
+/// canonical operator-facing line `skipped <label> upload — skip_upload is
+/// set` (the same phrasing [`should_skip_publisher_with_if`] uses). The line
+/// lives here so every publisher's skip-upload wording is identical; callers
+/// pass `None` only on render/validation paths that must stay silent (the
+/// offline schema validators re-render the same artifact without logging).
+///
 /// Moved here so all publishers share a single implementation; previously
 /// homebrew.rs owned this and other crates reached across modules.
 pub(crate) fn should_skip_upload(
     skip_upload: Option<&anodizer_core::config::StringOrBool>,
     ctx: &Context,
     log: &StageLogger,
+    label: Option<&str>,
 ) -> Result<bool> {
     let raw = match skip_upload {
         Some(v) => v.as_str(),
         None => return Ok(false),
     };
     let rendered = super::template::render_or_warn(ctx, log, "skip_upload", raw)?;
-    Ok(match rendered.trim() {
+    let skip = match rendered.trim() {
         "true" => true,
         "auto" => {
             let pre = ctx
@@ -221,7 +230,11 @@ pub(crate) fn should_skip_upload(
             ));
             false
         }
-    })
+    };
+    if skip && let Some(label) = label {
+        log.status(&format!("skipped {label} upload — skip_upload is set"));
+    }
+    Ok(skip)
 }
 
 /// Evaluate `skip` / `skip_upload` / `if:` fields for a publisher entry.
@@ -256,8 +269,7 @@ pub(crate) fn should_skip_publisher_with_if(
     // bare bool-eval would silently treat `auto` as an unknown string and
     // never skip a prerelease, regressing the documented `skip_upload: auto`
     // semantics.
-    if skip_upload.is_some() && should_skip_upload(skip_upload, ctx, log)? {
-        log.status(&format!("skipped {label} upload — skip_upload is set"));
+    if skip_upload.is_some() && should_skip_upload(skip_upload, ctx, log, Some(label))? {
         return Ok(true);
     }
     let proceed = anodizer_core::config::evaluate_if_condition(if_condition, label, |t| {

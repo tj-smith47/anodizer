@@ -30,8 +30,6 @@ use anodizer_core::publish_evidence::{
     HomebrewExtra, HomebrewTargetSnapshot, PublishEvidenceExtra,
 };
 
-use crate::util::{RevertTarget, run_revert_targets_parallel};
-
 simple_publisher!(
     HomebrewPublisher,
     "homebrew",
@@ -395,52 +393,19 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         ctx: &mut Context,
         evidence: &anodizer_core::PublishEvidence,
     ) -> anyhow::Result<()> {
-        let log = ctx.logger("publish");
-        let targets = decode_homebrew_targets(&evidence.extra);
-        if targets.is_empty() {
-            log.warn(&crate::publisher_helpers::rollback_empty_warning_msg(
-                "homebrew",
-                "tap clone targets",
-            ));
-            return Ok(());
-        }
-
         // Dedup by `(repo_url, branch)` so a tap that holds multiple
         // formulae/casks isn't reverted twice (second revert undoes
         // the first).
+        let targets = decode_homebrew_targets(&evidence.extra);
         let unique = dedup_homebrew_targets(&targets);
-        // Resolve auth tokens at rollback time — never persisted in
-        // evidence. `token_env_var` is just the *name* of the env
-        // var; the value lives only in the injected env source.
-        let env = ctx.env_source();
-        let prepared: Vec<RevertTarget> = unique
-            .iter()
-            .map(|t| {
-                let token = crate::util::resolve_rollback_token(env, t.token_env_var.as_deref());
-                RevertTarget {
-                    target: t.target.clone(),
-                    repo_url: t.repo_url.clone(),
-                    branch: t.branch.clone(),
-                    token,
-                    private_key: None,
-                    ssh_command: None,
-                }
-            })
-            .collect();
-        // Use the first target's env-var hint for the warn lines;
-        // every homebrew target carries the same `HOMEBREW_TAP_TOKEN`
-        // hint by construction, so picking the first is fine.
-        let env_hint = unique
-            .first()
-            .and_then(|t| t.token_env_var.as_deref())
-            .unwrap_or("HOMEBREW_TAP_TOKEN");
-        let (reverted, failed) =
-            run_revert_targets_parallel(&prepared, "homebrew", Some(env_hint), &log);
-        log.status(&format!(
-            "homebrew rollback reverted {} tap(s), {} failure(s)",
-            reverted, failed
-        ));
-        Ok(())
+        crate::util::run_token_revert_rollback(
+            ctx,
+            &unique,
+            "homebrew",
+            "HOMEBREW_TAP_TOKEN",
+            "tap clone targets",
+            "tap",
+        )
     }
 
     /// Probe every active tap repo (formula + cask) for existence + push scope
