@@ -112,7 +112,7 @@ fn delete_recorded_targets(ctx: &mut Context, targets: &[GemFuryTarget]) {
         // config (rendered through the template engine) still resolves it.
         let cfg_token = cfg_entries
             .iter()
-            .find(|c| api_token_env_var(c) == t.api_token_env_var)
+            .find(|c| api_token_env_var(ctx, c) == t.api_token_env_var)
             .and_then(|c| match resolve_api_token(ctx, c) {
                 Ok(s) if !s.is_empty() => Some(s),
                 _ => None,
@@ -198,7 +198,7 @@ impl anodizer_core::Publisher for GemFuryPublisher {
                 )
             })
             .map(|entry| anodizer_core::EnvRequirement::EnvAllOf {
-                vars: vec![crate::gemfury::publish::push_token_env_var(entry).to_string()],
+                vars: vec![crate::gemfury::publish::push_token_env_var(ctx, entry)],
             })
             .collect()
     }

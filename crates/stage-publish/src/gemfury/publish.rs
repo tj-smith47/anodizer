@@ -112,15 +112,21 @@ pub(crate) fn fury_package_name(art_name: &str, version: &str) -> String {
 }
 
 /// Resolved push-token env var name for the given config entry.
-pub(crate) fn push_token_env_var(cfg: &GemFuryConfig) -> &str {
-    cfg.secret_name.as_deref().unwrap_or(DEFAULT_PUSH_TOKEN_ENV)
+///
+/// A templated `secret_name` (`FURY_PUSH_{{ .Env.STAGE }}`) is rendered
+/// against `ctx` before it is used as an env-var name; without the render the
+/// literal template string is looked up, never found, and the credential is
+/// silently treated as absent on a live push.
+pub(crate) fn push_token_env_var(ctx: &Context, cfg: &GemFuryConfig) -> String {
+    crate::util::resolve_secret_name(ctx, cfg.secret_name.as_deref(), DEFAULT_PUSH_TOKEN_ENV)
 }
 
 /// Resolved API-token env var name for the given config entry.
-pub(crate) fn api_token_env_var(cfg: &GemFuryConfig) -> &str {
-    cfg.api_secret_name
-        .as_deref()
-        .unwrap_or(DEFAULT_API_TOKEN_ENV)
+///
+/// Renders a templated `api_secret_name` against `ctx` before lookup, for the
+/// same reason as [`push_token_env_var`].
+pub(crate) fn api_token_env_var(ctx: &Context, cfg: &GemFuryConfig) -> String {
+    crate::util::resolve_secret_name(ctx, cfg.api_secret_name.as_deref(), DEFAULT_API_TOKEN_ENV)
 }
 
 /// Detect the Fury format from a filename extension. Returns `None` for
@@ -165,10 +171,7 @@ pub(crate) fn resolve_push_token(ctx: &Context, cfg: &GemFuryConfig) -> Result<S
         }
     }
     let env = ctx.env_source();
-    Ok(env
-        .var(push_token_env_var(cfg))
-        .unwrap_or_default()
-        .to_string())
+    Ok(env.var(&push_token_env_var(ctx, cfg)).unwrap_or_default())
 }
 
 /// Resolve the API (delete) token. Same shape as [`resolve_push_token`]
@@ -187,10 +190,7 @@ pub(crate) fn resolve_api_token(ctx: &Context, cfg: &GemFuryConfig) -> Result<St
         }
     }
     let env = ctx.env_source();
-    Ok(env
-        .var(api_token_env_var(cfg))
-        .unwrap_or_default()
-        .to_string())
+    Ok(env.var(&api_token_env_var(ctx, cfg)).unwrap_or_default())
 }
 
 /// Walk crate-level `archives:` blocks and bail when one declares multiple
@@ -359,7 +359,8 @@ fn push_one_artifact<E: anodizer_core::EnvSource + ?Sized>(
     version: &str,
     push_url: &str,
     push_token: &str,
-    cfg: &GemFuryConfig,
+    push_token_env: &str,
+    api_token_env: &str,
     job: &PushJob<'_>,
     policy: &RetryPolicy,
     log: &StageLogger,
@@ -486,8 +487,8 @@ fn push_one_artifact<E: anodizer_core::EnvSource + ?Sized>(
         package: fury_pkg,
         version: version.to_string(),
         format: job.format.clone(),
-        push_token_env_var: push_token_env_var(cfg).to_string(),
-        api_token_env_var: api_token_env_var(cfg).to_string(),
+        push_token_env_var: push_token_env.to_string(),
+        api_token_env_var: api_token_env.to_string(),
     }))
 }
 
@@ -605,13 +606,17 @@ pub fn publish_to_gemfury(
 
         // ---- Token ----
         let push_token = resolve_push_token(ctx, cfg)?;
+        // Resolve the (templated) env-var names once per entry; every pushed
+        // artifact records the same rendered names into its rollback target.
+        let push_token_env = push_token_env_var(ctx, cfg);
+        let api_token_env = api_token_env_var(ctx, cfg);
         if push_token.is_empty() {
             bail!(
                 "gemfury: push token is required to push to account '{}' (entry '{}'). \
                  Set `${}` or `gemfury[].token`.",
                 account,
                 label,
-                push_token_env_var(cfg)
+                push_token_env
             );
         }
 
@@ -699,7 +704,8 @@ pub fn publish_to_gemfury(
                                 &version,
                                 &push_url,
                                 &push_token,
-                                cfg,
+                                &push_token_env,
+                                &api_token_env,
                                 job,
                                 &policy,
                                 log,

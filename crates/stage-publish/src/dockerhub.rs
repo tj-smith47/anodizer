@@ -301,8 +301,13 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
         // Surface a missing secret env in dry-run as a warning (live mode
         // will hard-fail later) so a typo'd secret_name doesn't slip
         // through unnoticed during config-test runs.
-        let secret_name = entry.secret_name.as_deref().unwrap_or("DOCKER_PASSWORD");
-        if ctx.is_dry_run() && ctx.env_var(secret_name).is_none() {
+        // A templated `secret_name` (`TOKEN_{{ .Env.STAGE }}`) must be
+        // rendered before the env lookup, or the literal template string is
+        // looked up, never found, and the credential is silently treated as
+        // absent on a live publish.
+        let secret_name =
+            crate::util::resolve_secret_name(ctx, entry.secret_name.as_deref(), "DOCKER_PASSWORD");
+        if ctx.is_dry_run() && ctx.env_var(&secret_name).is_none() {
             log.warn(&format!(
                 "dockerhub secret env '{}' is not set; live mode will fail authentication",
                 secret_name
@@ -350,7 +355,7 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
         let token = if let Some(cached) = jwt_cache.get(&cache_key) {
             cached.clone()
         } else {
-            let password = ctx.env_var(secret_name).ok_or_else(|| {
+            let password = ctx.env_var(&secret_name).ok_or_else(|| {
                 anyhow!("dockerhub: environment variable '{}' not set", secret_name)
             })?;
 
@@ -662,10 +667,12 @@ impl anodizer_core::Publisher for DockerhubPublisher {
             // Same resolution `run()` uses: password from `secret_name`
             // (default DOCKER_PASSWORD); username from config (templated)
             // with DOCKER_USERNAME as env fallback.
-            let secret = entry.secret_name.as_deref().unwrap_or("DOCKER_PASSWORD");
-            out.push(anodizer_core::EnvRequirement::EnvAllOf {
-                vars: vec![secret.to_string()],
-            });
+            let secret = crate::util::resolve_secret_name(
+                ctx,
+                entry.secret_name.as_deref(),
+                "DOCKER_PASSWORD",
+            );
+            out.push(anodizer_core::EnvRequirement::EnvAllOf { vars: vec![secret] });
             match entry.username.as_deref().filter(|u| !u.is_empty()) {
                 Some(u) => {
                     let refs = anodizer_core::env_preflight::template_env_refs(u);
@@ -817,12 +824,16 @@ impl anodizer_core::Publisher for DockerhubPublisher {
                 Some(u) => ctx.render_template(u).unwrap_or_else(|_| u.to_string()),
                 None => ctx.env_var("DOCKER_USERNAME").unwrap_or_default(),
             };
-            let secret_name = entry.secret_name.as_deref().unwrap_or("DOCKER_PASSWORD");
+            let secret_name = crate::util::resolve_secret_name(
+                ctx,
+                entry.secret_name.as_deref(),
+                "DOCKER_PASSWORD",
+            );
             // An unresolved credential is `requirements()`'s job to flag; this
             // probe only validates a credential that IS present.
             let (Some(username), Some(password)) = (
                 Some(username).filter(|u| !u.is_empty()),
-                ctx.env_var(secret_name).filter(|p| !p.is_empty()),
+                ctx.env_var(&secret_name).filter(|p| !p.is_empty()),
             ) else {
                 continue;
             };

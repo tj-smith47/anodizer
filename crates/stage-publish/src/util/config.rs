@@ -387,6 +387,31 @@ mod tests {
         );
     }
 
+    /// A templated `secret_name` (`TOKEN_{{ .Env.X }}`) must render to the
+    /// env-var name BEFORE the lookup, identically regardless of which
+    /// publisher's default is supplied. cloudsmith already routed through this
+    /// SSOT; dockerhub and gemfury now do too, so a `secret_name:
+    /// "TOKEN_{{ .Env.X }}"` with `.Env.X=FOO` resolves to `TOKEN_FOO` for all
+    /// three rather than being looked up as the literal template string.
+    #[test]
+    fn resolve_secret_name_renders_templated_value_identically_across_publishers() {
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.template_vars_mut().set_env("X", "FOO");
+        let templated = Some("TOKEN_{{ .Env.X }}");
+        // The default differs per publisher but the render path is the same;
+        // a present (templated) `secret_name` ignores the default entirely.
+        let cloudsmith = resolve_secret_name(&ctx, templated, "CLOUDSMITH_TOKEN");
+        let dockerhub = resolve_secret_name(&ctx, templated, "DOCKER_PASSWORD");
+        let gemfury = resolve_secret_name(&ctx, templated, "FURY_PUSH_TOKEN");
+        assert_eq!(cloudsmith, "TOKEN_FOO");
+        assert_eq!(dockerhub, "TOKEN_FOO");
+        assert_eq!(gemfury, "TOKEN_FOO");
+        assert!(
+            !cloudsmith.contains("{{"),
+            "the literal template must never become the env-var name"
+        );
+    }
+
     /// A plain (non-templated) `repository.token` passes through unchanged.
     #[test]
     fn resolve_repo_token_returns_plain_token_verbatim() {

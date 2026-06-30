@@ -187,20 +187,44 @@ fn detect_gemfury_format_is_case_insensitive() {
 
 #[test]
 fn push_and_api_token_env_var_defaults() {
+    let ctx = TestContextBuilder::new().build();
     let cfg = GemFuryConfig::default();
-    assert_eq!(push_token_env_var(&cfg), "FURY_PUSH_TOKEN");
-    assert_eq!(api_token_env_var(&cfg), "FURY_API_TOKEN");
+    assert_eq!(push_token_env_var(&ctx, &cfg), "FURY_PUSH_TOKEN");
+    assert_eq!(api_token_env_var(&ctx, &cfg), "FURY_API_TOKEN");
 }
 
 #[test]
 fn push_and_api_token_env_var_overrides() {
+    let ctx = TestContextBuilder::new().build();
     let cfg = GemFuryConfig {
         secret_name: Some("MY_PUSH".into()),
         api_secret_name: Some("MY_API".into()),
         ..Default::default()
     };
-    assert_eq!(push_token_env_var(&cfg), "MY_PUSH");
-    assert_eq!(api_token_env_var(&cfg), "MY_API");
+    assert_eq!(push_token_env_var(&ctx, &cfg), "MY_PUSH");
+    assert_eq!(api_token_env_var(&ctx, &cfg), "MY_API");
+}
+
+/// A templated `secret_name` / `api_secret_name`
+/// (`FURY_{{ .Env.STAGE }}`) must render against the context before the
+/// env-var lookup, exactly as cloudsmith's `resolve_secret_name` does — the
+/// literal template string must never be looked up as a var name.
+#[test]
+fn token_env_vars_render_templated_secret_name() {
+    let mut ctx = TestContextBuilder::new().build();
+    ctx.template_vars_mut().set_env("STAGE", "PROD");
+    let cfg = GemFuryConfig {
+        secret_name: Some("FURY_PUSH_{{ .Env.STAGE }}".into()),
+        api_secret_name: Some("FURY_API_{{ .Env.STAGE }}".into()),
+        ..Default::default()
+    };
+    assert_eq!(push_token_env_var(&ctx, &cfg), "FURY_PUSH_PROD");
+    assert_eq!(api_token_env_var(&ctx, &cfg), "FURY_API_PROD");
+    // The same SSOT cloudsmith routes through resolves identically.
+    assert_eq!(
+        push_token_env_var(&ctx, &cfg),
+        crate::util::resolve_secret_name(&ctx, cfg.secret_name.as_deref(), "FURY_PUSH_TOKEN")
+    );
 }
 
 // -----------------------------------------------------------------------------
