@@ -542,78 +542,135 @@ pub fn configured_producer_stages(
     config: &crate::config::Config,
 ) -> std::collections::BTreeSet<&'static str> {
     let crates = crate_universe(config);
-    let mut out = std::collections::BTreeSet::new();
-
-    // Per-crate producer blocks (unioned across the full crate universe so
-    // per-crate workspace mode sees the same surface the pipeline runs).
-    if crates
+    CONFIGURED_PRODUCERS
         .iter()
-        .any(|c| c.nfpms.iter().flatten().next().is_some())
-    {
-        out.insert("nfpm");
-    }
-    if crates
-        .iter()
-        .any(|c| c.snapcrafts.iter().flatten().next().is_some())
-    {
-        out.insert("snapcraft");
-    }
-    if crates
-        .iter()
-        .any(|c| c.dmgs.iter().flatten().next().is_some())
-    {
-        out.insert("dmg");
-    }
-    if crates
-        .iter()
-        .any(|c| c.msis.iter().flatten().next().is_some())
-    {
-        out.insert("msi");
-    }
-    if crates
-        .iter()
-        .any(|c| c.pkgs.iter().flatten().next().is_some())
-    {
-        out.insert("pkg");
-    }
-    if crates
-        .iter()
-        .any(|c| c.nsis.iter().flatten().next().is_some())
-    {
-        out.insert("nsis");
-    }
-    if crates
-        .iter()
-        .any(|c| c.app_bundles.iter().flatten().next().is_some())
-    {
-        out.insert("appbundle");
-    }
-    if crates
-        .iter()
-        .any(|c| c.flatpaks.iter().flatten().next().is_some())
-    {
-        out.insert("flatpak");
-    }
-    if crates
-        .iter()
-        .any(|c| c.dockers_v2.iter().flatten().next().is_some())
-    {
-        out.insert("docker");
-    }
-
-    // Top-level producer blocks.
-    if !config.appimages.is_empty() {
-        out.insert("appimage");
-    }
-    if !config.makeselfs.is_empty() {
-        out.insert("makeself");
-    }
-    if config.srpms.is_some() {
-        out.insert("srpm");
-    }
-
-    out
+        .filter(|p| (p.configured)(config, &crates))
+        .map(|p| p.token)
+        .collect()
 }
+
+/// Stage tokens of every config-gated producer whose payload binary `host_os`
+/// natively builds. `host_os` is a `target`-style OS token
+/// (`"linux"` / `"macos"` / `"windows"`); an unrecognized value yields an
+/// empty list. Order follows [`CONFIGURED_PRODUCERS`] within the OS group.
+///
+/// The determinism harness's `--stages`-absent default unions its always-on
+/// base with this set so each OS-native installer runs on the shard that
+/// builds what it packages — routing one to a shard that lacks its payload
+/// binary is how a format silently ships in NO release.
+pub fn os_native_producer_tokens(host_os: &str) -> Vec<&'static str> {
+    CONFIGURED_PRODUCERS
+        .iter()
+        .filter(|p| p.native_os == host_os)
+        .map(|p| p.token)
+        .collect()
+}
+
+/// One artifact-producing stage the determinism harness gates on config and
+/// routes to the host OS that natively builds its payload binary.
+///
+/// Single source for both the config-configured producer set
+/// ([`configured_producer_stages`]) and the per-host OS-native producer set
+/// ([`os_native_producer_tokens`]): adding a producer to [`CONFIGURED_PRODUCERS`]
+/// extends both derivations at once, so the determinism default and the
+/// preflight set cannot list a producer the other misses.
+struct ConfiguredProducer {
+    /// Canonical stage token — matches the determinism harness's `StageId`
+    /// token vocabulary and the `--skip=` / `--stages=` names.
+    token: &'static str,
+    /// `target`-style host-OS token (`"linux"` / `"macos"` / `"windows"`)
+    /// whose native toolchain builds this producer's payload binary.
+    native_os: &'static str,
+    /// Fires when the resolved config carries ≥1 block for this producer
+    /// (per-crate blocks unioned across the supplied [`crate_universe`];
+    /// top-level blocks read off `Config` directly).
+    configured: fn(&crate::config::Config, &[&crate::config::CrateConfig]) -> bool,
+}
+
+/// Every config-gated artifact producer the determinism harness can verify,
+/// with the host OS that natively builds it and the config predicate that
+/// decides whether the project configures it.
+///
+/// Order within each OS group is load-bearing for [`os_native_producer_tokens`]:
+/// on macOS `appbundle` precedes `dmg`/`pkg` so their `use: appbundle` finds a
+/// source `.app`. The always-on base stages (`build` / `source` / `archive` /
+/// `checksum` / `sbom` / `sign` / `upx`) are deliberately absent — they carry
+/// no installer tool and emit nothing when unconfigured, so the harness keeps
+/// them unconditionally rather than gating on config or OS.
+const CONFIGURED_PRODUCERS: &[ConfiguredProducer] = &[
+    ConfiguredProducer {
+        token: "nfpm",
+        native_os: "linux",
+        configured: |_, cs| cs.iter().any(|c| c.nfpms.iter().flatten().next().is_some()),
+    },
+    ConfiguredProducer {
+        token: "makeself",
+        native_os: "linux",
+        configured: |cfg, _| !cfg.makeselfs.is_empty(),
+    },
+    ConfiguredProducer {
+        token: "snapcraft",
+        native_os: "linux",
+        configured: |_, cs| {
+            cs.iter()
+                .any(|c| c.snapcrafts.iter().flatten().next().is_some())
+        },
+    },
+    ConfiguredProducer {
+        token: "srpm",
+        native_os: "linux",
+        configured: |cfg, _| cfg.srpms.is_some(),
+    },
+    ConfiguredProducer {
+        token: "docker",
+        native_os: "linux",
+        configured: |_, cs| {
+            cs.iter()
+                .any(|c| c.dockers_v2.iter().flatten().next().is_some())
+        },
+    },
+    ConfiguredProducer {
+        token: "appimage",
+        native_os: "linux",
+        configured: |cfg, _| !cfg.appimages.is_empty(),
+    },
+    ConfiguredProducer {
+        token: "flatpak",
+        native_os: "linux",
+        configured: |_, cs| {
+            cs.iter()
+                .any(|c| c.flatpaks.iter().flatten().next().is_some())
+        },
+    },
+    ConfiguredProducer {
+        token: "appbundle",
+        native_os: "macos",
+        configured: |_, cs| {
+            cs.iter()
+                .any(|c| c.app_bundles.iter().flatten().next().is_some())
+        },
+    },
+    ConfiguredProducer {
+        token: "dmg",
+        native_os: "macos",
+        configured: |_, cs| cs.iter().any(|c| c.dmgs.iter().flatten().next().is_some()),
+    },
+    ConfiguredProducer {
+        token: "pkg",
+        native_os: "macos",
+        configured: |_, cs| cs.iter().any(|c| c.pkgs.iter().flatten().next().is_some()),
+    },
+    ConfiguredProducer {
+        token: "msi",
+        native_os: "windows",
+        configured: |_, cs| cs.iter().any(|c| c.msis.iter().flatten().next().is_some()),
+    },
+    ConfiguredProducer {
+        token: "nsis",
+        native_os: "windows",
+        configured: |_, cs| cs.iter().any(|c| c.nsis.iter().flatten().next().is_some()),
+    },
+];
 
 /// When the entire string is a single `{{ [.]Env.NAME }}` expression,
 /// return `NAME`. Used to decide whether a templated secret field maps to

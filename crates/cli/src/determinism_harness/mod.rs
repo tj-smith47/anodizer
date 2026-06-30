@@ -64,6 +64,7 @@ use anodizer_core::{AllowList, ArtifactRow, CURRENT_SCHEMA_VERSION, DeterminismR
 use anyhow::{Context, Result};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
+use strum::{EnumIter, IntoEnumIterator};
 
 use artifacts::{
     ArtifactInfo, copy_artifacts_to_dump, discover_artifacts, hash_artifacts,
@@ -82,7 +83,7 @@ use preserve::{
 /// pipeline and look at the artifacts that stage produces". The harness
 /// shells to `anodize release --snapshot --skip=...` which runs the full
 /// build-side pipeline; finer-grained per-stage gating is a follow-up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, EnumIter)]
 pub enum StageId {
     Build,
     Source,
@@ -251,6 +252,17 @@ impl StageId {
             StageId::Appimage => "appimage",
             StageId::Flatpak => "flatpak",
         }
+    }
+
+    /// The [`StageId`] whose [`Self::as_str`] token equals `token`, or `None`
+    /// for an unrecognized token.
+    ///
+    /// Exact inverse of [`Self::as_str`], derived from it by scanning
+    /// [`Self::iter`] rather than a second match — the token vocabulary lives
+    /// in [`Self::as_str`] alone, so the parser, the `Known stages:` hint, and
+    /// this inverse cannot drift from the enum.
+    pub fn from_token(token: &str) -> Option<Self> {
+        Self::iter().find(|s| s.as_str() == token)
     }
 }
 
@@ -2025,6 +2037,20 @@ mod tests {
     };
     use super::*;
     use anodizer_core::AllowListEntry;
+
+    #[test]
+    fn stage_id_from_token_round_trips_every_variant() {
+        for s in StageId::iter() {
+            assert_eq!(
+                StageId::from_token(s.as_str()),
+                Some(s),
+                "from_token is not the inverse of as_str for {s:?}"
+            );
+        }
+        // An unknown token resolves to None rather than a silent default.
+        assert_eq!(StageId::from_token("not-a-stage"), None);
+        assert_eq!(StageId::from_token(""), None);
+    }
 
     fn empty_harness() -> Harness {
         Harness {

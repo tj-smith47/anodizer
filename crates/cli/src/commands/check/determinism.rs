@@ -21,6 +21,7 @@ use anodizer_core::{
     log::{StageLogger, Verbosity, render_error, render_note},
 };
 use anyhow::{Context, Result};
+use strum::IntoEnumIterator;
 
 pub fn run(args: CheckDeterminismArgs, verbose: bool, debug: bool, quiet: bool) -> Result<()> {
     let verbosity = Verbosity::from_flags(quiet, verbose, debug);
@@ -360,36 +361,24 @@ fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
                     // the named stages and the empty slot is noise.
                     continue;
                 }
-                match tok {
-                    "build" => parsed.push(StageId::Build),
-                    "source" => parsed.push(StageId::Source),
-                    "upx" => parsed.push(StageId::Upx),
-                    "archive" => parsed.push(StageId::Archive),
-                    "nfpm" => parsed.push(StageId::Nfpm),
-                    "makeself" => parsed.push(StageId::Makeself),
-                    "snapcraft" => parsed.push(StageId::Snapcraft),
-                    "sbom" => parsed.push(StageId::Sbom),
-                    "sign" => parsed.push(StageId::Sign),
-                    "checksum" => parsed.push(StageId::Checksum),
-                    "cargo-package" => parsed.push(StageId::CargoPackage),
-                    "docker" => parsed.push(StageId::Docker),
-                    "msi" => parsed.push(StageId::Msi),
-                    "nsis" => parsed.push(StageId::Nsis),
-                    "dmg" => parsed.push(StageId::Dmg),
-                    "pkg" => parsed.push(StageId::Pkg),
-                    "srpm" => parsed.push(StageId::Srpm),
-                    "appbundle" => parsed.push(StageId::Appbundle),
-                    "appimage" => parsed.push(StageId::Appimage),
-                    "flatpak" => parsed.push(StageId::Flatpak),
-                    "installers" => parsed.extend(installer_stages()),
-                    other => unknown.push(other.to_string()),
+                if tok == "installers" {
+                    parsed.extend(installer_stages());
+                } else if let Some(stage) = StageId::from_token(tok) {
+                    parsed.push(stage);
+                } else {
+                    unknown.push(tok.to_string());
                 }
             }
             if !unknown.is_empty() {
+                // The legal vocabulary is the enum itself (via `as_str`) plus
+                // the `installers` umbrella — built from `StageId::iter()` so a
+                // new variant joins the hint without a hand edit here.
+                let mut known: Vec<&str> = StageId::iter().map(StageId::as_str).collect();
+                known.push("installers");
                 return Err(format!(
-                    "--stages contained unknown stage(s): {}. \
-                     Known stages: build, source, upx, archive, nfpm, makeself, snapcraft, sbom, sign, checksum, cargo-package, docker, msi, nsis, dmg, pkg, srpm, appbundle, appimage, flatpak, installers.",
-                    unknown.join(", ")
+                    "--stages contained unknown stage(s): {}. Known stages: {}.",
+                    unknown.join(", "),
+                    known.join(", ")
                 ));
             }
             // De-dup while preserving insertion order so
@@ -479,20 +468,23 @@ fn parse_stages(s: Option<&str>) -> Result<Vec<StageId>, String> {
 /// config-configured producers — see [`host_default_for_config`].
 fn default_stages_for_host() -> Vec<StageId> {
     let mut stages = ALWAYS_ON_STAGES.to_vec();
-    if cfg!(target_os = "linux") {
-        stages.extend([
-            StageId::Nfpm,
-            StageId::Makeself,
-            StageId::Snapcraft,
-            StageId::Srpm,
-            StageId::Docker,
-            StageId::Appimage,
-            StageId::Flatpak,
-        ]);
+    let host_os = if cfg!(target_os = "linux") {
+        "linux"
     } else if cfg!(target_os = "macos") {
-        stages.extend([StageId::Appbundle, StageId::Dmg, StageId::Pkg]);
+        "macos"
     } else if cfg!(target_os = "windows") {
-        stages.extend([StageId::Msi, StageId::Nsis]);
+        "windows"
+    } else {
+        ""
+    };
+    for token in anodizer_core::env_preflight::os_native_producer_tokens(host_os) {
+        // Core's producer table is keyed by the same canonical token
+        // vocabulary as `StageId::as_str`, so an absent mapping is an internal
+        // invariant breach (a producer token with no `StageId`) — not operator
+        // input — and must fail loud rather than silently drop a producer.
+        stages.push(
+            StageId::from_token(token).expect("core producer token must map to a StageId variant"),
+        );
     }
     stages
 }
@@ -1046,6 +1038,69 @@ mod tests {
         for s in [StageId::Msi, StageId::Nsis] {
             assert!(stages.contains(&s), "windows default missing {s:?}");
         }
+    }
+
+    #[test]
+    fn derived_stage_sets_are_subsets_of_stage_id_vocabulary() {
+        // Both derived sets must draw only from the `StageId` enum, and every
+        // configured-producer token must round-trip back to a variant — the
+        // guarantee that a producer can never be byte-verified on a host
+        // default yet be unselectable via `--stages` (or vice versa).
+        let vocab: std::collections::HashSet<StageId> = StageId::iter().collect();
+        for s in default_stages_for_host() {
+            assert!(
+                vocab.contains(&s),
+                "host-default stage {s:?} not in StageId vocabulary"
+            );
+        }
+
+        use anodizer_core::config::{Config, CrateConfig, NfpmConfig, SrpmConfig};
+        let config = Config {
+            crates: vec![CrateConfig {
+                name: "x".to_string(),
+                path: ".".to_string(),
+                nfpms: Some(vec![NfpmConfig::default()]),
+                ..Default::default()
+            }],
+            srpms: Some(SrpmConfig::default()),
+            ..Default::default()
+        };
+        let configured = anodizer_core::env_preflight::configured_producer_stages(&config);
+        // The representative config configures exactly nfpm + srpm; both must
+        // map back to a `StageId` variant.
+        assert!(configured.contains("nfpm") && configured.contains("srpm"));
+        for tok in &configured {
+            let s = StageId::from_token(tok)
+                .unwrap_or_else(|| panic!("producer token `{tok}` has no StageId variant"));
+            assert!(vocab.contains(&s));
+        }
+
+        // The derived host default matches the previously-hardcoded per-OS
+        // expectation for the build host.
+        let host: std::collections::HashSet<StageId> =
+            default_stages_for_host().into_iter().collect();
+        #[cfg(target_os = "linux")]
+        for s in [
+            StageId::Nfpm,
+            StageId::Makeself,
+            StageId::Snapcraft,
+            StageId::Srpm,
+            StageId::Docker,
+            StageId::Appimage,
+            StageId::Flatpak,
+        ] {
+            assert!(host.contains(&s), "linux derived default missing {s:?}");
+        }
+        #[cfg(target_os = "macos")]
+        for s in [StageId::Appbundle, StageId::Dmg, StageId::Pkg] {
+            assert!(host.contains(&s), "macos derived default missing {s:?}");
+        }
+        #[cfg(target_os = "windows")]
+        for s in [StageId::Msi, StageId::Nsis] {
+            assert!(host.contains(&s), "windows derived default missing {s:?}");
+        }
+        // cargo-package is harness-only and never enters any host default.
+        assert!(!host.contains(&StageId::CargoPackage));
     }
 
     #[test]

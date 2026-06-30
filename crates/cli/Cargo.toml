@@ -77,6 +77,7 @@ tempfile.workspace = true
 toml.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+strum.workspace = true
 
 [dev-dependencies]
 anodizer-core = { workspace = true, features = ["test-helpers"] }
