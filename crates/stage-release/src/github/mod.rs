@@ -30,7 +30,9 @@ mod upload_outcome;
 pub(crate) use assets::{delete_release_asset_by_name, find_release_asset_probe};
 pub(crate) use client::build_octocrab_client;
 pub(crate) use rate_limit::check_github_rate_limit_with_env;
-pub(crate) use retry_call::{format_retry_warn, is_octocrab_404, retry_octocrab_call};
+pub(crate) use retry_call::{
+    format_retry_warn, is_octocrab_404, is_octocrab_transport_error, retry_octocrab_call,
+};
 use secondary_rate_limit::RetryAfterCapture;
 
 pub(crate) use backend::run_github_backend;

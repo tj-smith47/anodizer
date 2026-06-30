@@ -198,26 +198,17 @@ fn classify_retriability(err: &octocrab::Error) -> (u16, bool) {
     // the shared classifier; the actual error returned to the caller is the
     // borrowed original.
     use anodizer_core::retry::{HttpError, Retriable};
-    match err {
-        octocrab::Error::GitHub { source, .. } => {
-            let status = source.status_code.as_u16();
-            let probe = HttpError::new(std::io::Error::other("status probe"), status);
-            (status, is_retriable(&probe))
-        }
-        octocrab::Error::Hyper { .. }
-        | octocrab::Error::Http { .. }
-        | octocrab::Error::Service { .. }
-        | octocrab::Error::Other { .. }
-        | octocrab::Error::Serde { .. }
-        | octocrab::Error::Json { .. } => {
-            let probe = Retriable::new(std::io::Error::other("transport probe"));
-            (0, is_retriable(&probe))
-        }
-        _ => {
-            // Conservative default: unfamiliar future variants fast-fail
-            // rather than spin. Matches `classify_octocrab_error`'s fallback.
-            (0, false)
-        }
+    if let octocrab::Error::GitHub { source, .. } = err {
+        let status = source.status_code.as_u16();
+        let probe = HttpError::new(std::io::Error::other("status probe"), status);
+        (status, is_retriable(&probe))
+    } else if is_octocrab_transport_error(err) {
+        let probe = Retriable::new(std::io::Error::other("transport probe"));
+        (0, is_retriable(&probe))
+    } else {
+        // Conservative default: unfamiliar future variants fast-fail
+        // rather than spin. Matches `classify_octocrab_error`'s fallback.
+        (0, false)
     }
 }
 
@@ -232,6 +223,34 @@ pub(crate) fn is_octocrab_404(err: &octocrab::Error) -> bool {
     matches!(
         err,
         octocrab::Error::GitHub { source, .. } if source.status_code.as_u16() == 404
+    )
+}
+
+/// Single classifier for retriable octocrab transport/transient errors.
+///
+/// Returns `true` for the network-layer / proxy / decode failure variants
+/// that carry no HTTP status and are always safe to retry against a healthy
+/// GitHub origin: `Hyper`, `Http`, `Service`, `Other`, `Serde`, `Json`.
+/// (`Serde` / `Json` count because GitHub occasionally serves an HTML
+/// 502/503 interstitial that breaks octocrab's JSON decode — a transient
+/// proxy failure, not a malformed contract.) Status-bearing `GitHub`
+/// errors and unfamiliar future variants return `false`: their
+/// retriability is decided by HTTP status, not transport class.
+///
+/// This is the one predicate every GitHub-backend retry site shares (the
+/// borrow-based probe in [`classify_retriability`], the upload-attempt
+/// classifier in [`super::upload_outcome`], and the test oracle in
+/// [`super::retry_classify`]) so a new upstream octocrab variant is
+/// classified identically everywhere instead of drifting per copy.
+pub(crate) fn is_octocrab_transport_error(err: &octocrab::Error) -> bool {
+    matches!(
+        err,
+        octocrab::Error::Hyper { .. }
+            | octocrab::Error::Http { .. }
+            | octocrab::Error::Service { .. }
+            | octocrab::Error::Other { .. }
+            | octocrab::Error::Serde { .. }
+            | octocrab::Error::Json { .. }
     )
 }
 
@@ -331,6 +350,75 @@ mod tests {
             calls.load(Ordering::SeqCst),
             1,
             "attempts=1 must produce exactly one octocrab call"
+        );
+    }
+
+    #[tokio::test]
+    async fn is_octocrab_transport_error_true_for_transport_and_decode_false_for_404() {
+        // Direct coverage for the predicate the upload path now shares: a
+        // real transport-class error and a JSON-decode failure must classify
+        // as transport (retriable), while a status-bearing GitHub 404 must
+        // not (its retriability is the 404 router's job, not the transport
+        // bucket's). Without this, the upload-path copy of the variant set
+        // had zero tests and a new octocrab variant could go unnoticed.
+
+        // Transport-class error: an unresolvable RFC 2606 `.invalid` host
+        // fails fast at the connector on every platform, yielding a
+        // `Service`/`Hyper` variant with no HTTP status attached.
+        anodizer_core::tls::install_default_crypto_provider();
+        let octo = octocrab::OctocrabBuilder::new()
+            .base_uri("http://nonexistent.invalid/")
+            .expect("base_uri must accept RFC 2606 .invalid URL")
+            .build()
+            .expect("OctocrabBuilder::build");
+        let transport_err = octo
+            .get::<serde_json::Value, _, ()>("/", None::<&()>)
+            .await
+            .expect_err("request against .invalid host must fail at the connector");
+        assert!(
+            is_octocrab_transport_error(&transport_err),
+            "real transport-class octocrab error must classify as transport: {transport_err:?}"
+        );
+        assert!(
+            !is_octocrab_404(&transport_err),
+            "a transport error carries no HTTP status and is not a 404"
+        );
+
+        // Decode-class error: a 200 with a non-JSON body makes octocrab fail
+        // to deserialize into the requested type, producing a `Serde`/`Json`
+        // variant — also part of the retriable transport set (GitHub serves
+        // HTML interstitials from upstream proxies under load).
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 8\r\n\r\nnot-json",
+        ]);
+        let octo = build_test_octocrab(addr);
+        let decode_err = octo
+            .get::<serde_json::Value, _, ()>("/test", None::<&()>)
+            .await
+            .expect_err("invalid JSON body must surface a decode Err");
+        assert!(
+            is_octocrab_transport_error(&decode_err),
+            "a JSON-decode failure (Serde/Json) is transport-class: {decode_err:?}"
+        );
+
+        // Status-bearing GitHub 404: NOT a transport error. The 404 predicate
+        // owns it; the transport predicate must reject it so the upload path
+        // routes it to its dedicated read-after-write retry arm.
+        let (addr, _calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 27\r\n\r\n{\"message\":\"Not Found\"}    ",
+        ]);
+        let octo = build_test_octocrab(addr);
+        let github_404 = octo
+            .get::<serde_json::Value, _, ()>("/test", None::<&()>)
+            .await
+            .expect_err("404 must surface as Err");
+        assert!(
+            !is_octocrab_transport_error(&github_404),
+            "a status-bearing GitHub 404 is not a transport error: {github_404:?}"
+        );
+        assert!(
+            is_octocrab_404(&github_404),
+            "the 404 predicate must still recognise the GitHub 404"
         );
     }
 

@@ -17,6 +17,7 @@
 //! arms readable (no nested `matches!` chains) and makes the classification
 //! rules unit-testable against synthesized `octocrab::Error` values.
 
+use super::is_octocrab_transport_error;
 use super::secondary_rate_limit::is_secondary_rate_limit;
 
 /// Coarse classification of a single upload attempt's result.
@@ -163,14 +164,7 @@ pub(crate) fn classify_upload_attempt<T>(
             if source.status_code.is_server_error()
                 || source.status_code.as_u16() == 401
     );
-    if is_transient_status
-        || matches!(err, octocrab::Error::Hyper { .. })
-        || matches!(err, octocrab::Error::Http { .. })
-        || matches!(err, octocrab::Error::Service { .. })
-        || matches!(err, octocrab::Error::Other { .. })
-        || matches!(err, octocrab::Error::Serde { .. })
-        || matches!(err, octocrab::Error::Json { .. })
-    {
+    if is_transient_status || is_octocrab_transport_error(err) {
         return UploadAttemptOutcome::TransientRetry;
     }
 

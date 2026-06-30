@@ -20,10 +20,10 @@
 //! Returns `(wrapped, status)` so callers can also surface the status code
 //! in their log lines.
 //!
-//! Behaviour matches the upload retry path (see the
-//! `Hyper`/`Http`/`Service`/`Other`/`Serde`/`Json` arm of
-//! `upload_outcome::classify_upload_attempt`) — extracted here so
-//! the un-draft retry inherits the same classification without copy-paste
+//! Behaviour matches the upload retry path: both route the transport-class
+//! variant test through the shared
+//! [`super::is_octocrab_transport_error`] predicate, so the un-draft retry
+//! and the upload loop inherit the same classification without copy-paste
 //! drift.
 //!
 //! Every non-success
@@ -60,12 +60,7 @@ fn classify_octocrab_error(
         // Transport / decode / proxy failures: no HTTP status, but always
         // safe to retry. Force-wrap in Retriable so is_retriable -> true
         // regardless of the (often opaque) Display message.
-        octocrab::Error::Hyper { .. }
-        | octocrab::Error::Http { .. }
-        | octocrab::Error::Service { .. }
-        | octocrab::Error::Other { .. }
-        | octocrab::Error::Serde { .. }
-        | octocrab::Error::Json { .. } => (Box::new(Retriable::new(err)), 0),
+        other if super::is_octocrab_transport_error(other) => (Box::new(Retriable::new(err)), 0),
         // Anything else (future octocrab variants, URI parse errors, etc.)
         // falls through as a plain HttpError with status 0 — non-retriable
         // unless the Display matches a network-error needle. Conservative
