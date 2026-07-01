@@ -80,16 +80,27 @@ const OBJECT_STORE_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::f
 /// in seconds instead of riding the full request timeout.
 const OBJECT_STORE_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// `ClientOptions` carrying anodizer's standard bucket timeout policy, plus any
-/// provider-specific default headers (e.g. a canned-ACL header). Every store
-/// builder routes through this so no provider's client can be constructed
-/// without a request and connect deadline.
+/// `ClientOptions` carrying anodizer's standard bucket timeout policy, the
+/// plaintext-HTTP allowance, plus any provider-specific default headers (e.g. a
+/// canned-ACL header). Every store builder routes through this so no provider's
+/// client can be constructed without a request and connect deadline.
+///
+/// `allow_http` MUST be threaded through here rather than via the builder's
+/// standalone `with_allow_http`: `AmazonS3Builder::with_allow_http` writes into
+/// `client_options`, and a subsequent `with_client_options(_)` replaces that
+/// struct wholesale — so setting `allow_http` on the builder *before* this call
+/// is silently discarded, and an `http://` (disable_ssl) endpoint then fails
+/// every request with an opaque reqwest "builder error" (scheme not allowed).
+/// Owning `allow_http` in the one `ClientOptions` we pass makes it the single
+/// source of truth and unclobberable.
 fn timed_client_options(
+    allow_http: bool,
     headers: Option<reqwest::header::HeaderMap>,
 ) -> object_store::ClientOptions {
     let mut opts = object_store::ClientOptions::new()
         .with_timeout(OBJECT_STORE_REQUEST_TIMEOUT)
-        .with_connect_timeout(OBJECT_STORE_CONNECT_TIMEOUT);
+        .with_connect_timeout(OBJECT_STORE_CONNECT_TIMEOUT)
+        .with_allow_http(allow_http);
     if let Some(headers) = headers {
         opts = opts.with_default_headers(headers);
     }
@@ -160,10 +171,6 @@ pub(crate) fn build_s3_store(
         builder = builder.with_virtual_hosted_style_request(!force_path);
     }
 
-    if config.disable_ssl.unwrap_or(false) {
-        builder = builder.with_allow_http(true);
-    }
-
     // KMS server-side encryption: only set SSE-KMS on the S3 builder when the
     // key is a plain ARN/ID (ServerSide). URL-schemed keys (awskms://, gcpkms://,
     // azurekeyvault://) use client-side encryption — the data is encrypted before
@@ -207,7 +214,11 @@ pub(crate) fn build_s3_store(
     } else {
         None
     };
-    builder = builder.with_client_options(timed_client_options(acl_headers));
+    // `disable_ssl: true` (a plaintext-HTTP endpoint such as an in-cluster
+    // MinIO) must enable `allow_http` — threaded through the ClientOptions we
+    // pass so it cannot be clobbered (see `timed_client_options`).
+    let allow_http = config.disable_ssl.unwrap_or(false);
+    builder = builder.with_client_options(timed_client_options(allow_http, acl_headers));
 
     Ok(Box::new(
         builder
@@ -259,7 +270,8 @@ pub(crate) fn build_gcs_store(
     } else {
         None
     };
-    builder = builder.with_client_options(timed_client_options(acl_headers));
+    // GCS is always TLS (no disable_ssl surface), so plaintext HTTP stays off.
+    builder = builder.with_client_options(timed_client_options(false, acl_headers));
 
     Ok(Box::new(
         builder
@@ -277,7 +289,7 @@ pub(crate) fn build_azure_store(
     let builder = MicrosoftAzureBuilder::from_env()
         .with_container_name(container)
         .with_retry(to_object_store_retry(retry))
-        .with_client_options(timed_client_options(None));
+        .with_client_options(timed_client_options(false, None));
 
     Ok(Box::new(
         builder
@@ -355,5 +367,73 @@ mod retry_bridge_tests {
             std::time::Duration::from_secs(2)
         );
         assert_eq!(bridged.backoff.base, 2.0);
+    }
+}
+
+#[cfg(test)]
+mod allow_http_regression {
+    use super::*;
+    use anodizer_core::config::{Config, HumanDuration};
+    use anodizer_core::context::ContextOptions;
+    use object_store::ObjectStoreExt;
+
+    /// Regression: a `disable_ssl: true` (plaintext-HTTP) endpoint — an
+    /// in-cluster MinIO is the canonical case — must have its http scheme
+    /// ALLOWED, so a PUT is actually attempted (and fails at the transport
+    /// layer against a dead port) rather than rejected pre-flight with an
+    /// opaque reqwest "builder error".
+    ///
+    /// The bug this pins: `AmazonS3Builder::with_allow_http` writes into
+    /// `client_options`, and `build_s3_store`'s later
+    /// `with_client_options(timed_client_options(..))` replaced that struct
+    /// wholesale — silently reverting `allow_http` to `false`, so every blob
+    /// PUT to an http MinIO failed with `HTTP error: builder error`. Threading
+    /// `allow_http` through `timed_client_options` makes it unclobberable;
+    /// deleting that thread-through makes this test fail with a builder error.
+    #[tokio::test]
+    #[serial_test::serial(aws_env)]
+    async fn disable_ssl_http_endpoint_is_attempted_not_rejected() {
+        // skip_signature avoids an IMDS credential stall and isolates the test
+        // to the scheme allowance (no creds, no signing, no network beyond the
+        // localhost connect attempt).
+        unsafe {
+            // env-ok: #[serial(aws_env)]; sole mutator of these AWS_* vars
+            std::env::set_var("AWS_SKIP_SIGNATURE", "true");
+            // env-ok: #[serial(aws_env)]; sole mutator of these AWS_* vars
+            std::env::remove_var("AWS_ENDPOINT");
+            // env-ok: #[serial(aws_env)]; sole mutator of these AWS_* vars
+            std::env::remove_var("AWS_ENDPOINT_URL");
+        }
+        let config = BlobConfig {
+            provider: "s3".into(),
+            bucket: "b".into(),
+            endpoint: Some("http://127.0.0.1:1".into()),
+            region: Some("us-east-1".into()),
+            s3_force_path_style: Some(true),
+            disable_ssl: Some(true),
+            ..Default::default()
+        };
+        // Tight retry so the dead-port connect fails fast.
+        let retry = RetryConfig {
+            attempts: 1,
+            delay: HumanDuration(std::time::Duration::from_millis(1)),
+            max_delay: HumanDuration(std::time::Duration::from_millis(1)),
+        };
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let store = build_s3_store(&config, "b", &ctx, &retry).expect("store builds");
+        let res = store
+            .put(&object_store::path::Path::from("k"), b"x".to_vec().into())
+            .await;
+        unsafe {
+            // env-ok: #[serial(aws_env)]; sole mutator of these AWS_* vars
+            std::env::remove_var("AWS_SKIP_SIGNATURE");
+        }
+        let err = res.expect_err("a dead port must fail the PUT");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            !msg.contains("builder error"),
+            "disable_ssl http endpoint must be attempted (transport error), \
+             never rejected pre-flight as a scheme/builder error: {err}"
+        );
     }
 }
