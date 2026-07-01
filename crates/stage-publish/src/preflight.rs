@@ -1026,13 +1026,28 @@ fn run_cargo_dry_run_with_binary(
     crate_name: &str,
     log: &StageLogger,
 ) -> DryRunOutcome {
+    run_cargo_dry_run_spawning(cargo_binary, crate_name, log, |cmd| cmd.output())
+}
+
+/// Spawn-seam sibling of [`run_cargo_dry_run_with_binary`]: `spawn` builds the
+/// `cargo publish --dry-run` output. Production passes `|cmd| cmd.output()`;
+/// tests that install a `FakeToolDir` stub and exec it immediately inject
+/// `output_retrying_etxtbsy` so the write-then-exec `ETXTBSY` race a sibling
+/// test thread's `fork` window opens does not flake the real spawn+classify
+/// path. Production never writes-then-execs `cargo`, so its raw `.output()`
+/// cannot hit that race.
+fn run_cargo_dry_run_spawning(
+    cargo_binary: &std::path::Path,
+    crate_name: &str,
+    log: &StageLogger,
+    spawn: impl FnOnce(&mut std::process::Command) -> std::io::Result<std::process::Output>,
+) -> DryRunOutcome {
     use std::process::Command;
 
-    let output = Command::new(cargo_binary)
-        .args(["publish", "--dry-run", "-p", crate_name])
-        .output();
+    let mut cmd = Command::new(cargo_binary);
+    cmd.args(["publish", "--dry-run", "-p", crate_name]);
 
-    let output = match output {
+    let output = match spawn(&mut cmd) {
         Ok(o) => o,
         Err(e) => return DryRunOutcome::Unavailable(format!("spawn cargo: {e}")),
     };
@@ -3039,24 +3054,38 @@ mod tests {
     // -----------------------------------------------------------------------
     // FakeToolDir-driven `cargo publish --dry-run` spawn coverage.
     //
-    // Drives the REAL spawn against a fake `cargo` binary addressed by absolute
-    // path (`run_cargo_dry_run_with_binary`). Each test fork+execs a
-    // freshly-written stub, so they share the `path_env` serial group: a
-    // sibling test's concurrent `fork()` would otherwise duplicate the
-    // in-flight write FD of this stub and make the subsequent `exec` fail with
-    // ETXTBSY ("Text file busy"). Serializing every fork+exec-of-fresh-binary
-    // test under one group closes that window. Asserts argv shape + outcome
-    // classification.
+    // Drives the REAL spawn+classify against a fake `cargo` binary addressed by
+    // absolute path (`run_cargo_dry_run_spawning`). Each test fork+execs a
+    // freshly-written stub, so a sibling test thread's `fork()` can duplicate
+    // this stub's in-flight write FD and make the subsequent `exec` fail with
+    // ETXTBSY ("Text file busy"). The `path_env` serial group only orders these
+    // tests against each other — it does NOT bound the thousands of other
+    // spawning tests in the crate whose fork windows race this exec — so the
+    // stub-execing tests spawn through `output_retrying_etxtbsy`, which retries
+    // the exec until the racing child clears the FD. The spawn-FAILURE test
+    // keeps the raw path (it wants the immediate ENOENT). Asserts argv shape +
+    // outcome classification.
     // -----------------------------------------------------------------------
     #[cfg(unix)]
     mod publish_simulation_spawn {
         use super::super::*;
         use anodizer_core::log::{StageLogger, Verbosity};
-        use anodizer_core::test_helpers::fake_tool::FakeToolDir;
+        use anodizer_core::test_helpers::fake_tool::{FakeToolDir, output_retrying_etxtbsy};
         use serial_test::serial;
 
         fn quiet_log() -> StageLogger {
             StageLogger::new("publish-sim-spawn-test", Verbosity::Normal)
+        }
+
+        /// Drive the real spawn+classify path against a freshly-installed stub,
+        /// retrying the exec on `ETXTBSY` (the stub is written-then-exec'd, so a
+        /// sibling test thread's `fork` window can hold its fd briefly). Without
+        /// this the raw production `.output()` would surface the transient
+        /// `ETXTBSY` as `Unavailable` and flake the assertion.
+        fn dry_run_via_stub(fake: &FakeToolDir, crate_name: &str) -> DryRunOutcome {
+            run_cargo_dry_run_spawning(&fake.tool_path("cargo"), crate_name, &quiet_log(), |cmd| {
+                Ok(output_retrying_etxtbsy(cmd))
+            })
         }
 
         #[test]
@@ -3065,11 +3094,7 @@ mod tests {
             let fake = FakeToolDir::new();
             fake.tool("cargo").exit(0).install();
 
-            let out = run_cargo_dry_run_with_binary(
-                &fake.tool_path("cargo"),
-                "anodizer-core",
-                &quiet_log(),
-            );
+            let out = dry_run_via_stub(&fake, "anodizer-core");
             assert_eq!(out, DryRunOutcome::Ok);
 
             let calls = fake.calls("cargo");
@@ -3090,11 +3115,7 @@ mod tests {
                 .stderr("error[E0425]: cannot find function `probe_dir` in this scope")
                 .install();
 
-            let out = run_cargo_dry_run_with_binary(
-                &fake.tool_path("cargo"),
-                "anodizer-stage-blob",
-                &quiet_log(),
-            );
+            let out = dry_run_via_stub(&fake, "anodizer-stage-blob");
             match out {
                 DryRunOutcome::CompileError(line) => {
                     assert!(line.contains("probe_dir"), "line: {line}")
@@ -3112,11 +3133,7 @@ mod tests {
                 .stderr("error: no matching package named `anodizer-core` found")
                 .install();
 
-            let out = run_cargo_dry_run_with_binary(
-                &fake.tool_path("cargo"),
-                "anodizer-stage-blob",
-                &quiet_log(),
-            );
+            let out = dry_run_via_stub(&fake, "anodizer-stage-blob");
             match out {
                 DryRunOutcome::BenignSiblingMissing(line) => {
                     assert!(line.contains("anodizer-core"), "line: {line}")
