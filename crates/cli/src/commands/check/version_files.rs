@@ -61,11 +61,14 @@ fn run_guard(config: &Config, repo_root: &Path, log: &StageLogger) -> Result<()>
     let units = enrolled_units(config);
     // Load the workspace graph once (shared with `bump`) so a unit that matches
     // a member resolves via `resolve_member_version` — correctly handling
-    // inherited `version.workspace = true`. Best-effort: a rootless / non-cargo
-    // layout (no root `Cargo.toml`) has no graph, and a standalone crate that
-    // isn't a `[workspace].members` entry resolves against its own manifest
-    // instead, so the absence of a graph never fails the whole command.
-    let ws = load_workspace(repo_root).ok();
+    // inherited `version.workspace = true`. A rootless / non-cargo layout (no
+    // root `Cargo.toml`) has no graph (`Ok(None)`), and a standalone crate
+    // that isn't a `[workspace].members` entry resolves against its own
+    // manifest instead, so the ABSENCE of a graph never fails the whole
+    // command. A `Cargo.toml` that exists but is malformed is a real error
+    // (`?`), not silently treated as "no graph" — which would resolve
+    // version-file expectations against a wrong base.
+    let ws = load_workspace(repo_root)?;
 
     // De-duplicate (path, version) pairs so a file enrolled by several crates
     // that resolve to the same version is reported once. The version is part of

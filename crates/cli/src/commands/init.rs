@@ -455,7 +455,7 @@ fn scan_versions(root: &Path) -> Result<Vec<String>> {
         }
     };
 
-    if let Ok(ws) = load_workspace(root) {
+    if let Ok(Some(ws)) = load_workspace(root) {
         if let Some(v) = ws.workspace_package_version.clone() {
             push(v);
         }

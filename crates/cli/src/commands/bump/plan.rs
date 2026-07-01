@@ -104,7 +104,8 @@ pub fn build_plan(
     opts: &BumpOpts,
     anodizer_cfg: Option<&anodizer_core::config::Config>,
 ) -> Result<Vec<PlanRow>> {
-    let ws = cargo_edit::load_workspace(workspace_root)?;
+    let ws = cargo_edit::load_workspace(workspace_root)?
+        .with_context(|| format!("no Cargo workspace at {}", workspace_root.display()))?;
     let positional = parse_positional(&opts.level_or_version)?;
 
     // Filter set of crates to consider.

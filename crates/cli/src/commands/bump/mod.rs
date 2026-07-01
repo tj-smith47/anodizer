@@ -81,7 +81,7 @@ pub fn run(opts: BumpOpts) -> Result<()> {
     // Reject an incoherent flat-aggregate config (members sharing one tag prefix
     // but disagreeing on `[package].version`) before any work, identically to
     // `tag` and `changelog`.
-    let bump_workspace = cargo_edit::load_workspace(&workspace_root).ok();
+    let bump_workspace = cargo_edit::load_workspace(&workspace_root)?;
     crate::commands::tag::guard_flat_aggregate_coherence(
         bump_config.as_ref(),
         bump_workspace.as_ref(),

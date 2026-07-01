@@ -176,8 +176,8 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // subdirectory invocation still finds the repo-root `.anodizer.yaml` and its
     // `version_files` enrollment, not just whatever sits in the cwd.
     let loaded_config: Option<anodizer_core::config::Config> =
-        load_config_at(&opts, &workspace_root_path);
-    let loaded_workspace: Option<WorkspaceInfo> = load_workspace(&workspace_root_path).ok();
+        Some(load_config_at(&opts, &workspace_root_path)?);
+    let loaded_workspace: Option<WorkspaceInfo> = load_workspace(&workspace_root_path)?;
 
     let tag_config = loaded_config
         .as_ref()
@@ -1290,10 +1290,25 @@ fn resolve_config_path(opts: &TagOpts) -> Option<std::path::PathBuf> {
 /// than the process cwd, so `tag` invoked from a subdirectory still loads the
 /// repo-root `.anodizer.yaml` and its `version_files` enrollment. Returns `None`
 /// when no config is found or it fails to parse.
-fn load_config_at(opts: &TagOpts, root: &Path) -> Option<anodizer_core::config::Config> {
-    match opts.config_override.as_deref().filter(|p| p.exists()) {
-        Some(p) => crate::pipeline::load_config(p).ok(),
-        None => crate::pipeline::load_repo_config(root).ok(),
+fn load_config_at(opts: &TagOpts, root: &Path) -> Result<anodizer_core::config::Config> {
+    match opts.config_override.as_deref() {
+        Some(p) => {
+            // An explicitly-named `--config` path that doesn't exist is an
+            // operator error, not a silent fall-through to the repo config
+            // (which would read a DIFFERENT config than the one named).
+            if !p.exists() {
+                anyhow::bail!("--config path does not exist: {}", p.display());
+            }
+            crate::pipeline::load_config(p)
+        }
+        // `load_repo_config` returns `Ok(Config::default())` for a repo with a
+        // Cargo.toml but no `.anodizer.yaml` (the Cargo.toml fallback), and
+        // only `Err`s when the config file exists but fails to read/parse (or
+        // neither a config nor a Cargo.toml is present). Propagating that
+        // `Err` — instead of the old `.ok()` that flattened it to a silent
+        // default — is what stops a malformed `.anodizer.yaml` from cutting
+        // the wrong tag (lost `default_bump` / changelog / version_files).
+        None => crate::pipeline::load_repo_config(root),
     }
 }
 
@@ -1355,8 +1370,15 @@ pub(crate) fn detect_repo_shape(
     let lockstep = if let Some(ws) = preloaded_workspace {
         ws.workspace_package_version.is_some()
     } else {
+        // Unpreloaded fallback (standalone/test callers only — every
+        // production caller passes `preloaded_workspace`, and they load it
+        // with `?` so a malformed manifest bails before reaching here). A
+        // `None` here is an absent Cargo.toml (non-lockstep); even if a
+        // parse error were swallowed to `None`, the actual bump execution
+        // re-loads via `load_workspace` and bails, so no wrong tag is cut.
         load_workspace(workspace_root)
             .ok()
+            .flatten()
             .is_some_and(|ws| ws.workspace_package_version.is_some())
     };
     if lockstep {
@@ -1500,9 +1522,13 @@ fn compute_per_crate_tags(
     let anodizer_config: &anodizer_core::config::Config = if let Some(c) = preloaded_config {
         c
     } else {
-        fallback = resolve_config_path(opts)
-            .and_then(|p| crate::pipeline::load_config(&p).ok())
-            .unwrap_or_default();
+        // A malformed explicitly-resolved config must fail, not silently
+        // fall back to an empty default (the old `.ok().unwrap_or_default()`);
+        // the default is reserved for fixture repos with genuinely no config.
+        fallback = match resolve_config_path(opts) {
+            Some(p) => crate::pipeline::load_config(&p)?,
+            None => anodizer_core::config::Config::default(),
+        };
         &fallback
     };
 

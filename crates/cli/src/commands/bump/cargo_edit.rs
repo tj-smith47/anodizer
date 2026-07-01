@@ -38,8 +38,22 @@ pub struct WorkspaceInfo {
 }
 
 /// Read the workspace root `Cargo.toml` and every member manifest.
-pub fn load_workspace(workspace_root: &Path) -> Result<WorkspaceInfo> {
+/// Load the Cargo workspace graph rooted at `workspace_root`.
+///
+/// Returns `Ok(None)` when there is genuinely no Cargo workspace — no root
+/// `Cargo.toml` at all (anodizer also releases non-Rust / prebuilt-artifact
+/// projects, which legitimately have no manifest). That absent case is
+/// distinct from a `Cargo.toml` that EXISTS but fails to read or parse, or a
+/// member manifest / member glob that errors: those are real defects and
+/// surface as `Err`. Callers must NOT flatten the `Err` into "no workspace"
+/// (the historical `.ok()` bug): doing so let a malformed manifest silently
+/// abandon the lockstep path and resolve the version off a wrong base, cutting
+/// the wrong tag while reporting success.
+pub fn load_workspace(workspace_root: &Path) -> Result<Option<WorkspaceInfo>> {
     let root_manifest = workspace_root.join("Cargo.toml");
+    if !root_manifest.exists() {
+        return Ok(None);
+    }
     let root_text = std::fs::read_to_string(&root_manifest)
         .with_context(|| format!("failed to read {}", root_manifest.display()))?;
     let root_doc = root_text
@@ -93,10 +107,10 @@ pub fn load_workspace(workspace_root: &Path) -> Result<WorkspaceInfo> {
     // Stable ordering: the workspace order is often relied on by users.
     members.sort_by(|a, b| a.name.cmp(&b.name));
 
-    Ok(WorkspaceInfo {
+    Ok(Some(WorkspaceInfo {
         members,
         workspace_package_version,
-    })
+    }))
 }
 
 fn expand_member_glob(pattern: &Path) -> Result<Vec<PathBuf>> {
@@ -185,7 +199,8 @@ pub fn apply_plan(
 ) -> Result<()> {
     // Group rows into two buckets: root-rewrite (inheriting workspace version)
     // and member-rewrite (own version).
-    let ws = load_workspace(workspace_root)?;
+    let ws = load_workspace(workspace_root)?
+        .with_context(|| format!("no Cargo workspace at {}", workspace_root.display()))?;
     let member_index: BTreeMap<String, &MemberInfo> =
         ws.members.iter().map(|m| (m.name.clone(), m)).collect();
 
@@ -532,7 +547,9 @@ mod tests {
             "[package]\nname = \"b\"\nversion = \"0.9.0\"\n",
         )
         .unwrap();
-        let ws = load_workspace(dir.path()).unwrap();
+        let ws = load_workspace(dir.path())
+            .unwrap()
+            .expect("a workspace with a root Cargo.toml is present");
         assert_eq!(ws.workspace_package_version.as_deref(), Some("0.1.0"));
         let names: Vec<&str> = ws.members.iter().map(|m| m.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b"]);

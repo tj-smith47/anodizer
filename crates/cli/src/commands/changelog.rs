@@ -100,7 +100,7 @@ pub fn run(opts: ChangelogOpts) -> Result<()> {
     // Reject an incoherent flat-aggregate config (members sharing one tag prefix
     // but disagreeing on `[package].version`) before any work, identically to
     // `tag` and `bump`.
-    let workspace = load_workspace(&workspace_root).ok();
+    let workspace = load_workspace(&workspace_root)?;
     crate::commands::tag::guard_flat_aggregate_coherence(
         Some(&config),
         workspace.as_ref(),
@@ -381,7 +381,7 @@ fn run_refresh(
 ) -> Result<()> {
     let resolved = resolve_range(workspace_root, config, range)?;
     let effective_filter = resolved.pinned_crate.as_deref().or(crate_filter);
-    let workspace = load_workspace(workspace_root).ok();
+    let workspace = load_workspace(workspace_root)?;
     let selected = select_crates(workspace_root, config, workspace.as_ref(), effective_filter);
     if selected.is_empty() {
         log.warn("no crates selected for changelog refresh");
@@ -481,7 +481,7 @@ fn run_release_notes(
     if effective_filter.is_none() && config.crates.len() > 1 {
         let empty = anodizer_core::config::ChangelogConfig::default();
         let routing = ChangelogRouting::from_config(config.changelog.as_ref().unwrap_or(&empty));
-        let workspace = load_workspace(workspace_root).ok();
+        let workspace = load_workspace(workspace_root)?;
         let selected = select_crates(workspace_root, &config, workspace.as_ref(), None);
         let single_track =
             resolve_single_track(&selected, routing.root_enabled, routing.per_crate, false);
@@ -655,7 +655,7 @@ fn run_json(
 ) -> Result<()> {
     let resolved = resolve_range(workspace_root, config, range)?;
     let effective_filter = resolved.pinned_crate.as_deref().or(crate_filter);
-    let workspace = load_workspace(workspace_root).ok();
+    let workspace = load_workspace(workspace_root)?;
     let selected = select_crates(workspace_root, config, workspace.as_ref(), effective_filter);
     // `select_crates` already collapses a flat aggregate to ONE shared-root
     // entry, so the JSON array holds a single whole-release entry rather than N
