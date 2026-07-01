@@ -244,12 +244,16 @@ impl Stage for UpxStage {
                     let stdout = String::from_utf8_lossy(&output.stdout);
                     let combined = format!("{}{}", stdout, stderr);
 
+                    // "can't compress THIS input" cases → warn-and-skip (ship
+                    // the binary uncompressed). `IOException` is deliberately
+                    // NOT here: it is a real I/O failure (unreadable/unwritable
+                    // file, truncated output), not a "not compressible" verdict,
+                    // and must fail loudly rather than silently ship the binary.
                     const KNOWN_EXCEPTIONS: &[&str] = &[
                         "CantPackException",
                         "AlreadyPackedException",
                         "NotCompressibleException",
                         "UnknownExecutableFormatException",
-                        "IOException",
                     ];
 
                     if KNOWN_EXCEPTIONS.iter().any(|ex| combined.contains(ex)) {

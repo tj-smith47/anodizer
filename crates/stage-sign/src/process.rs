@@ -299,10 +299,15 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
             })?;
             drop(child_stdin); // Explicitly close stdin so child sees EOF
         } else {
-            log.warn(&format!(
-                "stdin data provided but child process stdin unavailable for {} ({})",
-                job.artifact_display, job.label
-            ));
+            // Proceeding would run the signer WITHOUT its intended stdin,
+            // producing a signature over missing input. Fail hard instead.
+            cleanup_rename_temp(job);
+            anyhow::bail!(
+                "{}: stdin data was provided but the child process stdin is \
+                 unavailable for {} — refusing to sign without it",
+                job.label,
+                job.artifact_display
+            );
         }
     }
 

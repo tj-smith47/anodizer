@@ -1469,13 +1469,16 @@ fn execute_nfpm_jobs(
         thread_log.status(&format!("packed {pkg_name}"));
 
         if let Some(mt) = job.mtime {
-            if let Err(e) = anodizer_core::util::set_file_mtime(&job.pkg_path, mt) {
-                thread_log.warn(&format!(
-                    "failed to apply mtime to {}: {}",
-                    job.pkg_path.display(),
-                    e
-                ));
-            } else if let Some(ref repr) = job.mtime_repr {
+            // A failure here would leave the package carrying a wall-clock
+            // mtime, breaking byte-reproducibility. Determinism is not
+            // best-effort: fail hard rather than ship a non-reproducible pkg.
+            anodizer_core::util::set_file_mtime(&job.pkg_path, mt).with_context(|| {
+                format!(
+                    "nfpm: apply reproducible mtime to {}",
+                    job.pkg_path.display()
+                )
+            })?;
+            if let Some(ref repr) = job.mtime_repr {
                 thread_log.verbose(&format!(
                     "applied mtime={repr} to {}",
                     job.pkg_path.display()

@@ -31,7 +31,6 @@ use serde::{Deserialize, Serialize};
 use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::{AttestationArtifactKind, AttestationConfig, AttestationMode};
 use anodizer_core::context::Context;
-use anodizer_core::log::StageLogger;
 use anodizer_core::stage::Stage;
 
 // ---------------------------------------------------------------------------
@@ -450,9 +449,14 @@ impl Stage for AttestStage {
                     );
                     let path = dist.join(&name);
                     let bytes = serialize_subjects_manifest(&subjects)?;
-                    write_output(&path, &bytes, dry_run, &log)?;
+                    let wrote = write_output(&path, &bytes, dry_run)?;
+                    let action = if wrote {
+                        "wrote"
+                    } else {
+                        "(dry-run) would write"
+                    };
                     log.status(&format!(
-                        "wrote attestation subjects manifest {name} ({} subjects)",
+                        "{action} attestation subjects manifest {name} ({} subjects)",
                         subjects.len()
                     ));
                     // Metadata kind: the manifest is consumed by
@@ -466,9 +470,14 @@ impl Stage for AttestStage {
                     let path = dist.join(&name);
                     let stmt = InTotoStatement::new(subjects.clone(), &tag, &version);
                     let bytes = serialize_statement(&stmt)?;
-                    write_output(&path, &bytes, dry_run, &log)?;
+                    let wrote = write_output(&path, &bytes, dry_run)?;
+                    let action = if wrote {
+                        "wrote"
+                    } else {
+                        "(dry-run) would write"
+                    };
                     log.status(&format!(
-                        "wrote in-toto SLSA provenance statement {name} ({} subjects)",
+                        "{action} in-toto SLSA provenance statement {name} ({} subjects)",
                         subjects.len()
                     ));
                     // UploadableFile so the existing `signs:` loop signs it and
@@ -516,17 +525,20 @@ fn serialize_statement(stmt: &InTotoStatement) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-/// Write `bytes` to `path`, creating parent dirs. No-op in dry-run.
-fn write_output(path: &Path, bytes: &[u8], dry_run: bool, log: &StageLogger) -> Result<()> {
+/// Write `bytes` to `path`, creating parent dirs. In dry-run mode nothing is
+/// written and `Ok(false)` is returned so the caller announces
+/// `(dry-run) would write …` rather than asserting a completed write; a real
+/// write returns `Ok(true)`.
+fn write_output(path: &Path, bytes: &[u8], dry_run: bool) -> Result<bool> {
     if dry_run {
-        log.verbose(&format!("(dry-run) would write {}", path.display()));
-        return Ok(());
+        return Ok(false);
     }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("attest: create parent {}", parent.display()))?;
     }
-    std::fs::write(path, bytes).with_context(|| format!("attest: write {}", path.display()))
+    std::fs::write(path, bytes).with_context(|| format!("attest: write {}", path.display()))?;
+    Ok(true)
 }
 
 /// Build the registry entry for a subjects manifest. Tagged `Metadata` so it

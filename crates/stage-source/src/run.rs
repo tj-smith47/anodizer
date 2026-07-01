@@ -142,16 +142,32 @@ impl SourceStage {
 
             let expanded_for_entry = match glob::glob(&pattern) {
                 Ok(paths) => {
-                    let expanded: Vec<_> = paths
-                        .filter_map(|p| p.ok())
-                        .filter(|p| p.is_file())
-                        .map(|p| SourceFileEntry {
-                            src: p.to_string_lossy().into_owned(),
-                            dst: entry.dst.clone(),
-                            strip_parent: entry.strip_parent,
-                            info: entry.info.clone(),
-                        })
-                        .collect();
+                    let mut expanded: Vec<SourceFileEntry> = Vec::new();
+                    for path_result in paths {
+                        let path = match path_result {
+                            Ok(p) => p,
+                            Err(e) => {
+                                // A path that errored mid-traversal (unreadable
+                                // dir, broken symlink) would otherwise be
+                                // silently dropped, shipping a partially-missing
+                                // source set. Name it so the loss is visible.
+                                log.warn(&format!(
+                                    "extra file pattern {pattern:?}: could not read {} ({})",
+                                    e.path().display(),
+                                    e.error()
+                                ));
+                                continue;
+                            }
+                        };
+                        if path.is_file() {
+                            expanded.push(SourceFileEntry {
+                                src: path.to_string_lossy().into_owned(),
+                                dst: entry.dst.clone(),
+                                strip_parent: entry.strip_parent,
+                                info: entry.info.clone(),
+                            });
+                        }
+                    }
                     if expanded.is_empty() {
                         if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
                             log.warn(&format!("extra file pattern {pattern:?} matched no files"));

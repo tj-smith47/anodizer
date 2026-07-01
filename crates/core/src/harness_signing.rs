@@ -125,7 +125,7 @@ pub fn provision_ephemeral_keys(sde: i64) -> Result<EphemeralSigningKeys> {
 
     let cosign_key_contents = provision_cosign(tmpdir.path())?;
     let (gnupg_home, gpg_fingerprint, gpg_key_path) = provision_gpg(tmpdir.path(), sde)?;
-    let apk_key_path = provision_apk(tmpdir.path());
+    let apk_key_path = provision_apk(tmpdir.path())?;
 
     Ok(EphemeralSigningKeys {
         cosign_key_contents,
@@ -289,8 +289,11 @@ fn provision_cosign(tmpdir: &Path) -> Result<String> {
 /// packager. nfpm RSA-signs apk; the signature is deterministic (no salt /
 /// no embedded timestamp), so the signed apk is byte-reproducible.
 ///
-/// Returns `None` when `openssl` is missing or key generation fails.
-fn provision_apk(tmpdir: &Path) -> Option<PathBuf> {
+/// Returns `Ok(None)` when `openssl` is missing or key generation fails
+/// (best-effort — apk is Linux-only and not every shard builds it). A failure
+/// to lock down the generated private key's permissions is a real error and is
+/// propagated, never ignored: an ephemeral key must not be left world-readable.
+fn provision_apk(tmpdir: &Path) -> Result<Option<PathBuf>> {
     let key_path = tmpdir.join("apk-harness.pem");
     // Best-effort, NOT bail-on-failure (unlike provision_cosign/provision_gpg):
     // apk is a Linux-only format and not every determinism shard builds it, so
@@ -317,18 +320,27 @@ fn provision_apk(tmpdir: &Path) -> Option<PathBuf> {
         .map(|s| s.success())
         .unwrap_or(false);
     if !ok {
-        return None;
+        return Ok(None);
     }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        if let Ok(meta) = std::fs::metadata(&key_path) {
-            let mut perms = meta.permissions();
-            perms.set_mode(0o600);
-            let _ = std::fs::set_permissions(&key_path, perms);
-        }
+        let meta = std::fs::metadata(&key_path).with_context(|| {
+            format!(
+                "harness signing: stat ephemeral apk key {}",
+                key_path.display()
+            )
+        })?;
+        let mut perms = meta.permissions();
+        perms.set_mode(0o600);
+        std::fs::set_permissions(&key_path, perms).with_context(|| {
+            format!(
+                "harness signing: restrict permissions on ephemeral apk key {}",
+                key_path.display()
+            )
+        })?;
     }
-    Some(key_path)
+    Ok(Some(key_path))
 }
 
 fn provision_gpg(tmpdir: &Path, sde: i64) -> Result<(PathBuf, String, PathBuf)> {

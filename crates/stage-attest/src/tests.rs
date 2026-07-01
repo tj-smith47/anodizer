@@ -1081,3 +1081,64 @@ fn non_dry_run_missing_file_still_errors() {
         "the real hashing error must surface, got: {err:#}"
     );
 }
+
+/// `write_output` must report whether it actually wrote: dry-run returns
+/// `Ok(false)` and touches no disk, a real write returns `Ok(true)`. The
+/// return value is what gates the caller's `wrote …` vs `(dry-run) would write
+/// …` status line — a past-tense "wrote" must never be asserted on the
+/// no-op path.
+#[test]
+fn write_output_reports_write_vs_dry_run_skip() {
+    let tmp = TempDir::new().unwrap();
+    let path = tmp.path().join("nested/manifest.json");
+
+    let skipped = write_output(&path, b"payload", true).unwrap();
+    assert!(!skipped, "dry-run must return false (nothing written)");
+    assert!(!path.exists(), "dry-run must not create the file");
+
+    let wrote = write_output(&path, b"payload", false).unwrap();
+    assert!(wrote, "a real write must return true");
+    assert_eq!(fs::read(&path).unwrap(), b"payload");
+}
+
+/// A `--dry-run` Subjects run registers the manifest artifact but writes no
+/// file, so the stage never claims a completed write it did not perform.
+#[test]
+fn dry_run_registers_manifest_without_writing_file() {
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    fs::create_dir_all(&dist).unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .dist(dist.clone())
+        .dry_run(true)
+        .crates(vec![crate_cfg("myapp")])
+        .build();
+    ctx.config.attestations = Some(attest_config(
+        AttestationMode::Subjects,
+        Some(vec![AttestationArtifactKind::Checksum]),
+    ));
+
+    add_unwritten_artifact(
+        &mut ctx,
+        &dist,
+        ArtifactKind::Checksum,
+        "myapp-1.0.0-linux-amd64.tar.gz.sha256",
+        "myapp",
+    );
+
+    AttestStage.run(&mut ctx).unwrap();
+
+    assert!(
+        !dist
+            .join(AttestationConfig::SUBJECTS_MANIFEST_NAME)
+            .exists(),
+        "dry-run must not write the subjects manifest"
+    );
+    assert!(
+        !ctx.artifacts.by_kind(ArtifactKind::Metadata).is_empty(),
+        "dry-run must still register the manifest artifact for the plan"
+    );
+}
