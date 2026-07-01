@@ -42,7 +42,6 @@ mod targets;
 // ---------------------------------------------------------------------------
 
 mod validation;
-pub use validation::*;
 
 // ---------------------------------------------------------------------------
 // check_workspace_package — validate --package flag for workspace crates

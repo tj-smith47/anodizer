@@ -46,7 +46,7 @@ use super::profile::{detect_amd64_variant, parse_amd64_variant_from_rustflags};
 use super::targets::KNOWN_TARGETS;
 use super::targets::{find_matching_override, is_target_ignored, resolve_target_env};
 use super::universal::build_universal_binary;
-use super::validation::{is_dynamically_linked, strip_glibc_suffix, target_for_validation};
+use super::validation::{strip_glibc_suffix, target_for_validation};
 use super::workspace::check_workspace_package;
 use anodizer_core::target::DEFAULT_TARGETS;
 
@@ -2161,31 +2161,6 @@ fn test_target_for_validation_strips_suffix() {
 fn test_target_for_validation_no_suffix() {
     let t = target_for_validation("x86_64-unknown-linux-gnu");
     assert_eq!(t, "x86_64-unknown-linux-gnu");
-}
-
-#[test]
-fn test_is_dynamically_linked_nonexistent() {
-    // A genuinely-absent path is `Ok(false)` (not our concern), never an error.
-    let tmp = tempfile::tempdir().unwrap();
-    let absent = tmp.path().join("does_not_exist");
-    assert!(!is_dynamically_linked(&absent).unwrap());
-}
-
-#[test]
-fn test_is_dynamically_linked_non_elf() {
-    let tmp = tempfile::tempdir().unwrap();
-    let path = tmp.path().join("not_elf");
-    std::fs::write(&path, b"not an elf file").unwrap();
-    assert!(!is_dynamically_linked(&path).unwrap());
-}
-
-#[test]
-fn test_is_dynamically_linked_unreadable_is_error() {
-    // A path that exists but cannot be read as a file (a directory: open
-    // succeeds, read yields EISDIR) must surface an error, not a silent
-    // `false` that would mask a build artifact anodizer cannot inspect.
-    let tmp = tempfile::tempdir().unwrap();
-    assert!(is_dynamically_linked(tmp.path()).is_err());
 }
 
 #[test]

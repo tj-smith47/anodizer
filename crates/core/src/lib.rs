@@ -19,6 +19,7 @@ pub mod disk;
 pub mod dist;
 pub mod docker_build;
 pub mod docker_detect;
+pub mod elf;
 pub mod env;
 pub mod env_expand;
 pub mod env_preflight;

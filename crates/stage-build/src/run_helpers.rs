@@ -20,12 +20,12 @@ use anodizer_core::template::TemplateVars;
 use crate::binstall;
 use crate::command::BuildCommand;
 use crate::universal::{build_universal_binary, project_universal_out_path};
-use crate::validation::is_dynamically_linked;
 use crate::version_sync;
 use crate::workspace::{
     find_workspace_root, resolve_binary_path, resolve_copy_from,
     resolve_reproducible_epoch_with_env,
 };
+use anodizer_core::elf::is_dynamically_linked;
 
 pub(crate) struct BuildJob {
     pub cmd: Option<BuildCommand>,

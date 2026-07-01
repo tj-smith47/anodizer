@@ -10,9 +10,9 @@ use anyhow::{Context as _, Result};
 
 use crate::util::{self, OsArtifact};
 
-use super::binary::is_dynamically_linked;
 use super::generate::{NixParams, SourceRootEntry, generate_nix_expression, nix_system};
 use super::hashing::hex_sha256_to_nix_base32;
+use anodizer_core::elf::is_dynamically_linked;
 
 /// Render and push the Nix derivation for `crate_name`.
 ///
