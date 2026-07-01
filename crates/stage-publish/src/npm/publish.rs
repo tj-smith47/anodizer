@@ -202,10 +202,8 @@ fn copy_extra_files(cfg: &NpmConfig, pkg_dir: &Path) -> Result<()> {
         } else {
             cwd.join(&pattern).to_string_lossy().into_owned()
         };
-        let entries = match glob::glob(&absolute_pattern) {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
+        let entries = glob::glob(&absolute_pattern)
+            .with_context(|| format!("npm: invalid extra_files glob pattern '{}'", pattern))?;
         for entry in entries.flatten() {
             if !entry.is_file() {
                 continue;
@@ -215,10 +213,11 @@ fn copy_extra_files(cfg: &NpmConfig, pkg_dir: &Path) -> Result<()> {
                 None => continue,
             };
             let dst = pkg_dir.join(basename);
-            let bytes = match fs::read(&entry) {
-                Ok(b) => b,
-                Err(_) => continue,
-            };
+            // A file matched the declared extra_files glob but can't be read:
+            // publishing without it would silently drop a declared
+            // README/LICENSE, so surface the failure instead of skipping.
+            let bytes = fs::read(&entry)
+                .with_context(|| format!("npm: read extra_files entry '{}'", entry.display()))?;
             write_deterministic(&dst, &bytes)?;
         }
     }

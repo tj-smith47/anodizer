@@ -369,7 +369,21 @@ impl anodizer_core::Publisher for NpmPublisher {
             let Ok(registry) = crate::npm::manifest::resolve_registry(ctx, cfg) else {
                 continue;
             };
-            let token = super::publish::resolve_token(ctx, cfg).unwrap_or_default();
+            // A resolution error means `cfg.token` was configured but its
+            // template failed to render — a misconfiguration that will fail the
+            // live publish. Surface it as a Blocker now rather than deferring
+            // past the tag and other one-way doors. An empty `Ok` is the
+            // legitimate absent-token / OIDC-only path (skip the probe).
+            let token = match super::publish::resolve_token(ctx, cfg) {
+                Ok(t) => t,
+                Err(e) => {
+                    acc = merge(
+                        acc,
+                        PreflightCheck::Blocker(format!("npm token could not be resolved: {e:#}")),
+                    );
+                    continue;
+                }
+            };
             if !token.is_empty() {
                 let outcome = match probe_token_auth(
                     &format!("{registry}/-/whoami"),

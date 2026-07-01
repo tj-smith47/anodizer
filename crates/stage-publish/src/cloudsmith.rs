@@ -127,11 +127,19 @@ fn cloudsmith_default_distribution(format: &str) -> Option<&'static str> {
 pub(crate) enum CloudsmithPackageState {
     /// No package found with the given filename: caller should upload.
     NotFound,
-    /// Package found with matching md5: caller should skip (idempotent).
+    /// Package found with a **verified** matching md5: caller should skip
+    /// (idempotent re-run).
     SkipIdempotent,
     /// Package found with a different md5: caller should bail loudly.
     /// `remote` is the md5 reported by Cloudsmith.
     Md5Mismatch { remote: String },
+    /// A package with this filename exists but Cloudsmith reported no
+    /// `checksum_md5` to compare against (still syncing, partially landed, or
+    /// a checksum-less format). Presence-by-filename is NOT proof the remote
+    /// bytes match the local ones, so the caller must upload rather than
+    /// skip-and-claim-match — mirroring artifactory's `Unknown` and blob's
+    /// `None`. Any real duplicate surfaces from the upload (409) path itself.
+    Unverifiable,
 }
 
 /// Classify a Cloudsmith packages-list response body against the local md5.
@@ -171,10 +179,13 @@ pub(crate) fn classify_cloudsmith_package_response(
             .unwrap_or("")
             .to_ascii_lowercase();
         if remote_md5.is_empty() {
-            // Package exists but Cloudsmith didn't report a checksum we can
-            // verify. Treat as idempotent skip rather than upload-and-create
-            // a duplicate: presence-by-filename is the strongest signal we have.
-            return Ok(CloudsmithPackageState::SkipIdempotent);
+            // Package exists by filename but Cloudsmith reported no checksum to
+            // verify against. Presence alone does NOT prove the remote bytes
+            // match the local ones (a partial/still-syncing prior upload
+            // reports an empty checksum), so this must NOT skip-and-claim a
+            // match — the caller uploads and lets the 409 path resolve a true
+            // duplicate.
+            return Ok(CloudsmithPackageState::Unverifiable);
         }
         if remote_md5 == local_md5.to_ascii_lowercase() {
             return Ok(CloudsmithPackageState::SkipIdempotent);
@@ -890,6 +901,15 @@ pub(crate) fn publish_to_cloudsmith(
                             md5_hex
                         );
                     }
+                    CloudsmithPackageState::Unverifiable => {
+                        // Filename present but no remote checksum to compare:
+                        // upload rather than skip-and-claim-match. The step-3
+                        // 409 path resolves a genuine duplicate.
+                        log.verbose(&format!(
+                            "'{}' present on cloudsmith but no remote md5 to verify; uploading (idempotency unconfirmed)",
+                            art_name
+                        ));
+                    }
                     CloudsmithPackageState::NotFound => {}
                 }
             }
@@ -1073,6 +1093,20 @@ pub(crate) fn publish_to_cloudsmith(
                                     remote,
                                     md5_hex
                                 );
+                            }
+                            CloudsmithPackageState::Unverifiable => {
+                                // The re-query shows the filename present but
+                                // with no checksum to compare — cannot confirm
+                                // the racing upload landed OUR bytes. Surface
+                                // the conflict rather than claim an idempotent
+                                // skip we can't prove.
+                                log.warn(&format!(
+                                    "cloudsmith: step-3 conflict for '{}'; remote reports no md5 to \
+                                     verify the landed bytes match local — surfacing the conflict \
+                                     instead of assuming an idempotent skip",
+                                    art_name
+                                ));
+                                return Err(err);
                             }
                             CloudsmithPackageState::NotFound => {
                                 return Err(err);
@@ -2560,14 +2594,26 @@ mod tests {
     }
 
     #[test]
-    fn cloudsmith_classify_skip_when_md5_field_absent() {
-        // Filename match but no checksum_md5 in the response — presence is
-        // a strong-enough idempotency signal; uploading would create a
-        // duplicate package with a different md5.
+    fn cloudsmith_classify_unverifiable_when_md5_field_absent() {
+        // Filename match but no checksum_md5 in the response: presence alone
+        // does NOT prove the remote bytes match the local ones, so the
+        // classifier must NOT skip-and-claim-match. Upload and let the 409
+        // path resolve a real duplicate.
         let body = r#"[{"filename":"app_1.0.0_amd64.deb"}]"#;
         let result =
             classify_cloudsmith_package_response(body, "app_1.0.0_amd64.deb", "deadbeef").unwrap();
-        assert_eq!(result, CloudsmithPackageState::SkipIdempotent);
+        assert_eq!(result, CloudsmithPackageState::Unverifiable);
+    }
+
+    #[test]
+    fn cloudsmith_classify_unverifiable_when_md5_empty_string() {
+        // A partial / still-syncing prior upload reports an empty checksum.
+        // Treating that as a match would ship unverified/stale content while
+        // claiming "matching md5"; it must classify as Unverifiable (upload).
+        let body = r#"[{"filename":"app_1.0.0_amd64.deb","checksum_md5":""}]"#;
+        let result =
+            classify_cloudsmith_package_response(body, "app_1.0.0_amd64.deb", "deadbeef").unwrap();
+        assert_eq!(result, CloudsmithPackageState::Unverifiable);
     }
 
     #[test]
