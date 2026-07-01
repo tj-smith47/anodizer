@@ -62,13 +62,20 @@ pub(crate) fn write_archive_entries<W: std::io::Write>(
     entries: &[ArchiveEntry],
     mtime: Option<u64>,
     label: &str,
+    strict: bool,
 ) -> Result<()> {
     for entry in entries {
         if !entry.src.exists() {
-            archive_log().warn(&format!(
+            // A resolved entry that vanished before write time would silently
+            // ship a truncated archive as success; hard-fail under `--strict`.
+            let msg = format!(
                 "{label}: '{}' no longer exists — omitted from the archive",
                 entry.src.display()
-            ));
+            );
+            if strict {
+                anyhow::bail!("{msg} (strict mode)");
+            }
+            archive_log().warn(&msg);
             continue;
         }
         formats::append_tar_entry(
@@ -110,6 +117,7 @@ pub(crate) fn write_zip_entries<W: std::io::Write + std::io::Seek>(
     zip: &mut zip::ZipWriter<W>,
     entries: &[ArchiveEntry],
     mtime: Option<u64>,
+    strict: bool,
 ) -> Result<()> {
     let mut base_options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated);
@@ -122,10 +130,16 @@ pub(crate) fn write_zip_entries<W: std::io::Write + std::io::Seek>(
 
     for entry in entries {
         if !entry.src.exists() {
-            archive_log().warn(&format!(
+            // A resolved entry that vanished before write time would silently
+            // ship a truncated archive as success; hard-fail under `--strict`.
+            let msg = format!(
                 "zip archive: '{}' no longer exists — omitted from the archive",
                 entry.src.display()
-            ));
+            );
+            if strict {
+                anyhow::bail!("{msg} (strict mode)");
+            }
+            archive_log().warn(&msg);
             continue;
         }
         let mut options = base_options;

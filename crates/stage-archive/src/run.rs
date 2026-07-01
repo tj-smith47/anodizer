@@ -353,10 +353,17 @@ fn archive_one_config(
                 .as_deref()
                 .map(|ids| format!(" matching ids {ids:?}"))
                 .unwrap_or_default();
-            log.warn(&format!(
-                "skipped archives[{archive_id}] — crate {crate_name} has no \
+            // A mis-scoped `ids:` filter (or a crate with no binaries) produces
+            // no archive at all; GoReleaser errors here. Hard-fail under
+            // `--strict` so the config doesn't silently yield nothing, and warn
+            // otherwise.
+            ctx.strict_guard(
+                log,
+                &format!(
+                    "skipped archives[{archive_id}] — crate {crate_name} has no \
              binaries{id_filter_desc} (set `meta: true` if this is intentional)"
-            ));
+                ),
+            )?;
             continue;
         }
 
@@ -658,7 +665,7 @@ fn archive_one_config(
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-                resolve_file_specs(&rendered_specs)
+                resolve_file_specs(&rendered_specs, ctx.is_strict(), log)
                     .with_context(|| format!("resolve file specs for {crate_name}/{target}"))?
             } else {
                 resolve_default_extra_files(crate_dir)
@@ -925,6 +932,7 @@ fn archive_one_config(
                         &all_entries,
                         &path_refs,
                         source_date_epoch,
+                        ctx.is_strict(),
                         log,
                     )?;
                 }

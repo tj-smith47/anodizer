@@ -3505,7 +3505,7 @@ fn test_resolve_file_specs_glob() {
     fs::write(&license, b"MIT").unwrap();
 
     let specs = vec![ArchiveFileSpec::Glob(license.to_string_lossy().to_string())];
-    let resolved = resolve_file_specs(&specs).unwrap();
+    let resolved = resolve_file_specs(&specs, false, &crate::archive_log()).unwrap();
     assert_eq!(resolved.len(), 1);
     assert_eq!(resolved[0].src, license);
     assert!(resolved[0].dst.is_none());
@@ -3531,7 +3531,7 @@ fn test_resolve_file_specs_detailed() {
         }),
         strip_parent: None,
     }];
-    let resolved = resolve_file_specs(&specs).unwrap();
+    let resolved = resolve_file_specs(&specs, false, &crate::archive_log()).unwrap();
     assert_eq!(resolved.len(), 1);
     assert_eq!(resolved[0].src, license);
     // With LCP logic: single file, LCP is the file path itself, so
@@ -3540,6 +3540,40 @@ fn test_resolve_file_specs_detailed() {
     let info = resolved[0].info.as_ref().unwrap();
     assert_eq!(info.owner.as_deref(), Some("root"));
     assert_eq!(info.mode, Some(anodizer_core::config::StringOrU32(0o644)));
+}
+
+#[test]
+fn test_resolve_file_specs_missing_literal_strict_errors_lenient_warns() {
+    use anodizer_core::config::ArchiveFileSpec;
+
+    let tmp = TempDir::new().unwrap();
+    let missing = tmp.path().join("NOTICE"); // never created
+    let specs = vec![ArchiveFileSpec::Glob(missing.to_string_lossy().to_string())];
+
+    // Lenient: a declared literal that doesn't exist warns and is dropped, but
+    // resolution still succeeds (returns no entries for it).
+    let lenient = resolve_file_specs(&specs, false, &crate::archive_log()).unwrap();
+    assert!(lenient.is_empty());
+
+    // Strict: the same missing declared literal is a hard error — a demanded
+    // file must never silently vanish from the archive.
+    let strict = resolve_file_specs(&specs, true, &crate::archive_log());
+    assert!(strict.is_err());
+    assert!(strict.unwrap_err().to_string().contains("does not exist"));
+}
+
+#[test]
+fn test_resolve_file_specs_missing_glob_never_errors_under_strict() {
+    use anodizer_core::config::ArchiveFileSpec;
+
+    let tmp = TempDir::new().unwrap();
+    // A glob pattern (contains '*') that matches nothing is legitimately
+    // "no matches" — tolerated even under strict, unlike a missing literal.
+    let pattern = format!("{}/*.nonexistent", tmp.path().to_string_lossy());
+    let specs = vec![ArchiveFileSpec::Glob(pattern)];
+
+    let strict = resolve_file_specs(&specs, true, &crate::archive_log()).unwrap();
+    assert!(strict.is_empty());
 }
 
 // -----------------------------------------------------------------------
@@ -3617,7 +3651,7 @@ fn test_resolve_file_specs_dst_preserves_directory_structure() {
         strip_parent: None,
     }];
 
-    let mut resolved = resolve_file_specs(&specs).unwrap();
+    let mut resolved = resolve_file_specs(&specs, false, &crate::archive_log()).unwrap();
     assert_eq!(resolved.len(), 2);
 
     // Sort by dst for deterministic assertions
@@ -3650,7 +3684,7 @@ fn test_resolve_file_specs_dst_with_strip_parent_ignores_lcp() {
         strip_parent: Some(true),
     }];
 
-    let resolved = resolve_file_specs(&specs).unwrap();
+    let resolved = resolve_file_specs(&specs, false, &crate::archive_log()).unwrap();
     assert_eq!(resolved.len(), 2);
 
     // With both dst AND strip_parent,
@@ -3686,7 +3720,7 @@ fn test_resolve_file_specs_literal_src_with_dst_preserves_filename() {
         strip_parent: None,
     }];
 
-    let resolved = resolve_file_specs(&specs).unwrap();
+    let resolved = resolve_file_specs(&specs, false, &crate::archive_log()).unwrap();
     assert_eq!(resolved.len(), 1);
     assert_eq!(resolved[0].src, license);
     assert_eq!(resolved[0].dst.as_deref(), Some("licenses/LICENSE"));
@@ -3714,7 +3748,7 @@ fn test_resolve_file_specs_dst_partial_filename_lcp_fallback() {
         strip_parent: None,
     }];
 
-    let mut resolved = resolve_file_specs(&specs).unwrap();
+    let mut resolved = resolve_file_specs(&specs, false, &crate::archive_log()).unwrap();
     assert_eq!(resolved.len(), 2);
 
     // Sort for deterministic assertions

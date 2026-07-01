@@ -98,10 +98,25 @@ pub fn read_cargo_version_opt(crate_path: &str) -> Result<Option<String>> {
 /// workspace, so a bump in this workspace must never rewrite a pin owned by a
 /// sibling workspace on its own release cadence. The starting `root` itself is
 /// always descended (its own `[workspace]` is the boundary we're scoping to).
-fn find_cargo_tomls(dir: &Path, root_toml: &Path, out: &mut Vec<std::path::PathBuf>) {
+fn find_cargo_tomls(
+    dir: &Path,
+    root_toml: &Path,
+    out: &mut Vec<std::path::PathBuf>,
+    log: &StageLogger,
+) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
-        Err(_) => return,
+        Err(e) => {
+            // An unreadable subtree may hold a member whose stale path-dep pin
+            // this scan exists to rewrite; pruning it silently is the exact
+            // drift the function prevents (a stale pin breaks cargo publish /
+            // lockstep). Surface it like the manifest-read path below.
+            log.warn(&format!(
+                "version sync: skipping unreadable directory {}: {e}",
+                dir.display()
+            ));
+            return;
+        }
     };
     for entry in entries.filter_map(|e| e.ok()) {
         let path = entry.path();
@@ -115,7 +130,7 @@ fn find_cargo_tomls(dir: &Path, root_toml: &Path, out: &mut Vec<std::path::PathB
             if dir_is_workspace_root(&path) {
                 continue;
             }
-            find_cargo_tomls(&path, root_toml, out);
+            find_cargo_tomls(&path, root_toml, out, log);
         } else if path.file_name().map(|n| n == "Cargo.toml").unwrap_or(false) && path != root_toml
         {
             out.push(path);
@@ -200,6 +215,7 @@ pub fn sync_workspace_deps(
         &scope_root,
         &scope_root.join("Cargo.toml"),
         &mut cargo_tomls,
+        log,
     );
 
     for path in &cargo_tomls {

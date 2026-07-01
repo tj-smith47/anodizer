@@ -72,6 +72,7 @@ pub(crate) fn write_archive_in_format(
     all_entries: &[&ArchiveEntry],
     path_refs: &[&Path],
     source_date_epoch: Option<u64>,
+    strict: bool,
     log: &StageLogger,
 ) -> Result<()> {
     match format {
@@ -79,7 +80,12 @@ pub(crate) fn write_archive_in_format(
             let out_file = File::create(archive_path)
                 .with_context(|| format!("create zip: {}", archive_path.display()))?;
             let mut zip = zip::ZipWriter::new(out_file);
-            write_zip_entries(&mut zip, &entries_to_owned(all_entries), source_date_epoch)?;
+            write_zip_entries(
+                &mut zip,
+                &entries_to_owned(all_entries),
+                source_date_epoch,
+                strict,
+            )?;
             zip.finish().context("zip: finish")?;
         }
         "tar.gz" | "tgz" => {
@@ -92,6 +98,7 @@ pub(crate) fn write_archive_in_format(
                 &entries_to_owned(all_entries),
                 source_date_epoch,
                 "tar.gz",
+                strict,
             )?;
             tar.finish().context("tar.gz: finish")?;
         }
@@ -105,6 +112,7 @@ pub(crate) fn write_archive_in_format(
                 &entries_to_owned(all_entries),
                 source_date_epoch,
                 "tar.xz",
+                strict,
             )?;
             tar.finish().context("tar.xz: finish")?;
         }
@@ -118,6 +126,7 @@ pub(crate) fn write_archive_in_format(
                 &entries_to_owned(all_entries),
                 source_date_epoch,
                 "tar.zst",
+                strict,
             )?;
             let enc = tar.into_inner().context("tar.zst: finish tar")?;
             enc.finish().context("tar.zst: finish zstd")?;
@@ -131,6 +140,7 @@ pub(crate) fn write_archive_in_format(
                 &entries_to_owned(all_entries),
                 source_date_epoch,
                 "tar",
+                strict,
             )?;
             tar.finish().context("tar: finish")?;
         }

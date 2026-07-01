@@ -119,7 +119,10 @@ pub(crate) fn add_artifact(
     } else {
         job_bin_path.to_path_buf()
     };
-    if artifact_path.exists() && is_dynamically_linked(&artifact_path) {
+    if artifact_path.exists()
+        && is_dynamically_linked(&artifact_path)
+            .with_context(|| format!("inspect ELF linkage of {}", artifact_path.display()))?
+    {
         meta.insert("DynamicallyLinked".to_string(), "true".to_string());
     }
     let artifact_name = artifact_path

@@ -42,24 +42,35 @@ pub(crate) fn target_for_validation(target: &str) -> &str {
 /// Check if a binary at the given path is dynamically linked by reading ELF
 /// program headers and looking for a PT_INTERP segment (type 3).
 ///
-/// Returns `false` for non-ELF files, files that can't be read, or statically
-/// linked ELF binaries.
-pub fn is_dynamically_linked(path: &Path) -> bool {
+/// Returns `Ok(false)` for a genuinely-absent path, a non-ELF file, a file too
+/// short to be a valid ELF header, or a statically linked ELF binary; `Ok(true)`
+/// when a `PT_INTERP` segment is present. Returns `Err` when a file that *does*
+/// exist cannot be read (open failure other than not-found, or a short/failed
+/// read of a confirmed ELF): a just-built artifact anodizer cannot read is a
+/// defect, not silently "statically linked".
+pub fn is_dynamically_linked(path: &Path) -> std::io::Result<bool> {
     use std::io::Read;
     let mut file = match std::fs::File::open(path) {
         Ok(f) => f,
-        Err(_) => return false,
+        // A genuinely-absent path is not our concern (callers guard on
+        // `.exists()`); any OTHER open failure on a file we were asked to
+        // inspect is a real error, not "statically linked".
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
     };
 
-    // Read enough of the header to determine ELF class and program header info
+    // Read enough of the header to determine ELF class and program header info.
+    // A short read (fewer than 64 bytes) means the file is too small to be a
+    // valid ELF — legitimately "not dynamically linked". A read *error* is a
+    // defect and propagates.
     let mut buf = [0u8; 64];
-    if file.read(&mut buf).unwrap_or(0) < 64 {
-        return false;
+    if file.read(&mut buf)? < 64 {
+        return Ok(false);
     }
 
     // Verify ELF magic: 0x7f 'E' 'L' 'F'
     if &buf[0..4] != b"\x7fELF" {
-        return false;
+        return Ok(false);
     }
 
     let is_64bit = buf[4] == 2;
@@ -103,19 +114,17 @@ pub fn is_dynamically_linked(path: &Path) -> bool {
     };
 
     if ph_count == 0 || ph_entry_size == 0 {
-        return false;
+        return Ok(false);
     }
 
-    // Read all program headers
+    // Read all program headers. A confirmed-ELF header pointing at program
+    // headers we cannot seek/read is a corrupt or truncated artifact — a defect
+    // that propagates rather than masquerading as "statically linked".
     let total_size = ph_entry_size * ph_count as u64;
     let mut ph_buf = vec![0u8; total_size as usize];
     use std::io::Seek;
-    if file.seek(std::io::SeekFrom::Start(ph_offset)).is_err() {
-        return false;
-    }
-    if file.read_exact(&mut ph_buf).is_err() {
-        return false;
-    }
+    file.seek(std::io::SeekFrom::Start(ph_offset))?;
+    file.read_exact(&mut ph_buf)?;
 
     // Scan for PT_INTERP (type 3)
     let pt_interp: u32 = 3;
@@ -123,9 +132,9 @@ pub fn is_dynamically_linked(path: &Path) -> bool {
         let entry_start = i * ph_entry_size as usize;
         let p_type = read_u32(&ph_buf[entry_start..entry_start + 4]);
         if p_type == pt_interp {
-            return true;
+            return Ok(true);
         }
     }
 
-    false
+    Ok(false)
 }

@@ -6,7 +6,7 @@ use anodizer_core::config::{BuildIgnore, BuildOverride, CrossStrategy};
 use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::stage::Stage;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 // Crate-internal items
 use super::BuildStage;
@@ -2165,7 +2165,10 @@ fn test_target_for_validation_no_suffix() {
 
 #[test]
 fn test_is_dynamically_linked_nonexistent() {
-    assert!(!is_dynamically_linked(Path::new("/nonexistent/path")));
+    // A genuinely-absent path is `Ok(false)` (not our concern), never an error.
+    let tmp = tempfile::tempdir().unwrap();
+    let absent = tmp.path().join("does_not_exist");
+    assert!(!is_dynamically_linked(&absent).unwrap());
 }
 
 #[test]
@@ -2173,7 +2176,16 @@ fn test_is_dynamically_linked_non_elf() {
     let tmp = tempfile::tempdir().unwrap();
     let path = tmp.path().join("not_elf");
     std::fs::write(&path, b"not an elf file").unwrap();
-    assert!(!is_dynamically_linked(&path));
+    assert!(!is_dynamically_linked(&path).unwrap());
+}
+
+#[test]
+fn test_is_dynamically_linked_unreadable_is_error() {
+    // A path that exists but cannot be read as a file (a directory: open
+    // succeeds, read yields EISDIR) must surface an error, not a silent
+    // `false` that would mask a build artifact anodizer cannot inspect.
+    let tmp = tempfile::tempdir().unwrap();
+    assert!(is_dynamically_linked(tmp.path()).is_err());
 }
 
 #[test]

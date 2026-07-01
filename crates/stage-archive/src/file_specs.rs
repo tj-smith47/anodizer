@@ -9,6 +9,7 @@ use anyhow::Result;
 
 use anodizer_core::config::ArchiveFileSpec;
 use anodizer_core::context::Context;
+use anodizer_core::log::StageLogger;
 
 use crate::formats::{normalize_archive_path, resolve_glob_patterns};
 
@@ -79,31 +80,44 @@ pub struct ResolvedExtraFile {
     pub default: bool,
 }
 
-/// Resolve a list of ArchiveFileSpec entries into concrete file paths with
-/// optional destination overrides and file info.
-/// Warn when an explicit, non-glob `files:` entry matches nothing. A glob that
-/// matches zero paths is legitimately "no matches"; a literal path that doesn't
-/// exist is almost always a typo, and silently dropping it (the bare
-/// `if p.exists()` in `resolve_glob_patterns`) would make the file vanish from
-/// the archive with no diagnostic. `resolve_glob_patterns` stays tolerant for
-/// the auto LICENSE/README defaults; the warning lives here at the
-/// explicit-config call site.
-fn warn_if_literal_unmatched(pattern: &str, paths: &[PathBuf]) {
+/// Fail (strict) or warn (lenient) when an explicit, non-glob `files:` entry
+/// matches nothing. A glob that matches zero paths is legitimately "no matches"
+/// and is always tolerated; a literal path that doesn't exist is almost always
+/// a typo, and silently dropping it (the bare `if p.exists()` in
+/// `resolve_glob_patterns`) would ship an archive missing a demanded file with
+/// no failure — checksum/sbom/publish would then treat the truncated archive as
+/// correct. GoReleaser errors on this; anodizer at least hard-fails under
+/// `--strict` and warns otherwise. `resolve_glob_patterns` stays tolerant for
+/// the auto LICENSE/README defaults; this guard lives at the explicit-config
+/// call site only.
+fn guard_literal_unmatched(
+    pattern: &str,
+    paths: &[PathBuf],
+    strict: bool,
+    log: &StageLogger,
+) -> Result<()> {
     let is_glob = pattern.contains('*') || pattern.contains('?') || pattern.contains('[');
     if !is_glob && paths.is_empty() {
-        crate::archive_log().warn(&format!(
-            "files: entry '{pattern}' does not exist — omitted from the archive"
-        ));
+        let msg = format!("files: entry '{pattern}' does not exist — omitted from the archive");
+        if strict {
+            anyhow::bail!("{msg} (strict mode)");
+        }
+        log.warn(&msg);
     }
+    Ok(())
 }
 
-pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtraFile>> {
+pub fn resolve_file_specs(
+    specs: &[ArchiveFileSpec],
+    strict: bool,
+    log: &StageLogger,
+) -> Result<Vec<ResolvedExtraFile>> {
     let mut results = Vec::new();
     for spec in specs {
         match spec {
             ArchiveFileSpec::Glob(pattern) => {
                 let paths = resolve_glob_patterns(std::slice::from_ref(pattern))?;
-                warn_if_literal_unmatched(pattern, &paths);
+                guard_literal_unmatched(pattern, &paths, strict, log)?;
                 for p in paths {
                     results.push(ResolvedExtraFile {
                         src: p,
@@ -121,7 +135,7 @@ pub fn resolve_file_specs(specs: &[ArchiveFileSpec]) -> Result<Vec<ResolvedExtra
                 strip_parent,
             } => {
                 let paths = resolve_glob_patterns(std::slice::from_ref(src))?;
-                warn_if_literal_unmatched(src, &paths);
+                guard_literal_unmatched(src, &paths, strict, log)?;
                 let do_strip = strip_parent.unwrap_or(false);
 
                 // When dst is set and strip_parent is false, compute per-file
