@@ -779,6 +779,23 @@ fn execute_appimage_job(
         pin_zsync_mtime(&built, &job.output_path, epoch)?;
     }
 
+    // The AppDir is linuxdeploy scaffolding, not a deliverable: its contents
+    // are squashed into the `.AppImage` (the transitive determinism witness),
+    // and nothing downstream reads the tree. Leaving it in `dist/` makes every
+    // scaffolding file — including the hidden `.DirIcon` — a "shipped" artifact
+    // that the determinism manifest records and publish-only hash-verifies.
+    // `actions/upload-artifact` drops hidden files by default, so the preserved
+    // dist that reaches publish is missing `.DirIcon` and hash-verify fails.
+    // Remove the scaffolding once the AppImage (and its sidecar) are finalized.
+    if job.appdir_root.exists() {
+        std::fs::remove_dir_all(&job.appdir_root).with_context(|| {
+            format!(
+                "appimage: removing AppDir scaffolding {}",
+                job.appdir_root.display()
+            )
+        })?;
+    }
+
     let mut metadata = HashMap::new();
     metadata.insert("id".to_string(), job.id.clone());
     metadata.insert("format".to_string(), "appimage".to_string());

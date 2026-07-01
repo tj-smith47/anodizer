@@ -139,6 +139,11 @@ jobs:
         with:
           name: dist-${{ matrix.shard }}
           path: preserved-dist/
+          # Upholds publish-only's "shipped bytes == harness-verified bytes"
+          # invariant: upload-artifact drops dotfiles by default, which would
+          # silently strip any hidden deliverable from the preserved dist and
+          # only surface as a cryptic hash-verify failure at publish time.
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 90
 
