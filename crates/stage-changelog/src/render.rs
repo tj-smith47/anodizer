@@ -20,6 +20,7 @@
 use std::sync::LazyLock;
 
 use anodizer_core::config::ChangelogGroup;
+use anodizer_core::log::{StageLogger, Verbosity};
 use anodizer_core::template::{self, TemplateVars};
 use anyhow::{Context as _, Result};
 use regex::Regex;
@@ -697,22 +698,35 @@ fn build_section_template_vars(sv: SectionVars<'_>) -> TemplateVars {
 /// Render a single templated field through `vars`, falling back to the raw
 /// string on a render error.
 ///
-/// The write path has no strict-mode flag or logger, so a malformed template
-/// is kept verbatim (matching the non-strict `render_template_strict` branch)
-/// rather than failing a `bump`/`tag` mid-flight.
-fn render_field(raw: &str, vars: &TemplateVars) -> String {
-    template::render(raw, vars).unwrap_or_else(|_| raw.to_string())
+/// The write path (`bump`/`tag` changelog sync) has no `Context`, so it can't
+/// consult `--strict`; a malformed template is kept verbatim (matching the
+/// non-strict `render_template_strict` branch) rather than failing the
+/// `bump`/`tag` mid-flight. But the fallback must never be SILENT: a `log.warn`
+/// naming the field kind and the offending template surfaces the defect at
+/// default verbosity so a literal `{{ … }}` is never committed into
+/// `CHANGELOG.md` without a trace.
+fn render_field(raw: &str, vars: &TemplateVars, field: &str, log: &StageLogger) -> String {
+    template::render(raw, vars).unwrap_or_else(|e| {
+        log.warn(&format!(
+            "changelog write path: failed to render templated {field} {raw:?}: {e}; keeping it verbatim"
+        ));
+        raw.to_string()
+    })
 }
 
 /// Recursively render each group's `title` through `vars`, mutating the tree
 /// in place so the grouping/render pipeline downstream sees resolved headings.
-fn render_group_titles_in_place(groups: &mut [ChangelogGroup], vars: &TemplateVars) {
+fn render_group_titles_in_place(
+    groups: &mut [ChangelogGroup],
+    vars: &TemplateVars,
+    log: &StageLogger,
+) {
     for g in groups.iter_mut() {
         if !g.title.is_empty() {
-            g.title = render_field(&g.title, vars);
+            g.title = render_field(&g.title, vars, "group title", log);
         }
         if let Some(subs) = g.groups.as_mut() {
-            render_group_titles_in_place(subs, vars);
+            render_group_titles_in_place(subs, vars, log);
         }
     }
 }
@@ -723,15 +737,21 @@ fn render_group_titles_in_place(groups: &mut [ChangelogGroup], vars: &TemplateVa
 fn render_section_config_fields(
     cfg: &mut anodizer_core::config::ChangelogConfig,
     vars: &TemplateVars,
+    log: &StageLogger,
 ) {
     if let Some(groups) = cfg.groups.as_mut() {
-        render_group_titles_in_place(groups, vars);
+        render_group_titles_in_place(groups, vars, log);
     }
     if let Some(divider) = cfg.divider.as_ref() {
-        cfg.divider = Some(render_field(divider, vars));
+        cfg.divider = Some(render_field(divider, vars, "divider", log));
     }
     if let Some(paths) = cfg.paths.as_ref() {
-        cfg.paths = Some(paths.iter().map(|p| render_field(p, vars)).collect());
+        cfg.paths = Some(
+            paths
+                .iter()
+                .map(|p| render_field(p, vars, "path", log))
+                .collect(),
+        );
     }
 }
 
@@ -759,20 +779,18 @@ fn group_section_commits(
     to_ref: Option<&str>,
     section_vars: SectionVars<'_>,
 ) -> Result<Option<(anodizer_core::config::ChangelogConfig, Vec<GroupedCommits>)>> {
-    use anodizer_core::log::{StageLogger, Verbosity};
-
     let Some(mut cfg) = load_changelog_config(workspace_root)? else {
         return Ok(None);
     };
+
+    let log = StageLogger::new("bump-changelog", Verbosity::default());
 
     // Resolve templated group fields (`groups[].title` / `divider` / `paths`)
     // against the per-crate context before they feed grouping/rendering, so the
     // write path matches the in-pipeline `Stage::run` rendering and never ships
     // a literal `{{ ... }}` into the committed CHANGELOG.md.
     let template_vars = build_section_template_vars(section_vars);
-    render_section_config_fields(&mut cfg, &template_vars);
-
-    let log = StageLogger::new("bump-changelog", Verbosity::default());
+    render_section_config_fields(&mut cfg, &template_vars, &log);
 
     // The current track's directory relative to the workspace root; empty for
     // the aggregate (the workspace-root "crate"), exactly as the resolver
@@ -1747,7 +1765,8 @@ pub fn render_root_section(
                 .and_then(|c| c.groups)
                 .unwrap_or_default();
             let template_vars = build_section_template_vars(section_vars);
-            render_group_titles_in_place(&mut groups, &template_vars);
+            let log = StageLogger::new("bump-changelog", Verbosity::default());
+            render_group_titles_in_place(&mut groups, &template_vars, &log);
             groups
         }
     };
@@ -4774,24 +4793,47 @@ mod render_extra_tests {
             version: "0.6.0",
             tag: "cfgd-core-v0.6.0",
         });
+        let log = StageLogger::new("test", Verbosity::Normal);
         assert_eq!(
-            render_field("{{ .Name }} {{ .Version }}", &vars),
+            render_field("{{ .Name }} {{ .Version }}", &vars, "group title", &log),
             "cfgd-core 0.6.0"
         );
-        assert_eq!(render_field("{{ .Tag }}", &vars), "cfgd-core-v0.6.0");
-        assert_eq!(render_field("{{ .ProjectName }}", &vars), "cfgd-core");
+        assert_eq!(
+            render_field("{{ .Tag }}", &vars, "group title", &log),
+            "cfgd-core-v0.6.0"
+        );
+        assert_eq!(
+            render_field("{{ .ProjectName }}", &vars, "group title", &log),
+            "cfgd-core"
+        );
     }
 
     #[test]
-    fn render_field_falls_back_to_raw_on_render_error() {
+    fn render_field_falls_back_to_raw_and_warns_on_render_error() {
         let vars = build_section_template_vars(SectionVars {
             crate_name: "x",
             version: "1.0.0",
             tag: "v1.0.0",
         });
-        // Malformed template => kept verbatim (non-strict write path).
+        let capture = anodizer_core::log::LogCapture::new();
+        let log = StageLogger::new("test", Verbosity::Normal).with_capture_handle(capture.clone());
+
+        // Malformed template => kept verbatim (non-strict write path), but the
+        // fallback must NOT be silent: a warn naming the field + template proves
+        // the failure surfaces instead of a literal `{{ … }}` shipping unnoticed.
         let raw = "{{ .Unterminated ";
-        assert_eq!(render_field(raw, &vars), raw);
+        assert_eq!(render_field(raw, &vars, "group title", &log), raw);
+
+        let warns = capture.warn_messages();
+        assert_eq!(
+            warns.len(),
+            1,
+            "malformed template must emit exactly one warn, got: {warns:?}"
+        );
+        assert!(
+            warns[0].contains("group title") && warns[0].contains(".Unterminated"),
+            "warn must name the field kind and the offending template, got: {warns:?}"
+        );
     }
 
     // ---- render_groups depth cap ----

@@ -179,7 +179,7 @@ fn release_one_crate(
         .cloned()
         .unwrap_or_default();
 
-    crate::populate_checksums_var(ctx);
+    crate::populate_checksums_var(ctx)?;
 
     let release_mode = release_cfg
         .resolved_mode()

@@ -2228,11 +2228,22 @@ fn test_release_collects_all_uploadable_artifact_kinds() {
         (ArtifactKind::SourceArchive, "myapp-src.tar.gz"),
         (ArtifactKind::Sbom, "myapp.sbom.json"),
     ];
+    // The checksum artifact is read to populate the `{{ .Checksums }}` release
+    // variable, so it must exist on disk (a tool-produced artifact always does
+    // in a real run); the other kinds are never read in dry-run.
+    let checksum_dir = tempfile::tempdir().unwrap();
+    let checksum_path = checksum_dir.path().join("checksums.txt");
+    std::fs::write(&checksum_path, "abc  myapp.tar.gz\n").unwrap();
     for (kind, name) in &uploadable_kinds {
+        let path = if *kind == ArtifactKind::Checksum {
+            checksum_path.clone()
+        } else {
+            PathBuf::from(format!("/tmp/{}", name))
+        };
         ctx.artifacts.add(Artifact {
             kind: *kind,
             name: String::new(),
-            path: PathBuf::from(format!("/tmp/{}", name)),
+            path,
             target: None,
             crate_name: "myapp".to_string(),
             metadata: Default::default(),
@@ -3567,7 +3578,8 @@ fn test_populate_checksums_var_aggregates_workspace_combined_files() {
         size: None,
     });
 
-    populate_checksums_var(&mut ctx);
+    populate_checksums_var(&mut ctx)
+        .expect("populate_checksums_var reads pipeline-produced checksum artifacts");
 
     let rendered = ctx.render_template("{{ Checksums }}").unwrap();
     assert!(
@@ -3619,7 +3631,8 @@ fn test_populate_checksums_var_single_combined_file_preserves_content() {
         size: None,
     });
 
-    populate_checksums_var(&mut ctx);
+    populate_checksums_var(&mut ctx)
+        .expect("populate_checksums_var reads pipeline-produced checksum artifacts");
 
     let rendered = ctx.render_template("{{ Checksums }}").unwrap();
     assert!(rendered.contains("abc123  myapp-1.0.0-linux.tar.gz"));
@@ -3673,7 +3686,8 @@ fn test_populate_checksums_var_split_mode_preserves_map_keyed_by_checksumof() {
         size: None,
     });
 
-    populate_checksums_var(&mut ctx);
+    populate_checksums_var(&mut ctx)
+        .expect("populate_checksums_var reads pipeline-produced checksum artifacts");
 
     // The map shape lets Tera iterate with `{% for k, v in Checksums %}`.
     // We verify the rendered output references both artifact names so the
@@ -3685,6 +3699,39 @@ fn test_populate_checksums_var_split_mode_preserves_map_keyed_by_checksumof() {
     assert!(rendered.contains("myapp-1.0.0-darwin.tar.gz"));
     assert!(rendered.contains("aaaa"));
     assert!(rendered.contains("bbbb"));
+}
+
+#[test]
+fn test_populate_checksums_var_unreadable_artifact_errors_not_silent() {
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+
+    // A registered checksum artifact whose file does not exist stands in for the
+    // truncated / permission-denied / IO-error read. Such a read must NOT
+    // collapse the `{{ .Checksums }}` release-body variable to empty and publish
+    // green — it is a real defect on a tool-produced artifact and must surface.
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("myapp_1.0.0_checksums.txt");
+
+    let mut ctx = TestContextBuilder::new().build();
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Checksum,
+        path: missing,
+        name: "myapp_1.0.0_checksums.txt".to_string(),
+        target: None,
+        crate_name: "myapp".to_string(),
+        metadata: std::collections::HashMap::from([
+            ("algorithm".to_string(), "sha256".to_string()),
+            ("combined".to_string(), "true".to_string()),
+        ]),
+        size: None,
+    });
+
+    let err = populate_checksums_var(&mut ctx)
+        .expect_err("an unreadable checksum artifact must surface, not silently empty Checksums");
+    assert!(
+        err.to_string().contains("checksum artifact"),
+        "error should name the failing checksum artifact read, got: {err}"
+    );
 }
 
 // ---------------------------------------------------------------------------

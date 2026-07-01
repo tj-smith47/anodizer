@@ -328,13 +328,35 @@ pub(crate) fn should_mark_prerelease(config: &Option<PrereleaseConfig>, tag: &st
 /// combined files keyed by their artifact `name` since they have no
 /// `ChecksumOf`. Mixed mode is unusual but the map shape stays consistent
 /// for templates that already iterate with `{% for k, v in Checksums %}`.
-pub(crate) fn populate_checksums_var(ctx: &mut Context) {
+/// Read a checksum artifact's contents for the `{{ .Checksums }}` release-body
+/// variable. Returns `Ok(None)` ONLY in `--dry-run` when the file is absent:
+/// the checksum stage registers the artifact but skips writing it in dry-run
+/// (the `(dry-run) combined checksums → …` line), so a missing file there is
+/// expected and simply contributes nothing to the preview. In a real run the
+/// file must exist and be readable — a `NotFound` (the stage didn't produce
+/// what it registered) OR any other read error is a defect that must fail the
+/// release, never silently blank the checksums body.
+fn read_checksum_artifact(dry_run: bool, path: &std::path::Path) -> anyhow::Result<Option<String>> {
+    match std::fs::read_to_string(path) {
+        Ok(content) => Ok(Some(content)),
+        Err(e) if dry_run && e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(anyhow::Error::new(e)).with_context(|| {
+            format!(
+                "release: reading checksum artifact {} for the {{{{ .Checksums }}}} release-body variable",
+                path.display()
+            )
+        }),
+    }
+}
+
+pub(crate) fn populate_checksums_var(ctx: &mut Context) -> anyhow::Result<()> {
     use anodizer_core::artifact::ArtifactKind;
 
+    let dry_run = ctx.is_dry_run();
     let checksum_artifacts = ctx.artifacts.by_kind(ArtifactKind::Checksum);
     if checksum_artifacts.is_empty() {
         ctx.template_vars_mut().set("Checksums", "");
-        return;
+        return Ok(());
     }
 
     let is_combined = |a: &&anodizer_core::artifact::Artifact| {
@@ -348,7 +370,9 @@ pub(crate) fn populate_checksums_var(ctx: &mut Context) {
     if all_combined && !any_split {
         let mut lines: Vec<String> = Vec::new();
         for artifact in &checksum_artifacts {
-            let content = std::fs::read_to_string(&artifact.path).unwrap_or_default();
+            let Some(content) = read_checksum_artifact(dry_run, &artifact.path)? else {
+                continue;
+            };
             for line in content.lines() {
                 if !line.is_empty() {
                     lines.push(line.to_string());
@@ -362,7 +386,7 @@ pub(crate) fn populate_checksums_var(ctx: &mut Context) {
         });
         lines.dedup();
         ctx.template_vars_mut().set("Checksums", &lines.join("\n"));
-        return;
+        return Ok(());
     }
 
     let mut map = serde_json::Map::new();
@@ -372,11 +396,14 @@ pub(crate) fn populate_checksums_var(ctx: &mut Context) {
             .get("ChecksumOf")
             .cloned()
             .unwrap_or_else(|| artifact.name.clone());
-        let content = std::fs::read_to_string(&artifact.path).unwrap_or_default();
+        let Some(content) = read_checksum_artifact(dry_run, &artifact.path)? else {
+            continue;
+        };
         map.insert(key, serde_json::Value::String(content));
     }
     ctx.template_vars_mut()
         .set_structured("Checksums", serde_json::Value::Object(map));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

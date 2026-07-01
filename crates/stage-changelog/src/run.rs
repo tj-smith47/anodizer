@@ -669,8 +669,7 @@ fn resolve_prev_tag(
             ctx.config.git.as_ref(),
             Some(ctx.template_vars()),
             monorepo_prefix,
-        )
-        .unwrap_or(None),
+        )?,
     };
     // Snapshot AND the standalone `changelog` preview keep the auto-discovered
     // previous tag even when it equals the current `Tag`: both render the
@@ -700,8 +699,7 @@ fn resolve_prev_tag(
                 ctx.config.git.as_ref(),
                 Some(ctx.template_vars()),
                 monorepo_prefix,
-            )
-            .unwrap_or(None);
+            )?;
             Ok(prev)
         }
         other => Ok(other),
