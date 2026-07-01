@@ -2,10 +2,15 @@ use crate::publish_evidence::PublishEvidence;
 use serde::{Deserialize, Serialize};
 
 /// Three-group dispatch classification for publishers. Dispatch order is
-/// always Assets → Manager → Submitter. The Submitter gate sits between
-/// Manager and Submitter and short-circuits Submitter dispatch when any
-/// `required: true` publisher in Assets or Manager failed (so a botched
-/// homebrew tap push cannot burn a crates.io version slot).
+/// always Assets → Manager → Submitter. The one-way-door gate (historically
+/// "the submitter gate") arms once any `required: true` publisher in an
+/// already-run group fails, and from that point skips **both** the Manager
+/// and Submitter groups — every publisher that writes a surface we cannot
+/// cleanly reclaim. Only the reversible Assets group runs ungated. This is
+/// why a botched blob mirror or homebrew tap push cannot burn a crates.io
+/// version slot, and why a failed required blob upload no longer lets the
+/// homebrew/scoop/nix/AUR/MCP one-way doors fire against an incomplete
+/// release.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PublisherGroup {
     /// Writes uploadable bytes to systems we control end-to-end. Failures
@@ -90,9 +95,12 @@ impl PublisherOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SkipReason {
-    /// Skipped because a required Assets/Manager publisher failed; the
-    /// Submitter gate closed before this publisher could dispatch.
-    /// Preserves rollback safety on irreversible publishers.
+    /// Skipped because a required publisher in an already-run group
+    /// failed and the one-way-door gate closed before this publisher
+    /// could dispatch. Recorded for gated Manager AND Submitter
+    /// publishers (the variant keeps its historical name). Preserves
+    /// rollback safety by never firing an irreversible publisher past a
+    /// known required failure.
     SubmitterGated,
     /// Publisher entry absent from the workspace config; the
     /// `Publisher::run` impl was never invoked.
@@ -178,23 +186,24 @@ impl PublishReport {
         })
     }
 
-    /// The single authoritative submitter-gate predicate: `true` when any
-    /// already-run **required** publisher failed and a downstream
-    /// irreversible Submitter must therefore be skipped.
+    /// The single authoritative one-way-door gate predicate: `true` when
+    /// any already-run **required** publisher failed and every downstream
+    /// one-way door (Manager or Submitter) must therefore be skipped.
     ///
     /// A required failure in Assets, Manager, **or the Submitter group
-    /// itself** closes the gate. The intra-Submitter check is load-bearing:
-    /// submitters run sequentially (cargo first), and a required cargo
-    /// failure must stop the later irreversible submitters (winget,
-    /// chocolatey, snapcraft) from pushing against an incomplete release —
-    /// the gate is not just an Assets/Manager → Submitter boundary, it is a
-    /// running "any required publish already broke" check that every
-    /// remaining irreversible submitter consults.
+    /// itself** closes the gate. Both the intra-Manager and intra-Submitter
+    /// checks are load-bearing: each group runs sequentially, and a
+    /// required failure partway through must stop the remaining
+    /// irreversible publishers in that group and every later group from
+    /// pushing against an incomplete release — the gate is not a single
+    /// boundary, it is a running "any required publish already broke" check
+    /// that every remaining one-way door consults.
     ///
-    /// Every gate site — the in-dispatch Submitter loop, the
+    /// Every gate site — the in-dispatch Manager+Submitter loop, the
     /// `SnapcraftPublishStage` (a Submitter that runs as its own stage after
-    /// the trait dispatch) — calls this one predicate so the rule cannot
-    /// drift between copies.
+    /// the trait dispatch), and the `BlobStage` self-check — calls this one
+    /// predicate so the rule cannot drift between copies. (The name is
+    /// historical: the gate originally covered only the Submitter group.)
     pub fn submitter_gate_closed(&self) -> bool {
         self.any_failed(PublisherGroup::Assets, true)
             || self.any_failed(PublisherGroup::Manager, true)

@@ -3,27 +3,49 @@
 //! [`dispatch`] iterates the registry's publishers in
 //! [`crate::registry::group_dispatch_order`] order (Assets → Manager →
 //! Submitter), recording a [`PublisherResult`] per publisher in the
-//! returned [`PublishReport`]. The submitter gate is re-evaluated before
-//! each Submitter-group publisher (not once at group entry) and fires when:
+//! returned [`PublishReport`].
+//!
+//! ## The one-way-door gate (a.k.a. the "submitter gate")
+//!
+//! Named for the immutable-registry Submitters it originally guarded, the
+//! gate protects **every one-way-door group — Manager AND Submitter** —
+//! not just Submitter. Both groups write to surfaces we cannot cleanly
+//! reclaim: Manager pushes package-manager state a consumer may have
+//! already pulled (homebrew tap, scoop bucket, nix-pkgs, AUR, MCP
+//! registry); Submitter writes immutable registry slots / moderation
+//! queues (cargo, chocolatey, winget, snapcraft, upstream-AUR). Only the
+//! Assets group (blob, github-release, cloudsmith, gemfury, dockerhub,
+//! artifactory) is left ungated — those failures are reversible via API
+//! delete, so Assets runs best-effort and rolls back.
+//!
+//! The gate is re-evaluated before **each Manager- and Submitter-group
+//! publisher** (not once at group entry) and fires when:
 //!
 //! 1. `opts.gate_submitter` is `true` (default), AND
-//! 2. any **required** publisher in an already-run group failed — Assets,
-//!    Manager, **or a required Submitter that already ran earlier in the
-//!    sequential Submitter loop** (cargo runs first; a required cargo
-//!    failure must stop the later irreversible submitters).
+//! 2. any **required** publisher in an already-run group failed — Assets
+//!    (e.g. a required blob upload), an earlier Manager, **or a required
+//!    Submitter that already ran earlier in the sequential Submitter
+//!    loop** (cargo runs first; a required cargo failure must stop the
+//!    later irreversible submitters).
 //!
 //! Both conditions are folded into the single authoritative
 //! [`PublishReport::submitter_gate_closed`] predicate so the gate rule
 //! cannot drift between the in-dispatch loop and the snapcraft stage that
 //! runs as its own Submitter surface.
 //!
-//! When gated, the remaining Submitter publishers record
+//! When gated, the remaining Manager and Submitter publishers record
 //! `Skipped(SubmitterGated)` instead of running and
 //! `report.submitter_gated` is set to `true`. This is the load-bearing
-//! protection against the "chocolatey moderation got submitted, then
-//! winget validation failed and we can't undo the choco upload" failure
-//! mode — and against the "cargo published crate A, failed on crate B,
-//! yet winget still submitted" intra-Submitter variant.
+//! protection against firing a one-way door past a known-broken release:
+//! the "chocolatey moderation got submitted, then winget validation
+//! failed and we can't undo the choco upload" failure mode, the "cargo
+//! published crate A, failed on crate B, yet winget still submitted"
+//! intra-Submitter variant, and — the case this gate was widened to
+//! cover — the "a required blob mirror upload failed, yet we still pushed
+//! the homebrew tap / posted the MCP registry entry" Manager variant.
+//! Prevention here is the only sound remedy: a Manager rollback is
+//! best-effort (it silently no-ops when its scope credential is absent)
+//! and cannot retract what a consumer has already pulled.
 //!
 //! `opts.fail_fast` stops iteration at the first publisher failure within
 //! the current group; the partial report is still returned via `Ok`.
@@ -42,11 +64,13 @@ use anodizer_core::{
 
 /// Knobs for [`dispatch`].
 ///
-/// `gate_submitter` defaults to `true`: irreversible Submitter
-/// publishers are skipped when a required Assets/Manager publisher
-/// failed. `fail_fast` defaults to `false`: the dispatcher continues
-/// past a failed publisher so the resulting report enumerates every
-/// outcome for the release summary.
+/// `gate_submitter` defaults to `true`: it arms the one-way-door gate,
+/// so **both** Manager and Submitter publishers are skipped once any
+/// required publisher in an already-run group failed (the field keeps its
+/// historical name — it originally gated only the Submitter group).
+/// `fail_fast` defaults to `false`: the dispatcher continues past a
+/// failed publisher so the resulting report enumerates every outcome for
+/// the release summary.
 ///
 /// `persist_snapshots` defaults to `false` (unit tests drive `dispatch`
 /// with fixture contexts whose `dist` must stay untouched); the
@@ -106,22 +130,29 @@ pub fn dispatch(
 
     'outer: for group in group_order {
         for p in publishers.iter().filter(|p| p.group() == group) {
-            // Submitter gate, re-checked per publisher. The gate closes when
-            // a required publisher in ANY already-run group failed —
-            // including a required Submitter that failed earlier in THIS
-            // loop (submitters run sequentially, cargo first, so a required
-            // cargo failure must stop the later irreversible submitters).
-            // Re-checking per publisher (rather than once at group entry)
-            // is what makes the intra-Submitter ordering safe: each
-            // remaining irreversible submitter consults the live "any
-            // required publish already broke" state via the single
-            // authoritative `submitter_gate_closed` predicate.
-            if group == PublisherGroup::Submitter
+            // One-way-door gate, re-checked per publisher. It covers BOTH
+            // the Manager and Submitter groups — every publisher that
+            // writes a surface we cannot cleanly reclaim — while leaving
+            // the reversible Assets group ungated. The gate closes when a
+            // required publisher in ANY already-run group failed: a
+            // required Assets failure (e.g. the blob mirror) that ran
+            // upstream, a required Manager that failed earlier in this
+            // loop, or a required Submitter that failed earlier (submitters
+            // run sequentially, cargo first, so a required cargo failure
+            // must stop the later irreversible submitters). Re-checking per
+            // publisher (rather than once at group entry) is what makes the
+            // intra-group ordering safe: each remaining one-way door
+            // consults the live "any required publish already broke" state
+            // via the single authoritative `submitter_gate_closed`
+            // predicate. Gating Manager here — rather than firing it and
+            // relying on rollback — is deliberate: a Manager rollback is
+            // best-effort and cannot un-pull what a consumer already has.
+            if matches!(group, PublisherGroup::Manager | PublisherGroup::Submitter)
                 && opts.gate_submitter
                 && report.submitter_gate_closed()
             {
                 ctx.logger("publish").status(&format!(
-                    "skipping {} — submitter-gated by an earlier required failure",
+                    "skipping {} — gated by an earlier required failure (one-way-door protection)",
                     p.name()
                 ));
                 report.results.push(PublisherResult {
@@ -545,6 +576,119 @@ mod tests {
             .find(|r| r.name == "blob")
             .expect("seeded blob row preserved in merged report");
         assert!(matches!(blob.outcome, PublisherOutcome::Failed(_)));
+    }
+
+    #[test]
+    fn seeded_required_assets_failure_gates_manager_oneway_doors() {
+        // F1 regression: the one-way-door gate must cover the Manager group,
+        // not just Submitter. A required blob (Assets) upload failure recorded
+        // before dispatch must SKIP homebrew/scoop/nix/aur/mcp (Manager,
+        // one-way doors) — not fire them and rely on a best-effort rollback.
+        // Before the fix the gate was scoped to `group == Submitter`, so these
+        // Manager doors published against an incomplete release: the live
+        // v0.13.1 incident where blob failed yet the homebrew tap push and MCP
+        // registry POST still went out. This test goes red the moment the gate
+        // is narrowed back to Submitter-only.
+        let mut ctx = Context::test_fixture();
+        let mut seeded = PublishReport::default();
+        seeded.results.push(PublisherResult {
+            name: "blob".into(),
+            group: PublisherGroup::Assets,
+            required: true,
+            outcome: PublisherOutcome::Failed("minio upload refused: connection reset".into()),
+            evidence: None,
+        });
+        ctx.publish_report = Some(seeded);
+
+        let publishers = vec![
+            fake(
+                "homebrew",
+                PublisherGroup::Manager,
+                true,
+                FakeOutcome::Succeed,
+            ),
+            fake("mcp", PublisherGroup::Manager, false, FakeOutcome::Succeed),
+            fake(
+                "cargo",
+                PublisherGroup::Submitter,
+                true,
+                FakeOutcome::Succeed,
+            ),
+        ];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+        assert!(report.submitter_gated);
+
+        for door in ["homebrew", "mcp", "cargo"] {
+            let r = report
+                .results
+                .iter()
+                .find(|r| r.name == door)
+                .unwrap_or_else(|| panic!("{door} entry present"));
+            assert!(
+                matches!(
+                    r.outcome,
+                    PublisherOutcome::Skipped(SkipReason::SubmitterGated)
+                ),
+                "{door} (one-way door) must be gated by the seeded required-blob failure, got {:?}",
+                r.outcome
+            );
+        }
+    }
+
+    #[test]
+    fn required_manager_failure_gates_later_manager_oneway_door() {
+        // Intra-Manager gate: Manager publishers run sequentially, so a
+        // required Manager failure must stop the LATER Manager one-way doors
+        // (and every Submitter), not just Submitters. homebrew (required)
+        // fails; scoop (a later Manager) must be gated, not pushed.
+        let mut ctx = Context::test_fixture();
+        let publishers = vec![
+            fake(
+                "homebrew",
+                PublisherGroup::Manager,
+                true,
+                FakeOutcome::Fail("tap push rejected".into()),
+            ),
+            fake(
+                "scoop",
+                PublisherGroup::Manager,
+                false,
+                FakeOutcome::Succeed,
+            ),
+        ];
+        let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
+            .expect("dispatch returns Ok");
+        assert!(
+            report.submitter_gated,
+            "a required Manager failure must close the gate"
+        );
+
+        let homebrew = report
+            .results
+            .iter()
+            .find(|r| r.name == "homebrew")
+            .expect("homebrew entry present");
+        assert!(
+            matches!(homebrew.outcome, PublisherOutcome::Failed(_)),
+            "homebrew ran and failed, got {:?}",
+            homebrew.outcome
+        );
+
+        let scoop = report
+            .results
+            .iter()
+            .find(|r| r.name == "scoop")
+            .expect("scoop entry present");
+        assert!(
+            matches!(
+                scoop.outcome,
+                PublisherOutcome::Skipped(SkipReason::SubmitterGated)
+            ),
+            "scoop (later Manager one-way door) must be gated by the earlier \
+             required-homebrew failure, got {:?}",
+            scoop.outcome
+        );
     }
 
     #[test]
@@ -1062,13 +1206,16 @@ mod tests {
         // Even when a publisher's `run()` would succeed, listing it in
         // `ctx.options.simulate_failure_publishers` must short-circuit
         // and record a synthetic `Failed("simulated failure: <name>")`
-        // entry. Sibling publishers continue to run normally so the
-        // gate/fail-fast/rollback paths can be tested in isolation.
+        // entry. A sibling that dispatches BEFORE the simulated failure runs
+        // normally (brew is ordered first so the one-way-door gate is still
+        // open when it dispatches) — keeping this test focused on the
+        // substitution mechanic, not the gate (whose Manager coverage is
+        // pinned by `required_manager_failure_gates_later_manager_oneway_door`).
         let mut ctx = Context::test_fixture();
         ctx.options.simulate_failure_publishers = vec!["cargo".to_string()];
         let publishers = vec![
-            fake("cargo", PublisherGroup::Manager, true, FakeOutcome::Succeed),
             fake("brew", PublisherGroup::Manager, false, FakeOutcome::Succeed),
+            fake("cargo", PublisherGroup::Manager, true, FakeOutcome::Succeed),
         ];
         let report = dispatch(&publishers, &mut ctx, &DispatchOptions::default())
             .expect("dispatch returns Ok");
