@@ -83,6 +83,19 @@ pub fn rfc3339_utc_from_epoch(secs: i64) -> Option<String> {
     DateTime::<Utc>::from_timestamp(secs, 0).map(|dt| dt.to_rfc3339())
 }
 
+/// Format a seconds-since-epoch value as an RFC 2822 UTC string
+/// (e.g. `Tue, 14 Nov 2023 22:13:20 +0000`), or `None` when `secs` is out of
+/// the representable range.
+///
+/// Used by writers that must stamp an RFC 2822 date into an artifact header
+/// from the resolved `SOURCE_DATE_EPOCH` rather than wall-clock time — notably
+/// the `.zsync` `MTime:` header the AppImage stage rewrites, since `zsyncmake`
+/// otherwise records the AppImage's filesystem mtime (wall-clock) and breaks
+/// byte-for-byte reproducibility.
+pub fn rfc2822_utc_from_epoch(secs: i64) -> Option<String> {
+    DateTime::<Utc>::from_timestamp(secs, 0).map(|dt| dt.to_rfc2822())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,6 +115,16 @@ mod tests {
         // Falls back to Utc::now(); assert only that it succeeded and is
         // a wall-clock value (post-2020).
         assert!(now.timestamp() > 1_577_836_800);
+    }
+
+    #[test]
+    fn rfc2822_matches_zsyncmake_format() {
+        // 1700000000 = 2023-11-14T22:13:20Z; the exact shape zsyncmake writes
+        // into a `.zsync` `MTime:` header (zero-padded day, `+0000` offset).
+        assert_eq!(
+            rfc2822_utc_from_epoch(1_700_000_000).as_deref(),
+            Some("Tue, 14 Nov 2023 22:13:20 +0000")
+        );
     }
 
     #[test]

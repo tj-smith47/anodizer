@@ -1179,3 +1179,89 @@ fn no_ids_admits_both_builds_the_collision_we_guard_against() {
         "both x86_64 builds collide on the linux_amd64 group key"
     );
 }
+
+// ---------------------------------------------------------------------------
+// .zsync MTime pinning (determinism)
+// ---------------------------------------------------------------------------
+
+// Build a minimal `.zsync` sidecar shaped like zsyncmake's output: newline
+// header, blank-line terminator, then a binary block-checksum tail.
+fn write_fake_zsync(path: &Path, appimage_name: &str) {
+    let header = format!(
+        "zsync: 0.6.2\nFilename: {appimage_name}\nMTime: Wed, 01 Jul 2026 07:08:51 +0000\n\
+         Blocksize: 2048\nLength: 948728\nHash-Lengths: 2,2,4\nURL: {appimage_name}\n\
+         SHA-1: dbd6fdfe71abb8cb3a0b8b810c7e93d8cc4c88d4\n"
+    );
+    let mut bytes = header.into_bytes();
+    bytes.push(b'\n'); // blank line terminating the header
+    bytes.extend_from_slice(&[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01]); // binary tail
+    fs::write(path, bytes).unwrap();
+}
+
+#[test]
+fn pin_zsync_rewrites_mtime_to_source_date_epoch() {
+    let tmp = TempDir::new().unwrap();
+    let app = tmp.path().join("anodizer-0.13.1-amd64.AppImage");
+    fs::write(&app, b"appimage-bytes").unwrap();
+    let zsync = tmp.path().join("anodizer-0.13.1-amd64.AppImage.zsync");
+    write_fake_zsync(&zsync, "anodizer-0.13.1-amd64.AppImage");
+
+    // 1700000000 = Tue, 14 Nov 2023 22:13:20 +0000
+    pin_zsync_mtime(&app, &app, 1_700_000_000).unwrap();
+
+    let out = fs::read(&zsync).unwrap();
+    let text = String::from_utf8_lossy(&out);
+    assert!(
+        text.contains("MTime: Tue, 14 Nov 2023 22:13:20 +0000"),
+        "MTime pinned to SOURCE_DATE_EPOCH, got:\n{text}"
+    );
+    assert!(
+        !text.contains("Wed, 01 Jul 2026"),
+        "wall-clock MTime removed"
+    );
+    // Binary tail preserved untouched.
+    assert_eq!(&out[out.len() - 6..], &[0xDE, 0xAD, 0xBE, 0xEF, 0x00, 0x01]);
+    // Non-MTime header fields untouched.
+    assert!(text.contains("SHA-1: dbd6fdfe71abb8cb3a0b8b810c7e93d8cc4c88d4"));
+    assert!(text.contains("Length: 948728"));
+}
+
+#[test]
+fn pin_zsync_repoints_filename_and_url_on_rename() {
+    let tmp = TempDir::new().unwrap();
+    // linuxdeploy wrote the AppImage (+ sidecar) under its APP/ARCH name...
+    let built = tmp.path().join("App-x86_64.AppImage");
+    fs::write(&built, b"appimage-bytes").unwrap();
+    let zsync_src = tmp.path().join("App-x86_64.AppImage.zsync");
+    write_fake_zsync(&zsync_src, "App-x86_64.AppImage");
+    // ...but the stage moves it to the deterministic final name.
+    let final_app = tmp.path().join("anodizer-0.13.1-amd64.AppImage");
+
+    pin_zsync_mtime(&built, &final_app, 1_700_000_000).unwrap();
+
+    // Sidecar migrated to sit next to the final AppImage; source removed.
+    let zsync_dst = tmp.path().join("anodizer-0.13.1-amd64.AppImage.zsync");
+    assert!(zsync_dst.exists(), "sidecar written next to final AppImage");
+    assert!(!zsync_src.exists(), "stale sidecar removed after rename");
+    let text = String::from_utf8_lossy(&fs::read(&zsync_dst).unwrap()).into_owned();
+    assert!(text.contains("Filename: anodizer-0.13.1-amd64.AppImage"));
+    assert!(text.contains("URL: anodizer-0.13.1-amd64.AppImage"));
+    assert!(
+        !text.contains("App-x86_64.AppImage"),
+        "old name fully repointed"
+    );
+    assert!(text.contains("MTime: Tue, 14 Nov 2023 22:13:20 +0000"));
+}
+
+#[test]
+fn pin_zsync_noop_when_sidecar_absent() {
+    let tmp = TempDir::new().unwrap();
+    let app = tmp.path().join("anodizer-0.13.1-amd64.AppImage");
+    fs::write(&app, b"appimage-bytes").unwrap();
+    // No `.zsync` present (UPDATE_INFORMATION unset) → clean no-op.
+    pin_zsync_mtime(&app, &app, 1_700_000_000).unwrap();
+    assert!(
+        !app.with_file_name("anodizer-0.13.1-amd64.AppImage.zsync")
+            .exists()
+    );
+}

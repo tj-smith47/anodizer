@@ -767,6 +767,18 @@ fn execute_appimage_job(
             })?;
     }
 
+    // linuxdeploy-plugin-appimage emits a sidecar `<name>.AppImage.zsync` next
+    // to the AppImage whenever UPDATE_INFORMATION is set (binary-delta update
+    // metadata). Its `MTime:` header is stamped by `zsyncmake` from the
+    // AppImage's *filesystem* mtime — wall-clock, unaffected by
+    // SOURCE_DATE_EPOCH — so it drifts run-to-run and breaks determinism.
+    // Rewrite it to the RFC 2822 rendering of SOURCE_DATE_EPOCH (and re-point
+    // the Filename/URL fields if the AppImage was renamed on move). Only under
+    // a reproducible build, and only when the sidecar exists.
+    if let (Some(epoch), Some(_)) = (job.sde_epoch, job.update_information.as_ref()) {
+        pin_zsync_mtime(&built, &job.output_path, epoch)?;
+    }
+
     let mut metadata = HashMap::new();
     metadata.insert("id".to_string(), job.id.clone());
     metadata.insert("format".to_string(), "appimage".to_string());
@@ -826,6 +838,93 @@ fn locate_built_appimage(appdir_root: &Path, expected_filename: &str) -> Result<
                 search_dir.display()
             )
         })
+}
+
+/// Pin a `.zsync` sidecar's `MTime:` header to `SOURCE_DATE_EPOCH` for
+/// reproducibility, re-pointing `Filename:`/`URL:` if the AppImage was renamed.
+///
+/// `src_appimage` is the path linuxdeploy wrote the AppImage to (the sidecar
+/// lives next to it as `<name>.zsync`); `final_appimage` is where the AppImage
+/// was moved. `zsyncmake` records the AppImage's filesystem mtime (wall-clock)
+/// in the `MTime:` header, so without this the sidecar's bytes drift run-to-run
+/// even when the AppImage itself is byte-stable. The `SHA-1`/`Length` fields
+/// checksum the AppImage bytes (unchanged here), so rewriting only the header
+/// text keeps the sidecar valid.
+///
+/// A no-op when the sidecar is absent (no `UPDATE_INFORMATION` → no `.zsync`).
+fn pin_zsync_mtime(src_appimage: &Path, final_appimage: &Path, epoch: i64) -> Result<()> {
+    let src_name = src_appimage
+        .file_name()
+        .and_then(|n| n.to_str())
+        .with_context(|| {
+            format!(
+                "appimage: non-UTF8 AppImage name {}",
+                src_appimage.display()
+            )
+        })?;
+    let final_name = final_appimage
+        .file_name()
+        .and_then(|n| n.to_str())
+        .with_context(|| {
+            format!(
+                "appimage: non-UTF8 AppImage name {}",
+                final_appimage.display()
+            )
+        })?;
+
+    let zsync_src = src_appimage.with_file_name(format!("{src_name}.zsync"));
+    if !zsync_src.exists() {
+        return Ok(());
+    }
+
+    let mtime = anodizer_core::sde::rfc2822_utc_from_epoch(epoch).with_context(|| {
+        format!("appimage: SOURCE_DATE_EPOCH {epoch} out of range for zsync MTime")
+    })?;
+
+    let bytes = std::fs::read(&zsync_src)
+        .with_context(|| format!("appimage: read zsync {}", zsync_src.display()))?;
+    // The header is newline-separated text terminated by a blank line
+    // (`\n\n`); everything after that is the binary block-checksum table.
+    let boundary = bytes
+        .windows(2)
+        .position(|w| w == b"\n\n")
+        .with_context(|| {
+            format!(
+                "appimage: {} has no zsync header terminator",
+                zsync_src.display()
+            )
+        })?;
+    let header = std::str::from_utf8(&bytes[..boundary])
+        .with_context(|| format!("appimage: {} header is not UTF8", zsync_src.display()))?;
+    let body = &bytes[boundary..];
+
+    let rename = src_name != final_name;
+    let mut out = String::with_capacity(header.len());
+    for (i, line) in header.split('\n').enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if line.starts_with("MTime:") {
+            out.push_str(&format!("MTime: {mtime}"));
+        } else if rename && line.starts_with("Filename:") {
+            out.push_str(&format!("Filename: {final_name}"));
+        } else if rename && line.starts_with("URL:") {
+            out.push_str(&format!("URL: {final_name}"));
+        } else {
+            out.push_str(line);
+        }
+    }
+
+    let mut new_bytes = out.into_bytes();
+    new_bytes.extend_from_slice(body);
+
+    let zsync_dst = final_appimage.with_file_name(format!("{final_name}.zsync"));
+    std::fs::write(&zsync_dst, &new_bytes)
+        .with_context(|| format!("appimage: write zsync {}", zsync_dst.display()))?;
+    if zsync_dst != zsync_src {
+        std::fs::remove_file(&zsync_src).ok();
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
