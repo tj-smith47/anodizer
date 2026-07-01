@@ -1,9 +1,12 @@
 //! Sibling-publisher isolation test (closes [B10]).
 //!
 //! Asserts that a failing publisher in the middle of a group does not
-//! abort siblings before or after it in the same group. Ships
-//! regardless of whether B10 needed a code fix — guards against
-//! future regression.
+//! abort its siblings by aborting the whole dispatch. Isolation is
+//! asymmetric across a REQUIRED failure in a one-way-door group: siblings
+//! that already dispatched (and every sibling after an OPTIONAL failure)
+//! still run, but a sibling AFTER a required failure is gated, never fired
+//! against an incomplete release (the one-way-door gate). Guards against
+//! future regression of both halves.
 //!
 //! Drives the canonical [`anodizer_stage_publish::testing::FakePublisher`]
 //! (exposed via the `test-support` feature, enabled by this crate's own
@@ -12,7 +15,7 @@
 //! tests.
 
 use anodizer_core::context::Context;
-use anodizer_core::{Publisher, PublisherGroup, PublisherOutcome};
+use anodizer_core::{Publisher, PublisherGroup, PublisherOutcome, SkipReason};
 use anodizer_stage_publish::testing::{FakeOutcome, fake};
 use anodizer_stage_publish::{DispatchOptions, dispatch};
 
@@ -64,8 +67,14 @@ fn three_managers_middle_fails_siblings_still_run() {
 }
 
 #[test]
-fn three_managers_middle_required_failure_counts_in_required_failures() {
-    // Same shape but B is required=true.
+fn three_managers_middle_required_failure_gates_later_sibling() {
+    // Same shape but B is required=true. Sibling isolation is asymmetric
+    // across a REQUIRED failure: the sibling BEFORE it (A) still runs — the
+    // gate wasn't closed yet when A dispatched — but the sibling AFTER it (C)
+    // is now gated. A required failure in a one-way-door group (Manager here)
+    // closes the gate, and no later one-way door may fire against an
+    // incomplete release (F1). Contrast `three_managers_middle_fails_siblings_
+    // still_run`, where B is OPTIONAL, the gate stays open, and C runs.
     let publishers: Vec<Box<dyn Publisher>> = vec![
         fake("a", PublisherGroup::Manager, false, FakeOutcome::Succeed),
         fake(
@@ -82,18 +91,26 @@ fn three_managers_middle_required_failure_counts_in_required_failures() {
     let report = dispatch(&publishers, &mut ctx, &opts).expect("dispatch returns Ok");
 
     assert_eq!(report.results.len(), 3);
-    assert!(matches!(
-        report.results[0].outcome,
-        PublisherOutcome::Succeeded
-    ));
-    assert!(matches!(
-        report.results[1].outcome,
-        PublisherOutcome::Failed(_)
-    ));
-    assert!(matches!(
-        report.results[2].outcome,
-        PublisherOutcome::Succeeded
-    ));
+    assert!(
+        matches!(report.results[0].outcome, PublisherOutcome::Succeeded),
+        "A: ran before the gate closed"
+    );
+    assert!(
+        matches!(report.results[1].outcome, PublisherOutcome::Failed(_)),
+        "B: required, failed — closes the gate"
+    );
+    assert!(
+        matches!(
+            report.results[2].outcome,
+            PublisherOutcome::Skipped(SkipReason::SubmitterGated)
+        ),
+        "C: a later Manager one-way door, gated by B's required failure, got {:?}",
+        report.results[2].outcome
+    );
+    assert!(
+        report.submitter_gated,
+        "a required Manager failure must close the one-way-door gate"
+    );
     assert_eq!(
         report.required_failures(),
         1,

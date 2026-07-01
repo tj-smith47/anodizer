@@ -42,24 +42,34 @@ fn read_u16(bytes: &[u8], little: bool) -> u16 {
 // ELF dynamic linking detection
 // ---------------------------------------------------------------------------
 
-/// Check if a binary is dynamically linked by looking for ELF PT_INTERP header.
-/// Returns false for non-ELF files (macOS Mach-O, Windows PE).
-pub(super) fn is_dynamically_linked(path: &std::path::Path) -> bool {
+/// Check if a binary is dynamically linked by looking for an ELF PT_INTERP
+/// header (the dynamic linker), which signals the Nix derivation needs
+/// `autoPatchelfHook` on Linux.
+///
+/// `Ok(false)` for a genuinely non-dynamic input: a missing file (the caller
+/// only feeds registered artifacts, so absence is benign), a non-ELF binary
+/// (macOS Mach-O, Windows PE), or a readable file too short / lacking
+/// PT_INTERP. A file that EXISTS but errors on open/read/seek is a real defect
+/// and returns `Err` — never silently `false`, which would drop
+/// `autoPatchelfHook` and ship a broken `nix` install for a binary we simply
+/// failed to inspect.
+pub(super) fn is_dynamically_linked(path: &std::path::Path) -> std::io::Result<bool> {
     use std::io::Read;
     let mut file = match std::fs::File::open(path) {
         Ok(f) => f,
-        Err(_) => return false,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e),
     };
     // Read ELF header: magic (4 bytes), class (1), data (1), version (1),
     // osabi (1), padding (8), type (2), machine (2), version (4), then
     // entry/phoff/shoff vary by class.
     let mut header = [0u8; 64]; // Enough for 64-bit ELF header
-    if file.read(&mut header).unwrap_or(0) < 52 {
-        return false;
+    if file.read(&mut header)? < 52 {
+        return Ok(false);
     }
     // Check ELF magic
     if &header[0..4] != b"\x7fELF" {
-        return false;
+        return Ok(false);
     }
     let is_64bit = header[4] == 2;
     let is_little_endian = header[5] == 1;
@@ -79,19 +89,15 @@ pub(super) fn is_dynamically_linked(path: &std::path::Path) -> bool {
 
     // Read program headers and look for PT_INTERP (type 3)
     use std::io::Seek;
-    if file.seek(std::io::SeekFrom::Start(phoff)).is_err() {
-        return false;
-    }
+    file.seek(std::io::SeekFrom::Start(phoff))?;
     let mut phdr_buf = vec![0u8; phentsize as usize];
     for _ in 0..phnum {
-        if file.read_exact(&mut phdr_buf).is_err() {
-            return false;
-        }
+        file.read_exact(&mut phdr_buf)?;
         let p_type = read_u32(&phdr_buf[0..4], is_little_endian);
         if p_type == 3 {
             // PT_INTERP
-            return true;
+            return Ok(true);
         }
     }
-    false
+    Ok(false)
 }

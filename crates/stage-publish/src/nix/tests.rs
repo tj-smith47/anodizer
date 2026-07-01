@@ -938,9 +938,12 @@ fn nix_sha256_empty_metadata_bails_with_actionable_error() {
 /// contract used by the publish path's metadata-fallback inspection.
 #[test]
 fn is_dynamically_linked_missing_file_returns_false() {
-    assert!(!is_dynamically_linked(std::path::Path::new(
-        "/nonexistent/path/to/binary/that/cannot/exist"
-    )));
+    assert!(
+        !is_dynamically_linked(std::path::Path::new(
+            "/nonexistent/path/to/binary/that/cannot/exist"
+        ))
+        .expect("a missing file is Ok(false), not an error")
+    );
 }
 
 /// File smaller than ELF header (52 bytes) returns false.
@@ -949,7 +952,18 @@ fn is_dynamically_linked_short_file_returns_false() {
     let tmp = tempfile::tempdir().unwrap();
     let p = tmp.path().join("tiny");
     std::fs::write(&p, b"abc").unwrap();
-    assert!(!is_dynamically_linked(&p));
+    assert!(!is_dynamically_linked(&p).unwrap());
+}
+
+/// A path that EXISTS but errors on read is a real defect, not `Ok(false)`:
+/// a directory opens as a File on Unix but errors (EISDIR) on read. Silently
+/// returning `false` here would drop `autoPatchelfHook` for a binary we merely
+/// failed to inspect and ship a broken `nix` install.
+#[test]
+#[cfg(unix)]
+fn is_dynamically_linked_unreadable_path_is_error() {
+    let tmp = tempfile::tempdir().unwrap();
+    assert!(is_dynamically_linked(tmp.path()).is_err());
 }
 
 /// File without ELF magic bytes (e.g. Mach-O / PE / random) returns false.
@@ -960,7 +974,7 @@ fn is_dynamically_linked_non_elf_returns_false() {
     // 64 bytes of nonzero non-ELF data.
     let bytes: Vec<u8> = (0..64u8).collect();
     std::fs::write(&p, bytes).unwrap();
-    assert!(!is_dynamically_linked(&p));
+    assert!(!is_dynamically_linked(&p).unwrap());
 }
 
 /// Hand-rolled minimal 64-bit ELF with a single PT_INTERP program header
@@ -996,7 +1010,10 @@ fn is_dynamically_linked_elf64_with_pt_interp_returns_true() {
     bytes.extend_from_slice(&3u32.to_le_bytes());
     bytes.extend_from_slice(&vec![0u8; phentsize as usize - 4]);
     std::fs::write(&p, &bytes).unwrap();
-    assert!(is_dynamically_linked(&p), "PT_INTERP must be detected");
+    assert!(
+        is_dynamically_linked(&p).unwrap(),
+        "PT_INTERP must be detected"
+    );
 }
 
 /// 64-bit ELF whose only program header is PT_LOAD (1) returns false —
@@ -1030,7 +1047,7 @@ fn is_dynamically_linked_elf64_without_pt_interp_returns_false() {
     bytes.extend_from_slice(&1u32.to_le_bytes());
     bytes.extend_from_slice(&vec![0u8; phentsize as usize - 4]);
     std::fs::write(&p, &bytes).unwrap();
-    assert!(!is_dynamically_linked(&p));
+    assert!(!is_dynamically_linked(&p).unwrap());
 }
 
 /// 32-bit ELF with PT_INTERP returns true — pins the `is_64bit=false`
@@ -1065,7 +1082,7 @@ fn is_dynamically_linked_elf32_with_pt_interp_returns_true() {
     bytes.extend_from_slice(&3u32.to_le_bytes()); // PT_INTERP
     bytes.extend_from_slice(&vec![0u8; phentsize as usize - 4]);
     std::fs::write(&p, &bytes).unwrap();
-    assert!(is_dynamically_linked(&p));
+    assert!(is_dynamically_linked(&p).unwrap());
 }
 
 /// Big-endian ELF with PT_INTERP returns true — exercises the `little=false`
@@ -1098,7 +1115,7 @@ fn is_dynamically_linked_elf64_big_endian_with_pt_interp_returns_true() {
     bytes.extend_from_slice(&3u32.to_be_bytes());
     bytes.extend_from_slice(&vec![0u8; phentsize as usize - 4]);
     std::fs::write(&p, &bytes).unwrap();
-    assert!(is_dynamically_linked(&p));
+    assert!(is_dynamically_linked(&p).unwrap());
 }
 
 // ---------------------------------------------------------------------------

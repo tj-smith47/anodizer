@@ -241,7 +241,7 @@ fn render_nix_derivation_inner(
     let (source_root, source_root_map) =
         resolve_source_roots(crate_cfg, &all_artifacts, &name, &version);
 
-    let dynamically_linked = detect_dynamically_linked(ctx, crate_name);
+    let dynamically_linked = detect_dynamically_linked(ctx, crate_name)?;
 
     let expr = generate_nix_expression(&NixParams {
         name: &name,
@@ -873,16 +873,26 @@ fn resolve_source_roots(
 /// linked. Prefers the build-stage metadata flag `DynamicallyLinked` to
 /// avoid redundant disk I/O; falls back to direct ELF inspection for
 /// artifacts that lack the marker.
-fn detect_dynamically_linked(ctx: &Context, crate_name: &str) -> bool {
+fn detect_dynamically_linked(ctx: &Context, crate_name: &str) -> anyhow::Result<bool> {
     let binary_artifacts = ctx
         .artifacts
         .by_kind_and_crate(anodizer_core::artifact::ArtifactKind::Binary, crate_name);
-    binary_artifacts.iter().any(|a| {
+    for a in &binary_artifacts {
         if let Some(v) = a.metadata.get("DynamicallyLinked") {
-            return v == "true";
+            if v == "true" {
+                return Ok(true);
+            }
+            continue;
         }
-        is_dynamically_linked(&a.path)
-    })
+        // A registered binary we cannot inspect must fail the nix publish, not
+        // silently drop autoPatchelfHook and ship a broken derivation.
+        if is_dynamically_linked(&a.path)
+            .with_context(|| format!("inspecting {} for ELF dynamic linking", a.path.display()))?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 // ---------------------------------------------------------------------------
@@ -1651,7 +1661,7 @@ mod tests {
     fn detect_dynamically_linked_true_from_metadata_flag() {
         let ctx = ctx_with_binary_metadata("mytool", Some("true"));
         assert!(
-            detect_dynamically_linked(&ctx, "mytool"),
+            detect_dynamically_linked(&ctx, "mytool").unwrap(),
             "DynamicallyLinked=true metadata must report dynamic linkage \
              without touching the (nonexistent) binary path"
         );
@@ -1661,7 +1671,7 @@ mod tests {
     fn detect_dynamically_linked_false_from_metadata_flag() {
         let ctx = ctx_with_binary_metadata("mytool", Some("false"));
         assert!(
-            !detect_dynamically_linked(&ctx, "mytool"),
+            !detect_dynamically_linked(&ctx, "mytool").unwrap(),
             "DynamicallyLinked=false metadata must report static linkage \
              without falling through to ELF inspection of a missing path"
         );
