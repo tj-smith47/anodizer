@@ -71,10 +71,11 @@ tasks:
       - cargo run -p anodizer --release -- release --snapshot --clean --host-targets --summary-json=dist/snapshot-summary.json
 
   prepush:
-    # The canonical pre-push gate: the full real build + emission check AND the
-    # workspace suite on every reachable OS, so a push is proven cross-platform
-    # rather than on this box alone. `test:os` SKIPs unreachable hosts loudly.
-    desc: "Run before pushing: FULL real build + emission-validate (release:snapshot) AND the workspace suite on every reachable OS (test:os)."
+    # Cross-platform evidence run — everything `task gate` cannot prove from this
+    # box alone: a REAL build of every host-buildable target + emission-validate
+    # (release:snapshot) and the workspace suite on every reachable OS (test:os).
+    # Run it before a release push in addition to `task gate` (the CI-job mirror).
+    desc: "Cross-platform evidence: FULL real build + emission-validate (release:snapshot) AND the workspace suite on every reachable OS (test:os). Complements task gate."
     cmds:
       - task: release:snapshot
       - task: test:os
@@ -197,6 +198,18 @@ tasks:
       - task: fmt
       - task: docs
 
+  audit:deps:
+    desc: "Guard: dependency tree carries no unaddressed RUSTSEC advisory (mirrors the CI cargo-audit job; honors .cargo/audit.toml ignores)."
+    cmds:
+      - cargo audit
+
+  audit:workflows:
+    desc: "Guard: GitHub workflow files pass actionlint + the job-timeout and gate-mirror audits (mirrors the CI actionlint job)."
+    cmds:
+      - actionlint -color
+      - task: audit:job-timeouts
+      - task: audit:gate-mirror
+
   audit:log:
     desc: "Guard: no subprocess command-echo at default log verbosity (status vs verbose)."
     cmds:
@@ -227,6 +240,11 @@ tasks:
     cmds:
       - .claude/scripts/audit-repo-identity.sh
 
+  audit:gate-mirror:
+    desc: "Guard: task gate mirrors every blocking ci.yml job (fails when a CI job has no registered local equivalent)."
+    cmds:
+      - .claude/scripts/audit-gate-mirror.sh
+
   lint:
     desc: Local pre-commit check (tidy, clippy, build, snapshot dry-run)
     cmds:
@@ -240,6 +258,7 @@ tasks:
       - task: audit:test-spawn
       - task: audit:job-timeouts
       - task: audit:repo-identity
+      - task: audit:gate-mirror
 
   ci:
     desc: Run all CI checks (everything except cross-platform builds)
@@ -249,6 +268,24 @@ tasks:
       - task: test
       - task: docs:check
       - task: package
+
+  gate:
+    # Canonical pre-push / pre-release gate: this MUST run every job that blocks
+    # release.yml (i.e. every ci.yml job). release.yml triggers on the whole CI
+    # workflow succeeding, so any ci.yml job that is not mirrored here is a hole
+    # through which a red CI slips to a push. When a ci.yml job is added, add its
+    # local equivalent here (enforced by audit:gate-mirror). Slow by design
+    # (the instrumented coverage run dominates); the snapshot step is the same
+    # dry-run CI runs. `task ci` remains the fast inner-loop subset.
+    desc: "FULL local gate — mirrors EVERY blocking CI job (fmt, clippy, cargo-audit, test, package, docs-check, validate-readme, check-config, snapshot, coverage, actionlint). Slow; the pre-push floor."
+    cmds:
+      - task: ci                     # fmt:check, clippy, test, docs:check, package
+      - task: audit:deps             # cargo-audit
+      - task: docs:validate-readme   # validate-readme
+      - task: check:config           # check-config
+      - task: snapshot               # snapshot (dry-run)
+      - task: audit:workflows        # actionlint
+      - task: coverage:gate          # coverage floor
 
   commit:
     desc: "Lint (regenerates docs), restage only the user's intended files, then commit. Usage: task commit -- -m 'my message'"
@@ -269,14 +306,14 @@ tasks:
       - git commit {{.CLI_ARGS}}
 
   push:
-    desc: "Coverage-gated push. Usage: task push [-- <git push args>] (defaults to origin master)."
+    desc: "Full-gate push: runs task gate (every blocking CI job mirrored locally), then pushes. Usage: task push [-- <git push args>] (defaults to origin master)."
     preconditions:
       # Uncommitted changes must not ride along on a push decision — gate the
       # coverage run and the push on a clean tree.
       - sh: git diff --quiet && git diff --cached --quiet
         msg: "Working tree is dirty — commit or stash before task push."
     cmds:
-      - task: coverage:gate
+      - task: gate
       - git push {{.CLI_ARGS | default "origin master"}}
 
   _commit:restage:

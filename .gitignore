@@ -24,6 +24,8 @@ CLAUDE.local.md
 !.claude/scripts/audit-test-isolation.sh
 !.claude/scripts/audit-test-spawn-retry.sh
 !.claude/scripts/audit-job-timeouts.sh
+!.claude/scripts/audit-repo-identity.sh
+!.claude/scripts/audit-gate-mirror.sh
 !.claude/scripts/test-os.sh
 !.claude/scripts/test-os-winserver.ps1
 !.claude/scripts/test-os-suite.sh

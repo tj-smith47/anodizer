@@ -39,6 +39,8 @@ jobs:
       # yq ships preinstalled on the ubuntu-latest runner image.
       - name: Audit job timeouts
         run: .claude/scripts/audit-job-timeouts.sh
+      - name: Audit gate mirror
+        run: .claude/scripts/audit-gate-mirror.sh
 
   fmt:
     name: Formatting
