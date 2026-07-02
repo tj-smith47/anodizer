@@ -78,7 +78,7 @@ debug = "line-tables-only"
 debug = "line-tables-only"
 
 [workspace.package]
-version = "0.13.0"
+version = "0.13.1"
 edition = "2024"
 # edition 2024 needs ≥1.85, but the code uses `Option::is_none_or` and
 # `{integer}::is_multiple_of`, both stabilized in 1.87 — clippy's
@@ -96,36 +96,36 @@ keywords = ["release", "automation", "cargo", "ci-cd", "packaging"]
 categories = ["development-tools", "development-tools::build-utils"]
 
 [workspace.dependencies]
-anodizer-core = { path = "crates/core", version = "0.13.0" }
-anodizer-stage-build = { path = "crates/stage-build", version = "0.13.0" }
-anodizer-stage-archive = { path = "crates/stage-archive", version = "0.13.0" }
-anodizer-stage-nfpm = { path = "crates/stage-nfpm", version = "0.13.0" }
-anodizer-stage-checksum = { path = "crates/stage-checksum", version = "0.13.0" }
-anodizer-stage-changelog = { path = "crates/stage-changelog", version = "0.13.0" }
-anodizer-stage-release = { path = "crates/stage-release", version = "0.13.0" }
-anodizer-stage-publish = { path = "crates/stage-publish", version = "0.13.0" }
-anodizer-stage-docker = { path = "crates/stage-docker", version = "0.13.0" }
-anodizer-stage-sign = { path = "crates/stage-sign", version = "0.13.0" }
-anodizer-stage-announce = { path = "crates/stage-announce", version = "0.13.0" }
-anodizer-stage-source = { path = "crates/stage-source", version = "0.13.0" }
-anodizer-stage-sbom = { path = "crates/stage-sbom", version = "0.13.0" }
-anodizer-stage-attest = { path = "crates/stage-attest", version = "0.13.0" }
-anodizer-stage-appimage = { path = "crates/stage-appimage", version = "0.13.0" }
-anodizer-stage-upx = { path = "crates/stage-upx", version = "0.13.0" }
-anodizer-stage-snapcraft = { path = "crates/stage-snapcraft", version = "0.13.0" }
-anodizer-stage-dmg = { path = "crates/stage-dmg", version = "0.13.0" }
-anodizer-stage-msi = { path = "crates/stage-msi", version = "0.13.0" }
-anodizer-stage-pkg = { path = "crates/stage-pkg", version = "0.13.0" }
-anodizer-stage-blob = { path = "crates/stage-blob", version = "0.13.0" }
-anodizer-stage-nsis = { path = "crates/stage-nsis", version = "0.13.0" }
-anodizer-stage-appbundle = { path = "crates/stage-appbundle", version = "0.13.0" }
-anodizer-stage-flatpak = { path = "crates/stage-flatpak", version = "0.13.0" }
-anodizer-stage-notarize = { path = "crates/stage-notarize", version = "0.13.0" }
-anodizer-stage-templatefiles = { path = "crates/stage-templatefiles", version = "0.13.0" }
-anodizer-stage-makeself = { path = "crates/stage-makeself", version = "0.13.0" }
-anodizer-stage-srpm = { path = "crates/stage-srpm", version = "0.13.0" }
-anodizer-stage-verify-release = { path = "crates/stage-verify-release", version = "0.13.0" }
-anodizer-stage-prepublish-guard = { path = "crates/stage-prepublish-guard", version = "0.13.0" }
+anodizer-core = { path = "crates/core", version = "0.13.1" }
+anodizer-stage-build = { path = "crates/stage-build", version = "0.13.1" }
+anodizer-stage-archive = { path = "crates/stage-archive", version = "0.13.1" }
+anodizer-stage-nfpm = { path = "crates/stage-nfpm", version = "0.13.1" }
+anodizer-stage-checksum = { path = "crates/stage-checksum", version = "0.13.1" }
+anodizer-stage-changelog = { path = "crates/stage-changelog", version = "0.13.1" }
+anodizer-stage-release = { path = "crates/stage-release", version = "0.13.1" }
+anodizer-stage-publish = { path = "crates/stage-publish", version = "0.13.1" }
+anodizer-stage-docker = { path = "crates/stage-docker", version = "0.13.1" }
+anodizer-stage-sign = { path = "crates/stage-sign", version = "0.13.1" }
+anodizer-stage-announce = { path = "crates/stage-announce", version = "0.13.1" }
+anodizer-stage-source = { path = "crates/stage-source", version = "0.13.1" }
+anodizer-stage-sbom = { path = "crates/stage-sbom", version = "0.13.1" }
+anodizer-stage-attest = { path = "crates/stage-attest", version = "0.13.1" }
+anodizer-stage-appimage = { path = "crates/stage-appimage", version = "0.13.1" }
+anodizer-stage-upx = { path = "crates/stage-upx", version = "0.13.1" }
+anodizer-stage-snapcraft = { path = "crates/stage-snapcraft", version = "0.13.1" }
+anodizer-stage-dmg = { path = "crates/stage-dmg", version = "0.13.1" }
+anodizer-stage-msi = { path = "crates/stage-msi", version = "0.13.1" }
+anodizer-stage-pkg = { path = "crates/stage-pkg", version = "0.13.1" }
+anodizer-stage-blob = { path = "crates/stage-blob", version = "0.13.1" }
+anodizer-stage-nsis = { path = "crates/stage-nsis", version = "0.13.1" }
+anodizer-stage-appbundle = { path = "crates/stage-appbundle", version = "0.13.1" }
+anodizer-stage-flatpak = { path = "crates/stage-flatpak", version = "0.13.1" }
+anodizer-stage-notarize = { path = "crates/stage-notarize", version = "0.13.1" }
+anodizer-stage-templatefiles = { path = "crates/stage-templatefiles", version = "0.13.1" }
+anodizer-stage-makeself = { path = "crates/stage-makeself", version = "0.13.1" }
+anodizer-stage-srpm = { path = "crates/stage-srpm", version = "0.13.1" }
+anodizer-stage-verify-release = { path = "crates/stage-verify-release", version = "0.13.1" }
+anodizer-stage-prepublish-guard = { path = "crates/stage-prepublish-guard", version = "0.13.1" }
 brontes = "0.2.0"
 anyhow = "1"
 # Compile-time-exhaustive enum iteration: `PublisherKind` derives `EnumIter`

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-07-02
+
+### Bug Fixes
+
+* 9b771a74891d drop AppDir scaffolding from dist; zero-pad zsync MTime ([@tj-smith47](https://github.com/tj-smith47))
+* 4bb830ab20d2 pin .zsync MTime to SOURCE_DATE_EPOCH for determinism ([@tj-smith47](https://github.com/tj-smith47))
+* dbcaafe12b4a strict-fail vanished/unmatched archive entries; propagate ELF+scan errors #133 ([@tj-smith47](https://github.com/tj-smith47))
+* 6859d34782de stop silently masking write/mtime/stdin/IO failures #134 ([@tj-smith47](https://github.com/tj-smith47))
+* f44720f56268 thread allow_http through ClientOptions so disable_ssl endpoints work ([@tj-smith47](https://github.com/tj-smith47))
+* a000fd2d767b size hdiutil image explicitly to prevent spurious ENOSPC ([@tj-smith47](https://github.com/tj-smith47))
+* b7bbd986b35e derive curl-sh asset names from the engine, not hardcoded shell ([@tj-smith47](https://github.com/tj-smith47))
+* cb1aa93565a6 declare the configured formatter binary in publisher requirements ([@tj-smith47](https://github.com/tj-smith47))
+* f7fbbc6d637f stop cargo dry-run spawn tests flaking on ETXTBSY #129 ([@tj-smith47](https://github.com/tj-smith47))
+* 013aa262affb cloudsmith unverifiable-checksum uploads; npm token/extra-file errors surface #132 ([@tj-smith47](https://github.com/tj-smith47))
+* d23cbe334ae3 gate ALL one-way doors on a required failure, not just Submitter #F1 ([@tj-smith47](https://github.com/tj-smith47))
+* 1bafb9503234 make blob rollback reachable via dedicated rollback_publishers ([@tj-smith47](https://github.com/tj-smith47))
+* cb9e449df5ad nix ELF inspection failure must fail the publish, not drop autoPatchelfHook #133 ([@tj-smith47](https://github.com/tj-smith47))
+* 7e91f26c2d94 render templated secret_name for dockerhub and gemfury ([@tj-smith47](https://github.com/tj-smith47))
+* 1fccbe0c189b upload blob assets before the one-way-door publishers ([@tj-smith47](https://github.com/tj-smith47))
+* 0eef96a22523 fail on unreadable checksum artifact; warn on write-path template fallback #131 ([@tj-smith47](https://github.com/tj-smith47))
+* 9d4305869cbe propagate config+workspace load errors, never cut a wrong version silently #130 ([@tj-smith47](https://github.com/tj-smith47))
+* 9b2f088e378e self-skip when github-release is deselected ([@tj-smith47](https://github.com/tj-smith47))
+* 2811e400e06c eliminate failure-hiding across the repo (stubs, swallowed errors, auto-pass) ([@tj-smith47](https://github.com/tj-smith47))
+* c757ec4d4c08 centralize three drifting patterns onto core types ([@tj-smith47](https://github.com/tj-smith47))
+* fe804e899de8 single-source the ELF dynamic-linking probe, fix class-gate divergence #136 ([@tj-smith47](https://github.com/tj-smith47))
+* df57ff9a89fa make StageId the bidirectional stage-vocabulary SSOT ([@tj-smith47](https://github.com/tj-smith47))
+* f00908967618 single-source skip-upload log, token rollback, poll eligibility ([@tj-smith47](https://github.com/tj-smith47))
+* efc0e586166b single-source the GitHub-publisher preflight loop and gh probe ([@tj-smith47](https://github.com/tj-smith47))
+* 588a30ca06bb centralize octocrab transport-error classification ([@tj-smith47](https://github.com/tj-smith47))
+* be134cdc2060 single-source dist sidecar basenames and the run-<id> dir ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.13.0] - 2026-06-27
 
 ### Features
@@ -437,7 +468,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.13.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.13.1...HEAD
+[0.13.1]: https://github.com/tj-smith47/anodizer/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/tj-smith47/anodizer/compare/v0.12.3...v0.13.0
 [0.12.3]: https://github.com/tj-smith47/anodizer/compare/v0.12.2...v0.12.3
 [0.12.2]: https://github.com/tj-smith47/anodizer/compare/v0.12.1...v0.12.2
