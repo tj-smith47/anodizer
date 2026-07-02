@@ -131,7 +131,7 @@ anyhow = "1"
 # Compile-time-exhaustive enum iteration: `PublisherKind` derives `EnumIter`
 # so `valid_publisher_names`, the `--skip` publisher vocabulary, and the
 # trait registry are all generated from one variant list and cannot drift.
-strum = { version = "0.27", features = ["derive"] }
+strum = { version = "0.28", features = ["derive"] }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 serde = { version = "1", features = ["derive"] }
