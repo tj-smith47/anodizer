@@ -153,12 +153,17 @@ tempfile = "3"
 fs4 = { version = "1", default-features = false, features = ["sync"] }
 # RustCrypto hash/MAC stack — pinned to the digest-0.10 line on purpose.
 # `stage-checksum`'s `hash_file_with::<D: Digest>` unifies every algorithm
-# (blake2b/s, md5, sha1, sha2, sha3) under one `digest` trait version, so they
-# must all share it. `blake2` has no stable `digest`-0.11 release yet (latest is
+# (blake2b/s, md5, sha1, sha2, sha3) under one `digest` trait version, so
+# ANODIZER'S OWN sha1/sha2/sha3/md-5/hmac/blake2 workspace deps must all share
+# it. `blake2` has no stable `digest`-0.11 release yet (latest is
 # 0.11.0-rc.6), and a release-*signing* tool does not ship a release-candidate
 # crypto crate — so the whole stack stays on `digest` 0.10 until `blake2 0.11`
 # lands. Dependabot is told to hold these back (.github/dependabot.yml) so the
 # group can't split the graph again. Bump all of them together once blake2 ships.
+# `object_store` 0.14's `aws-base` carries its own internal `md-5 0.11` →
+# `digest 0.11` line, independent of this stack (it never enters
+# `hash_file_with`'s trait graph) — the two `digest` lines coexist harmlessly
+# and merge once blake2 0.11 stabilizes and the stack above moves.
 sha1 = "0.10"
 sha2 = "0.10"
 uuid = { version = "1", default-features = false, features = ["v5"] }
@@ -183,7 +188,15 @@ octocrab = { version = "0.53", default-features = false, features = [
 ] }
 tower = { version = "0.5", default-features = false, features = ["util"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
-reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "multipart", "stream", "rustls-tls"] }
+# 0.13 drops bundled webpki-roots in favor of `rustls-platform-verifier`
+# (system CA store), matching the trust-store behavior Go/GoReleaser already
+# use — anodizer's own container base (distroless/cc-debian12) ships a
+# standard Debian CA bundle, so this is not a regression. `rustls-tls` was
+# renamed to `rustls`. `query` and `form` moved from bundled-in-`blocking` to
+# their own opt-in features in 0.13; `stage-publish/cloudsmith.rs` calls
+# `RequestBuilder::query` and `stage-announce/{mastodon,reddit}.rs` call
+# `RequestBuilder::form`, so both stay enabled.
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "multipart", "stream", "rustls", "query", "form"] }
 percent-encoding = "2"
 colored = "3"
 chrono = "0.4"
@@ -202,15 +215,15 @@ hyper-rustls = { version = "0.27", default-features = false, features = ["http1"
 hyper-util = { version = "0.1", features = ["client-legacy"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "std", "tls12"] }
 rcgen = { version = "0.14", default-features = false, features = ["ring", "pem"] }
-# Held at 0.13: object_store 0.14 takes a direct `aws-lc-rs` dependency, which
-# (1) pulls a second rustls CryptoProvider alongside our `ring`, and rustls
-# 0.23 then refuses to auto-select one — panicking at runtime on the first TLS
-# handshake (GitHub API, SMTP, blob upload); and (2) drags a C/cmake/asm build
-# toolchain that breaks the hermetic, ring-only cross-compile the determinism
-# harness depends on (musl, windows-aarch64, zigbuild). Hold until object_store
-# offers a ring-only build path. Dependabot is told to skip the 0.14 bump
-# (.github/dependabot.yml).
-object_store = { version = "0.13", features = ["aws", "gcp", "azure"] }
+# 0.14 adopted with the full `aws`/`gcp`/`azure` "batteries-included"
+# features. Those features link `aws-lc-rs` (also pulled by octocrab, see the
+# comment above) alongside `ring`, but runtime rustls `CryptoProvider`
+# selection is pinned to `ring` process-wide by
+# `crates/core/src/tls.rs::install_default_crypto_provider()`, so the second
+# provider never reaches auto-select ambiguity. `quick-xml` stays on the
+# 0.40.x line because 0.14 pins `^0.40.1`; the resulting advisory is a
+# tracked ignore in `.cargo/audit.toml`, not a blocker here.
+object_store = { version = "0.14", features = ["aws", "gcp", "azure"] }
 object = { version = "0.39", default-features = false, features = ["read", "elf", "std"] }
 serial_test = "3"
 schemars = "1.2"

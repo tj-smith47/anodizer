@@ -383,19 +383,19 @@ mod allow_http_regression {
     /// layer against a dead port) rather than rejected pre-flight with an
     /// opaque reqwest "builder error".
     ///
-    /// The bug this pins: `AmazonS3Builder::with_allow_http` writes into
-    /// `client_options`, and `build_s3_store`'s later
-    /// `with_client_options(timed_client_options(..))` replaced that struct
-    /// wholesale — silently reverting `allow_http` to `false`, so every blob
-    /// PUT to an http MinIO failed with `HTTP error: builder error`. Threading
-    /// `allow_http` through `timed_client_options` makes it unclobberable;
-    /// deleting that thread-through makes this test fail with a builder error.
-    #[tokio::test]
-    #[serial_test::serial(aws_env)]
-    async fn disable_ssl_http_endpoint_is_attempted_not_rejected() {
-        // skip_signature avoids an IMDS credential stall and isolates the test
-        // to the scheme allowance (no creds, no signing, no network beyond the
-        // localhost connect attempt).
+    /// Shared setup for the two dead-port S3 regression tests below: the
+    /// AWS_* env dance, `BlobConfig`/`RetryConfig`/`Context` construction,
+    /// and the build+PUT are identical between them — only the endpoint
+    /// scheme and `disable_ssl` (the config axis each test is actually
+    /// pinning) differ. skip_signature avoids an IMDS credential stall and
+    /// isolates each test to the behavior it's checking (no creds, no
+    /// signing, no network beyond the localhost connect attempt). Callers
+    /// must hold `#[serial(aws_env)]` — this mutates the same AWS_* vars a
+    /// concurrent test could observe.
+    async fn attempt_dead_port_put(
+        endpoint: &str,
+        disable_ssl: Option<bool>,
+    ) -> object_store::Result<object_store::PutResult> {
         unsafe {
             // env-ok: #[serial(aws_env)]; sole mutator of these AWS_* vars
             std::env::set_var("AWS_SKIP_SIGNATURE", "true");
@@ -407,10 +407,10 @@ mod allow_http_regression {
         let config = BlobConfig {
             provider: "s3".into(),
             bucket: "b".into(),
-            endpoint: Some("http://127.0.0.1:1".into()),
+            endpoint: Some(endpoint.into()),
             region: Some("us-east-1".into()),
             s3_force_path_style: Some(true),
-            disable_ssl: Some(true),
+            disable_ssl,
             ..Default::default()
         };
         // Tight retry so the dead-port connect fails fast.
@@ -428,6 +428,20 @@ mod allow_http_regression {
             // env-ok: #[serial(aws_env)]; sole mutator of these AWS_* vars
             std::env::remove_var("AWS_SKIP_SIGNATURE");
         }
+        res
+    }
+
+    /// The bug this pins: `AmazonS3Builder::with_allow_http` writes into
+    /// `client_options`, and `build_s3_store`'s later
+    /// `with_client_options(timed_client_options(..))` replaced that struct
+    /// wholesale — silently reverting `allow_http` to `false`, so every blob
+    /// PUT to an http MinIO failed with `HTTP error: builder error`. Threading
+    /// `allow_http` through `timed_client_options` makes it unclobberable;
+    /// deleting that thread-through makes this test fail with a builder error.
+    #[tokio::test]
+    #[serial_test::serial(aws_env)]
+    async fn disable_ssl_http_endpoint_is_attempted_not_rejected() {
+        let res = attempt_dead_port_put("http://127.0.0.1:1", Some(true)).await;
         let err = res.expect_err("a dead port must fail the PUT");
         let msg = err.to_string().to_lowercase();
         assert!(
@@ -435,5 +449,26 @@ mod allow_http_regression {
             "disable_ssl http endpoint must be attempted (transport error), \
              never rejected pre-flight as a scheme/builder error: {err}"
         );
+    }
+
+    /// Regression: `object_store`'s `aws`/`gcp`/`azure` features link
+    /// `aws-lc-rs` alongside the process-wide `ring` provider installed by
+    /// `install_default_crypto_provider()`. rustls 0.23 panics on the first
+    /// TLS handshake if two `CryptoProvider`s are linked and neither call
+    /// site pins one explicitly ("Could not automatically determine the
+    /// process-level CryptoProvider"). Driving a real handshake attempt
+    /// (an https endpoint that fails at the transport layer, same shape as
+    /// `disable_ssl_http_endpoint_is_attempted_not_rejected`) after installing
+    /// `ring` pins that no panic reaches the caller — only an ordinary
+    /// transport error.
+    #[tokio::test]
+    #[serial_test::serial(aws_env)]
+    async fn crypto_provider_coexistence_does_not_panic_on_handshake() {
+        anodizer_core::tls::install_default_crypto_provider();
+        let res = attempt_dead_port_put("https://127.0.0.1:1", None).await;
+        // A `CryptoProvider` auto-select panic would abort this call, not
+        // return an `Err` — the assertion below only runs at all if no panic
+        // occurred.
+        res.expect_err("a dead port must fail the PUT at the transport layer, not panic");
     }
 }

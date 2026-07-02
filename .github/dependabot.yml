@@ -30,13 +30,6 @@ updates:
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
       - dependency-name: "hmac"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
-      # object_store 0.14 takes a direct aws-lc-rs dependency, introducing a
-      # second rustls CryptoProvider (panics auto-selection) and a C/cmake/asm
-      # build toolchain that breaks the hermetic ring-only cross-compile. Hold
-      # the 0.14 bump until object_store ships a ring-only path. See the pin
-      # note in Cargo.toml.
-      - dependency-name: "object_store"
-        update-types: ["version-update:semver-minor", "version-update:semver-major"]
       # tera 2.x is a from-scratch rewrite: undefined-variable access now errors
       # (Go templates render undefined as empty — our GoReleaser-parity contract
       # depends on the lenient behaviour), macros are removed, the Rust

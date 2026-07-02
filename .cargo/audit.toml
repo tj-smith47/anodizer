@@ -1,0 +1,8 @@
+[advisories]
+# quick-xml <0.41.0 DoS advisories, transitive via object_store's S3 XML
+# parsing. No released object_store permits quick-xml >=0.41.0 (0.14.0 pins
+# ^0.40.1). Low real risk: XML is parsed from the operator's own configured
+# S3/blob endpoint during artifact upload — not attacker-controlled input;
+# worst case DoS-hangs the release tool, not production. REMOVE when the
+# dependabot PR bumping object_store to a release using quick-xml >=0.41.0 lands.
+ignore = ["RUSTSEC-2026-0194", "RUSTSEC-2026-0195"]

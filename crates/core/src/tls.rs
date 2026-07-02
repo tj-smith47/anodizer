@@ -15,10 +15,13 @@
 //! deterministic, so no present or future bare-builder path can panic on
 //! provider ambiguity — the incoherence is removed by construction rather
 //! than left to every call site to remember. Paths that already pass an
-//! explicit provider (the GitHub API client) keep using `ring`; paths that
-//! own their provider internally (`reqwest`, `lettre`, `object_store`) are
-//! unaffected, since a per-config provider always wins over the process
-//! default.
+//! explicit provider (the GitHub API client) keep using `ring`. `lettre`
+//! owns its provider internally (`rustls::ClientConfig::builder_with_provider`
+//! in its `smtp` transport) and is genuinely unaffected. `reqwest` and
+//! `object_store`, however, link both `ring` and `aws-lc-rs` and take
+//! rustls's *process-default* `CryptoProvider` for their bare
+//! `ClientConfig`/`ServerConfig` builders — they rely on this module's pin
+//! rather than owning their own provider.
 //!
 //! [panics]: https://docs.rs/rustls/0.23/rustls/crypto/struct.CryptoProvider.html#method.install_default
 
