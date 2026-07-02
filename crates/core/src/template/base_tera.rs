@@ -1,8 +1,9 @@
 use regex::Regex;
+use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::LazyLock;
-use tera::Value;
+use tera::TeraResult;
 
 use sha1::Digest as Sha1Digest;
 use sha2::Digest as Sha2Digest;
@@ -10,9 +11,10 @@ use sha3::Digest as Sha3Digest;
 
 // --- Helper functions for template engine ---
 
+use super::engine_adapter::{JsonRegisterExt, try_get_value};
 use crate::path_util::expand_tilde;
 
-/// Convert a Tera `Value` to a string for comparison purposes.
+/// Convert a JSON template `Value` to a string for comparison purposes.
 /// Numbers, bools, and strings are all stringified; null → "".
 /// Returns `Cow::Borrowed` for strings (avoiding a clone), `Cow::Owned` otherwise.
 fn value_to_string(v: &Value) -> Cow<'_, str> {
@@ -223,8 +225,9 @@ const PRINTF_FIELD_MAX: usize = 100_000;
 /// flags `- + 0 (space) #`, width, and precision.
 fn format_verb(spec: &PrintfSpec, value: Option<&Value>) -> Result<String, tera::Error> {
     let val = || -> Result<&Value, tera::Error> {
-        value
-            .ok_or_else(|| tera::Error::msg(format!("printf: missing argument for %{}", spec.verb)))
+        value.ok_or_else(|| {
+            tera::Error::message(format!("printf: missing argument for %{}", spec.verb))
+        })
     };
     match spec.verb {
         's' => {
@@ -238,7 +241,7 @@ fn format_verb(spec: &PrintfSpec, value: Option<&Value>) -> Result<String, tera:
         't' => {
             let b = val()?
                 .as_bool()
-                .ok_or_else(|| tera::Error::msg("printf: %t expects a boolean argument"))?;
+                .ok_or_else(|| tera::Error::message("printf: %t expects a boolean argument"))?;
             Ok(pad(spec, b.to_string(), None))
         }
         'q' => {
@@ -249,19 +252,19 @@ fn format_verb(spec: &PrintfSpec, value: Option<&Value>) -> Result<String, tera:
             let v = val()?;
             let code = v
                 .as_u64()
-                .ok_or_else(|| tera::Error::msg("printf: %c expects a non-negative integer"))?;
+                .ok_or_else(|| tera::Error::message("printf: %c expects a non-negative integer"))?;
             let ch = u32::try_from(code)
                 .ok()
                 .and_then(char::from_u32)
                 .ok_or_else(|| {
-                    tera::Error::msg(format!("printf: %c: {} is not a valid code point", code))
+                    tera::Error::message(format!("printf: %c: {} is not a valid code point", code))
                 })?;
             Ok(pad(spec, ch.to_string(), None))
         }
         'd' => {
             let n = val()?
                 .as_i64()
-                .ok_or_else(|| tera::Error::msg("printf: %d expects an integer argument"))?;
+                .ok_or_else(|| tera::Error::message("printf: %d expects an integer argument"))?;
             let sign = numeric_sign(n < 0, spec.plus, spec.space);
             Ok(pad_int(
                 spec,
@@ -272,7 +275,7 @@ fn format_verb(spec: &PrintfSpec, value: Option<&Value>) -> Result<String, tera:
         }
         'b' | 'o' | 'x' | 'X' => {
             let n = val()?.as_i64().ok_or_else(|| {
-                tera::Error::msg(format!(
+                tera::Error::message(format!(
                     "printf: %{} expects an integer argument",
                     spec.verb
                 ))
@@ -302,7 +305,7 @@ fn format_verb(spec: &PrintfSpec, value: Option<&Value>) -> Result<String, tera:
         }
         'f' | 'e' | 'E' | 'g' | 'G' => {
             let f = val()?.as_f64().ok_or_else(|| {
-                tera::Error::msg(format!("printf: %{} expects a numeric argument", spec.verb))
+                tera::Error::message(format!("printf: %{} expects a numeric argument", spec.verb))
             })?;
             let prec = spec.precision.unwrap_or(6);
             let mag = f.abs();
@@ -320,7 +323,7 @@ fn format_verb(spec: &PrintfSpec, value: Option<&Value>) -> Result<String, tera:
             let sign = numeric_sign(f.is_sign_negative() && f != 0.0, spec.plus, spec.space);
             Ok(pad(spec, body, Some((sign, ""))))
         }
-        other => Err(tera::Error::msg(format!(
+        other => Err(tera::Error::message(format!(
             "printf: unsupported verb %{} (supported: s d v x X o b c q f e E g G t %%)",
             other
         ))),
@@ -388,7 +391,7 @@ fn sprintf(format: &str, args: &[Value]) -> Result<String, tera::Error> {
             // A value that overflows usize is, a fortiori, over the ceiling.
             let w = width_digits.parse::<usize>().unwrap_or(usize::MAX);
             if w > PRINTF_FIELD_MAX {
-                return Err(tera::Error::msg(format!(
+                return Err(tera::Error::message(format!(
                     "printf width {} exceeds maximum {}",
                     width_digits, PRINTF_FIELD_MAX
                 )));
@@ -415,7 +418,7 @@ fn sprintf(format: &str, args: &[Value]) -> Result<String, tera::Error> {
                 prec_digits.parse::<usize>().unwrap_or(usize::MAX)
             };
             if p > PRINTF_FIELD_MAX {
-                return Err(tera::Error::msg(format!(
+                return Err(tera::Error::message(format!(
                     "printf precision {} exceeds maximum {}",
                     prec_digits, PRINTF_FIELD_MAX
                 )));
@@ -423,9 +426,9 @@ fn sprintf(format: &str, args: &[Value]) -> Result<String, tera::Error> {
             spec.precision = Some(p);
         }
 
-        let verb = chars
-            .next()
-            .ok_or_else(|| tera::Error::msg("printf: format string ends with a dangling '%'"))?;
+        let verb = chars.next().ok_or_else(|| {
+            tera::Error::message("printf: format string ends with a dangling '%'")
+        })?;
         spec.verb = verb;
 
         let value = args.get(arg_idx);
@@ -510,7 +513,7 @@ fn increment_version(v: &str, part: VersionPart) -> Result<String, tera::Error> 
     let stripped = v.strip_prefix('v').unwrap_or(v);
     let parts: Vec<&str> = stripped.splitn(3, '.').collect();
     let invalid = || {
-        tera::Error::msg(format!(
+        tera::Error::message(format!(
             "incpatch/incminor/incmajor: '{}' is not a valid semver version (expected MAJOR.MINOR.PATCH)",
             v
         ))
@@ -565,10 +568,10 @@ pub fn ruby_escape_str(s: &str) -> String {
 /// formula/cask templates have the filter available even though they build a
 /// fresh `tera::Tera` rather than cloning `BASE_TERA`.
 pub(super) fn register_ruby_escape(tera: &mut tera::Tera) {
-    tera.register_filter(
+    tera.register_json_filter(
         "ruby_escape",
         |value: &Value, _: &HashMap<String, Value>| {
-            let s = tera::try_get_value!("ruby_escape", "value", String, value);
+            let s = try_get_value!("ruby_escape", "value", String, value);
             Ok(Value::String(ruby_escape_str(&s)))
         },
     );
@@ -581,38 +584,38 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     register_ruby_escape(&mut tera);
 
     // Compatibility aliases
-    tera.register_filter("tolower", |value: &Value, _: &HashMap<String, Value>| {
-        let s = tera::try_get_value!("tolower", "value", String, value);
+    tera.register_json_filter("tolower", |value: &Value, _: &HashMap<String, Value>| {
+        let s = try_get_value!("tolower", "value", String, value);
         Ok(Value::String(s.to_lowercase()))
     });
-    tera.register_filter("toupper", |value: &Value, _: &HashMap<String, Value>| {
-        let s = tera::try_get_value!("toupper", "value", String, value);
+    tera.register_json_filter("toupper", |value: &Value, _: &HashMap<String, Value>| {
+        let s = try_get_value!("toupper", "value", String, value);
         Ok(Value::String(s.to_uppercase()))
     });
 
     // trimprefix(prefix="...") — strip prefix from a string
-    tera.register_filter(
+    tera.register_json_filter(
         "trimprefix",
         |value: &Value, args: &HashMap<String, Value>| {
-            let s = tera::try_get_value!("trimprefix", "value", String, value);
+            let s = try_get_value!("trimprefix", "value", String, value);
             let prefix = args
                 .get("prefix")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("trimprefix requires a `prefix` argument"))?;
+                .ok_or_else(|| tera::Error::message("trimprefix requires a `prefix` argument"))?;
             let result = s.strip_prefix(prefix).unwrap_or(&s);
             Ok(Value::String(result.to_string()))
         },
     );
 
     // trimsuffix(suffix="...") — strip suffix from a string
-    tera.register_filter(
+    tera.register_json_filter(
         "trimsuffix",
         |value: &Value, args: &HashMap<String, Value>| {
-            let s = tera::try_get_value!("trimsuffix", "value", String, value);
+            let s = try_get_value!("trimsuffix", "value", String, value);
             let suffix = args
                 .get("suffix")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("trimsuffix requires a `suffix` argument"))?;
+                .ok_or_else(|| tera::Error::message("trimsuffix requires a `suffix` argument"))?;
             let result = s.strip_suffix(suffix).unwrap_or(&s);
             Ok(Value::String(result.to_string()))
         },
@@ -623,25 +626,25 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // context-aware closures in render() before actual rendering occurs.
     // See render() for the real implementations that read from the template
     // context's Env map.
-    tera.register_function(
+    tera.register_json_function(
         "envOrDefault",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let name = args
                 .get("name")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("envOrDefault requires `name` argument"))?;
+                .ok_or_else(|| tera::Error::message("envOrDefault requires `name` argument"))?;
             let default = args.get("default").and_then(|v| v.as_str()).unwrap_or("");
             let value = std::env::var(name).unwrap_or_else(|_| default.to_string());
             Ok(Value::String(value))
         },
     );
-    tera.register_function(
+    tera.register_json_function(
         "isEnvSet",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let name = args
                 .get("name")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("isEnvSet requires `name` argument"))?;
+                .ok_or_else(|| tera::Error::message("isEnvSet requires `name` argument"))?;
             let is_set = std::env::var(name).map(|v| !v.is_empty()).unwrap_or(false);
             Ok(Value::Bool(is_set))
         },
@@ -650,37 +653,37 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // --- Version increment functions ---
 
     // incpatch("1.2.3") → "1.2.4"
-    tera.register_function(
+    tera.register_json_function(
         "incpatch",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let v = args
                 .get("v")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("incpatch requires `v` argument"))?;
+                .ok_or_else(|| tera::Error::message("incpatch requires `v` argument"))?;
             Ok(Value::String(increment_version(v, VersionPart::Patch)?))
         },
     );
 
     // incminor("1.2.3") → "1.3.0"
-    tera.register_function(
+    tera.register_json_function(
         "incminor",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let v = args
                 .get("v")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("incminor requires `v` argument"))?;
+                .ok_or_else(|| tera::Error::message("incminor requires `v` argument"))?;
             Ok(Value::String(increment_version(v, VersionPart::Minor)?))
         },
     );
 
     // incmajor("1.2.3") → "2.0.0"
-    tera.register_function(
+    tera.register_json_function(
         "incmajor",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let v = args
                 .get("v")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("incmajor requires `v` argument"))?;
+                .ok_or_else(|| tera::Error::message("incmajor requires `v` argument"))?;
             Ok(Value::String(increment_version(v, VersionPart::Major)?))
         },
     );
@@ -689,15 +692,18 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
 
     macro_rules! register_hash_fn {
         ($tera:expr, $name:expr, $hash_fn:expr) => {
-            $tera.register_function(
+            $tera.register_json_function(
                 $name,
-                |args: &HashMap<String, Value>| -> tera::Result<Value> {
+                |args: &HashMap<String, Value>| -> TeraResult<Value> {
                     let s = args.get("s").and_then(|v| v.as_str()).ok_or_else(|| {
-                        tera::Error::msg(format!("{} requires `s` argument", $name))
+                        tera::Error::message(format!("{} requires `s` argument", $name))
                     })?;
                     // Read the file; error if it cannot be read (no silent fallback).
                     let bytes = std::fs::read(s).map_err(|e| {
-                        tera::Error::msg(format!("{}: failed to read file '{}': {}", $name, s, e))
+                        tera::Error::message(format!(
+                            "{}: failed to read file '{}': {}",
+                            $name, s, e
+                        ))
                     })?;
                     Ok(Value::String($hash_fn(&bytes)))
                 },
@@ -777,13 +783,13 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // readFile(path="file.txt") — reads file, returns empty string on error.
     // Intentionally returns empty on all errors (not just ENOENT).
     // Whitespace is trimmed from the result.
-    tera.register_function(
+    tera.register_json_function(
         "readFile",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let path = args
                 .get("path")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("readFile requires `path` argument"))?;
+                .ok_or_else(|| tera::Error::message("readFile requires `path` argument"))?;
             let resolved = expand_tilde(path);
             let content = std::fs::read_to_string(resolved.as_ref()).unwrap_or_default();
             Ok(Value::String(content.trim().to_string()))
@@ -792,16 +798,16 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
 
     // mustReadFile(path="file.txt") — reads file, errors if file doesn't exist
     // Whitespace is trimmed from the result.
-    tera.register_function(
+    tera.register_json_function(
         "mustReadFile",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let path = args
                 .get("path")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("mustReadFile requires `path` argument"))?;
+                .ok_or_else(|| tera::Error::message("mustReadFile requires `path` argument"))?;
             let resolved = expand_tilde(path);
             let content = std::fs::read_to_string(resolved.as_ref())
-                .map_err(|e| tera::Error::msg(format!("mustReadFile: {}: {}", resolved, e)))?;
+                .map_err(|e| tera::Error::message(format!("mustReadFile: {}: {}", resolved, e)))?;
             Ok(Value::String(content.trim().to_string()))
         },
     );
@@ -814,9 +820,9 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // SDE-aware: honors `SOURCE_DATE_EPOCH` so user templates that embed
     // `{{ time(format="2006-01-02") }}` in artifact names or metadata
     // produce byte-stable output under the determinism harness.
-    tera.register_function(
+    tera.register_json_function(
         "time",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let fmt = args
                 .get("format")
                 .and_then(|v| v.as_str())
@@ -830,8 +836,8 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // --- Path manipulation filters ---
 
     // dir — returns the directory portion of a path
-    tera.register_filter("dir", |value: &Value, _: &HashMap<String, Value>| {
-        let s = tera::try_get_value!("dir", "value", String, value);
+    tera.register_json_filter("dir", |value: &Value, _: &HashMap<String, Value>| {
+        let s = try_get_value!("dir", "value", String, value);
         let p = std::path::Path::new(&s);
         Ok(Value::String(
             p.parent()
@@ -841,8 +847,8 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     });
 
     // base — returns the filename portion of a path
-    tera.register_filter("base", |value: &Value, _: &HashMap<String, Value>| {
-        let s = tera::try_get_value!("base", "value", String, value);
+    tera.register_json_filter("base", |value: &Value, _: &HashMap<String, Value>| {
+        let s = try_get_value!("base", "value", String, value);
         let p = std::path::Path::new(&s);
         Ok(Value::String(
             p.file_name()
@@ -852,8 +858,8 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     });
 
     // abs — returns absolute path (prefixes with cwd if relative)
-    tera.register_filter("abs", |value: &Value, _: &HashMap<String, Value>| {
-        let s = tera::try_get_value!("abs", "value", String, value);
+    tera.register_json_filter("abs", |value: &Value, _: &HashMap<String, Value>| {
+        let s = try_get_value!("abs", "value", String, value);
         let p = std::path::Path::new(&s);
         if p.is_absolute() {
             Ok(Value::String(s))
@@ -866,10 +872,10 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     });
 
     // urlPathEscape — URL-encode a path segment
-    tera.register_filter(
+    tera.register_json_filter(
         "urlPathEscape",
         |value: &Value, _: &HashMap<String, Value>| {
-            let s = tera::try_get_value!("urlPathEscape", "value", String, value);
+            let s = try_get_value!("urlPathEscape", "value", String, value);
             // Percent-encode all non-unreserved characters per RFC 3986.
             // Path escaping encodes `/` as `%2F`.
             let encoded: String = s
@@ -888,8 +894,8 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     );
 
     // mdv2escape — escape Telegram MarkdownV2 special characters
-    tera.register_filter("mdv2escape", |value: &Value, _: &HashMap<String, Value>| {
-        let s = tera::try_get_value!("mdv2escape", "value", String, value);
+    tera.register_json_filter("mdv2escape", |value: &Value, _: &HashMap<String, Value>| {
+        let s = try_get_value!("mdv2escape", "value", String, value);
         let escaped = s
             .chars()
             .map(|c| {
@@ -906,17 +912,17 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // --- Go-style compatibility functions ---
 
     // contains(s="haystack", substr="needle") — check string containment
-    tera.register_function(
+    tera.register_json_function(
         "contains",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let s = args
                 .get("s")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("contains requires `s` argument"))?;
+                .ok_or_else(|| tera::Error::message("contains requires `s` argument"))?;
             let substr = args
                 .get("substr")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("contains requires `substr` argument"))?;
+                .ok_or_else(|| tera::Error::message("contains requires `substr` argument"))?;
             Ok(Value::Bool(s.contains(substr)))
         },
     );
@@ -926,32 +932,32 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // (Pass 2 in template_preprocess.rs), which rewrites it to `["a", "b"]`
     // before Tera sees it. This function registration exists for direct Tera
     // usage, e.g. `{{ list(items=["a", "b"]) }}`.
-    tera.register_function(
+    tera.register_json_function(
         "list",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let items = args
                 .get("items")
                 .and_then(|v| v.as_array())
-                .ok_or_else(|| tera::Error::msg("list requires `items` argument"))?;
+                .ok_or_else(|| tera::Error::message("list requires `items` argument"))?;
             Ok(Value::Array(items.clone()))
         },
     );
 
     // map(pairs=[k1, v1, k2, v2, ...]) — create a map from alternating key-value pairs
     // Example: {{ $m := map "a" "1" "b" "2" }}
-    tera.register_function(
+    tera.register_json_function(
         "map",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let pairs = args
                 .get("pairs")
                 .and_then(|v| v.as_array())
-                .ok_or_else(|| tera::Error::msg("map requires `pairs` argument"))?;
+                .ok_or_else(|| tera::Error::message("map requires `pairs` argument"))?;
             if pairs.len() % 2 != 0 {
-                return Err(tera::Error::msg(
+                return Err(tera::Error::message(
                     "map requires an even number of arguments (key-value pairs)",
                 ));
             }
-            let mut result = tera::Map::new();
+            let mut result = serde_json::Map::new();
             for chunk in pairs.chunks(2) {
                 let key = chunk[0].as_str().unwrap_or("").to_string();
                 result.insert(key, chunk[1].clone());
@@ -964,23 +970,25 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // Go-style: {{ in (list "a" "b" "c") "b" }} → true
     // Named:    {{ in(items=["a","b","c"], value="b") }} → true
     // Compares all elements as strings.
-    let in_fn = |args: &HashMap<String, Value>| -> tera::Result<Value> {
+    let in_fn = |args: &HashMap<String, Value>| -> TeraResult<Value> {
         let items = args
             .get("items")
             .and_then(|v| v.as_array())
-            .ok_or_else(|| tera::Error::msg("in requires `items` argument (must be an array)"))?;
+            .ok_or_else(|| {
+                tera::Error::message("in requires `items` argument (must be an array)")
+            })?;
         let value = args
             .get("value")
-            .ok_or_else(|| tera::Error::msg("in requires `value` argument"))?;
+            .ok_or_else(|| tera::Error::message("in requires `value` argument"))?;
         // Convert the search value to a string for comparison.
         let needle = value_to_string(value);
         let found = items.iter().any(|item| value_to_string(item) == needle);
         Ok(Value::Bool(found))
     };
-    tera.register_function("in", in_fn);
+    tera.register_json_function("in", in_fn);
     // `contains_any` alias — avoids the Tera `in` keyword clash inside
     // `{% set x = ... %}` / `{% if ... %}` bodies.
-    tera.register_function("contains_any", in_fn);
+    tera.register_json_function("contains_any", in_fn);
 
     // reReplaceAll(pattern="...", input="...", replacement="...") — regex replace
     // Go-style: {{ reReplaceAll "(.*)" .Message "$1" }}
@@ -989,23 +997,25 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // Returns a Tera error on invalid regex (no panic).
     // Note: regex is compiled per call. This is acceptable for template rendering
     // where each pattern is typically used once per render pass.
-    tera.register_function(
+    tera.register_json_function(
         "reReplaceAll",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let pattern = args
                 .get("pattern")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("reReplaceAll requires `pattern` argument"))?;
+                .ok_or_else(|| tera::Error::message("reReplaceAll requires `pattern` argument"))?;
             let input = args
                 .get("input")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("reReplaceAll requires `input` argument"))?;
+                .ok_or_else(|| tera::Error::message("reReplaceAll requires `input` argument"))?;
             let replacement = args
                 .get("replacement")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("reReplaceAll requires `replacement` argument"))?;
+                .ok_or_else(|| {
+                    tera::Error::message("reReplaceAll requires `replacement` argument")
+                })?;
             let re = Regex::new(pattern).map_err(|e| {
-                tera::Error::msg(format!("reReplaceAll: invalid regex '{}': {}", pattern, e))
+                tera::Error::message(format!("reReplaceAll: invalid regex '{}': {}", pattern, e))
             })?;
             Ok(Value::String(
                 re.replace_all(input, replacement).to_string(),
@@ -1016,24 +1026,24 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // reReplaceAll filter form: {{ Field | reReplaceAll(pattern="...", replacement="...") }}
     // Note: regex is compiled per call. This is acceptable for template rendering
     // where each pattern is typically used once per render pass.
-    tera.register_filter(
+    tera.register_json_filter(
         "reReplaceAll",
         |value: &Value, args: &HashMap<String, Value>| {
-            let input = tera::try_get_value!("reReplaceAll", "value", String, value);
+            let input = try_get_value!("reReplaceAll", "value", String, value);
             let pattern = args
                 .get("pattern")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| {
-                    tera::Error::msg("reReplaceAll filter requires `pattern` argument")
+                    tera::Error::message("reReplaceAll filter requires `pattern` argument")
                 })?;
             let replacement = args
                 .get("replacement")
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| {
-                    tera::Error::msg("reReplaceAll filter requires `replacement` argument")
+                    tera::Error::message("reReplaceAll filter requires `replacement` argument")
                 })?;
             let re = Regex::new(pattern).map_err(|e| {
-                tera::Error::msg(format!("reReplaceAll: invalid regex '{}': {}", pattern, e))
+                tera::Error::message(format!("reReplaceAll: invalid regex '{}': {}", pattern, e))
             })?;
             Ok(Value::String(
                 re.replace_all(&input, replacement).to_string(),
@@ -1043,13 +1053,13 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
 
     // englishJoin(items=[...], oxford=true) — join list items with commas and "and"
     // Empty/whitespace-only items are filtered out before joining.
-    tera.register_function(
+    tera.register_json_function(
         "englishJoin",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let items = args
                 .get("items")
                 .and_then(|v| v.as_array())
-                .ok_or_else(|| tera::Error::msg("englishJoin requires `items` argument"))?;
+                .ok_or_else(|| tera::Error::message("englishJoin requires `items` argument"))?;
             let oxford = args.get("oxford").and_then(|v| v.as_bool()).unwrap_or(true);
             let strs: Vec<String> = items
                 .iter()
@@ -1078,12 +1088,12 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     );
 
     // englishJoin filter: {{ list "a" "b" "c" | englishJoin }} — pipe form
-    tera.register_filter(
+    tera.register_json_filter(
         "englishJoin",
         |value: &Value, args: &HashMap<String, Value>| {
             let items = value
                 .as_array()
-                .ok_or_else(|| tera::Error::msg("englishJoin filter expects an array"))?;
+                .ok_or_else(|| tera::Error::message("englishJoin filter expects an array"))?;
             let oxford = args.get("oxford").and_then(|v| v.as_bool()).unwrap_or(true);
             let strs: Vec<String> = items
                 .iter()
@@ -1112,28 +1122,28 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     );
 
     // filter as pipe form: {{ items | filter(regexp="pattern") }}
-    tera.register_filter("filter", |value: &Value, args: &HashMap<String, Value>| {
+    tera.register_json_filter("filter", |value: &Value, args: &HashMap<String, Value>| {
         let pattern = args
             .get("regexp")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| tera::Error::msg("filter requires `regexp` argument"))?;
+            .ok_or_else(|| tera::Error::message("filter requires `regexp` argument"))?;
         let re = regex::Regex::new(pattern)
-            .map_err(|e| tera::Error::msg(format!("invalid regex '{}': {}", pattern, e)))?;
+            .map_err(|e| tera::Error::message(format!("invalid regex '{}': {}", pattern, e)))?;
         let input = value.as_str().unwrap_or("");
         let result: Vec<&str> = input.lines().filter(|line| re.is_match(line)).collect();
         Ok(Value::String(result.join("\n")))
     });
 
     // reverseFilter as pipe form: {{ items | reverseFilter(regexp="pattern") }}
-    tera.register_filter(
+    tera.register_json_filter(
         "reverseFilter",
         |value: &Value, args: &HashMap<String, Value>| {
             let pattern = args
                 .get("regexp")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("reverseFilter requires `regexp` argument"))?;
+                .ok_or_else(|| tera::Error::message("reverseFilter requires `regexp` argument"))?;
             let re = regex::Regex::new(pattern)
-                .map_err(|e| tera::Error::msg(format!("invalid regex '{}': {}", pattern, e)))?;
+                .map_err(|e| tera::Error::message(format!("invalid regex '{}': {}", pattern, e)))?;
             let input = value.as_str().unwrap_or("");
             let result: Vec<&str> = input.lines().filter(|line| !re.is_match(line)).collect();
             Ok(Value::String(result.join("\n")))
@@ -1145,18 +1155,18 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // We also accept an array for convenience.
     // Note: regex is compiled per call. This is acceptable for template rendering
     // where each pattern is typically used once per render pass.
-    tera.register_function(
+    tera.register_json_function(
         "filter",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let items_val = args
                 .get("items")
-                .ok_or_else(|| tera::Error::msg("filter requires `items` argument"))?;
+                .ok_or_else(|| tera::Error::message("filter requires `items` argument"))?;
             let pattern = args
                 .get("regexp")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("filter requires `regexp` argument"))?;
+                .ok_or_else(|| tera::Error::message("filter requires `regexp` argument"))?;
             let re = Regex::new(pattern)
-                .map_err(|e| tera::Error::msg(format!("filter: invalid regex: {}", e)))?;
+                .map_err(|e| tera::Error::message(format!("filter: invalid regex: {}", e)))?;
 
             if let Some(s) = items_val.as_str() {
                 // String input: split by newlines, filter matching lines, rejoin
@@ -1175,7 +1185,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                     .collect();
                 Ok(Value::Array(filtered))
             } else {
-                Err(tera::Error::msg(
+                Err(tera::Error::message(
                     "filter: `items` must be a string or array",
                 ))
             }
@@ -1187,18 +1197,19 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // We also accept an array for convenience.
     // Note: regex is compiled per call. This is acceptable for template rendering
     // where each pattern is typically used once per render pass.
-    tera.register_function(
+    tera.register_json_function(
         "reverseFilter",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let items_val = args
                 .get("items")
-                .ok_or_else(|| tera::Error::msg("reverseFilter requires `items` argument"))?;
+                .ok_or_else(|| tera::Error::message("reverseFilter requires `items` argument"))?;
             let pattern = args
                 .get("regexp")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("reverseFilter requires `regexp` argument"))?;
-            let re = Regex::new(pattern)
-                .map_err(|e| tera::Error::msg(format!("reverseFilter: invalid regex: {}", e)))?;
+                .ok_or_else(|| tera::Error::message("reverseFilter requires `regexp` argument"))?;
+            let re = Regex::new(pattern).map_err(|e| {
+                tera::Error::message(format!("reverseFilter: invalid regex: {}", e))
+            })?;
 
             if let Some(s) = items_val.as_str() {
                 // String input: split by newlines, exclude matching lines, rejoin
@@ -1217,7 +1228,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                     .collect();
                 Ok(Value::Array(filtered))
             } else {
-                Err(tera::Error::msg(
+                Err(tera::Error::message(
                     "reverseFilter: `items` must be a string or array",
                 ))
             }
@@ -1225,17 +1236,17 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     );
 
     // map(items={...}, key="k", default="d") — lookup a key in a map with default
-    tera.register_function(
+    tera.register_json_function(
         "indexOrDefault",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let map = args
                 .get("map")
                 .and_then(|v| v.as_object())
-                .ok_or_else(|| tera::Error::msg("indexOrDefault requires `map` argument"))?;
+                .ok_or_else(|| tera::Error::message("indexOrDefault requires `map` argument"))?;
             let key = args
                 .get("key")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("indexOrDefault requires `key` argument"))?;
+                .ok_or_else(|| tera::Error::message("indexOrDefault requires `key` argument"))?;
             let default = args
                 .get("default")
                 .cloned()
@@ -1246,77 +1257,76 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
 
     // --- replace function ---
     // Function form: replace(s="input", old="x", new="y")
-    tera.register_function(
+    tera.register_json_function(
         "replace",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let s = args
                 .get("s")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("replace requires `s` argument"))?;
+                .ok_or_else(|| tera::Error::message("replace requires `s` argument"))?;
             let old = args
                 .get("old")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("replace requires `old` argument"))?;
+                .ok_or_else(|| tera::Error::message("replace requires `old` argument"))?;
             let new = args
                 .get("new")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("replace requires `new` argument"))?;
+                .ok_or_else(|| tera::Error::message("replace requires `new` argument"))?;
             Ok(Value::String(s.replace(old, new)))
         },
     );
     // Filter form: {{ Field | replace(from="old", to="new") }}
     // Overrides Tera's built-in replace filter. Uses `from`/`to` arg names
     // (same as the built-in) so existing Tera templates continue to work.
-    tera.register_filter("replace", |value: &Value, args: &HashMap<String, Value>| {
-        let s = tera::try_get_value!("replace", "value", String, value);
+    tera.register_json_filter("replace", |value: &Value, args: &HashMap<String, Value>| {
+        let s = try_get_value!("replace", "value", String, value);
         let from = args
             .get("from")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| tera::Error::msg("replace filter requires `from` argument"))?;
+            .ok_or_else(|| tera::Error::message("replace filter requires `from` argument"))?;
         let to = args
             .get("to")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| tera::Error::msg("replace filter requires `to` argument"))?;
+            .ok_or_else(|| tera::Error::message("replace filter requires `to` argument"))?;
         Ok(Value::String(s.replace(from, to)))
     });
 
     // --- split function ---
     // split(s="a,b,c", sep=",") → ["a", "b", "c"]
-    tera.register_function(
+    tera.register_json_function(
         "split",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let s = args
                 .get("s")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("split requires `s` argument"))?;
+                .ok_or_else(|| tera::Error::message("split requires `s` argument"))?;
             let sep = args
                 .get("sep")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("split requires `sep` argument"))?;
+                .ok_or_else(|| tera::Error::message("split requires `sep` argument"))?;
             let parts: Vec<Value> = s.split(sep).map(|p| Value::String(p.to_string())).collect();
             Ok(Value::Array(parts))
         },
     );
     // Filter form: {{ Field | split(sep=".") }}
-    tera.register_filter("split", |value: &Value, args: &HashMap<String, Value>| {
-        let s = tera::try_get_value!("split", "value", String, value);
+    tera.register_json_filter("split", |value: &Value, args: &HashMap<String, Value>| {
+        let s = try_get_value!("split", "value", String, value);
         let sep = args
             .get("sep")
             .and_then(|v| v.as_str())
-            .ok_or_else(|| tera::Error::msg("split filter requires `sep` argument"))?;
+            .ok_or_else(|| tera::Error::message("split filter requires `sep` argument"))?;
         let parts: Vec<Value> = s.split(sep).map(|p| Value::String(p.to_string())).collect();
         Ok(Value::Array(parts))
     });
 
     // Filter form: {{ Field | contains(substr="needle") }}
-    tera.register_filter(
+    tera.register_json_filter(
         "contains",
         |value: &Value, args: &HashMap<String, Value>| {
-            let s = tera::try_get_value!("contains", "value", String, value);
-            let substr = args
-                .get("substr")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("contains filter requires `substr` argument"))?;
+            let s = try_get_value!("contains", "value", String, value);
+            let substr = args.get("substr").and_then(|v| v.as_str()).ok_or_else(|| {
+                tera::Error::message("contains filter requires `substr` argument")
+            })?;
             Ok(Value::Bool(s.contains(substr)))
         },
     );
@@ -1324,13 +1334,13 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // --- trim function ---
     // Function form: trim(s="  hello  ") → "hello"
     // Tera already has a built-in `trim` filter, so we only add the function form.
-    tera.register_function(
+    tera.register_json_function(
         "trim",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let s = args
                 .get("s")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("trim requires `s` argument"))?;
+                .ok_or_else(|| tera::Error::message("trim requires `s` argument"))?;
             Ok(Value::String(s.trim().to_string()))
         },
     );
@@ -1338,13 +1348,13 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // --- title function ---
     // Function form: title(s="hello world") → "Hello World"
     // Tera already has a built-in `title` filter, so we only add the function form.
-    tera.register_function(
+    tera.register_json_function(
         "title",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let s = args
                 .get("s")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("title requires `s` argument"))?;
+                .ok_or_else(|| tera::Error::message("title requires `s` argument"))?;
             // Title-case: capitalize the first letter of each word.
             let titled = s
                 .split_whitespace()
@@ -1367,71 +1377,71 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // --- Dual registration: existing filters also as functions ---
 
     // tolower(s="...") — function form of tolower filter
-    tera.register_function(
+    tera.register_json_function(
         "tolower",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let s = args
                 .get("s")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("tolower requires `s` argument"))?;
+                .ok_or_else(|| tera::Error::message("tolower requires `s` argument"))?;
             Ok(Value::String(s.to_lowercase()))
         },
     );
 
     // toupper(s="...") — function form of toupper filter
-    tera.register_function(
+    tera.register_json_function(
         "toupper",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let s = args
                 .get("s")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("toupper requires `s` argument"))?;
+                .ok_or_else(|| tera::Error::message("toupper requires `s` argument"))?;
             Ok(Value::String(s.to_uppercase()))
         },
     );
 
     // trimprefix(s="...", prefix="...") — function form of trimprefix filter
-    tera.register_function(
+    tera.register_json_function(
         "trimprefix",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let s = args
                 .get("s")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("trimprefix requires `s` argument"))?;
+                .ok_or_else(|| tera::Error::message("trimprefix requires `s` argument"))?;
             let prefix = args
                 .get("prefix")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("trimprefix requires `prefix` argument"))?;
+                .ok_or_else(|| tera::Error::message("trimprefix requires `prefix` argument"))?;
             let result = s.strip_prefix(prefix).unwrap_or(s);
             Ok(Value::String(result.to_string()))
         },
     );
 
     // trimsuffix(s="...", suffix="...") — function form of trimsuffix filter
-    tera.register_function(
+    tera.register_json_function(
         "trimsuffix",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let s = args
                 .get("s")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("trimsuffix requires `s` argument"))?;
+                .ok_or_else(|| tera::Error::message("trimsuffix requires `s` argument"))?;
             let suffix = args
                 .get("suffix")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("trimsuffix requires `suffix` argument"))?;
+                .ok_or_else(|| tera::Error::message("trimsuffix requires `suffix` argument"))?;
             let result = s.strip_suffix(suffix).unwrap_or(s);
             Ok(Value::String(result.to_string()))
         },
     );
 
     // dir(s="...") — function form of dir filter
-    tera.register_function(
+    tera.register_json_function(
         "dir",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let s = args
                 .get("s")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("dir requires `s` argument"))?;
+                .ok_or_else(|| tera::Error::message("dir requires `s` argument"))?;
             let p = std::path::Path::new(s);
             Ok(Value::String(
                 p.parent()
@@ -1442,13 +1452,13 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     );
 
     // base(s="...") — function form of base filter
-    tera.register_function(
+    tera.register_json_function(
         "base",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let s = args
                 .get("s")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("base requires `s` argument"))?;
+                .ok_or_else(|| tera::Error::message("base requires `s` argument"))?;
             let p = std::path::Path::new(s);
             Ok(Value::String(
                 p.file_name()
@@ -1459,13 +1469,13 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     );
 
     // abs(s="...") — function form of abs filter
-    tera.register_function(
+    tera.register_json_function(
         "abs",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let s = args
                 .get("s")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("abs requires `s` argument"))?;
+                .ok_or_else(|| tera::Error::message("abs requires `s` argument"))?;
             let p = std::path::Path::new(s);
             if p.is_absolute() {
                 Ok(Value::String(s.to_string()))
@@ -1479,13 +1489,13 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     );
 
     // urlPathEscape(s="...") — function form of urlPathEscape filter
-    tera.register_function(
+    tera.register_json_function(
         "urlPathEscape",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let s = args
                 .get("s")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("urlPathEscape requires `s` argument"))?;
+                .ok_or_else(|| tera::Error::message("urlPathEscape requires `s` argument"))?;
             let encoded: String = s
                 .bytes()
                 .map(|b| {
@@ -1502,13 +1512,13 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     );
 
     // mdv2escape(s="...") — function form of mdv2escape filter
-    tera.register_function(
+    tera.register_json_function(
         "mdv2escape",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let s = args
                 .get("s")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("mdv2escape requires `s` argument"))?;
+                .ok_or_else(|| tera::Error::message("mdv2escape requires `s` argument"))?;
             let escaped = s
                 .chars()
                 .map(|c| {
@@ -1526,20 +1536,20 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // --- Dual registration: existing functions also as filters ---
 
     // incpatch — filter form: {{ "1.2.3" | incpatch }}
-    tera.register_filter("incpatch", |value: &Value, _: &HashMap<String, Value>| {
-        let v = tera::try_get_value!("incpatch", "value", String, value);
+    tera.register_json_filter("incpatch", |value: &Value, _: &HashMap<String, Value>| {
+        let v = try_get_value!("incpatch", "value", String, value);
         Ok(Value::String(increment_version(&v, VersionPart::Patch)?))
     });
 
     // incminor — filter form: {{ "1.2.3" | incminor }}
-    tera.register_filter("incminor", |value: &Value, _: &HashMap<String, Value>| {
-        let v = tera::try_get_value!("incminor", "value", String, value);
+    tera.register_json_filter("incminor", |value: &Value, _: &HashMap<String, Value>| {
+        let v = try_get_value!("incminor", "value", String, value);
         Ok(Value::String(increment_version(&v, VersionPart::Minor)?))
     });
 
     // incmajor — filter form: {{ "1.2.3" | incmajor }}
-    tera.register_filter("incmajor", |value: &Value, _: &HashMap<String, Value>| {
-        let v = tera::try_get_value!("incmajor", "value", String, value);
+    tera.register_json_filter("incmajor", |value: &Value, _: &HashMap<String, Value>| {
+        let v = try_get_value!("incmajor", "value", String, value);
         Ok(Value::String(increment_version(&v, VersionPart::Major)?))
     });
 
@@ -1552,13 +1562,13 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // SDE-aware: honors `SOURCE_DATE_EPOCH` so the harness's two from-clean
     // rebuilds produce identical output for templates like
     // `{{ Now | now_format(format="2006-01-02") }}`.
-    tera.register_filter(
+    tera.register_json_filter(
         "now_format",
         |_value: &Value, args: &HashMap<String, Value>| {
             let fmt = args
                 .get("format")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("now_format requires a `format` argument"))?;
+                .ok_or_else(|| tera::Error::message("now_format requires a `format` argument"))?;
             let chrono_fmt = translate_go_time_format(fmt);
             let now = crate::sde::resolve_now();
             Ok(Value::String(now.format(&chrono_fmt).to_string()))
@@ -1569,15 +1579,15 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // Go template: {{ index .Map "key" }} → access map by key.
     // Go template: {{ index .Slice 0 }} → access array by index.
     // Returns empty string if key/index not found.
-    tera.register_function(
+    tera.register_json_function(
         "index",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let collection = args
                 .get("collection")
-                .ok_or_else(|| tera::Error::msg("index requires `collection` argument"))?;
+                .ok_or_else(|| tera::Error::message("index requires `collection` argument"))?;
             let key = args
                 .get("key")
-                .ok_or_else(|| tera::Error::msg("index requires `key` argument"))?;
+                .ok_or_else(|| tera::Error::message("index requires `key` argument"))?;
 
             match collection {
                 Value::Object(map) => {
@@ -1594,7 +1604,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                             .cloned()
                             .unwrap_or(Value::String(String::new())))
                     } else {
-                        Err(tera::Error::msg("index: array index must be a number"))
+                        Err(tera::Error::message("index: array index must be a number"))
                     }
                 }
                 _ => {
@@ -1610,16 +1620,16 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     let in_filter = |value: &Value, args: &HashMap<String, Value>| {
         let items = value
             .as_array()
-            .ok_or_else(|| tera::Error::msg("in filter requires an array as input"))?;
+            .ok_or_else(|| tera::Error::message("in filter requires an array as input"))?;
         let needle = args
             .get("value")
-            .ok_or_else(|| tera::Error::msg("in filter requires `value` argument"))?;
+            .ok_or_else(|| tera::Error::message("in filter requires `value` argument"))?;
         let needle_str = value_to_string(needle);
         let found = items.iter().any(|item| value_to_string(item) == needle_str);
         Ok(Value::Bool(found))
     };
-    tera.register_filter("in", in_filter);
-    tera.register_filter("contains_any", in_filter);
+    tera.register_json_filter("in", in_filter);
+    tera.register_json_filter("contains_any", in_filter);
 
     // --- Go `slice` builtin (superset of Tera's native slice) ---
     // slice(start=, end=) — substring of a string (char-boundary safe) or
@@ -1628,7 +1638,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // (`start=-2` → last 2), matching Tera's native array slice so user
     // templates relying on it keep working. Go's positional `slice X 0 7` only
     // ever passes non-negative bounds, so the Go usage is a strict subset.
-    tera.register_filter("slice", |value: &Value, args: &HashMap<String, Value>| {
+    tera.register_json_filter("slice", |value: &Value, args: &HashMap<String, Value>| {
         let start = args.get("start").and_then(|v| v.as_i64()).unwrap_or(0);
         let end = args.get("end").and_then(|v| v.as_i64());
 
@@ -1652,7 +1662,7 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 let hi = resolve(end.unwrap_or(len), len).max(lo) as usize;
                 Ok(Value::Array(arr[lo as usize..hi].to_vec()))
             }
-            other => Err(tera::Error::msg(format!(
+            other => Err(tera::Error::message(format!(
                 "slice: expected a string or array, got {}",
                 other
             ))),
@@ -1662,13 +1672,13 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // --- Go `printf` builtin ---
     // printf(format="%04d", args=[Patch]) — formats args per a bounded Go/C
     // verb subset. Unsupported verbs return a clear error (never silent-wrong).
-    tera.register_function(
+    tera.register_json_function(
         "printf",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let format = args
                 .get("format")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("printf requires a `format` argument"))?;
+                .ok_or_else(|| tera::Error::message("printf requires a `format` argument"))?;
             let fmt_args: Vec<Value> = args
                 .get("args")
                 .and_then(|v| v.as_array())
@@ -1683,9 +1693,9 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // adjacent operands only when NEITHER is a string (`print 1 2` → "1 2";
     // `print "a" "b"` → "ab"; `print "a" 1` → "a1").
     // println(args=[a, b]) joins with single spaces and appends a newline.
-    tera.register_function(
+    tera.register_json_function(
         "print",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let fmt_args: Vec<Value> = args
                 .get("args")
                 .and_then(|v| v.as_array())
@@ -1705,9 +1715,9 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
             Ok(Value::String(out))
         },
     );
-    tera.register_function(
+    tera.register_json_function(
         "println",
-        |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let fmt_args: Vec<Value> = args
                 .get("args")
                 .and_then(|v| v.as_array())

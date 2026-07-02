@@ -10,9 +10,14 @@ use anyhow::{Context as _, Result};
 /// label reaches the user as `.with_context(...)?`.
 pub fn parse_static(name: &str, raw: &str) -> Result<tera::Tera> {
     let mut tera = tera::Tera::default();
-    tera.autoescape_on(vec![]);
+    // Empty suffix list = escape nothing; the element type must be named for
+    // 2.0's generic `IntoIterator` signature to infer.
+    tera.autoescape_on(Vec::<&str>::new());
     super::base_tera::register_ruby_escape(&mut tera);
-    tera.add_raw_template(name, raw)
+    // Same raw-string-literal restoration the dynamic render path applies:
+    // the embedded templates were authored against 1.x's raw literals.
+    let raw = super::engine_adapter::double_string_literal_backslashes(raw);
+    tera.add_raw_template(name, raw.as_ref())
         .with_context(|| format!("parse static template '{}'", name))?;
     Ok(tera)
 }

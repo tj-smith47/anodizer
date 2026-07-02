@@ -30,6 +30,62 @@ Templates use `{{ "{{ }}" }}` for variable interpolation and `{{ "{% %}" }}` for
 name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
 ```
 
+## Undefined variables
+
+Anodizer runs Tera in strict mode: referencing an undefined variable is a
+render error by default, so a typo in a name template fails the build
+instead of silently baking a blank into a release artifact.
+
+- **Top-level access errors**, naming the missing variable:
+
+  ```yaml
+  name_template: "{{ Typo }}"
+  ```
+
+  ```text
+  error: Variable `Typo` is not defined.
+  ```
+
+  The error also lists the variables actually available in that rendering
+  context — Tera appends `Available variables: ...` with the live context
+  keys. That list varies by stage (a build-stage render exposes `Os` /
+  `Arch`; a top-level render adds 20+ git-derived variables) and isn't
+  reproduced here since it isn't a fixed contract.
+
+- **An undefined operand inside `~` string-concat renders as empty**, not an
+  error — this is Tera's own coercion rule for the `~` operator, not
+  something anodizer configures:
+
+  ```yaml
+  name_template: "{{ Typo ~ '-rc1' }}"
+  # -> "-rc1"
+  ```
+
+- **`.Env.MISSING` (Go-style) renders empty by design** — env var
+  references always resolve, defaulting to `""` instead of erroring, since
+  most templates only reference an env var conditionally:
+
+  ```yaml
+  name_template: "{{ .Env.MISSING }}"
+  # -> ""
+  ```
+
+For an *intentional* default rather than an accidental empty string, reach
+for one of these idioms:
+
+```yaml
+# Top-level fallback
+name_template: "{{ Typo or \"default\" }}"
+
+# Optional chaining into a (possibly absent) nested field
+name_template: "{{ Some?.Missing or \"\" }}"
+```
+
+`or` short-circuits past an undefined left-hand side the same way `~`
+coerces one. `?.` suppresses the Undefined error at *every* link of a
+dotted path — including a wholly undefined root — not just a missing leaf
+field, so it composes with `or` for a safe default anywhere in a chain.
+
 ## GoReleaser compatibility
 
 Anodizer auto-translates Go `text/template` syntax to its Tera equivalent before rendering, so a template copied verbatim from a `.goreleaser.yaml` works without edits. The translation covers:

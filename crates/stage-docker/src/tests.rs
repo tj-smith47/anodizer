@@ -5295,12 +5295,12 @@ fn docker_v2_pre_hook_does_not_expose_digest() {
     let err = DockerStage::new()
         .run(&mut ctx)
         .expect_err("pre-hook referencing undefined `.Digest` must fail rendering");
-    // Pin the failure CAUSE — Tera reports the missing variable name and a
-    // "not found" suffix. A regression that silently coerced undefined vars
-    // to empty strings would Ok the render and break the contract.
+    // Pin the failure CAUSE — Tera reports the missing variable name and an
+    // "is not defined" suffix. A regression that silently coerced undefined
+    // vars to empty strings would Ok the render and break the contract.
     let msg = format!("{:#}", err);
     assert!(
-        msg.contains("Digest") && msg.contains("not found"),
+        msg.contains("Digest") && msg.contains("is not defined"),
         "error must pin `Digest` as the undefined variable, got: {msg}"
     );
 }

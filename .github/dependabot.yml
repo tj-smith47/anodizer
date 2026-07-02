@@ -30,15 +30,6 @@ updates:
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
       - dependency-name: "hmac"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
-      # tera 2.x is a from-scratch rewrite: undefined-variable access now errors
-      # (Go templates render undefined as empty — our GoReleaser-parity contract
-      # depends on the lenient behaviour), macros are removed, the Rust
-      # filter/function API is rewritten, and builtins are split into a
-      # `tera-contrib` crate. Adopting it requires a dedicated migration with
-      # full template-parity re-validation, not an unattended group bump. Hold
-      # on the 1.x line until that migration lands.
-      - dependency-name: "tera"
-        update-types: ["version-update:semver-major"]
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:

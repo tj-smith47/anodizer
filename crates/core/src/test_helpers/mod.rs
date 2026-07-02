@@ -1004,7 +1004,7 @@ mod tests {
         let ctx = TestContextBuilder::new().dirty(true).build();
         assert_eq!(
             ctx.template_vars().get_structured("IsGitDirty"),
-            Some(&tera::Value::Bool(true))
+            Some(&serde_json::Value::Bool(true))
         );
         assert_eq!(
             ctx.template_vars().get("GitTreeState"),
@@ -1024,7 +1024,7 @@ mod tests {
         assert!(ctx.is_snapshot());
         assert_eq!(
             ctx.template_vars().get_structured("IsSnapshot"),
-            Some(&tera::Value::Bool(true))
+            Some(&serde_json::Value::Bool(true))
         );
     }
 

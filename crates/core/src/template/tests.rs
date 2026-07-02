@@ -1,5 +1,5 @@
+use serde_json::Value;
 use std::collections::HashMap;
-use tera::Value;
 
 use super::base_tera::translate_go_time_format;
 use super::render::{extract_artifact_ext, render, render_with_env};
@@ -278,14 +278,62 @@ fn test_trailing_pipe_with_no_filter_name_error() {
 }
 
 #[test]
-fn test_nested_missing_var_in_expression_error() {
+fn test_undefined_var_in_concat_coerces_empty() {
     let vars = test_vars();
-    // Using an undefined variable in an expression (not just a conditional
-    // truthiness check) should error when the template tries to render it.
-    let result = render("{{ Undefined ~ ' suffix' }}", &vars);
+    // tera 2.0's interpreter coerces an `Undefined` operand of `~`
+    // string-concat to "" (engine semantics, not something we configure) —
+    // it does not error the way top-level `{{ Undefined }}` access does
+    // (see test_undefined_variable_error_mentions_variable).
+    let result = render("{{ Undefined ~ ' suffix' }}", &vars).unwrap();
+    assert_eq!(result, " suffix");
+}
+
+#[test]
+fn test_optional_chaining_suppresses_undefined_at_every_link() {
+    // `?.` (tera 2.0 native optional chaining) suppresses the Undefined
+    // error at EVERY link of the chain, unlike a bare `.` chain (see
+    // test_undefined_dotted_root_in_concat_errors, which still errors when
+    // the root itself is absent): both a present-object-missing-field
+    // access and a wholly-absent-root access fall through to `or`.
+    let mut vars = test_vars();
+    vars.set_structured("Some", serde_json::json!({ "present": "x" }));
+    assert_eq!(
+        render("{{ Some?.Missing or \"fallback\" }}", &vars).unwrap(),
+        "fallback"
+    );
+    assert_eq!(
+        render("{{ AbsentRoot?.b or \"fallback\" }}", &vars).unwrap(),
+        "fallback"
+    );
+}
+
+#[test]
+fn test_undefined_dotted_field_in_concat_coerces_empty() {
+    // A dotted-path lookup into an object that exists, on a field that
+    // doesn't, resolves the same as a bare `Undefined`: the `~` operand
+    // coerces to "".
+    let mut vars = test_vars();
+    vars.set_structured("Some", serde_json::json!({ "present": "x" }));
+    let result = render("{{ Some.Missing ~ '-x' }}", &vars).unwrap();
+    assert_eq!(result, "-x");
+}
+
+#[test]
+fn test_undefined_dotted_root_in_concat_errors() {
+    // A dotted-path lookup whose ROOT segment isn't in context errors the
+    // same as top-level `{{ Undefined }}` access — tera's coercion-to-""
+    // only applies once the root resolves; it does not suppress a missing-
+    // variable error for an unresolvable root.
+    let vars = test_vars();
+    let result = render("{{ AbsentRoot.Missing ~ '-x' }}", &vars);
     assert!(
         result.is_err(),
-        "undefined variable in an expression should produce an error"
+        "concat with an undefined root variable should still error"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("AbsentRoot"),
+        "error should name the undefined root variable, got: {err}"
     );
 }
 
@@ -4190,4 +4238,37 @@ fn test_standalone_tera_comment_still_stripped() {
     let vars = test_vars();
     let result = render("pre {# c #} post", &vars).unwrap();
     assert_eq!(result, "pre  post");
+}
+
+/// Pins the live behavior backing every example in
+/// `docs/site/content/docs/general/templates.md`'s "Undefined variables"
+/// section. The literal `Available variables: ...` list was dropped from
+/// that doc (round-3 tera-2.0 review finding) because it's context-shaped —
+/// this test proves that shape actually varies rather than asserting a
+/// specific list, so the doc's "varies by stage" claim stays honest.
+#[test]
+fn docs_undefined_variable_examples_stay_live_accurate() {
+    use super::render;
+    use super::vars::TemplateVars;
+
+    let vars = TemplateVars::new();
+
+    let err = render("{{ Typo }}", &vars).unwrap_err();
+    let chain = format!("{err:#}");
+    assert!(
+        chain.contains("Variable `Typo` is not defined"),
+        "got: {chain}"
+    );
+    assert!(
+        chain.contains("Available variables:"),
+        "tera must still append the live context keys: {chain}"
+    );
+
+    assert_eq!(render("{{ Typo ~ '-rc1' }}", &vars).unwrap(), "-rc1");
+    assert_eq!(render("{{ .Env.MISSING }}", &vars).unwrap(), "");
+    assert_eq!(
+        render("{{ Typo or \"default\" }}", &vars).unwrap(),
+        "default"
+    );
+    assert_eq!(render("{{ Some?.Missing or \"\" }}", &vars).unwrap(), "");
 }

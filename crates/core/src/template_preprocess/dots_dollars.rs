@@ -103,8 +103,19 @@ pub(super) fn preprocess_strip_dots(template: &str) -> String {
                 {
                     // Check if the preceding character is a word char — if so,
                     // this is chained access (e.g., `Env.VAR`) and we keep the dot.
-                    let prev_is_word =
-                        i > 0 && (bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'_');
+                    // A preceding `?` is tera 2.0's optional-chaining operator
+                    // (`?.`, lexed as one token): stripping this dot would
+                    // silently corrupt `Some?.Missing` into `Some?Missing`,
+                    // a parse error. A preceding `]` closes an index
+                    // expression (`arr[0]` or tera 2.0's optional-index
+                    // `arr?[0]`, its `?.` sibling token): the dot after it is
+                    // chained field access too (`arr[0].Field`), never a
+                    // Go-style leading dot to strip.
+                    let prev_is_word = i > 0
+                        && (bytes[i - 1].is_ascii_alphanumeric()
+                            || bytes[i - 1] == b'_'
+                            || bytes[i - 1] == b'?'
+                            || bytes[i - 1] == b']');
                     if prev_is_word {
                         result.push('.');
                     }

@@ -227,7 +227,15 @@ object_store = { version = "0.14", features = ["aws", "gcp", "azure"] }
 object = { version = "0.39", default-features = false, features = ["read", "elf", "std"] }
 serial_test = "3"
 schemars = "1.2"
-tera = "1.20.1" # latest 1.x; held off 2.x (from-scratch rewrite breaks GoReleaser template parity — see dependabot.yml ignore)
+# 2.0 adopted. GoReleaser template parity is preserved by keeping every custom
+# filter/function body on serde_json::Value behind the JSON boundary adapter
+# (crates/core/src/template/engine_adapter.rs) plus the Go-syntax preprocessor.
+# `preserve_order` keeps map iteration deterministic (insertion order — the
+# adapter's `insert_sorted` inserts keys pre-sorted into a `BTreeMap` before
+# handing them to tera, independent of how serde_json's own map is
+# configured); `glob_fs` restores the 1.x glob-loading constructor xtask's
+# doc generation uses.
+tera = { version = "2", features = ["preserve_order", "glob_fs"] }
 sha3 = "0.10" # digest-0.10 line; see the sha1/sha2 pin note above
 blake3 = "1"
 crc32fast = "1"

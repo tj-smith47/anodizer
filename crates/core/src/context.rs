@@ -1247,7 +1247,7 @@ impl Context {
             0
         };
         self.template_vars
-            .set_structured("NightlyBuild", tera::Value::from(nightly_build));
+            .set_structured("NightlyBuild", serde_json::Value::from(nightly_build));
 
         // Mode flags are injected as real bools (not "true"/"false" strings)
         // so `not IsSnapshot` / `IsSnapshot == false` / bare `{% if … %}`
@@ -1452,10 +1452,8 @@ impl Context {
                 })
             })
             .collect();
-        // serde_json::Value and tera::Value are the same type under the hood,
-        // so no conversion is needed — pass values directly.
-        let tera_value = tera::Value::Array(artifacts_value);
-        self.template_vars.set_structured("Artifacts", tera_value);
+        self.template_vars
+            .set_structured("Artifacts", serde_json::Value::Array(artifacts_value));
     }
 
     /// Populate the `Metadata` structured template variable from config.metadata.
@@ -1562,7 +1560,6 @@ impl Context {
             "FullDescription": full_description,
             "CommitAuthor": commit_author_map,
         });
-        // serde_json::Value and tera::Value are the same type, so pass directly.
         self.template_vars.set_structured("Metadata", meta_map);
         Ok(())
     }
@@ -1886,7 +1883,7 @@ mod tests {
         ctx.populate_git_vars();
         assert_eq!(
             ctx.template_vars().get_structured("NightlyBuild"),
-            Some(&tera::Value::from(0u64))
+            Some(&serde_json::Value::from(0u64))
         );
     }
 
@@ -2002,7 +1999,7 @@ mod tests {
         let v = ctx.template_vars();
         assert_eq!(
             v.get_structured("IsGitDirty"),
-            Some(&tera::Value::Bool(false))
+            Some(&serde_json::Value::Bool(false))
         );
         assert_eq!(v.get("GitTreeState"), Some(&"clean".to_string()));
     }
@@ -2017,7 +2014,7 @@ mod tests {
         let v = ctx.template_vars();
         assert_eq!(
             v.get_structured("IsGitDirty"),
-            Some(&tera::Value::Bool(true))
+            Some(&serde_json::Value::Bool(true))
         );
         assert_eq!(v.get("GitTreeState"), Some(&"dirty".to_string()));
     }
@@ -2035,7 +2032,7 @@ mod tests {
 
         assert_eq!(
             ctx.template_vars().get_structured("IsSnapshot"),
-            Some(&tera::Value::Bool(true))
+            Some(&serde_json::Value::Bool(true))
         );
 
         // Non-snapshot
@@ -2050,7 +2047,7 @@ mod tests {
 
         assert_eq!(
             ctx2.template_vars().get_structured("IsSnapshot"),
-            Some(&tera::Value::Bool(false))
+            Some(&serde_json::Value::Bool(false))
         );
     }
 
@@ -2063,7 +2060,7 @@ mod tests {
 
         assert_eq!(
             ctx.template_vars().get_structured("IsDraft"),
-            Some(&tera::Value::Bool(false))
+            Some(&serde_json::Value::Bool(false))
         );
     }
 
@@ -2179,11 +2176,11 @@ mod tests {
 
         assert_eq!(
             ctx.template_vars().get_structured("IsSnapshot"),
-            Some(&tera::Value::Bool(true))
+            Some(&serde_json::Value::Bool(true))
         );
         assert_eq!(
             ctx.template_vars().get_structured("IsDraft"),
-            Some(&tera::Value::Bool(false))
+            Some(&serde_json::Value::Bool(false))
         );
         // Git-specific vars should NOT be set
         assert_eq!(ctx.template_vars().get("Tag"), None);
@@ -2202,7 +2199,7 @@ mod tests {
 
         assert_eq!(
             ctx.template_vars().get_structured("IsNightly"),
-            Some(&tera::Value::Bool(true)),
+            Some(&serde_json::Value::Bool(true)),
             "IsNightly should be 'true' when nightly mode is active"
         );
         assert!(ctx.is_nightly(), "is_nightly() should return true");
@@ -2217,7 +2214,7 @@ mod tests {
 
         assert_eq!(
             ctx.template_vars().get_structured("IsNightly"),
-            Some(&tera::Value::Bool(false)),
+            Some(&serde_json::Value::Bool(false)),
             "IsNightly should default to 'false'"
         );
         assert!(
@@ -2256,7 +2253,7 @@ mod tests {
 
         assert_eq!(
             ctx.template_vars().get_structured("IsNightly"),
-            Some(&tera::Value::Bool(true)),
+            Some(&serde_json::Value::Bool(true)),
             "IsNightly should be set even without git info"
         );
     }
@@ -2270,7 +2267,7 @@ mod tests {
 
         assert_eq!(
             ctx.template_vars().get_structured("IsGitClean"),
-            Some(&tera::Value::Bool(true))
+            Some(&serde_json::Value::Bool(true))
         );
     }
 
@@ -2283,7 +2280,7 @@ mod tests {
 
         assert_eq!(
             ctx.template_vars().get_structured("IsGitClean"),
-            Some(&tera::Value::Bool(false))
+            Some(&serde_json::Value::Bool(false))
         );
     }
 
@@ -2361,7 +2358,7 @@ mod tests {
 
         assert_eq!(
             ctx.template_vars().get_structured("IsSingleTarget"),
-            Some(&tera::Value::Bool(false))
+            Some(&serde_json::Value::Bool(false))
         );
     }
 
@@ -2378,7 +2375,7 @@ mod tests {
 
         assert_eq!(
             ctx.template_vars().get_structured("IsSingleTarget"),
-            Some(&tera::Value::Bool(true))
+            Some(&serde_json::Value::Bool(true))
         );
     }
 
@@ -2615,7 +2612,7 @@ mod tests {
 
         assert_eq!(
             ctx.template_vars().get_structured("IsRelease"),
-            Some(&tera::Value::Bool(true))
+            Some(&serde_json::Value::Bool(true))
         );
     }
 
@@ -2632,7 +2629,7 @@ mod tests {
 
         assert_eq!(
             ctx.template_vars().get_structured("IsRelease"),
-            Some(&tera::Value::Bool(false))
+            Some(&serde_json::Value::Bool(false))
         );
     }
 
@@ -2649,7 +2646,7 @@ mod tests {
 
         assert_eq!(
             ctx.template_vars().get_structured("IsRelease"),
-            Some(&tera::Value::Bool(false))
+            Some(&serde_json::Value::Bool(false))
         );
     }
 
@@ -2666,7 +2663,7 @@ mod tests {
 
         assert_eq!(
             ctx.template_vars().get_structured("IsMerging"),
-            Some(&tera::Value::Bool(true))
+            Some(&serde_json::Value::Bool(true))
         );
     }
 
@@ -2679,7 +2676,7 @@ mod tests {
 
         assert_eq!(
             ctx.template_vars().get_structured("IsMerging"),
-            Some(&tera::Value::Bool(false))
+            Some(&serde_json::Value::Bool(false))
         );
     }
 
@@ -3055,7 +3052,7 @@ mod tests {
 
         assert_eq!(
             ctx.template_vars().get_structured("IsRelease"),
-            Some(&tera::Value::Bool(true))
+            Some(&serde_json::Value::Bool(true))
         );
     }
 
@@ -3072,7 +3069,7 @@ mod tests {
 
         assert_eq!(
             ctx.template_vars().get_structured("IsMerging"),
-            Some(&tera::Value::Bool(true))
+            Some(&serde_json::Value::Bool(true))
         );
     }
 

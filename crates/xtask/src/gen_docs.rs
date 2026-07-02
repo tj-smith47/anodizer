@@ -50,13 +50,18 @@ pub fn run(check: bool) -> Result<(), String> {
     let docs_dir = project_root.join("docs/site/content/docs");
     let templates_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("templates");
 
-    let tera = Tera::new(
+    // tera 2.0 dropped the glob-loading constructor; loading is a separate
+    // step (feature `glob_fs`). No custom filters/functions are used by the
+    // xtask templates, so nothing needs registering before the load.
+    let mut tera = Tera::default();
+    tera.load_from_glob(
         templates_dir
             .join("*.tera")
             .to_str()
             .ok_or("invalid template path")?,
     )
     .map_err(|e| format!("failed to load templates: {e}"))?;
+    let tera = tera;
 
     let cli_content = generate_cli_reference(&tera)?;
     let config_content = generate_config_reference(&tera)?;

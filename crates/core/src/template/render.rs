@@ -1,6 +1,7 @@
 use anyhow::{Context as _, Result};
-use std::collections::HashMap;
-use tera::Value;
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap};
+use tera::TeraResult;
 
 use crate::env_source::{EnvSource, ProcessEnvSource};
 use crate::template_preprocess::{
@@ -8,7 +9,20 @@ use crate::template_preprocess::{
 };
 
 use super::base_tera::{BASE_TERA, translate_go_time_format};
+use super::engine_adapter::{JsonRegisterExt, double_string_literal_backslashes};
 use super::vars::{ENV_REF_RE, NUMERIC_FIELDS, TemplateVars};
+
+/// Insert a string map into the context in sorted key order.
+///
+/// tera 2.0 preserves insertion order (`preserve_order` feature), which for a
+/// `HashMap` would be a random per-process order. Sorting into a `BTreeMap`
+/// before insert guarantees `{% for k, v in Env %}` iterates keys sorted,
+/// deterministically, regardless of how `serde_json`'s own map type is
+/// configured elsewhere in the workspace.
+fn insert_sorted(ctx: &mut tera::Context, key: &'static str, map: &HashMap<String, String>) {
+    let sorted: BTreeMap<&str, &str> = map.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    ctx.insert(key, &sorted);
+}
 
 /// Build a `tera::Context` from `TemplateVars`, pre-populating missing env var
 /// keys referenced in the template with empty strings.
@@ -71,27 +85,27 @@ fn build_tera_context(vars: &TemplateVars) -> tera::Context {
         if NUMERIC_FIELDS.contains(&k.as_str())
             && let Ok(n) = v.parse::<i64>()
         {
-            ctx.insert(k.as_str(), &n);
+            ctx.insert(k.clone(), &n);
             continue;
         }
         match v.as_str() {
-            "true" => ctx.insert(k.as_str(), &true),
-            "false" => ctx.insert(k.as_str(), &false),
-            _ => ctx.insert(k.as_str(), v),
+            "true" => ctx.insert(k.clone(), &true),
+            "false" => ctx.insert(k.clone(), &false),
+            _ => ctx.insert(k.clone(), v),
         }
     }
-    ctx.insert("Env", &vars.env);
+    insert_sorted(&mut ctx, "Env", &vars.env);
 
     // Always insert Var (even when empty) so that referencing the `Var`
     // namespace does not produce a hard Tera error. Accessing a missing key
     // within the map still requires `| default(value="")`. This matches
     // an empty .Var map is provided by default.
-    ctx.insert("Var", &vars.custom_vars);
+    insert_sorted(&mut ctx, "Var", &vars.custom_vars);
 
     // Always insert Outputs (even when empty) so that referencing the
     // `Outputs` namespace does not produce a hard Tera error. Accessing a
     // missing key within the map still requires `| default(value="")`.
-    ctx.insert("Outputs", &vars.outputs);
+    insert_sorted(&mut ctx, "Outputs", &vars.outputs);
 
     // Build a nested `Runtime` map for `Runtime.Goos` / `Runtime.Goarch`.
     let mut runtime = HashMap::new();
@@ -102,12 +116,12 @@ fn build_tera_context(vars: &TemplateVars) -> tera::Context {
         runtime.insert("Goarch".to_string(), goarch.clone());
     }
     if !runtime.is_empty() {
-        ctx.insert("Runtime", &runtime);
+        insert_sorted(&mut ctx, "Runtime", &runtime);
     }
 
     // Insert structured values (arrays, objects) directly into the context.
     for (k, v) in &vars.structured {
-        ctx.insert(k.as_str(), v);
+        ctx.insert(k.clone(), v);
     }
 
     ctx
@@ -147,6 +161,10 @@ pub fn render_with_env(
     // such collision); the inverse restore runs on the rendered string below.
     let preprocessed_raw = preprocess(template);
     let preprocessed = protect_shell_param_length(&preprocessed_raw)?;
+    // Restore 1.x raw string-literal semantics (`pattern="(\w+)"`) before
+    // tera 2.0's escape-processing lexer sees the template. Runs after the
+    // `${#…}` shield so comment-open collisions are already out of the text.
+    let preprocessed = double_string_literal_backslashes(preprocessed.as_ref());
     let ctx = build_tera_context_for_template(vars, preprocessed.as_ref(), host_env);
 
     // Clone the base instance (cheap — filters carry over, no templates to clone)
@@ -171,13 +189,13 @@ pub fn render_with_env(
     let env_map = std::sync::Arc::new(vars.all_env().clone());
     let env_map_for_default = env_map.clone();
     let host_for_default = host_snapshot.clone();
-    tera.register_function(
+    tera.register_json_function(
         "envOrDefault",
-        move |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        move |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let name = args
                 .get("name")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("envOrDefault requires `name` argument"))?;
+                .ok_or_else(|| tera::Error::message("envOrDefault requires `name` argument"))?;
             let default = args.get("default").and_then(|v| v.as_str()).unwrap_or("");
             // Check template context Env map first, then fall back to the
             // injected host env.
@@ -192,13 +210,13 @@ pub fn render_with_env(
 
     let env_map_for_isset = env_map.clone();
     let host_for_isset = host_snapshot.clone();
-    tera.register_function(
+    tera.register_json_function(
         "isEnvSet",
-        move |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        move |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let name = args
                 .get("name")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("isEnvSet requires `name` argument"))?;
+                .ok_or_else(|| tera::Error::message("isEnvSet requires `name` argument"))?;
             // Check template context Env map first, then fall back to the
             // injected host env.
             let is_set = env_map_for_isset
@@ -220,9 +238,9 @@ pub fn render_with_env(
     // through `ProcessEnvSource` — fine for production, but tests injecting
     // a `MapEnvSource` need the overrides to see their fixture value.
     let host_for_time = host_snapshot.clone();
-    tera.register_function(
+    tera.register_json_function(
         "time",
-        move |args: &HashMap<String, Value>| -> tera::Result<Value> {
+        move |args: &HashMap<String, Value>| -> TeraResult<Value> {
             let fmt = args
                 .get("format")
                 .and_then(|v| v.as_str())
@@ -238,13 +256,13 @@ pub fn render_with_env(
     );
 
     let host_for_now_format = host_snapshot.clone();
-    tera.register_filter(
+    tera.register_json_filter(
         "now_format",
         move |_value: &Value, args: &HashMap<String, Value>| {
             let fmt = args
                 .get("format")
                 .and_then(|v| v.as_str())
-                .ok_or_else(|| tera::Error::msg("now_format requires a `format` argument"))?;
+                .ok_or_else(|| tera::Error::message("now_format requires a `format` argument"))?;
             let chrono_fmt = translate_go_time_format(fmt);
             let sde = host_for_now_format.get("SOURCE_DATE_EPOCH").cloned();
             let now = sde

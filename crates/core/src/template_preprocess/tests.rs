@@ -121,6 +121,19 @@ fn test_positional_no_spaces_compact() {
 }
 
 #[test]
+fn test_optional_chaining_dot_survives_go_leading_dot_strip() {
+    // `?.` is tera 2.0's native optional-chaining operator, lexed as one
+    // token. The Go-leading-dot-strip pass used to treat the `.` here the
+    // same as a Go `{{ .Field }}` leading dot (since `?` isn't a word
+    // char) and strip it, corrupting `Some?.Missing` into the
+    // parse-error `Some?Missing`. A `?` immediately before the dot must
+    // count as "chained access" like a preceding identifier does.
+    let input = "{{ Some?.Missing or \"fallback\" }}";
+    let result = preprocess(input);
+    assert_eq!(result, "{{ Some?.Missing or \"fallback\" }}");
+}
+
+#[test]
 fn test_unrelated_expression_unchanged() {
     // A simple variable reference should not be affected
     let input = "{{ Version }}";
@@ -921,4 +934,26 @@ fn test_preprocess_preserves_emoji_inside_block_string() {
         result.contains('🦀'),
         "emoji inside block string must survive, got: {result:?}"
     );
+}
+
+#[test]
+fn test_optional_index_dot_survives_go_leading_dot_strip() {
+    // `?[` is tera 2.0's optional-index operator, the sibling of `?.`
+    // (same lexer family: exactly two `?` tokens exist). A `.` immediately
+    // after the `]` that closes `Some?[0]` is chained field access
+    // (`Some?[0].Field`), not a Go-style leading dot — stripping it would
+    // corrupt the template into the parse error `Some?[0]Field`.
+    let input = "{{ Some?[0].Field or \"fallback\" }}";
+    let result = preprocess(input);
+    assert_eq!(result, "{{ Some?[0].Field or \"fallback\" }}");
+}
+
+#[test]
+fn test_plain_index_dot_survives_go_leading_dot_strip() {
+    // Pins existing (now-correct) behavior for plain, non-optional
+    // indexing: `Some[0].Field` is chained field access after an index,
+    // same reasoning as the `?[` case above but without the `?`.
+    let input = "{{ Some[0].Field }}";
+    let result = preprocess(input);
+    assert_eq!(result, "{{ Some[0].Field }}");
 }

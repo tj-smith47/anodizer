@@ -28,6 +28,7 @@
 // forbids `.unwrap()` in lib code, catching most drift automatically).
 
 mod base_tera;
+mod engine_adapter;
 mod guard;
 mod render;
 mod static_render;

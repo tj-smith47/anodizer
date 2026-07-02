@@ -1,7 +1,7 @@
 use regex::Regex;
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::LazyLock;
-use tera::Value;
 
 #[derive(Clone)]
 pub struct TemplateVars {
@@ -49,7 +49,7 @@ impl TemplateVars {
         self.vars.insert(key.to_string(), value.to_string());
     }
 
-    /// Set a boolean template variable as a real `tera::Value::Bool` so that
+    /// Set a boolean template variable as a real `Value::Bool` so that
     /// `{% if Var %}` / `not Var` / `and` / `or` evaluate it as a bool while
     /// `{{ Var }}` interpolation still renders `"true"` / `"false"`.
     pub fn set_bool(&mut self, key: &str, value: bool) {
@@ -143,7 +143,7 @@ impl TemplateVars {
 
     /// Get a structured (non-string) template variable by key.
     /// Returns `None` if the key does not exist in the structured map.
-    pub fn get_structured(&self, key: &str) -> Option<&tera::Value> {
+    pub fn get_structured(&self, key: &str) -> Option<&Value> {
         self.structured.get(key)
     }
 
@@ -211,7 +211,7 @@ pub fn clear_per_artifact_vars(tv: &mut TemplateVars) {
 pub(super) const NUMERIC_FIELDS: &[&str] =
     &["Major", "Minor", "Patch", "Timestamp", "CommitTimestamp"];
 
-/// Template variables anodizer injects as real `tera::Value::Bool` values.
+/// Template variables anodizer injects as real `Value::Bool` values.
 /// `{% if Var %}` / `not Var` evaluate them as bools; `{{ Var }}` renders
 /// `"true"` / `"false"`. Comparing one to a quoted string (`Var == "false"`)
 /// never matches — Tera does not coerce `Bool` ↔ `str` — so such compares
@@ -230,7 +230,7 @@ pub const BOOL_FIELDS: &[&str] = &[
 ];
 
 /// Typed (non-string) injected fields beyond the bools: `NightlyBuild` is a
-/// `tera::Value::Number`, so string compares against it never match either.
+/// `Value::Number`, so string compares against it never match either.
 const TYPED_NON_STRING_FIELDS: &[&str] = &["NightlyBuild"];
 
 /// Regex matching a quoted-string comparison against one of the typed
