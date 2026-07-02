@@ -51,25 +51,40 @@ pub fn dmg_tool() -> Option<DmgTool> {
 /// - `vol_name`: the volume label
 /// - `staging_dir`: path to the directory whose contents go into the image
 /// - `output_path`: path to the output `.dmg` file
+/// - `size_mb`: explicit image size in whole MiB for `hdiutil` (ignored by
+///   `genisoimage`/`mkisofs`, which grow their output dynamically). `None`
+///   leaves `hdiutil` to auto-size from `-srcfolder` — see
+///   [`hdiutil_image_size_mb`] for why an explicit size is passed in production.
 pub fn dmg_command(
     tool: DmgTool,
     vol_name: &str,
     staging_dir: &str,
     output_path: &str,
+    size_mb: Option<u64>,
 ) -> Vec<String> {
     match tool {
-        DmgTool::Hdiutil => vec![
-            "hdiutil".to_string(),
-            "create".to_string(),
-            "-volname".to_string(),
-            vol_name.to_string(),
-            "-srcfolder".to_string(),
-            staging_dir.to_string(),
-            "-ov".to_string(),
-            "-format".to_string(),
-            "UDZO".to_string(),
-            output_path.to_string(),
-        ],
+        DmgTool::Hdiutil => {
+            let mut args = vec![
+                "hdiutil".to_string(),
+                "create".to_string(),
+                "-volname".to_string(),
+                vol_name.to_string(),
+                "-srcfolder".to_string(),
+                staging_dir.to_string(),
+                "-ov".to_string(),
+                "-format".to_string(),
+                "UDZO".to_string(),
+            ];
+            // An explicit `-size` stops hdiutil's `-srcfolder` auto-estimate
+            // from undershooting APFS filesystem overhead and aborting the
+            // copy with a spurious `create failed - No space left on device`.
+            if let Some(mb) = size_mb {
+                args.push("-size".to_string());
+                args.push(format!("{mb}m"));
+            }
+            args.push(output_path.to_string());
+            args
+        }
         DmgTool::Genisoimage => vec![
             "genisoimage".to_string(),
             "-V".to_string(),
@@ -95,6 +110,25 @@ pub fn dmg_command(
             staging_dir.to_string(),
         ],
     }
+}
+
+/// Explicit `hdiutil` image size, in whole MiB, for a staging directory:
+/// measured staged content plus 50 % headroom (64 MiB floor), rounded up.
+///
+/// `hdiutil create -srcfolder` derives the internal read/write image size from
+/// the source folder, but the estimate omits enough APFS filesystem overhead
+/// that it intermittently undershoots and aborts mid-copy with the opaque
+/// `hdiutil: create failed - No space left on device` — even when the host has
+/// 100+ GiB free, because the exhausted space is *inside* the image, not on the
+/// volume. Sizing the image from measured content plus headroom removes the
+/// undershoot. The result is a pure function of the (byte-identical) staged
+/// content, so it is stable across determinism runs and the extra free space is
+/// discarded by the UDZO compression, leaving the shipped image unaffected.
+fn hdiutil_image_size_mb(staging_dir: &std::path::Path) -> u64 {
+    const MIB: u64 = 1024 * 1024;
+    let content = anodizer_core::disk::dir_size_bytes(staging_dir);
+    let headroom = (content / 2).max(64 * MIB);
+    content.saturating_add(headroom).div_ceil(MIB).max(1)
 }
 
 // ---------------------------------------------------------------------------
@@ -647,12 +681,19 @@ impl Stage for DmgStage {
                             }
                         }
 
-                        // Build and run the command
+                        // Build and run the command. hdiutil needs an explicit
+                        // image size (measured content + headroom) so its
+                        // -srcfolder auto-estimate can't undershoot and fail
+                        // with a spurious ENOSPC; genisoimage/mkisofs size
+                        // dynamically and take None.
+                        let size_mb =
+                            (tool == DmgTool::Hdiutil).then(|| hdiutil_image_size_mb(staging_dir));
                         let cmd_args = dmg_command(
                             tool,
                             &vol_name,
                             &staging_dir.to_string_lossy(),
                             &dmg_path.to_string_lossy(),
+                            size_mb,
                         );
 
                         log.verbose(&format!("running {}", cmd_args.join(" ")));
@@ -791,7 +832,13 @@ mod tests {
 
     #[test]
     fn test_dmg_command_hdiutil() {
-        let cmd = dmg_command(DmgTool::Hdiutil, "MyApp", "/tmp/staging", "/tmp/out.dmg");
+        let cmd = dmg_command(
+            DmgTool::Hdiutil,
+            "MyApp",
+            "/tmp/staging",
+            "/tmp/out.dmg",
+            None,
+        );
         assert_eq!(
             cmd,
             vec![
@@ -810,12 +857,57 @@ mod tests {
     }
 
     #[test]
+    fn test_dmg_command_hdiutil_with_size() {
+        // An explicit size emits `-size <N>m` immediately before the output
+        // path; this is the anti-undershoot argument the production caller
+        // always passes for hdiutil.
+        let cmd = dmg_command(
+            DmgTool::Hdiutil,
+            "MyApp",
+            "/tmp/staging",
+            "/tmp/out.dmg",
+            Some(256),
+        );
+        assert_eq!(
+            cmd,
+            vec![
+                "hdiutil",
+                "create",
+                "-volname",
+                "MyApp",
+                "-srcfolder",
+                "/tmp/staging",
+                "-ov",
+                "-format",
+                "UDZO",
+                "-size",
+                "256m",
+                "/tmp/out.dmg",
+            ]
+        );
+    }
+
+    #[test]
+    fn test_hdiutil_image_size_mb_floor_and_headroom() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Empty staging dir: 0 content -> 64 MiB floor -> 64.
+        assert_eq!(hdiutil_image_size_mb(tmp.path()), 64);
+
+        // ~100 MiB of content -> content + 50% headroom, rounded up in MiB.
+        let big = tmp.path().join("payload.bin");
+        std::fs::write(&big, vec![0u8; 100 * 1024 * 1024]).unwrap();
+        // 100 MiB + max(50 MiB, 64 MiB) = 164 MiB.
+        assert_eq!(hdiutil_image_size_mb(tmp.path()), 164);
+    }
+
+    #[test]
     fn test_dmg_command_genisoimage() {
         let cmd = dmg_command(
             DmgTool::Genisoimage,
             "MyApp",
             "/tmp/staging",
             "/tmp/out.dmg",
+            None,
         );
         assert_eq!(
             cmd,
@@ -836,7 +928,13 @@ mod tests {
 
     #[test]
     fn test_dmg_command_mkisofs() {
-        let cmd = dmg_command(DmgTool::Mkisofs, "MyApp", "/tmp/staging", "/tmp/out.dmg");
+        let cmd = dmg_command(
+            DmgTool::Mkisofs,
+            "MyApp",
+            "/tmp/staging",
+            "/tmp/out.dmg",
+            None,
+        );
         assert_eq!(
             cmd,
             vec![
@@ -2721,6 +2819,7 @@ crates:
                 "ReproProbe",
                 &staging.path().to_string_lossy(),
                 &dmg_path.to_string_lossy(),
+                Some(hdiutil_image_size_mb(staging.path())),
             );
             let status = Command::new(&argv[0])
                 .args(&argv[1..])
