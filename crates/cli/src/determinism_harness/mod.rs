@@ -378,16 +378,19 @@ fn matches_artifact_pattern(pattern: &str, artifact: &str) -> bool {
 }
 
 /// Stage a docker build context that mirrors the production `docker`
-/// stage's layout so a `docker buildx build` against it resolves the
-/// repo Dockerfile's `COPY ${TARGETOS}/${TARGETARCH}/${BIN}`.
+/// stage's layout so a `docker buildx build` against it resolves both the
+/// configured dockerfile's `COPY ${TARGETOS}/${TARGETARCH}/${BIN}` and any
+/// `COPY <extra_file> …`.
 ///
-/// Reference layout: `anodizer_stage_docker`'s `stage_artifacts_v2`
-/// (`<context>/<os>/<arch>/<name>`) + `copy_dockerfile`
-/// (`<context>/Dockerfile`). The real stage stages from a loaded
-/// `Context`'s artifacts; the harness has no `Context` (it ran the
-/// release as a subprocess), so it stages from the per-triple binaries
-/// it discovered on disk, mapping each triple → `(os, arch)` via the
-/// same [`anodizer_core::target::map_target`] helper the real stage uses.
+/// Reference: `anodizer_stage_docker::prepare_v2_config` — it stages
+/// per-artifact binaries at `<context>/<os>/<arch>/<name>`, copies the
+/// rendered dockerfile to `<context>/Dockerfile` ([`anodizer_stage_docker::copy_dockerfile`]),
+/// then stages `extra_files` ([`anodizer_stage_docker::stage_extra_files`]).
+/// The harness reuses the SAME two helpers so the two paths cannot drift; it
+/// only substitutes the binary source, staging from the per-triple binaries
+/// it discovered on disk (the harness ran the release as a subprocess and has
+/// no in-process `Context` artifact set), mapping each triple → `(os, arch)`
+/// via the same [`anodizer_core::target::map_target`] the real stage uses.
 ///
 /// Returns the number of binaries staged. Zero means the build produced
 /// no per-triple binaries — the caller forks on `explicitly_requested`
@@ -399,7 +402,7 @@ fn matches_artifact_pattern(pattern: &str, artifact: &str) -> bool {
 fn stage_docker_context(
     worktree_path: &Path,
     context_dir: &Path,
-    dockerfile: &Path,
+    docker_cfg: &ResolvedDockerConfig,
     log: &StageLogger,
 ) -> Result<usize> {
     use anodizer_core::target::map_target;
@@ -429,14 +432,32 @@ fn stage_docker_context(
         staged += 1;
     }
 
-    let dockerfile_dest = context_dir.join("Dockerfile");
-    std::fs::copy(dockerfile, &dockerfile_dest).with_context(|| {
-        format!(
-            "staging Dockerfile {} → {}",
-            dockerfile.display(),
-            dockerfile_dest.display()
-        )
-    })?;
+    // Copy the configured, template-rendered dockerfile (NOT a hardcoded
+    // repo-root `Dockerfile`). Passed absolute so the copy is cwd-independent.
+    let dockerfile_abs = worktree_path.join(&docker_cfg.dockerfile);
+    anodizer_stage_docker::copy_dockerfile(
+        &dockerfile_abs.to_string_lossy(),
+        context_dir,
+        false,
+        log,
+        "determinism docker",
+    )?;
+
+    // Stage the entry's extra_files preserving their relative structure,
+    // rooting relative sources at the per-run worktree (`base_dir`) so the copy
+    // reads the COMMITTED bytes — never the harness's own cwd (the live working
+    // tree), which would leak uncommitted bytes into a rebuild that must
+    // reflect the committed commit. No process-global cwd mutation.
+    if !docker_cfg.extra_files.is_empty() {
+        anodizer_stage_docker::stage_extra_files(
+            &docker_cfg.extra_files,
+            context_dir,
+            Some(worktree_path),
+            false,
+            log,
+            "determinism docker",
+        )?;
+    }
 
     Ok(staged)
 }
@@ -499,6 +520,31 @@ fn discover_per_triple_binaries(worktree_path: &Path) -> Result<Vec<(String, Pat
     }
     out.sort();
     Ok(out)
+}
+
+/// One project `dockers_v2` entry resolved for the harness docker path.
+///
+/// Template rendering happens once in the CLI dispatcher (which owns a
+/// [`anodizer_core::context::Context`]); the harness receives plain data and
+/// mirrors the production `docker` stage's staging — `copy_dockerfile` +
+/// `stage_extra_files` from [`anodizer_stage_docker`] — so the determinism
+/// probe builds the SAME image the release build does, never the repo-root
+/// `Dockerfile`.
+#[derive(Debug, Clone)]
+pub struct ResolvedDockerConfig {
+    /// Template-rendered dockerfile path, relative to the repo/worktree root
+    /// (the configured `dockers_v2[*].dockerfile`, e.g.
+    /// `Dockerfile.agent.release`). Joined against each per-run worktree so
+    /// the committed dockerfile is built, not the live working tree's.
+    pub dockerfile: String,
+    /// Configured `dockers_v2[*].extra_files`, relative to the repo/worktree
+    /// root. Staged into the build context preserving their relative
+    /// structure so a Dockerfile `COPY <extra> …` resolves.
+    pub extra_files: Vec<String>,
+    /// Template-rendered `--build-arg KEY=VALUE` pairs
+    /// (`dockers_v2[*].build_args`), forwarded to buildx exactly as the
+    /// production `build_docker_v2_command` does.
+    pub build_args: Vec<(String, String)>,
 }
 
 /// Harness configuration. Constructed by the CLI dispatcher
@@ -611,6 +657,32 @@ pub struct Harness {
     /// `None` / `Some("buildx")` / `Some("docker")` preserve the historical
     /// behaviour of always invoking `docker buildx build`.
     pub docker_backend_hint: Option<String>,
+    /// Resolved `dockers_v2` entries for the crate under test (empty when the
+    /// crate configures none). Drives [`Harness::run_docker_stage`]: each
+    /// entry's rendered dockerfile + `extra_files` + `build_args` reproduce
+    /// exactly what the production `docker` stage would build. An empty vec is
+    /// a clean docker-stage skip — the harness never falls back to a stray
+    /// repo-root `Dockerfile`. When a project declares MULTIPLE entries for
+    /// the crate, every configured image is byte-verified, not just one.
+    pub docker_configs: Vec<ResolvedDockerConfig>,
+    /// Whether the crate under test DECLARES a non-empty `dockers_v2` block in
+    /// config — independent of render outcome. Distinguishes the two empty-
+    /// [`Self::docker_configs`] cases so [`Harness::run_docker_stage`] never
+    /// SILENTLY passes a declared-but-unbuilt image: `false` → the crate
+    /// configures no docker image (clean, quiet skip); `true` with empty
+    /// `docker_configs` → the crate declared images but every entry was
+    /// LEGITIMATELY skipped in this context (truthy `skip:` / empty-rendered
+    /// conditional dockerfile) → visible warn-skip that MIRRORS production
+    /// (which builds nothing, no error). A resolution ERROR keeps this `false`:
+    /// under an explicit request it hard-fails upstream via
+    /// `resolve_docker_configs`'s `?` propagation and never reaches the harness;
+    /// under a host-default run the dispatcher warns accurately and forces this
+    /// `false` (reflecting the errored resolve as not-declared) so the
+    /// empty-state path here only ever means genuine all-skipped, never a
+    /// swallowed error. Warning (not bailing) on the legit-skip case avoids the
+    /// false FAILURE of reddening every determinism run of a `skip-on-snapshot`
+    /// config.
+    pub docker_declared: bool,
     /// When set alongside `preserve_dist`, the preserved dist tree is
     /// written to `<preserve_dist>/<crate_name>/` rather than directly
     /// into `<preserve_dist>/`. This prevents context.json collision when
@@ -1316,26 +1388,31 @@ impl Harness {
     /// Drive the `docker` stage when [`StageId::Docker`] is in the
     /// requested stage set.
     ///
-    /// Delegates to [`anodizer_core::docker_build::oci_build_fixture`]
-    /// (the allow-listed subprocess entry point), which runs
+    /// Iterates the crate-under-test's resolved [`ResolvedDockerConfig`]
+    /// entries ([`Self::docker_configs`]) — every configured `dockers_v2`
+    /// image, not just one. For each, it stages a dedicated context (see
+    /// [`stage_docker_context`]: per-triple binaries at
+    /// `<context>/<os>/<arch>/<bin>`, the config's rendered dockerfile copied
+    /// to `<context>/Dockerfile`, and the config's `extra_files`) then
+    /// delegates to [`anodizer_core::docker_build::oci_build_fixture`] (the
+    /// allow-listed subprocess entry point), which runs
     /// `docker buildx build --output=type=oci,rewrite-timestamp=true,dest=…`
-    /// against a staged build context (see [`stage_docker_context`]) whose
-    /// layout mirrors what the production `docker` stage produces:
-    /// `<context>/<os>/<arch>/<bin>` plus a `<context>/Dockerfile` copy.
-    /// The repo `Dockerfile` does
-    /// `COPY ${TARGETOS}/${TARGETARCH}/${BIN} …`, so building against the
-    /// bare worktree (which has no `<os>/<arch>/<bin>` tree) fails the
-    /// `COPY`; the harness must replicate the real stage's staging step.
-    /// The emitted OCI tarball is copied into `<worktree>/dist/docker/` so
-    /// the existing [`discover_artifacts`] walker picks it up under the
-    /// normal `dist/` surface.
+    /// with the config's `build_args`. Each emitted OCI tarball is copied to
+    /// `<worktree>/dist/docker/<idx>/image.oci.tar` (per-config subdir so
+    /// multiple images don't collide) where the existing [`discover_artifacts`]
+    /// walker picks it up under the normal `dist/` surface.
     ///
-    /// Skipped (Ok no-op) when `<worktree>/Dockerfile` does not exist —
-    /// the harness must stay harmless for repos whose docker config
-    /// points at a non-default path (and for the cargo-package /
-    /// cargo-only test fixtures that share the same harness binary).
-    /// This skip is unconditional: a missing Dockerfile yields nothing to
-    /// byte-compare, so it is not coverage loss regardless of intent.
+    /// The configured dockerfile is the SAME one the production `docker` stage
+    /// builds — never a hardcoded repo-root `Dockerfile`. A project with a thin
+    /// release dockerfile (`COPY ${TARGETOS}/${TARGETARCH}/${BIN}`) distinct
+    /// from a fat dev `Dockerfile` at the repo root gets its release image
+    /// byte-verified, not the dev one against an incomplete context.
+    ///
+    /// Skipped (Ok no-op) when [`Self::docker_configs`] is empty — the crate
+    /// configures no `dockers_v2`, so there is nothing to byte-compare. This
+    /// skip is unconditional (never coverage loss regardless of intent) and
+    /// keeps the stage harmless for cargo-package / cargo-only fixtures that
+    /// share the harness binary.
     ///
     /// When `docker buildx` is unreachable or the project opted into
     /// `use: podman`, the behaviour forks on `explicitly_requested`:
@@ -1359,8 +1436,33 @@ impl Harness {
         env: &HashMap<String, String>,
         explicitly_requested: bool,
     ) -> Result<()> {
-        let dockerfile = worktree_path.join("Dockerfile");
-        if !dockerfile.exists() {
+        let log = StageLogger::new("check-determinism", self.verbosity);
+        // Fork on the two empty-`docker_configs` cases. Resolution ERRORS are
+        // already hard failures upstream (`resolve_docker_configs` propagates
+        // every skip-eval / dockerfile / build_arg render error via `?`), so an
+        // empty set here is NEVER a swallowed error — only:
+        // - crate declares no `dockers_v2` → nothing to byte-verify → clean
+        //   skip (and never a stray repo-root `Dockerfile`); or
+        // - crate DECLARES `dockers_v2` but every entry was LEGITIMATELY
+        //   skipped in this context (truthy `skip:` — e.g. the common
+        //   `skip: "{{ .IsSnapshot }}"` under the harness's snapshot mode — or
+        //   an empty-rendered conditional dockerfile).
+        //
+        // The all-skipped case must MIRROR production, which cleanly skips
+        // (DockerStage::run leaves `build_jobs` empty → no build, no error;
+        // prepare_v2_config `return Ok(())`s a skipped / empty-render entry).
+        // Hard-failing it under `--require-tools` would be a false FAILURE —
+        // the mirror of the false pass — turning every determinism run of a
+        // `skip-on-snapshot` config red. So warn-and-skip even when explicitly
+        // requested; the warn keeps it from being silent.
+        if self.docker_configs.is_empty() {
+            if self.docker_declared {
+                log.warn(
+                    "skipped docker stage for this run — crate declares dockers_v2 but all \
+                     entries are skipped in this context (`skip:` / empty-rendered dockerfile); \
+                     docker byte-verification produced no image (matches a normal release)",
+                );
+            }
             return Ok(());
         }
         // The determinism harness's docker probe shells out to
@@ -1375,7 +1477,6 @@ impl Harness {
         // them like every other harness line; the docker-buildx child's
         // own output below is captured by `run_checked` and surfaced only
         // at `-v` (or on failure), so it honours the same verbosity flag.
-        let log = StageLogger::new("check-determinism", self.verbosity);
         if self.docker_backend_hint.as_deref() == Some("podman") {
             let msg = "docker stage requested but project config has `use: podman` \
                  (Linux-only); the determinism harness only probes BuildKit-based \
@@ -1408,24 +1509,70 @@ impl Harness {
                 return Ok(());
             }
         }
-        // The repo Dockerfile does `COPY ${TARGETOS}/${TARGETARCH}/${BIN}`,
-        // so the build context must hold each binary at `<os>/<arch>/<bin>`.
-        // Stage a dedicated context that mirrors the production `docker`
-        // stage's layout (`stage-docker`'s `stage_artifacts_v2`) before
-        // building against it; the bare worktree has no such tree.
-        let context_dir = worktree_path.join(".det-tmp").join("docker-context");
-        let staged = stage_docker_context(worktree_path, &context_dir, &dockerfile, &log)?;
+        // Build EVERY configured image so the gate covers each, not just one.
+        for (idx, docker_cfg) in self.docker_configs.iter().enumerate() {
+            self.run_one_docker_config(
+                worktree_path,
+                env,
+                &log,
+                idx,
+                docker_cfg,
+                explicitly_requested,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Stage + build one resolved `dockers_v2` entry for the current run,
+    /// emitting its OCI tarball (and BuildKit digest) under
+    /// `<worktree>/dist/docker/<idx>/`.
+    fn run_one_docker_config(
+        &self,
+        worktree_path: &Path,
+        env: &HashMap<String, String>,
+        log: &StageLogger,
+        idx: usize,
+        docker_cfg: &ResolvedDockerConfig,
+        explicitly_requested: bool,
+    ) -> Result<()> {
+        // A configured dockerfile that isn't in the committed worktree would
+        // also fail the production release (the release rebuilds the same
+        // commit). Fork on intent like the buildx / staged-binary gates: an
+        // explicit request hard-fails (silent skip = false coverage); a
+        // host-default run warn-skips so a dev box stays usable.
+        let dockerfile_abs = worktree_path.join(&docker_cfg.dockerfile);
+        if !dockerfile_abs.exists() {
+            if explicitly_requested {
+                anyhow::bail!(
+                    "dockers_v2[{idx}] dockerfile '{}' does not exist in the rebuilt \
+                     worktree; the determinism docker stage cannot byte-verify it. \
+                     Ensure the dockerfile is committed.",
+                    docker_cfg.dockerfile
+                );
+            }
+            log.warn(&format!(
+                "skipped dockers_v2[{idx}] for this run — dockerfile '{}' not found in the \
+                 rebuilt worktree (no artifacts emitted)",
+                docker_cfg.dockerfile
+            ));
+            return Ok(());
+        }
+        // Per-config context dir so multiple images don't clobber each other.
+        let context_dir = worktree_path
+            .join(".det-tmp")
+            .join(format!("docker-context-{idx}"));
+        let staged = stage_docker_context(worktree_path, &context_dir, docker_cfg, log)?;
         if staged == 0 {
             // No per-triple binaries discovered means the build pipeline
-            // produced nothing the Dockerfile's COPY could resolve. Honour
+            // produced nothing the dockerfile's COPY could resolve. Honour
             // the explicit-vs-auto fork rather than spawn a build that is
             // guaranteed to fail the COPY with a cryptic BuildKit error.
             if explicitly_requested {
                 anyhow::bail!(
                     "docker stage requested via --stages but the build produced no \
                      per-triple binaries to stage under <os>/<arch>/; the COPY in \
-                     `Dockerfile` cannot resolve. Check that the requested --targets \
-                     built successfully."
+                     dockers_v2[{idx}]'s dockerfile cannot resolve. Check that the \
+                     requested --targets built successfully."
                 );
             }
             log.warn(
@@ -1434,16 +1581,20 @@ impl Harness {
             );
             return Ok(());
         }
-        // Pin the image tag to a deterministic constant so the manifest's
-        // `org.opencontainers.image.ref.name` annotation does not itself
-        // drift between runs based on time-derived names.
+        // Pin the image tag to a deterministic per-config constant so the
+        // manifest's `org.opencontainers.image.ref.name` annotation does not
+        // itself drift between runs based on time-derived names.
         let output = anodizer_core::docker_build::oci_build_fixture(
             &context_dir,
-            "anodize/det:harness",
+            &format!("anodize/det:harness-{idx}"),
+            &docker_cfg.build_args,
             env,
-            &log,
+            log,
         )?;
-        let dest_dir = worktree_path.join("dist").join("docker");
+        let dest_dir = worktree_path
+            .join("dist")
+            .join("docker")
+            .join(idx.to_string());
         std::fs::create_dir_all(&dest_dir)
             .with_context(|| format!("creating dest dir {}", dest_dir.display()))?;
         // Rename to a stable filename so the artifact-discovery walker
@@ -2069,6 +2220,8 @@ mod tests {
             version_hint: String::new(),
             child_snapshot: true,
             docker_backend_hint: None,
+            docker_configs: Vec::new(),
+            docker_declared: false,
             crate_name: None,
             verbosity: Verbosity::Normal,
             config_tools: BTreeMap::new(),
@@ -2971,17 +3124,53 @@ mod tests {
         assert_eq!(report.drift_count, 2);
     }
 
-    /// A missing Dockerfile is an unconditional Ok no-op — there is
+    /// No configured `dockers_v2` is an unconditional Ok no-op — there is
     /// nothing to byte-compare, so it is never coverage loss, even when
     /// the operator explicitly requested the docker stage.
     #[test]
-    fn docker_stage_no_dockerfile_is_ok_even_when_explicit() {
+    fn docker_stage_no_config_is_ok_even_when_explicit() {
         let tmp = tempfile::TempDir::new().unwrap();
+        // A stray repo-root Dockerfile must NOT be built when no dockers_v2 is
+        // configured — the empty-config skip is the gate, not the file.
+        std::fs::write(tmp.path().join("Dockerfile"), "FROM scratch\n").unwrap();
         let h = empty_harness();
+        assert!(h.docker_configs.is_empty());
         let env = HashMap::new();
         assert!(
             h.run_docker_stage(tmp.path(), &env, true).is_ok(),
-            "missing Dockerfile must be a harmless no-op regardless of intent"
+            "no dockers_v2 config must be a harmless no-op regardless of intent"
+        );
+    }
+
+    /// Production parity: a crate that DECLARES `dockers_v2` but whose entries
+    /// are all LEGITIMATELY skipped in this context (truthy `skip:` — e.g.
+    /// `skip: "{{ .IsSnapshot }}"` under the harness's snapshot mode — or an
+    /// empty-rendered conditional dockerfile) must CLEANLY SKIP (warn, not
+    /// error) even under `--require-tools` / explicit `--stages=docker`. That
+    /// mirrors production (`DockerStage::run` builds nothing, no error);
+    /// hard-failing would be a false FAILURE that reddens every determinism run
+    /// of a skip-on-snapshot config. Resolution ERRORS, by contrast, hard-fail
+    /// upstream in `resolve_docker_configs` (see
+    /// `resolve_docker_configs_propagates_render_error`), so an empty set here
+    /// is never a swallowed error.
+    #[test]
+    fn docker_stage_declared_but_all_skipped_warns_not_errors_even_when_explicit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut h = empty_harness();
+        h.docker_declared = true; // crate declares dockers_v2 ...
+        h.docker_configs = Vec::new(); // ... but every entry was legitimately skipped
+        let env = HashMap::new();
+        // Explicit request (require-tools / --stages=docker) must NOT hard-fail
+        // the all-skipped case — production cleanly skips it.
+        assert!(
+            h.run_docker_stage(tmp.path(), &env, true).is_ok(),
+            "declared-but-all-skipped docker must warn-and-skip, not error, even under an \
+             explicit request (production parity)"
+        );
+        // The host-default (non-explicit) path behaves identically.
+        assert!(
+            h.run_docker_stage(tmp.path(), &env, false).is_ok(),
+            "declared-but-all-skipped docker must warn-and-skip on a host-default run too"
         );
     }
 
@@ -2999,6 +3188,11 @@ mod tests {
         std::fs::write(tmp.path().join("Dockerfile"), "FROM scratch\n").unwrap();
         let mut h = empty_harness();
         h.docker_backend_hint = Some("podman".into());
+        h.docker_configs = vec![ResolvedDockerConfig {
+            dockerfile: "Dockerfile".into(),
+            extra_files: Vec::new(),
+            build_args: Vec::new(),
+        }];
         let env = HashMap::new();
         let err = h
             .run_docker_stage(tmp.path(), &env, true)
@@ -3212,10 +3406,11 @@ mod tests {
     }
 
     /// The docker staging step must lay each discovered per-triple binary
-    /// out at `<os>/<arch>/<bin>` (matching the repo Dockerfile's
-    /// `COPY ${TARGETOS}/${TARGETARCH}/${BIN}`) and drop the Dockerfile at
-    /// the staging root, BEFORE any `docker buildx build` spawns. This
-    /// exercises the staging logic in isolation — no docker required.
+    /// out at `<os>/<arch>/<bin>` (matching a dockerfile's
+    /// `COPY ${TARGETOS}/${TARGETARCH}/${BIN}`) and copy the CONFIGURED
+    /// dockerfile to the staging root, BEFORE any `docker buildx build`
+    /// spawns. This exercises the staging logic in isolation — no docker
+    /// required.
     #[test]
     fn docker_context_staging_lays_out_os_arch_bin_and_dockerfile() {
         let tmp = tempfile::TempDir::new().unwrap();
@@ -3237,12 +3432,16 @@ mod tests {
         std::fs::create_dir_all(&host_release).unwrap();
         std::fs::write(host_release.join("anodizer"), b"host-byproduct").unwrap();
 
-        let dockerfile = worktree.join("Dockerfile");
-        std::fs::write(&dockerfile, "FROM scratch\nCOPY x x\n").unwrap();
+        std::fs::write(worktree.join("Dockerfile"), "FROM scratch\nCOPY x x\n").unwrap();
 
+        let cfg = ResolvedDockerConfig {
+            dockerfile: "Dockerfile".into(),
+            extra_files: Vec::new(),
+            build_args: Vec::new(),
+        };
         let context_dir = worktree.join(".det-tmp").join("docker-context");
         let log = StageLogger::new("test", Verbosity::Quiet);
-        let staged = stage_docker_context(worktree, &context_dir, &dockerfile, &log).unwrap();
+        let staged = stage_docker_context(worktree, &context_dir, &cfg, &log).unwrap();
 
         // Both per-triple binaries staged; the bare host byproduct excluded.
         assert_eq!(staged, 2, "only per-triple binaries should be staged");
@@ -3264,16 +3463,88 @@ mod tests {
         );
         assert!(
             context_dir.join("Dockerfile").is_file(),
-            "Dockerfile must be copied to the staging root"
+            "configured dockerfile must be copied to the staging root"
         );
 
         // Re-running wipes stale bytes: stale content must not survive.
         std::fs::write(context_dir.join("stale.txt"), b"old").unwrap();
-        let staged2 = stage_docker_context(worktree, &context_dir, &dockerfile, &log).unwrap();
+        let staged2 = stage_docker_context(worktree, &context_dir, &cfg, &log).unwrap();
         assert_eq!(staged2, 2);
         assert!(
             !context_dir.join("stale.txt").exists(),
             "re-run must wipe the prior staging dir so no bytes carry over"
+        );
+    }
+
+    /// A THIN configured dockerfile (distinct from any repo-root `Dockerfile`)
+    /// plus `extra_files` must all land in the context: the RENDERED dockerfile
+    /// at the staging root, each per-triple binary at `<os>/<arch>/<bin>`, and
+    /// every extra_file at its structure-preserving relative path. This is the
+    /// regression guard for the harness building the wrong (fat repo-root)
+    /// dockerfile against an incomplete context.
+    #[test]
+    fn docker_context_staging_thin_dockerfile_and_extra_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let worktree = tmp.path();
+
+        let release = worktree
+            .join(".det-tmp")
+            .join("target")
+            .join("x86_64-unknown-linux-gnu")
+            .join("release");
+        std::fs::create_dir_all(&release).unwrap();
+        std::fs::write(release.join("cfgd"), b"fake-binary").unwrap();
+
+        // A thin release dockerfile that is NOT named `Dockerfile`, alongside a
+        // fat repo-root `Dockerfile` that must never be selected.
+        std::fs::write(
+            worktree.join("Dockerfile"),
+            "FROM rust\nCOPY Cargo.lock .\n",
+        )
+        .unwrap();
+        std::fs::write(
+            worktree.join("Dockerfile.agent.release"),
+            "FROM debian\nARG TARGETOS=linux\nARG TARGETARCH\n\
+             COPY ${TARGETOS}/${TARGETARCH}/cfgd /usr/local/bin/cfgd\n\
+             COPY entrypoint.sh /entrypoint.sh\n",
+        )
+        .unwrap();
+        // An extra_file in a subdir — its relative structure must be preserved.
+        std::fs::write(worktree.join("entrypoint.sh"), b"#!/bin/sh\n").unwrap();
+
+        let cfg = ResolvedDockerConfig {
+            dockerfile: "Dockerfile.agent.release".into(),
+            extra_files: vec!["entrypoint.sh".into()],
+            build_args: vec![("VERSION".into(), "1.2.3".into())],
+        };
+        let context_dir = worktree.join(".det-tmp").join("docker-context-0");
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let staged = stage_docker_context(worktree, &context_dir, &cfg, &log).unwrap();
+
+        assert_eq!(staged, 1, "the single per-triple binary must be staged");
+        assert!(
+            context_dir
+                .join("linux")
+                .join("amd64")
+                .join("cfgd")
+                .is_file(),
+            "binary must land at <context>/linux/amd64/cfgd"
+        );
+        // The RENDERED (thin) dockerfile — not the fat repo-root one — is the
+        // copied `Dockerfile`.
+        let staged_dockerfile = std::fs::read_to_string(context_dir.join("Dockerfile")).unwrap();
+        assert!(
+            staged_dockerfile.contains("COPY ${TARGETOS}/${TARGETARCH}/cfgd"),
+            "the configured thin dockerfile must be staged, not the fat repo-root one: \
+             {staged_dockerfile}"
+        );
+        assert!(
+            !staged_dockerfile.contains("COPY Cargo.lock"),
+            "the fat repo-root Dockerfile must never be staged: {staged_dockerfile}"
+        );
+        assert!(
+            context_dir.join("entrypoint.sh").is_file(),
+            "extra_files must be staged into the context"
         );
     }
 
@@ -3287,6 +3558,11 @@ mod tests {
         std::fs::write(tmp.path().join("Dockerfile"), "FROM scratch\n").unwrap();
         let mut h = empty_harness();
         h.docker_backend_hint = Some("podman".into());
+        h.docker_configs = vec![ResolvedDockerConfig {
+            dockerfile: "Dockerfile".into(),
+            extra_files: Vec::new(),
+            build_args: Vec::new(),
+        }];
         let env = HashMap::new();
         assert!(
             h.run_docker_stage(tmp.path(), &env, false).is_ok(),

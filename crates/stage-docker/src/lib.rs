@@ -48,12 +48,13 @@ mod build;
 // stage_artifacts_v2 / copy_dockerfile / warn_project_markers / stage_extra_files
 // ---------------------------------------------------------------------------
 mod staging;
-pub use staging::PROJECT_MARKERS;
+pub use staging::{PROJECT_MARKERS, copy_dockerfile, stage_extra_files};
 
 // ---------------------------------------------------------------------------
 // DockerStage
 // ---------------------------------------------------------------------------
 mod run;
+pub use run::render_v2_kv_map;
 
 use std::sync::Arc;
 

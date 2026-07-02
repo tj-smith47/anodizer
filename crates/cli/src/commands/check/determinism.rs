@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::determinism_harness::{Harness, StageId, installer_stages};
+use crate::determinism_harness::{Harness, ResolvedDockerConfig, StageId, installer_stages};
 use anodizer_cli::CheckDeterminismArgs;
 use anodizer_core::{
     AllowList, AllowListEntry, DeterminismState,
@@ -225,6 +225,40 @@ pub fn run(args: CheckDeterminismArgs, verbose: bool, debug: bool, quiet: bool) 
     // soft: the docker stage falls through to its existing buildx path.
     let docker_backend_hint = repo_config.as_ref().and_then(detect_docker_backend_hint);
 
+    // Resolve the crate-under-test's `dockers_v2` entries (rendered dockerfile
+    // path + extra_files + build_args) so the harness docker path builds the
+    // SAME image(s) the production `docker` stage would — never a stray
+    // repo-root `Dockerfile`. Rendered here (the dispatcher owns a `Context`);
+    // the harness receives plain data. `docker_declared` records whether the
+    // crate configures ANY docker image, independent of render outcome, so the
+    // harness can distinguish an unconfigured crate (clean skip) from a
+    // declared-but-unresolved one (hard error under an explicit request).
+    //
+    // Only resolved when `docker` is in the stage set (the harness never runs
+    // the docker stage otherwise), which also avoids the git/env setup cost and
+    // side effects on unrelated runs. The resolve outcome + operator intent are
+    // forked by `classify_docker_stage_state` (which also reconciles
+    // `docker_declared` with an errored host-default resolve — see its doc).
+    let docker_declared_raw =
+        crate_declares_docker(repo_config.as_ref(), args.crate_name.as_deref());
+    let docker_explicitly_requested =
+        args.require_tools || explicit_stages.contains(&StageId::Docker);
+    let (docker_configs, docker_declared) = if stages.contains(&StageId::Docker) {
+        classify_docker_stage_state(
+            resolve_docker_configs(
+                repo_config.as_ref(),
+                args.crate_name.as_deref(),
+                child_snapshot,
+                &log,
+            ),
+            docker_declared_raw,
+            docker_explicitly_requested,
+            &log,
+        )?
+    } else {
+        (Vec::new(), docker_declared_raw)
+    };
+
     // Resolve the config-only tool requirements for the gate, so a
     // host-default producer whose backing binary is absent hard-fails under
     // `--require-tools` instead of failing mid-run (msi) or silently
@@ -267,6 +301,8 @@ pub fn run(args: CheckDeterminismArgs, verbose: bool, debug: bool, quiet: bool) 
         version_hint,
         child_snapshot,
         docker_backend_hint,
+        docker_configs,
+        docker_declared,
         crate_name: args.crate_name.clone(),
         verbosity,
         config_tools,
@@ -778,6 +814,188 @@ fn detect_docker_backend_hint(cfg: &anodizer_core::config::Config) -> Option<Str
     }
 }
 
+/// Iterate the crate universe (top-level `crates:` chained with every
+/// `workspaces[].crates[]`), optionally scoped to `crate_name`.
+///
+/// Mirrors `Config::populate_derived_metadata` and the msi/upx tool resolvers
+/// so a workspace-only project (cfgd) is walked the same as a single-crate one.
+/// `--crate` scopes to one; a whole-project run (`crate_name == None`) takes
+/// all. `defaults.dockers_v2` is materialized onto crates by `apply_defaults`
+/// before this runs, so a producer declared only under `defaults:` is seen too.
+fn crate_universe<'a>(
+    cfg: &'a anodizer_core::config::Config,
+    crate_name: Option<&'a str>,
+) -> impl Iterator<Item = &'a anodizer_core::config::CrateConfig> {
+    cfg.crates
+        .iter()
+        .chain(
+            cfg.workspaces
+                .iter()
+                .flatten()
+                .flat_map(|w| w.crates.iter()),
+        )
+        .filter(move |k| crate_name.is_none_or(|n| k.name == n))
+}
+
+/// `true` when the crate-under-test DECLARES at least one `dockers_v2` entry —
+/// independent of whether any entry later resolves to a buildable image.
+///
+/// Threaded into [`Harness::docker_declared`] so the harness distinguishes
+/// "crate configures no docker image" (quiet clean skip) from "crate declared
+/// images but every entry was legitimately skipped in this context" (visible
+/// warn-skip that mirrors production). A raw declaration check, deliberately
+/// NOT gated on render outcome.
+fn crate_declares_docker(
+    repo_config: Option<&anodizer_core::config::Config>,
+    crate_name: Option<&str>,
+) -> bool {
+    repo_config.is_some_and(|cfg| {
+        crate_universe(cfg, crate_name)
+            .any(|k| k.dockers_v2.as_ref().is_some_and(|v| !v.is_empty()))
+    })
+}
+
+/// Resolve the crate-under-test's `dockers_v2` entries into the plain
+/// [`ResolvedDockerConfig`] data the harness docker path consumes.
+///
+/// Mirrors the production `docker` stage's config resolution
+/// (`anodizer_stage_docker::prepare_v2_config`) and, critically, its ERROR
+/// discipline: every `skip:` evaluation, `dockerfile` render, and `build_args`
+/// render is propagated via `?` — never swallowed. Production propagates these
+/// (`render_template(&v2_cfg.dockerfile)?`, `is_docker_v2_skipped(...)?`)
+/// precisely so a broken template FAILS rather than silently shipping fewer
+/// images; the determinism gate must not be laxer, or a mis-rendered image
+/// would pass byte-verification it never underwent. A truthy `skip:` or an
+/// empty rendered dockerfile is a genuine conditional skip (matching
+/// production's `return Ok(())`) and drops the entry; `extra_files` pass through
+/// verbatim (production does not template them).
+///
+/// The `Context` is seeded the SAME way the child `anodize release --snapshot`
+/// builds its config-resolution surface for this crate — snapshot/nightly
+/// options, process + config `env` ([`helpers::setup_env`]), git + version vars
+/// ([`helpers::resolve_git_context`]), the snapshot version suffix
+/// ([`release::apply_snapshot_template_vars`]), and time/runtime/metadata vars —
+/// so a `dockerfile` / `build_args` template referencing `.Env.*`, `.Version`,
+/// `.Commit`, etc. resolves IDENTICALLY to the release build rather than
+/// silently rendering empty under an under-seeded context.
+fn resolve_docker_configs(
+    repo_config: Option<&anodizer_core::config::Config>,
+    crate_name: Option<&str>,
+    child_snapshot: bool,
+    log: &StageLogger,
+) -> Result<Vec<ResolvedDockerConfig>> {
+    let Some(cfg) = repo_config else {
+        return Ok(Vec::new());
+    };
+
+    // Build the config-resolution Context the child snapshot release would use
+    // for this crate, reusing the SAME public helpers the release setup does so
+    // the two surfaces cannot drift.
+    let opts = anodizer_core::context::ContextOptions {
+        snapshot: child_snapshot,
+        selected_crates: crate_name.map(|n| vec![n.to_string()]).unwrap_or_default(),
+        ..Default::default()
+    };
+    let mut ctx = anodizer_core::context::Context::new(cfg.clone(), opts);
+    ctx.populate_time_vars();
+    ctx.populate_runtime_vars();
+    ctx.populate_metadata_var()?;
+    crate::commands::helpers::setup_env(&mut ctx, cfg, log)?;
+    crate::commands::helpers::resolve_git_context(&mut ctx, cfg, log)?;
+    if child_snapshot {
+        crate::commands::release::apply_snapshot_template_vars(&mut ctx, cfg, log)?;
+    }
+
+    let mut out: Vec<ResolvedDockerConfig> = Vec::new();
+    for krate in crate_universe(cfg, crate_name) {
+        let Some(entries) = krate.dockers_v2.as_ref() else {
+            continue;
+        };
+        for (idx, entry) in entries.iter().enumerate() {
+            // A truthy `skip:` drops the entry — propagate a render/eval error
+            // rather than treating a broken `skip:` template as `false`.
+            if anodizer_stage_docker::is_docker_v2_skipped(&entry.skip, &ctx).with_context(
+                || format!("dockers_v2[{idx}]: evaluate skip for crate {}", krate.name),
+            )? {
+                continue;
+            }
+            // Propagate the dockerfile render error (never swallow) so a broken
+            // template fails loudly instead of silently dropping the image.
+            let dockerfile = ctx.render_template(&entry.dockerfile).with_context(|| {
+                format!(
+                    "dockers_v2[{idx}]: render dockerfile path '{}' for crate {}",
+                    entry.dockerfile, krate.name
+                )
+            })?;
+            // An empty rendered dockerfile is a genuine conditional skip
+            // (matches production's `rendered_dockerfile.trim().is_empty()`).
+            if dockerfile.trim().is_empty() {
+                continue;
+            }
+            // Propagate build_arg render errors (never default to empty args,
+            // which would build a DIFFERENT image than the release and still
+            // report byte-stability).
+            //
+            // Boundary: build_args referencing `.BaseImage` / `.BaseImageDigest`
+            // are NOT rendered here. Production seeds those into the Context
+            // post-inspect (a networked `get_base_image` docker inspect) before
+            // rendering build_args; the harness deliberately does not run that
+            // inspect — it is networked and itself non-deterministic, wrong for
+            // a determinism probe. Such args render empty and drop here. This is
+            // still a strict improvement over the prior zero-build-args harness,
+            // and run-to-run determinism holds because args are resolved once
+            // and reused across every rebuild.
+            let build_args = anodizer_stage_docker::render_v2_kv_map(
+                &mut ctx,
+                entry.build_args.as_ref(),
+                "build_arg",
+            )?;
+            out.push(ResolvedDockerConfig {
+                dockerfile,
+                extra_files: entry.extra_files.clone().unwrap_or_default(),
+                build_args,
+            });
+        }
+    }
+    Ok(out)
+}
+
+/// Fork the determinism docker-stage state on the [`resolve_docker_configs`]
+/// outcome and operator intent, returning the harness's `(docker_configs,
+/// docker_declared)` pair.
+///
+/// - `Ok(v)` → carry the resolved configs; `declared` is unchanged.
+/// - `Err` under an EXPLICIT request (`--require-tools` / explicit
+///   `--stages=docker`) → hard-fail now. Silently skipping a stage the caller
+///   asked to byte-verify is false coverage.
+/// - `Err` under a HOST-DEFAULT run → warn accurately and reflect the errored
+///   resolve as NOT declared (`false`). This keeps the downstream harness state
+///   honest: [`Harness::run_docker_stage`]'s `declared && empty` branch emits a
+///   "declares dockers_v2 but all entries were legitimately skipped" warn, which
+///   would be factually WRONG for an errored resolve (and a redundant second
+///   warn). Forcing `declared=false` routes the errored case to the quiet skip,
+///   so that legit-skip warn only ever fires for a genuine all-skipped config.
+fn classify_docker_stage_state(
+    resolved: Result<Vec<ResolvedDockerConfig>>,
+    declared: bool,
+    explicitly_requested: bool,
+    log: &StageLogger,
+) -> Result<(Vec<ResolvedDockerConfig>, bool)> {
+    match resolved {
+        Ok(v) => Ok((v, declared)),
+        Err(e) if explicitly_requested => Err(e).context(
+            "resolving dockers_v2 for the determinism docker stage (--require-tools / \
+             explicit --stages=docker)",
+        ),
+        Err(e) => {
+            log.warn(&format!(
+                "skipping docker stage — could not resolve dockers_v2 for this run: {e:#}"
+            ));
+            Ok((Vec::new(), false))
+        }
+    }
+}
+
 /// Resolve the WiX binaries the `msi` stage requires from the loaded config
 /// via [`anodizer_stage_msi::required_msi_tools`] — the SAME helper
 /// env-preflight consults, so the determinism gate's MSI tool requirement
@@ -1204,6 +1422,130 @@ mod tests {
     #[test]
     fn host_default_none_config_is_full_partition() {
         assert_eq!(host_default_for_config(None), default_stages_for_host());
+    }
+
+    /// The real false-coverage guard: a GENUINE render error in a declared
+    /// `dockers_v2` entry (malformed `dockerfile` template) must PROPAGATE from
+    /// `resolve_docker_configs` (the `?` path), never be swallowed into an empty
+    /// result. The dispatcher then hard-fails it under `--require-tools` /
+    /// explicit `--stages=docker`. Contrast with the harness's
+    /// `docker_stage_declared_but_all_skipped_warns_not_errors_even_when_explicit`,
+    /// which pins the LEGITIMATE-skip (empty, no error) case.
+    #[test]
+    fn resolve_docker_configs_propagates_render_error() {
+        use anodizer_core::config::{Config, CrateConfig, DockerV2Config};
+        let config = Config {
+            project_name: "full".to_string(),
+            crates: vec![CrateConfig {
+                name: "full".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                dockers_v2: Some(vec![DockerV2Config {
+                    // Unknown filter → hard render error regardless of strict mode.
+                    dockerfile: "{{ Version | this_filter_does_not_exist }}".to_string(),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let err = resolve_docker_configs(Some(&config), Some("full"), true, &log)
+            .expect_err("a malformed dockerfile template must propagate, not resolve to empty");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("dockerfile"),
+            "the propagated error must be the dockerfile render failure (not a swallowed empty \
+             result nor an unrelated setup error): {msg}"
+        );
+    }
+
+    /// Production parity at the resolver: a declared entry with a truthy `skip:`
+    /// resolves to an EMPTY set with NO error (mirrors production's
+    /// `prepare_v2_config` `return Ok(())`). Combined with the harness's
+    /// warn-skip on `declared && empty`, the all-skipped case never hard-fails.
+    #[test]
+    fn resolve_docker_configs_truthy_skip_resolves_empty_without_error() {
+        use anodizer_core::config::{Config, CrateConfig, DockerV2Config, StringOrBool};
+        let config = Config {
+            project_name: "full".to_string(),
+            crates: vec![CrateConfig {
+                name: "full".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                dockers_v2: Some(vec![DockerV2Config {
+                    dockerfile: "Dockerfile.release".to_string(),
+                    skip: Some(StringOrBool::Bool(true)),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let resolved = resolve_docker_configs(Some(&config), Some("full"), true, &log)
+            .expect("a truthy skip must resolve cleanly (Ok), mirroring production");
+        assert!(
+            resolved.is_empty(),
+            "a skipped entry must produce no ResolvedDockerConfig: {resolved:?}"
+        );
+    }
+
+    /// A resolution ERROR on a HOST-DEFAULT run must warn and reflect the crate
+    /// as NOT declared, so the harness routes to its quiet skip rather than the
+    /// (now factually wrong) "declares dockers_v2 but all entries were skipped"
+    /// warn. This is the LOW-1 invariant: an errored host-default resolve must
+    /// not surface a misleading legit-skip message downstream.
+    #[test]
+    fn classify_docker_stage_state_host_default_error_forces_not_declared() {
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let (configs, declared) = classify_docker_stage_state(
+            Err(anyhow::anyhow!("boom: could not resolve")),
+            true,  // crate DOES declare dockers_v2 ...
+            false, // ... but this is a host-default run (not explicit)
+            &log,
+        )
+        .expect("a host-default resolve error must warn-and-skip, not hard-fail");
+        assert!(configs.is_empty(), "an errored resolve carries no configs");
+        assert!(
+            !declared,
+            "an errored host-default resolve must be reflected as NOT declared so the harness \
+             quiet-skips instead of emitting the misleading legit-skip warn"
+        );
+    }
+
+    /// The same resolution ERROR under an EXPLICIT request
+    /// (`--require-tools` / explicit `--stages=docker`) must hard-fail — silently
+    /// skipping a stage the caller asked to byte-verify is false coverage.
+    #[test]
+    fn classify_docker_stage_state_explicit_error_hard_fails() {
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let res = classify_docker_stage_state(
+            Err(anyhow::anyhow!("boom: could not resolve")),
+            true,
+            true, // explicit request
+            &log,
+        );
+        assert!(
+            res.is_err(),
+            "an explicit docker request whose resolve errored must hard-fail, not skip"
+        );
+    }
+
+    /// A successful resolve carries its configs and leaves `declared` untouched
+    /// (the errored-host-default reconciliation applies ONLY to the error arm).
+    #[test]
+    fn classify_docker_stage_state_ok_preserves_declared_and_configs() {
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        let resolved = vec![ResolvedDockerConfig {
+            dockerfile: "FROM scratch\n".to_string(),
+            extra_files: Vec::new(),
+            build_args: Vec::new(),
+        }];
+        let (configs, declared) = classify_docker_stage_state(Ok(resolved), true, true, &log)
+            .expect("Ok must pass through");
+        assert_eq!(configs.len(), 1, "resolved configs must be carried through");
+        assert!(declared, "a successful resolve must not alter `declared`");
     }
 
     /// An EXPLICIT `--stages` is the operator's typed intent and ignores the

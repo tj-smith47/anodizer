@@ -557,7 +557,7 @@ fn prepare_v2_config(
 
     if let Some(ref extra_files) = v2_cfg.extra_files {
         warn_project_markers_in_extra_files(extra_files, log, "dockers_v2");
-        stage_extra_files(extra_files, &staging_dir, dry_run, log, "dockers_v2")?;
+        stage_extra_files(extra_files, &staging_dir, None, dry_run, log, "dockers_v2")?;
     }
 
     // Resolve the Dockerfile's final-stage base image so the two template
@@ -1043,7 +1043,7 @@ fn run_buildx_probes(stage: &super::DockerStage, log: &anodizer_core::log::Stage
 /// through the engine. Empty rendered keys or values are dropped. Output is
 /// sorted by rendered key for deterministic emission.
 /// `tplMapFlags`.
-pub(crate) fn render_v2_kv_map(
+pub fn render_v2_kv_map(
     ctx: &mut Context,
     map: Option<&HashMap<String, String>>,
     label: &str,

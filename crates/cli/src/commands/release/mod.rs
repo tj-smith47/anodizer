@@ -1433,7 +1433,7 @@ fn apply_nightly_template_vars(
 /// Default: `"{{ Version }}-SNAPSHOT-{{ ShortCommit }}"` when no snapshot
 /// config exists. `RawVersion` is intentionally preserved as the numeric
 /// semver base.
-fn apply_snapshot_template_vars(
+pub(crate) fn apply_snapshot_template_vars(
     ctx: &mut Context,
     config: &Config,
     log: &StageLogger,

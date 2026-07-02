@@ -109,7 +109,7 @@ pub(crate) fn stage_artifacts_v2(
 }
 
 /// Copy a Dockerfile into the staging directory.
-pub(crate) fn copy_dockerfile(
+pub fn copy_dockerfile(
     dockerfile: &str,
     staging_dir: &std::path::Path,
     dry_run: bool,
@@ -192,15 +192,29 @@ pub(crate) fn warn_project_markers_in_extra_files(
 ///
 /// Preserves relative directory structure for relative paths. For absolute
 /// paths, only the filename is used.
-pub(crate) fn stage_extra_files(
+///
+/// `base_dir` roots relative SOURCE paths: `None` resolves them against the
+/// process working directory (the production release path, whose cwd is the
+/// repo root); `Some(dir)` resolves them against `dir` (the determinism
+/// harness's per-run worktree) so the copy reads the COMMITTED bytes without
+/// mutating the process-global cwd. The DEST always preserves the configured
+/// relative structure, so both callers stage identical layouts.
+pub fn stage_extra_files(
     extra_files: &[String],
     staging_dir: &std::path::Path,
+    base_dir: Option<&std::path::Path>,
     dry_run: bool,
     log: &StageLogger,
     prefix: &str,
 ) -> Result<()> {
     for file_path in extra_files {
-        let src = PathBuf::from(file_path);
+        let configured = PathBuf::from(file_path);
+        // Resolve the SOURCE: a relative entry roots at `base_dir` when given,
+        // else the process cwd; an absolute entry is used verbatim.
+        let src = match base_dir {
+            Some(base) if configured.is_relative() => base.join(&configured),
+            _ => configured.clone(),
+        };
         if src.is_dir() {
             anyhow::bail!(
                 "{}: extra_files entry '{}' is a directory; only files are supported",
@@ -208,13 +222,13 @@ pub(crate) fn stage_extra_files(
                 file_path
             );
         }
-        let dest = if src.is_absolute() {
-            let file_name = src
+        let dest = if configured.is_absolute() {
+            let file_name = configured
                 .file_name()
                 .unwrap_or_else(|| std::ffi::OsStr::new(file_path));
             staging_dir.join(file_name)
         } else {
-            staging_dir.join(file_path)
+            staging_dir.join(&configured)
         };
 
         if dry_run {

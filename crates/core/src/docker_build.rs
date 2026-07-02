@@ -13,6 +13,7 @@
 //! ```text
 //! docker buildx build --provenance=false --sbom=false \
 //!                     --output=type=oci,rewrite-timestamp=true,dest=<oci_tar> \
+//!                     --build-arg <KEY>=<VALUE> ... \
 //!                     --tag <tag> \
 //!                     <context_dir>
 //! ```
@@ -91,6 +92,12 @@ pub struct OciBuildOutput {
 /// harness picks a deterministic constant tag so the annotation does not
 /// itself become a drift source.
 ///
+/// `build_args` are forwarded verbatim as `--build-arg KEY=VALUE` argv
+/// pairs (one token per pair, no shell tokenization), mirroring the
+/// production `docker` stage's `build_docker_v2_command` so the harness
+/// builds the image with the SAME arguments the release path would. The
+/// caller renders each pair's templates; this function passes them through.
+///
 /// `env` carries the harness's hermetic env block (`SOURCE_DATE_EPOCH`,
 /// `HOME`, `PATH`, etc.). The function `env_clear`s the child first so
 /// host env vars cannot perturb the build.
@@ -105,6 +112,7 @@ pub struct OciBuildOutput {
 pub fn oci_build_fixture(
     context_dir: &Path,
     image_tag: &str,
+    build_args: &[(String, String)],
     env: &HashMap<String, String>,
     log: &StageLogger,
 ) -> Result<OciBuildOutput> {
@@ -133,10 +141,14 @@ pub fn oci_build_fixture(
             "--output=type=oci,rewrite-timestamp=true,dest={}",
             oci_tar.to_string_lossy()
         ))
-        .arg(format!("--iidfile={}", iidfile.to_string_lossy()))
-        .arg("--tag")
-        .arg(image_tag)
-        .arg(context_dir);
+        .arg(format!("--iidfile={}", iidfile.to_string_lossy()));
+    // `--build-arg KEY=VALUE`, one argv pair each — mirrors the production
+    // `build_docker_v2_command` so a Dockerfile `ARG` resolves identically
+    // under the harness and the release build.
+    for (key, value) in build_args {
+        cmd.arg("--build-arg").arg(format!("{key}={value}"));
+    }
+    cmd.arg("--tag").arg(image_tag).arg(context_dir);
     cmd.current_dir(context_dir);
     cmd.env_clear();
     for (k, v) in env {
@@ -184,7 +196,7 @@ mod tests {
         let nonexistent = tmp.path().join("does-not-exist");
         let env: HashMap<String, String> = HashMap::new();
         let (log, _cap) = StageLogger::with_capture("test", crate::log::Verbosity::Normal);
-        let res = oci_build_fixture(&nonexistent, "anodize/det:test", &env, &log);
+        let res = oci_build_fixture(&nonexistent, "anodize/det:test", &[], &env, &log);
         assert!(
             res.is_err(),
             "buildx against a nonexistent context dir must error"
