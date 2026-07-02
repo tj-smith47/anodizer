@@ -670,11 +670,12 @@ struct AppImageJob {
 
 /// Execute a prepared AppImage job: assemble the AppDir, then spawn
 /// linuxdeploy with the constructed argv + env. Returns the registered
-/// `Artifact`.
+/// artifacts — always the `.AppImage`, plus its `.AppImage.zsync` sidecar when
+/// `UPDATE_INFORMATION` produced one.
 fn execute_appimage_job(
     job: &AppImageJob,
     verbosity: anodizer_core::log::Verbosity,
-) -> Result<Artifact> {
+) -> Result<Vec<Artifact>> {
     let thread_log = anodizer_core::log::StageLogger::new("appimage", verbosity);
 
     // The root icon path is returned for parity with the staged layout but is
@@ -804,7 +805,7 @@ fn execute_appimage_job(
         metadata.insert("amd64_variant".to_string(), v.clone());
     }
 
-    Ok(Artifact {
+    let mut artifacts = vec![Artifact {
         kind: ArtifactKind::AppImage,
         name: job.filename.clone(),
         path: job.output_path.clone(),
@@ -812,7 +813,52 @@ fn execute_appimage_job(
         crate_name: job.primary_crate_name.clone(),
         metadata,
         size: None,
-    })
+    }];
+
+    // Register the `.AppImage.zsync` sidecar so it is byte-verified by the
+    // determinism harness, preserved into the shard's dist, and uploaded to the
+    // release. Without this the AppImage ships with embedded update-info
+    // (`.upd_info`) pointing at a `*.AppImage.zsync` that never lands on the
+    // release — delta auto-update silently 404s. `pin_zsync_mtime` has already
+    // placed it at `<final>.AppImage.zsync` under a reproducible build (the
+    // release/harness path always sets SOURCE_DATE_EPOCH); it is absent only
+    // when no `UPDATE_INFORMATION` was configured, in which case the AppImage
+    // carries no update pointer and needs no sidecar.
+    let zsync_path = sidecar_zsync_path(&job.output_path);
+    if zsync_path.is_file() {
+        let mut zmeta = HashMap::new();
+        zmeta.insert("id".to_string(), job.id.clone());
+        zmeta.insert("format".to_string(), "appimage_zsync".to_string());
+        zmeta.insert("ext".to_string(), ".AppImage.zsync".to_string());
+        if let Some(v) = &job.amd64_variant {
+            zmeta.insert("amd64_variant".to_string(), v.clone());
+        }
+        artifacts.push(Artifact {
+            kind: ArtifactKind::UploadableFile,
+            name: zsync_path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string(),
+            path: zsync_path,
+            target: job.primary_target.clone(),
+            crate_name: job.primary_crate_name.clone(),
+            metadata: zmeta,
+            size: None,
+        });
+    }
+
+    Ok(artifacts)
+}
+
+/// The `.AppImage.zsync` sidecar path for a finalized `.AppImage` at
+/// `appimage_path` (the sibling file `<name>.zsync`).
+fn sidecar_zsync_path(appimage_path: &Path) -> PathBuf {
+    let name = appimage_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    appimage_path.with_file_name(format!("{name}.zsync"))
 }
 
 /// Find the `.AppImage` linuxdeploy emitted in the cwd (the AppDir's parent),
@@ -1013,7 +1059,7 @@ impl Stage for AppImageStage {
             |job: &AppImageJob| execute_appimage_job(job, verbosity),
         )?;
 
-        for artifact in built {
+        for artifact in built.into_iter().flatten() {
             ctx.artifacts.add(artifact);
         }
 

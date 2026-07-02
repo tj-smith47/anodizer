@@ -1199,6 +1199,18 @@ fn write_fake_zsync(path: &Path, appimage_name: &str) {
 }
 
 #[test]
+fn sidecar_zsync_path_appends_zsync_to_appimage_name() {
+    // The sidecar the stage registers for upload is the sibling `<name>.zsync`,
+    // matching the glob in the AppImage's embedded `update_information`
+    // (`*.AppImage.zsync`).
+    let app = Path::new("/dist/anodizer-0.13.1-amd64.AppImage");
+    assert_eq!(
+        sidecar_zsync_path(app),
+        Path::new("/dist/anodizer-0.13.1-amd64.AppImage.zsync")
+    );
+}
+
+#[test]
 fn pin_zsync_rewrites_mtime_to_source_date_epoch() {
     let tmp = TempDir::new().unwrap();
     let app = tmp.path().join("anodizer-0.13.1-amd64.AppImage");
