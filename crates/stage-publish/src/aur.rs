@@ -1469,26 +1469,6 @@ pub(crate) fn is_aur_per_crate_configured(ctx: &Context, crate_name: &str) -> bo
     crate::publisher_helpers::is_per_crate_block_configured(ctx, crate_name, block)
 }
 
-/// Message emitted at publisher entry. Names how many crates the publisher
-/// is iterating over. Factored into a helper so tests can pin the exact
-/// substring an operator scans the log for.
-pub(crate) fn run_start_message(selected_total: usize) -> String {
-    format!(
-        "starting aur publish — scanning {} selected crate(s) for an aur config block",
-        selected_total
-    )
-}
-
-/// Message emitted when a selected crate has no `publish.aur` block.
-/// Replaces what used to be a silent `continue` — operators need to see
-/// why a per-crate publish was a no-op rather than guess from a blank log.
-pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
-    format!(
-        "skipped aur for crate '{}' — no aur config block",
-        crate_name
-    )
-}
-
 /// Message emitted just before delegating to `publish_to_aur`. Anchors the
 /// AUR activity (PKGBUILD render, git clone, push) to a specific crate in
 /// the log so multi-crate workspaces are disambiguatable.
@@ -1586,7 +1566,10 @@ impl anodizer_core::Publisher for AurOurPublisher {
         let log = ctx.logger("publish");
         let selected =
             crate::publisher_helpers::effective_publish_crates(ctx, is_aur_per_crate_configured);
-        log.status(&run_start_message(selected.len()));
+        log.status(&crate::publisher_helpers::run_start_message(
+            "aur",
+            selected.len(),
+        ));
         let mut processed = 0usize;
         let mut any_pushed = false;
         for crate_name in &selected {
@@ -1595,7 +1578,7 @@ impl anodizer_core::Publisher for AurOurPublisher {
             if !is_aur_per_crate_configured(ctx, crate_name) {
                 log.skip_line(
                     ctx.options.show_skipped,
-                    &run_skip_unconfigured_message(crate_name),
+                    &crate::publisher_helpers::no_config_block_message("aur", crate_name),
                 );
                 continue;
             }
@@ -2007,20 +1990,6 @@ mod publisher_tests {
     // -----------------------------------------------------------------------
     // Log-message helpers — the operator-facing log strings the publisher
     // emits at each boundary.
-
-    #[test]
-    fn run_start_message_names_selected_total() {
-        let msg = run_start_message(3);
-        assert!(msg.starts_with("starting aur publish"), "{msg}");
-        assert!(msg.contains("3 selected"), "{msg}");
-    }
-
-    #[test]
-    fn run_skip_unconfigured_message_names_crate() {
-        let msg = run_skip_unconfigured_message("demo");
-        assert!(msg.starts_with("skipped aur for crate 'demo'"), "{msg}");
-        assert!(msg.contains("no aur config block"), "{msg}");
-    }
 
     #[test]
     fn run_per_crate_start_message_names_crate() {

@@ -29,6 +29,13 @@ pub const ROLLBACK_JSON: &str = "rollback.json";
 /// `dist/run-<id>/summary.json` — the per-run publish summary.
 pub const SUMMARY_JSON: &str = "summary.json";
 
+/// Directory-name prefix of the per-run `dist/run-<id>/` subdir. Shared by
+/// the writer (`run_dir` in the publish stage) and the run-summary scanner
+/// so a prefix rename cannot make the scanner silently return empty — which
+/// would strip `tag rollback`'s published-state guard and every run-summary
+/// display of all on-disk publish evidence.
+pub const RUN_DIR_PREFIX: &str = "run-";
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -45,5 +52,6 @@ mod tests {
         assert_eq!(REPORT_JSON, "report.json");
         assert_eq!(ROLLBACK_JSON, "rollback.json");
         assert_eq!(SUMMARY_JSON, "summary.json");
+        assert_eq!(RUN_DIR_PREFIX, "run-");
     }
 }

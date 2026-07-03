@@ -1195,11 +1195,19 @@ impl anodizer_core::Publisher for AurSourcePublisher {
             ctx,
             is_aur_source_per_crate_configured,
         );
+        log.status(&crate::publisher_helpers::run_start_message(
+            "aur_source",
+            selected.len(),
+        ));
         // Per-crate aur_source blocks.
         for crate_name in &selected {
             // Defensive guard for explicit `--crate=X` selection when X has
             // no aur_source block; implicit-all is already filtered above.
             if !is_aur_source_per_crate_configured(ctx, crate_name) {
+                log.status(&crate::publisher_helpers::no_config_block_message(
+                    "aur_source",
+                    crate_name,
+                ));
                 continue;
             }
             // Re-scope the version/name template vars to THIS crate's own tag so
@@ -1415,6 +1423,25 @@ mod publisher_tests {
             p.preflight(&ctx).expect("preflight ok"),
             PreflightCheck::Pass
         ));
+    }
+
+    /// The publisher emits the shared per-crate entry line — upstream-AUR
+    /// previously had NO run-entry scan line, so an operator grepping the
+    /// `starting … publish — scanning` family saw every per-crate publisher
+    /// except this one.
+    #[test]
+    fn aur_source_run_emits_shared_start_line() {
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut ctx = TestContextBuilder::new().build();
+        ctx.with_log_capture(capture.clone());
+        let p = AurSourcePublisher::new();
+        let _ = p.run(&mut ctx);
+        let msgs: Vec<String> = capture.all_messages().into_iter().map(|(_, m)| m).collect();
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("starting aur_source publish — scanning")),
+            "run() must emit the shared entry line; got: {msgs:?}"
+        );
     }
 
     #[test]

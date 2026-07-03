@@ -127,26 +127,6 @@ fn collect_run_targets(ctx: &Context) -> Vec<HomebrewTarget> {
     out
 }
 
-/// Message emitted at publisher entry. Names how many crates the publisher
-/// is iterating over. Factored into a helper so tests can pin the exact
-/// substring an operator scans the log for.
-pub(crate) fn run_start_message(selected_total: usize) -> String {
-    format!(
-        "starting homebrew publish — scanning {} selected crate(s) for a homebrew config block",
-        selected_total
-    )
-}
-
-/// Message emitted when a selected crate has no `publish.homebrew` block.
-/// Replaces what used to be a silent `continue` — operators need to see
-/// why a per-crate publish was a no-op rather than guess from a blank log.
-pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
-    format!(
-        "skipped homebrew for crate '{}' — no homebrew config block",
-        crate_name
-    )
-}
-
 /// Message emitted just before delegating to `publish_to_homebrew`.
 /// Anchors the homebrew activity (formula render, tap clone, push) to a
 /// specific crate in the log so multi-crate workspaces are
@@ -312,7 +292,10 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             ctx,
             is_homebrew_per_crate_configured,
         );
-        log.status(&run_start_message(selected.len()));
+        log.status(&crate::publisher_helpers::run_start_message(
+            "homebrew",
+            selected.len(),
+        ));
         // `processed` counts crates whose configured predicate passed and
         // whose `publish_to_homebrew` invocation was reached — NOT crates
         // that pushed. The dry-run / skip_upload paths inside
@@ -329,7 +312,7 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             if !is_homebrew_per_crate_configured(ctx, crate_name) {
                 log.skip_line(
                     ctx.options.show_skipped,
-                    &run_skip_unconfigured_message(crate_name),
+                    &crate::publisher_helpers::no_config_block_message("homebrew", crate_name),
                 );
                 continue;
             }
@@ -721,23 +704,6 @@ mod publisher_tests {
     // emits at each boundary.
 
     #[test]
-    fn run_start_message_names_selected_total() {
-        let msg = run_start_message(3);
-        assert!(msg.starts_with("starting homebrew publish"), "{msg}");
-        assert!(msg.contains("3 selected"), "{msg}");
-    }
-
-    #[test]
-    fn run_skip_unconfigured_message_names_crate() {
-        let msg = run_skip_unconfigured_message("demo");
-        assert!(
-            msg.starts_with("skipped homebrew for crate 'demo'"),
-            "{msg}"
-        );
-        assert!(msg.contains("no homebrew config block"), "{msg}");
-    }
-
-    #[test]
     fn run_per_crate_start_message_names_crate() {
         let msg = run_per_crate_start_message("demo");
         assert!(
@@ -774,7 +740,7 @@ mod publisher_tests {
         );
         log.skip_line(
             ctx.options.show_skipped,
-            &run_skip_unconfigured_message(crate_name),
+            &crate::publisher_helpers::no_config_block_message("homebrew", crate_name),
         );
         cap.all_messages()
     }
@@ -828,7 +794,7 @@ mod publisher_tests {
         );
         log.skip_line(
             ctx.options.show_skipped,
-            &run_skip_unconfigured_message(crate_name),
+            &crate::publisher_helpers::no_config_block_message("homebrew", crate_name),
         );
         let lines = cap.all_messages();
         assert_eq!(cap.debug_count(), 1, "{lines:?}");

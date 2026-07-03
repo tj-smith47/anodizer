@@ -482,7 +482,7 @@ pub(super) fn push_nupkg(
             attempt,
             redact_bearer_tokens(&summarize_response_body(&body)),
         );
-        if status.is_server_error() || status.as_u16() == 429 {
+        if anodizer_core::retry::status_is_retriable(status.as_u16()) {
             // 5xx / 429 retry naturally.
             Err(ControlFlow::Continue(base_err))
         } else {

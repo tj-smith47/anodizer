@@ -78,6 +78,28 @@ pub(crate) fn is_any_crate_block_configured<T>(
         .any(|c| c.publish.as_ref().and_then(&block).is_some())
 }
 
+/// Operator-facing publisher-entry line for a per-crate publisher: names
+/// the publisher and how many selected crates it is scanning. One format
+/// string for every per-crate publisher, so the `starting … publish —
+/// scanning` family stays a single grep surface (per-file copies kept the
+/// wording aligned only by copy discipline, and upstream-AUR shipped with
+/// no entry line at all).
+pub(crate) fn run_start_message(publisher: &str, selected_total: usize) -> String {
+    format!(
+        "starting {publisher} publish — scanning {selected_total} selected crate(s) \
+         for a {publisher} config block"
+    )
+}
+
+/// Operator-facing line for a selected crate that carries no
+/// `publish.<X>` block. Replaces what used to be a silent `continue` —
+/// operators need to see why a per-crate publish was a no-op rather than
+/// guess from a blank log. Shared wording for the same reason as
+/// [`run_start_message`].
+pub(crate) fn no_config_block_message(publisher: &str, crate_name: &str) -> String {
+    format!("skipped {publisher} for crate '{crate_name}' — no {publisher} config block")
+}
+
 /// Resolve the effective list of crates a per-crate publisher should
 /// iterate over.
 ///
@@ -682,6 +704,24 @@ mod tests {
             names,
             vec!["ws-only".to_string()],
             "workspace-only crate must appear under implicit-all"
+        );
+    }
+
+    /// One pin for the cross-publisher operator-line wording. Every
+    /// per-crate publisher (krew, nix, homebrew, scoop, aur, chocolatey,
+    /// winget, aur_source) formats its entry + no-config-block lines
+    /// through these helpers, so this single test replaces the per-file
+    /// copies that kept the `starting … publish — scanning` grep surface
+    /// aligned only by copy discipline.
+    #[test]
+    fn shared_operator_line_wording_is_stable() {
+        assert_eq!(
+            run_start_message("scoop", 3),
+            "starting scoop publish — scanning 3 selected crate(s) for a scoop config block"
+        );
+        assert_eq!(
+            no_config_block_message("krew", "demo"),
+            "skipped krew for crate 'demo' — no krew config block"
         );
     }
 }

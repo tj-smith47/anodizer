@@ -1870,28 +1870,6 @@ fn collect_winget_target(
     }))
 }
 
-/// Message emitted at publisher entry. Names how many crates the publisher
-/// is iterating over. Factored into a helper so tests can pin the exact
-/// substring an operator scans the log for ("starting winget publish
-/// for ...").
-pub(crate) fn run_start_message(selected_total: usize) -> String {
-    format!(
-        "starting winget publish — scanning {} selected crate(s) for a winget config block",
-        selected_total
-    )
-}
-
-/// Message emitted when a selected crate has no `publish.winget` block.
-/// Replaces what used to be a silent `continue` — operators need to see
-/// why a per-crate publish was a no-op rather than guess from a blank
-/// log.
-pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
-    format!(
-        "skipped winget for crate '{}' — no winget config block",
-        crate_name
-    )
-}
-
 /// Message emitted just before delegating to `publish_to_winget`.
 /// Anchors the winget activity (manifest generation, fork clone, push,
 /// PR submission) to a specific crate in the log so multi-crate
@@ -1983,14 +1961,17 @@ impl anodizer_core::Publisher for WingetPublisher {
         let mut targets: Vec<WingetTarget> = Vec::new();
         let selected =
             crate::publisher_helpers::effective_publish_crates(ctx, is_winget_per_crate_configured);
-        log.status(&run_start_message(selected.len()));
+        log.status(&crate::publisher_helpers::run_start_message(
+            "winget",
+            selected.len(),
+        ));
         for crate_name in &selected {
             // Defensive guard for explicit `--crate=X` selection when X has no
             // publisher block; implicit-all is already filtered by effective_publish_crates above.
             if !is_winget_per_crate_configured(ctx, crate_name) {
                 log.skip_line(
                     ctx.options.show_skipped,
-                    &run_skip_unconfigured_message(crate_name),
+                    &crate::publisher_helpers::no_config_block_message("winget", crate_name),
                 );
                 continue;
             }
@@ -2911,20 +2892,6 @@ mod publisher_tests {
     // dispatch table then reports as "succeeded" — indistinguishable
     // from a real PR push. Every helper below must produce a line the
     // operator can grep the publish log for.
-
-    #[test]
-    fn run_start_message_names_selected_total() {
-        let msg = run_start_message(3);
-        assert!(msg.starts_with("starting winget publish"), "{msg}");
-        assert!(msg.contains("3 selected"), "{msg}");
-    }
-
-    #[test]
-    fn run_skip_unconfigured_message_names_crate() {
-        let msg = run_skip_unconfigured_message("demo");
-        assert!(msg.starts_with("skipped winget for crate 'demo'"), "{msg}");
-        assert!(msg.contains("no winget config block"), "{msg}");
-    }
 
     #[test]
     fn run_per_crate_start_message_names_crate() {

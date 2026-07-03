@@ -460,7 +460,7 @@ fn push_one_artifact<E: anodizer_core::EnvSource + ?Sized>(
             redact_bearer_tokens(body.trim())
         );
         let err = anyhow::anyhow!(err_msg);
-        if status.is_server_error() || status.as_u16() == 429 {
+        if anodizer_core::retry::status_is_retriable(status.as_u16()) {
             Err(ControlFlow::Continue(err))
         } else {
             Err(ControlFlow::Break(err))

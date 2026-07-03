@@ -3697,26 +3697,6 @@ pub(crate) fn is_krew_per_crate_configured(ctx: &Context, crate_name: &str) -> b
     crate::publisher_helpers::is_per_crate_block_configured(ctx, crate_name, block)
 }
 
-/// Message emitted at publisher entry. Names how many crates the publisher
-/// is iterating over. Factored into a helper so tests can pin the exact
-/// substring an operator scans the log for.
-pub(crate) fn run_start_message(selected_total: usize) -> String {
-    format!(
-        "starting krew publish — scanning {} selected crate(s) for a krew config block",
-        selected_total
-    )
-}
-
-/// Message emitted when a selected crate has no `publish.krew` block.
-/// Replaces what used to be a silent `continue` — operators need to see
-/// why a per-crate publish was a no-op rather than guess from a blank log.
-pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
-    format!(
-        "skipped krew for crate '{}' — no krew config block",
-        crate_name
-    )
-}
-
 /// Message emitted just before delegating to `publish_to_krew`. Anchors
 /// the krew activity (plugin manifest render, fork clone, PR submission)
 /// to a specific crate in the log so multi-crate workspaces are
@@ -3819,7 +3799,10 @@ impl anodizer_core::Publisher for KrewPublisher {
         let log = ctx.logger("publish");
         let selected =
             crate::publisher_helpers::effective_publish_crates(ctx, is_krew_per_crate_configured);
-        log.status(&run_start_message(selected.len()));
+        log.status(&crate::publisher_helpers::run_start_message(
+            "krew",
+            selected.len(),
+        ));
         let mut processed = 0usize;
         let mut any_pushed = false;
         let mut targets: Vec<KrewPrTarget> = Vec::new();
@@ -3829,7 +3812,7 @@ impl anodizer_core::Publisher for KrewPublisher {
             if !is_krew_per_crate_configured(ctx, crate_name) {
                 log.skip_line(
                     ctx.options.show_skipped,
-                    &run_skip_unconfigured_message(crate_name),
+                    &crate::publisher_helpers::no_config_block_message("krew", crate_name),
                 );
                 continue;
             }
@@ -4341,20 +4324,6 @@ mod publisher_tests {
     // -----------------------------------------------------------------------
     // Log-message helpers — the operator-facing log strings the publisher
     // emits at each boundary.
-
-    #[test]
-    fn run_start_message_names_selected_total() {
-        let msg = run_start_message(3);
-        assert!(msg.starts_with("starting krew publish"), "{msg}");
-        assert!(msg.contains("3 selected"), "{msg}");
-    }
-
-    #[test]
-    fn run_skip_unconfigured_message_names_crate() {
-        let msg = run_skip_unconfigured_message("demo");
-        assert!(msg.starts_with("skipped krew for crate 'demo'"), "{msg}");
-        assert!(msg.contains("no krew config block"), "{msg}");
-    }
 
     #[test]
     fn run_per_crate_start_message_names_crate() {

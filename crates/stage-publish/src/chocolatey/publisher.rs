@@ -86,28 +86,6 @@ fn collect_chocolatey_target(ctx: &Context, crate_name: &str) -> Option<Chocolat
     })
 }
 
-/// Message emitted at publisher entry. Names how many crates the publisher
-/// is iterating over. Factored into a helper so tests can pin the exact
-/// substring an operator scans the log for ("starting chocolatey publish
-/// for ...").
-pub(crate) fn run_start_message(selected_total: usize) -> String {
-    format!(
-        "starting chocolatey publish — scanning {} selected crate(s) for a chocolatey config block",
-        selected_total
-    )
-}
-
-/// Message emitted when a selected crate has no `publish.chocolatey`
-/// block. Replaces what used to be a silent `continue` — operators need
-/// to see why a per-crate publish was a no-op rather than guess from a
-/// blank log.
-pub(crate) fn run_skip_unconfigured_message(crate_name: &str) -> String {
-    format!(
-        "skipped chocolatey for crate '{}' — no chocolatey config block",
-        crate_name
-    )
-}
-
 /// Message emitted just before delegating to `publish_to_chocolatey`.
 /// Anchors the choco activity (nuspec generation, nupkg creation, push)
 /// to a specific crate in the log so multi-crate workspaces are
@@ -203,7 +181,10 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
             ctx,
             is_chocolatey_per_crate_configured,
         );
-        log.status(&run_start_message(selected.len()));
+        log.status(&crate::publisher_helpers::run_start_message(
+            "chocolatey",
+            selected.len(),
+        ));
         // `processed` counts configured crates the loop ENTERED (post
         // implicit-all filter, post `is_chocolatey_per_crate_configured`
         // defensive guard). It is incremented BEFORE
@@ -221,7 +202,7 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
             if !is_chocolatey_per_crate_configured(ctx, crate_name) {
                 log.skip_line(
                     ctx.options.show_skipped,
-                    &run_skip_unconfigured_message(crate_name),
+                    &crate::publisher_helpers::no_config_block_message("chocolatey", crate_name),
                 );
                 continue;
             }
@@ -827,23 +808,6 @@ mod publisher_tests {
     // dispatch table then reports as "succeeded" — indistinguishable
     // from a real push. Every helper below must produce a line the
     // operator can grep the publish log for.
-
-    #[test]
-    fn run_start_message_names_selected_total() {
-        let msg = run_start_message(3);
-        assert!(msg.starts_with("starting chocolatey publish"), "{msg}");
-        assert!(msg.contains("3 selected"), "{msg}");
-    }
-
-    #[test]
-    fn run_skip_unconfigured_message_names_crate() {
-        let msg = run_skip_unconfigured_message("demo");
-        assert!(
-            msg.starts_with("skipped chocolatey for crate 'demo'"),
-            "{msg}"
-        );
-        assert!(msg.contains("no chocolatey config block"), "{msg}");
-    }
 
     #[test]
     fn run_per_crate_start_message_names_crate() {

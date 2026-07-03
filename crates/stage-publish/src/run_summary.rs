@@ -453,7 +453,11 @@ pub fn collect_run_summary_paths(dist: &Path) -> Vec<std::path::PathBuf> {
         };
         entries
             .flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with("run-"))
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(anodizer_core::dist::RUN_DIR_PREFIX)
+            })
             .map(|e| e.path().join(anodizer_core::dist::SUMMARY_JSON))
             .filter(|p| p.is_file())
             .collect()

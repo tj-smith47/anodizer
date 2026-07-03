@@ -145,6 +145,39 @@ fn effective_description(
         })
 }
 
+/// The config half of the username ladder: `entry.username`, non-empty.
+/// [`DockerhubPublisher::requirements`] derives its env projection from
+/// this same accessor, so the static requirement and the runtime ladder
+/// key on one field read.
+fn configured_username(entry: &anodizer_core::config::DockerHubConfig) -> Option<&str> {
+    entry.username.as_deref().filter(|u| !u.is_empty())
+}
+
+/// Resolve the effective Docker Hub username for an entry: config value
+/// (templated — rendered here, and a render failure is an `Err`, never a
+/// raw template string passed on as a username) → `DOCKER_USERNAME` env →
+/// `None`.
+///
+/// The one ladder shared by `run()` (bails on `None`) and `preflight()`
+/// (maps `Err` to a Warning naming the render failure, so a template typo
+/// is reported as a template problem instead of probing the login endpoint
+/// with the literal template string and misreporting a credential
+/// failure). A config value that renders to the empty string resolves to
+/// `None` without falling back to the env var — the config explicitly
+/// owns the field when present.
+fn resolve_dockerhub_username(
+    ctx: &Context,
+    entry: &anodizer_core::config::DockerHubConfig,
+) -> Result<Option<String>> {
+    if let Some(u) = configured_username(entry) {
+        let rendered = ctx
+            .render_template(u)
+            .with_context(|| format!("dockerhub: render username template {u:?}"))?;
+        return Ok(Some(rendered).filter(|r| !r.is_empty()));
+    }
+    Ok(ctx.env_var("DOCKER_USERNAME").filter(|u| !u.is_empty()))
+}
+
 // ---------------------------------------------------------------------------
 // publish_to_dockerhub
 // ---------------------------------------------------------------------------
@@ -215,17 +248,8 @@ fn publish_to_dockerhub(ctx: &Context, log: &StageLogger) -> Result<Vec<Dockerhu
         // Resolve username from config, falling back to DOCKER_USERNAME.
         // Bail early when neither is set so config errors surface even in
         // dry-run.
-        let username_env = ctx.env_var("DOCKER_USERNAME");
-        let username = match entry.username.as_deref() {
-            Some(u) if !u.is_empty() => ctx
-                .render_template(u)
-                .with_context(|| format!("dockerhub: render username template {u:?}"))?,
-            _ => match username_env.as_deref() {
-                Some(u) if !u.is_empty() => u.to_string(),
-                _ => bail!(
-                    "dockerhub: 'username' is required (set in config or via DOCKER_USERNAME env)"
-                ),
-            },
+        let Some(username) = resolve_dockerhub_username(ctx, entry)? else {
+            bail!("dockerhub: 'username' is required (set in config or via DOCKER_USERNAME env)")
         };
 
         // Render each image entry through the template engine. The docs
@@ -664,16 +688,18 @@ impl anodizer_core::Publisher for DockerhubPublisher {
             ) {
                 continue;
             }
-            // Same resolution `run()` uses: password from `secret_name`
-            // (default DOCKER_PASSWORD); username from config (templated)
-            // with DOCKER_USERNAME as env fallback.
+            // Static projection of [`resolve_dockerhub_username`]'s ladder,
+            // keyed on the same [`configured_username`] accessor: password
+            // from `secret_name` (default DOCKER_PASSWORD); username env
+            // refs when the config value is templated, the DOCKER_USERNAME
+            // fallback when the config value is absent.
             let secret = crate::util::resolve_secret_name(
                 ctx,
                 entry.secret_name.as_deref(),
                 "DOCKER_PASSWORD",
             );
             out.push(anodizer_core::EnvRequirement::EnvAllOf { vars: vec![secret] });
-            match entry.username.as_deref().filter(|u| !u.is_empty()) {
+            match configured_username(entry) {
                 Some(u) => {
                     let refs = anodizer_core::env_preflight::template_env_refs(u);
                     if !refs.is_empty() {
@@ -820,9 +846,22 @@ impl anodizer_core::Publisher for DockerhubPublisher {
             ) {
                 continue;
             }
-            let username = match entry.username.as_deref().filter(|u| !u.is_empty()) {
-                Some(u) => ctx.render_template(u).unwrap_or_else(|_| u.to_string()),
-                None => ctx.env_var("DOCKER_USERNAME").unwrap_or_default(),
+            // Same ladder `run()` uses; a render failure becomes a Warning
+            // naming the template problem instead of probing the login
+            // endpoint with the raw template string (which would misreport
+            // a template typo as a credential failure).
+            let username = match resolve_dockerhub_username(ctx, entry) {
+                Ok(u) => u,
+                Err(e) => {
+                    acc = merge(
+                        acc,
+                        PreflightCheck::Warning(format!(
+                            "dockerhub: username template did not render ({e:#}); \
+                             login probe skipped — fix the template",
+                        )),
+                    );
+                    continue;
+                }
             };
             let secret_name = crate::util::resolve_secret_name(
                 ctx,
@@ -832,7 +871,7 @@ impl anodizer_core::Publisher for DockerhubPublisher {
             // An unresolved credential is `requirements()`'s job to flag; this
             // probe only validates a credential that IS present.
             let (Some(username), Some(password)) = (
-                Some(username).filter(|u| !u.is_empty()),
+                username,
                 ctx.env_var(&secret_name).filter(|p| !p.is_empty()),
             ) else {
                 continue;

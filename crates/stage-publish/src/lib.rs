@@ -108,13 +108,17 @@ pub fn derive_run_id(ctx: &Context) -> String {
     "local".to_string()
 }
 
-/// Resolve `<dist>/run-<id>/` for a derived `run_id`. Single source of the
-/// `run-<id>` prefix shared by [`report_path_for`], [`run_summary::summary_path`],
-/// [`rollback_only`], and the writer in [`write_report_to_run_dir`]. Anchors on
+/// Resolve `<dist>/run-<id>/` for a derived `run_id` — formatted with
+/// [`anodizer_core::dist::RUN_DIR_PREFIX`], the same constant the
+/// run-summary scanner matches on. Shared by [`report_path_for`],
+/// [`run_summary::summary_path`], [`rollback_only`], and the writer in
+/// [`write_report_to_run_dir`]. Anchors on
 /// `ctx.config.dist`, which per-crate workspace mode re-anchors onto
 /// `dist/<crate>/`, so the helper composes correctly across every config mode.
 pub fn run_dir(ctx: &Context, run_id: &str) -> PathBuf {
-    ctx.config.dist.join(format!("run-{run_id}"))
+    ctx.config
+        .dist
+        .join(format!("{}{run_id}", anodizer_core::dist::RUN_DIR_PREFIX))
 }
 
 /// Resolve `<dist>/run-<id>/report.json` for a derived `run_id`. Pure

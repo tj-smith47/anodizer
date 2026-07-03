@@ -635,7 +635,7 @@ pub fn is_retriable(err: &(dyn StdError + 'static)) -> bool {
             return true;
         }
         if let Some(http) = e.downcast_ref::<HttpError>()
-            && (http.status >= 500 || http.status == 429)
+            && status_is_retriable(http.status)
         {
             return true;
         }
@@ -644,6 +644,23 @@ pub fn is_retriable(err: &(dyn StdError + 'static)) -> bool {
 
     // 2. Network-error substring / EOF chain match.
     is_network_error(err)
+}
+
+/// The canonical retriable-HTTP-status rule: server errors (`>= 500`) and
+/// `429 Too Many Requests`. Everything else — notably the remaining 4xx
+/// range — is fast-failed.
+///
+/// [`is_retriable`]'s [`HttpError`] arm delegates here, and raw-status
+/// classifiers that cannot route through [`HttpError`] (the gemfury and
+/// chocolatey multipart push loops, whose conflict-as-success / hard-fail
+/// cases need bespoke `ControlFlow` handling) call it directly, so the
+/// fast-fail/retry split for a bare status code has exactly one
+/// definition. Extending the rule (408/425, `Retry-After` awareness)
+/// updates every consumer at once — including the one-way-door publishers
+/// where a mis-fast-failed transient burns an unrecoverable publish
+/// attempt.
+pub fn status_is_retriable(status: u16) -> bool {
+    status >= 500 || status == 429
 }
 
 /// Convenience: `None` passes through as `false`. The
