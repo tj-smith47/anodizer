@@ -1944,7 +1944,9 @@ fn publish_to_homebrew_dry_run_returns_false() {
 }
 
 /// publish_to_homebrew: no archive artifacts => bail with actionable error
-/// mentioning the filter knobs (ids / amd64_variant / arm_variant).
+/// mentioning the filter knobs (ids / amd64_variant / arm_variant). With
+/// neither variant configured, both hints carry the `<default …>` marker so
+/// the operator can tell a fallback apart from an explicit setting.
 /// Prevents a broken formula with empty url/sha256 from being written.
 #[test]
 fn publish_to_homebrew_no_archives_errors() {
@@ -1961,7 +1963,32 @@ fn publish_to_homebrew_no_archives_errors() {
     let msg = format!("{err}");
     assert!(msg.contains("no archives matched filters"), "{msg}");
     assert!(msg.contains("mytool"));
-    assert!(msg.contains("amd64_variant"));
+    assert!(msg.contains("amd64_variant=<default v1>"), "{msg}");
+    assert!(msg.contains("arm_variant=<default 6>"), "{msg}");
+}
+
+/// publish_to_homebrew: when the variant selectors ARE configured, the
+/// no-archives error prints the configured values plainly — no `<default …>`
+/// marker that would misattribute an operator choice to a fallback.
+#[test]
+fn publish_to_homebrew_no_archives_errors_configured_variants() {
+    let cfg = HomebrewConfig {
+        repository: Some(RepositoryConfig {
+            owner: Some("myorg".to_string()),
+            name: Some("homebrew-tap".to_string()),
+            ..Default::default()
+        }),
+        amd64_variant: Some(anodizer_core::config::Amd64Variant::V3),
+        arm_variant: Some("7".to_string()),
+        ..Default::default()
+    };
+    let mut ctx = hb_ctx(cfg, false);
+    let err = super::publish_to_homebrew(&mut ctx, "mytool", &quiet_log()).unwrap_err();
+    let msg = format!("{err}");
+    assert!(msg.contains("no archives matched filters"), "{msg}");
+    assert!(msg.contains("amd64_variant=v3,"), "{msg}");
+    assert!(msg.contains("arm_variant=7)"), "{msg}");
+    assert!(!msg.contains("<default"), "{msg}");
 }
 
 /// publish_cask: missing `publish.homebrew` => error.

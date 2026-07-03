@@ -309,9 +309,6 @@ fn collect_archive_entries(
     log: &StageLogger,
 ) -> Result<Vec<(String, String, String)>> {
     let ids_filter = hb_cfg.ids.as_deref();
-    let amd64_variant = hb_cfg.amd64_variant.map_or("v1", |v| v.as_str());
-    // Goarm defaults to "6" for Homebrew.
-    let arm_variant = hb_cfg.arm_variant.as_deref().or(Some("6"));
     // Collect as (target, url, sha256, format) so the disambiguator can prefer
     // .tar.gz when multiple archives match the same OS/arch and ids: is unset.
     let raw_archive_data: Vec<(String, String, String, String)> =
@@ -373,12 +370,16 @@ fn collect_archive_entries(
         let ids_hint = ids_filter
             .map(|ids| format!("ids={ids:?}"))
             .unwrap_or_else(|| "ids=<none>".to_string());
-        let arm_hint = arm_variant.unwrap_or("<default 6>");
+        // Hint from the raw config, not the folded filter value, so a
+        // defaulted selector reads `<default …>` while a configured one
+        // prints plainly.
+        let amd64_hint = hb_cfg.amd64_variant.map_or("<default v1>", |v| v.as_str());
+        let arm_hint = hb_cfg.arm_variant.as_deref().unwrap_or("<default 6>");
         anyhow::bail!(
             "homebrew: no archives matched filters for '{crate_name}' — \
              formula would have empty url/sha256. Check your archive \
              configuration and homebrew filters ({ids_hint}, \
-             amd64_variant={amd64_variant}, arm_variant={arm_hint}). At least one \
+             amd64_variant={amd64_hint}, arm_variant={arm_hint}). At least one \
              Archive or UploadableBinary artifact must match."
         );
     }

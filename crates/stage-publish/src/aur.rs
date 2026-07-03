@@ -759,11 +759,15 @@ fn aur_build_sources(
         let ids_hint = ids_filter
             .map(|ids| format!("ids={ids:?}"))
             .unwrap_or_else(|| "ids=<none>".to_string());
+        // Hint from the raw config, not the folded filter value, so a
+        // defaulted selector reads `<default …>` while a configured one
+        // prints plainly.
+        let amd64_hint = aur_cfg.amd64_variant.map_or("<default v1>", |v| v.as_str());
         anyhow::bail!(
             "aur: no linux archives matched filters for '{crate_name}' — \
              PKGBUILD would have placeholder URL and empty sha256. Check your \
              archive configuration and aur filters ({ids_hint}, \
-             amd64_variant={amd64_variant}, arm_variant=7 [hardcoded]). At least \
+             amd64_variant={amd64_hint}, arm_variant=7 [hardcoded]). At least \
              one linux Archive artifact must match."
         );
     }
@@ -2759,6 +2763,51 @@ mod tests {
             msg.contains("nonexistent"),
             "error should cite ids filter, got: {msg}"
         );
+        assert!(
+            msg.contains("amd64_variant=<default v1>"),
+            "unconfigured amd64_variant should carry the default marker, got: {msg}"
+        );
+    }
+
+    /// A configured `amd64_variant` prints plainly in the no-match error —
+    /// no `<default …>` marker that would misattribute an operator choice to
+    /// a fallback.
+    #[test]
+    fn test_publish_to_aur_empty_archive_error_cites_configured_amd64_variant() {
+        use anodizer_core::config::{Amd64Variant, AurConfig, Config, CrateConfig, PublishConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        use anodizer_core::log::{StageLogger, Verbosity};
+
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                aur: Some(AurConfig {
+                    git_url: Some("ssh://aur@aur.archlinux.org/mytool.git".to_string()),
+                    homepage: Some("https://example.com/mytool".to_string()),
+                    description: Some("A great tool".to_string()),
+                    ids: Some(vec!["nonexistent".to_string()]),
+                    amd64_variant: Some(Amd64Variant::V3),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+
+        let ctx = Context::new(config, ContextOptions::default());
+        let log = StageLogger::new("publish", Verbosity::Normal);
+
+        let err = publish_to_aur(&ctx, "mytool", &log)
+            .expect_err("empty linux archive set must hard-fail");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("amd64_variant=v3,"),
+            "configured amd64_variant should print plainly, got: {msg}"
+        );
+        assert!(!msg.contains("<default"), "{msg}");
     }
 
     #[test]
