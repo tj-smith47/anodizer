@@ -16,26 +16,29 @@ use std::sync::LazyLock;
 ///
 /// These match `{{ if ... }}`, `{{ else }}`, `{{ else if ... }}`, `{{ end }}`,
 /// `{{ range ... }}`, `{{ with ... }}`, and `{{ $var := ... }}` patterns.
-/// Whitespace trimming markers (`-`) are preserved.
+/// Whitespace trimming markers (`-`) are preserved. `(?s)` lets the lazy
+/// condition captures cross newlines — a block broken across lines is valid
+/// Go template syntax and must still convert; laziness keeps each capture
+/// from swallowing an adjacent block's `}}`.
 static GO_IF_RE: LazyLock<Regex> =
-    LazyLock::new(|| static_regex(r"^\{\{(-?)\s*if\s+(.+?)\s*(-?)\}\}"));
+    LazyLock::new(|| static_regex(r"(?s)^\{\{(-?)\s*if\s+(.+?)\s*(-?)\}\}"));
 static GO_ELSE_IF_RE: LazyLock<Regex> =
-    LazyLock::new(|| static_regex(r"^\{\{(-?)\s*else\s+if\s+(.+?)\s*(-?)\}\}"));
+    LazyLock::new(|| static_regex(r"(?s)^\{\{(-?)\s*else\s+if\s+(.+?)\s*(-?)\}\}"));
 static GO_ELSE_RE: LazyLock<Regex> = LazyLock::new(|| static_regex(r"^\{\{(-?)\s*else\s*(-?)\}\}"));
 static GO_END_RE: LazyLock<Regex> = LazyLock::new(|| static_regex(r"^\{\{(-?)\s*end\s*(-?)\}\}"));
 static GO_RANGE_KV_RE: LazyLock<Regex> = LazyLock::new(|| {
     // {{ range $k, $v := .Map }}
-    static_regex(r"^\{\{(-?)\s*range\s+\$(\w+)\s*,\s*\$(\w+)\s*:=\s*(.+?)\s*(-?)\}\}")
+    static_regex(r"(?s)^\{\{(-?)\s*range\s+\$(\w+)\s*,\s*\$(\w+)\s*:=\s*(.+?)\s*(-?)\}\}")
 });
 static GO_RANGE_V_RE: LazyLock<Regex> = LazyLock::new(|| {
     // {{ range $v := .Slice }} or {{ range .Slice }}
-    static_regex(r"^\{\{(-?)\s*range\s+(?:\$(\w+)\s*:=\s*)?(.+?)\s*(-?)\}\}")
+    static_regex(r"(?s)^\{\{(-?)\s*range\s+(?:\$(\w+)\s*:=\s*)?(.+?)\s*(-?)\}\}")
 });
 static GO_WITH_RE: LazyLock<Regex> =
-    LazyLock::new(|| static_regex(r"^\{\{(-?)\s*with\s+(.+?)\s*(-?)\}\}"));
+    LazyLock::new(|| static_regex(r"(?s)^\{\{(-?)\s*with\s+(.+?)\s*(-?)\}\}"));
 static GO_VAR_ASSIGN_RE: LazyLock<Regex> = LazyLock::new(|| {
     // {{ $var := expr }}
-    static_regex(r"^\{\{(-?)\s*\$(\w+)\s*:=\s*(.+?)\s*(-?)\}\}")
+    static_regex(r"(?s)^\{\{(-?)\s*\$(\w+)\s*:=\s*(.+?)\s*(-?)\}\}")
 });
 /// Match `{{ . }}` (bare dot reference to current context).
 static GO_DOT_RE: LazyLock<Regex> = LazyLock::new(|| static_regex(r"^\{\{(-?)\s*\.\s*(-?)\}\}"));
@@ -291,4 +294,54 @@ pub(super) fn try_rewrite_control_block(inner: &str) -> Option<String> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::preprocess_go_blocks;
+
+    #[test]
+    fn multiline_go_if_and_else_if_convert() {
+        assert_eq!(
+            preprocess_go_blocks(
+                "{{ if eq .Os\n\"linux\" }}L{{ else if eq .Os\n\"darwin\" }}D{{ end }}"
+            ),
+            "{% if eq .Os\n\"linux\" %}L{% elif eq .Os\n\"darwin\" %}D{% endif %}"
+        );
+    }
+
+    #[test]
+    fn multiline_go_range_converts() {
+        assert_eq!(
+            preprocess_go_blocks("{{ range $v := index .M\n\"k\" }}{{ $v }}{{ end }}"),
+            "{% for v in index .M\n\"k\" %}{{ v }}{% endfor %}"
+        );
+    }
+
+    #[test]
+    fn multiline_go_with_converts() {
+        assert_eq!(
+            preprocess_go_blocks("{{ with index .M\n\"k\" }}{{ . }}{{ end }}"),
+            "{% if index .M\n\"k\" %}{{ index .M\n\"k\" }}{% endif %}"
+        );
+    }
+
+    #[test]
+    fn multiline_go_var_assign_converts() {
+        assert_eq!(
+            preprocess_go_blocks("{{ $v := printf \"%s\"\n.Name }}"),
+            "{% set v = printf \"%s\"\n.Name %}"
+        );
+    }
+
+    #[test]
+    fn adjacent_multiline_blocks_do_not_merge() {
+        // The lazy condition captures must stop at each block's OWN close —
+        // `(?s)` must not let the first condition swallow across `}}` into
+        // the second block.
+        assert_eq!(
+            preprocess_go_blocks("{{ if eq .A\n1 }}x{{ end }}\n{{ if eq .B\n2 }}y{{ end }}"),
+            "{% if eq .A\n1 %}x{% endif %}\n{% if eq .B\n2 %}y{% endif %}"
+        );
+    }
 }

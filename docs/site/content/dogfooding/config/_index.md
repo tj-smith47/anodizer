@@ -237,7 +237,7 @@ config is rendered.
 | `appimages[].desktop` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`assets/anodizer.desktop`) |
 | `appimages[].icon` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`assets/logo.png`) |
 | `appimages[].filename` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`"{{ ProjectName }}-{{ Version }}-{{ Arch }}.AppImage"`) |
-| `appimages[].update_information` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`gh-releases-zsync|...|*.AppImage.zsync` for delta updates) |
+| `appimages[].update_information` | ⏳ Pending | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`gh-releases-zsync\|...\|*.AppImage.zsync` for delta updates) |
 | `makeselfs[].id` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`id: default`) |
 | `makeselfs[].name` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`"anodizer Installer"`) |
 | `makeselfs[].script` | ✅ Verified | [anodizer `.anodizer.yaml`](https://github.com/tj-smith47/anodizer/blob/master/.anodizer.yaml) (`scripts/makeself-install.sh`) |

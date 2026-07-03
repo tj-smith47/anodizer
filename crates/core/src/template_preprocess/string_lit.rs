@@ -6,13 +6,15 @@
 //! lexer is held to that same boundary by the engine-side compat shim
 //! (`template::engine_adapter::double_string_literal_backslashes`), which
 //! doubles backslashes so both engines agree on the close position by
-//! construction. Every preprocessor pass that skips string literals must go
-//! through these helpers: a pass with its own (escape-aware, or two-delimiter)
-//! scanner disagrees with the engine about where a string ends and silently
-//! rewrites string contents — or rewrites code it wrongly thought was quoted.
+//! construction — and which locates each literal via [`is_string_delim`] /
+//! [`raw_string_end`] below, so the shim cannot drift from the passes. Every
+//! preprocessor pass that skips string literals must go through these
+//! helpers: a pass with its own (escape-aware, or two-delimiter) scanner
+//! disagrees with the engine about where a string ends and silently rewrites
+//! string contents — or rewrites code it wrongly thought was quoted.
 
 /// True when `b` is a tera string-literal delimiter (`"`, `'`, or backtick).
-pub(super) fn is_string_delim(b: u8) -> bool {
+pub(crate) fn is_string_delim(b: u8) -> bool {
     matches!(b, b'"' | b'\'' | b'`')
 }
 
@@ -21,7 +23,7 @@ pub(super) fn is_string_delim(b: u8) -> bool {
 /// occurrence of the same delimiter, no escape awareness. Returns
 /// `bytes.len()` for an unterminated literal so callers' scan loops
 /// terminate cleanly.
-pub(super) fn raw_string_end(bytes: &[u8], start: usize) -> usize {
+pub(crate) fn raw_string_end(bytes: &[u8], start: usize) -> usize {
     let delim = bytes[start];
     match bytes[start + 1..].iter().position(|&b| b == delim) {
         Some(off) => start + 1 + off + 1,

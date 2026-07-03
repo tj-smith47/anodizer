@@ -246,20 +246,20 @@ Examples below use the Tera-native no-dot idiom.
 
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
-| `lower` / `tolower` | filter | `{{ "{{ Os | lower }}" }}` | `linux` |
-| `upper` / `toupper` | filter | `{{ "{{ Os | upper }}" }}` | `LINUX` |
-| `title` | filter / fn | `{{ "{{ \"hello world\" | title }}" }}` | `Hello World` |
-| `trim` | filter / fn | `{{ "{{ \" x \" | trim }}" }}` | `x` |
-| `trimprefix` | filter | `{{ "{{ Tag | trimprefix(prefix=\"v\") }}" }}` | `1.2.3` |
-| `trimsuffix` | filter | `{{ "{{ File | trimsuffix(suffix=\".tar.gz\") }}" }}` | strips suffix |
-| `replace` | filter / fn | `{{ "{{ Version | replace(from=\".\", to=\"_\") }}" }}` | `1_2_3` |
-| `split` | filter / fn | `{{ "{{ \"a.b.c\" | split(sep=\".\") }}" }}` | `["a","b","c"]` |
-| `contains` | filter / fn | `{{ "{{ Tag | contains(substr=\"rc\") }}" }}` | `true` / `false` |
-| `slice` | filter / fn | `{{ "{{ Tag | slice(start=1, end=4) }}" }}` | `1.2` (end-exclusive, Go semantics) |
+| `lower` / `tolower` | filter | `{{ "{{ Os \| lower }}" }}` | `linux` |
+| `upper` / `toupper` | filter | `{{ "{{ Os \| upper }}" }}` | `LINUX` |
+| `title` | filter / fn | `{{ "{{ \"hello world\" \| title }}" }}` | `Hello World` |
+| `trim` | filter / fn | `{{ "{{ \" x \" \| trim }}" }}` | `x` |
+| `trimprefix` | filter | `{{ "{{ Tag \| trimprefix(prefix=\"v\") }}" }}` | `1.2.3` |
+| `trimsuffix` | filter | `{{ "{{ File \| trimsuffix(suffix=\".tar.gz\") }}" }}` | strips suffix |
+| `replace` | filter / fn | `{{ "{{ Version \| replace(from=\".\", to=\"_\") }}" }}` | `1_2_3` |
+| `split` | filter / fn | `{{ "{{ \"a.b.c\" \| split(sep=\".\") }}" }}` | `["a","b","c"]` |
+| `contains` | filter / fn | `{{ "{{ Tag \| contains(substr=\"rc\") }}" }}` | `true` / `false` |
+| `slice` | filter / fn | `{{ "{{ Tag \| slice(start=1, end=4) }}" }}` | `1.2` (end-exclusive, Go semantics) |
 | `reReplaceAll` | fn | `{{ "{{ reReplaceAll(pattern=\"[^0-9]\", input=Tag, replacement=\"\") }}" }}` | digits only |
 | `urlPathEscape` | fn | `{{ "{{ urlPathEscape(s=Branch) }}" }}` | percent-encoded path segment |
-| `mdv2escape` | filter | `{{ "{{ Body | mdv2escape }}" }}` | Telegram MarkdownV2-escaped |
-| `ruby_escape` | filter | `{{ "{{ Desc | ruby_escape }}" }}` | safe in a Ruby `\"…\"` literal |
+| `mdv2escape` | filter | `{{ "{{ Body \| mdv2escape }}" }}` | Telegram MarkdownV2-escaped |
+| `ruby_escape` | filter | `{{ "{{ Desc \| ruby_escape }}" }}` | safe in a Ruby `\"…\"` literal |
 
 ### Formatting
 
@@ -276,15 +276,15 @@ Examples below use the Tera-native no-dot idiom.
 
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
-| `dir` | filter | `{{ "{{ ArtifactPath | dir }}" }}` | parent directory |
-| `base` | filter | `{{ "{{ ArtifactPath | base }}" }}` | final path component |
-| `abs` | filter | `{{ "{{ \"./dist\" | abs }}" }}` | absolute path |
+| `dir` | filter | `{{ "{{ ArtifactPath \| dir }}" }}` | parent directory |
+| `base` | filter | `{{ "{{ ArtifactPath \| base }}" }}` | final path component |
+| `abs` | filter | `{{ "{{ \"./dist\" \| abs }}" }}` | absolute path |
 
 ### List and map
 
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
-| `list` | fn | `{{ "{{ list(items=[Os, Arch]) | join(sep=\"-\") }}" }}` | `linux-amd64` |
+| `list` | fn | `{{ "{{ list(items=[Os, Arch]) \| join(sep=\"-\") }}" }}` | `linux-amd64` |
 | `map` | fn | `{{ "{% set M = map(pairs=[\"a\", 1]) %}{{ M.a }}" }}` | `1` |
 | `index` | fn | `{{ "{{ index(collection=Parts, key=0) }}" }}` | element at index |
 | `indexOrDefault` | fn | `{{ "{{ indexOrDefault(map=M, key=\"k\", default=\"-\") }}" }}` | value or default |
@@ -297,9 +297,9 @@ Examples below use the Tera-native no-dot idiom.
 
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
-| `incpatch` | filter | `{{ "{{ Version | incpatch }}" }}` | `1.2.4` |
-| `incminor` | filter | `{{ "{{ Version | incminor }}" }}` | `1.3.0` |
-| `incmajor` | filter | `{{ "{{ Version | incmajor }}" }}` | `2.0.0` |
+| `incpatch` | filter | `{{ "{{ Version \| incpatch }}" }}` | `1.2.4` |
+| `incminor` | filter | `{{ "{{ Version \| incminor }}" }}` | `1.3.0` |
+| `incmajor` | filter | `{{ "{{ Version \| incmajor }}" }}` | `2.0.0` |
 
 ### Environment
 
@@ -321,8 +321,8 @@ Examples below use the Tera-native no-dot idiom.
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
 | `time` | fn | `{{ "{{ time(format=\"2006-01-02\") }}" }}` | current date (Go layout accepted) |
-| `now_format` | filter | `{{ "{{ Now | now_format(format=\"%Y-%m-%d\") }}" }}` | current date (chrono format) |
-| `date` | filter | `{{ "{{ Now | date(format=\"%Y%m%d\") }}" }}` | `20260703` |
+| `now_format` | filter | `{{ "{{ Now \| now_format(format=\"%Y-%m-%d\") }}" }}` | current date (chrono format) |
+| `date` | filter | `{{ "{{ Now \| date(format=\"%Y%m%d\") }}" }}` | `20260703` |
 
 `date` formats a Unix timestamp (integer), an RFC 3339 datetime string, a naive `%Y-%m-%dT%H:%M:%S` datetime, or a plain `%Y-%m-%d` date. `format` takes chrono strftime specifiers (default `%Y-%m-%d`). `timezone` takes an IANA name (`timezone="America/New_York"`) and converts timestamps and offset-carrying RFC 3339 inputs; naive datetime and plain-date inputs format as UTC and ignore it. `locale` is not supported and errors — output is always POSIX-locale.
 

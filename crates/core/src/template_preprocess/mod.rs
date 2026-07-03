@@ -22,7 +22,7 @@ mod go_blocks;
 mod methods;
 mod positional;
 mod shell_guard;
-mod string_lit;
+pub(crate) mod string_lit;
 mod tokens;
 
 #[cfg(test)]

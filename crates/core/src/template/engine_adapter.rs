@@ -25,6 +25,8 @@ use std::collections::HashMap;
 
 use tera::{Kwargs, State, TeraResult};
 
+use crate::template_preprocess::string_lit;
+
 /// Convert an engine value to its JSON equivalent via serde.
 pub(super) fn to_json(v: &tera::Value) -> TeraResult<serde_json::Value> {
     serde_json::to_value(v).map_err(tera::Error::message)
@@ -134,10 +136,13 @@ impl JsonRegisterExt for tera::Tera {
 /// run length, without the scanner needing any concept of escaping.
 ///
 /// All three 1.x literal delimiters (`"`, `'`, `` ` ``) are handled; text
-/// outside blocks and comment blocks is left untouched. The preprocessor's
-/// string scanners implement this same boundary rule via
-/// `template_preprocess`'s `string_lit` module — the two must agree, or a
-/// pass rewrites bytes the engine considers string contents (or vice versa).
+/// outside blocks and comment blocks is left untouched. The boundary
+/// decisions (what opens a literal, where it closes) are not re-implemented
+/// here: the scan calls `template_preprocess::string_lit`'s
+/// `is_string_delim` / `raw_string_end`, the same single source of truth the
+/// preprocessor passes use — so the shim and the passes cannot disagree
+/// about which bytes are string contents. Only the backslash doubling
+/// itself lives here.
 ///
 /// 2.0 also added inline map literals (`{'a': 1}`), whose own `{`/`}` pair
 /// can sit inside a `{{ … }}` expression. A depth-blind scan sees that map
@@ -174,19 +179,17 @@ pub(super) fn double_string_literal_backslashes(template: &str) -> std::borrow::
 
     let mut out = String::with_capacity(template.len() + 8);
     let mut region = Region::Text;
-    // The active string delimiter inside a block, if any.
-    let mut string_delim: Option<char> = None;
     // Depth of `{`/`}` map-literal nesting inside the current block, outside
     // any string literal. `}}` only closes the block at depth 0.
     let mut brace_depth: u32 = 0;
-    let mut chars = template.chars().peekable();
+    let mut chars = template.char_indices().peekable();
 
-    while let Some(c) = chars.next() {
+    while let Some((i, c)) = chars.next() {
         match region {
             Region::Text => {
                 if c == '{' {
                     match chars.peek() {
-                        Some('{') | Some('%') => {
+                        Some(&(_, '{')) | Some(&(_, '%')) => {
                             // Consume the full 2-char open delimiter now.
                             // Leaving the second char (`{` or `%`) for the
                             // next iteration would feed it to the Block
@@ -196,72 +199,73 @@ pub(super) fn double_string_literal_backslashes(template: &str) -> std::borrow::
                             // `brace_depth` to 1 when the block is actually
                             // at depth 0.
                             out.push(c);
-                            if let Some(second) = chars.next() {
+                            if let Some((_, second)) = chars.next() {
                                 out.push(second);
                             }
                             region = Region::Block;
                             brace_depth = 0;
                             continue;
                         }
-                        Some('#') => region = Region::Comment,
+                        Some(&(_, '#')) => region = Region::Comment,
                         _ => {}
                     }
                 }
                 out.push(c);
             }
             Region::Comment => {
-                if c == '#' && chars.peek() == Some(&'}') {
+                if c == '#' && matches!(chars.peek(), Some(&(_, '}'))) {
                     region = Region::Text;
                 }
                 out.push(c);
             }
             Region::Block => {
-                match string_delim {
-                    Some(delim) => {
-                        if c == '\\' {
-                            // The one rewrite this whole scan exists for.
-                            // Every backslash byte doubles independently
-                            // (not per-pair), so a run of N backslashes
-                            // always becomes 2N — always even, which is
-                            // also what keeps tera 2.0's own lexer from
-                            // ever treating the char after the run as an
-                            // escape target.
-                            out.push('\\');
-                        } else if c == delim {
-                            // First-occurrence close, no escape awareness —
-                            // exactly 1.x's raw grammar. A preceding
-                            // backslash (however many) never protects this
-                            // delimiter; see the function doc comment for
-                            // why doubling still keeps the two engines'
-                            // close positions in agreement.
-                            string_delim = None;
-                        }
-                    }
-                    None => match c {
-                        '"' | '\'' | '`' => {
-                            string_delim = Some(c);
-                        }
-                        '{' => brace_depth += 1,
-                        // A nested map literal's close: consumed by the
-                        // depth counter, never a block-close candidate.
-                        '}' if brace_depth > 0 => brace_depth -= 1,
-                        // Block close: `}}` or `%}` outside a string literal
-                        // and outside any open map literal. Consume the
-                        // full 2-char close delimiter now (same reasoning
-                        // as the open side) so the region genuinely returns
-                        // to Text — leaving the second `}`/`%` behind used
-                        // to strand the scan in Block for the rest of the
-                        // template, corrupting any later quoted text.
-                        '}' | '%' if chars.peek() == Some(&'}') => {
-                            out.push(c);
-                            if let Some(second) = chars.next() {
-                                out.push(second);
+                match c {
+                    // String literal: the boundary comes from string_lit's
+                    // shared raw rule (first next occurrence of the same
+                    // delimiter, no escape awareness; unterminated runs to
+                    // EOF). Delimiters are ASCII, so `raw_string_end` always
+                    // lands on a char boundary. The literal's span — a
+                    // possible `}}`/`%}` inside it included — is emitted
+                    // here wholesale, so block-close detection below never
+                    // sees string contents.
+                    _ if c.is_ascii() && string_lit::is_string_delim(c as u8) => {
+                        let end = string_lit::raw_string_end(template.as_bytes(), i);
+                        for ch in template[i..end].chars() {
+                            if ch == '\\' {
+                                // The one rewrite this whole scan exists
+                                // for. Every backslash byte doubles
+                                // independently (not per-pair), so a run of
+                                // N backslashes always becomes 2N — always
+                                // even, which is also what keeps tera 2.0's
+                                // own lexer from ever treating the char
+                                // after the run as an escape target.
+                                out.push('\\');
                             }
-                            region = Region::Text;
-                            continue;
+                            out.push(ch);
                         }
-                        _ => {}
-                    },
+                        while chars.next_if(|&(j, _)| j < end).is_some() {}
+                        continue;
+                    }
+                    '{' => brace_depth += 1,
+                    // A nested map literal's close: consumed by the
+                    // depth counter, never a block-close candidate.
+                    '}' if brace_depth > 0 => brace_depth -= 1,
+                    // Block close: `}}` or `%}` outside a string literal
+                    // and outside any open map literal. Consume the
+                    // full 2-char close delimiter now (same reasoning
+                    // as the open side) so the region genuinely returns
+                    // to Text — leaving the second `}`/`%` behind used
+                    // to strand the scan in Block for the rest of the
+                    // template, corrupting any later quoted text.
+                    '}' | '%' if matches!(chars.peek(), Some(&(_, '}'))) => {
+                        out.push(c);
+                        if let Some((_, second)) = chars.next() {
+                            out.push(second);
+                        }
+                        region = Region::Text;
+                        continue;
+                    }
+                    _ => {}
                 }
                 out.push(c);
             }
@@ -818,6 +822,70 @@ mod tests {
                 non_block_spans(tpl),
                 non_block_spans(shimmed.as_ref()),
                 "text/comment spans diverged for template: {tpl:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn backslash_shim_and_preprocessor_scanner_agree_on_string_boundaries() {
+        // Cross-pin: the expected output is computed from string_lit's scan
+        // ALONE — a backslash doubles iff that scan classifies it as inside
+        // a string literal. The shim only doubles in-string backslashes, so
+        // if either side ever regrows its own boundary rule (escape-aware,
+        // two-delimiter, …), the doubling pattern diverges from the
+        // string_lit prediction and this fails, instead of the two scanners
+        // silently drifting apart.
+        use crate::template_preprocess::string_lit::{is_string_delim, raw_string_end};
+
+        let corpus = [
+            // mixed delimiters + close right after a backslash + code backslash
+            r#""a\" 'b\' \code"#,
+            // 1.x-invalid "escaped quote" intent; reopened string swallows the tail
+            r"'it\'s' ~ \x",
+            // backtick literal containing a quote and a trailing backslash;
+            // quote literal containing a backtick
+            "`tick\"quote\\` ~ \\ ~ 'q`t'",
+            // adjacent literals, each ending in backslash-then-close
+            r"'a\''b\'",
+            // unterminated literal: everything to EOF is string contents
+            r#""never \closed"#,
+            // backslash run before a close, then an unterminated reopen
+            r"'run\\\' tail' \\",
+            // adjacent empty literals around a code-region backslash
+            r"'' \gap ''",
+        ];
+        for body in corpus {
+            let template = format!("{{% {body} %}}");
+            let bytes = template.as_bytes();
+
+            // Classify every byte via the preprocessor's scanner, starting
+            // just past the `{% ` opener (the shim only scans inside blocks).
+            let mut in_string = vec![false; bytes.len()];
+            let mut i = 3;
+            while i < bytes.len() {
+                if is_string_delim(bytes[i]) {
+                    let end = raw_string_end(bytes, i);
+                    for flag in &mut in_string[i..end] {
+                        *flag = true;
+                    }
+                    i = end;
+                } else {
+                    i += 1;
+                }
+            }
+
+            let mut expected = String::new();
+            for (i, ch) in template.char_indices() {
+                if ch == '\\' && in_string[i] {
+                    expected.push('\\');
+                }
+                expected.push(ch);
+            }
+
+            assert_eq!(
+                double_string_literal_backslashes(&template).as_ref(),
+                expected,
+                "shim/preprocessor boundary disagreement for body: {body:?}"
             );
         }
     }
