@@ -312,22 +312,25 @@ fn test_preprocess_in_piped() {
 // --- list subexpr: escaped quotes and mixed quote styles ---
 
 #[test]
-fn test_preprocess_list_subexpr_escaped_double_quotes() {
-    // (list "hello \"world\"" "plain") should parse correctly
+fn test_preprocess_list_subexpr_escaped_double_quotes_error_loudly() {
+    // Under the engine's raw string rule `"hello \"` closes at the quote
+    // right after the backslash — `\"` never embedded a quote, so this
+    // template was never valid. The pass must leave it unrewritten and let
+    // the engine error loudly, never silently reinterpret the boundaries.
+    use crate::template::{TemplateVars, render};
     let input = r#"{{ in (list "hello \"world\"" "plain") "plain" }}"#;
-    let result = preprocess(input);
-    assert_eq!(
-        result,
-        r#"{{ in(items=["hello \"world\"", "plain"], value="plain") }}"#
-    );
+    assert_eq!(preprocess(input), input);
+    assert!(render(input, &TemplateVars::new()).is_err());
 }
 
 #[test]
-fn test_preprocess_list_subexpr_escaped_single_quotes() {
-    // (list 'it\'s' 'fine') should parse correctly
+fn test_preprocess_list_subexpr_escaped_single_quotes_error_loudly() {
+    // Same raw-rule reality for single quotes: `'it\'` closes after the
+    // backslash, leaving a dangling `s'` — loud error, no silent rewrite.
+    use crate::template::{TemplateVars, render};
     let input = "{{ in (list 'it\\'s' 'fine') \"fine\" }}";
-    let result = preprocess(input);
-    assert_eq!(result, "{{ in(items=['it\\'s', 'fine'], value=\"fine\") }}");
+    assert_eq!(preprocess(input), input);
+    assert!(render(input, &TemplateVars::new()).is_err());
 }
 
 #[test]
@@ -1055,4 +1058,71 @@ fn test_numeric_index_end_to_end_render() {
     assert_eq!(render("{{ list.0 }}", &vars).unwrap(), "first");
     assert_eq!(render("{{ items.0.name }}", &vars).unwrap(), "n0");
     assert_eq!(render("{{ list.1 | upper }}", &vars).unwrap(), "SECOND");
+}
+
+// --- raw string-boundary rule (shared `string_lit` helper) ---
+// All passes must close string literals exactly where the engine does:
+// first next occurrence of the opening delimiter (`"`, `'`, or backtick),
+// no escape awareness.
+
+#[test]
+fn test_backtick_string_skipped_by_numeric_index_pass() {
+    assert_eq!(preprocess("{{ `v1.0` }}"), "{{ `v1.0` }}");
+}
+
+#[test]
+fn test_backtick_string_skipped_by_dollar_strip() {
+    assert_eq!(preprocess("{{ `$foo` }}"), "{{ `$foo` }}");
+}
+
+#[test]
+fn test_backtick_string_skipped_by_dot_strip() {
+    assert_eq!(preprocess("{{ `.Field` }}"), "{{ `.Field` }}");
+}
+
+#[test]
+fn test_backtick_filter_arg_content_untouched() {
+    let input = "{{ 'v1.0-x' | replace(from=`v1.0`, to=\"Z\") }}";
+    assert_eq!(preprocess(input), input);
+}
+
+#[test]
+fn test_string_closes_at_first_quote_even_after_backslash() {
+    // `'Q\'` closes at the second quote (the engine has no escape concept),
+    // so `'v1.0'` is a STRING whose `.0` must survive verbatim.
+    let input = r"{{ 'Q\' ~ 'v1.0' }}";
+    assert_eq!(preprocess(input), input);
+}
+
+// --- multiline expression blocks receive every pass ---
+
+#[test]
+fn test_multiline_block_dot_strip_applies() {
+    assert_eq!(preprocess("{{\n  .Version }}"), "{{\n  Version }}");
+}
+
+#[test]
+fn test_multiline_block_dollar_strip_applies() {
+    assert_eq!(preprocess("{{\n  $foo }}"), "{{\n  foo }}");
+}
+
+#[test]
+fn test_multiline_block_builtin_rewrite_applies() {
+    assert_eq!(
+        preprocess("{% if eq Os \"linux\"\n%}yes{% endif %}"),
+        "{% if Os == \"linux\"\n%}yes{% endif %}"
+    );
+}
+
+#[test]
+fn test_multiline_block_method_call_rewrite_applies() {
+    assert_eq!(
+        preprocess("{{\n  .Now.Format \"2006-01-02\" }}"),
+        "{{\n  Now | now_format(format=\"2006-01-02\") }}"
+    );
+}
+
+#[test]
+fn test_multiline_block_numeric_index_rewrite_applies() {
+    assert_eq!(preprocess("{{\n  list.0 }}"), "{{\n  list[0] }}");
 }

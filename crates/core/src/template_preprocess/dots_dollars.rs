@@ -3,45 +3,14 @@
 
 use super::GO_BLOCK_RE;
 use super::go_blocks::{extract_block_parts, push_char_at};
-use super::static_regex;
-use regex::Regex;
-use std::sync::LazyLock;
-
-/// Copy a quoted string literal starting at `s[i]` (the opening `"` or `'`)
-/// into `out` verbatim, honoring backslash escapes, and return the index just
-/// past the closing quote. Shared by every block-scanning pass in this module
-/// so string-literal contents are never rewritten.
-fn copy_quoted(out: &mut String, s: &str, mut i: usize) -> usize {
-    let bytes = s.as_bytes();
-    let quote = bytes[i];
-    out.push(quote as char);
-    i += 1;
-    while i < bytes.len() && bytes[i] != quote {
-        if bytes[i] == b'\\' && i + 1 < bytes.len() {
-            // Backslash is ASCII; the escaped char may be multibyte.
-            out.push('\\');
-            i += 1;
-            i += push_char_at(out, s, i);
-        } else {
-            i += push_char_at(out, s, i);
-        }
-    }
-    if i < bytes.len() {
-        out.push(quote as char);
-        i += 1;
-    }
-    i
-}
+use super::string_lit::{copy_raw_string, is_string_delim};
 
 /// Strip `$` prefix from Go variable references inside `{{ }}` and `{% %}` blocks.
 ///
 /// Scans each block character by character, skipping quoted strings, and removes
 /// `$` when followed by a word character (e.g., `$var` → `var`).
 pub(super) fn strip_dollar_vars(template: &str) -> String {
-    // Match both {{ ... }} and {% ... %} blocks
-    static BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| static_regex(r"\{\{.*?\}\}|\{%.*?%\}"));
-
-    BLOCK_RE
+    GO_BLOCK_RE
         .replace_all(template, |caps: &regex::Captures| {
             let block = &caps[0];
             let bytes = block.as_bytes();
@@ -50,8 +19,8 @@ pub(super) fn strip_dollar_vars(template: &str) -> String {
 
             while i < bytes.len() {
                 // Skip quoted strings entirely
-                if bytes[i] == b'"' || bytes[i] == b'\'' {
-                    i = copy_quoted(&mut result, block, i);
+                if is_string_delim(bytes[i]) {
+                    i = copy_raw_string(&mut result, block, i);
                     continue;
                 }
 
@@ -87,8 +56,8 @@ pub(super) fn preprocess_strip_dots(template: &str) -> String {
             let mut i = 0;
             while i < bytes.len() {
                 // Skip over quoted strings entirely
-                if bytes[i] == b'"' || bytes[i] == b'\'' {
-                    i = copy_quoted(&mut result, inner, i);
+                if is_string_delim(bytes[i]) {
+                    i = copy_raw_string(&mut result, inner, i);
                     continue;
                 }
 
@@ -189,8 +158,8 @@ pub(super) fn rewrite_numeric_index_segments(template: &str) -> String {
             let mut i = 0;
             while i < bytes.len() {
                 // Never rewrite inside string literals
-                if bytes[i] == b'"' || bytes[i] == b'\'' {
-                    i = copy_quoted(&mut result, inner, i);
+                if is_string_delim(bytes[i]) {
+                    i = copy_raw_string(&mut result, inner, i);
                     continue;
                 }
 

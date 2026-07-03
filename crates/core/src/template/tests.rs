@@ -4319,7 +4319,9 @@ fn test_date_filter_invalid_format_errors() {
     vars.set("Now", "2026-04-05T12:34:56Z");
     let err = render("{{ Now | date(format=\"%¾\") }}", &vars).unwrap_err();
     assert!(
-        format!("{err:#}").contains("invalid format"),
+        format!("{err:#}").contains(
+            "invalid format `%¾` — expected chrono strftime specifiers (e.g. `%Y-%m-%d`)"
+        ),
         "got: {err:#}"
     );
 }
@@ -4390,21 +4392,181 @@ fn test_date_filter_invalid_timezone_errors() {
     )
     .unwrap_err();
     assert!(
-        format!("{err:#}").contains("error parsing `Mars/Olympus_Mons` as a timezone"),
+        format!("{err:#}").contains(
+            "error parsing `Mars/Olympus_Mons` as a timezone \
+             (expected an IANA name, e.g. `America/New_York`)"
+        ),
         "got: {err:#}"
     );
 }
 
 #[test]
 fn test_date_filter_locale_arg_errors_explicitly() {
-    // `locale` needed tera's non-default `date-locale` feature, which 1.x
-    // anodizer never enabled; the compat filter must fail loudly, never
-    // silently format in the wrong locale.
+    // 1.x (without the non-default `date-locale` feature) never read the
+    // `locale` argument and silently formatted in the POSIX locale; the
+    // compat filter fails loudly instead of silently dropping an explicit
+    // argument.
     let mut vars = test_vars();
     vars.set("Now", "2026-04-05T12:34:56Z");
     let err = render("{{ Now | date(format=\"%Y\", locale=\"fr_FR\") }}", &vars).unwrap_err();
     assert!(
-        format!("{err:#}").contains("`locale` argument is not supported"),
+        format!("{err:#}").contains(
+            "the `locale` argument is not supported; remove it — \
+             output is always formatted in the POSIX locale"
+        ),
         "got: {err:#}"
+    );
+}
+
+// ---- raw string-boundary regressions (shared `string_lit` rule) ----
+// The engine closes a string literal at the FIRST next occurrence of its
+// delimiter — `"`, `'`, or backtick, no escape concept. Every preprocessor
+// pass must agree, or 1.x-valid templates get their string contents (or the
+// code around a misjudged string) silently rewritten.
+
+#[test]
+fn test_backtick_string_numeric_content_not_index_rewritten() {
+    let vars = test_vars();
+    assert_eq!(render("{{ `v1.0` }}", &vars).unwrap(), "v1.0");
+}
+
+#[test]
+fn test_backtick_string_as_filter_arg_survives_verbatim() {
+    let vars = test_vars();
+    assert_eq!(
+        render("{{ 'v1.0-x' | replace(from=`v1.0`, to=\"Z\") }}", &vars).unwrap(),
+        "Z-x"
+    );
+}
+
+#[test]
+fn test_string_closing_at_first_quote_after_backslash_matches_engine() {
+    // `'Q\'` closes at the second quote (raw rule); `'v1.0'` after `~` is a
+    // STRING, so its `.0` must never be index-rewritten.
+    let vars = test_vars();
+    assert_eq!(render(r"{{ 'Q\' ~ 'v1.0' }}", &vars).unwrap(), r"Q\v1.0");
+}
+
+#[test]
+fn test_backtick_string_dollar_content_not_stripped() {
+    let vars = test_vars();
+    assert_eq!(render("{{ `$foo` }}", &vars).unwrap(), "$foo");
+}
+
+#[test]
+fn test_backtick_string_leading_dot_content_not_stripped() {
+    let vars = test_vars();
+    assert_eq!(render("{{ `.Field` }}", &vars).unwrap(), ".Field");
+}
+
+#[test]
+fn test_escaped_quote_inside_string_is_a_loud_error_not_a_silent_change() {
+    // Under the raw rule `"a\"b"` closes right after the backslash, leaving
+    // a dangling `b"` — such templates were never valid under 1.x either.
+    // Escape-unaware scanning must surface that as a loud parse/render
+    // error, never a silent reinterpretation.
+    let vars = test_vars();
+    assert!(render(r#"{{ "a\"b" }}"#, &vars).is_err());
+}
+
+// ---- pass-ordering pins: positional-arg syntax containing `.N` ----
+// These survive only because the numeric-index rewrite (Pass 5) runs AFTER
+// the token-based passes: run it earlier and `list.0` lexes as `list` +
+// `[0]`, breaking positional-arity detection — each of these then fails.
+
+fn list_vars() -> TemplateVars {
+    let mut vars = test_vars();
+    vars.set_structured("list", serde_json::json!(["banana", "cherry"]));
+    vars
+}
+
+#[test]
+fn test_positional_standalone_arg_with_numeric_index() {
+    assert_eq!(
+        render("{{ replace list.0 \"a\" \"o\" }}", &list_vars()).unwrap(),
+        "bonono"
+    );
+}
+
+#[test]
+fn test_positional_piped_input_with_numeric_index() {
+    assert_eq!(
+        render("{{ list.0 | replace \"a\" \"o\" }}", &list_vars()).unwrap(),
+        "bonono"
+    );
+}
+
+#[test]
+fn test_positional_slice_arg_with_numeric_index() {
+    assert_eq!(
+        render("{{ slice list.1 0 3 }}", &list_vars()).unwrap(),
+        "che"
+    );
+}
+
+#[test]
+fn test_optional_numeric_index_renders_end_to_end() {
+    // `a?.0` → `a?[0]` (tera 2.0's optional-index token) through the full
+    // public render path.
+    let mut vars = test_vars();
+    vars.set_structured("a", serde_json::json!(["first", "second"]));
+    assert_eq!(render("{{ a?.0 }}", &vars).unwrap(), "first");
+}
+
+// ---- multiline expression blocks get the full pass surface ----
+// `{{\n x }}` is valid tera; each preprocessor pass class must apply across
+// the newline (the block regexes carry `(?s)`).
+
+#[test]
+fn test_multiline_block_dot_strip() {
+    let vars = test_vars();
+    assert_eq!(render("{{\n  .Version }}", &vars).unwrap(), "1.2.3");
+}
+
+#[test]
+fn test_multiline_block_dollar_var_strip() {
+    let vars = test_vars();
+    assert_eq!(
+        render("{% set foo = \"x\" %}{{\n  $foo }}", &vars).unwrap(),
+        "x"
+    );
+}
+
+#[test]
+fn test_multiline_block_go_builtin_rewrite() {
+    let vars = test_vars();
+    assert_eq!(
+        render("{% if eq Os \"linux\"\n%}yes{% endif %}", &vars).unwrap(),
+        "yes"
+    );
+}
+
+#[test]
+fn test_multiline_block_method_call_rewrite() {
+    let mut vars = test_vars();
+    vars.set("Now", "2026-04-05T12:34:56Z");
+    // SOURCE_DATE_EPOCH pins now_format's output: 1719878400 = 2024-07-02.
+    let env = MapEnvSource::new().with("SOURCE_DATE_EPOCH", "1719878400");
+    assert_eq!(
+        render_with_env("{{\n  .Now.Format \"2006-01-02\" }}", &vars, &env).unwrap(),
+        "2024-07-02"
+    );
+}
+
+#[test]
+fn test_multiline_block_numeric_index_rewrite() {
+    assert_eq!(render("{{\n  list.0 }}", &list_vars()).unwrap(), "banana");
+}
+
+#[test]
+fn test_multiline_block_backslash_shim() {
+    let vars = test_vars();
+    assert_eq!(
+        render(
+            "{{\n  reReplaceAll(pattern=\"(\\w+)\", input=\"abc\", replacement=\"[$1]\") }}",
+            &vars,
+        )
+        .unwrap(),
+        "[abc]"
     );
 }

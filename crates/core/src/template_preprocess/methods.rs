@@ -3,6 +3,7 @@
 use super::GO_BLOCK_RE;
 use super::go_blocks::extract_block_parts;
 use super::static_regex;
+use super::string_lit::RAW_STRING_RE_ALT;
 use regex::Regex;
 use std::sync::LazyLock;
 
@@ -12,7 +13,7 @@ use std::sync::LazyLock;
 /// `{{ Now.Format "2006-01-02" }}`. This regex rewrites it to
 /// `{{ Now | now_format(format="2006-01-02") }}`.
 static NOW_FORMAT_RE: LazyLock<Regex> =
-    LazyLock::new(|| static_regex(r#"Now\.Format\s+("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')"#));
+    LazyLock::new(|| static_regex(&format!(r"Now\.Format\s+({RAW_STRING_RE_ALT})")));
 
 /// Pass 4: Rewrite Go-style method calls to Tera filter syntax.
 ///

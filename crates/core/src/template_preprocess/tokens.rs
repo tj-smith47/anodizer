@@ -1,5 +1,6 @@
 //! Token machinery shared between block-level and positional rewrites.
 
+use super::string_lit::{is_string_delim, raw_string_end};
 use std::borrow::Cow;
 
 /// A token from inside a `{{ }}` block.
@@ -7,7 +8,8 @@ use std::borrow::Cow;
 pub(super) enum Token {
     /// A bare identifier or dotted path (e.g., `Version`, `Env.VAR`).
     Ident(String),
-    /// A quoted string literal including its quotes (e.g., `"v"`).
+    /// A quoted string literal including its delimiters (e.g., `"v"`,
+    /// `'v'`, `` `v` ``).
     Quoted(String),
     /// A Tera array literal including brackets (e.g., `["a", "b", "c"]`).
     ArrayLiteral(String),
@@ -17,26 +19,6 @@ pub(super) enum Token {
     Space(String),
     /// Anything else (parentheses, operators, etc.).
     Other(String),
-}
-
-/// Advance `*i` past a quoted string starting at `bytes[*i]` (the opening
-/// quote). The opening byte is one of `"` or `'`. Honors backslash escapes
-/// (skips one extra byte after a `\`) and consumes the closing quote when
-/// present. Safe to call when the quote is unterminated — `*i` is left at
-/// `bytes.len()` so the outer loop terminates cleanly.
-fn consume_quoted(bytes: &[u8], i: &mut usize) {
-    let quote = bytes[*i];
-    *i += 1;
-    while *i < bytes.len() && bytes[*i] != quote {
-        if bytes[*i] == b'\\' && *i + 1 < bytes.len() {
-            *i += 2;
-        } else {
-            *i += 1;
-        }
-    }
-    if *i < bytes.len() {
-        *i += 1; // closing quote
-    }
 }
 
 /// Tokenize the inner content of a `{{ }}` block.
@@ -58,9 +40,9 @@ pub(super) fn tokenize_block(inner: &str) -> Vec<Token> {
         }
 
         // Quoted string
-        if bytes[i] == b'"' || bytes[i] == b'\'' {
+        if is_string_delim(bytes[i]) {
             let start = i;
-            consume_quoted(bytes, &mut i);
+            i = raw_string_end(bytes, i);
             tokens.push(Token::Quoted(inner[start..i].to_string()));
             continue;
         }
@@ -76,9 +58,9 @@ pub(super) fn tokenize_block(inner: &str) -> Vec<Token> {
                     depth += 1;
                 } else if bytes[i] == b']' {
                     depth -= 1;
-                } else if bytes[i] == b'"' || bytes[i] == b'\'' {
+                } else if is_string_delim(bytes[i]) {
                     // Skip quoted strings inside the array
-                    consume_quoted(bytes, &mut i);
+                    i = raw_string_end(bytes, i);
                     continue;
                 }
                 i += 1;

@@ -3,6 +3,7 @@
 use super::GO_BLOCK_RE;
 use super::go_blocks::{extract_block_parts, try_rewrite_control_block};
 use super::static_regex;
+use super::string_lit::RAW_STRING_RE_ALT;
 use super::tokens::{Token, significant_tokens, token_to_str, tokenize_block};
 use regex::Regex;
 use std::sync::LazyLock;
@@ -15,7 +16,7 @@ use std::sync::LazyLock;
 /// Each item can be a quoted string or a bare identifier.
 static MAP_POSITIONAL_RE: LazyLock<Regex> = LazyLock::new(|| {
     // Match `map` followed by 2+ space-separated args (quoted strings or identifiers).
-    let item = r#"(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[a-zA-Z_][a-zA-Z0-9_.]*)"#;
+    let item = format!(r"(?:{RAW_STRING_RE_ALT}|[a-zA-Z_][a-zA-Z0-9_.]*)");
     // Require at least two args (one key-value pair).
     // Use a capture group for the preceding character instead of look-behind.
     // No look-ahead needed; the greedy match of args handles the boundary
@@ -46,9 +47,7 @@ pub(super) fn preprocess_map_syntax(template: &str) -> String {
                     let args_str = mcaps.name("args").map_or("", |m| m.as_str());
                     // Tokenize the arguments.
                     static ITEM_RE: LazyLock<Regex> = LazyLock::new(|| {
-                        static_regex(
-                            r#""(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[a-zA-Z_][a-zA-Z0-9_.]*"#,
-                        )
+                        static_regex(&format!(r"{RAW_STRING_RE_ALT}|[a-zA-Z_][a-zA-Z0-9_.]*"))
                     });
                     let items: Vec<&str> =
                         ITEM_RE.find_iter(args_str).map(|m| m.as_str()).collect();

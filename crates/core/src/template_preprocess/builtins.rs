@@ -3,19 +3,19 @@
 use super::GO_BLOCK_RE;
 use super::go_blocks::extract_block_parts;
 use super::static_regex;
+use super::string_lit::RAW_STRING_RE_ALT;
 use regex::Regex;
 use std::sync::LazyLock;
 
 /// Regex matching `(list "a" "b" ...)` subexpressions inside template blocks.
 /// Captures the inner arguments (variadic args to `list`).
 /// Each item independently matches:
-/// - Double-quoted strings with escaped-quote support: `"hello \"world\""`
-/// - Single-quoted strings with escaped-quote support: `'it\'s'`
+/// - String literals under the raw boundary rule ([`RAW_STRING_RE_ALT`])
 /// - Bare identifiers (variable references): `Os`, `Env.FOO`, `Version`
 // SAFETY: Built from deterministic string literals; the resulting pattern is known to be valid.
 static LIST_SUBEXPR_RE: LazyLock<Regex> = LazyLock::new(|| {
     // A single item: quoted string OR bare identifier (dotted paths like Env.FOO allowed).
-    let item = r#"(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[a-zA-Z_][a-zA-Z0-9_.]*)"#;
+    let item = format!(r"(?:{RAW_STRING_RE_ALT}|[a-zA-Z_][a-zA-Z0-9_.]*)");
     let pattern = format!(r"\(list\s+({item}(?:\s+{item})*)\)");
     static_regex(&pattern)
 });
@@ -40,9 +40,7 @@ pub(super) fn preprocess_list_subexpr(template: &str) -> String {
                     // Split items (quoted strings or bare identifiers) and rejoin as a Tera array literal.
                     // Bare identifiers pass through as variable references: `[Os, "windows"]`.
                     static ITEM_RE: LazyLock<Regex> = LazyLock::new(|| {
-                        static_regex(
-                            r#""(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[a-zA-Z_][a-zA-Z0-9_.]*"#,
-                        )
+                        static_regex(&format!(r"{RAW_STRING_RE_ALT}|[a-zA-Z_][a-zA-Z0-9_.]*"))
                     });
                     let items: Vec<&str> = ITEM_RE.find_iter(inner).map(|m| m.as_str()).collect();
                     format!("[{}]", items.join(", "))
@@ -217,7 +215,9 @@ fn rewrite_prefix_to_infix(expr: &str, func_name: &str, operator: &str) -> Strin
     static REGEX_CACHE: LazyLock<Mutex<HashMap<String, Regex>>> =
         LazyLock::new(|| Mutex::new(HashMap::new()));
 
-    let arg_pattern = r#"(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()]*(?:\([^()]*\))*[^()]*)\)|[a-zA-Z_][a-zA-Z0-9_.]*|\d+)"#;
+    let arg_pattern = format!(
+        r"(?:{RAW_STRING_RE_ALT}|\((?:[^()]*(?:\([^()]*\))*[^()]*)\)|[a-zA-Z_][a-zA-Z0-9_.]*|\d+)"
+    );
 
     // Build regex that captures the first arg and ALL remaining args as a tail.
     let pattern = format!(
@@ -247,8 +247,10 @@ fn rewrite_prefix_to_infix(expr: &str, func_name: &str, operator: &str) -> Strin
     // Regex to split the tail into individual args.
     let split_re = {
         static SPLIT_RE: LazyLock<Regex> = LazyLock::new(|| {
-            let arg = r#"(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\((?:[^()]*(?:\([^()]*\))*[^()]*)\)|[a-zA-Z_][a-zA-Z0-9_.]*|\d+)"#;
-            static_regex(arg)
+            let arg = format!(
+                r"(?:{RAW_STRING_RE_ALT}|\((?:[^()]*(?:\([^()]*\))*[^()]*)\)|[a-zA-Z_][a-zA-Z0-9_.]*|\d+)"
+            );
+            static_regex(&arg)
         });
         &*SPLIT_RE
     };
@@ -278,8 +280,7 @@ fn rewrite_prefix_to_infix(expr: &str, func_name: &str, operator: &str) -> Strin
 /// X can be a quoted string, identifier/dotted path, or parenthesized expression.
 fn rewrite_len(expr: &str) -> String {
     static LEN_RE: LazyLock<Regex> = LazyLock::new(|| {
-        let arg_pattern =
-            r#"(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|\([^()]*\)|[a-zA-Z_][a-zA-Z0-9_.]*)"#;
+        let arg_pattern = format!(r"(?:{RAW_STRING_RE_ALT}|\([^()]*\)|[a-zA-Z_][a-zA-Z0-9_.]*)");
         // Use a capture group for the preceding character instead of look-behind.
         let pattern = format!(
             r"(?:^|(?P<pre>[^a-zA-Z0-9_]))len\s+(?P<arg>{})",

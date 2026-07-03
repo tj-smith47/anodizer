@@ -96,6 +96,7 @@ Anodizer auto-translates Go `text/template` syntax to its Tera equivalent before
 - **Comparison & logic functions** — `eq` `ne` `gt` `lt` `ge` `le` `and` `or` `not` map to Tera operators (`==` `!=` `>` `<` `>=` `<=` `and` `or` `not`).
 - **`len`** — `{{ "{{ len .Tags }}" }}` becomes `{{ "{{ Tags | length }}" }}`.
 - **Positional function calls** — Go-style positional arguments for `replace` `split` `contains` `in` `reReplaceAll` `map` `slice` `time` `printf` `print` `println` are mapped to Tera's named-argument form.
+- **tera 1.x numeric indexing** — `list.0` / `a.0.b` / `a?.0` rewrite to the native `list[0]` / `a[0].b` / `a?[0]`. Numeric segments index arrays: a map key that is the string `"0"` needs `["0"]`, not `.0`. Write `[N]` in new templates.
 
 ```yaml
 # Both forms are equivalent:
@@ -321,6 +322,9 @@ Examples below use the Tera-native no-dot idiom.
 |--------|------|---------|--------|
 | `time` | fn | `{{ "{{ time(format=\"2006-01-02\") }}" }}` | current date (Go layout accepted) |
 | `now_format` | filter | `{{ "{{ Now | now_format(format=\"%Y-%m-%d\") }}" }}` | current date (chrono format) |
+| `date` | filter | `{{ "{{ Now | date(format=\"%Y%m%d\") }}" }}` | `20260703` |
+
+`date` formats a Unix timestamp (integer), an RFC 3339 datetime string, a naive `%Y-%m-%dT%H:%M:%S` datetime, or a plain `%Y-%m-%d` date. `format` takes chrono strftime specifiers (default `%Y-%m-%d`). `timezone` takes an IANA name (`timezone="America/New_York"`) and converts timestamps and offset-carrying RFC 3339 inputs; naive datetime and plain-date inputs format as UTC and ignore it. `locale` is not supported and errors — output is always POSIX-locale.
 
 ### Hashing
 

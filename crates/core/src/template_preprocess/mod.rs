@@ -22,6 +22,7 @@ mod go_blocks;
 mod methods;
 mod positional;
 mod shell_guard;
+mod string_lit;
 mod tokens;
 
 #[cfg(test)]
@@ -46,7 +47,9 @@ fn static_regex(pattern: &str) -> Regex {
 }
 
 /// Regex to match `{{ ... }}` and `{% ... %}` blocks for Go-style preprocessing.
-static GO_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| static_regex(r"\{\{.*?\}\}|\{%.*?%\}"));
+/// `(?s)` lets `.` cross newlines: a multiline expression block (`{{\n x }}`)
+/// is valid tera and must receive every pass, not skip preprocessing.
+static GO_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| static_regex(r"(?s)\{\{.*?\}\}|\{%.*?%\}"));
 
 /// Preprocess a template: convert Go-style syntax to Tera-native syntax.
 ///

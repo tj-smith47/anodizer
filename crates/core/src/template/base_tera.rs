@@ -836,16 +836,23 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // --- date filter (tera 1.x compat) ---
     // tera 2.0 removed the builtin `date` filter; 1.x-era anodizer templates
     // (`{{ Now | date(format='%Y%m%d') }}`) are a consumer contract, so it is
-    // re-registered with 1.x semantics: input is an i64 unix timestamp or a
-    // datetime string (RFC3339, naive `%Y-%m-%dT%H:%M:%S`, or plain
-    // `%Y-%m-%d`); `format` is chrono strftime, defaulting to `%Y-%m-%d`.
-    // `timezone` takes an IANA name via chrono-tz (a tera 1.x DEFAULT feature,
-    // so it worked in every shipped 1.x binary) and — exactly as in 1.x —
-    // converts only timestamps and offset-carrying RFC3339 strings; naive
-    // datetime and plain-date strings format as UTC with `timezone` unused.
-    // 1.x's `locale` argument needed tera's non-default `date-locale` feature,
-    // which anodizer never enabled; it errors explicitly rather than silently
-    // misformat.
+    // re-registered: input is an i64 unix timestamp or a datetime string
+    // (RFC3339, naive `%Y-%m-%dT%H:%M:%S`, or plain `%Y-%m-%d`); `format` is
+    // chrono strftime, defaulting to `%Y-%m-%d`.
+    // The tz-CONVERSION rules replicate 1.x exactly: `timezone` takes an IANA
+    // name via chrono-tz (a tera 1.x DEFAULT feature, so it worked in every
+    // shipped 1.x binary) and converts only timestamps and offset-carrying
+    // RFC3339 strings; naive datetime and plain-date strings format as UTC
+    // with `timezone` unused. One deliberate widening beyond 1.x: the
+    // no-timezone timestamp path formats a `DateTime<Utc>` (so `%Z` renders
+    // `UTC` and `%z` renders `+0000`) where 1.x formatted a bare
+    // `NaiveDateTime`, whose `%Z`/`%z` formatting failed at render — a
+    // panic→defined-output widening, never a changed byte for any format
+    // 1.x could actually render.
+    // 1.x's `locale` argument needed tera's non-default `date-locale`
+    // feature; without it 1.x never read the argument and SILENTLY formatted
+    // in the POSIX locale. anodizer chooses to error instead — silently
+    // dropping an explicit argument hides the misconfiguration.
     tera.register_json_filter("date", |value: &Value, args: &HashMap<String, Value>| {
         use chrono::format::{Item, StrftimeItems};
         use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, TimeZone, Utc};
@@ -853,8 +860,8 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
 
         if args.contains_key("locale") {
             return Err(tera::Error::message(
-                "date: the `locale` argument is not supported \
-                 (anodizer's compatibility `date` filter formats with the POSIX locale)",
+                "date: the `locale` argument is not supported; remove it — \
+                 output is always formatted in the POSIX locale",
             ));
         }
         let format = args
@@ -863,14 +870,18 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
             .unwrap_or("%Y-%m-%d");
         if StrftimeItems::new(format).any(|item| matches!(item, Item::Error)) {
             return Err(tera::Error::message(format!(
-                "date: invalid format `{format}`"
+                "date: invalid format `{format}` — expected chrono strftime \
+                 specifiers (e.g. `%Y-%m-%d`)"
             )));
         }
         let timezone = match args.get("timezone") {
             Some(val) => {
                 let tz = try_get_value!("date", "timezone", String, val);
                 Some(tz.parse::<Tz>().map_err(|_| {
-                    tera::Error::message(format!("date: error parsing `{tz}` as a timezone"))
+                    tera::Error::message(format!(
+                        "date: error parsing `{tz}` as a timezone \
+                         (expected an IANA name, e.g. `America/New_York`)"
+                    ))
                 })?)
             }
             None => None,

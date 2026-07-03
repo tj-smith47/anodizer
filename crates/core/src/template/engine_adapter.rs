@@ -134,7 +134,10 @@ impl JsonRegisterExt for tera::Tera {
 /// run length, without the scanner needing any concept of escaping.
 ///
 /// All three 1.x literal delimiters (`"`, `'`, `` ` ``) are handled; text
-/// outside blocks and comment blocks is left untouched.
+/// outside blocks and comment blocks is left untouched. The preprocessor's
+/// string scanners implement this same boundary rule via
+/// `template_preprocess`'s `string_lit` module — the two must agree, or a
+/// pass rewrites bytes the engine considers string contents (or vice versa).
 ///
 /// 2.0 also added inline map literals (`{'a': 1}`), whose own `{`/`}` pair
 /// can sit inside a `{{ … }}` expression. A depth-blind scan sees that map
@@ -551,6 +554,17 @@ mod tests {
         tera.add_raw_template("t", tpl.as_ref()).unwrap();
         let out = tera.render("t", &tera::Context::new()).unwrap();
         assert_eq!(out, r"true:\w+");
+    }
+
+    #[test]
+    fn backslash_shim_handles_multiline_blocks() {
+        // The shim is a char scanner, not a dot-based regex: a block spanning
+        // newlines must still get its string-literal backslashes doubled.
+        let tpl = "{{\n  f(p='\\w+')\n}} tail \\x";
+        assert_eq!(
+            double_string_literal_backslashes(tpl),
+            "{{\n  f(p='\\\\w+')\n}} tail \\x"
+        );
     }
 
     #[test]
