@@ -1,127 +1,14 @@
-use std::collections::HashMap;
-
-use anodizer_core::config::{BuildIgnore, BuildOverride};
-use anodizer_core::target::map_target;
-
 // ---------------------------------------------------------------------------
 // Build ignore/override helpers
 // ---------------------------------------------------------------------------
 
-/// Check if a target triple matches any entry in the ignore list.
-/// Matching is done by comparing the os and arch components of the target triple.
-pub(crate) fn is_target_ignored(target: &str, ignores: &[BuildIgnore]) -> bool {
-    if ignores.is_empty() {
-        return false;
-    }
-    let (os, arch) = map_target(target);
-    ignores.iter().any(|ig| ig.os == os && ig.arch == arch)
-}
-
-/// Compile a glob pattern with consistent strict-mode-vs-warn handling
-/// across the build stage's pattern-matching call sites (per-target env
-/// keys, build override `targets`, …).
-///
-/// Returns `Ok(None)` when the pattern fails to compile in normal mode
-/// (after logging a warning); `Err` in strict mode; `Ok(Some(pat))` on
-/// success. `label` describes the configuration site that produced the
-/// pattern, e.g. `"build.env key"` or `"build override target"`.
-pub(crate) fn try_compile_glob(
-    key: &str,
-    label: &str,
-    log: &anodizer_core::log::StageLogger,
-    strict: bool,
-) -> anyhow::Result<Option<glob::Pattern>> {
-    match glob::Pattern::new(key) {
-        Ok(pat) => Ok(Some(pat)),
-        Err(e) => {
-            if strict {
-                anyhow::bail!(
-                    "build: invalid glob pattern in {} '{}': {} (strict mode)",
-                    label,
-                    key,
-                    e
-                );
-            }
-            log.warn(&format!(
-                "invalid glob pattern in {} '{}': {}",
-                label, key, e
-            ));
-            Ok(None)
-        }
-    }
-}
-
-/// Resolve the merged env map for a build target by interpreting each
-/// `build.env` key as a glob pattern (matching the same `glob::Pattern`
-/// semantic used by `find_matching_override` and the `targets:` filter on
-/// upx / overrides).
-///
-/// Tradeoff-free UX win over the previous exact-key lookup: a user who writes
-/// `env: { "*-linux-gnu": { CC: musl-gcc } }` now gets that env applied to
-/// every linux-gnu target instead of silently nothing. Exact target strings
-/// are valid trivial globs and continue to match exactly as before.
-///
-/// **Merge order is alphabetic, not most-specific-wins.** Keys are visited in
-/// lexicographic order; later (alphabetically-greater) matching keys override
-/// earlier ones on conflicting values. With both `*-linux-gnu` and the exact
-/// target string matching, the exact key sorts later and wins coincidentally.
-/// For two glob keys (e.g. `*-linux-gnu` and `x86_64-*`), ASCII order — not
-/// pattern specificity — decides. Authors of multiple overlapping keys must
-/// keep that in mind; prefer non-overlapping patterns or rely on the exact
-/// target string to override globs.
-///
-/// Returns `Ok(None)` when the env map is absent / empty / has no matching
-/// keys; otherwise `Ok(Some(merged))`.
-pub(crate) fn resolve_target_env(
-    env: Option<&HashMap<String, HashMap<String, String>>>,
-    target: &str,
-    log: &anodizer_core::log::StageLogger,
-    strict: bool,
-) -> anyhow::Result<Option<HashMap<String, String>>> {
-    let Some(env) = env else { return Ok(None) };
-    if env.is_empty() {
-        return Ok(None);
-    }
-    let mut sorted_keys: Vec<&String> = env.keys().collect();
-    sorted_keys.sort();
-    let mut merged: HashMap<String, String> = HashMap::new();
-    let mut matched_any = false;
-    for key in sorted_keys {
-        let Some(pat) = try_compile_glob(key, "build.env key", log, strict)? else {
-            continue;
-        };
-        if pat.matches(target)
-            && let Some(vals) = env.get(key)
-        {
-            matched_any = true;
-            for (k, v) in vals {
-                merged.insert(k.clone(), v.clone());
-            }
-        }
-    }
-    Ok(if matched_any { Some(merged) } else { None })
-}
-
-/// Find the first matching override for a target triple.
-/// Override `targets` are glob patterns matched against the full triple string.
-pub(crate) fn find_matching_override<'a>(
-    target: &str,
-    overrides: &'a [BuildOverride],
-    log: &anodizer_core::log::StageLogger,
-    strict: bool,
-) -> anyhow::Result<Option<&'a BuildOverride>> {
-    for ov in overrides {
-        for pat_str in &ov.targets {
-            let Some(pat) = try_compile_glob(pat_str, "build override target", log, strict)? else {
-                continue;
-            };
-            if pat.matches(target) {
-                return Ok(Some(ov));
-            }
-        }
-    }
-    Ok(None)
-}
+// The glob/env/override resolution semantics live in core
+// (`anodizer_core::build_env`) so this stage and the config-time asset-name
+// derivation (which must project the same per-target env to derive the amd64
+// micro-arch level) share one implementation.
+pub(crate) use anodizer_core::build_env::{
+    find_matching_override, is_target_ignored, resolve_target_env,
+};
 
 // ---------------------------------------------------------------------------
 // Known Rust target triples (Tier 1 + Tier 2) for validation

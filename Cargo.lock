@@ -243,7 +243,6 @@ version = "0.13.1"
 dependencies = [
  "anodizer-core",
  "anyhow",
- "glob",
  "serde_yaml_ng",
  "serial_test",
  "tempfile",

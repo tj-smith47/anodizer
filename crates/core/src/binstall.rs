@@ -3,7 +3,7 @@ use std::path::Path;
 
 use anyhow::{Context as _, Result};
 
-use crate::archive_name::{binstall_pkg_fmt, render_archive_asset_name};
+use crate::archive_name::{binstall_pkg_fmt, render_archive_asset_name_with_variant};
 use crate::config::{ArchiveConfig, ArchivesConfig, BinstallConfig, BinstallOverride, CrateConfig};
 use crate::context::Context;
 use crate::target::map_target;
@@ -347,7 +347,10 @@ pub struct ArchiveAssetName {
 /// per-`os-arch` `case` table ([`crate::installer::render_installer_cases`]):
 /// both must resolve to the same asset or a consumer hits a 404, so both render
 /// through the *same* `archive.name_template` + `format_overrides` the archive
-/// stage uses (via [`crate::archive_name`]). Returns `None` when the crate
+/// stage uses (via [`crate::archive_name`]), with each target's amd64
+/// micro-arch level derived from the build env
+/// ([`crate::build_env::config_time_amd64_variant`]) so a v2/v3-tuned group's
+/// suffixed asset name is reproduced too. Returns `None` when the crate
 /// exposes no binstallable archive or produces no targets.
 pub fn crate_archive_asset_names(
     crate_cfg: &CrateConfig,
@@ -375,7 +378,19 @@ pub fn crate_archive_asset_names(
     let mut map: BTreeMap<String, ArchiveAssetName> = BTreeMap::new();
     for target in &targets {
         let format = archive_format_for_target(&archive, target, &global_default_format);
-        let asset_name = render_archive_asset_name(ctx, &name_template, target, &format)?;
+        // The archive stage names a v2/v3-tuned group's asset with the amd64
+        // micro-arch level detected from the build env; derive the same level
+        // from config so the derived name cannot silently fall to the
+        // baseline (the binstall/installer 404 class).
+        let amd64_variant =
+            crate::build_env::config_time_amd64_variant(crate_cfg, target, default_targets, ctx)?;
+        let asset_name = render_archive_asset_name_with_variant(
+            ctx,
+            &name_template,
+            target,
+            &format,
+            amd64_variant.as_deref(),
+        )?;
         map.insert(target.clone(), ArchiveAssetName { format, asset_name });
     }
     Ok(Some(map))
@@ -548,12 +563,12 @@ fn archive_format_for_target(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, HashMap};
 
     use super::*;
     use crate::config::{
-        ArchiveConfig, ArchivesConfig, BinstallConfig, BinstallOverride, Config, FormatOverride,
-        GitHubConfig, ReleaseConfig,
+        ArchiveConfig, ArchivesConfig, BinstallConfig, BinstallOverride, BuildConfig, Config,
+        FormatOverride, GitHubConfig, ReleaseConfig,
     };
     use crate::context::{Context, ContextOptions};
 
@@ -1502,5 +1517,129 @@ binstall = { pkg-url = "https://example/x", custom = "keep" }
             render_overrides_map(&empty, &ctx).unwrap().is_none(),
             "an empty map renders to None, never an empty table"
         );
+    }
+
+    // --- variant-aware config-time derivation ------------------------------
+
+    /// A crate whose builds carry per-target env, against the DEFAULT archive
+    /// name template, so the derived names exercise the `Amd64` suffix clause.
+    fn tuned_crate(env: HashMap<String, HashMap<String, String>>) -> CrateConfig {
+        CrateConfig {
+            name: "myapp".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("myapp".to_string()),
+                targets: Some(vec![
+                    "x86_64-unknown-linux-gnu".to_string(),
+                    "aarch64-unknown-linux-gnu".to_string(),
+                    "x86_64-apple-darwin".to_string(),
+                ]),
+                env: Some(env),
+                ..Default::default()
+            }]),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                formats: Some(vec!["tar.gz".to_string()]),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }
+    }
+
+    /// A v3-tuned build (`RUSTFLAGS -Ctarget-cpu=x86-64-v3` in the per-target
+    /// build env) must derive the SAME `amd64v3` asset name the archive stage
+    /// uploads for that group — with zero manual overrides. Targets without
+    /// the tuning env (the darwin amd64 build here) keep the baseline
+    /// suffix-free name, proving the variant is keyed per target, not
+    /// per crate.
+    #[test]
+    fn asset_names_carry_config_declared_amd64_variant() {
+        let mut env = HashMap::new();
+        env.insert(
+            "x86_64-unknown-linux-gnu".to_string(),
+            HashMap::from([(
+                "RUSTFLAGS".to_string(),
+                "-Ctarget-cpu=x86-64-v3".to_string(),
+            )]),
+        );
+        let crate_cfg = tuned_crate(env);
+        let mut ctx = make_ctx();
+        let assets = crate_archive_asset_names(&crate_cfg, &[], &mut ctx)
+            .unwrap()
+            .expect("binstallable archive with targets derives names");
+        assert_eq!(
+            assets["x86_64-unknown-linux-gnu"].asset_name, "myapp_1.0.0_linux_amd64v3.tar.gz",
+            "tuned target must carry the micro-arch suffix"
+        );
+        assert_eq!(
+            assets["aarch64-unknown-linux-gnu"].asset_name,
+            "myapp_1.0.0_linux_arm64.tar.gz"
+        );
+        assert_eq!(
+            assets["x86_64-apple-darwin"].asset_name, "myapp_1.0.0_darwin_amd64.tar.gz",
+            "untuned amd64 target stays on the baseline name"
+        );
+    }
+
+    /// A build env whose RUSTFLAGS cannot be rendered at config time (an
+    /// undefined build-time-only variable) must NOT invent a variant: the
+    /// derivation falls back to the baseline name and the snapshot
+    /// emission cross-check remains the loud backstop.
+    #[test]
+    fn asset_names_fall_back_to_baseline_when_env_defeats_config_render() {
+        let mut env = HashMap::new();
+        env.insert(
+            "x86_64-unknown-linux-gnu".to_string(),
+            HashMap::from([(
+                "RUSTFLAGS".to_string(),
+                "{{ BuildTimeOnlyVar }}".to_string(),
+            )]),
+        );
+        let crate_cfg = tuned_crate(env);
+        let mut ctx = make_ctx();
+        let assets = crate_archive_asset_names(&crate_cfg, &[], &mut ctx)
+            .unwrap()
+            .expect("derivation still resolves");
+        assert_eq!(
+            assets["x86_64-unknown-linux-gnu"].asset_name, "myapp_1.0.0_linux_amd64.tar.gz",
+            "unrenderable env derives no variant (baseline name)"
+        );
+    }
+
+    /// Deriving the variant must not leak the build-env cascade into the
+    /// caller's template env: `{{ .Env.KEY }}` seen by later renders is the
+    /// value from BEFORE the derivation.
+    #[test]
+    fn variant_derivation_does_not_leak_build_env_into_ctx() {
+        let mut env = HashMap::new();
+        env.insert(
+            "x86_64-unknown-linux-gnu".to_string(),
+            HashMap::from([
+                (
+                    "RUSTFLAGS".to_string(),
+                    "-Ctarget-cpu=x86-64-v2".to_string(),
+                ),
+                ("MY_BUILD_KEY".to_string(), "leaky".to_string()),
+            ]),
+        );
+        let crate_cfg = tuned_crate(env);
+        let mut ctx = make_ctx();
+        ctx.template_vars_mut().set_env("RUSTFLAGS", "prior-value");
+        let before_keys = ctx.template_vars().all_env().len();
+        let assets = crate_archive_asset_names(&crate_cfg, &[], &mut ctx)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            assets["x86_64-unknown-linux-gnu"].asset_name,
+            "myapp_1.0.0_linux_amd64v2.tar.gz"
+        );
+        assert_eq!(
+            ctx.template_vars().all_env().get("RUSTFLAGS").unwrap(),
+            "prior-value",
+            "the caller's prior env value must be restored after the cascade"
+        );
+        assert!(
+            !ctx.template_vars().all_env().contains_key("MY_BUILD_KEY"),
+            "cascade-only keys must be removed after derivation"
+        );
+        assert_eq!(ctx.template_vars().all_env().len(), before_keys);
     }
 }

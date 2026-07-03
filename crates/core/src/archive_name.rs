@@ -232,7 +232,34 @@ pub fn render_archive_asset_name(
     target: &str,
     format: &str,
 ) -> Result<String> {
-    let stem = render_archive_stem(ctx, name_template, target)?;
+    render_archive_asset_name_with_variant(ctx, name_template, target, format, None)
+}
+
+/// [`render_archive_asset_name`] with the group's amd64 micro-architecture
+/// level overlaid — the exact seeding sequence the archive stage performs
+/// ([`seed_target_vars`] then [`seed_amd64_variant_var`] with the group's
+/// `amd64_variant` metadata), so a derived name for a v2/v3-tuned target
+/// carries the same `amd64v3`-style suffix the uploaded archive does.
+///
+/// Config-time callers obtain `amd64_variant` from
+/// [`crate::build_env::config_time_amd64_variant`]; `None` renders the
+/// baseline (identical to [`render_archive_asset_name`]).
+pub fn render_archive_asset_name_with_variant(
+    ctx: &mut Context,
+    name_template: &str,
+    target: &str,
+    format: &str,
+    amd64_variant: Option<&str>,
+) -> Result<String> {
+    let stem = if amd64_variant.is_some() {
+        seed_target_vars(ctx, target);
+        let (_, arch) = map_target(target);
+        seed_amd64_variant_var(ctx.template_vars_mut(), &arch, amd64_variant);
+        ctx.render_template(name_template)
+            .with_context(|| format!("render archive name template for target '{target}'"))?
+    } else {
+        render_archive_stem(ctx, name_template, target)?
+    };
     Ok(format!("{stem}.{format}"))
 }
 

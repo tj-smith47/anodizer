@@ -87,6 +87,18 @@ impl TemplateVars {
         self.env.insert(key.to_string(), value.to_string());
     }
 
+    /// Remove an env var injected via [`set_env`](Self::set_env). Returns
+    /// `true` if the key was present.
+    ///
+    /// The undo half of a temporary env cascade (a config-time projection
+    /// that must leave the caller's render env untouched): restoring a key
+    /// that did not exist beforehand needs removal — `set_env(key, "")`
+    /// would leave `{{ .Env.KEY }}` resolving to a defined-empty value
+    /// instead of the pre-cascade "unset".
+    pub fn unset_env(&mut self, key: &str) -> bool {
+        self.env.remove(key).is_some()
+    }
+
     /// Set an env var that was explicitly configured by the user.
     /// Also adds it to the general env map for template rendering.
     pub fn set_config_env(&mut self, key: &str, value: &str) {

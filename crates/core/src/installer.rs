@@ -252,7 +252,9 @@ fn render_uname_cases(table: &[(&str, &str)], released: &BTreeSet<String>) -> St
 /// Searches top-level `crates:` first, then every `workspaces[].crates[]`, and
 /// returns the first match. `None` when no such crate exists (e.g. a pure
 /// library workspace), in which case the installer renders no asset arms.
-fn installer_crate(config: &Config) -> Option<CrateConfig> {
+/// Public so emission validation can tell whether a crate's derived asset
+/// names feed the installer's case table.
+pub fn installer_crate(config: &Config) -> Option<CrateConfig> {
     let project = config.project_name.as_str();
     let produces_project_binary = |c: &CrateConfig| -> bool {
         crate::build_plan::planned_builds(c)
@@ -427,6 +429,37 @@ mod tests {
         assert_eq!(
             arms.get("linux-amd64").map(String::as_str),
             Some("anodizer_0.13.0_linux_amd64.tar.gz")
+        );
+    }
+
+    /// A v3-tuned linux build (`RUSTFLAGS -Ctarget-cpu=x86-64-v3` in the
+    /// per-target build env) must surface the SAME `amd64v3` suffix in the
+    /// installer's asset arm the archive stage bakes into the uploaded name —
+    /// with zero overrides. Untuned targets keep the baseline names.
+    #[test]
+    fn installer_arms_carry_config_declared_amd64_variant() {
+        let mut ctx = anodize_ctx(None);
+        let mut env = std::collections::HashMap::new();
+        env.insert(
+            "x86_64-unknown-linux-gnu".to_string(),
+            std::collections::HashMap::from([(
+                "RUSTFLAGS".to_string(),
+                "-Ctarget-cpu=x86-64-v3".to_string(),
+            )]),
+        );
+        ctx.config.crates[0].builds.as_mut().unwrap()[0].env = Some(env);
+
+        let table = render_installer_cases(&mut ctx).unwrap().asset_cases;
+        let arms = parse_arms(&table);
+        assert_eq!(
+            arms.get("linux-amd64").map(String::as_str),
+            Some("anodizer_0.13.0_linux_amd64v3.tar.gz"),
+            "tuned target's arm must carry the micro-arch suffix"
+        );
+        assert_eq!(
+            arms.get("darwin-amd64").map(String::as_str),
+            Some("anodizer_0.13.0_darwin_amd64.tar.gz"),
+            "untuned amd64 target stays baseline"
         );
     }
 

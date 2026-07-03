@@ -3,6 +3,7 @@ pub mod archive_name;
 pub mod artifact;
 pub mod binary_artifact_guard;
 pub mod binstall;
+pub mod build_env;
 pub mod build_plan;
 pub mod cargo_lock;
 pub mod cargo_package;

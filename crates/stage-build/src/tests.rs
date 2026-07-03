@@ -42,7 +42,9 @@ fn ctx_for_test<'a>(
         command_override: None,
     }
 }
-use super::profile::{detect_amd64_variant, parse_amd64_variant_from_rustflags};
+use anodizer_core::build_env::amd64_variant_from_rustflags as parse_amd64_variant_from_rustflags;
+
+use super::profile::detect_amd64_variant;
 use super::targets::KNOWN_TARGETS;
 use super::targets::{find_matching_override, is_target_ignored, resolve_target_env};
 use super::universal::build_universal_binary;

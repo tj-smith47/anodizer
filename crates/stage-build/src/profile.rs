@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 // ---------------------------------------------------------------------------
 // detect_cargo_profile — parse --release / --profile flags from cargo flags
 // ---------------------------------------------------------------------------
@@ -53,39 +51,7 @@ pub(crate) fn detect_cargo_profile(flags: &[String]) -> &str {
 // amd64 microarchitecture variant detection from RUSTFLAGS
 // ---------------------------------------------------------------------------
 
-pub(crate) fn parse_amd64_variant_from_rustflags(rustflags: &str) -> Option<String> {
-    let tokens: Vec<&str> = rustflags.split_whitespace().collect();
-    let mut i = 0;
-    while i < tokens.len() {
-        let cpu = if let Some(val) = tokens[i].strip_prefix("-Ctarget-cpu=") {
-            Some(val)
-        } else if tokens[i] == "-C"
-            && i + 1 < tokens.len()
-            && let Some(val) = tokens[i + 1].strip_prefix("target-cpu=")
-        {
-            i += 1;
-            Some(val)
-        } else {
-            None
-        };
-        if let Some(cpu) = cpu
-            && let Some(level) = cpu.strip_prefix("x86-64-")
-        {
-            return Some(level.to_string());
-        }
-        i += 1;
-    }
-    None
-}
-
-pub(crate) fn detect_amd64_variant(target: &str, env: &HashMap<String, String>) -> Option<String> {
-    if !target.starts_with("x86_64") {
-        return None;
-    }
-    if let Some(flags) = env.get("RUSTFLAGS")
-        && let Some(v) = parse_amd64_variant_from_rustflags(flags)
-    {
-        return Some(v);
-    }
-    None
-}
+// The detection lives in core (`anodizer_core::build_env`) so config-time
+// asset-name derivation and this stage share one detector; re-exported under
+// the stage's historical name.
+pub(crate) use anodizer_core::build_env::amd64_variant_from_env as detect_amd64_variant;
