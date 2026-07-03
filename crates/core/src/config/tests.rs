@@ -17,6 +17,7 @@ use super::{
 // because config/mod.rs does `pub use submod::*;` for each)
 use super::GitConfig;
 use super::HookEntry;
+use super::{Amd64Variant, config_schema};
 use super::{ArchivesConfig, ChecksumConfig, ContentSource, ExtraFileSpec};
 use super::{BuilderKind, all_builds_prebuilt, validate_builds};
 use super::{ChangelogConfig, MilestoneConfig, SbomConfig};
@@ -9691,8 +9692,12 @@ crates:
 }
 
 #[test]
-fn validate_builds_gates_amd64_variant_to_known_levels() {
-    let yaml = r#"
+fn builds_amd64_variant_is_rejected_at_parse_on_every_axis() {
+    // Typed as an enum, so serde is the gate — a garbage level fails the
+    // PARSE on the crates axis, the workspaces axis, AND `defaults.builds`
+    // (which the loader's validate_builds walk never visits, and which is
+    // folded into crates only AFTER validation runs).
+    let crates_yaml = r#"
 project_name: test
 crates:
   - name: app
@@ -9703,16 +9708,77 @@ crates:
         targets: ["x86_64-unknown-linux-gnu"]
         amd64_variant: "v3"
 "#;
-    let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
-    validate_builds(&cfg).expect("a declared v3 level must validate cleanly");
+    let cfg: Config = serde_yaml_ng::from_str(crates_yaml).expect("a declared v3 level parses");
+    assert_eq!(
+        cfg.crates[0].builds.as_ref().unwrap()[0].amd64_variant,
+        Some(Amd64Variant::V3)
+    );
 
-    let bad = yaml.replace("\"v3\"", "\"x86-64-v3\"");
-    let cfg: Config = serde_yaml_ng::from_str(&bad).unwrap();
-    let err = validate_builds(&cfg).expect_err("a non-level value must be rejected");
-    assert!(err.contains("amd64_variant"), "names the field: {err}");
+    let bad = crates_yaml.replace("\"v3\"", "\"x86-64-v3\"");
+    let err = serde_yaml_ng::from_str::<Config>(&bad)
+        .expect_err("a non-level value on the crates axis must fail the parse");
+    let msg = err.to_string();
     assert!(
-        err.contains("\"v1\", \"v2\", \"v3\", \"v4\""),
-        "lists the levels: {err}"
+        msg.contains("unknown variant `x86-64-v3`, expected one of `v1`, `v2`, `v3`, `v4`"),
+        "names the bad value and the full valid set: {msg}"
+    );
+
+    let defaults_yaml = r#"
+project_name: test
+defaults:
+  builds:
+    amd64_variant: "x86-64-v3"
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let err = serde_yaml_ng::from_str::<Config>(defaults_yaml)
+        .expect_err("the defaults axis must be gated by the same parse");
+    let msg = err.to_string();
+    assert!(
+        msg.contains("unknown variant `x86-64-v3`, expected one of `v1`, `v2`, `v3`, `v4`"),
+        "defaults-axis garbage gets the same rejection: {msg}"
+    );
+
+    let workspaces_yaml = r#"
+project_name: test
+workspaces:
+  - name: "ws"
+    crates:
+      - name: app
+        path: "."
+        tag_template: "v{{ .Version }}"
+        builds:
+          - binary: app
+            amd64_variant: "v9"
+"#;
+    let err = serde_yaml_ng::from_str::<Config>(workspaces_yaml)
+        .expect_err("the workspaces axis must be gated by the same parse");
+    assert!(
+        err.to_string().contains("unknown variant `v9`"),
+        "workspaces-axis garbage gets the same rejection: {err}"
+    );
+}
+
+#[test]
+fn schema_types_builds_amd64_variant_as_the_level_enum() {
+    // The generated schema.json must reject a bogus level (e.g. "v9") the
+    // same way serde does: BuildConfig.amd64_variant references the closed
+    // Amd64Variant enum instead of a free-form string.
+    let schema = config_schema();
+    let variant_ref = &schema["definitions"]["BuildConfig"]["properties"]["amd64_variant"];
+    assert!(
+        variant_ref
+            .to_string()
+            .contains("#/definitions/Amd64Variant"),
+        "builds[].amd64_variant must reference the enum definition: {variant_ref}"
+    );
+    let levels = &schema["definitions"]["Amd64Variant"]["enum"];
+    assert_eq!(
+        levels,
+        &serde_json::json!(["v1", "v2", "v3", "v4"]),
+        "the enum definition is closed over the four levels"
     );
 }
 

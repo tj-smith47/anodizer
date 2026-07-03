@@ -44,12 +44,12 @@ fn ctx_for_test<'a>(
 }
 use anodizer_core::build_env::amd64_variant_from_rustflags as parse_amd64_variant_from_rustflags;
 
-use super::profile::detect_amd64_variant;
 use super::targets::KNOWN_TARGETS;
 use super::targets::{find_matching_override, is_target_ignored, resolve_target_env};
 use super::universal::build_universal_binary;
 use super::validation::{strip_glibc_suffix, target_for_validation};
 use super::workspace::check_workspace_package;
+use anodizer_core::build_env::amd64_variant_from_env as detect_amd64_variant;
 use anodizer_core::target::DEFAULT_TARGETS;
 
 fn test_logger() -> StageLogger {
@@ -2854,7 +2854,11 @@ fn test_detect_amd64_variant_x86_64_with_rustflags() {
         "-C target-cpu=x86-64-v3".to_string(),
     );
     assert_eq!(
-        detect_amd64_variant("x86_64-unknown-linux-gnu", &env),
+        detect_amd64_variant(
+            "x86_64-unknown-linux-gnu",
+            &env,
+            &anodizer_core::MapEnvSource::new()
+        ),
         Some("v3".to_string())
     );
 }
@@ -2867,7 +2871,11 @@ fn test_detect_amd64_variant_non_x86_target() {
         "-C target-cpu=x86-64-v3".to_string(),
     );
     assert_eq!(
-        detect_amd64_variant("aarch64-unknown-linux-gnu", &env),
+        detect_amd64_variant(
+            "aarch64-unknown-linux-gnu",
+            &env,
+            &anodizer_core::MapEnvSource::new()
+        ),
         None
     );
 }
@@ -2875,7 +2883,14 @@ fn test_detect_amd64_variant_non_x86_target() {
 #[test]
 fn test_detect_amd64_variant_no_rustflags() {
     let env = HashMap::new();
-    assert_eq!(detect_amd64_variant("x86_64-unknown-linux-gnu", &env), None);
+    assert_eq!(
+        detect_amd64_variant(
+            "x86_64-unknown-linux-gnu",
+            &env,
+            &anodizer_core::MapEnvSource::new()
+        ),
+        None
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -3183,4 +3198,139 @@ mod no_binary_skip_visibility {
         assert_eq!(lines.len(), 1, "{lines:?}");
         assert_eq!(lines[0].0, LogLevel::Status, "{lines:?}");
     }
+}
+
+// ---------------------------------------------------------------------------
+// First-binary agreement: real artifact registration + real archive naming
+// vs the config-time projection
+// ---------------------------------------------------------------------------
+
+/// Executable both-sides pin for the "first binary names the group" rule:
+/// artifacts are registered through the runner's own `add_artifact` in the
+/// REAL registration order (compile results before drained copy_from jobs),
+/// the REAL archive stage names the group, and the config-time projection —
+/// walking the same crate config, where the copy_from entry is listed FIRST —
+/// must pick the same variant the produced archive carries.
+#[test]
+fn archive_group_first_binary_variant_agrees_with_projection() {
+    use anodizer_core::config::{Amd64Variant, BuildConfig, CrateConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
+    use anodizer_stage_archive::ArchiveStage;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    std::fs::create_dir_all(&dist).unwrap();
+    let target = "x86_64-unknown-linux-gnu";
+    let compiled_bin = tmp.path().join("myapp");
+    let copied_bin = tmp.path().join("helper");
+    std::fs::write(&compiled_bin, b"fake compiled binary").unwrap();
+    std::fs::write(&copied_bin, b"fake copied binary").unwrap();
+
+    let tuned_env = |flags: &str| {
+        let mut env = HashMap::new();
+        env.insert(
+            target.to_string(),
+            HashMap::from([("RUSTFLAGS".to_string(), flags.to_string())]),
+        );
+        Some(env)
+    };
+    // Config order lists the copy_from entry FIRST — raw config order must
+    // NOT decide the group; registration order does.
+    let copy_build = BuildConfig {
+        binary: Some("helper".to_string()),
+        copy_from: Some("myapp".to_string()),
+        targets: Some(vec![target.to_string()]),
+        env: tuned_env("-Ctarget-cpu=x86-64-v3"),
+        ..Default::default()
+    };
+    let compile_build = BuildConfig {
+        binary: Some("myapp".to_string()),
+        targets: Some(vec![target.to_string()]),
+        env: tuned_env("-Ctarget-cpu=x86-64-v2"),
+        ..Default::default()
+    };
+    let krate = CrateConfig {
+        name: "myapp".to_string(),
+        path: ".".to_string(),
+        tag_template: "v{{ .Version }}".to_string(),
+        builds: Some(vec![copy_build, compile_build]),
+        ..Default::default()
+    };
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .dist(dist.clone())
+        .crates(vec![krate.clone()])
+        .sealed_env()
+        .build();
+    ctx.template_vars_mut().set("Version", "1.0.0");
+
+    // Register through the runner's own registration surface in ITS order:
+    // compile results are zipped back before copy_from jobs drain.
+    super::run_helpers::add_artifact(
+        &mut ctx,
+        &dist,
+        false,
+        &compiled_bin,
+        ArtifactKind::Binary,
+        target,
+        "myapp",
+        "myapp",
+        &None,
+        false,
+        &Some("v2".to_string()),
+    )
+    .unwrap();
+    super::run_helpers::add_artifact(
+        &mut ctx,
+        &dist,
+        false,
+        &copied_bin,
+        ArtifactKind::Binary,
+        target,
+        "myapp",
+        "helper",
+        &None,
+        false,
+        &Some("v3".to_string()),
+    )
+    .unwrap();
+
+    // Real archive-group naming.
+    ArchiveStage.run(&mut ctx).expect("archive stage runs");
+    let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+    assert_eq!(archives.len(), 1, "one group for the target");
+    let group_variant = archives[0].metadata.get("amd64_variant").cloned();
+    assert_eq!(
+        group_variant.as_deref(),
+        Some("v2"),
+        "the group carries its FIRST registered binary's variant"
+    );
+    assert!(
+        archives[0].name.contains("amd64v2"),
+        "the produced name renders the first binary's level: {}",
+        archives[0].name
+    );
+
+    // The projection picks the same build — compile pass before copy_from —
+    // so both sides agree on the group's level.
+    let projected =
+        anodizer_core::build_env::config_time_amd64_variant(&krate, target, &[], &mut ctx).unwrap();
+    assert_eq!(
+        projected, group_variant,
+        "projection must agree with the produced group's first-binary variant"
+    );
+
+    // Guard the fixture's premise: a declared level on the copy entry would
+    // not change the compile-first pick either.
+    let mut declared = krate.clone();
+    declared.builds.as_mut().unwrap()[0].amd64_variant = Some(Amd64Variant::V4);
+    assert_eq!(
+        anodizer_core::build_env::config_time_amd64_variant(&declared, target, &[], &mut ctx)
+            .unwrap()
+            .as_deref(),
+        Some("v2"),
+        "a copy_from declaration must not out-vote the first-registered compile build"
+    );
 }

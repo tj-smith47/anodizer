@@ -4,11 +4,11 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use super::{
-    AppBundleConfig, ArchiveConfig, ArchivesConfig, BinstallConfig, BlobConfig, ChecksumConfig,
-    DmgConfig, DockerDigestConfig, DockerManifestConfig, DockerV2Config, FlatpakConfig, HookEntry,
-    HooksConfig, MsiConfig, NfpmConfig, NsisConfig, PkgConfig, PublishConfig, ReleaseConfig,
-    SnapcraftConfig, StringOrBool, VersionSyncConfig, deserialize_archives_config,
-    deserialize_string_or_bool_opt,
+    Amd64Variant, AppBundleConfig, ArchiveConfig, ArchivesConfig, BinstallConfig, BlobConfig,
+    ChecksumConfig, DmgConfig, DockerDigestConfig, DockerManifestConfig, DockerV2Config,
+    FlatpakConfig, HookEntry, HooksConfig, MsiConfig, NfpmConfig, NsisConfig, PkgConfig,
+    PublishConfig, ReleaseConfig, SnapcraftConfig, StringOrBool, VersionSyncConfig,
+    deserialize_archives_config, deserialize_string_or_bool_opt,
 };
 
 // ---------------------------------------------------------------------------
@@ -375,8 +375,11 @@ pub struct BuildConfig {
     pub no_unique_dist_dir: Option<StringOrBool>,
     /// Declared x86-64 micro-architecture level for this build's artifacts:
     /// `"v2"`, `"v3"`, `"v4"`, or the `"v1"` baseline. When set, it overrides
-    /// the level anodizer detects from the resolved build env (`RUSTFLAGS` /
-    /// `CARGO_TARGET_<TRIPLE>_RUSTFLAGS` carrying `-Ctarget-cpu=x86-64-v<N>`)
+    /// the level anodizer detects from the resolved build env — the
+    /// config-map and inherited process environment merged under cargo's own
+    /// mutually-exclusive source order (`CARGO_ENCODED_RUSTFLAGS`, then
+    /// `RUSTFLAGS`, then `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`, first present
+    /// wins) carrying `-Ctarget-cpu=x86-64-v<N>` —
     /// for BOTH the artifact's `amd64_variant` metadata — which names a
     /// v2/v3-tuned group's archives (`…_amd64v3.tar.gz`) — and the config-time
     /// asset-name derivation feeding cargo-binstall `pkg_url` and the
@@ -384,7 +387,11 @@ pub struct BuildConfig {
     /// only resolvable at build time (e.g. `RUSTFLAGS: "{{ .Env.CI_FLAGS }}"`)
     /// or when importing a tuned binary via `builder: prebuilt`. Ignored for
     /// non-x86_64 targets.
-    pub amd64_variant: Option<String>,
+    ///
+    /// Typed as [`Amd64Variant`], so any value outside `"v1"`..`"v4"` is
+    /// rejected when the config is parsed — on every axis the field can be
+    /// set from (`crates[]`, `workspaces[].crates[]`, and `defaults.builds`).
+    pub amd64_variant: Option<Amd64Variant>,
     /// Builder to use for this entry. `cargo` (the default when omitted)
     /// runs `cargo build`. `prebuilt` skips compilation and imports a
     /// binary the operator already produced via the `prebuilt:` block.

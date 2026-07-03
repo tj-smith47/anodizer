@@ -496,6 +496,13 @@ fn validate_derived_asset_names(
             continue;
         }
         if !for_triple.iter().any(|p| p.name == asset.asset_name) {
+            // Quote the level the produced group actually carries so the
+            // remedy works verbatim; an archive with no amd64_variant
+            // metadata is the untagged baseline.
+            let produced_level = for_triple
+                .iter()
+                .find_map(|p| p.amd64_variant.as_deref())
+                .unwrap_or("v1");
             bail!(
                 "crate '{}' auto-derived asset name for target '{}' resolves to \
                  '{}', but the archives produced for that target are: {}. Every \
@@ -505,9 +512,10 @@ fn validate_derived_asset_names(
                  at config time, so the derivation could not reproduce a naming \
                  input of the produced asset (e.g. its amd64 micro-arch level); \
                  make the tuning env target-static (renderable from config), or \
-                 declare the level on the tuned build — `amd64_variant: \"v3\"` \
-                 in its builds[] entry — which overrides detection for both the \
-                 artifact metadata and every derived-name consumer.",
+                 declare the produced level on the tuned build — \
+                 `amd64_variant: \"{}\"` in its builds[] entry — which overrides \
+                 detection for both the artifact metadata and every \
+                 derived-name consumer.",
                 crate_cfg.name,
                 triple,
                 asset.asset_name,
@@ -516,17 +524,22 @@ fn validate_derived_asset_names(
                     .map(|p| p.name.as_str())
                     .collect::<Vec<_>>()
                     .join(", "),
+                produced_level,
             );
         }
     }
     Ok(())
 }
 
-/// A produced archive asset: its filename and the target triple it was built
-/// for (when known).
+/// A produced archive asset: its filename, the target triple it was built
+/// for (when known), and the amd64 micro-architecture level its group's
+/// first binary carried (`Artifact.metadata["amd64_variant"]`, absent for
+/// baseline/non-x86 groups) — the level the derived-name bail quotes in its
+/// `amd64_variant:` remedy so the fix works verbatim.
 struct ProducedAsset {
     name: String,
     target: Option<String>,
+    amd64_variant: Option<String>,
 }
 
 /// Gather the archive assets this run produced for `crate_name`, sorted by
@@ -539,6 +552,7 @@ fn produced_archives(ctx: &Context, crate_name: &str) -> Vec<ProducedAsset> {
         .map(|a| ProducedAsset {
             name: a.name.clone(),
             target: a.target.clone(),
+            amd64_variant: a.metadata.get("amd64_variant").cloned(),
         })
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
@@ -833,9 +847,12 @@ mod tests {
     /// (the per-crate scope `with_crate_scope` would otherwise apply) so the
     /// individual `validate_*` functions can be exercised without a git fixture.
     fn scoped_ctx(crate_cfg: CrateConfig) -> Context {
+        // Sealed: variant derivation consults the process env at every cargo
+        // flags tier, so an exported RUSTFLAGS must not leak into fixtures.
         let mut ctx = TestContextBuilder::new()
             .snapshot(true)
             .crates(vec![crate_cfg])
+            .sealed_env()
             .build();
         ctx.template_vars_mut().set("Version", "1.0.0");
         ctx.template_vars_mut().set("RawVersion", "1.0.0");
@@ -848,9 +865,25 @@ mod tests {
     /// Add an archive artifact for `crate_name`/`target` with the canonical
     /// asset `name` plus url+sha256 metadata so the nix render path accepts it.
     fn add_archive(ctx: &mut Context, crate_name: &str, target: &str, name: &str) {
+        add_archive_with_variant(ctx, crate_name, target, name, None);
+    }
+
+    /// [`add_archive`] with the `amd64_variant` metadata a real tuned
+    /// archive carries (propagated from its first source binary by the
+    /// archive stage) — the level the derived-name bail's remedy quotes.
+    fn add_archive_with_variant(
+        ctx: &mut Context,
+        crate_name: &str,
+        target: &str,
+        name: &str,
+        amd64_variant: Option<&str>,
+    ) {
         let mut metadata = HashMap::new();
         metadata.insert("url".to_string(), format!("https://example.com/{name}"));
         metadata.insert("sha256".to_string(), "a".repeat(64));
+        if let Some(v) = amd64_variant {
+            metadata.insert("amd64_variant".to_string(), v.to_string());
+        }
         ctx.artifacts.add(Artifact {
             kind: ArtifactKind::Archive,
             path: std::path::PathBuf::from(format!("/dist/{name}")),
@@ -1017,17 +1050,19 @@ mod tests {
         );
     }
 
-    /// The full remedy loop: the bail names `amd64_variant:` as the fix, and
-    /// applying it VERBATIM to the tuned build makes the same validation
+    /// The full remedy loop: the bail names `amd64_variant:` as the fix —
+    /// quoting the level the produced archive's metadata actually carries —
+    /// and applying it VERBATIM to the tuned build makes the same validation
     /// pass — a remedy that doesn't work when followed is worse than none.
     #[test]
     fn unrenderable_env_bail_remedy_applied_verbatim_passes() {
         let (mut cfg, _bs, mut ctx) = auto_derived_fixture(Some("{{ BuildTimeOnlyFlags }}"));
-        add_archive(
+        add_archive_with_variant(
             &mut ctx,
             "cfgd",
             "x86_64-unknown-linux-gnu",
             "cfgd_1.0.0_linux_amd64v3.tar.gz",
+            Some("v3"),
         );
         let err = validate_derived_asset_names(&mut ctx, &cfg, &log())
             .expect_err("unreproducible naming input fails first");
@@ -1036,9 +1071,41 @@ mod tests {
             "the remedy must be quoted ready to paste: {err}"
         );
 
-        cfg.builds.as_mut().unwrap()[0].amd64_variant = Some("v3".to_string());
+        cfg.builds.as_mut().unwrap()[0].amd64_variant =
+            Some(anodizer_core::config::Amd64Variant::V3);
         validate_derived_asset_names(&mut ctx, &cfg, &log())
             .expect("the bail's own remedy must satisfy the cross-check");
+    }
+
+    /// The remedy quotes the PRODUCED level, not a hardcoded "v3": a
+    /// v2-tuned group's bail must say `amd64_variant: "v2"`, and applying
+    /// that exact value must pass.
+    #[test]
+    fn unrenderable_env_bail_remedy_quotes_the_produced_v2_level() {
+        let (mut cfg, _bs, mut ctx) = auto_derived_fixture(Some("{{ BuildTimeOnlyFlags }}"));
+        add_archive_with_variant(
+            &mut ctx,
+            "cfgd",
+            "x86_64-unknown-linux-gnu",
+            "cfgd_1.0.0_linux_amd64v2.tar.gz",
+            Some("v2"),
+        );
+        let err = validate_derived_asset_names(&mut ctx, &cfg, &log())
+            .expect_err("unreproducible naming input fails first");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("`amd64_variant: \"v2\"`"),
+            "the remedy must quote the produced level: {msg}"
+        );
+        assert!(
+            !msg.contains("\"v3\""),
+            "no hardcoded v3 may survive in the remedy: {msg}"
+        );
+
+        cfg.builds.as_mut().unwrap()[0].amd64_variant =
+            Some(anodizer_core::config::Amd64Variant::V2);
+        validate_derived_asset_names(&mut ctx, &cfg, &log())
+            .expect("the quoted v2 remedy must satisfy the cross-check");
     }
 
     /// Auto-derived binstall fixture: binstall enabled with NEITHER `pkg_url`

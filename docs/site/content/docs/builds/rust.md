@@ -31,7 +31,7 @@ This builds a single binary for the default targets.
 | `env` | map | none | Per-target environment variables |
 | `copy_from` | string | none | Copies the built binary from another build's **binary name** in the same crate instead of compiling it |
 | `reproducible` | bool | `false` | Enable reproducible build settings |
-| `amd64_variant` | string | detected from the build env | Declared x86-64 micro-architecture level (`"v1"`–`"v4"`); overrides detection for artifact metadata and derived asset names |
+| `amd64_variant` | enum | detected from the build env | Declared x86-64 micro-architecture level — exactly one of `"v1"`, `"v2"`, `"v3"`, `"v4"` (any other value is rejected when the config is parsed, on the crates, workspaces, and `defaults.builds` axes alike); overrides detection for artifact metadata and derived asset names |
 
 ## Multiple binaries
 

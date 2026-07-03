@@ -46,12 +46,3 @@ pub(crate) fn detect_cargo_profile(flags: &[String]) -> &str {
 
     "debug"
 }
-
-// ---------------------------------------------------------------------------
-// amd64 microarchitecture variant detection from RUSTFLAGS
-// ---------------------------------------------------------------------------
-
-// The detection lives in core (`anodizer_core::build_env`) so config-time
-// asset-name derivation and this stage share one detector; re-exported under
-// the stage's historical name.
-pub(crate) use anodizer_core::build_env::amd64_variant_from_env as detect_amd64_variant;

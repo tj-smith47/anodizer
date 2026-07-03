@@ -967,6 +967,94 @@ crates:
         );
     }
 
+    /// The defaults-axis bypass is closed at the PARSE: `validate_builds`
+    /// runs before `apply_defaults` and walks only crates/workspaces, so a
+    /// garbage `defaults.builds.amd64_variant` used to sail through the load
+    /// untouched. Typed as an enum, the load itself rejects it — this pins
+    /// the message the user actually sees.
+    #[test]
+    fn load_config_rejects_defaults_axis_amd64_variant_garbage() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("anodizer.yaml");
+        fs::write(
+            &cfg_path,
+            r#"
+project_name: test
+defaults:
+  builds:
+    amd64_variant: "x86-64-v3"
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#,
+        )
+        .unwrap();
+        let err = load_config(&cfg_path).expect_err("defaults-axis garbage must fail the load");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("failed to deserialize config"),
+            "names the failing phase: {msg}"
+        );
+        assert!(
+            msg.contains("unknown variant `x86-64-v3`, expected one of `v1`, `v2`, `v3`, `v4`"),
+            "names the bad value and the full valid set: {msg}"
+        );
+
+        // The crates axis stays rejected by the same parse.
+        fs::write(
+            &cfg_path,
+            r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: app
+        amd64_variant: "v9"
+"#,
+        )
+        .unwrap();
+        let err = load_config(&cfg_path).expect_err("crates-axis garbage must fail the load");
+        assert!(
+            format!("{err:#}").contains("unknown variant `v9`"),
+            "crates-axis garbage gets the same rejection: {err:#}"
+        );
+    }
+
+    /// The positive half of the defaults axis: a VALID level set only on
+    /// `defaults.builds` survives the load and is folded into every crate's
+    /// builds by `apply_defaults`, so the planner stamp sees it.
+    #[test]
+    fn load_config_flows_defaults_axis_amd64_variant_into_crate_builds() {
+        let tmp = TempDir::new().unwrap();
+        let cfg_path = tmp.path().join("anodizer.yaml");
+        fs::write(
+            &cfg_path,
+            r#"
+project_name: test
+defaults:
+  builds:
+    amd64_variant: "v2"
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: app
+        targets: ["x86_64-unknown-linux-gnu"]
+"#,
+        )
+        .unwrap();
+        let config = load_config(&cfg_path).expect("a valid defaults-axis level loads");
+        assert_eq!(
+            config.crates[0].builds.as_ref().unwrap()[0].amd64_variant,
+            Some(anodizer_core::config::Amd64Variant::V2),
+            "defaults.builds.amd64_variant must reach the per-crate builds"
+        );
+    }
+
     #[test]
     fn test_find_config_with_override_existing() {
         let tmp = TempDir::new().unwrap();

@@ -15,7 +15,7 @@ use anodizer_core::build_plan::{crate_declares_bin, planned_builds};
 use super::command::{
     build_command, build_lib_command, crate_has_binary_target, detect_crate_type,
 };
-use super::profile::{detect_amd64_variant, detect_cargo_profile};
+use super::profile::detect_cargo_profile;
 use super::targets::{
     KNOWN_TARGETS, find_matching_override, is_target_ignored, resolve_target_env,
 };
@@ -652,16 +652,21 @@ fn plan_build_jobs(
                     // Clear per-target template vars before continuing
                     clear_build_target_vars(ctx.template_vars_mut());
 
-                    // Declared `build.amd64_variant` overrides detection —
-                    // same precedence as the compile path's shared decision.
-                    let copy_variant = anodizer_core::build_env::declared_amd64_variant(
-                        build, target,
-                    )
-                    .or_else(|| {
-                        raw_target_env
-                            .as_ref()
-                            .and_then(|e| detect_amd64_variant(target, e))
-                    });
+                    // Shared decision with the compile path: declared level
+                    // wins (with the mismatch warning), detection reads the
+                    // RAW merged map — copy_from env is never rendered —
+                    // plus the inherited process env the compiling sibling's
+                    // cargo saw.
+                    let copy_variant = {
+                        let empty_env = HashMap::new();
+                        build_amd64_variant(
+                            build,
+                            target,
+                            raw_target_env.as_ref().unwrap_or(&empty_env),
+                            ctx.env_source(),
+                            log,
+                        )
+                    };
                     copy_jobs.push(BuildJob {
                         cmd: None,
                         copy_from: Some((src_path, bin_path.clone())),
@@ -854,7 +859,13 @@ fn plan_build_jobs(
                     no_unique_dist_dir: no_unique_dist_dir_val,
                     crate_path: crate_cfg.path.clone(),
                     mod_timestamp: build.mod_timestamp.clone(),
-                    amd64_variant: build_amd64_variant(build, target, &target_env),
+                    amd64_variant: build_amd64_variant(
+                        build,
+                        target,
+                        &target_env,
+                        ctx.env_source(),
+                        log,
+                    ),
                     // Fully-rendered per-target build env (overrides + the
                     // reproducible RUSTFLAGS/SOURCE_DATE_EPOCH merges already
                     // folded in) flows into this job's build hooks beneath the
@@ -1335,7 +1346,10 @@ mod env_scope_tests {
     #[test]
     fn cascade_env_injections_are_scoped_per_target() {
         let krate = leaky_crate();
-        let mut ctx = TestContextBuilder::new().project_name("myapp").build();
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .sealed_env()
+            .build();
         let (jobs, copy_jobs) = plan(&krate, &mut ctx);
         assert!(copy_jobs.is_empty());
         assert_eq!(jobs.len(), 2);
@@ -1374,8 +1388,12 @@ mod env_scope_tests {
     #[test]
     fn declared_amd64_variant_overrides_planner_detection() {
         let mut krate = leaky_crate();
-        krate.builds.as_mut().unwrap()[0].amd64_variant = Some("v2".to_string());
-        let mut ctx = TestContextBuilder::new().project_name("myapp").build();
+        krate.builds.as_mut().unwrap()[0].amd64_variant =
+            Some(anodizer_core::config::Amd64Variant::V2);
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .sealed_env()
+            .build();
         let (jobs, _) = plan(&krate, &mut ctx);
         let linux = jobs.iter().find(|j| j.target == LINUX).unwrap();
         assert_eq!(
@@ -1389,6 +1407,98 @@ mod env_scope_tests {
                 .as_deref(),
             Some("v2"),
             "projection must agree with the planner's declared stamp"
+        );
+    }
+
+    /// A valid level set only on `defaults.builds` reaches the planner
+    /// stamp: the defaults merge folds it into the crate's builds, and the
+    /// planned job carries it.
+    #[test]
+    fn defaults_axis_amd64_variant_reaches_the_planner_stamp() {
+        use anodizer_core::config::{Amd64Variant, Config, Defaults};
+        let mut config = Config {
+            project_name: "myapp".to_string(),
+            defaults: Some(Defaults {
+                builds: Some(BuildConfig {
+                    amd64_variant: Some(Amd64Variant::V2),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            crates: vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: "no-such-dir".to_string(),
+                builds: Some(vec![BuildConfig {
+                    binary: Some("myapp".to_string()),
+                    targets: Some(vec![LINUX.to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        anodizer_core::defaults_merge::apply_defaults(&mut config);
+        let krate = config.crates[0].clone();
+        assert_eq!(
+            krate.builds.as_ref().unwrap()[0].amd64_variant,
+            Some(Amd64Variant::V2),
+            "the defaults merge must fold the level into the crate's builds"
+        );
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .sealed_env()
+            .build();
+        let (jobs, _) = plan(&krate, &mut ctx);
+        let linux = jobs.iter().find(|j| j.target == LINUX).unwrap();
+        assert_eq!(
+            linux.amd64_variant.as_deref(),
+            Some("v2"),
+            "the planner stamp must carry the defaults-declared level"
+        );
+    }
+
+    /// The CI mislabel vector: a process `RUSTFLAGS="-Dwarnings"` shadows a
+    /// level-carrying config `CARGO_TARGET_<T>_RUSTFLAGS` (cargo's sources
+    /// are mutually exclusive), so the binary is BASELINE — the planner must
+    /// stamp baseline, not the suppressed v3 that would name the asset
+    /// `_amd64v3` around an untuned binary. The projection agrees.
+    #[test]
+    fn process_rustflags_suppress_tuned_target_var_in_planner_stamp() {
+        let mut env = HashMap::new();
+        env.insert(
+            LINUX.to_string(),
+            HashMap::from([(
+                "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS".to_string(),
+                "-Ctarget-cpu=x86-64-v3".to_string(),
+            )]),
+        );
+        let krate = CrateConfig {
+            name: "myapp".to_string(),
+            path: "no-such-dir".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("myapp".to_string()),
+                targets: Some(vec![LINUX.to_string()]),
+                env: Some(env),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .env("RUSTFLAGS", "-Dwarnings")
+            .build();
+        let (jobs, _) = plan(&krate, &mut ctx);
+        let linux = jobs.iter().find(|j| j.target == LINUX).unwrap();
+        assert_eq!(
+            linux.amd64_variant, None,
+            "the suppressed target var must not stamp v3 on a baseline binary"
+        );
+        assert_eq!(
+            anodizer_core::build_env::config_time_amd64_variant(&krate, LINUX, &[], &mut ctx)
+                .unwrap(),
+            None,
+            "projection must agree with the planner's baseline stamp"
         );
     }
 }

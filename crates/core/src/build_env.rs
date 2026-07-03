@@ -25,6 +25,7 @@ use crate::config::{BuildConfig, BuildIgnore, BuildOverride, BuilderKind, CrateC
 use crate::context::Context;
 use crate::env::parse_env_entries;
 use crate::env_expand::expand_env;
+use crate::env_source::EnvSource;
 use crate::log::StageLogger;
 use crate::target::map_target;
 use crate::template::TemplateVars;
@@ -238,36 +239,57 @@ pub fn cargo_target_rustflags_key(target: &str) -> String {
 }
 
 /// The extra-rustc-flags string cargo would apply to a build of `target`
-/// given `env`, following cargo's documented source order — the sources are
-/// MUTUALLY EXCLUSIVE, first present wins: `CARGO_ENCODED_RUSTFLAGS`, then
-/// `RUSTFLAGS`, then `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`. A set-but-empty
-/// earlier source still shadows the later ones (verified against cargo
-/// 1.96.0: `RUSTFLAGS=""` suppresses a level-carrying
-/// `CARGO_TARGET_*_RUSTFLAGS` entirely).
-fn effective_rustflags(target: &str, env: &HashMap<String, String>) -> Option<String> {
-    if let Some(encoded) = env.get("CARGO_ENCODED_RUSTFLAGS") {
+/// given the resolved config `env` map plus the `process` environment the
+/// cargo subprocess inherits, following cargo's documented source order —
+/// the sources are MUTUALLY EXCLUSIVE, first present wins:
+/// `CARGO_ENCODED_RUSTFLAGS`, then `RUSTFLAGS`, then
+/// `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`. A set-but-empty earlier source still
+/// shadows the later ones (verified against cargo 1.96.0: `RUSTFLAGS=""`
+/// suppresses a level-carrying `CARGO_TARGET_*_RUSTFLAGS` entirely).
+///
+/// The build stage spawns cargo with the parent environment intact and the
+/// config map overlaid per key (`Command::envs`, no `env_clear`), so a
+/// source tier is present when EITHER side carries its key — and on the
+/// SAME tier the config-map value wins, because the overlay replaces the
+/// inherited value for that key.
+fn effective_rustflags(
+    target: &str,
+    env: &HashMap<String, String>,
+    process: &dyn EnvSource,
+) -> Option<String> {
+    let lookup = |key: &str| env.get(key).cloned().or_else(|| process.var(key));
+    if let Some(encoded) = lookup("CARGO_ENCODED_RUSTFLAGS") {
         // Encoded form separates argv tokens with 0x1F; target-cpu tokens
         // never contain spaces, so a space join feeds the same tokens to the
         // whitespace-splitting parser.
         return Some(encoded.replace('\u{1f}', " "));
     }
-    if let Some(flags) = env.get("RUSTFLAGS") {
-        return Some(flags.clone());
+    if let Some(flags) = lookup("RUSTFLAGS") {
+        return Some(flags);
     }
-    env.get(&cargo_target_rustflags_key(target)).cloned()
+    lookup(&cargo_target_rustflags_key(target))
 }
 
 /// Detect the amd64 micro-architecture variant for a build of `target` from
-/// its resolved env map — the value the build stage stamps into the
+/// its resolved config env map plus the `process` environment the cargo
+/// subprocess inherits — the value the build stage stamps into the
 /// artifact's `amd64_variant` metadata. The flags string is picked by
-/// cargo's own source precedence ([`effective_rustflags`]). `None` for
+/// cargo's own source precedence ([`effective_rustflags`]), with config and
+/// process merged at each tier (config wins on the same key). `None` for
 /// non-x86_64 targets and for env whose effective flags carry no level (the
-/// untuned baseline).
-pub fn amd64_variant_from_env(target: &str, env: &HashMap<String, String>) -> Option<String> {
+/// untuned baseline) — including a process `RUSTFLAGS` (e.g. a CI
+/// `-Dwarnings` export) that shadows a level-carrying config
+/// `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`, which would otherwise mislabel a
+/// baseline binary with the suppressed tuning level.
+pub fn amd64_variant_from_env(
+    target: &str,
+    env: &HashMap<String, String>,
+    process: &dyn EnvSource,
+) -> Option<String> {
     if !target.starts_with("x86_64") {
         return None;
     }
-    effective_rustflags(target, env).and_then(|flags| amd64_variant_from_rustflags(&flags))
+    effective_rustflags(target, env, process).and_then(|flags| amd64_variant_from_rustflags(&flags))
 }
 
 /// The user-declared micro-architecture level for a build of `target`
@@ -278,19 +300,43 @@ pub fn declared_amd64_variant(build: &BuildConfig, target: &str) -> Option<Strin
     if !target.starts_with("x86_64") {
         return None;
     }
-    build.amd64_variant.clone()
+    build.amd64_variant.map(|l| l.as_str().to_string())
 }
 
 /// The amd64 variant the build planner stamps on a compiled (or copied)
 /// binary of `target`: the declared `build.amd64_variant` when set, else
-/// detection from the resolved env map. The single decision shared by the
-/// planner and the config-time projection.
+/// detection from the resolved env map merged with the `process` environment
+/// the cargo subprocess inherits ([`amd64_variant_from_env`]). The single
+/// decision shared by the planner and the config-time projection.
+///
+/// When BOTH a declaration and a detected level exist and they differ, a
+/// `log.warn` names the two — the stale-declaration catcher for a tuning env
+/// bumped to a new level while `amd64_variant:` still pins the old one. The
+/// declaration still wins, exactly as documented on the config field.
 pub fn build_amd64_variant(
     build: &BuildConfig,
     target: &str,
     env: &HashMap<String, String>,
+    process: &dyn EnvSource,
+    log: &StageLogger,
 ) -> Option<String> {
-    declared_amd64_variant(build, target).or_else(|| amd64_variant_from_env(target, env))
+    let declared = declared_amd64_variant(build, target);
+    let detected = amd64_variant_from_env(target, env, process);
+    if let (Some(d), Some(det)) = (declared.as_deref(), detected.as_deref())
+        && d != det
+    {
+        log.warn(&format!(
+            "build '{}' declares amd64_variant \"{d}\" but its resolved env for {target} \
+             detects x86-64 level \"{det}\"; the declaration names the artifacts — update \
+             `amd64_variant:` if the tuning level changed",
+            build
+                .id
+                .as_deref()
+                .or(build.binary.as_deref())
+                .unwrap_or("<unnamed>"),
+        ));
+    }
+    declared.or(detected)
 }
 
 /// The amd64 variant the planner stamps on a `builder: prebuilt` import of
@@ -299,12 +345,7 @@ pub fn build_amd64_variant(
 /// so nothing can be detected. `None` for other arches.
 pub fn prebuilt_amd64_variant(build: &BuildConfig, target: &str) -> Option<String> {
     if target.split('-').next() == Some("x86_64") {
-        Some(
-            build
-                .amd64_variant
-                .clone()
-                .unwrap_or_else(|| "v1".to_string()),
-        )
+        Some(build.amd64_variant.map_or("v1", |l| l.as_str()).to_string())
     } else {
         None
     }
@@ -328,7 +369,12 @@ pub fn prebuilt_amd64_variant(build: &BuildConfig, target: &str) -> Option<Strin
 /// fails to render, exactly as the planner does), matching `build.overrides`
 /// env merged on top, and — for `reproducible: true` builds with no config
 /// `RUSTFLAGS` — the inherited process `RUSTFLAGS` the reproducibility merge
-/// would adopt as its base. A declared `build.amd64_variant` short-circuits
+/// would adopt as its base. Detection itself consults the inherited process
+/// environment at every cargo flags-source tier
+/// ([`amd64_variant_from_env`]), exactly as the spawned cargo does — via the
+/// context's [`EnvSource`], so the projection stays testable and
+/// config-time derivation reflects the environment of the deriving run. A
+/// declared `build.amd64_variant` short-circuits
 /// the projection on every path, exactly as it overrides the planner's
 /// detection.
 ///
@@ -441,9 +487,15 @@ fn build_env_amd64_variant(
     let raw = resolve_target_env(build.env.as_ref(), target, log, strict)?;
 
     // `copy_from:` jobs never render their env — the planner detects their
-    // variant from the RAW merged map, so this projection must too.
+    // variant from the RAW merged map (plus the inherited process env the
+    // compiling sibling's cargo saw), so this projection must too.
     if build.copy_from.is_some() {
-        return Ok(raw.as_ref().and_then(|e| amd64_variant_from_env(target, e)));
+        let empty = HashMap::new();
+        return Ok(amd64_variant_from_env(
+            target,
+            raw.as_ref().unwrap_or(&empty),
+            ctx.env_source(),
+        ));
     }
 
     // The planner seeds the per-target vars before rendering env values, so
@@ -538,13 +590,13 @@ fn build_env_amd64_variant(
             ctx.env_source().var("RUSTFLAGS").unwrap_or_default(),
         );
     }
-    Ok(amd64_variant_from_env(target, &rendered))
+    Ok(amd64_variant_from_env(target, &rendered, ctx.env_source()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, Defaults};
+    use crate::config::{Amd64Variant, Config, Defaults};
     use crate::context::{Context, ContextOptions};
     use crate::env_source::MapEnvSource;
 
@@ -556,9 +608,17 @@ mod tests {
             ..Default::default()
         };
         let mut ctx = Context::new(config, ContextOptions::default());
+        // Detection consults the context's env source at every cargo flags
+        // tier; seal it so a RUSTFLAGS exported by the dev shell / CI runner
+        // cannot leak into these fixtures.
+        ctx.set_env_source(MapEnvSource::new());
         ctx.template_vars_mut().set("Version", "1.0.0");
         ctx.template_vars_mut().set("ProjectName", "myapp");
         ctx
+    }
+
+    fn no_process_env() -> MapEnvSource {
+        MapEnvSource::new()
     }
 
     fn crate_with_build(build: BuildConfig) -> CrateConfig {
@@ -729,12 +789,11 @@ mod tests {
     }
 
     #[test]
-    fn reproducible_build_adopts_inherited_rustflags_base() {
-        // reproducible: true with no config RUSTFLAGS — the planner's merge
-        // adopts the process env value as its base, so a harness/operator
-        // `-Ctarget-cpu=x86-64-v3` names the assets and the projection must
-        // see it. A non-reproducible build never reads the inherited value
-        // (the planner's detection only sees the config env).
+    fn inherited_process_rustflags_reach_detection() {
+        // The cargo subprocess inherits the process env (no env_clear), so a
+        // harness/operator `RUSTFLAGS=-Ctarget-cpu=x86-64-v3` tunes the
+        // binary for reproducible AND non-reproducible builds alike — the
+        // projection must see it on both.
         let mut build = BuildConfig {
             binary: Some("myapp".to_string()),
             targets: Some(vec![LINUX_AMD64.to_string()]),
@@ -756,9 +815,160 @@ mod tests {
         let mut c = ctx();
         c.set_env_source(MapEnvSource::new().with("RUSTFLAGS", "-Ctarget-cpu=x86-64-v3"));
         assert_eq!(
+            config_time_amd64_variant(&krate, LINUX_AMD64, &[], &mut c)
+                .unwrap()
+                .as_deref(),
+            Some("v3"),
+            "the inherited RUSTFLAGS reaches cargo regardless of reproducible:"
+        );
+    }
+
+    #[test]
+    fn reproducible_merge_shadows_config_target_rustflags_without_process_flags() {
+        // What still distinguishes reproducible: its merge ALWAYS sets
+        // RUSTFLAGS in the subprocess env (remap rules at minimum), so with
+        // NO process RUSTFLAGS a level-carrying config
+        // CARGO_TARGET_<T>_RUSTFLAGS is suppressed for a reproducible build
+        // but still reaches a plain one.
+        let mut build = tuned_build_key(
+            LINUX_AMD64,
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
+            "-Ctarget-cpu=x86-64-v3",
+        );
+        build.reproducible = Some(true);
+        let krate = crate_with_build(build.clone());
+        let mut c = ctx();
+        assert_eq!(
             config_time_amd64_variant(&krate, LINUX_AMD64, &[], &mut c).unwrap(),
             None,
-            "non-reproducible builds must not read the inherited RUSTFLAGS"
+            "the reproducible RUSTFLAGS merge shadows the target-specific var"
+        );
+
+        build.reproducible = None;
+        let krate = crate_with_build(build);
+        let mut c = ctx();
+        assert_eq!(
+            config_time_amd64_variant(&krate, LINUX_AMD64, &[], &mut c)
+                .unwrap()
+                .as_deref(),
+            Some("v3"),
+            "a plain build's target-specific var stays cargo's source"
+        );
+    }
+
+    #[test]
+    fn process_rustflags_suppress_config_target_rustflags() {
+        // The mislabel vector: CI exports RUSTFLAGS="-Dwarnings" (no
+        // target-cpu), config tunes via CARGO_TARGET_<T>_RUSTFLAGS. Cargo
+        // hands rustc only the inherited RUSTFLAGS (higher tier), so the
+        // binary is baseline — detection must stamp baseline, not the
+        // suppressed v3.
+        let env = HashMap::from([(
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS".to_string(),
+            "-Ctarget-cpu=x86-64-v3".to_string(),
+        )]);
+        let ci = MapEnvSource::new().with("RUSTFLAGS", "-Dwarnings");
+        assert_eq!(
+            amd64_variant_from_env(LINUX_AMD64, &env, &ci),
+            None,
+            "a process RUSTFLAGS shadows the config target-specific var"
+        );
+
+        // Same scenario through the config-time projection.
+        let krate = crate_with_build(tuned_build_key(
+            LINUX_AMD64,
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
+            "-Ctarget-cpu=x86-64-v3",
+        ));
+        let mut c = ctx();
+        c.set_env_source(MapEnvSource::new().with("RUSTFLAGS", "-Dwarnings"));
+        assert_eq!(
+            config_time_amd64_variant(&krate, LINUX_AMD64, &[], &mut c).unwrap(),
+            None,
+            "the projection must stamp the baseline the binary actually is"
+        );
+    }
+
+    #[test]
+    fn process_encoded_rustflags_shadow_config_rustflags() {
+        // CARGO_ENCODED_RUSTFLAGS is cargo's highest-priority source even
+        // when only the process env carries it.
+        let env = HashMap::from([(
+            "RUSTFLAGS".to_string(),
+            "-Ctarget-cpu=x86-64-v2".to_string(),
+        )]);
+        let process =
+            MapEnvSource::new().with("CARGO_ENCODED_RUSTFLAGS", "-C\u{1f}target-cpu=x86-64-v4");
+        assert_eq!(
+            amd64_variant_from_env(LINUX_AMD64, &env, &process).as_deref(),
+            Some("v4"),
+            "a process CARGO_ENCODED_RUSTFLAGS outranks the config RUSTFLAGS"
+        );
+    }
+
+    #[test]
+    fn config_key_beats_process_key_on_the_same_tier() {
+        // Command::envs overlays the config map onto the inherited env per
+        // key, so for the SAME variable the config value is what cargo sees.
+        let env = HashMap::from([(
+            "RUSTFLAGS".to_string(),
+            "-Ctarget-cpu=x86-64-v2".to_string(),
+        )]);
+        let process = MapEnvSource::new().with("RUSTFLAGS", "-Ctarget-cpu=x86-64-v3");
+        assert_eq!(
+            amd64_variant_from_env(LINUX_AMD64, &env, &process).as_deref(),
+            Some("v2"),
+            "the .envs() overlay replaces the inherited value for the same key"
+        );
+    }
+
+    #[test]
+    fn declared_vs_detected_mismatch_warns_and_match_stays_silent() {
+        use crate::log::{StageLogger, Verbosity};
+        // Stale-declaration catcher: env bumped to v4, declaration still
+        // v3 — the planner's shared decision warns naming both levels; an
+        // agreeing pair emits nothing.
+        let mut build = tuned_build(LINUX_AMD64, "-Ctarget-cpu=x86-64-v4");
+        build.amd64_variant = Some(Amd64Variant::V3);
+        let env = HashMap::from([(
+            "RUSTFLAGS".to_string(),
+            "-Ctarget-cpu=x86-64-v4".to_string(),
+        )]);
+        let (log, cap) = StageLogger::with_capture("build", Verbosity::Quiet);
+        assert_eq!(
+            build_amd64_variant(&build, LINUX_AMD64, &env, &no_process_env(), &log).as_deref(),
+            Some("v3"),
+            "the declaration still wins"
+        );
+        let warns = cap.warn_messages();
+        assert_eq!(warns.len(), 1, "exactly one mismatch warning: {warns:?}");
+        assert!(
+            warns[0].contains("\"v3\"") && warns[0].contains("\"v4\""),
+            "warning names both levels: {}",
+            warns[0]
+        );
+
+        // Agreement — silent.
+        build.amd64_variant = Some(Amd64Variant::V4);
+        let (log, cap) = StageLogger::with_capture("build", Verbosity::Quiet);
+        assert_eq!(
+            build_amd64_variant(&build, LINUX_AMD64, &env, &no_process_env(), &log).as_deref(),
+            Some("v4")
+        );
+        assert_eq!(cap.warn_count(), 0, "a matching declaration must not warn");
+
+        // Declared with nothing detected — the documented use case, silent.
+        build.amd64_variant = Some(Amd64Variant::V3);
+        let empty = HashMap::new();
+        let (log, cap) = StageLogger::with_capture("build", Verbosity::Quiet);
+        assert_eq!(
+            build_amd64_variant(&build, LINUX_AMD64, &empty, &no_process_env(), &log).as_deref(),
+            Some("v3")
+        );
+        assert_eq!(
+            cap.warn_count(),
+            0,
+            "declaring an undetectable level is the feature, not a mismatch"
         );
     }
 
@@ -821,16 +1031,20 @@ mod tests {
             "-Ctarget-cpu=x86-64-v3".to_string(),
         )]);
         assert_eq!(
-            amd64_variant_from_env(LINUX_AMD64, &env).as_deref(),
+            amd64_variant_from_env(LINUX_AMD64, &env, &no_process_env()).as_deref(),
             Some("v3")
         );
         // The env key belongs to a different triple: not cargo's source for
         // this build.
-        assert_eq!(amd64_variant_from_env("x86_64-apple-darwin", &env), None);
+        assert_eq!(
+            amd64_variant_from_env("x86_64-apple-darwin", &env, &no_process_env()),
+            None
+        );
         // A glibc-suffixed triple keys by its base triple — the `--target`
         // cargo is invoked with.
         assert_eq!(
-            amd64_variant_from_env("x86_64-unknown-linux-gnu.2.17", &env).as_deref(),
+            amd64_variant_from_env("x86_64-unknown-linux-gnu.2.17", &env, &no_process_env())
+                .as_deref(),
             Some("v3")
         );
     }
@@ -852,7 +1066,7 @@ mod tests {
             ),
         ]);
         assert_eq!(
-            amd64_variant_from_env(LINUX_AMD64, &both).as_deref(),
+            amd64_variant_from_env(LINUX_AMD64, &both, &no_process_env()).as_deref(),
             Some("v2"),
             "RUSTFLAGS must win when both are present"
         );
@@ -865,7 +1079,7 @@ mod tests {
             ),
         ]);
         assert_eq!(
-            amd64_variant_from_env(LINUX_AMD64, &empty_shadows),
+            amd64_variant_from_env(LINUX_AMD64, &empty_shadows, &no_process_env()),
             None,
             "a set-but-empty RUSTFLAGS still shadows the target-specific var"
         );
@@ -881,7 +1095,7 @@ mod tests {
             ),
         ]);
         assert_eq!(
-            amd64_variant_from_env(LINUX_AMD64, &encoded_wins).as_deref(),
+            amd64_variant_from_env(LINUX_AMD64, &encoded_wins, &no_process_env()).as_deref(),
             Some("v4"),
             "CARGO_ENCODED_RUSTFLAGS outranks RUSTFLAGS"
         );
@@ -965,7 +1179,7 @@ mod tests {
             "prebuilt x86-64 import carries the planner's v1 stamp, not its env"
         );
 
-        build.amd64_variant = Some("v3".to_string());
+        build.amd64_variant = Some(Amd64Variant::V3);
         let krate = crate_with_build(build.clone());
         let mut c = ctx();
         assert_eq!(
@@ -991,7 +1205,7 @@ mod tests {
         // The escape hatch for tuning env only resolvable at build time:
         // `amd64_variant:` decides without projecting the env at all.
         let mut build = tuned_build(LINUX_AMD64, "{{ BuildTimeOnlyVar }}");
-        build.amd64_variant = Some("v3".to_string());
+        build.amd64_variant = Some(Amd64Variant::V3);
         let krate = crate_with_build(build.clone());
         let mut c = ctx();
         assert_eq!(
@@ -1004,7 +1218,7 @@ mod tests {
         // Declared beats a CONFLICTING detected level (same precedence as
         // the planner's stamp).
         let mut build = tuned_build(LINUX_AMD64, "-Ctarget-cpu=x86-64-v3");
-        build.amd64_variant = Some("v2".to_string());
+        build.amd64_variant = Some(Amd64Variant::V2);
         let krate = crate_with_build(build.clone());
         let mut c = ctx();
         assert_eq!(
@@ -1016,7 +1230,7 @@ mod tests {
 
         // Arch-gated: the declaration never stamps a non-x86_64 target.
         let mut build = tuned_build(LINUX_AMD64, "-Ctarget-cpu=x86-64-v3");
-        build.amd64_variant = Some("v3".to_string());
+        build.amd64_variant = Some(Amd64Variant::V3);
         build.targets = Some(vec!["aarch64-unknown-linux-gnu".to_string()]);
         let krate = crate_with_build(build);
         let mut c = ctx();

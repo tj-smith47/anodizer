@@ -1433,14 +1433,6 @@ pub fn validate_builds(config: &Config) -> Result<(), String> {
             ));
         }
         for (idx, build) in builds.iter().enumerate() {
-            if let Some(ref v) = build.amd64_variant
-                && !matches!(v.as_str(), "v1" | "v2" | "v3" | "v4")
-            {
-                return Err(format!(
-                    "{location}.builds[{idx}]: `amd64_variant: \"{v}\"` is not a valid x86-64 \
-                     micro-architecture level; use one of \"v1\", \"v2\", \"v3\", \"v4\"."
-                ));
-            }
             match build.builder {
                 Some(BuilderKind::Prebuilt) => {
                     let path = build.prebuilt.as_ref().map(|p| p.path.trim()).unwrap_or("");

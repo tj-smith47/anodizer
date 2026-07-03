@@ -427,6 +427,9 @@ mod tests {
             ..Default::default()
         };
         let mut ctx = Context::new(config, ContextOptions::default());
+        // Variant derivation consults the process env at every cargo flags
+        // tier; seal so an exported RUSTFLAGS cannot leak into fixtures.
+        ctx.set_env_source(crate::MapEnvSource::new());
         ctx.template_vars_mut().set("ProjectName", "anodizer");
         ctx.template_vars_mut().set("Version", "0.13.0");
         ctx

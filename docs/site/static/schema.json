@@ -626,7 +626,7 @@
   "additionalProperties": false,
   "definitions": {
     "Amd64Variant": {
-      "description": "`x86_64` micro-architecture variant. A typed values. Used by [`AurSourceConfig::amd64_variant`] to constrain the `prepare:` / `build:` / `package:` template var surface to a known set — AUR source pkgs build from the upstream tarball so the value is template-only (no artifact filter) and a typo would render an invalid PKGBUILD silently.",
+      "description": "`x86_64` micro-architecture level — `v1` (baseline), `v2`, `v3`, or `v4`. Typed so a typo fails at config-parse time instead of flowing on as an arbitrary string. Used by [`BuildConfig::amd64_variant`](super::BuildConfig::amd64_variant) — where the declared level names a tuned group's artifacts and derived asset names — and by [`AurSourceConfig::amd64_variant`], where it constrains the `prepare:` / `build:` / `package:` template var surface to a known set (AUR source pkgs build from the upstream tarball, so an invalid value would otherwise render silently into the PKGBUILD).",
       "type": "string",
       "enum": [
         "v1",
@@ -2723,11 +2723,15 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "Declared x86-64 micro-architecture level for this build's artifacts: `\"v2\"`, `\"v3\"`, `\"v4\"`, or the `\"v1\"` baseline. When set, it overrides the level anodizer detects from the resolved build env (`RUSTFLAGS` / `CARGO_TARGET_<TRIPLE>_RUSTFLAGS` carrying `-Ctarget-cpu=x86-64-v<N>`) for BOTH the artifact's `amd64_variant` metadata — which names a v2/v3-tuned group's archives (`…_amd64v3.tar.gz`) — and the config-time asset-name derivation feeding cargo-binstall `pkg_url` and the `curl | sh` installer's case table. Declare it when the tuning value is only resolvable at build time (e.g. `RUSTFLAGS: \"{{ .Env.CI_FLAGS }}\"`) or when importing a tuned binary via `builder: prebuilt`. Ignored for non-x86_64 targets.",
+          "description": "Declared x86-64 micro-architecture level for this build's artifacts: `\"v2\"`, `\"v3\"`, `\"v4\"`, or the `\"v1\"` baseline. When set, it overrides the level anodizer detects from the resolved build env — the config-map and inherited process environment merged under cargo's own mutually-exclusive source order (`CARGO_ENCODED_RUSTFLAGS`, then `RUSTFLAGS`, then `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`, first present wins) carrying `-Ctarget-cpu=x86-64-v<N>` — for BOTH the artifact's `amd64_variant` metadata — which names a v2/v3-tuned group's archives (`…_amd64v3.tar.gz`) — and the config-time asset-name derivation feeding cargo-binstall `pkg_url` and the `curl | sh` installer's case table. Declare it when the tuning value is only resolvable at build time (e.g. `RUSTFLAGS: \"{{ .Env.CI_FLAGS }}\"`) or when importing a tuned binary via `builder: prebuilt`. Ignored for non-x86_64 targets.\n\nTyped as [`Amd64Variant`], so any value outside `\"v1\"`..`\"v4\"` is rejected when the config is parsed — on every axis the field can be set from (`crates[]`, `workspaces[].crates[]`, and `defaults.builds`).",
           "default": null,
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Amd64Variant"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "binary": {

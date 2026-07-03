@@ -102,12 +102,15 @@ pub struct AurSourceConfig {
     pub retain_on_rollback: Option<bool>,
 }
 
-/// `x86_64` micro-architecture variant. A typed
-/// values. Used by [`AurSourceConfig::amd64_variant`] to constrain the
-/// `prepare:` / `build:` / `package:` template var surface to a known set —
-/// AUR source pkgs build from the upstream tarball so the value is
-/// template-only (no artifact filter) and a typo would render an invalid
-/// PKGBUILD silently.
+/// `x86_64` micro-architecture level — `v1` (baseline), `v2`, `v3`, or `v4`.
+/// Typed so a typo fails at config-parse time instead of flowing on as an
+/// arbitrary string. Used by
+/// [`BuildConfig::amd64_variant`](super::BuildConfig::amd64_variant) — where
+/// the declared level names a tuned group's artifacts and derived asset
+/// names — and by [`AurSourceConfig::amd64_variant`], where it constrains the
+/// `prepare:` / `build:` / `package:` template var surface to a known set
+/// (AUR source pkgs build from the upstream tarball, so an invalid value
+/// would otherwise render silently into the PKGBUILD).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Amd64Variant {
