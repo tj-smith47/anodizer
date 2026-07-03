@@ -833,6 +833,79 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
         },
     );
 
+    // --- date filter (tera 1.x compat) ---
+    // tera 2.0 removed the builtin `date` filter; 1.x-era anodizer templates
+    // (`{{ Now | date(format='%Y%m%d') }}`) are a consumer contract, so it is
+    // re-registered with 1.x semantics: input is an i64 unix timestamp or a
+    // datetime string (RFC3339, naive `%Y-%m-%dT%H:%M:%S`, or plain
+    // `%Y-%m-%d`); `format` is chrono strftime, defaulting to `%Y-%m-%d`.
+    // 1.x's `timezone`/`locale` arguments needed the chrono-tz / locale data
+    // crates anodizer does not ship; they error explicitly rather than
+    // silently misformat.
+    tera.register_json_filter("date", |value: &Value, args: &HashMap<String, Value>| {
+        use chrono::format::{Item, StrftimeItems};
+        use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, Utc};
+
+        for unsupported in ["timezone", "locale"] {
+            if args.contains_key(unsupported) {
+                return Err(tera::Error::message(format!(
+                    "date: the `{unsupported}` argument is not supported \
+                     (anodizer's compatibility `date` filter formats in UTC with the POSIX locale)"
+                )));
+            }
+        }
+        let format = args
+            .get("format")
+            .and_then(|v| v.as_str())
+            .unwrap_or("%Y-%m-%d");
+        if StrftimeItems::new(format).any(|item| matches!(item, Item::Error)) {
+            return Err(tera::Error::message(format!(
+                "date: invalid format `{format}`"
+            )));
+        }
+
+        let formatted = match value {
+            Value::Number(n) => {
+                let secs = n.as_i64().ok_or_else(|| {
+                    tera::Error::message(format!("date: expected an integer timestamp, got {n}"))
+                })?;
+                let dt = DateTime::<Utc>::from_timestamp(secs, 0).ok_or_else(|| {
+                    tera::Error::message(format!("date: timestamp {secs} is out of range"))
+                })?;
+                dt.format(format).to_string()
+            }
+            Value::String(s) if s.contains('T') => match s.parse::<DateTime<FixedOffset>>() {
+                Ok(dt) => dt.format(format).to_string(),
+                Err(_) => {
+                    let dt = s.parse::<NaiveDateTime>().map_err(|_| {
+                        tera::Error::message(format!(
+                            "date: cannot parse `{s}` as an RFC3339 or naive datetime"
+                        ))
+                    })?;
+                    dt.and_utc().format(format).to_string()
+                }
+            },
+            Value::String(s) => {
+                let d = NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| {
+                    tera::Error::message(format!("date: cannot parse `{s}` as a YYYY-MM-DD date"))
+                })?;
+                // Midnight always exists for a valid NaiveDate; unwrap_or is
+                // unreachable but keeps the closure panic-free.
+                d.and_hms_opt(0, 0, 0)
+                    .unwrap_or_default()
+                    .and_utc()
+                    .format(format)
+                    .to_string()
+            }
+            other => {
+                return Err(tera::Error::message(format!(
+                    "date: expected a timestamp or datetime string, got {other}"
+                )));
+            }
+        };
+        Ok(Value::String(formatted))
+    });
+
     // --- Path manipulation filters ---
 
     // dir — returns the directory portion of a path

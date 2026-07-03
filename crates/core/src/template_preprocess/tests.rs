@@ -957,3 +957,102 @@ fn test_plain_index_dot_survives_go_leading_dot_strip() {
     let result = preprocess(input);
     assert_eq!(result, "{{ Some[0].Field }}");
 }
+
+// ---- Pass 5: tera 1.x numeric-index compatibility (`list.0` → `list[0]`) ----
+
+#[test]
+fn test_numeric_index_simple() {
+    assert_eq!(preprocess("{{ list.0 }}"), "{{ list[0] }}");
+}
+
+#[test]
+fn test_numeric_index_multi_digit() {
+    assert_eq!(preprocess("{{ list.12 }}"), "{{ list[12] }}");
+}
+
+#[test]
+fn test_numeric_index_then_field() {
+    assert_eq!(preprocess("{{ a.0.b }}"), "{{ a[0].b }}");
+}
+
+#[test]
+fn test_numeric_index_chained_indices() {
+    assert_eq!(preprocess("{{ a.0.1 }}"), "{{ a[0][1] }}");
+}
+
+#[test]
+fn test_numeric_index_after_bracket_index() {
+    assert_eq!(preprocess("{{ x[1].0 }}"), "{{ x[1][0] }}");
+}
+
+#[test]
+fn test_numeric_index_optional_chaining() {
+    // tera 2.0 lexes `?[` as its optional-index token (the `?.` sibling),
+    // so the 1.x-era `a?.0` must land on `a?[0]`.
+    assert_eq!(preprocess("{{ a?.0 }}"), "{{ a?[0] }}");
+}
+
+#[test]
+fn test_numeric_index_go_style_leading_dot() {
+    assert_eq!(
+        preprocess("{{ .Artifacts.0.Name }}"),
+        "{{ Artifacts[0].Name }}"
+    );
+}
+
+#[test]
+fn test_numeric_index_in_statement_block() {
+    assert_eq!(
+        preprocess("{% if list.0 %}x{% endif %}"),
+        "{% if list[0] %}x{% endif %}"
+    );
+}
+
+#[test]
+fn test_numeric_index_float_literal_untouched() {
+    // A number literal is not a path head — `1.0` stays a float.
+    assert_eq!(preprocess("{{ 1.0 }}"), "{{ 1.0 }}");
+    assert_eq!(preprocess("{{ 1.5 | round }}"), "{{ 1.5 | round }}");
+}
+
+#[test]
+fn test_numeric_index_version_literal_untouched() {
+    // Chained digits-only segments are float/version-shaped literals,
+    // never paths.
+    assert_eq!(preprocess("{{ 1.2 + 0.5 }}"), "{{ 1.2 + 0.5 }}");
+}
+
+#[test]
+fn test_numeric_index_inside_string_literal_untouched() {
+    assert_eq!(preprocess("{{ \"a.0\" }}"), "{{ \"a.0\" }}");
+    assert_eq!(
+        preprocess("{{ foo | replace(from=\"v1.0\", to=\"\") }}"),
+        "{{ foo | replace(from=\"v1.0\", to=\"\") }}"
+    );
+}
+
+#[test]
+fn test_numeric_index_identifierish_segment_untouched() {
+    // `.0x` is not a pure numeric segment; leave it for tera's parser
+    // to diagnose.
+    assert_eq!(preprocess("{{ a.0x }}"), "{{ a.0x }}");
+}
+
+#[test]
+fn test_numeric_index_outside_blocks_untouched() {
+    // Only expression blocks are rewritten; literal text keeps its dots.
+    assert_eq!(preprocess("v1.0 of {{ name }}"), "v1.0 of {{ name }}");
+}
+
+#[test]
+fn test_numeric_index_end_to_end_render() {
+    // Proves `{{ list.0 }}` renders under tera 2.0 via the public API,
+    // not just that the rewrite produces the expected text.
+    use crate::template::{TemplateVars, render};
+    let mut vars = TemplateVars::new();
+    vars.set_structured("list", serde_json::json!(["first", "second"]));
+    vars.set_structured("items", serde_json::json!([{"name": "n0"}]));
+    assert_eq!(render("{{ list.0 }}", &vars).unwrap(), "first");
+    assert_eq!(render("{{ items.0.name }}", &vars).unwrap(), "n0");
+    assert_eq!(render("{{ list.1 | upper }}", &vars).unwrap(), "SECOND");
+}

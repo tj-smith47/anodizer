@@ -36,12 +36,12 @@ class {{ class_name }} < Formula
 {% endfor %}{% if depends_on_macos %}  depends_on :macos
 {% endif %}{% if depends_on_linux %}  depends_on :linux
 {% endif %}{% if has_macos %}  on_macos do
-{% if has_only_amd64_macos %}    url "{{ macos_entries.0.url | ruby_escape }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
+{% if has_only_amd64_macos %}    url "{{ macos_entries[0].url | ruby_escape }}"{% if download_strategy %}, using: {{ download_strategy }}{% endif %}{% if url_headers %},
       headers: [
 {% for header in url_headers %}        "{{ header | ruby_escape }}",
 {% endfor %}      ]{% endif %}
 
-    sha256 "{{ macos_entries.0.sha256 | ruby_escape }}"
+    sha256 "{{ macos_entries[0].sha256 | ruby_escape }}"
 
     def install
 {% for line in install_lines %}      {{ line }}

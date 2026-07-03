@@ -4272,3 +4272,71 @@ fn docs_undefined_variable_examples_stay_live_accurate() {
     );
     assert_eq!(render("{{ Some?.Missing or \"\" }}", &vars).unwrap(), "");
 }
+
+// ---- date filter (tera 1.x compat) tests ----
+
+#[test]
+fn test_date_filter_rfc3339_string() {
+    // The documented nightly-builds form: `{{ Now | date(format='%Y%m%d') }}`.
+    let mut vars = test_vars();
+    vars.set("Now", "2026-04-05T12:34:56+00:00");
+    assert_eq!(
+        render("{{ Now | date(format='%Y%m%d') }}", &vars).unwrap(),
+        "20260405"
+    );
+}
+
+#[test]
+fn test_date_filter_default_format() {
+    let mut vars = test_vars();
+    vars.set("Now", "2026-04-05T12:34:56Z");
+    assert_eq!(render("{{ Now | date }}", &vars).unwrap(), "2026-04-05");
+}
+
+#[test]
+fn test_date_filter_timestamp_input() {
+    let mut vars = test_vars();
+    vars.set_structured("Epoch", serde_json::json!(1715000000));
+    assert_eq!(
+        render("{{ Epoch | date(format=\"%Y-%m-%d\") }}", &vars).unwrap(),
+        "2024-05-06"
+    );
+}
+
+#[test]
+fn test_date_filter_plain_date_string() {
+    let mut vars = test_vars();
+    vars.set("Day", "2026-04-05");
+    assert_eq!(
+        render("{{ Day | date(format=\"%d/%m/%Y\") }}", &vars).unwrap(),
+        "05/04/2026"
+    );
+}
+
+#[test]
+fn test_date_filter_invalid_format_errors() {
+    let mut vars = test_vars();
+    vars.set("Now", "2026-04-05T12:34:56Z");
+    let err = render("{{ Now | date(format=\"%¾\") }}", &vars).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("invalid format"),
+        "got: {err:#}"
+    );
+}
+
+#[test]
+fn test_date_filter_timezone_arg_errors_explicitly() {
+    // 1.x supported `timezone` via chrono-tz; anodizer's compat filter
+    // must fail loudly, never silently format in the wrong zone.
+    let mut vars = test_vars();
+    vars.set("Now", "2026-04-05T12:34:56Z");
+    let err = render(
+        "{{ Now | date(format=\"%Y\", timezone=\"Europe/Paris\") }}",
+        &vars,
+    )
+    .unwrap_err();
+    assert!(
+        format!("{err:#}").contains("`timezone` argument is not supported"),
+        "got: {err:#}"
+    );
+}

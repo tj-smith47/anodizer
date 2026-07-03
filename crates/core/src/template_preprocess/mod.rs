@@ -1,12 +1,8 @@
-// Template preprocessing: converts Go-style syntax to Tera-native syntax.
-//
-// Pass 1 (`preprocess_strip_dots`): strips leading dots from `{{ .Field }}` → `{{ Field }}`.
-// Pass 2 (`preprocess_list_subexpr`): rewrites `(list ...)` subexpressions to Tera array literals:
-//   `(list "a" "b" "c")` → `["a", "b", "c"]`
+// Template preprocessing: converts Go-style syntax to Tera-native syntax,
+// plus tera 1.x compatibility rewrites. The authoritative pass list lives on
+// [`preprocess`] below. Representative rewrites:
+//   `{{ .Field }}` → `{{ Field }}`
 //   `(list .Os "windows")` → (after dot-strip) `[Os, "windows"]`
-// Pass 3 (`preprocess_positional_syntax`): converts positional function calls to named-arg syntax
-//   for `replace`, `split`, `contains`, `in`, `reReplaceAll`, `time`, `slice`,
-//   `printf`, `print`, and `println`:
 //   `{{ replace Version "v" "" }}` → `{{ replace(s=Version, old="v", new="") }}`
 //   `{{ Version | replace "v" "" }}` → `{{ Version | replace(from="v", to="") }}`
 //   `{{ in (list "a" "b") "a" }}` → `{{ in(items=["a", "b"], value="a") }}`
@@ -14,6 +10,8 @@
 //   `{{ time "2006-01-02" }}` → `{{ time(format="2006-01-02") }}`
 //   `{{ slice Commit 0 7 }}` → `{{ Commit | slice(start=0, end=7) }}`
 //   `{{ printf "%04d" Patch }}` → `{{ printf(format="%04d", args=[Patch]) }}`
+//   `{{ .Now.Format "2006-01-02" }}` → `{{ Now | now_format(format="2006-01-02") }}`
+//   `{{ list.0 }}` → `{{ list[0] }}`
 
 use regex::Regex;
 use std::sync::LazyLock;
@@ -30,7 +28,7 @@ mod tokens;
 mod tests;
 
 use builtins::{preprocess_go_builtins, preprocess_list_subexpr};
-use dots_dollars::preprocess_strip_dots;
+use dots_dollars::{preprocess_strip_dots, rewrite_numeric_index_segments};
 use go_blocks::preprocess_go_blocks;
 use methods::preprocess_method_calls;
 use positional::{preprocess_map_syntax, preprocess_positional_syntax};
@@ -63,6 +61,8 @@ static GO_BLOCK_RE: LazyLock<Regex> = LazyLock::new(|| static_regex(r"\{\{.*?\}\
 ///          `map(pairs=["k1", "v1", ...])` named-arg syntax.
 /// Pass 3: convert positional function syntax to named-arg syntax.
 /// Pass 4: rewrite Go-style `.Now.Format "..."` method calls to Tera filter syntax.
+/// Pass 5: rewrite tera 1.x numeric path segments (`list.0`) to tera 2.0
+///         index syntax (`list[0]`).
 pub fn preprocess(template: &str) -> String {
     // Pass 0: convert Go block syntax to Tera block syntax.
     let block_converted = preprocess_go_blocks(template);
@@ -77,5 +77,8 @@ pub fn preprocess(template: &str) -> String {
     // Pass 3: convert positional function syntax to named-arg syntax.
     let positional_rewritten = preprocess_positional_syntax(&map_rewritten);
     // Pass 4: rewrite `Now.Format "..."` → `Now | now_format(format="...")`.
-    preprocess_method_calls(&positional_rewritten)
+    let method_rewritten = preprocess_method_calls(&positional_rewritten);
+    // Pass 5: rewrite `list.0` → `list[0]` (tera 2.0 dropped `.N` indexing).
+    // Must run last: earlier passes lex `list.0` as one dotted-path token.
+    rewrite_numeric_index_segments(&method_rewritten)
 }
