@@ -4325,18 +4325,86 @@ fn test_date_filter_invalid_format_errors() {
 }
 
 #[test]
-fn test_date_filter_timezone_arg_errors_explicitly() {
-    // 1.x supported `timezone` via chrono-tz; anodizer's compat filter
-    // must fail loudly, never silently format in the wrong zone.
+fn test_date_filter_timestamp_timezone_converts() {
+    // 1719878400 is 2024-07-02T00:00:00Z, i.e. 2024-07-01 20:00 in
+    // America/New_York (EDT, UTC-4) — the two zones must differ.
+    let mut vars = test_vars();
+    vars.set_structured("Epoch", serde_json::json!(1719878400));
+    assert_eq!(
+        render(
+            "{{ Epoch | date(format=\"%Y-%m-%d %H:%M\", timezone=\"America/New_York\") }}",
+            &vars,
+        )
+        .unwrap(),
+        "2024-07-01 20:00"
+    );
+    assert_eq!(
+        render(
+            "{{ Epoch | date(format=\"%Y-%m-%d %H:%M\", timezone=\"UTC\") }}",
+            &vars,
+        )
+        .unwrap(),
+        "2024-07-02 00:00"
+    );
+}
+
+#[test]
+fn test_date_filter_rfc3339_timezone_converts() {
+    // Offset-carrying RFC3339 strings ARE converted (tera 1.x semantics):
+    // 12:34:56Z on 2026-04-05 is 14:34 in Europe/Paris (CEST, UTC+2).
+    let mut vars = test_vars();
+    vars.set("Now", "2026-04-05T12:34:56Z");
+    assert_eq!(
+        render(
+            "{{ Now | date(format=\"%H:%M\", timezone=\"Europe/Paris\") }}",
+            &vars,
+        )
+        .unwrap(),
+        "14:34"
+    );
+}
+
+#[test]
+fn test_date_filter_naive_datetime_timezone_ignored() {
+    // tera 1.x formatted an offset-less datetime as UTC without applying
+    // `timezone`; the compat filter replicates that exactly.
+    let mut vars = test_vars();
+    vars.set("Now", "2026-04-05T12:34:56");
+    assert_eq!(
+        render(
+            "{{ Now | date(format=\"%H:%M\", timezone=\"Europe/Paris\") }}",
+            &vars,
+        )
+        .unwrap(),
+        "12:34"
+    );
+}
+
+#[test]
+fn test_date_filter_invalid_timezone_errors() {
     let mut vars = test_vars();
     vars.set("Now", "2026-04-05T12:34:56Z");
     let err = render(
-        "{{ Now | date(format=\"%Y\", timezone=\"Europe/Paris\") }}",
+        "{{ Now | date(format=\"%Y\", timezone=\"Mars/Olympus_Mons\") }}",
         &vars,
     )
     .unwrap_err();
     assert!(
-        format!("{err:#}").contains("`timezone` argument is not supported"),
+        format!("{err:#}").contains("error parsing `Mars/Olympus_Mons` as a timezone"),
+        "got: {err:#}"
+    );
+}
+
+#[test]
+fn test_date_filter_locale_arg_errors_explicitly() {
+    // `locale` needed tera's non-default `date-locale` feature, which 1.x
+    // anodizer never enabled; the compat filter must fail loudly, never
+    // silently format in the wrong locale.
+    let mut vars = test_vars();
+    vars.set("Now", "2026-04-05T12:34:56Z");
+    let err = render("{{ Now | date(format=\"%Y\", locale=\"fr_FR\") }}", &vars).unwrap_err();
+    assert!(
+        format!("{err:#}").contains("`locale` argument is not supported"),
         "got: {err:#}"
     );
 }

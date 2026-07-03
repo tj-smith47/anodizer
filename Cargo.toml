@@ -200,6 +200,10 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 percent-encoding = "2"
 colored = "3"
 chrono = "0.4"
+# tera 1.x's DEFAULT feature set included `chrono-tz`, so the `date` filter's
+# `timezone=` kwarg worked in every shipped 1.x binary; pinned to keep that
+# contract alive in the restored compat filter.
+chrono-tz = "0.10"
 # `static` vendors liblzma and compiles it with the active C compiler (zig cc
 # under zigbuild) instead of pkg-config-probing the build host. A dynamically
 # linked system liblzma.so adds a runtime dependency on the host's lzma AND

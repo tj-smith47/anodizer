@@ -839,20 +839,23 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
     // re-registered with 1.x semantics: input is an i64 unix timestamp or a
     // datetime string (RFC3339, naive `%Y-%m-%dT%H:%M:%S`, or plain
     // `%Y-%m-%d`); `format` is chrono strftime, defaulting to `%Y-%m-%d`.
-    // 1.x's `timezone`/`locale` arguments needed the chrono-tz / locale data
-    // crates anodizer does not ship; they error explicitly rather than
-    // silently misformat.
+    // `timezone` takes an IANA name via chrono-tz (a tera 1.x DEFAULT feature,
+    // so it worked in every shipped 1.x binary) and — exactly as in 1.x —
+    // converts only timestamps and offset-carrying RFC3339 strings; naive
+    // datetime and plain-date strings format as UTC with `timezone` unused.
+    // 1.x's `locale` argument needed tera's non-default `date-locale` feature,
+    // which anodizer never enabled; it errors explicitly rather than silently
+    // misformat.
     tera.register_json_filter("date", |value: &Value, args: &HashMap<String, Value>| {
         use chrono::format::{Item, StrftimeItems};
-        use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, Utc};
+        use chrono::{DateTime, FixedOffset, NaiveDate, NaiveDateTime, TimeZone, Utc};
+        use chrono_tz::Tz;
 
-        for unsupported in ["timezone", "locale"] {
-            if args.contains_key(unsupported) {
-                return Err(tera::Error::message(format!(
-                    "date: the `{unsupported}` argument is not supported \
-                     (anodizer's compatibility `date` filter formats in UTC with the POSIX locale)"
-                )));
-            }
+        if args.contains_key("locale") {
+            return Err(tera::Error::message(
+                "date: the `locale` argument is not supported \
+                 (anodizer's compatibility `date` filter formats with the POSIX locale)",
+            ));
         }
         let format = args
             .get("format")
@@ -863,6 +866,15 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 "date: invalid format `{format}`"
             )));
         }
+        let timezone = match args.get("timezone") {
+            Some(val) => {
+                let tz = try_get_value!("date", "timezone", String, val);
+                Some(tz.parse::<Tz>().map_err(|_| {
+                    tera::Error::message(format!("date: error parsing `{tz}` as a timezone"))
+                })?)
+            }
+            None => None,
+        };
 
         let formatted = match value {
             Value::Number(n) => {
@@ -872,16 +884,27 @@ pub(super) static BASE_TERA: LazyLock<tera::Tera> = LazyLock::new(|| {
                 let dt = DateTime::<Utc>::from_timestamp(secs, 0).ok_or_else(|| {
                     tera::Error::message(format!("date: timestamp {secs} is out of range"))
                 })?;
-                dt.format(format).to_string()
+                match timezone {
+                    Some(tz) => tz
+                        .from_utc_datetime(&dt.naive_utc())
+                        .format(format)
+                        .to_string(),
+                    None => dt.format(format).to_string(),
+                }
             }
             Value::String(s) if s.contains('T') => match s.parse::<DateTime<FixedOffset>>() {
-                Ok(dt) => dt.format(format).to_string(),
+                Ok(dt) => match timezone {
+                    Some(tz) => dt.with_timezone(&tz).format(format).to_string(),
+                    None => dt.format(format).to_string(),
+                },
                 Err(_) => {
                     let dt = s.parse::<NaiveDateTime>().map_err(|_| {
                         tera::Error::message(format!(
                             "date: cannot parse `{s}` as an RFC3339 or naive datetime"
                         ))
                     })?;
+                    // tera 1.x treated an offset-less datetime as UTC and did
+                    // NOT apply `timezone` to it; replicated for parity.
                     dt.and_utc().format(format).to_string()
                 }
             },
