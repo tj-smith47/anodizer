@@ -7075,7 +7075,7 @@ crates:
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).expect("dmg amd64_variant must parse");
     let dmg = &config.crates[0].dmgs.as_ref().unwrap()[0];
-    assert_eq!(dmg.amd64_variant.as_deref(), Some("v3"));
+    assert_eq!(dmg.amd64_variant, Some(Amd64Variant::V3));
 }
 
 #[test]
@@ -7092,7 +7092,7 @@ crates:
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).expect("msi amd64_variant must parse");
     let msi = &config.crates[0].msis.as_ref().unwrap()[0];
-    assert_eq!(msi.amd64_variant.as_deref(), Some("v2"));
+    assert_eq!(msi.amd64_variant, Some(Amd64Variant::V2));
 }
 
 #[test]
@@ -7109,7 +7109,7 @@ crates:
 "#;
     let config: Config = serde_yaml_ng::from_str(yaml).expect("nsis amd64_variant must parse");
     let nsis = &config.crates[0].nsis.as_ref().unwrap()[0];
-    assert_eq!(nsis.amd64_variant.as_deref(), Some("v4"));
+    assert_eq!(nsis.amd64_variant, Some(Amd64Variant::V4));
 }
 
 #[test]
@@ -7130,7 +7130,7 @@ crates:
     let nfpm = &config.crates[0].nfpms.as_ref().unwrap()[0];
     assert_eq!(
         nfpm.amd64_variant.as_deref(),
-        Some(&[String::from("v2"), String::from("v3")][..])
+        Some(&[Amd64Variant::V2, Amd64Variant::V3][..])
     );
 }
 
@@ -7718,15 +7718,81 @@ fn test_installer_and_nfpm_configs_accept_legacy_goamd64_alias() {
     // dmg/msi/nsis/nfpm so imported configs carrying the legacy spelling fold
     // into the canonical field rather than hard-failing.
     let dmg: super::DmgConfig = serde_yaml_ng::from_str("goamd64: v3\n").unwrap();
-    assert_eq!(dmg.amd64_variant.as_deref(), Some("v3"));
+    assert_eq!(dmg.amd64_variant, Some(Amd64Variant::V3));
     let msi: super::MsiConfig = serde_yaml_ng::from_str("goamd64: v3\n").unwrap();
-    assert_eq!(msi.amd64_variant.as_deref(), Some("v3"));
+    assert_eq!(msi.amd64_variant, Some(Amd64Variant::V3));
     let nsis: super::NsisConfig = serde_yaml_ng::from_str("goamd64: v3\n").unwrap();
-    assert_eq!(nsis.amd64_variant.as_deref(), Some("v3"));
+    assert_eq!(nsis.amd64_variant, Some(Amd64Variant::V3));
     let nfpm: super::NfpmConfig = serde_yaml_ng::from_str("goamd64: [v3]\n").unwrap();
-    assert_eq!(
-        nfpm.amd64_variant.as_deref(),
-        Some(&[String::from("v3")][..])
+    assert_eq!(nfpm.amd64_variant.as_deref(), Some(&[Amd64Variant::V3][..]));
+}
+
+/// The whole `amd64_variant` domain is the typed [`Amd64Variant`] enum, so a
+/// level typo dies at parse instead of silently selecting only variant-less
+/// baseline archives. `homebrew: { amd64_variant: "x86-64-v3" }` is the proven
+/// failure: it used to parse, then the selector matched only untagged
+/// baseline archives and published the UNTUNED binary under a formula the
+/// operator believed was v3-tuned.
+#[test]
+fn test_publisher_amd64_variant_typo_rejected_at_parse_per_crate_axis() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+    publish:
+      homebrew:
+        amd64_variant: "x86-64-v3"
+"#;
+    let err = serde_yaml_ng::from_str::<Config>(yaml)
+        .expect_err("a typo'd amd64_variant must fail at parse")
+        .to_string();
+    assert!(
+        err.contains("unknown variant `x86-64-v3`")
+            && err.contains("expected one of `v1`, `v2`, `v3`, `v4`"),
+        "parse error must name the bad value and the valid set: {err}"
+    );
+}
+
+/// Same closed domain on the defaults axis: a garbage level under
+/// `defaults.publish.*` is rejected at parse, not merged into every crate.
+#[test]
+fn test_publisher_amd64_variant_typo_rejected_at_parse_defaults_axis() {
+    let yaml = r#"
+project_name: test
+defaults:
+  publish:
+    winget:
+      amd64_variant: v5
+crates:
+  - name: a
+    path: "."
+    tag_template: "v{{ .Version }}"
+"#;
+    let err = serde_yaml_ng::from_str::<Config>(yaml)
+        .expect_err("a garbage defaults-axis amd64_variant must fail at parse")
+        .to_string();
+    assert!(
+        err.contains("unknown variant `v5`")
+            && err.contains("expected one of `v1`, `v2`, `v3`, `v4`"),
+        "parse error must name the bad value and the valid set: {err}"
+    );
+}
+
+/// The legacy `goamd64:` alias routes through the same enum: an invalid
+/// level under the old spelling is rejected too, on installers and on
+/// nfpm's list form alike.
+#[test]
+fn test_goamd64_alias_typo_rejected_at_parse() {
+    assert!(
+        serde_yaml_ng::from_str::<super::MsiConfig>("goamd64: x86-64-v3\n").is_err(),
+        "msi goamd64 typo must fail at parse"
+    );
+    assert!(
+        serde_yaml_ng::from_str::<super::NfpmConfig>("formats: [deb]\ngoamd64: [x86-64-v3]\n")
+            .is_err(),
+        "nfpm goamd64 list typo must fail at parse"
     );
 }
 
@@ -9780,6 +9846,36 @@ fn schema_types_builds_amd64_variant_as_the_level_enum() {
         &serde_json::json!(["v1", "v2", "v3", "v4"]),
         "the enum definition is closed over the four levels"
     );
+}
+
+#[test]
+fn schema_types_every_amd64_variant_field_as_the_level_enum() {
+    // The whole `amd64_variant` domain references the one closed enum: every
+    // config carrying the field (build declaration, AUR source template var,
+    // installer/packager/publisher selectors) must reject a bogus level in
+    // schema validation exactly as serde does at parse.
+    let schema = config_schema();
+    for def in [
+        "BuildConfig",
+        "AurSourceConfig",
+        "DmgConfig",
+        "MsiConfig",
+        "NsisConfig",
+        "NfpmConfig",
+        "HomebrewConfig",
+        "ScoopConfig",
+        "ChocolateyConfig",
+        "WingetConfig",
+        "KrewConfig",
+        "NixConfig",
+        "AurConfig",
+    ] {
+        let field = &schema["definitions"][def]["properties"]["amd64_variant"];
+        assert!(
+            field.to_string().contains("#/definitions/Amd64Variant"),
+            "{def}.amd64_variant must reference the enum definition: {field}"
+        );
+    }
 }
 
 #[test]

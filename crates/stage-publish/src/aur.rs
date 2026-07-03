@@ -742,13 +742,13 @@ fn aur_build_sources(
     // Find Linux artifacts for the AUR package, applying IDs + amd64_variant filter.
     // arm_variant is hardcoded to "7" for AUR (no config option).
     let ids_filter = aur_cfg.ids.as_deref();
-    let amd64_variant = aur_cfg.amd64_variant.as_deref().or(Some("v1"));
+    let amd64_variant = aur_cfg.amd64_variant.map_or("v1", |v| v.as_str());
     let linux_artifacts = util::find_artifacts_by_os_with_variant(
         ctx,
         crate_name,
         "linux",
         ids_filter,
-        amd64_variant,
+        Some(amd64_variant),
         Some("7"),
     )?;
 
@@ -759,12 +759,11 @@ fn aur_build_sources(
         let ids_hint = ids_filter
             .map(|ids| format!("ids={ids:?}"))
             .unwrap_or_else(|| "ids=<none>".to_string());
-        let amd_hint = amd64_variant.unwrap_or("<default v1>");
         anyhow::bail!(
             "aur: no linux archives matched filters for '{crate_name}' — \
              PKGBUILD would have placeholder URL and empty sha256. Check your \
              archive configuration and aur filters ({ids_hint}, \
-             amd64_variant={amd_hint}, arm_variant=7 [hardcoded]). At least \
+             amd64_variant={amd64_variant}, arm_variant=7 [hardcoded]). At least \
              one linux Archive artifact must match."
         );
     }
@@ -1036,13 +1035,13 @@ pub(crate) fn crate_has_aur_linux_archive(
     crate_name: &str,
 ) -> Result<bool> {
     let ids_filter = aur_cfg.ids.as_deref();
-    let amd64_variant = aur_cfg.amd64_variant.as_deref().or(Some("v1"));
+    let amd64_variant = aur_cfg.amd64_variant.map_or("v1", |v| v.as_str());
     let matched = util::find_artifacts_by_os_with_variant(
         ctx,
         crate_name,
         "linux",
         ids_filter,
-        amd64_variant,
+        Some(amd64_variant),
         Some("7"),
     )?;
     Ok(!matched.is_empty())

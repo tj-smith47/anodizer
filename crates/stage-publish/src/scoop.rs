@@ -613,7 +613,7 @@ impl<'a> ScoopArtifactFilters<'a> {
     fn from_config(scoop_cfg: &'a anodizer_core::config::ScoopConfig) -> Self {
         ScoopArtifactFilters {
             ids: scoop_cfg.ids.as_deref(),
-            amd64_variant: scoop_cfg.amd64_variant.as_deref().or(Some("v1")),
+            amd64_variant: Some(scoop_cfg.amd64_variant.map_or("v1", |v| v.as_str())),
         }
     }
 }

@@ -5317,7 +5317,7 @@ fn test_setup_lintian_overrides_dry_run_skips_write_but_injects_content() {
 /// fields stay conventional, so the variant must live in the filename) rather
 /// than colliding under the conventional default.
 fn nfpm_amd64_variant_test_ctx(
-    amd64_variant: Option<Vec<&str>>,
+    amd64_variant: Option<Vec<anodizer_core::config::Amd64Variant>>,
 ) -> anodizer_core::context::Context {
     use anodizer_core::config::{Config, CrateConfig, NfpmConfig};
     use anodizer_core::context::{Context, ContextOptions};
@@ -5327,7 +5327,7 @@ fn nfpm_amd64_variant_test_ctx(
         package_name: Some("myapp".to_string()),
         formats: vec!["deb".to_string()],
         maintainer: Some("test@example.com".to_string()),
-        amd64_variant: amd64_variant.map(|v| v.into_iter().map(str::to_string).collect()),
+        amd64_variant,
         file_name_template: Some(
             "{{ .PackageName }}_{{ .Version }}_{{ .Arch }}{{ .Amd64 }}".to_string(),
         ),
@@ -5435,7 +5435,7 @@ fn test_nfpm_amd64_variant_unset_passes_all_amd64_variants() {
 
 #[test]
 fn test_nfpm_amd64_variant_v3_only_keeps_matching_variant() {
-    let mut ctx = nfpm_amd64_variant_test_ctx(Some(vec!["v3"]));
+    let mut ctx = nfpm_amd64_variant_test_ctx(Some(vec![anodizer_core::config::Amd64Variant::V3]));
     NfpmStage.run(&mut ctx).unwrap();
     let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
     // Only v3 amd64 (one package) + arm64 (one package) -> 2 debs.
@@ -5446,7 +5446,10 @@ fn test_nfpm_amd64_variant_v3_only_keeps_matching_variant() {
 fn test_nfpm_amd64_variant_multiple_variants_pass_listed() {
     // The `goamd64: [v2, v3]` form passes BOTH v2 and v3 amd64 binaries
     // (autoOr semantics).
-    let mut ctx = nfpm_amd64_variant_test_ctx(Some(vec!["v2", "v3"]));
+    let mut ctx = nfpm_amd64_variant_test_ctx(Some(vec![
+        anodizer_core::config::Amd64Variant::V2,
+        anodizer_core::config::Amd64Variant::V3,
+    ]));
     NfpmStage.run(&mut ctx).unwrap();
     let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
     // v2 and v3 are distinct micro-arch variants of the amd64 target — each
@@ -5459,7 +5462,7 @@ fn test_nfpm_amd64_variant_multiple_variants_pass_listed() {
 fn test_nfpm_amd64_variant_filter_does_not_drop_arm64() {
     // Pin: filter only constrains amd64; arm64 must still pass even
     // when the filter rejects every amd64 variant.
-    let mut ctx = nfpm_amd64_variant_test_ctx(Some(vec!["v9000"]));
+    let mut ctx = nfpm_amd64_variant_test_ctx(Some(vec![anodizer_core::config::Amd64Variant::V4]));
     NfpmStage.run(&mut ctx).unwrap();
     let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
     assert_eq!(

@@ -2088,7 +2088,9 @@ crates:
     /// Build a context with three windows/amd64 binaries (variants v1/v2/v3)
     /// plus one windows/arm64 binary. The `amd64_variant` field on the config
     /// drives which subset of amd64 binaries reaches `Installer` artifact creation.
-    fn msi_amd64_variant_test_ctx(amd64_variant: Option<&str>) -> anodizer_core::context::Context {
+    fn msi_amd64_variant_test_ctx(
+        amd64_variant: Option<anodizer_core::config::Amd64Variant>,
+    ) -> anodizer_core::context::Context {
         use anodizer_core::artifact::Artifact;
         use anodizer_core::config::{Config, CrateConfig, MsiConfig};
         use anodizer_core::context::{Context, ContextOptions};
@@ -2099,7 +2101,7 @@ crates:
 
         let msi_cfg = MsiConfig {
             wxs: Some(wxs_path.to_string_lossy().into_owned()),
-            amd64_variant: amd64_variant.map(str::to_string),
+            amd64_variant,
             ..Default::default()
         };
 
@@ -2174,7 +2176,7 @@ crates:
 
     #[test]
     fn test_msi_amd64_variant_v3_only_keeps_matching_variant() {
-        let mut ctx = msi_amd64_variant_test_ctx(Some("v3"));
+        let mut ctx = msi_amd64_variant_test_ctx(Some(anodizer_core::config::Amd64Variant::V3));
         MsiStage.run(&mut ctx).unwrap();
         let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
         // Only v3 amd64 + arm64 (always passes) -> 2 MSIs.
@@ -2191,7 +2193,7 @@ crates:
     fn test_msi_amd64_variant_filter_does_not_drop_arm64() {
         // Pin: filter only constrains amd64. arm64 must still pass even
         // when no amd64 variant matches.
-        let mut ctx = msi_amd64_variant_test_ctx(Some("v9000"));
+        let mut ctx = msi_amd64_variant_test_ctx(Some(anodizer_core::config::Amd64Variant::V4));
         MsiStage.run(&mut ctx).unwrap();
         let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
         assert_eq!(installers.len(), 1);

@@ -176,7 +176,7 @@ crates:
 | `contributors` | string[] | `[]` | Contributor comment lines in PKGBUILD |
 | `rel` | string | `"1"` | Package release number (`pkgrel`) |
 | `ids` | string[] | all | Build IDs filter: only include artifacts whose `id` is in this list |
-| `amd64_variant` | string | `"v1"` | amd64 microarchitecture variant filter (`v1`, `v2`, `v3`, `v4`) |
+| `amd64_variant` | enum | `"v1"` | amd64 microarchitecture variant filter — exactly one of `v1`, `v2`, `v3`, `v4` (any other value is rejected when the config is parsed) |
 | `url_template` | string | release URL | Custom download URL template (overrides artifact URLs) |
 | `package` | string | auto | Custom `package()` function body for PKGBUILD |
 | `install` | string | none | Content for a `.install` file (post-install/pre-remove hooks) |

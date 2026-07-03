@@ -730,7 +730,7 @@ fn build_platform_groups(
                     .get("amd64_variant")
                     .map(String::as_str)
                     .unwrap_or("v1");
-                wants.iter().any(|w| w == v)
+                wants.iter().any(|w| w.as_str() == v)
             })
             .collect()
     } else {

@@ -1,7 +1,9 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::super::{PostPublishPollConfig, StringOrBool, deserialize_string_or_bool_opt};
+use super::super::{
+    Amd64Variant, PostPublishPollConfig, StringOrBool, deserialize_string_or_bool_opt,
+};
 use super::{CommitAuthorConfig, RepositoryConfig};
 
 // ---------------------------------------------------------------------------
@@ -107,9 +109,11 @@ pub struct WingetConfig {
     /// Artifact selection: "archive" (default), "msi", or "nsis".
     #[serde(rename = "use")]
     pub use_artifact: Option<String>,
-    /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
-    /// Only artifacts matching this variant are included. Default: "v1".
-    pub amd64_variant: Option<String>,
+    /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`).
+    /// Only artifacts matching this variant are included. Default: `v1`.
+    /// Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is
+    /// rejected when the config is parsed.
+    pub amd64_variant: Option<Amd64Variant>,
     /// Post-publish PR-validation polling settings. Polling is
     /// disabled by default — winget-pkgs PR validation routinely
     /// takes hours to days, and blocking a CI workflow on that wait

@@ -249,7 +249,7 @@ fn homebrew_matching_artifacts<'a>(
     crate_name: &str,
 ) -> Vec<&'a anodizer_core::artifact::Artifact> {
     let ids_filter = hb_cfg.ids.as_deref();
-    let amd64_variant = hb_cfg.amd64_variant.as_deref().or(Some("v1"));
+    let amd64_variant = hb_cfg.amd64_variant.map_or("v1", |v| v.as_str());
     // Goarm defaults to "6" for Homebrew.
     let arm_variant = hb_cfg.arm_variant.as_deref().or(Some("6"));
     let mut all_artifacts = ctx
@@ -281,10 +281,11 @@ fn homebrew_matching_artifacts<'a>(
         .filter(|a| {
             let target = a.target.as_deref().unwrap_or("");
             let (_, arch) = anodizer_core::target::map_target(target);
-            if arch == "amd64"
-                && let Some(want) = amd64_variant
-            {
-                return a.metadata.get("amd64_variant").is_none_or(|v| v == want);
+            if arch == "amd64" {
+                return a
+                    .metadata
+                    .get("amd64_variant")
+                    .is_none_or(|v| v == amd64_variant);
             }
             if arch.starts_with("arm")
                 && arch != "arm64"
@@ -308,7 +309,7 @@ fn collect_archive_entries(
     log: &StageLogger,
 ) -> Result<Vec<(String, String, String)>> {
     let ids_filter = hb_cfg.ids.as_deref();
-    let amd64_variant = hb_cfg.amd64_variant.as_deref().or(Some("v1"));
+    let amd64_variant = hb_cfg.amd64_variant.map_or("v1", |v| v.as_str());
     // Goarm defaults to "6" for Homebrew.
     let arm_variant = hb_cfg.arm_variant.as_deref().or(Some("6"));
     // Collect as (target, url, sha256, format) so the disambiguator can prefer
@@ -372,13 +373,12 @@ fn collect_archive_entries(
         let ids_hint = ids_filter
             .map(|ids| format!("ids={ids:?}"))
             .unwrap_or_else(|| "ids=<none>".to_string());
-        let amd_hint = amd64_variant.unwrap_or("<default v1>");
         let arm_hint = arm_variant.unwrap_or("<default 6>");
         anyhow::bail!(
             "homebrew: no archives matched filters for '{crate_name}' — \
              formula would have empty url/sha256. Check your archive \
              configuration and homebrew filters ({ids_hint}, \
-             amd64_variant={amd_hint}, arm_variant={arm_hint}). At least one \
+             amd64_variant={amd64_variant}, arm_variant={arm_hint}). At least one \
              Archive or UploadableBinary artifact must match."
         );
     }
@@ -1296,6 +1296,35 @@ mod tests {
         assert_eq!(
             matched[0].metadata.get("id").map(|s| s.as_str()),
             Some("keepme")
+        );
+    }
+
+    /// A typed `amd64_variant: v3` selector matches the v3-tagged amd64
+    /// archive and drops the explicitly-v1-tagged one — the positive half of
+    /// the enum conversion (a typo'd level now dies at config parse; a valid
+    /// level keeps selecting exactly the tuned archive).
+    #[test]
+    fn homebrew_matching_artifacts_selects_declared_amd64_variant() {
+        let hb = HomebrewConfig {
+            amd64_variant: Some(anodizer_core::config::Amd64Variant::V3),
+            ..Default::default()
+        };
+        let mut v3 = archive("x86_64-unknown-linux-gnu", "https://e/v3.tar.gz", "s3");
+        v3.metadata
+            .insert("amd64_variant".to_string(), "v3".to_string());
+        let mut v1 = archive("x86_64-unknown-linux-gnu", "https://e/v1.tar.gz", "s1");
+        v1.metadata
+            .insert("amd64_variant".to_string(), "v1".to_string());
+        let ctx = single_crate_ctx(hb.clone(), vec![v3, v1]);
+        let matched = homebrew_matching_artifacts(&ctx, &hb, "mytool");
+        assert_eq!(
+            matched.len(),
+            1,
+            "only the v3-tagged archive matches a v3 selector"
+        );
+        assert_eq!(
+            matched[0].metadata.get("url").map(String::as_str),
+            Some("https://e/v3.tar.gz")
         );
     }
 

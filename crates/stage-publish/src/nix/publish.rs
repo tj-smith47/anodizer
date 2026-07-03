@@ -533,8 +533,14 @@ fn collect_platform_artifacts(
     nix_cfg: &NixConfig,
 ) -> anyhow::Result<Vec<OsArtifact>> {
     let ids_filter = nix_cfg.ids.as_deref();
-    let amd64_variant = nix_cfg.amd64_variant.as_deref().or(Some("v1"));
-    util::find_all_platform_artifacts_with_variant(ctx, crate_name, ids_filter, amd64_variant, None)
+    let amd64_variant = nix_cfg.amd64_variant.map_or("v1", |v| v.as_str());
+    util::find_all_platform_artifacts_with_variant(
+        ctx,
+        crate_name,
+        ids_filter,
+        Some(amd64_variant),
+        None,
+    )
 }
 
 /// Builds the `(nix_system, download_url, base32_hash)` triples that

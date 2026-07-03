@@ -277,7 +277,7 @@ impl Stage for NsisStage {
                                 .get("amd64_variant")
                                 .map(String::as_str)
                                 .unwrap_or("v1")
-                                == want
+                                == want.as_str()
                         });
                     }
 
@@ -1767,7 +1767,9 @@ crates:
     /// Build a context with three windows/amd64 binaries (v1/v2/v3) +
     /// one windows/arm64 binary. The `amd64_variant` field on the config drives
     /// which subset of amd64 binaries reaches NSIS Installer artifact creation.
-    fn nsis_amd64_variant_test_ctx(amd64_variant: Option<&str>) -> anodizer_core::context::Context {
+    fn nsis_amd64_variant_test_ctx(
+        amd64_variant: Option<anodizer_core::config::Amd64Variant>,
+    ) -> anodizer_core::context::Context {
         use anodizer_core::artifact::Artifact;
         use anodizer_core::config::{CrateConfig, NsisConfig};
         use anodizer_core::context::{Context, ContextOptions};
@@ -1778,7 +1780,7 @@ crates:
 
         let nsis_cfg = NsisConfig {
             script: Some(script_path.to_string_lossy().into_owned()),
-            amd64_variant: amd64_variant.map(str::to_string),
+            amd64_variant,
             ..Default::default()
         };
 
@@ -1852,7 +1854,7 @@ crates:
 
     #[test]
     fn test_nsis_amd64_variant_v3_only_keeps_matching_variant() {
-        let mut ctx = nsis_amd64_variant_test_ctx(Some("v3"));
+        let mut ctx = nsis_amd64_variant_test_ctx(Some(anodizer_core::config::Amd64Variant::V3));
         NsisStage.run(&mut ctx).unwrap();
         let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
         // Only v3 amd64 + arm64 -> 2 installers.
@@ -1868,7 +1870,7 @@ crates:
     #[test]
     fn test_nsis_amd64_variant_filter_does_not_drop_arm64() {
         // Pin: amd64 filter never affects arm64.
-        let mut ctx = nsis_amd64_variant_test_ctx(Some("v9000"));
+        let mut ctx = nsis_amd64_variant_test_ctx(Some(anodizer_core::config::Amd64Variant::V4));
         NsisStage.run(&mut ctx).unwrap();
         let installers = ctx.artifacts.by_kind(ArtifactKind::Installer);
         assert_eq!(installers.len(), 1);

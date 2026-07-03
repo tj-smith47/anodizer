@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::super::{StringOrBool, deserialize_string_or_bool_opt};
+use super::super::{Amd64Variant, StringOrBool, deserialize_string_or_bool_opt};
 use super::{CommitAuthorConfig, RepositoryConfig};
 
 // ---------------------------------------------------------------------------
@@ -94,9 +94,11 @@ pub struct HomebrewConfig {
     pub livecheck: Option<HomebrewLivecheck>,
     /// Homebrew Cask configuration (macOS .app bundles).
     pub cask: Option<HomebrewCaskConfig>,
-    /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
-    /// Only artifacts matching this variant are included. Default: "v1".
-    pub amd64_variant: Option<String>,
+    /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`).
+    /// Only artifacts matching this variant are included. Default: `v1`.
+    /// Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is
+    /// rejected when the config is parsed.
+    pub amd64_variant: Option<Amd64Variant>,
     /// ARM version filter (e.g. "6", "7"). Only artifacts matching this
     /// variant are included.
     pub arm_variant: Option<String>,
@@ -565,9 +567,11 @@ pub struct ScoopConfig {
     /// Artifact selection: "archive" (default), "msi", or "nsis".
     #[serde(rename = "use")]
     pub use_artifact: Option<String>,
-    /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
-    /// Only artifacts matching this variant are included. Default: "v1".
-    pub amd64_variant: Option<String>,
+    /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`).
+    /// Only artifacts matching this variant are included. Default: `v1`.
+    /// Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is
+    /// rejected when the config is parsed.
+    pub amd64_variant: Option<Amd64Variant>,
     /// Override whether this publisher failing should fail the overall release.
     ///
     /// Default: `false` — a failure here is logged but does not abort the release.

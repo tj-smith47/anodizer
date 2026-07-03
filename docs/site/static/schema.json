@@ -626,7 +626,7 @@
   "additionalProperties": false,
   "definitions": {
     "Amd64Variant": {
-      "description": "`x86_64` micro-architecture level — `v1` (baseline), `v2`, `v3`, or `v4`. Typed so a typo fails at config-parse time instead of flowing on as an arbitrary string. Used by [`BuildConfig::amd64_variant`](super::BuildConfig::amd64_variant) — where the declared level names a tuned group's artifacts and derived asset names — and by [`AurSourceConfig::amd64_variant`], where it constrains the `prepare:` / `build:` / `package:` template var surface to a known set (AUR source pkgs build from the upstream tarball, so an invalid value would otherwise render silently into the PKGBUILD).",
+      "description": "`x86_64` micro-architecture level — `v1` (baseline), `v2`, `v3`, or `v4`. Typed so a typo fails at config-parse time instead of flowing on as an arbitrary string. This is the ONE type for every `amd64_variant:` config field: [`BuildConfig::amd64_variant`](super::BuildConfig::amd64_variant) — where the declared level names a tuned group's artifacts and derived asset names — [`AurSourceConfig::amd64_variant`], where it constrains the `prepare:` / `build:` / `package:` template var surface to a known set (AUR source pkgs build from the upstream tarball, so an invalid value would otherwise render silently into the PKGBUILD), and the variant *selector* on every installer/packager/publisher config (dmg/msi/nsis/nfpm, homebrew/scoop/chocolatey/winget/krew/nix/aur), where a free-string typo would silently match only variant-less baseline archives and ship the untuned binary. Artifact metadata stays string-typed; selectors compare via [`Amd64Variant::as_str`].",
       "type": "string",
       "enum": [
         "v1",
@@ -1720,11 +1720,15 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed.",
           "default": null,
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Amd64Variant"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "backup": {
@@ -3660,11 +3664,15 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed.",
           "default": null,
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Amd64Variant"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "api_key": {
@@ -5159,11 +5167,15 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`), set via the `amd64_variant:` key. When set, only artifacts with the matching `amd64_variant` metadata are included. The legacy `goamd64:` spelling is accepted via serde alias for back-compat with imported configs. When unset, all amd64 variants are included (no filtering).",
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`), set via the `amd64_variant:` key. When set, only artifacts with the matching `amd64_variant` metadata are included. The legacy `goamd64:` spelling is accepted via serde alias for back-compat with imported configs. When unset, all amd64 variants are included (no filtering). Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed.",
           "default": null,
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Amd64Variant"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "extra_files": {
@@ -7294,11 +7306,15 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed.",
           "default": null,
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Amd64Variant"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "arm_variant": {
@@ -7876,11 +7892,15 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed.",
           "default": null,
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Amd64Variant"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "arm_variant": {
@@ -9232,11 +9252,15 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`), set via the `amd64_variant:` key. When set, only artifacts with the matching `amd64_variant` metadata are included. The legacy `goamd64:` spelling is accepted via serde alias for back-compat with imported configs.",
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`), set via the `amd64_variant:` key. When set, only artifacts with the matching `amd64_variant` metadata are included. The legacy `goamd64:` spelling is accepted via serde alias for back-compat with imported configs. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed.",
           "default": null,
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Amd64Variant"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "extensions": {
@@ -9468,14 +9492,14 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (`[\"v1\"]`, `[\"v2\", \"v3\"]`, etc.), set via the `amd64_variant:` key. When set, only amd64 binaries with `amd64_variant` matching one of the listed values are included. The legacy `goamd64:` spelling is accepted via serde alias for back-compat with imported configs. When unset, all amd64 variants are included (no filtering).",
+          "description": "amd64 microarchitecture variant filter (`[\"v1\"]`, `[\"v2\", \"v3\"]`, etc.), set via the `amd64_variant:` key. When set, only amd64 binaries with `amd64_variant` matching one of the listed values are included. The legacy `goamd64:` spelling is accepted via serde alias for back-compat with imported configs. When unset, all amd64 variants are included (no filtering). Each entry is typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed.",
           "default": null,
           "type": [
             "array",
             "null"
           ],
           "items": {
-            "type": "string"
+            "$ref": "#/definitions/Amd64Variant"
           }
         },
         "apk": {
@@ -10529,11 +10553,15 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed.",
           "default": null,
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Amd64Variant"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "changelog": {
@@ -11156,11 +11184,15 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`), set via the `amd64_variant:` key. When set, only artifacts with the matching `amd64_variant` metadata are included. The legacy `goamd64:` spelling is accepted via serde alias for back-compat with imported configs.",
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`), set via the `amd64_variant:` key. When set, only artifacts with the matching `amd64_variant` metadata are included. The legacy `goamd64:` spelling is accepted via serde alias for back-compat with imported configs. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed.",
           "default": null,
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Amd64Variant"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "extra_files": {
@@ -12792,11 +12824,15 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed.",
           "default": null,
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Amd64Variant"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "checkver": {
@@ -15362,11 +15398,15 @@
       "type": "object",
       "properties": {
         "amd64_variant": {
-          "description": "amd64 microarchitecture variant filter (e.g. \"v1\", \"v2\", \"v3\", \"v4\"). Only artifacts matching this variant are included. Default: \"v1\".",
+          "description": "amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed.",
           "default": null,
-          "type": [
-            "string",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Amd64Variant"
+            },
+            {
+              "type": "null"
+            }
           ]
         },
         "author": {

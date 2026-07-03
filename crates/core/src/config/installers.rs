@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 
 use super::archives::{ArchiveFileSpec, ExtraFileSpec, TemplatedExtraFile};
 use super::build::BuildHooksConfig;
-use super::{StringOrBool, deserialize_string_or_bool_opt};
+use super::{Amd64Variant, StringOrBool, deserialize_string_or_bool_opt};
 
 // ---------------------------------------------------------------------------
 // DmgConfig
@@ -39,8 +39,10 @@ pub struct DmgConfig {
     /// matching `amd64_variant` metadata are included. The legacy `goamd64:`
     /// spelling is accepted via serde alias for back-compat with imported
     /// configs. When unset, all amd64 variants are included (no filtering).
+    /// Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is
+    /// rejected when the config is parsed.
     #[serde(alias = "goamd64")]
-    pub amd64_variant: Option<String>,
+    pub amd64_variant: Option<Amd64Variant>,
     /// Template-conditional: skip this DMG config if rendered result is "false"
     /// or empty. Render failure hard-errors (not silent-skip).
     #[serde(rename = "if")]
@@ -86,8 +88,10 @@ pub struct MsiConfig {
     /// matching `amd64_variant` metadata are included. The legacy `goamd64:`
     /// spelling is accepted via serde alias for back-compat with imported
     /// configs.
+    /// Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is
+    /// rejected when the config is parsed.
     #[serde(alias = "goamd64")]
-    pub amd64_variant: Option<String>,
+    pub amd64_variant: Option<Amd64Variant>,
     /// Additional files available in the WiX build context (simple filenames).
     pub extra_files: Option<Vec<String>>,
     /// WiX extensions to enable (e.g., "WixUIExtension"). Templates allowed.
@@ -189,8 +193,10 @@ pub struct NsisConfig {
     /// matching `amd64_variant` metadata are included. The legacy `goamd64:`
     /// spelling is accepted via serde alias for back-compat with imported
     /// configs.
+    /// Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is
+    /// rejected when the config is parsed.
     #[serde(alias = "goamd64")]
-    pub amd64_variant: Option<String>,
+    pub amd64_variant: Option<Amd64Variant>,
     /// Remove source archives from artifacts, keeping only the installer.
     pub replace: Option<bool>,
     /// Output timestamp for reproducible builds.
@@ -294,24 +300,24 @@ mod goamd64_alias_tests {
     #[test]
     fn dmg_goamd64_alias_parses_into_amd64_variant() {
         let dmg: DmgConfig = serde_yaml_ng::from_str("goamd64: v3").unwrap();
-        assert_eq!(dmg.amd64_variant.as_deref(), Some("v3"));
+        assert_eq!(dmg.amd64_variant, Some(Amd64Variant::V3));
     }
 
     #[test]
     fn dmg_canonical_amd64_variant_still_parses() {
         let dmg: DmgConfig = serde_yaml_ng::from_str("amd64_variant: v2").unwrap();
-        assert_eq!(dmg.amd64_variant.as_deref(), Some("v2"));
+        assert_eq!(dmg.amd64_variant, Some(Amd64Variant::V2));
     }
 
     #[test]
     fn msi_goamd64_alias_parses_into_amd64_variant() {
         let msi: MsiConfig = serde_yaml_ng::from_str("goamd64: v4").unwrap();
-        assert_eq!(msi.amd64_variant.as_deref(), Some("v4"));
+        assert_eq!(msi.amd64_variant, Some(Amd64Variant::V4));
     }
 
     #[test]
     fn nsis_goamd64_alias_parses_into_amd64_variant() {
         let nsis: NsisConfig = serde_yaml_ng::from_str("goamd64: v1").unwrap();
-        assert_eq!(nsis.amd64_variant.as_deref(), Some("v1"));
+        assert_eq!(nsis.amd64_variant, Some(Amd64Variant::V1));
     }
 }

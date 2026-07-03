@@ -179,7 +179,7 @@ mod tests {
             upgrade_behavior: Some("install".to_string()),
             silent_switch: None,
             use_artifact: None,
-            amd64_variant: Some("v1".to_string()),
+            amd64_variant: Some(anodizer_core::config::Amd64Variant::V1),
             post_publish_poll: None,
             update_existing_pr: None,
             required: Some(true),

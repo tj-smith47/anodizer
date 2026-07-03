@@ -144,7 +144,7 @@ mod tests {
             ids: None,
             url_template: None,
             use_artifact: None,
-            amd64_variant: Some("v1".to_string()),
+            amd64_variant: Some(anodizer_core::config::Amd64Variant::V1),
             required: Some(true),
             if_condition: None,
             retain_on_rollback: None,

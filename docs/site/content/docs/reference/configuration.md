@@ -1035,7 +1035,7 @@ After each docker image push, a digest file (containing the sha256 digest) is wr
 ## `crates[].nfpms`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `amd64_variant` | list of string | — | amd64 microarchitecture variant filter (`["v1"]`, `["v2", "v3"]`, etc.), set via the `amd64_variant:` key. When set, only amd64 binaries with `amd64_variant` matching one of the listed values are included. The legacy `goamd64:` spelling is accepted via serde alias for back-compat with imported configs. When unset, all amd64 variants are included (no filtering). |
+| `amd64_variant` | list of Amd64Variant | — | amd64 microarchitecture variant filter (`["v1"]`, `["v2", "v3"]`, etc.), set via the `amd64_variant:` key. When set, only amd64 binaries with `amd64_variant` matching one of the listed values are included. The legacy `goamd64:` spelling is accepted via serde alias for back-compat with imported configs. When unset, all amd64 variants are included (no filtering). Each entry is typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed. |
 | `apk` | NfpmApkConfig | — | APK-specific configuration. |
 | `archlinux` | NfpmArchlinuxConfig | — | Archlinux-specific configuration. |
 | `bin_alias` | string | — | Rename the installed binary inside the package only.
@@ -1137,7 +1137,7 @@ Single-crate workspaces and lockstep-bumped monorepos (anodizer itself) leave th
 ## `crates[].publish.homebrew`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `amd64_variant` | string | — | amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4"). Only artifacts matching this variant are included. Default: "v1". |
+| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed. |
 | `arm_variant` | string | — | ARM version filter (e.g. "6", "7"). Only artifacts matching this variant are included. |
 | `cask` | HomebrewCaskConfig | — | Homebrew Cask configuration (macOS .app bundles). |
 | `caveats` | string | — | Post-install user-facing notes shown by `brew info`. |
@@ -1225,7 +1225,7 @@ Cannot be combined with `url.template:` — set one or the other. If both are pr
 ## `crates[].publish.scoop`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `amd64_variant` | string | — | amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4"). Only artifacts matching this variant are included. Default: "v1". |
+| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed. |
 | `checkver` | string | — | Scoop `checkver` strategy used by bucket maintainers to detect new releases. Defaults to `"github"` (derived from the configured GitHub repo) — `ScoopInstaller/Main` requires checkver for automated-update PRs. Override with a homepage regex when GitHub release detection is not appropriate.
 
 Example: `checkver: "github"` or `checkver: "v([\\d.]+)"`. |
@@ -1255,7 +1255,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 ## `crates[].publish.chocolatey`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `amd64_variant` | string | — | amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4"). Only artifacts matching this variant are included. Default: "v1". |
+| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed. |
 | `api_key` | string | — | Chocolatey API key for `choco push`. Falls back to `CHOCOLATEY_API_KEY` env var. |
 | `authors` | string | — | Package author(s) displayed in the Chocolatey gallery. |
 | `bug_tracker_url` | string | — | Bug tracker URL (`<bugTrackerUrl>`). Defaults to `{repository}/issues` when unset. |
@@ -1293,7 +1293,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 ## `crates[].publish.winget`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `amd64_variant` | string | — | amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4"). Only artifacts matching this variant are included. Default: "v1". |
+| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed. |
 | `author` | string | — | Author name. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
 | `commit_msg_template` | string | — | Custom commit message template. |
@@ -1346,7 +1346,7 @@ Example: `upgrade_behavior: "uninstallPrevious"`. |
 ## `crates[].publish.aur`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `amd64_variant` | string | — | amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4"). Only artifacts matching this variant are included. Default: "v1". |
+| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed. |
 | `backup` | list of string | — | List of config files to preserve on upgrade (relative to `/`). |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
 | `commit_msg_template` | string | — | Custom commit message template. Default: "Update to {{ version }}". |
@@ -1419,7 +1419,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 ## `crates[].publish.krew`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `amd64_variant` | string | — | amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4"). Only artifacts matching this variant are included. Default: "v1". |
+| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed. |
 | `arm_variant` | string | — | ARM version filter (e.g. "6", "7"). Only artifacts matching this variant are included. |
 | `caveats` | string | — | Post-install message shown to the user. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
@@ -1446,7 +1446,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 ## `crates[].publish.nix`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `amd64_variant` | string | — | amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4"). Only artifacts matching this variant are included. Default: "v1". |
+| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed. |
 | `changelog` | string | — | URL for `meta.changelog`. When unset, anodizer derives `<host>/<owner>/<repo>/releases/tag/<tag>` from the crate's `release` repository and the release tag (matching what ripgrep/fd set in nixpkgs). Set this to override (e.g. a `…/blob/<tag>/CHANGELOG.md` URL). Templated. Omitted only when no release repo is configured and no explicit value is given. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
 | `commit_msg_template` | string | — | Custom commit message template. |

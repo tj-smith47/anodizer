@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::super::{StringOrBool, deserialize_string_or_bool_opt};
+use super::super::{Amd64Variant, StringOrBool, deserialize_string_or_bool_opt};
 use super::{CommitAuthorConfig, RepositoryConfig};
 
 // ---------------------------------------------------------------------------
@@ -45,9 +45,11 @@ pub struct KrewConfig {
     /// has no krew channel).
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub skip: Option<StringOrBool>,
-    /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
-    /// Only artifacts matching this variant are included. Default: "v1".
-    pub amd64_variant: Option<String>,
+    /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`).
+    /// Only artifacts matching this variant are included. Default: `v1`.
+    /// Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is
+    /// rejected when the config is parsed.
+    pub amd64_variant: Option<Amd64Variant>,
     /// ARM version filter (e.g. "6", "7"). Only artifacts matching this
     /// variant are included.
     pub arm_variant: Option<String>,

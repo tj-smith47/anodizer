@@ -135,7 +135,7 @@ mod tests {
             caveats: Some("Run `kubectl widget --help` to get started.".to_string()),
             skip_upload: None,
             skip: None,
-            amd64_variant: Some("v1".to_string()),
+            amd64_variant: Some(anodizer_core::config::Amd64Variant::V1),
             arm_variant: Some("7".to_string()),
             update_existing_pr: None,
             required: Some(true),

@@ -428,7 +428,7 @@ fn filter_msi_binaries(
                 .get("amd64_variant")
                 .map(String::as_str)
                 .unwrap_or("v1")
-                == want
+                == want.as_str()
         });
     }
 

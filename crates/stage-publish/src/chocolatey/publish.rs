@@ -449,7 +449,7 @@ fn select_windows_artifacts<'a>(
     // Find both 32-bit and 64-bit Windows artifacts.
     // Apply IDs + amd64_variant filter.
     let ids_filter = choco_cfg.ids.as_deref();
-    let amd64_variant = choco_cfg.amd64_variant.as_deref().or(Some("v1"));
+    let amd64_variant = choco_cfg.amd64_variant.map_or("v1", |v| v.as_str());
     let artifact_kind = util::resolve_artifact_kind(choco_cfg.use_artifact.as_deref());
     let all_artifacts = ctx.artifacts.by_kind_and_crate(artifact_kind, crate_name);
 
@@ -491,10 +491,11 @@ fn select_windows_artifacts<'a>(
         .filter(|a| {
             let target = a.target.as_deref().unwrap_or("");
             let (_, arch) = anodizer_core::target::map_target(target);
-            if arch == "amd64"
-                && let Some(want) = amd64_variant
-            {
-                return a.metadata.get("amd64_variant").is_none_or(|v| v == want);
+            if arch == "amd64" {
+                return a
+                    .metadata
+                    .get("amd64_variant")
+                    .is_none_or(|v| v == amd64_variant);
             }
             true
         })
@@ -1351,7 +1352,7 @@ mod tests {
         ctx.artifacts.add(v2);
         ctx.artifacts.add(v3);
         let cfg = ChocolateyConfig {
-            amd64_variant: Some("v3".to_string()),
+            amd64_variant: Some(anodizer_core::config::Amd64Variant::V3),
             ..Default::default()
         };
         let log = StageLogger::new("publish", Verbosity::Quiet);

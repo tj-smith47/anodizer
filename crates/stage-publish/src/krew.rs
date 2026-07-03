@@ -751,13 +751,13 @@ pub(crate) fn crate_has_krew_artifacts(
     krew_cfg: &anodizer_core::config::KrewConfig,
 ) -> Result<bool> {
     let ids_filter = krew_cfg.ids.as_deref();
-    let amd64_variant = krew_cfg.amd64_variant.as_deref().or(Some("v1"));
+    let amd64_variant = krew_cfg.amd64_variant.map_or("v1", |v| v.as_str());
     let arm_variant = krew_cfg.arm_variant.as_deref();
     let artifacts = util::find_all_platform_artifacts_with_variant(
         ctx,
         crate_name,
         ids_filter,
-        amd64_variant,
+        Some(amd64_variant),
         arm_variant,
     )?;
     Ok(!artifacts.is_empty())
@@ -897,7 +897,7 @@ pub(crate) fn render_krew_manifest_for_crate(
     // Find artifacts across all platforms, applying the IDs +
     // amd64_variant/arm_variant filters.
     let ids_filter = krew_cfg.ids.as_deref();
-    let amd64_variant = krew_cfg.amd64_variant.as_deref().or(Some("v1"));
+    let amd64_variant = krew_cfg.amd64_variant.map_or("v1", |v| v.as_str());
     let arm_variant = krew_cfg.arm_variant.as_deref();
 
     // Krew plugins support a single binary per archive. Walk the eligible
@@ -922,7 +922,7 @@ pub(crate) fn render_krew_manifest_for_crate(
         ctx,
         crate_name,
         ids_filter,
-        amd64_variant,
+        Some(amd64_variant),
         arm_variant,
     )?;
 

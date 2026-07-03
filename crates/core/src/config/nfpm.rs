@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::{FileInfo, StringOrU32};
+use super::{Amd64Variant, FileInfo, StringOrU32};
 
 // ---------------------------------------------------------------------------
 // NfpmConfig
@@ -73,8 +73,10 @@ pub struct NfpmConfig {
     /// legacy `goamd64:` spelling is accepted via serde alias for back-compat
     /// with imported configs. When unset, all amd64 variants are included (no
     /// filtering).
+    /// Each entry is typed as [`Amd64Variant`], so any value outside
+    /// `v1`..`v4` is rejected when the config is parsed.
     #[serde(alias = "goamd64")]
-    pub amd64_variant: Option<Vec<String>>,
+    pub amd64_variant: Option<Vec<Amd64Variant>>,
     /// Package epoch for versioning (integer as string).
     pub epoch: Option<String>,
     /// Package release number.
@@ -454,7 +456,7 @@ mod is_empty_tests {
             serde_yaml_ng::from_str("formats: [deb]\ngoamd64: [v2, v3]").unwrap();
         assert_eq!(
             nfpm.amd64_variant.as_deref(),
-            Some(["v2".to_string(), "v3".to_string()].as_slice())
+            Some([Amd64Variant::V2, Amd64Variant::V3].as_slice())
         );
     }
 
@@ -464,7 +466,23 @@ mod is_empty_tests {
             serde_yaml_ng::from_str("formats: [deb]\namd64_variant: [v1]").unwrap();
         assert_eq!(
             nfpm.amd64_variant.as_deref(),
-            Some(["v1".to_string()].as_slice())
+            Some([Amd64Variant::V1].as_slice())
+        );
+    }
+
+    /// A typo'd level in the list form must fail at parse — the field is a
+    /// closed enum, not free text, so `x86-64-v3` cannot silently disable
+    /// the variant filter.
+    #[test]
+    fn nfpm_amd64_variant_list_rejects_garbage_at_parse() {
+        let err =
+            serde_yaml_ng::from_str::<NfpmConfig>("formats: [deb]\namd64_variant: [v2, x86-64-v3]")
+                .unwrap_err()
+                .to_string();
+        assert!(
+            err.contains("unknown variant `x86-64-v3`")
+                && err.contains("expected one of `v1`, `v2`, `v3`, `v4`"),
+            "parse error must name the bad value and the valid set: {err}"
         );
     }
 }

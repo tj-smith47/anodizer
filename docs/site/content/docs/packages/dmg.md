@@ -82,7 +82,7 @@ DMG only processes binary artifacts targeting Darwin (macOS). Binaries for other
 | `replace` | bool | `false` | Remove matching archive artifacts, keeping only the DMG. |
 | `mod_timestamp` | string | | Fixed timestamp for reproducible builds. Supports templates (e.g. `{{ CommitTimestamp }}`). |
 | `use` | string | `binary` | Which artifact type to package: `binary` or `appbundle`. |
-| `amd64_variant` | string | | amd64 microarchitecture variant filter (`v1`/`v2`/`v3`/`v4`). |
+| `amd64_variant` | enum | | amd64 microarchitecture variant filter — exactly one of `v1`/`v2`/`v3`/`v4` (any other value is rejected when the config is parsed). |
 | `if` | string | | Template-conditional: skip this config when rendered result is falsy. |
 | `skip` | bool/string | `false` | Skip this DMG config. Accepts bool or template string. |
 

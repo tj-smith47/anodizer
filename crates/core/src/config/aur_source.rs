@@ -104,13 +104,18 @@ pub struct AurSourceConfig {
 
 /// `x86_64` micro-architecture level — `v1` (baseline), `v2`, `v3`, or `v4`.
 /// Typed so a typo fails at config-parse time instead of flowing on as an
-/// arbitrary string. Used by
-/// [`BuildConfig::amd64_variant`](super::BuildConfig::amd64_variant) — where
-/// the declared level names a tuned group's artifacts and derived asset
-/// names — and by [`AurSourceConfig::amd64_variant`], where it constrains the
+/// arbitrary string. This is the ONE type for every `amd64_variant:` config
+/// field: [`BuildConfig::amd64_variant`](super::BuildConfig::amd64_variant) —
+/// where the declared level names a tuned group's artifacts and derived asset
+/// names — [`AurSourceConfig::amd64_variant`], where it constrains the
 /// `prepare:` / `build:` / `package:` template var surface to a known set
 /// (AUR source pkgs build from the upstream tarball, so an invalid value
-/// would otherwise render silently into the PKGBUILD).
+/// would otherwise render silently into the PKGBUILD), and the variant
+/// *selector* on every installer/packager/publisher config
+/// (dmg/msi/nsis/nfpm, homebrew/scoop/chocolatey/winget/krew/nix/aur), where
+/// a free-string typo would silently match only variant-less baseline
+/// archives and ship the untuned binary. Artifact metadata stays
+/// string-typed; selectors compare via [`Amd64Variant::as_str`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Amd64Variant {

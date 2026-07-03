@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::super::{StringOrBool, deserialize_string_or_bool_opt};
+use super::super::{Amd64Variant, StringOrBool, deserialize_string_or_bool_opt};
 use super::{CommitAuthorConfig, RepositoryConfig};
 
 // ---------------------------------------------------------------------------
@@ -81,9 +81,11 @@ pub struct NixConfig {
     pub dependencies: Option<Vec<NixDependency>>,
     /// Nix formatter to run on the generated file: "alejandra" or "nixfmt".
     pub formatter: Option<String>,
-    /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
-    /// Only artifacts matching this variant are included. Default: "v1".
-    pub amd64_variant: Option<String>,
+    /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`).
+    /// Only artifacts matching this variant are included. Default: `v1`.
+    /// Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is
+    /// rejected when the config is parsed.
+    pub amd64_variant: Option<Amd64Variant>,
     /// Value for `meta.mainProgram` in the generated Nix derivation.
     /// When set, the rendered derivation includes
     /// `mainProgram = "<value>";` inside the `meta` block, telling Nix

@@ -33,7 +33,7 @@ crates:
         version: ""                   # optional; v3 | v4 | wixl (alias: linux); auto-detected if omitted
         replace: false                # optional; remove archive artifacts, keep MSI only
         mod_timestamp: ""             # optional; fixed timestamp for reproducible builds (template)
-        amd64_variant: ""             # optional; amd64 variant filter (v1/v2/v3/v4)
+        amd64_variant: v1             # optional; amd64 variant filter (v1/v2/v3/v4)
         extra_files: []               # optional; plain filename strings copied into the WiX build context
         extensions: []                # optional; WiX extensions to enable (template per entry)
         if: ""                        # optional; skip this config if rendered result is falsy
@@ -91,7 +91,7 @@ The WiX version is determined in this order:
 | `version` | string | auto | WiX toolchain: `v3`, `v4`, or `wixl` (alias `linux`) for the Linux-native msitools path. Auto-detected from the `.wxs` namespace and installed tools when omitted. |
 | `replace` | bool | `false` | Remove matching archive artifacts, keeping only the MSI. |
 | `mod_timestamp` | string | | Fixed timestamp for reproducible builds. Templates allowed (e.g. `{{ CommitTimestamp }}`). |
-| `amd64_variant` | string | | amd64 microarchitecture variant filter (`v1`/`v2`/`v3`/`v4`). |
+| `amd64_variant` | enum | | amd64 microarchitecture variant filter — exactly one of `v1`/`v2`/`v3`/`v4` (any other value is rejected when the config is parsed). |
 | `extra_files` | list | | Plain filename strings (not `{src, dst}` objects) copied into the WiX build context alongside the rendered `.wxs`. |
 | `extensions` | list | | WiX extensions to enable (e.g. `WixUIExtension`). Each entry is a template. |
 | `if` | string | | Skip this config when the rendered value is `false` or empty. Anodizer-additive — see note below. |

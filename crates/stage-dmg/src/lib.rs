@@ -426,7 +426,7 @@ impl Stage for DmgStage {
                                 .get("amd64_variant")
                                 .map(String::as_str)
                                 .unwrap_or("v1")
-                                == want
+                                == want.as_str()
                         });
                     }
 
@@ -2256,7 +2256,9 @@ crates:
     /// and one darwin/arm64 binary. The `amd64_variant` field on the config
     /// drives which subset of amd64 binaries makes it into DiskImage
     /// artifacts; arm64 is always included regardless.
-    fn dmg_amd64_variant_test_ctx(amd64_variant: Option<&str>) -> anodizer_core::context::Context {
+    fn dmg_amd64_variant_test_ctx(
+        amd64_variant: Option<anodizer_core::config::Amd64Variant>,
+    ) -> anodizer_core::context::Context {
         use anodizer_core::config::{Config, CrateConfig, DmgConfig};
         use anodizer_core::context::{Context, ContextOptions};
         let tmp = tempfile::TempDir::new().unwrap();
@@ -2265,7 +2267,7 @@ crates:
         config.dist = tmp.path().join("dist");
         std::fs::create_dir_all(&config.dist).unwrap();
         let dmg_cfg = DmgConfig {
-            amd64_variant: amd64_variant.map(str::to_string),
+            amd64_variant,
             ..Default::default()
         };
         config.crates = vec![CrateConfig {
@@ -2335,7 +2337,7 @@ crates:
 
     #[test]
     fn test_dmg_amd64_variant_v3_only_keeps_matching_variant() {
-        let mut ctx = dmg_amd64_variant_test_ctx(Some("v3"));
+        let mut ctx = dmg_amd64_variant_test_ctx(Some(anodizer_core::config::Amd64Variant::V3));
         DmgStage.run(&mut ctx).unwrap();
         let dmgs = ctx.artifacts.by_kind(ArtifactKind::DiskImage);
         // Only the v3 amd64 binary survives (one amd64 DMG) + the arm64
@@ -2350,7 +2352,7 @@ crates:
     fn test_dmg_amd64_variant_filter_does_not_drop_arm64() {
         // Pin: filter only constrains amd64 — arm64 must still pass even
         // when the filter rejects every amd64 variant present.
-        let mut ctx = dmg_amd64_variant_test_ctx(Some("v9000")); // matches no variant
+        let mut ctx = dmg_amd64_variant_test_ctx(Some(anodizer_core::config::Amd64Variant::V4)); // matches no fixture variant
         DmgStage.run(&mut ctx).unwrap();
         let dmgs = ctx.artifacts.by_kind(ArtifactKind::DiskImage);
         // No amd64 survives; arm64 still produces one DMG.

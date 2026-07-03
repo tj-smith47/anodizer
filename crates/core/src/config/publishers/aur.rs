@@ -1,7 +1,7 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use super::super::{StringOrBool, deserialize_string_or_bool_opt};
+use super::super::{Amd64Variant, StringOrBool, deserialize_string_or_bool_opt};
 use super::CommitAuthorConfig;
 
 // ---------------------------------------------------------------------------
@@ -75,9 +75,11 @@ pub struct AurConfig {
     // `https://github.com/{release.github.owner}/{release.github.name}`.
     /// Packages this PKGBUILD replaces (for upgrade paths from old package names).
     pub replaces: Option<Vec<String>>,
-    /// amd64 microarchitecture variant filter (e.g. "v1", "v2", "v3", "v4").
-    /// Only artifacts matching this variant are included. Default: "v1".
-    pub amd64_variant: Option<String>,
+    /// amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`).
+    /// Only artifacts matching this variant are included. Default: `v1`.
+    /// Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is
+    /// rejected when the config is parsed.
+    pub amd64_variant: Option<Amd64Variant>,
     /// Override whether this publisher failing should fail the overall release.
     ///
     /// Default: `false` — a failure here is logged but does not abort the release.
