@@ -59,9 +59,7 @@ impl PublisherSchemaValidator for ScoopSchemaValidator {
             // render or validate.
             let Some(scoop_cfg) = ctx
                 .config
-                .crate_universe()
-                .into_iter()
-                .find(|c| &c.name == crate_name)
+                .find_crate(crate_name)
                 .and_then(|c| c.publish.as_ref())
                 .and_then(|p| p.scoop.clone())
             else {

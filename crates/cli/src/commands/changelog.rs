@@ -107,6 +107,23 @@ pub fn run(opts: ChangelogOpts) -> Result<()> {
         &workspace_root,
     )?;
 
+    // An unknown `--crate` is a hard error, shared with release/build/tag:
+    // every format's selection silently filters unknown names to an empty
+    // set (refresh warns, release-notes renders nothing) and exits 0 — a
+    // typo would look like "no changes". A name select_crates resolves (a
+    // universe crate, or the shared-root aggregate's own name on
+    // lockstep/flat-aggregate shapes) is valid.
+    if let Some(ref name) = crate_name {
+        let selectable = select_crates(&workspace_root, &config, workspace.as_ref(), Some(name));
+        if selectable.is_empty() {
+            crate::commands::helpers::validate_selection_against_universe(
+                &config,
+                std::slice::from_ref(name),
+                None,
+            )?;
+        }
+    }
+
     match format {
         ChangelogFormat::KeepAChangelog => run_refresh(
             &workspace_root,

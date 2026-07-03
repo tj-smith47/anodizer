@@ -30,10 +30,23 @@ pub fn run(opts: BuildOpts) -> Result<()> {
         pipeline::find_config_with_logger(opts.config_override.as_deref(), Some(&log))?;
     let mut config = pipeline::load_config_logged(&config_path, &log)?;
 
-    // Resolve workspace if specified
-    if let Some(ref ws_name) = opts.workspace {
-        let ws = super::release::resolve_workspace(&config, ws_name)?.clone();
-        helpers::apply_workspace_overlay(&mut config, &ws);
+    // Apply the workspace scope exactly like the release path: the explicit
+    // `--workspace` overlay, or the one inferred from a `--crate` selection
+    // that lives in a single workspace (so a member build gets its
+    // workspace's env/signs), then hard-reject any selected name absent from
+    // the post-overlay universe — every stage filters unknown names to an
+    // empty set, which would otherwise be a silent no-op "success".
+    let workspace_skip = helpers::apply_workspace_scope(
+        &mut config,
+        opts.workspace.as_deref(),
+        &opts.crate_names,
+        &log,
+    )?;
+    let mut skip_stages = opts.skip;
+    for stage in workspace_skip {
+        if !skip_stages.contains(&stage) {
+            skip_stages.push(stage);
+        }
     }
 
     // Auto-infer project_name from Cargo.toml when not set in config.
@@ -55,7 +68,7 @@ pub fn run(opts: BuildOpts) -> Result<()> {
         selected_crates: opts.crate_names,
         parallelism: opts.parallelism,
         single_target: opts.single_target,
-        skip_stages: opts.skip,
+        skip_stages,
         ..Default::default()
     };
     let mut ctx = Context::new(config.clone(), ctx_opts);

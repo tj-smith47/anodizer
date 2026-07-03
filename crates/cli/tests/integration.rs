@@ -6510,3 +6510,112 @@ workspaces:
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// build --crate: unknown-name validation + workspace inference
+// ---------------------------------------------------------------------------
+
+/// One-member `workspaces:` fixture with a buildable bin crate and a
+/// workspace-level `env:` sentinel only the overlay can inject.
+fn create_workspaces_member_build_project(dir: &Path) {
+    let host = detect_host_target();
+    fs::write(
+        dir.join("Cargo.toml"),
+        "[workspace]\nresolver = \"2\"\nmembers = [\"tools/member\"]\n",
+    )
+    .unwrap();
+    let member = dir.join("tools/member");
+    fs::create_dir_all(member.join("src")).unwrap();
+    fs::write(
+        member.join("Cargo.toml"),
+        "[package]\nname = \"member\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::write(
+        member.join("src/main.rs"),
+        "fn main() { println!(\"member\"); }\n",
+    )
+    .unwrap();
+    let config = format!(
+        r#"project_name: mono
+workspaces:
+  - name: tools
+    env:
+      - MEMBER_WS_SENTINEL=overlay-applied
+    crates:
+      - name: member
+        path: tools/member
+        tag_template: "member-v{{{{ .Version }}}}"
+        builds:
+          - binary: member
+            targets:
+              - {host}
+"#
+    );
+    create_config(dir, &config);
+    init_git_repo(dir);
+}
+
+/// `build --crate <unknown>` is a hard error naming the known crates — every
+/// stage filters unknown names to an empty set, so before this validation a
+/// typo produced a silent no-op "build complete".
+#[test]
+fn test_build_unknown_crate_hard_errors_naming_known_crates() {
+    let tmp = TempDir::new().unwrap();
+    create_workspaces_member_build_project(tmp.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["build", "--crate", "nope"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "build --crate nope must fail, got stdout:\n{}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        stderr.contains("nope") && stderr.contains("member"),
+        "error must name the unknown crate and the known ones, got:\n{stderr}"
+    );
+}
+
+/// `build --crate <ws-member>` (no `--workspace`) infers the member's
+/// workspace and applies its overlay — the same inference the release path
+/// uses — so the member builds under its workspace env. The effective config
+/// dump (written post-overlay) is the observable: the workspace `env:`
+/// sentinel must be merged in and the sibling `workspaces:` block cleared.
+#[test]
+fn test_build_ws_member_crate_applies_workspace_inference() {
+    let tmp = TempDir::new().unwrap();
+    create_workspaces_member_build_project(tmp.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["build", "--crate", "member"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "build --crate member must succeed.\nstderr:\n{stderr}"
+    );
+
+    let effective = fs::read_to_string(tmp.path().join("dist/config.yaml"))
+        .expect("dist/config.yaml effective dump must exist");
+    assert!(
+        effective.contains("MEMBER_WS_SENTINEL=overlay-applied"),
+        "workspace env must be merged by the inferred overlay, got:\n{effective}"
+    );
+    assert!(
+        effective.contains("member"),
+        "post-overlay universe must carry the member crate, got:\n{effective}"
+    );
+    assert!(
+        !effective.contains("workspaces:")
+            || effective.contains("workspaces: null")
+            || effective.contains("workspaces: ~"),
+        "the overlay must clear the workspaces block, got:\n{effective}"
+    );
+}

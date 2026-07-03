@@ -338,9 +338,12 @@ tag prefix (the [multi-track](#multi-track-root-subsections) shape below).
 ### Coherence: members must agree on `[package].version`
 
 In a flat-aggregate one tag carries one version, so every member's
-`[package].version` must **agree**. If they diverge, `changelog`, `tag`, and
-`bump` all **error before doing anything** — no partial tag, no partial
-changelog write:
+`[package].version` must **agree**. The rule applies per prefix group: a
+shared-prefix SUBSET of a flat list (or of top-level crates alongside
+`workspaces:`) is one aggregate whose members must agree, while crates on
+their own prefix stay exempt. If an aggregate's members diverge, `changelog`,
+`tag`, and `bump` all **error before doing anything** — no partial tag, no
+partial changelog write:
 
 ```yaml
 crates:

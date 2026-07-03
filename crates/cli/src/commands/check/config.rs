@@ -24,9 +24,13 @@ pub fn run(
     // check validates the same project_name the release pipeline would see.
     helpers::infer_project_name(&mut config, &log);
 
-    // Always validate the raw config first
-    log.status("validating configuration");
-    run_checks(&config, true, &log)?;
+    // The raw whole-file pass belongs to the no-flag form only: a
+    // `--workspace` run validates the OVERLAID config below, so a sibling
+    // workspace's error (out of this run's scope) never fails it.
+    if workspace.is_none() {
+        log.status("validating configuration");
+        run_checks(&config, true, &log)?;
+    }
 
     // `--publishers` is a config-validation selector: each name must be a
     // publisher the active config actually enables, so the configured (not
@@ -34,7 +38,7 @@ pub fn run(
     // pipeline would resolve for this invocation — overlaid when --workspace
     // is given — so a per-workspace publish block is honored.
     let publisher_config = if let Some(ws_name) = workspace {
-        let ws = super::super::release::resolve_workspace(&config, ws_name)?;
+        let ws = helpers::resolve_workspace(&config, ws_name)?;
         let mut resolved = config.clone();
         helpers::apply_workspace_overlay(&mut resolved, ws);
         resolved
@@ -56,9 +60,9 @@ pub fn run(
         }
     }
 
-    // When --workspace is specified, also validate the resolved (overlaid) config
+    // When --workspace is specified, validate the resolved (overlaid) config
     if let Some(ws_name) = workspace {
-        let ws = super::super::release::resolve_workspace(&config, ws_name)?;
+        let ws = helpers::resolve_workspace(&config, ws_name)?;
         let mut resolved = config.clone();
         helpers::apply_workspace_overlay(&mut resolved, ws);
         log.status(&format!(
@@ -1044,6 +1048,49 @@ mod tests {
         helpers::apply_workspace_overlay(&mut resolved, &ws);
         run_checks(&resolved, false, &test_logger())
             .expect("workspace-scoped validation must ignore sibling workspace errors");
+    }
+
+    /// The COMMAND path of the sibling-isolation rule: `check config
+    /// --workspace ws-a` must exit clean when the only error (a `depends_on`
+    /// cycle) is confined to sibling ws-b, while the no-flag form still fails
+    /// on it. The hand-overlaid `run_checks` pin above cannot catch a command
+    /// that validates the raw config before scoping — this one drives `run`.
+    #[test]
+    fn command_workspace_scoped_run_ignores_sibling_errors() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let config_path = root.join(".anodizer.yaml");
+        // `path: .` throughout — the crate-path existence check resolves
+        // against the PROCESS cwd (which a unit test must not change), and
+        // the sibling-isolation subject here is the cycle, not the paths.
+        std::fs::write(
+            &config_path,
+            r#"project_name: fixture
+workspaces:
+  - name: ws-a
+    crates:
+      - name: a-one
+        path: .
+        tag_template: "a-one-v{{ .Version }}"
+  - name: ws-b
+    crates:
+      - name: b-one
+        path: .
+        tag_template: "b-one-v{{ .Version }}"
+        depends_on: [b-two]
+      - name: b-two
+        path: .
+        tag_template: "b-two-v{{ .Version }}"
+        depends_on: [b-one]
+"#,
+        )
+        .unwrap();
+
+        run(Some(&config_path), Some("ws-a"), &[], false, false, true)
+            .expect("scoped run must not fail on the sibling workspace's cycle");
+        let err = run(Some(&config_path), None, &[], false, false, true)
+            .expect_err("the no-flag run still validates the whole file");
+        assert!(err.to_string().contains("validation failed"), "got: {err}");
     }
 
     // ---- Cycle detection tests ----

@@ -2687,3 +2687,94 @@ fn release_notes_open_upper_bound_still_reaches_head() {
         r.stdout
     );
 }
+
+// ---------------------------------------------------------------------------
+// --crate validation + workspace overlay resolution
+// ---------------------------------------------------------------------------
+
+/// A `workspaces:` fixture whose workspace carries its OWN `changelog.groups`
+/// (a title no default config produces), one member crate, a `member-v0.1.0`
+/// baseline tag, and a pending `feat:` commit scoped to the member.
+fn workspaces_member_repo() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"tools/member\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("tools/member/src")).unwrap();
+    fs::write(
+        root.join("tools/member/Cargo.toml"),
+        "[package]\nname = \"member\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("tools/member/src/lib.rs"), "").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: mono
+workspaces:
+  - name: tools
+    changelog:
+      groups:
+        - title: Workspace Features
+          regexp: "^feat"
+          order: 0
+    crates:
+      - name: member
+        path: tools/member
+        tag_template: "member-v{{ .Version }}"
+"#,
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "feat: initial member");
+    run_git(root, &["tag", "member-v0.1.0"]);
+    fs::write(root.join("tools/member/src/lib.rs"), "// gadget\n").unwrap();
+    git_add_commit(root, "feat: add gadget");
+    tmp
+}
+
+/// End-to-end pin for the release-notes workspace overlay: `--crate` naming a
+/// `workspaces[].crates` member must resolve THAT workspace's track — its
+/// per-workspace `changelog` config (here a `groups` title only the overlay
+/// can supply) shapes the rendered notes, and the pending commit lands in it.
+#[test]
+fn release_notes_crate_filter_applies_workspace_overlay() {
+    let tmp = workspaces_member_repo();
+    let stdout = release_notes_for_crate(tmp.path(), "member");
+    assert!(
+        stdout.contains("Workspace Features"),
+        "the member's workspace-level changelog.groups must shape the notes \
+         (overlay applied), got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("add gadget"),
+        "the member's pending commit must appear in its notes, got:\n{stdout}"
+    );
+}
+
+/// `changelog --crate <unknown>` is a hard error naming the known crates on
+/// EVERY format — refresh previously warned and exited 0, release-notes
+/// rendered nothing and exited 0, so a typo looked like "no changes".
+#[test]
+fn changelog_unknown_crate_hard_errors_on_every_format() {
+    let tmp = workspaces_member_repo();
+    for format_args in [
+        &["--crate", "nope"][..],
+        &["--crate", "nope", "--format", "release-notes"][..],
+        &["--crate", "nope", "--format", "json"][..],
+    ] {
+        let r = changelog(tmp.path(), format_args);
+        assert!(
+            !r.success,
+            "changelog {format_args:?} must fail on an unknown crate, got stdout:\n{}",
+            r.stdout
+        );
+        assert!(
+            r.stderr.contains("nope") && r.stderr.contains("member"),
+            "error must name the unknown crate and the known ones, got:\n{}",
+            r.stderr
+        );
+    }
+}

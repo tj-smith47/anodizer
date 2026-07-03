@@ -939,3 +939,56 @@ fn per_crate_first_tag_starts_from_cargo_version() {
         res.stdout
     );
 }
+
+/// `tag --crate <unknown>` is a hard error naming the known crates — never a
+/// silent fall-through to REPO-LEVEL tagging (default `v` prefix, no path
+/// scoping), which could cut and push a wrong repo-wide tag from a typo.
+#[test]
+fn tag_unknown_crate_hard_errors_naming_known_crates() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for name in ["core", "cli"] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: percrate\ncrates:\n  - name: core\n    path: crates/core\n    tag_template: \"core-v{{ .Version }}\"\n  - name: cli\n    path: crates/cli\n    tag_template: \"cli-v{{ .Version }}\"\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "feat: initial release");
+
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = anodizer();
+            cmd.current_dir(root).args(["tag", "--crate", "nope"]);
+            cmd
+        },
+        "anodizer",
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !out.status.success(),
+        "tag --crate nope must fail, got stdout:\n{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert!(
+        stderr.contains("nope") && stderr.contains("core") && stderr.contains("cli"),
+        "error must name the unknown crate and the known ones, got:\n{stderr}"
+    );
+    assert!(
+        !git_tag_exists(root, "v0.1.0") && !git_tag_exists(root, "v0.2.0"),
+        "no repo-level tag may be created from an unknown --crate"
+    );
+}

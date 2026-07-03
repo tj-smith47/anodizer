@@ -274,10 +274,13 @@ for both tag discovery (finding the latest `my-crate-v*` tag) and tag
 creation. Distinct prefixes keep workspaces independent — `my-core-v0.5.0` and
 `my-cli-v1.2.0` can coexist without collision (the multi-track shape).
 
-When every crate in a flat `crates:` list shares the **same** `tag_template`
-prefix (all `v{{ Version }}`), a bare `anodizer tag` (no `--crate`) bumps every
-member and creates **one shared `v*` tag** — the flat-aggregate shape, treated
-like lockstep. All members must agree on `[package].version` first; a divergence
+A bare `anodizer tag` (no `--crate`) groups a flat `crates:` list **by
+extracted `tag_template` prefix**: every subset of crates sharing one prefix
+(e.g. all `v{{ Version }}`) bumps together and creates **one shared tag** for
+that prefix — the aggregate shape, treated like lockstep — while crates with a
+unique (or no extractable) prefix stay independent tracks. When the whole list
+shares a single prefix this is the flat-aggregate shape. Each aggregate's
+members must agree on `[package].version` first; a divergence
 errors before any tag is created (see the
 [coherence rule](@/docs/more/changelog.md#coherence-members-must-agree-on-package-version)).
 
@@ -311,18 +314,25 @@ A bare `anodizer tag` groups this shape as follows:
 
 - Each `workspaces:` entry is one lockstep group (its crates bump and tag as
   a unit).
-- Top-level crates that ALL share one extractable `tag_template` prefix
-  (`alpha` + `beta` above, both `v*`) join as **one aggregate group** — one
-  shared tag per release, exactly like the
-  [flat-aggregate shape](#workspace-aware-tagging). They must agree on
-  `[package].version`; a divergence errors before any tag is created.
-- Top-level crates without a shared prefix stay independent singleton tracks.
+- Top-level crates are grouped **by extracted `tag_template` prefix**: every
+  subset sharing one prefix (`alpha` + `beta` above, both `v*`) joins as
+  **one aggregate group** — one shared tag per release, exactly like the
+  [flat-aggregate shape](#workspace-aware-tagging). Each aggregate's members
+  must agree on `[package].version`; a divergence errors before any tag is
+  created.
+- Top-level crates with a unique (or no extractable) prefix stay independent
+  singleton tracks.
 
 ```bash
 $ anodizer tag --dry-run   # feat on alpha + fix on beta, prev tag v0.1.0
 • running auto-tag (per-crate) (dry-run)
-new_tag=v0.2.0             # ONE shared tag — never v0.2.0 AND v0.1.1
+• (dry-run) would push branch 'master' + tags [v0.2.0] to 'origin' atomically
+anodizer-output crates=["alpha","beta"]
+anodizer-output versions={"alpha":"0.2.0","beta":"0.2.0"}
 ```
+
+One shared `v0.2.0` tag covers both members — never `v0.2.0` AND `v0.1.1`
+in the same namespace.
 
 **First-ever tags.** Change detection includes every crate that has no tag
 matching its `tag_template` yet. In a repo that adds a mixed config (or adds

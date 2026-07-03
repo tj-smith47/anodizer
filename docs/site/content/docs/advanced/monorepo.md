@@ -50,6 +50,11 @@ To release the crates together under **one** shared `v*` tag instead, give every
 member the **same** prefix (`tag_template: "v{{ Version }}"`) — the
 flat-aggregate shape above. All members must then agree on `[package].version`.
 
+Grouping is **by prefix**, not all-or-nothing: a shared prefix on a SUBSET of
+the list aggregates just that subset (those members bump and tag as one unit,
+under one shared tag) while every crate with a unique prefix keeps its own
+track. The `[package].version` coherence rule applies per prefix group.
+
 ## Workspaces config (multi-root monorepo)
 
 For repos with components that release independently (different cadences, different registries, different announce/signing settings), use the top-level `workspaces:` list. Each workspace has its own `crates:`, `changelog:`, `release:`, and optional `skip:` list:

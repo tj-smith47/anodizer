@@ -317,17 +317,11 @@ pub(crate) fn with_validated_crate_scope<T>(
 ) -> Result<T> {
     // Cloned (not borrowed) because `body` takes `ctx` mutably while the
     // scope guard still needs the crate's tag template.
-    let crate_cfg = ctx
-        .config
-        .crate_universe()
-        .into_iter()
-        .find(|c| c.name == crate_name)
-        .cloned()
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "schema-validation: crate '{crate_name}' is not present in the crate universe"
-            )
-        })?;
+    let crate_cfg = ctx.config.find_crate(crate_name).cloned().ok_or_else(|| {
+        anyhow::anyhow!(
+            "schema-validation: crate '{crate_name}' is not present in the crate universe"
+        )
+    })?;
     anodizer_core::crate_scope::with_crate_scope(ctx, &crate_cfg, resolve_tag, body)
 }
 

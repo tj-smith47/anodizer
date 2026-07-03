@@ -85,9 +85,7 @@ impl PublisherSchemaValidator for NixSchemaValidator {
                     let mut out = Vec::new();
                     let nix_cfg = ctx
                         .config
-                        .crate_universe()
-                        .into_iter()
-                        .find(|c| &c.name == crate_name)
+                        .find_crate(crate_name)
                         .and_then(|c| c.publish.as_ref())
                         .and_then(|p| p.nix.clone());
 

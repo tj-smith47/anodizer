@@ -8,7 +8,7 @@ pub use split::{load_split_contexts_into, run_merge};
 
 use super::helpers;
 use crate::pipeline;
-use anodizer_core::config::{Config, CrateConfig, WorkspaceConfig};
+use anodizer_core::config::{Config, CrateConfig};
 use anodizer_core::context::{Context, ContextOptions, RollbackMode};
 use anodizer_core::git;
 use anodizer_core::hooks::HookRunContext;
@@ -552,10 +552,37 @@ fn dispatch_release_modes(
             publish_only::DistLayout::PerCrate(subdirs) => {
                 // Topo-sort discovered crate names so depends_on ordering
                 // is respected. Fall back to alphabetical when none of the
-                // discovered names match any configured crate.
+                // discovered names match any configured crate — but only
+                // when NO workspace overlay was applied: post-overlay the
+                // universe is one workspace's crates, and a zero-match dist
+                // means every discovered subdir is a SIBLING crate that
+                // would publish under this workspace's env/signs/skip. Fail
+                // closed instead, mirroring the --crate partial-match bail
+                // above.
                 let all_known: Vec<CrateConfig> =
                     config.crate_universe().into_iter().cloned().collect();
                 let sorted = topo_sort_selected(&all_known, &subdirs);
+                if sorted.is_empty()
+                    && let Some(ref ws_name) = opts.workspace
+                {
+                    let ws_crates: Vec<&str> = all_known.iter().map(|c| c.name.as_str()).collect();
+                    anyhow::bail!(
+                        "publish-only --workspace {}: none of the preserved per-crate dist \
+                         subdirs at {} ({}) belong to workspace '{}' (its crates: {}). \
+                         Refusing to publish sibling crates under this workspace's \
+                         env/signs/skip — check the workspace name, or point the run at \
+                         the preserved dist produced for this workspace.",
+                        ws_name,
+                        dist.display(),
+                        subdirs.join(", "),
+                        ws_name,
+                        if ws_crates.is_empty() {
+                            "(none)".to_string()
+                        } else {
+                            ws_crates.join(", ")
+                        },
+                    );
+                }
                 let order = if sorted.is_empty() { subdirs } else { sorted };
                 return publish_only::run_per_crate(ctx, config, log, run_opts, dist, order);
             }
@@ -614,137 +641,15 @@ fn validate_strict_vs_allowlist(opts: &ReleaseOpts) -> Result<()> {
 
 /// Apply the workspace overlay (explicit `--workspace`, or inferred from the
 /// `--crate` selection when it resolves into a single workspace). Returns the
-/// list of workspace-level skip stages to merge later.
-///
-/// After any overlay decision, every explicitly-selected crate name is
-/// validated against the post-overlay universe: `topo_sort_selected` silently
-/// drops unknown names and several run modes treat an empty selection as "all
-/// crates", so an unmatched name would otherwise flip a scoped request into a
-/// broader (or empty) run instead of failing loudly.
+/// list of workspace-level skip stages to merge later. Delegates to the
+/// shared [`helpers::apply_workspace_scope`] so `release`, `build`, and every
+/// other crate-selecting command scope and validate identically.
 fn apply_workspace_overlay_for_opts(
     config: &mut Config,
     opts: &ReleaseOpts,
     log: &StageLogger,
 ) -> Result<Vec<String>> {
-    let mut workspace_skip: Vec<String> = Vec::new();
-    let mut applied_ws: Option<String> = opts.workspace.clone();
-    if let Some(ref ws_name) = opts.workspace {
-        let ws = resolve_workspace(config, ws_name)?.clone();
-        workspace_skip = ws.skip.clone();
-        helpers::apply_workspace_overlay(config, &ws);
-    } else if let Some(ws_name) = infer_workspace_for_selection(config, &opts.crate_names)? {
-        // No --workspace given, but the whole --crate selection lives in one
-        // workspace — apply its overlay so the crates' workspace-level
-        // context (skip/env/signs) applies. Matches user intuition:
-        // "release crate X" should release X under X's workspace settings.
-        log.verbose(&format!(
-            "--crate selection lives in workspace '{}'; applying workspace overlay",
-            ws_name
-        ));
-        let ws = resolve_workspace(config, &ws_name)?.clone();
-        workspace_skip = ws.skip.clone();
-        helpers::apply_workspace_overlay(config, &ws);
-        applied_ws = Some(ws_name);
-    }
-    validate_selection_against_universe(config, &opts.crate_names, applied_ws.as_deref())?;
-    Ok(workspace_skip)
-}
-
-/// Resolve which workspace (if any) an explicit `--crate` selection infers.
-///
-/// The decision considers EVERY selected name, not just the first: the
-/// overlay replaces the crate universe and applies one workspace's
-/// env/signs/skip to the whole run, so a selection spanning a workspace and
-/// top-level crates (or two workspaces) has no single correct overlay — some
-/// crates would release under another scope's settings, or fall out of the
-/// post-overlay universe entirely. Such a selection is a hard error naming
-/// each crate and its home.
-///
-/// A name that is a top-level crate counts as top-level even when a workspace
-/// declares the same name (the universe's first-seen shadowing). Names found
-/// nowhere are ignored here — the post-overlay universe validation rejects
-/// them with the right scope context.
-fn infer_workspace_for_selection(
-    config: &Config,
-    crate_names: &[String],
-) -> Result<Option<String>> {
-    if crate_names.is_empty() {
-        return Ok(None);
-    }
-    let mut homes: Vec<(String, String)> = Vec::new();
-    let mut ws_names: Vec<String> = Vec::new();
-    let mut has_top_level = false;
-    for name in crate_names {
-        if config.crates.iter().any(|c| &c.name == name) {
-            has_top_level = true;
-            homes.push((name.clone(), "top-level".to_string()));
-        } else if let Some(ws) = helpers::workspace_containing_crate(config, name) {
-            if !ws_names.contains(&ws.name) {
-                ws_names.push(ws.name.clone());
-            }
-            homes.push((name.clone(), format!("workspace '{}'", ws.name)));
-        }
-    }
-    if ws_names.is_empty() {
-        return Ok(None);
-    }
-    if has_top_level || ws_names.len() > 1 {
-        let listing = homes
-            .iter()
-            .map(|(name, home)| format!("'{name}' ({home})"))
-            .collect::<Vec<_>>()
-            .join(", ");
-        anyhow::bail!(
-            "--crate selection spans multiple release scopes: {listing}. One run applies a \
-             single workspace's overlay (env/signs/skip), so a mixed selection cannot release \
-             every named crate correctly — select crates from one scope per run (or pass \
-             --workspace <name>)"
-        );
-    }
-    Ok(Some(ws_names.remove(0)))
-}
-
-/// Reject any explicitly-selected crate name absent from the post-overlay
-/// crate universe. `scope` names the workspace whose overlay was applied (so
-/// the error can say WHY the crate is out of reach), or `None` when no
-/// overlay ran.
-fn validate_selection_against_universe(
-    config: &Config,
-    crate_names: &[String],
-    scope: Option<&str>,
-) -> Result<()> {
-    let universe: Vec<&str> = config
-        .crate_universe()
-        .into_iter()
-        .map(|c| c.name.as_str())
-        .collect();
-    let unknown: Vec<&str> = crate_names
-        .iter()
-        .map(|n| n.as_str())
-        .filter(|n| !universe.contains(n))
-        .collect();
-    if unknown.is_empty() {
-        return Ok(());
-    }
-    let known = if universe.is_empty() {
-        "(none)".to_string()
-    } else {
-        universe.join(", ")
-    };
-    match scope {
-        Some(ws) => anyhow::bail!(
-            "--crate {}: not in workspace '{}' (its crates: {}); a workspace-scoped run \
-             releases only that workspace's crates",
-            unknown.join(", "),
-            ws,
-            known
-        ),
-        None => anyhow::bail!(
-            "--crate {}: no such crate in the configuration (known crates: {})",
-            unknown.join(", "),
-            known
-        ),
-    }
+    helpers::apply_workspace_scope(config, opts.workspace.as_deref(), &opts.crate_names, log)
 }
 
 /// Apply CLI overrides that mutate `config.release` (draft / header / footer
@@ -1921,23 +1826,6 @@ fn check_workspace_files_changed(workspace_root: &Path, tag: &str) -> Result<boo
     )
 }
 
-/// Resolve a workspace by name from the config. Returns an error if
-/// `workspaces` is not configured or the given name is not found.
-pub fn resolve_workspace<'a>(config: &'a Config, name: &str) -> Result<&'a WorkspaceConfig> {
-    let workspaces = config.workspaces.as_ref().ok_or_else(|| {
-        anyhow::anyhow!("--workspace specified but no workspaces defined in config")
-    })?;
-
-    workspaces.iter().find(|ws| ws.name == name).ok_or_else(|| {
-        let available: Vec<&str> = workspaces.iter().map(|ws| ws.name.as_str()).collect();
-        anyhow::anyhow!(
-            "workspace '{}' not found (available: {})",
-            name,
-            available.join(", ")
-        )
-    })
-}
-
 /// Topologically sort the selected crates respecting depends_on order.
 fn topo_sort_selected(all_crates: &[CrateConfig], selected: &[String]) -> Vec<String> {
     let selected_set: std::collections::HashSet<&str> =
@@ -2020,119 +1908,6 @@ mod tests {
             depends_on: deps.map(|d| d.iter().map(|s| s.to_string()).collect()),
             ..Default::default()
         }
-    }
-
-    fn make_config_with_workspaces(workspaces: Vec<WorkspaceConfig>) -> Config {
-        Config {
-            project_name: "test".to_string(),
-            workspaces: Some(workspaces),
-            ..Default::default()
-        }
-    }
-
-    // -----------------------------------------------------------------------
-    // --crate selection: workspace inference + post-overlay validation
-    // -----------------------------------------------------------------------
-
-    fn mixed_config() -> Config {
-        Config {
-            project_name: "test".to_string(),
-            crates: vec![make_crate("top", None)],
-            workspaces: Some(vec![
-                WorkspaceConfig {
-                    name: "ws-a".to_string(),
-                    crates: vec![make_crate("a-one", None), make_crate("a-two", None)],
-                    ..Default::default()
-                },
-                WorkspaceConfig {
-                    name: "ws-b".to_string(),
-                    crates: vec![make_crate("b-one", None)],
-                    ..Default::default()
-                },
-            ]),
-            ..Default::default()
-        }
-    }
-
-    #[test]
-    fn infer_workspace_single_workspace_selection_infers() {
-        let config = mixed_config();
-        let inferred =
-            infer_workspace_for_selection(&config, &["a-one".to_string(), "a-two".to_string()])
-                .expect("single-workspace selection must not error");
-        assert_eq!(inferred.as_deref(), Some("ws-a"));
-    }
-
-    #[test]
-    fn infer_workspace_top_level_only_selection_is_untouched() {
-        let config = mixed_config();
-        let inferred = infer_workspace_for_selection(&config, &["top".to_string()])
-            .expect("top-level selection must not error");
-        assert_eq!(inferred, None);
-    }
-
-    #[test]
-    fn infer_workspace_mixed_selection_errors_in_both_orderings() {
-        let config = mixed_config();
-        // Both orderings must yield the SAME hard error: the decision comes
-        // from the whole selection set, never from whichever name is first.
-        let forward =
-            infer_workspace_for_selection(&config, &["a-one".to_string(), "top".to_string()])
-                .expect_err("workspace + top-level selection must error");
-        let reversed =
-            infer_workspace_for_selection(&config, &["top".to_string(), "a-one".to_string()])
-                .expect_err("reversed ordering must error identically");
-        for err in [&forward, &reversed] {
-            let msg = err.to_string();
-            assert!(
-                msg.contains("'a-one' (workspace 'ws-a')") && msg.contains("'top' (top-level)"),
-                "error must name each crate and its home; got: {msg}"
-            );
-        }
-    }
-
-    #[test]
-    fn infer_workspace_two_workspace_selection_errors() {
-        let config = mixed_config();
-        let err =
-            infer_workspace_for_selection(&config, &["a-one".to_string(), "b-one".to_string()])
-                .expect_err("selection spanning two workspaces must error");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("workspace 'ws-a'") && msg.contains("workspace 'ws-b'"),
-            "error must name both workspaces; got: {msg}"
-        );
-    }
-
-    #[test]
-    fn validate_selection_rejects_unknown_names() {
-        let config = mixed_config();
-        let err = validate_selection_against_universe(&config, &["nope".to_string()], None)
-            .expect_err("an unknown --crate name must be a hard error, not a silent drop");
-        assert!(err.to_string().contains("nope"), "got: {err}");
-        // Known names across the whole universe pass.
-        validate_selection_against_universe(
-            &config,
-            &["top".to_string(), "b-one".to_string()],
-            None,
-        )
-        .expect("known names must validate");
-    }
-
-    #[test]
-    fn validate_selection_names_workspace_scope_after_overlay() {
-        let mut config = mixed_config();
-        let ws = config.workspaces.as_ref().unwrap()[0].clone();
-        helpers::apply_workspace_overlay(&mut config, &ws);
-        // Post-overlay the universe is ws-a only: a top-level crate name is
-        // out of scope and the error must say WHY (the workspace scoping).
-        let err = validate_selection_against_universe(&config, &["top".to_string()], Some("ws-a"))
-            .expect_err("a crate outside the overlaid workspace must be rejected");
-        let msg = err.to_string();
-        assert!(
-            msg.contains("ws-a") && msg.contains("top"),
-            "error must name the workspace scope and the crate; got: {msg}"
-        );
     }
 
     // -----------------------------------------------------------------------
@@ -2490,64 +2265,6 @@ mod tests {
         assert!(
             opts.targets.is_none(),
             "no configured targets => no filter, opts.targets stays None"
-        );
-    }
-
-    #[test]
-    fn test_resolve_workspace_found() {
-        let config = make_config_with_workspaces(vec![
-            WorkspaceConfig {
-                name: "frontend".to_string(),
-                crates: vec![make_crate("fe-app", None)],
-                ..Default::default()
-            },
-            WorkspaceConfig {
-                name: "backend".to_string(),
-                crates: vec![make_crate("be-api", None)],
-                ..Default::default()
-            },
-        ]);
-        let ws = resolve_workspace(&config, "backend").unwrap();
-        assert_eq!(ws.name, "backend");
-        assert_eq!(ws.crates.len(), 1);
-        assert_eq!(ws.crates[0].name, "be-api");
-    }
-
-    #[test]
-    fn test_resolve_workspace_not_found() {
-        let config = make_config_with_workspaces(vec![WorkspaceConfig {
-            name: "frontend".to_string(),
-            crates: vec![make_crate("fe-app", None)],
-            ..Default::default()
-        }]);
-        let result = resolve_workspace(&config, "nonexistent");
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("nonexistent"),
-            "error should mention the workspace name: {}",
-            msg
-        );
-        assert!(
-            msg.contains("frontend"),
-            "error should list available workspaces: {}",
-            msg
-        );
-    }
-
-    #[test]
-    fn test_resolve_workspace_no_workspaces_defined() {
-        let config = Config {
-            project_name: "test".to_string(),
-            ..Default::default()
-        };
-        let result = resolve_workspace(&config, "anything");
-        assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
-        assert!(
-            msg.contains("no workspaces defined"),
-            "error should say no workspaces defined: {}",
-            msg
         );
     }
 

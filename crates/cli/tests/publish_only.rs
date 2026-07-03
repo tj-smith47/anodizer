@@ -1127,3 +1127,96 @@ fn publish_only_unions_sha256_across_sharded_manifests() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// --workspace scoping: a dist holding only SIBLING crates must fail closed
+// ---------------------------------------------------------------------------
+
+/// `release --workspace ws-a --publish-only` against a preserved dist whose
+/// per-crate subdirs all belong to a SIBLING workspace must error before any
+/// publish work: post-overlay the universe is ws-a's crates, and the old
+/// alphabetical fallback would have published every sibling subdir under
+/// ws-a's env/signs/skip with `workspace_for` empty.
+#[test]
+fn publish_only_workspace_with_only_sibling_subdirs_fails_closed() {
+    if !tool_on_path("git") {
+        eprintln!("SKIP publish_only_workspace_with_only_sibling_subdirs: git missing from PATH");
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path();
+    run_git(repo, &["init", "-q", "-b", "master"]);
+    run_git(repo, &["config", "user.email", "test@test.com"]);
+    run_git(repo, &["config", "user.name", "Test"]);
+    run_git(repo, &["config", "commit.gpgsign", "false"]);
+
+    for name in ["a-one", "b-one"] {
+        let dir = repo.join("crates").join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\n"),
+        )
+        .unwrap();
+    }
+    fs::write(
+        repo.join(".anodizer.yaml"),
+        r#"project_name: fixture
+workspaces:
+  - name: ws-a
+    crates:
+      - name: a-one
+        path: crates/a-one
+        tag_template: "a-one-v{{ .Version }}"
+  - name: ws-b
+    crates:
+      - name: b-one
+        path: crates/b-one
+        tag_template: "b-one-v{{ .Version }}"
+"#,
+    )
+    .unwrap();
+    fs::write(repo.join(".gitignore"), "dist/\n").unwrap();
+    run_git(repo, &["add", "-A"]);
+    run_git(repo, &["commit", "-q", "-m", "init"]);
+    run_git(repo, &["tag", "-a", "a-one-v0.1.0", "-m", "r"]);
+    run_git(repo, &["tag", "-a", "b-one-v0.1.0", "-m", "r"]);
+
+    // Preserved dist holding ONLY ws-b's crate.
+    let sub = repo.join("dist/b-one");
+    fs::create_dir_all(&sub).unwrap();
+    fs::write(sub.join("artifacts.json"), "[]").unwrap();
+    fs::write(
+        sub.join("context.json"),
+        r#"{"artifacts":[],"targets":[],"version":"0.1.0","commit":"deadbeef"}"#,
+    )
+    .unwrap();
+
+    let out = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--workspace",
+            "ws-a",
+            "--publish-only",
+            "--dry-run",
+            "--no-preflight",
+        ])
+        .current_dir(repo)
+        .output()
+        .expect("invoking anodizer release --publish-only");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let merged = format!("{stdout}\n{stderr}");
+    assert!(
+        !out.status.success(),
+        "sibling-only dist under --workspace must fail closed, got:\n{merged}"
+    );
+    assert!(
+        merged.contains("ws-a") && merged.contains("a-one") && merged.contains("b-one"),
+        "error must name the workspace, its crates, and the discovered subdirs, got:\n{merged}"
+    );
+    assert!(
+        !merged.contains("publishing crate 'b-one'"),
+        "the sibling crate must NOT be published under ws-a's overlay, got:\n{merged}"
+    );
+}

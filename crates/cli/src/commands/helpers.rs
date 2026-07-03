@@ -270,6 +270,160 @@ pub fn workspace_containing_crate<'a>(
         .find(|ws| ws.crates.iter().any(|c| c.name == name))
 }
 
+/// Resolve a workspace by name from the config. Returns an error if
+/// `workspaces` is not configured or the given name is not found.
+pub fn resolve_workspace<'a>(config: &'a Config, name: &str) -> Result<&'a WorkspaceConfig> {
+    let workspaces = config.workspaces.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("--workspace specified but no workspaces defined in config")
+    })?;
+
+    workspaces.iter().find(|ws| ws.name == name).ok_or_else(|| {
+        let available: Vec<&str> = workspaces.iter().map(|ws| ws.name.as_str()).collect();
+        anyhow::anyhow!(
+            "workspace '{}' not found (available: {})",
+            name,
+            available.join(", ")
+        )
+    })
+}
+
+/// Apply the workspace scope for a command run: the explicit `--workspace`
+/// overlay, or the one inferred from the `--crate` selection when it resolves
+/// into a single workspace. Returns the workspace-level skip stages to merge
+/// into the run's skip list.
+///
+/// After any overlay decision, every explicitly-selected crate name is
+/// validated against the post-overlay universe: the topo sort and the stages'
+/// crate filters silently drop unknown names, and several run modes treat an
+/// empty selection as "all crates", so an unmatched name would otherwise flip
+/// a scoped request into a broader (or empty) run instead of failing loudly.
+pub fn apply_workspace_scope(
+    config: &mut Config,
+    workspace: Option<&str>,
+    crate_names: &[String],
+    log: &StageLogger,
+) -> Result<Vec<String>> {
+    let mut workspace_skip: Vec<String> = Vec::new();
+    let mut applied_ws: Option<String> = workspace.map(str::to_string);
+    if let Some(ws_name) = workspace {
+        let ws = resolve_workspace(config, ws_name)?.clone();
+        workspace_skip = ws.skip.clone();
+        apply_workspace_overlay(config, &ws);
+    } else if let Some(ws_name) = infer_workspace_for_selection(config, crate_names)? {
+        // No --workspace given, but the whole --crate selection lives in one
+        // workspace — apply its overlay so the crates' workspace-level
+        // context (skip/env/signs) applies. Matches user intuition:
+        // "release crate X" should release X under X's workspace settings.
+        log.verbose(&format!(
+            "--crate selection lives in workspace '{}'; applying workspace overlay",
+            ws_name
+        ));
+        let ws = resolve_workspace(config, &ws_name)?.clone();
+        workspace_skip = ws.skip.clone();
+        apply_workspace_overlay(config, &ws);
+        applied_ws = Some(ws_name);
+    }
+    validate_selection_against_universe(config, crate_names, applied_ws.as_deref())?;
+    Ok(workspace_skip)
+}
+
+/// Resolve which workspace (if any) an explicit `--crate` selection infers.
+///
+/// The decision considers EVERY selected name, not just the first: the
+/// overlay replaces the crate universe and applies one workspace's
+/// env/signs/skip to the whole run, so a selection spanning a workspace and
+/// top-level crates (or two workspaces) has no single correct overlay — some
+/// crates would release under another scope's settings, or fall out of the
+/// post-overlay universe entirely. Such a selection is a hard error naming
+/// each crate and its home.
+///
+/// A name that is a top-level crate counts as top-level even when a workspace
+/// declares the same name (the universe's first-seen shadowing). Names found
+/// nowhere are ignored here — the post-overlay universe validation rejects
+/// them with the right scope context.
+pub fn infer_workspace_for_selection(
+    config: &Config,
+    crate_names: &[String],
+) -> Result<Option<String>> {
+    if crate_names.is_empty() {
+        return Ok(None);
+    }
+    let mut homes: Vec<(String, String)> = Vec::new();
+    let mut ws_names: Vec<String> = Vec::new();
+    let mut has_top_level = false;
+    for name in crate_names {
+        if config.crates.iter().any(|c| &c.name == name) {
+            has_top_level = true;
+            homes.push((name.clone(), "top-level".to_string()));
+        } else if let Some(ws) = workspace_containing_crate(config, name) {
+            if !ws_names.contains(&ws.name) {
+                ws_names.push(ws.name.clone());
+            }
+            homes.push((name.clone(), format!("workspace '{}'", ws.name)));
+        }
+    }
+    if ws_names.is_empty() {
+        return Ok(None);
+    }
+    if has_top_level || ws_names.len() > 1 {
+        let listing = homes
+            .iter()
+            .map(|(name, home)| format!("'{name}' ({home})"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::bail!(
+            "--crate selection spans multiple release scopes: {listing}. One run applies a \
+             single workspace's overlay (env/signs/skip), so a mixed selection cannot release \
+             every named crate correctly — select crates from one scope per run (or pass \
+             --workspace <name>)"
+        );
+    }
+    Ok(Some(ws_names.remove(0)))
+}
+
+/// Reject any explicitly-selected crate name absent from the post-overlay
+/// crate universe. `scope` names the workspace whose overlay was applied (so
+/// the error can say WHY the crate is out of reach), or `None` when no
+/// overlay ran.
+pub fn validate_selection_against_universe(
+    config: &Config,
+    crate_names: &[String],
+    scope: Option<&str>,
+) -> Result<()> {
+    let universe: Vec<&str> = config
+        .crate_universe()
+        .into_iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    let unknown: Vec<&str> = crate_names
+        .iter()
+        .map(|n| n.as_str())
+        .filter(|n| !universe.contains(n))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(());
+    }
+    let known = if universe.is_empty() {
+        "(none)".to_string()
+    } else {
+        universe.join(", ")
+    };
+    match scope {
+        Some(ws) => anyhow::bail!(
+            "--crate {}: not in workspace '{}' (its crates: {}); a workspace-scoped run \
+             releases only that workspace's crates",
+            unknown.join(", "),
+            ws,
+            known
+        ),
+        None => anyhow::bail!(
+            "--crate {}: no such crate in the configuration (known crates: {})",
+            unknown.join(", "),
+            known
+        ),
+    }
+}
+
 /// Resolve the current-tag override from the env-var precedence chain.
 ///
 /// Precedence (first non-empty wins):
@@ -3702,5 +3856,174 @@ list:
             found, root,
             "override discovery must return the absolute dir holding Cargo.toml"
         );
+    }
+
+    // ---- workspace scoping: resolve / infer / validate ------------------
+
+    fn scope_crate(name: &str) -> CrateConfig {
+        CrateConfig {
+            name: name.to_string(),
+            path: ".".to_string(),
+            tag_template: format!("{}-v{{{{ .Version }}}}", name),
+            ..Default::default()
+        }
+    }
+
+    fn scope_mixed_config() -> Config {
+        use anodizer_core::config::WorkspaceConfig;
+        Config {
+            project_name: "test".to_string(),
+            crates: vec![scope_crate("top")],
+            workspaces: Some(vec![
+                WorkspaceConfig {
+                    name: "ws-a".to_string(),
+                    crates: vec![scope_crate("a-one"), scope_crate("a-two")],
+                    ..Default::default()
+                },
+                WorkspaceConfig {
+                    name: "ws-b".to_string(),
+                    crates: vec![scope_crate("b-one")],
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn resolve_workspace_found() {
+        let config = scope_mixed_config();
+        let ws = resolve_workspace(&config, "ws-b").unwrap();
+        assert_eq!(ws.name, "ws-b");
+        assert_eq!(ws.crates.len(), 1);
+        assert_eq!(ws.crates[0].name, "b-one");
+    }
+
+    #[test]
+    fn resolve_workspace_not_found_lists_available() {
+        let config = scope_mixed_config();
+        let msg = resolve_workspace(&config, "nonexistent")
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("nonexistent"), "names the missing ws: {msg}");
+        assert!(
+            msg.contains("ws-a") && msg.contains("ws-b"),
+            "lists available workspaces: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_workspace_no_workspaces_defined() {
+        let config = Config {
+            project_name: "test".to_string(),
+            ..Default::default()
+        };
+        let msg = resolve_workspace(&config, "anything")
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("no workspaces defined"), "got: {msg}");
+    }
+
+    #[test]
+    fn infer_workspace_single_workspace_selection_infers() {
+        let config = scope_mixed_config();
+        let inferred =
+            infer_workspace_for_selection(&config, &["a-one".to_string(), "a-two".to_string()])
+                .expect("single-workspace selection must not error");
+        assert_eq!(inferred.as_deref(), Some("ws-a"));
+    }
+
+    #[test]
+    fn infer_workspace_top_level_only_selection_is_untouched() {
+        let config = scope_mixed_config();
+        let inferred = infer_workspace_for_selection(&config, &["top".to_string()])
+            .expect("top-level selection must not error");
+        assert_eq!(inferred, None);
+    }
+
+    #[test]
+    fn infer_workspace_mixed_selection_errors_in_both_orderings() {
+        let config = scope_mixed_config();
+        // Both orderings must yield the SAME hard error: the decision comes
+        // from the whole selection set, never from whichever name is first.
+        let forward =
+            infer_workspace_for_selection(&config, &["a-one".to_string(), "top".to_string()])
+                .expect_err("workspace + top-level selection must error");
+        let reversed =
+            infer_workspace_for_selection(&config, &["top".to_string(), "a-one".to_string()])
+                .expect_err("reversed ordering must error identically");
+        for err in [&forward, &reversed] {
+            let msg = err.to_string();
+            assert!(
+                msg.contains("'a-one' (workspace 'ws-a')") && msg.contains("'top' (top-level)"),
+                "error must name each crate and its home; got: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn infer_workspace_two_workspace_selection_errors() {
+        let config = scope_mixed_config();
+        let err =
+            infer_workspace_for_selection(&config, &["a-one".to_string(), "b-one".to_string()])
+                .expect_err("selection spanning two workspaces must error");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("workspace 'ws-a'") && msg.contains("workspace 'ws-b'"),
+            "error must name both workspaces; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn validate_selection_rejects_unknown_names() {
+        let config = scope_mixed_config();
+        let err = validate_selection_against_universe(&config, &["nope".to_string()], None)
+            .expect_err("an unknown --crate name must be a hard error, not a silent drop");
+        assert!(err.to_string().contains("nope"), "got: {err}");
+        // Known names across the whole universe pass.
+        validate_selection_against_universe(
+            &config,
+            &["top".to_string(), "b-one".to_string()],
+            None,
+        )
+        .expect("known names must validate");
+    }
+
+    #[test]
+    fn validate_selection_names_workspace_scope_after_overlay() {
+        let mut config = scope_mixed_config();
+        let ws = config.workspaces.as_ref().unwrap()[0].clone();
+        apply_workspace_overlay(&mut config, &ws);
+        // Post-overlay the universe is ws-a only: a top-level crate name is
+        // out of scope and the error must say WHY (the workspace scoping).
+        let err = validate_selection_against_universe(&config, &["top".to_string()], Some("ws-a"))
+            .expect_err("a crate outside the overlaid workspace must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("ws-a") && msg.contains("top"),
+            "error must name the workspace scope and the crate; got: {msg}"
+        );
+    }
+
+    #[test]
+    fn apply_workspace_scope_infers_and_returns_skip() {
+        use anodizer_core::config::WorkspaceConfig;
+        let mut config = scope_mixed_config();
+        config.workspaces.as_mut().unwrap()[0] = WorkspaceConfig {
+            name: "ws-a".to_string(),
+            crates: vec![scope_crate("a-one"), scope_crate("a-two")],
+            skip: vec!["upx".to_string()],
+            ..Default::default()
+        };
+        let log = StageLogger::new("test", anodizer_core::log::Verbosity::Quiet);
+        let skip = apply_workspace_scope(&mut config, None, &["a-one".to_string()], &log)
+            .expect("ws-member selection must infer its workspace");
+        assert_eq!(skip, vec!["upx".to_string()], "workspace skip returned");
+        assert!(
+            config.workspaces.is_none(),
+            "overlay must clear sibling workspaces"
+        );
+        let names: Vec<&str> = config.crates.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["a-one", "a-two"], "universe is ws-a's crates");
     }
 }

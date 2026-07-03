@@ -227,14 +227,36 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // When --crate is given, look up the crate in config and derive the tag
     // prefix from its tag_template.  Also capture the crate path to
     // scope change detection to only that directory.
+    //
+    // An unknown name is a hard error, never a fall-through: the repo-level
+    // path below tags with the default `v` prefix and NO path scoping, so a
+    // typo'd `--crate` would cut (and possibly push) a wrong repo-wide tag.
+    // A KNOWN crate whose template has no extractable prefix is a distinct
+    // condition and stays valid — it tags under the canonical `<name>-v`
+    // fallback family (`git::per_crate_tag_prefix`), same as the per-crate
+    // engine and the changelog's crate selection.
     let mut crate_path: Option<String> = None;
     let mut version_sync_enabled = false;
     let mut crate_version_files: Vec<String> = Vec::new();
-    if let Some(ref crate_name) = opts.crate_name
-        && let Some(info) = loaded_config
-            .as_ref()
-            .and_then(|c| load_crate_tag_info(c, crate_name))
-    {
+    if let Some(ref crate_name) = opts.crate_name {
+        let Some(config) = loaded_config.as_ref() else {
+            bail!(
+                "--crate '{}': no anodizer configuration found, so no crates are defined; \
+                 drop --crate or add the crate to the configuration",
+                crate_name
+            );
+        };
+        crate::commands::helpers::validate_selection_against_universe(
+            config,
+            std::slice::from_ref(crate_name),
+            None,
+        )?;
+        let info = load_crate_tag_info(config, crate_name).ok_or_else(|| {
+            anyhow::anyhow!(
+                "--crate '{}': crate resolved but its tag info could not be loaded",
+                crate_name
+            )
+        })?;
         cfg.tag_prefix = info.tag_prefix;
         crate_path = Some(info.path);
         version_sync_enabled = info.version_sync;
@@ -1329,15 +1351,20 @@ pub(crate) enum RepoShape {
 /// Reads the Cargo workspace and anodizer config. Precedence:
 /// 1. If anodizer config has `workspaces:` with groups → `PerCrate` (hybrid;
 ///    explicit operator intent, wins over a lockstep `[workspace.package].version`).
-///    Top-level `crates:` entries not in any group join as singleton groups
-///    (independent tracks).
+///    Top-level `crates:` entries not in any group join as [`prefix_groups`]:
+///    each shared-prefix subset is one aggregate group, the rest are
+///    singleton groups (independent tracks).
 /// 2. If `[workspace.package].version` is set → `Lockstep`.
-/// 3. If anodizer config has `crates:` with >1 entry:
-///    - all sharing ONE explicit tag prefix → `FlatAggregate` (one prefix = one
-///      shared tag namespace, so the crates release in lockstep — `v0.2.0`
-///      cannot independently belong to two crates — but each carries its own
-///      `[package].version`, so it bumps N manifests under one shared tag);
-///    - otherwise → `PerCrate` (flat multi-crate, distinct tracks).
+/// 3. If anodizer config has `crates:` with >1 entry, group by extracted
+///    prefix ([`prefix_groups`]):
+///    - the WHOLE list sharing ONE explicit tag prefix → `FlatAggregate`
+///      (one prefix = one shared tag namespace, so the crates release in
+///      lockstep — `v0.2.0` cannot independently belong to two crates — but
+///      each carries its own `[package].version`, so it bumps N manifests
+///      under one shared tag);
+///    - otherwise → `PerCrate` whose tracks are the prefix groups (each
+///      shared-prefix subset one aggregate, unique/no-prefix crates
+///      singleton).
 /// 4. Otherwise → `Single`.
 pub(crate) fn detect_repo_shape(
     workspace_root: &Path,
@@ -1361,20 +1388,14 @@ pub(crate) fn detect_repo_shape(
         // also appears in a workspace group stays with its group: the group
         // defines its lockstep cadence, and the top-level duplicate is the
         // same crate (the universe's first-seen dedup), not a second track.
-        // Leftovers that ALL share one extractable tag prefix live in one tag
-        // namespace and join as ONE aggregate group (mirroring the flat
-        // `crates:` arm below — separate singleton groups would cut divergent
-        // tags, e.g. v0.2.0 AND v0.1.1, into the same `v*` namespace and
-        // cross-contaminate every member's next change detection); otherwise
-        // each leftover is a singleton group, exactly like the flat arm.
-        let leftovers = leftover_top_level_crates(config);
-        if leftovers.len() > 1 && shared_tag_prefix(&leftovers).is_some() {
-            groups.push(leftovers);
-        } else {
-            for c in leftovers {
-                groups.push(vec![c]);
-            }
-        }
+        // Leftovers group BY extracted tag prefix (mirroring the flat
+        // `crates:` arm below): every subset sharing one prefix lives in one
+        // tag namespace and joins as ONE aggregate group — separate singleton
+        // groups would cut divergent tags, e.g. v0.2.0 AND v0.1.1, into the
+        // same `v*` namespace and cross-contaminate every member's next
+        // change detection. A leftover with a unique (or no extractable)
+        // prefix stays a singleton group.
+        groups.extend(prefix_groups(&leftover_top_level_crates(config)));
         return RepoShape::PerCrate(groups);
     }
 
@@ -1405,20 +1426,58 @@ pub(crate) fn detect_repo_shape(
     // config with `workspaces:` entries returned in the precedence branch
     // above, so no workspace crate can reach this point.
     if config.crates.len() > 1 {
-        // A flat `crates:` list that ALL share one explicit tag prefix lives in
-        // one tag namespace: `v0.2.0` cannot simultaneously be two crates'
-        // independent tag, so the crates necessarily release in lockstep. Only
-        // an EXPLICIT shared prefix collapses — a crate with no extractable
-        // `tag_template` prefix (the per-crate `{crate}-v` fallback) is treated
-        // as distinct, keeping genuinely independent crates per-crate.
-        if shared_tag_prefix(&config.crates).is_some() {
+        // A flat `crates:` list groups BY extracted tag prefix: crates
+        // sharing one explicit prefix live in one tag namespace — `v0.2.0`
+        // cannot simultaneously be two crates' independent tag — so each
+        // shared-prefix subset necessarily releases in lockstep as one
+        // aggregate group. When the WHOLE list is one such group the shape is
+        // the dedicated `FlatAggregate` (one shared tag, one flat changelog);
+        // any other split (a shared-prefix subset alongside independent
+        // crates, or no sharing at all) is `PerCrate` with the prefix groups
+        // as its tracks. Only an EXPLICIT shared prefix aggregates — a crate
+        // with no extractable `tag_template` prefix (the per-crate
+        // `{crate}-v` fallback) is always its own track.
+        let groups = prefix_groups(&config.crates);
+        if groups.len() == 1 {
             return RepoShape::FlatAggregate(config.crates.clone());
         }
-        let groups: Vec<Vec<CrateConfig>> = config.crates.iter().map(|c| vec![c.clone()]).collect();
         return RepoShape::PerCrate(groups);
     }
 
     RepoShape::Single
+}
+
+/// Group a crate list by extracted tag prefix: every subset of crates whose
+/// `tag_template`s yield the same concrete prefix (via
+/// [`git::extract_tag_prefix`]) forms ONE group — those crates mint tags into
+/// one shared namespace and must release as a lockstep aggregate. A crate
+/// with a unique prefix, or with no extractable prefix at all (the per-crate
+/// `{crate}-v` fallback keeps such crates in distinct namespaces), stays a
+/// singleton group. Group order follows each group's first appearance in
+/// `crates`.
+///
+/// The ONE aggregation decision both [`detect_repo_shape`]'s group building
+/// and [`guard_flat_aggregate_coherence`] resolve through — a re-derived
+/// predicate at either site could drift and let divergent versions into a
+/// shared tag namespace.
+fn prefix_groups(crates: &[CrateConfig]) -> Vec<Vec<CrateConfig>> {
+    let mut grouped: Vec<(Option<String>, Vec<CrateConfig>)> = Vec::new();
+    for c in crates {
+        match git::extract_tag_prefix(&c.tag_template) {
+            Some(prefix) => {
+                if let Some((_, group)) = grouped
+                    .iter_mut()
+                    .find(|(p, _)| p.as_deref() == Some(prefix.as_str()))
+                {
+                    group.push(c.clone());
+                } else {
+                    grouped.push((Some(prefix), vec![c.clone()]));
+                }
+            }
+            None => grouped.push((None, vec![c.clone()])),
+        }
+    }
+    grouped.into_iter().map(|(_, group)| group).collect()
 }
 
 /// The single tag prefix shared by EVERY crate in a flat `crates:` list, or
@@ -1507,13 +1566,15 @@ fn leftover_top_level_crates(config: &anodizer_core::config::Config) -> Vec<Crat
 /// toward lockstep (`[workspace.package].version`) or independent prefixes.
 ///
 /// Two shapes can be incoherent this way and get the identical check: a
-/// `RepoShape::FlatAggregate`, and the mixed shape's leftover aggregate (a
-/// shared-prefix set of top-level crates alongside `workspaces:`, which
-/// [`detect_repo_shape`] joins as one `PerCrate` group). Any other shape is a
-/// no-op. A member without a readable literal `[package].version` (absent
-/// manifest, or a virtual / `version.workspace = true` manifest) is skipped:
-/// the guard fires only on genuine version strings it can compare, so a
-/// versionless member never trips the check nor masks a real divergence.
+/// `RepoShape::FlatAggregate`, and every multi-member prefix group among a
+/// `PerCrate` shape's top-level crates — a shared-prefix SUBSET of a flat
+/// `crates:` list, or of the leftovers alongside `workspaces:` (which
+/// [`detect_repo_shape`] joins as aggregate groups via the same
+/// [`prefix_groups`] decision). Any other shape is a no-op. A member without
+/// a readable literal `[package].version` (absent manifest, or a virtual /
+/// `version.workspace = true` manifest) is skipped: the guard fires only on
+/// genuine version strings it can compare, so a versionless member never
+/// trips the check nor masks a real divergence.
 pub(crate) fn guard_flat_aggregate_coherence(
     config: Option<&anodizer_core::config::Config>,
     workspace: Option<&WorkspaceInfo>,
@@ -1527,18 +1588,22 @@ pub(crate) fn guard_flat_aggregate_coherence(
             let Some(config) = config else {
                 return Ok(());
             };
-            // The mixed shape's leftover aggregate exists only when
-            // `workspaces:` is declared (a flat multi-crate `PerCrate` has
-            // only singleton groups, which cannot diverge).
-            if config.workspaces.as_ref().is_none_or(|w| w.is_empty()) {
-                return Ok(());
-            }
-            let leftovers = leftover_top_level_crates(config);
-            if leftovers.len() > 1 && shared_tag_prefix(&leftovers).is_some() {
-                check_shared_prefix_version_coherence(&leftovers, workspace_root)
+            // Prefix-derived aggregates come from the top-level crate set the
+            // shape detection grouped: the leftovers when `workspaces:` is
+            // declared, the flat `crates:` list otherwise. Workspace groups
+            // themselves are declared lockstep units, not prefix aggregates,
+            // and stay outside this guard.
+            let candidates = if config.workspaces.as_ref().is_some_and(|w| !w.is_empty()) {
+                leftover_top_level_crates(config)
             } else {
-                Ok(())
+                config.crates.clone()
+            };
+            for group in prefix_groups(&candidates) {
+                if group.len() > 1 {
+                    check_shared_prefix_version_coherence(&group, workspace_root)?;
+                }
             }
+            Ok(())
         }
         RepoShape::Single | RepoShape::Lockstep => Ok(()),
     }
@@ -2103,7 +2168,9 @@ fn run_per_crate_tag(
     // Build crate-name → new-version map from version_updates (path → version),
     // joined against crate_names so the output uses canonical crate names rather
     // than filesystem paths. Each group's crates share the same new version.
-    let versions_map: std::collections::HashMap<String, String> = tag_results
+    // BTreeMap so the emitted JSON key order is stable across runs — CI logs
+    // and doc examples must not flicker on HashMap iteration order.
+    let versions_map: std::collections::BTreeMap<String, String> = tag_results
         .iter()
         .flat_map(|r| {
             r.crate_names
@@ -2154,6 +2221,13 @@ struct CrateTagInfo {
 /// workspace crates.  Returns the tag prefix (from `tag_template`) and the
 /// crate's `path` so change detection can be scoped to that directory.
 ///
+/// `None` only for an UNKNOWN crate name (the caller validates and errors
+/// first). A known crate whose template has no extractable prefix resolves
+/// to the canonical `<name>-v` fallback family via
+/// [`git::per_crate_tag_prefix`] — the same family the per-crate engine and
+/// the changelog's crate selection scan, so `--crate` never silently
+/// switches a crate to the repo-level `v` namespace.
+///
 /// Takes the command's single shared config load rather than re-loading:
 /// every `load_config` re-emits the load-time legacy-alias warnings, so a
 /// second load doubled them on the `--crate` path.
@@ -2163,7 +2237,7 @@ fn load_crate_tag_info(
 ) -> Option<CrateTagInfo> {
     let crate_cfg = config.find_crate(crate_name)?;
 
-    let tag_prefix = git::extract_tag_prefix(&crate_cfg.tag_template)?;
+    let tag_prefix = git::per_crate_tag_prefix(&crate_cfg.name, &crate_cfg.tag_template);
     let version_sync = crate_cfg
         .version_sync
         .as_ref()
@@ -2641,7 +2715,7 @@ fn plan_changelog_targets(
 /// routing's `single_track`), `false` otherwise (`targets` left untouched).
 ///
 /// The flat-aggregate DECISION lives in [`detect_repo_shape`] (via
-/// [`shared_tag_prefix`]); this helper only applies it, so the prefix-equality
+/// [`prefix_groups`]); this helper only applies it, so the prefix-equality
 /// comparison is not re-derived here.
 ///
 /// The aggregate spans the workspace (`crate_dir = workspace_root`), keyed by
@@ -4146,6 +4220,189 @@ tag_post_hooks:
         assert!(err.contains("'a' (0.2.0)"), "lists member a: {err}");
         assert!(err.contains("'b' (0.2.0)"), "lists member b: {err}");
         assert!(err.contains("'c' (0.5.0)"), "lists member c: {err}");
+    }
+
+    /// A strict SUBSET of a flat `crates:` list sharing one prefix
+    /// aggregates BY prefix: `alpha`+`beta` (both `v*`) form one group,
+    /// `gamma` (`gamma-v*`) stays independent — never three singletons
+    /// cutting divergent tags into the shared `v*` namespace, and never a
+    /// whole-list collapse swallowing `gamma`.
+    #[test]
+    fn detect_repo_shape_flat_prefix_subset_groups_by_prefix() {
+        let config = anodizer_core::config::Config {
+            project_name: "p".to_string(),
+            crates: vec![
+                crate_cfg("alpha", "crates/alpha", "v{{ .Version }}"),
+                crate_cfg("beta", "crates/beta", "v{{ .Version }}"),
+                crate_cfg("gamma", "crates/gamma", "gamma-v{{ .Version }}"),
+            ],
+            ..Default::default()
+        };
+        let root = empty_root();
+        let shape = detect_repo_shape(root.path(), Some(&config), None);
+        match shape {
+            RepoShape::PerCrate(groups) => {
+                let names: Vec<Vec<&str>> = groups
+                    .iter()
+                    .map(|g| g.iter().map(|c| c.name.as_str()).collect())
+                    .collect();
+                assert_eq!(
+                    names,
+                    vec![vec!["alpha", "beta"], vec!["gamma"]],
+                    "shared-prefix subset must aggregate; unique prefix stays singleton"
+                );
+            }
+            other => panic!(
+                "expected PerCrate, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    /// The SAME subset rule in the mixed shape: leftovers `alpha`+`beta`
+    /// (both `v*`) aggregate while leftover `delta` (`delta-v*`) stays a
+    /// singleton track alongside the workspace group.
+    #[test]
+    fn detect_repo_shape_mixed_leftover_prefix_subset_groups_by_prefix() {
+        let config = anodizer_core::config::Config {
+            project_name: "mixed".to_string(),
+            crates: vec![
+                crate_cfg("alpha", "crates/alpha", "v{{ .Version }}"),
+                crate_cfg("beta", "crates/beta", "v{{ .Version }}"),
+                crate_cfg("delta", "crates/delta", "delta-v{{ .Version }}"),
+            ],
+            workspaces: Some(vec![anodizer_core::config::WorkspaceConfig {
+                name: "grp".to_string(),
+                crates: vec![crate_cfg("gamma", "tools/gamma", "gamma-v{{ .Version }}")],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let root = empty_root();
+        let shape = detect_repo_shape(root.path(), Some(&config), None);
+        match shape {
+            RepoShape::PerCrate(groups) => {
+                let names: Vec<Vec<&str>> = groups
+                    .iter()
+                    .map(|g| g.iter().map(|c| c.name.as_str()).collect())
+                    .collect();
+                assert_eq!(
+                    names,
+                    vec![vec!["gamma"], vec!["alpha", "beta"], vec!["delta"]],
+                    "leftover shared-prefix subset must aggregate; unique prefix stays singleton"
+                );
+            }
+            other => panic!(
+                "expected PerCrate, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    /// The coherence guard fires on a divergent shared-prefix SUBSET of a
+    /// flat list — the shape is `PerCrate` (gamma keeps it from collapsing to
+    /// `FlatAggregate`), but alpha/beta still share the `v*` namespace and
+    /// must agree on `[package].version`.
+    #[test]
+    fn coherence_guard_rejects_divergent_flat_prefix_subset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for (name, ver) in [("alpha", "0.5.0"), ("beta", "0.1.0"), ("gamma", "0.9.0")] {
+            let dir = root.join(format!("crates/{name}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\n"),
+            )
+            .unwrap();
+        }
+        let config = anodizer_core::config::Config {
+            project_name: "p".to_string(),
+            crates: vec![
+                crate_cfg("alpha", "crates/alpha", "v{{ .Version }}"),
+                crate_cfg("beta", "crates/beta", "v{{ .Version }}"),
+                crate_cfg("gamma", "crates/gamma", "gamma-v{{ .Version }}"),
+            ],
+            ..Default::default()
+        };
+        let err = guard_flat_aggregate_coherence(Some(&config), Some(&ws_no_lockstep()), root)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("alpha") && err.contains("beta"), "{err}");
+        assert!(err.contains("0.5.0") && err.contains("0.1.0"), "{err}");
+        assert!(
+            !err.contains("gamma"),
+            "gamma has its own namespace and must not be blamed: {err}"
+        );
+    }
+
+    /// An agreeing shared-prefix subset passes even when the independent
+    /// crate's version differs — `gamma` mints tags into its OWN namespace,
+    /// so its version never conflicts with the `v*` aggregate.
+    #[test]
+    fn coherence_guard_passes_agreeing_flat_subset_with_divergent_singleton() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for (name, ver) in [("alpha", "0.2.0"), ("beta", "0.2.0"), ("gamma", "0.9.0")] {
+            let dir = root.join(format!("crates/{name}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\n"),
+            )
+            .unwrap();
+        }
+        let config = anodizer_core::config::Config {
+            project_name: "p".to_string(),
+            crates: vec![
+                crate_cfg("alpha", "crates/alpha", "v{{ .Version }}"),
+                crate_cfg("beta", "crates/beta", "v{{ .Version }}"),
+                crate_cfg("gamma", "crates/gamma", "gamma-v{{ .Version }}"),
+            ],
+            ..Default::default()
+        };
+        let res = guard_flat_aggregate_coherence(Some(&config), Some(&ws_no_lockstep()), root);
+        assert!(res.is_ok(), "independent singleton must not trip: {res:?}");
+    }
+
+    /// The divergent-subset rule in the MIXED shape: leftovers alpha/beta
+    /// share `v*` with divergent versions alongside a `workspaces:` group →
+    /// error; the singleton leftover stays out of it.
+    #[test]
+    fn coherence_guard_rejects_divergent_mixed_leftover_subset() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        for (name, ver) in [("alpha", "0.5.0"), ("beta", "0.1.0"), ("delta", "0.9.0")] {
+            let dir = root.join(format!("crates/{name}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("Cargo.toml"),
+                format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\n"),
+            )
+            .unwrap();
+        }
+        let config = anodizer_core::config::Config {
+            project_name: "mixed".to_string(),
+            crates: vec![
+                crate_cfg("alpha", "crates/alpha", "v{{ .Version }}"),
+                crate_cfg("beta", "crates/beta", "v{{ .Version }}"),
+                crate_cfg("delta", "crates/delta", "delta-v{{ .Version }}"),
+            ],
+            workspaces: Some(vec![anodizer_core::config::WorkspaceConfig {
+                name: "grp".to_string(),
+                crates: vec![crate_cfg("gamma", "tools/gamma", "gamma-v{{ .Version }}")],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let err = guard_flat_aggregate_coherence(Some(&config), Some(&ws_no_lockstep()), root)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("alpha") && err.contains("beta"), "{err}");
+        assert!(
+            !err.contains("delta"),
+            "delta has its own namespace and must not be blamed: {err}"
+        );
     }
 
     // ---- anodizer-output line format tests ----

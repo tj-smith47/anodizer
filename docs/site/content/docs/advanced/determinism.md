@@ -103,7 +103,7 @@ allow-listing.
 The verification harness is a leaf of `anodizer check`:
 
 ```
-anodizer check config [--workspace=<path>]
+anodizer check config [--workspace=<name>]
 anodizer check determinism \
   --runs=<N> \
   --stages=<subset> \
