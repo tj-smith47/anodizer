@@ -6,7 +6,7 @@ use anodizer_core::artifact::ArtifactKind;
 use anodizer_core::config::UpxConfig;
 use anodizer_core::context::Context;
 use anodizer_core::stage::Stage;
-use anodizer_core::util::find_binary;
+use anodizer_core::tool_detect::on_path;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -106,7 +106,7 @@ impl Stage for UpxStage {
             let binary = &upx_cfg.binary;
 
             // Check if UPX binary exists
-            if !ctx.is_dry_run() && !find_binary(binary) {
+            if !ctx.is_dry_run() && !on_path(binary) {
                 if upx_cfg.required {
                     anyhow::bail!(
                         "upx: binary '{}' not found and this config is marked as required",
@@ -746,7 +746,7 @@ crates: []
     #[test]
     fn test_dry_run_logs_without_executing() {
         // Use /usr/bin/env as the "upx binary" — it exists on the system and
-        // WOULD be found by find_binary(). The test verifies that dry-run mode
+        // WOULD be found by on_path(). The test verifies that dry-run mode
         // skips both the binary check AND the actual execution. If the stage
         // tried to run /usr/bin/env with UPX args, the command would fail on
         // the artifact path. Success here proves the dry-run contract holds.

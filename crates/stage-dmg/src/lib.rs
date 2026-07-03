@@ -30,11 +30,11 @@ pub enum DmgTool {
 /// Preference order: hdiutil (macOS native) > genisoimage > mkisofs.
 /// Returns `None` if no suitable tool is found.
 pub fn dmg_tool() -> Option<DmgTool> {
-    if anodizer_core::util::find_binary("hdiutil") {
+    if anodizer_core::tool_detect::on_path("hdiutil") {
         Some(DmgTool::Hdiutil)
-    } else if anodizer_core::util::find_binary("genisoimage") {
+    } else if anodizer_core::tool_detect::on_path("genisoimage") {
         Some(DmgTool::Genisoimage)
-    } else if anodizer_core::util::find_binary("mkisofs") {
+    } else if anodizer_core::tool_detect::on_path("mkisofs") {
         Some(DmgTool::Mkisofs)
     } else {
         None
@@ -2803,7 +2803,7 @@ crates:
     #[test]
     #[cfg(target_os = "macos")]
     fn dmg_is_byte_reproducible_across_time() {
-        if !anodizer_core::util::find_binary("hdiutil") {
+        if !anodizer_core::tool_detect::on_path("hdiutil") {
             eprintln!("hdiutil unavailable; test skipped hermetically");
             return;
         }

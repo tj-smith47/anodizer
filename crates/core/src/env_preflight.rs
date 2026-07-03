@@ -207,7 +207,7 @@ impl std::fmt::Display for EnvPreflightReport {
 // ---------------------------------------------------------------------------
 
 /// Side-effecting probes injected into [`evaluate`]. Production callers wire
-/// `tool` to [`crate::util::find_binary`] (a pure PATH lookup mirroring how
+/// `tool` to [`crate::tool_detect::on_path`] (a pure PATH lookup mirroring how
 /// stages spawn commands), `endpoint` to [`crate::http`], and `docker` to
 /// [`crate::tool_detect`]; tests inject closures.
 pub struct EnvProbes<'a> {

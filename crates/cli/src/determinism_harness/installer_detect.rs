@@ -5,10 +5,10 @@
 //! the [`filter_available_with_probe`] function that drops any
 //! installer stage whose backing tool(s) are not reachable on `PATH`.
 //!
-//! Why a separate module: the `crates/cli/**` forbid-list bans direct
-//! `Command::new` calls. The actual `<tool> --version` probe lives in
-//! [`anodizer_core::tool_detect::tool_available`] — this module merely
-//! consults that allow-listed probe and decides which installer stages
+//! The availability question is answered by
+//! [`anodizer_core::tool_detect::on_path`] — a pure `PATH` lookup with no
+//! exec (see [`host_tool_probe`] for why the version-spawn probe is the
+//! wrong question here); this module only decides which installer stages
 //! the child release subprocess can usefully run.
 //!
 //! Behavioral contract: this module only PARTITIONS requested stages
@@ -28,7 +28,7 @@
 use std::collections::BTreeMap;
 
 use super::StageId;
-use anodizer_core::util::find_binary;
+use anodizer_core::tool_detect::on_path;
 
 /// Result of an installer-tool availability sweep.
 ///
@@ -204,7 +204,7 @@ pub(super) fn missing_tool_error(skipped: &[(StageId, String)], require_tools: b
 }
 
 /// The production tool probe: PATH-existence via
-/// [`anodizer_core::util::find_binary`]. The gate's question is strictly
+/// [`anodizer_core::tool_detect::on_path`]. The gate's question is strictly
 /// "can the stage spawn this binary" — i.e. is it reachable on `PATH` — NOT
 /// "does `<tool> --version` exit zero". Several installer tools answer the
 /// latter with a non-zero exit despite being present and runnable: `hdiutil`
@@ -217,7 +217,7 @@ pub(super) fn missing_tool_error(skipped: &[(StageId, String)], require_tools: b
 /// [`super::Harness::run`] injects this into
 /// [`super::Harness::gate_installer_stages`]; tests inject a stub.
 pub(super) fn host_tool_probe(tool: &str) -> bool {
-    find_binary(tool)
+    on_path(tool)
 }
 
 /// Probe each tool-gated stage in `requested` with `probe` and partition
@@ -672,12 +672,12 @@ mod tests {
     fn host_tool_probe_detects_present_tool_that_lacks_version_flag() {
         // Regression: the gate detects a tool by PATH-existence, NOT by a
         // `<tool> --version` exit code. `hdiutil` (macOS) has no version flag
-        // and exits non-zero on `--version`; the old `tool_available` probe
+        // and exits non-zero on `--version`; the old version-spawn probe
         // therefore reported it missing and hard-failed the macOS dmg/pkg
         // determinism shard though the binary was present. A stub that exits
-        // non-zero on every call models such a tool — `host_tool_probe` (now
-        // backed by `find_binary`, a pure PATH lookup with no exec) must still
-        // find it.
+        // non-zero on every call models such a tool — `host_tool_probe`
+        // (backed by `tool_detect::on_path`, a pure PATH lookup with no
+        // exec) must still find it.
         use anodizer_core::test_helpers::fake_tool::FakeToolDir;
 
         let tools = FakeToolDir::new();

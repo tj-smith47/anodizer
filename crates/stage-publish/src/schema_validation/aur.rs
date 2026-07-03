@@ -1164,13 +1164,13 @@ mod tests {
         add_linux_archive(&mut ctx, "widget", "1.0.0");
         let log = ctx.logger("publish");
 
-        match anodizer_core::tool_detect::tool_available("bash") {
-            Ok(true) => {}
-            Ok(false) => {
+        match anodizer_core::tool_detect::runs("bash") {
+            anodizer_core::tool_detect::ToolProbe::Available => {}
+            anodizer_core::tool_detect::ToolProbe::Unavailable => {
                 log.status("SKIP bash_n_accepts_every_option_pkgbuild: bash not on PATH (syntax layer unexercised)");
                 return;
             }
-            Err(e) => {
+            anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
                 log.status(&format!("SKIP bash_n_accepts_every_option_pkgbuild: bash probe failed ({e}) (syntax layer unexercised)"));
                 return;
             }
@@ -1195,15 +1195,15 @@ mod tests {
         let ctx = TestContextBuilder::new().snapshot(true).build();
         let log = ctx.logger("publish");
 
-        match anodizer_core::tool_detect::tool_available("bash") {
-            Ok(true) => {}
-            Ok(false) => {
+        match anodizer_core::tool_detect::runs("bash") {
+            anodizer_core::tool_detect::ToolProbe::Available => {}
+            anodizer_core::tool_detect::ToolProbe::Unavailable => {
                 log.status(
                     "SKIP bash_n_rejects_broken_pkgbuild: bash not on PATH (syntax layer unexercised)",
                 );
                 return;
             }
-            Err(e) => {
+            anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
                 log.status(&format!(
                     "SKIP bash_n_rejects_broken_pkgbuild: bash probe failed ({e}) (syntax layer unexercised)"
                 ));

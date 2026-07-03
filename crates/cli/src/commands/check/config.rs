@@ -760,13 +760,13 @@ fn check_cross_tooling(config: &Config, warnings: &mut Vec<String>) {
     });
 
     if needs_cross || config.crates.iter().any(|c| c.builds.is_some()) {
-        if !tool_available("cargo-zigbuild") {
+        if !anodizer_core::tool_detect::on_path("cargo-zigbuild") {
             warnings.push(
                 "cargo-zigbuild is not installed (needed for cross-compilation via zigbuild)"
                     .to_string(),
             );
         }
-        if !tool_available("cross") {
+        if !anodizer_core::tool_detect::on_path("cross") {
             warnings.push(
                 "cross is not installed (needed for cross-compilation via cross)".to_string(),
             );
@@ -779,7 +779,7 @@ fn check_docker_tooling(config: &Config, warnings: &mut Vec<String>) {
     if !needs_docker {
         return;
     }
-    if !tool_available("docker") {
+    if !anodizer_core::tool_detect::on_path("docker") {
         warnings.push("docker is not installed but docker sections are configured".to_string());
         return;
     }
@@ -787,7 +787,7 @@ fn check_docker_tooling(config: &Config, warnings: &mut Vec<String>) {
     //   Ok(true)  → buildx subcommand exists.
     //   Ok(false) → docker present but buildx subcommand missing.
     //   Err(_)    → spawn failed (typically: docker disappeared between
-    //               the find_binary check above and now, e.g. PATH race).
+    //               the on_path check above and now, e.g. PATH race).
     //               Collapse Err to "buildx unavailable" and trace-log the
     //               io::Error so verbose runs can see the underlying cause.
     let buildx_ok = match anodizer_core::docker_detect::buildx_available() {
@@ -808,16 +808,16 @@ fn check_github_token(config: &Config, warnings: &mut Vec<String>) {
     // Route through the canonical resolver so an empty `GITHUB_TOKEN=""`
     // (set-but-blank) is correctly reported as "no token", same as unset.
     if needs_release && anodizer_core::git::resolve_github_token(None).is_none() {
-        warnings.push(
-            "no GitHub token found but release sections are configured; set GITHUB_TOKEN or ANODIZER_GITHUB_TOKEN"
-                .to_string(),
-        );
+        warnings.push(format!(
+            "no GitHub token found but release sections are configured; set {}",
+            anodizer_core::git::github_token_env_hint()
+        ));
     }
 }
 
 fn check_nfpm_tool(config: &Config, warnings: &mut Vec<String>) {
     let needs_nfpm = config.crates.iter().any(|c| c.nfpms.is_some());
-    if needs_nfpm && !tool_available("nfpm") {
+    if needs_nfpm && !anodizer_core::tool_detect::on_path("nfpm") {
         warnings.push("nfpm is not installed but nfpm sections are configured".to_string());
     }
 }
@@ -826,7 +826,7 @@ fn check_signing_tools(config: &Config, warnings: &mut Vec<String>) {
     if !config.signs.is_empty() {
         for sign_cfg in &config.signs {
             let sign_cmd = sign_cfg.cmd.as_deref().unwrap_or("gpg");
-            if !tool_available(sign_cmd) {
+            if !anodizer_core::tool_detect::on_path(sign_cmd) {
                 warnings.push(format!(
                     "'{}' is not installed but signs section is configured",
                     sign_cmd
@@ -837,7 +837,7 @@ fn check_signing_tools(config: &Config, warnings: &mut Vec<String>) {
     if let Some(docker_signs) = &config.docker_signs {
         for ds in docker_signs {
             let cmd = ds.cmd.as_deref().unwrap_or("cosign");
-            if !tool_available(cmd) {
+            if !anodizer_core::tool_detect::on_path(cmd) {
                 warnings.push(format!(
                     "'{}' is not installed but docker_signs section is configured",
                     cmd
@@ -947,10 +947,6 @@ fn validate_tag_template(tag_template: &str, context: &str, errors: &mut Vec<Str
             context, tag_template
         ));
     }
-}
-
-fn tool_available(name: &str) -> bool {
-    anodizer_core::util::find_binary(name)
 }
 
 // ---------------------------------------------------------------------------

@@ -7,7 +7,7 @@ use anodizer_core::artifact::{Artifact, ArtifactKind};
 use anodizer_core::config::UniversalBinaryConfig;
 use anodizer_core::context::Context;
 use anodizer_core::hooks::{HookRunContext, run_hooks};
-use anodizer_core::util::find_binary;
+use anodizer_core::tool_detect::on_path;
 
 // ---------------------------------------------------------------------------
 // build_universal_binary — run `lipo` to combine arm64 + x86_64 macOS binaries
@@ -226,7 +226,7 @@ pub(crate) fn build_universal_binary(
     } else {
         // Check lipo is available — this is an error since the user
         // explicitly configured universal_binaries.
-        if !find_binary("lipo") {
+        if !on_path("lipo") {
             anyhow::bail!(
                 "lipo not found but universal_binaries is configured for {crate_name}; \
                  install Xcode command-line tools or ensure lipo is on PATH"

@@ -56,16 +56,18 @@ impl WixVersion {
     /// `wixl` (Linux-native msitools). Falls back to V4 if none is found.
     pub fn detect_from_tools() -> Self {
         // Check for V4 first (preferred)
-        if anodizer_core::util::find_binary("wix") {
+        if anodizer_core::tool_detect::on_path("wix") {
             return WixVersion::V4;
         }
         // Check for V3 toolchain
-        if anodizer_core::util::find_binary("candle") && anodizer_core::util::find_binary("light") {
+        if anodizer_core::tool_detect::on_path("candle")
+            && anodizer_core::tool_detect::on_path("light")
+        {
             return WixVersion::V3;
         }
         // Linux-native fallback: WiX is Windows-only, so a Linux box with only
         // msitools' `wixl` builds MSIs through it.
-        if anodizer_core::util::find_binary("wixl") {
+        if anodizer_core::tool_detect::on_path("wixl") {
             return WixVersion::Wixl;
         }
         // Default to V4
@@ -264,9 +266,9 @@ pub fn resolve_wix_version_quiet(
     // Never downgrade V4 — its wxs is incompatible with wixl's v3 dialect, so a
     // missing v4 toolchain must surface as a real build error, not silent reroute.
     if candidate == WixVersion::V3
-        && !(anodizer_core::util::find_binary("candle")
-            && anodizer_core::util::find_binary("light"))
-        && anodizer_core::util::find_binary("wixl")
+        && !(anodizer_core::tool_detect::on_path("candle")
+            && anodizer_core::tool_detect::on_path("light"))
+        && anodizer_core::tool_detect::on_path("wixl")
     {
         return WixVersion::Wixl;
     }

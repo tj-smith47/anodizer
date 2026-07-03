@@ -163,7 +163,8 @@ pub async fn fetch_published_asset_names(
     let token = ctx.options.token.clone().ok_or_else(|| {
         anyhow::anyhow!(
             "verify-release: no GitHub token available to fetch the published \
-             release's assets (set GITHUB_TOKEN or ANODIZER_GITHUB_TOKEN, or pass --token)"
+             release's assets ({})",
+            anodizer_core::git::github_token_hint()
         )
     })?;
 

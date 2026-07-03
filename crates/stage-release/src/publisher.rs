@@ -367,8 +367,8 @@ fn github_release_preflight(ctx: &Context) -> anodizer_core::PreflightCheck {
     let Some(token) = token else {
         let (owner, repo) = &targets[0];
         return PreflightCheck::Blocker(format!(
-            "no GitHub token resolved (set ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN, or pass --token); \
-             cannot create the release in {owner}/{repo}"
+            "no GitHub token resolved ({}); cannot create the release in {owner}/{repo}",
+            anodizer_core::git::github_token_hint()
         ));
     };
     let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;

@@ -99,53 +99,6 @@ pub fn topological_sort(items: &[(impl AsRef<str>, impl AsRef<[String]>)]) -> Ve
 }
 
 // ---------------------------------------------------------------------------
-// find_binary
-// ---------------------------------------------------------------------------
-
-/// Check whether a binary can be found on the system.
-///
-/// For absolute or relative paths (containing `/`), checks if the file exists.
-/// For bare names, searches each directory in the `PATH` environment variable
-/// for an executable with the given name. This is a pure-Rust implementation
-/// that avoids shelling out to `which` or `command -v`, making it portable
-/// across all platforms.
-pub fn find_binary(name: &str) -> bool {
-    if name.contains('/') || name.contains('\\') {
-        return Path::new(name).exists();
-    }
-
-    // On Windows, PATHEXT lists extensions to try (e.g., .COM;.EXE;.BAT;.CMD).
-    // When the caller asks for "upx", we also check for "upx.exe", etc.
-    let extensions: Vec<String> = if cfg!(windows) {
-        std::env::var("PATHEXT")
-            .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
-            .split(';')
-            .filter(|e| !e.is_empty())
-            .map(|e| e.to_string())
-            .collect()
-    } else {
-        Vec::new()
-    };
-
-    if let Ok(path_var) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&path_var) {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                return true;
-            }
-            for ext in &extensions {
-                let with_ext = dir.join(format!("{}{}", name, ext));
-                if with_ext.is_file() {
-                    return true;
-                }
-            }
-        }
-    }
-
-    false
-}
-
-// ---------------------------------------------------------------------------
 // apply_mod_timestamp
 // ---------------------------------------------------------------------------
 
@@ -525,47 +478,6 @@ mod tests {
         let items: Vec<(String, Vec<String>)> = vec![];
         let sorted = topological_sort(&items);
         assert!(sorted.is_empty());
-    }
-
-    // -----------------------------------------------------------------------
-    // find_binary tests
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_find_binary_absolute_path_exists() {
-        if cfg!(windows) {
-            // cmd.exe exists on all Windows systems
-            assert!(find_binary("C:\\Windows\\System32\\cmd.exe"));
-        } else {
-            // /usr/bin/env exists on virtually all Unix systems
-            assert!(find_binary("/usr/bin/env"));
-        }
-    }
-
-    #[test]
-    fn test_find_binary_absolute_path_does_not_exist() {
-        if cfg!(windows) {
-            assert!(!find_binary("C:\\nonexistent\\binary\\path.exe"));
-        } else {
-            assert!(!find_binary("/nonexistent/binary/path"));
-        }
-    }
-
-    #[test]
-    fn test_find_binary_bare_name_on_path() {
-        if cfg!(windows) {
-            // "cmd.exe" should be findable on PATH on any Windows system
-            // (find_binary does exact name match, no implicit .exe appending)
-            assert!(find_binary("cmd.exe"));
-        } else {
-            // "env" should be findable on PATH on any Unix system
-            assert!(find_binary("env"));
-        }
-    }
-
-    #[test]
-    fn test_find_binary_bare_name_not_on_path() {
-        assert!(!find_binary("nonexistent-binary-xyz-12345"));
     }
 
     // -----------------------------------------------------------------------

@@ -770,7 +770,7 @@ fn snap_is_byte_reproducible_across_time() {
     // SOURCE_DATE_EPOCH for the squashfs superblock mod_time and per-inode
     // mtimes — the value the determinism harness exports into every stage's
     // subprocess env — so two builds with a wall-clock gap are byte-identical.
-    if !anodizer_core::util::find_binary("snapcraft") {
+    if !anodizer_core::tool_detect::on_path("snapcraft") {
         eprintln!("snapcraft absent; .snap reproducibility test skipped hermetically");
         return;
     }

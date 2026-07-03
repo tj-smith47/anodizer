@@ -102,9 +102,24 @@ fn sync_fork(
     }
 }
 
-/// Check whether the `gh` CLI is available in PATH.
-fn gh_is_available() -> bool {
-    anodizer_core::tool_detect::tool_available("gh").unwrap_or(false)
+/// Check whether the `gh` CLI is available (spawn probe). A probe FAILURE
+/// (permission denied, exec-format — presence unknown) is surfaced as a
+/// WARN before falling back to the token/API transport, never silently
+/// collapsed into "gh absent": a quiet reroute would hide a broken gh from
+/// the operator while changing which transport (and which capabilities,
+/// e.g. force-push PR updates) the publish uses.
+fn gh_is_available(log: &StageLogger) -> bool {
+    match anodizer_core::tool_detect::runs("gh") {
+        anodizer_core::tool_detect::ToolProbe::Available => true,
+        anodizer_core::tool_detect::ToolProbe::Unavailable => false,
+        anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
+            log.warn(&format!(
+                "could not probe gh availability ({e}); falling back to the \
+                 token/API transport"
+            ));
+            false
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -572,7 +587,7 @@ pub(crate) fn maybe_submit_pr_with_env<E: EnvSource + ?Sized>(
     };
 
     // PR creation: try gh CLI first, fall back to GitHub API.
-    match classify_pr_transport(gh_is_available(), token.is_some()) {
+    match classify_pr_transport(gh_is_available(log), token.is_some()) {
         PrTransport::GhCli => create_pr_via_gh_cli(repo_path, &upstream_slug, &spec, label, log),
         PrTransport::Api => {
             let tok = token
@@ -716,7 +731,7 @@ pub(crate) fn submit_pr_via_gh_with_opts_with_env<E: EnvSource + ?Sized>(
         update_existing_pr: opts.update_existing_pr,
     };
 
-    match classify_pr_transport(gh_is_available(), token.is_some()) {
+    match classify_pr_transport(gh_is_available(log), token.is_some()) {
         PrTransport::GhCli => create_pr_via_gh_cli(repo_path, upstream_repo, &spec, label, log),
         PrTransport::Api => {
             let tok = token
@@ -801,12 +816,13 @@ mod tests {
     /// gh on PATH wins regardless of whether a token is also present —
     /// gh can force-push to update an existing PR's branch, the API
     /// transport cannot.
-    /// The probe delegates to `core::tool_detect::tool_available("gh")`; the
-    /// outcome depends on whether gh is on PATH, so only assert it returns a
-    /// bool without panicking.
+    /// The probe delegates to `core::tool_detect::runs("gh")`; the outcome
+    /// depends on whether gh is on PATH, so only assert it returns a bool
+    /// without panicking.
     #[test]
     fn gh_is_available_returns_a_bool_without_panicking() {
-        let _: bool = gh_is_available();
+        let log = StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
+        let _: bool = gh_is_available(&log);
     }
 
     #[test]

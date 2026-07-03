@@ -344,10 +344,11 @@ fn map_auto_probe(plugin_name: &str, in_index: Option<bool>) -> Result<KrewFlow>
              (the contents-API probe failed — likely a rate-limit or network \
              error). Refusing to guess: an existing plugin wrongly routed to a \
              fork PR is rejected by krew maintainers. Retry the release, ensure \
-             a GitHub token is available (ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN) \
+             a GitHub token is available ({}) \
              to raise the API rate limit, or set the krew `mode` field \
              explicitly to `bot` or `pr-direct`.",
-            plugin_name
+            plugin_name,
+            anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.join(" / ")
         ),
     }
 }
@@ -3922,9 +3923,10 @@ impl anodizer_core::Publisher for KrewPublisher {
             let Some(token) = resolve_token(t) else {
                 log.warn(&format!(
                     "skipped rollback for {} — no krew token resolvable (env var ${} / \
-                     ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN all unset)",
+                     {} all unset)",
                     t.target,
                     t.token_env_var.as_deref().unwrap_or("KREW_INDEX_TOKEN"),
+                    anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.join(" / "),
                 ));
                 continue;
             };

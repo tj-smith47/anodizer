@@ -997,7 +997,7 @@ impl Stage for PkgStage {
                     let builder = if dry_run {
                         PkgBuilder::Pkgbuild
                     } else {
-                        resolve_pkg_builder(anodizer_core::util::find_binary)
+                        resolve_pkg_builder(anodizer_core::tool_detect::on_path)
                             .map_err(anyhow::Error::msg)?
                     };
 
@@ -1553,7 +1553,9 @@ mod tests {
 
     #[test]
     fn test_normalize_odc_cpio_zeroes_dev_ino_and_is_idempotent() {
-        if !anodizer_core::util::find_binary("cpio") || !anodizer_core::util::find_binary("sh") {
+        if !anodizer_core::tool_detect::on_path("cpio")
+            || !anodizer_core::tool_detect::on_path("sh")
+        {
             eprintln!("cpio absent; test skipped hermetically");
             return;
         }
@@ -1604,8 +1606,8 @@ mod tests {
         let have_tools = cfg!(target_os = "linux")
             && LINUX_PKG_TOOLS
                 .iter()
-                .all(|t| anodizer_core::util::find_binary(t))
-            && anodizer_core::util::find_binary("sh");
+                .all(|t| anodizer_core::tool_detect::on_path(t))
+            && anodizer_core::tool_detect::on_path("sh");
         if !have_tools {
             eprintln!("Linux pkg toolchain absent; test skipped hermetically");
             return;
@@ -1654,7 +1656,7 @@ mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn native_pkgbuild_pkg_is_byte_reproducible_across_time() {
-        if !anodizer_core::util::find_binary("pkgbuild") {
+        if !anodizer_core::tool_detect::on_path("pkgbuild") {
             eprintln!("pkgbuild unavailable; test skipped hermetically");
             return;
         }
@@ -1706,8 +1708,8 @@ mod tests {
         let have_tools = cfg!(target_os = "linux")
             && LINUX_PKG_TOOLS
                 .iter()
-                .all(|t| anodizer_core::util::find_binary(t))
-            && anodizer_core::util::find_binary("sh");
+                .all(|t| anodizer_core::tool_detect::on_path(t))
+            && anodizer_core::tool_detect::on_path("sh");
         if !have_tools {
             eprintln!("Linux pkg toolchain absent; test skipped hermetically");
             return;
@@ -2492,11 +2494,11 @@ crates:
 
         let result = PkgStage.run(&mut ctx);
 
-        let pkgbuild = anodizer_core::util::find_binary("pkgbuild");
+        let pkgbuild = anodizer_core::tool_detect::on_path("pkgbuild");
         let linux_toolchain = LINUX_PKG_TOOLS
             .iter()
-            .all(|t| anodizer_core::util::find_binary(t))
-            && anodizer_core::util::find_binary("sh");
+            .all(|t| anodizer_core::tool_detect::on_path(t))
+            && anodizer_core::tool_detect::on_path("sh");
 
         if pkgbuild {
             // pkgbuild may succeed or fail at exec; either is past the copy step.

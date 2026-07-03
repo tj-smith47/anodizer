@@ -820,11 +820,16 @@ pub fn setup_env(
         if needs_token {
             let hint = match ctx.token_type {
                 anodizer_core::scm::ScmTokenType::GitLab => {
-                    "no GitLab token found. Set GITLAB_TOKEN."
+                    "no GitLab token found. Set GITLAB_TOKEN.".to_string()
                 }
-                anodizer_core::scm::ScmTokenType::Gitea => "no Gitea token found. Set GITEA_TOKEN.",
+                anodizer_core::scm::ScmTokenType::Gitea => {
+                    "no Gitea token found. Set GITEA_TOKEN.".to_string()
+                }
                 anodizer_core::scm::ScmTokenType::GitHub => {
-                    "no GitHub token found. Set GITHUB_TOKEN or ANODIZER_GITHUB_TOKEN."
+                    format!(
+                        "no GitHub token found. Set {}.",
+                        anodizer_core::git::github_token_env_hint()
+                    )
                 }
             };
             anyhow::bail!("{}", hint);

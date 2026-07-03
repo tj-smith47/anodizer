@@ -215,12 +215,12 @@ fn any_flatpak_enabled(
 
 /// Confirm both `flatpak-builder` and `flatpak` are on PATH; bail otherwise.
 fn require_flatpak_tools() -> Result<()> {
-    if !anodizer_core::util::find_binary("flatpak-builder") {
+    if !anodizer_core::tool_detect::on_path("flatpak-builder") {
         anyhow::bail!(
             "flatpak-builder not found on PATH; install Flatpak to create Flatpak bundles"
         );
     }
-    if !anodizer_core::util::find_binary("flatpak") {
+    if !anodizer_core::tool_detect::on_path("flatpak") {
         anyhow::bail!("flatpak not found on PATH; install Flatpak to create Flatpak bundles");
     }
     Ok(())
@@ -2605,7 +2605,7 @@ finish_args:
         use anodizer_core::context::{Context, ContextOptions};
 
         // Skip if the tools are actually installed
-        if anodizer_core::util::find_binary("flatpak-builder") {
+        if anodizer_core::tool_detect::on_path("flatpak-builder") {
             return;
         }
 

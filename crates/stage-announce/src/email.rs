@@ -282,9 +282,9 @@ pub fn send_sendmail(
     let message = build_rfc2822_message(params)?;
 
     // Try sendmail first, then msmtp
-    let (program, args) = if anodizer_core::util::find_binary("sendmail") {
+    let (program, args) = if anodizer_core::tool_detect::on_path("sendmail") {
         ("sendmail", vec!["-t"])
-    } else if anodizer_core::util::find_binary("msmtp") {
+    } else if anodizer_core::tool_detect::on_path("msmtp") {
         ("msmtp", vec!["-t"])
     } else {
         anyhow::bail!(

@@ -6506,7 +6506,7 @@ fn test_rpm_and_archlinux_only_empty_maintainer_succeeds() {
 #[cfg(test)]
 fn build_nfpm_twice(format: &str, ext: &str) -> Option<(Vec<u8>, Vec<u8>)> {
     use std::process::Command;
-    if !anodizer_core::util::find_binary("nfpm") {
+    if !anodizer_core::tool_detect::on_path("nfpm") {
         eprintln!("nfpm absent; {format} reproducibility test skipped hermetically");
         return None;
     }
@@ -6585,7 +6585,7 @@ fn rpm_is_byte_reproducible_across_time() {
 #[cfg(test)]
 fn provision_ephemeral_gpg_key() -> Option<(TempDir, std::path::PathBuf, String)> {
     use std::process::Command;
-    if !anodizer_core::util::find_binary("gpg") {
+    if !anodizer_core::tool_detect::on_path("gpg") {
         eprintln!("gpg absent; signed-body reproducibility test skipped hermetically");
         return None;
     }
@@ -6675,7 +6675,7 @@ fn build_signed_nfpm_twice(
     make_signature_block: impl Fn(&std::path::Path) -> String,
 ) -> Option<(Vec<u8>, Vec<u8>)> {
     use std::process::Command;
-    if !anodizer_core::util::find_binary("nfpm") {
+    if !anodizer_core::tool_detect::on_path("nfpm") {
         eprintln!("nfpm absent; signed {format} reproducibility test skipped hermetically");
         return None;
     }
@@ -6762,7 +6762,7 @@ fn signed_deb_body_is_byte_reproducible_across_time() {
         a, b,
         "a GPG-signed .deb must differ across builds (proving signing ran)"
     );
-    if !anodizer_core::util::find_binary("ar") {
+    if !anodizer_core::tool_detect::on_path("ar") {
         eprintln!("ar absent; deb body comparison skipped hermetically");
         return;
     }
@@ -6876,11 +6876,11 @@ fn signed_apk_is_byte_reproducible_across_time() {
     use std::process::Command;
     // Both tools are required to actually sign + build; skip-with-pass when
     // either is absent so the suite stays hermetic on a bare host.
-    if !anodizer_core::util::find_binary("openssl") {
+    if !anodizer_core::tool_detect::on_path("openssl") {
         eprintln!("openssl absent; signed apk reproducibility test skipped hermetically");
         return;
     }
-    if !anodizer_core::util::find_binary("nfpm") {
+    if !anodizer_core::tool_detect::on_path("nfpm") {
         eprintln!("nfpm absent; signed apk reproducibility test skipped hermetically");
         return;
     }
@@ -6967,7 +6967,7 @@ fn signed_apk_is_byte_reproducible_across_time() {
     // by confirming the apk carries a `.SIGN.RSA...` signature member (an apk is
     // a gzipped tar; GNU `tar tzf` lists the concatenated gzip members). Skip
     // this sub-check when `tar` is absent, matching the hermetic skip idiom above.
-    if !anodizer_core::util::find_binary("tar") {
+    if !anodizer_core::tool_detect::on_path("tar") {
         eprintln!("tar absent; apk signature-member check skipped hermetically");
         return;
     }
@@ -7009,11 +7009,11 @@ fn signed_apk_repro_despite_varying_script_disk_mtime() {
     use std::process::Command;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    if !anodizer_core::util::find_binary("openssl") {
+    if !anodizer_core::tool_detect::on_path("openssl") {
         eprintln!("openssl absent; apk script-mtime repro test skipped hermetically");
         return;
     }
-    if !anodizer_core::util::find_binary("nfpm") {
+    if !anodizer_core::tool_detect::on_path("nfpm") {
         eprintln!("nfpm absent; apk script-mtime repro test skipped hermetically");
         return;
     }

@@ -3467,13 +3467,13 @@ fn publish_cask_name_override_does_not_mask_crate_in_errors() {
 /// being on `PATH`; prints a visible skip marker and returns when absent so a
 /// machine without ruby reports SKIP rather than a false PASS.
 fn assert_ruby_syntax_ok(label: &str, source: &str) {
-    match anodizer_core::tool_detect::tool_available("ruby") {
-        Ok(true) => {}
-        Ok(false) => {
+    match anodizer_core::tool_detect::runs("ruby") {
+        anodizer_core::tool_detect::ToolProbe::Available => {}
+        anodizer_core::tool_detect::ToolProbe::Unavailable => {
             eprintln!("SKIP {label}: ruby not on PATH; cannot run `ruby -c`");
             return;
         }
-        Err(e) => {
+        anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
             eprintln!("SKIP {label}: ruby probe failed ({e}); cannot run `ruby -c`");
             return;
         }
@@ -3749,13 +3749,13 @@ fn uninstall_zap_debug_format_stays_valid_ruby() {
 /// prove the escaping is load-bearing: the un-escaped equivalent must be
 /// rejected by the same validator that accepts the escaped form.
 fn assert_ruby_syntax_err(label: &str, source: &str) {
-    match anodizer_core::tool_detect::tool_available("ruby") {
-        Ok(true) => {}
-        Ok(false) => {
+    match anodizer_core::tool_detect::runs("ruby") {
+        anodizer_core::tool_detect::ToolProbe::Available => {}
+        anodizer_core::tool_detect::ToolProbe::Unavailable => {
             eprintln!("SKIP {label}: ruby not on PATH; cannot run `ruby -c`");
             return;
         }
-        Err(e) => {
+        anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
             eprintln!("SKIP {label}: ruby probe failed ({e}); cannot run `ruby -c`");
             return;
         }

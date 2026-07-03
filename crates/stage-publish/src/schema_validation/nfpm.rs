@@ -227,39 +227,32 @@ fn validate_built_packages(
         let expected = expected_control(&cfg.yaml, &cfg.format)?;
 
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        // Clean absence skips quietly (nfpm is reversible; the config schema
+        // floor still stands), but a GENUINE probe I/O failure warns — the
+        // error is never swallowed into a silent skip.
         match ext {
-            // `tool_available` reports a binary missing from PATH as
-            // `Err(NotFound)`, not `Ok(false)` — so fold `NotFound` in with the
-            // clean "not on PATH" skip (`Ok(false)` = installed but the version
-            // probe exited non-zero). Only a GENUINE probe I/O failure warns;
-            // nfpm is reversible so the end state is skip either way, but the
-            // error is never swallowed into a silent false.
-            "deb" => match anodizer_core::tool_detect::tool_available("dpkg-deb") {
-                Ok(true) => findings.extend(check_deb_control(path, &expected)?),
-                Ok(false) => log.verbose(
+            "deb" => match anodizer_core::tool_detect::runs("dpkg-deb") {
+                anodizer_core::tool_detect::ToolProbe::Available => {
+                    findings.extend(check_deb_control(path, &expected)?)
+                }
+                anodizer_core::tool_detect::ToolProbe::Unavailable => log.verbose(
                     "dpkg-deb not on PATH — relying on the nfpm config schema floor \
                      for .deb validation",
                 ),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => log.verbose(
-                    "dpkg-deb not on PATH — relying on the nfpm config schema floor \
-                     for .deb validation",
-                ),
-                Err(e) => log.warn(&format!(
+                anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => log.warn(&format!(
                     "could not probe dpkg-deb availability ({e}); relying on the nfpm \
                      config schema floor for .deb validation"
                 )),
             },
-            "rpm" => match anodizer_core::tool_detect::tool_available("rpm") {
-                Ok(true) => findings.extend(check_rpm_control(path, &expected)?),
-                Ok(false) => log.verbose(
+            "rpm" => match anodizer_core::tool_detect::runs("rpm") {
+                anodizer_core::tool_detect::ToolProbe::Available => {
+                    findings.extend(check_rpm_control(path, &expected)?)
+                }
+                anodizer_core::tool_detect::ToolProbe::Unavailable => log.verbose(
                     "rpm not on PATH — relying on the nfpm config schema floor \
                      for .rpm validation",
                 ),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => log.verbose(
-                    "rpm not on PATH — relying on the nfpm config schema floor \
-                     for .rpm validation",
-                ),
-                Err(e) => log.warn(&format!(
+                anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => log.warn(&format!(
                     "could not probe rpm availability ({e}); relying on the nfpm \
                      config schema floor for .rpm validation"
                 )),
@@ -559,10 +552,12 @@ mod tests {
     /// ERROR is surfaced through `reason` (never silently collapsed into a bare
     /// "absent"), so a skipped test records why the tool was unusable.
     fn test_tool_probe(tool: &str) -> (bool, String) {
-        match anodizer_core::tool_detect::tool_available(tool) {
-            Ok(true) => (true, format!("{tool}=present")),
-            Ok(false) => (false, format!("{tool}=absent")),
-            Err(e) => (false, format!("{tool}=probe-error({e})")),
+        match anodizer_core::tool_detect::runs(tool) {
+            anodizer_core::tool_detect::ToolProbe::Available => (true, format!("{tool}=present")),
+            anodizer_core::tool_detect::ToolProbe::Unavailable => (false, format!("{tool}=absent")),
+            anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
+                (false, format!("{tool}=probe-error({e})"))
+            }
         }
     }
 

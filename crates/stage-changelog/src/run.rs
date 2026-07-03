@@ -301,9 +301,9 @@ fn handle_github_native_changelog(
 ) -> Result<()> {
     if ctx.options.token.is_none() && !ctx.is_dry_run() && !ctx.is_snapshot() {
         bail!(
-            "changelog: use=github-native requires a GitHub token (set \
-             GITHUB_TOKEN or ANODIZER_GITHUB_TOKEN, or pass --token); \
-             GitHub auto-release-notes is an authenticated API"
+            "changelog: use=github-native requires a GitHub token ({}); \
+             GitHub auto-release-notes is an authenticated API",
+            anodizer_core::git::github_token_hint()
         );
     }
     let has_repo = ctx.config.crates.iter().any(|c| {

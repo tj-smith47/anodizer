@@ -372,7 +372,7 @@ pub fn evaluate_against_environment(
             .cloned()
             .or_else(|| ctx.env_var(name))
     };
-    let tool = |name: &str| -> bool { anodizer_core::util::find_binary(name) };
+    let tool = |name: &str| -> bool { anodizer_core::tool_detect::on_path(name) };
     let endpoint = |url: &str| -> std::result::Result<(), String> {
         let target = if url.contains("://") {
             url.to_string()

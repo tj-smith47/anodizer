@@ -81,21 +81,18 @@ pub fn verify_cosign_key_loads(key_ref: &str) -> CosignKeyLoad {
 /// on a successful load, and [`CosignKeyLoad::Failed`] with cosign's stderr when
 /// the key fails to load.
 pub fn verify_cosign_key_loads_with_env(key_ref: &str, env: &dyn EnvSource) -> CosignKeyLoad {
-    match anodizer_core::tool_detect::tool_available("cosign") {
-        Ok(true) => {}
-        // Definitively absent: the version probe ran but exited non-zero, or
-        // (the common case) cosign is not on PATH so the probe could not spawn
-        // it (`NotFound`). Either way the load can't be attempted; sign time
+    match anodizer_core::tool_detect::runs("cosign") {
+        anodizer_core::tool_detect::ToolProbe::Available => {}
+        // Definitively absent: the load can't be attempted; sign time
         // re-validates on a runner that carries cosign.
-        Ok(false) => return CosignKeyLoad::CosignUnavailable,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+        anodizer_core::tool_detect::ToolProbe::Unavailable => {
             return CosignKeyLoad::CosignUnavailable;
         }
-        // A non-NotFound spawn failure (e.g. permission denied) means presence
-        // is UNKNOWN, not "absent": surface the I/O error so the caller's WARN
-        // names it rather than masquerading a broken probe as a clean skip of
-        // this security-relevant precheck.
-        Err(e) => {
+        // Probe failure (e.g. permission denied) means presence is UNKNOWN,
+        // not "absent": surface the I/O error so the caller's WARN names it
+        // rather than masquerading a broken probe as a clean skip of this
+        // security-relevant precheck.
+        anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
             return CosignKeyLoad::CosignProbeFailed(format!(
                 "could not probe cosign availability: {e}"
             ));
@@ -154,10 +151,11 @@ mod tests {
     /// surfaced through `reason` (never silently collapsed into a bare
     /// "absent"), so a skipped test records why cosign was unusable.
     fn cosign_present() -> (bool, String) {
-        match anodizer_core::tool_detect::tool_available("cosign") {
-            Ok(true) => (true, "cosign=present".to_string()),
-            Ok(false) => (false, "cosign=absent".to_string()),
-            Err(e) => (false, format!("cosign=probe-error({e})")),
+        use anodizer_core::tool_detect::ToolProbe;
+        match anodizer_core::tool_detect::runs("cosign") {
+            ToolProbe::Available => (true, "cosign=present".to_string()),
+            ToolProbe::Unavailable => (false, "cosign=absent".to_string()),
+            ToolProbe::ProbeFailed(e) => (false, format!("cosign=probe-error({e})")),
         }
     }
 

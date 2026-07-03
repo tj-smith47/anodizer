@@ -325,7 +325,7 @@ impl Stage for NsisStage {
                     }
 
                     // Check that makensis is available once per config (not per binary)
-                    if !dry_run && !anodizer_core::util::find_binary("makensis") {
+                    if !dry_run && !anodizer_core::tool_detect::on_path("makensis") {
                         anyhow::bail!(
                             "makensis not found on PATH; install NSIS to create Windows installers"
                         );
@@ -808,7 +808,7 @@ mod tests {
     /// makensis is absent.
     #[test]
     fn nsis_setup_is_byte_reproducible_across_time() {
-        if !anodizer_core::util::find_binary("makensis") {
+        if !anodizer_core::tool_detect::on_path("makensis") {
             eprintln!("makensis unavailable; test skipped hermetically");
             return;
         }

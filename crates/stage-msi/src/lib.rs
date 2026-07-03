@@ -2608,7 +2608,7 @@ crates:
             .parent()
             .map(|p| p.to_string_lossy().into_owned())
             .unwrap_or_default();
-        if anodizer_core::util::find_binary("wix") {
+        if anodizer_core::tool_detect::on_path("wix") {
             return Some(msi_command(
                 WixVersion::V4,
                 wxs_path,
@@ -2620,7 +2620,7 @@ crates:
         }
         let mut cmds = msi_command(WixVersion::V3, wxs_path, out_path, &int_dir, &[], "x64");
         let resolve_v3 = |bare: &str| -> Option<String> {
-            if anodizer_core::util::find_binary(bare) {
+            if anodizer_core::tool_detect::on_path(bare) {
                 return Some(bare.to_string());
             }
             // The hosted windows image installs WiX v3.14 but leaves its bin dir
@@ -2875,11 +2875,11 @@ crates:
         }];
         let ctx = Context::new(config, ContextOptions::default());
 
-        let has_v3 =
-            anodizer_core::util::find_binary("candle") && anodizer_core::util::find_binary("light");
+        let has_v3 = anodizer_core::tool_detect::on_path("candle")
+            && anodizer_core::tool_detect::on_path("light");
         let expected = if has_v3 {
             vec!["candle".to_string(), "light".to_string()]
-        } else if anodizer_core::util::find_binary("wixl") {
+        } else if anodizer_core::tool_detect::on_path("wixl") {
             vec!["wixl".to_string()]
         } else {
             // Neither candle+light nor wixl installed: V3 stays V3 (the build
@@ -2948,11 +2948,11 @@ crates:
         // Both active configs resolve to the same host-aware v3 tool set, so
         // the requirement appears once regardless of which it is; the skipped
         // config contributes nothing.
-        let has_v3 =
-            anodizer_core::util::find_binary("candle") && anodizer_core::util::find_binary("light");
+        let has_v3 = anodizer_core::tool_detect::on_path("candle")
+            && anodizer_core::tool_detect::on_path("light");
         let expected = if has_v3 {
             vec!["candle".to_string(), "light".to_string()]
-        } else if anodizer_core::util::find_binary("wixl") {
+        } else if anodizer_core::tool_detect::on_path("wixl") {
             vec!["wixl".to_string()]
         } else {
             vec!["candle".to_string(), "light".to_string()]

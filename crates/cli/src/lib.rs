@@ -8,6 +8,16 @@ use std::path::PathBuf;
 const PUBLISHERS_HELP_STEM: &str = "Comma-separated publishers to run (default: all configured). \
      --skip always wins over --publishers.";
 
+/// Shared `--token` help used by every token-taking subcommand, rendered
+/// from the canonical env ladder so the documented override order can never
+/// drift from the order the resolver actually applies.
+static TOKEN_HELP: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        "GitHub token (overrides {} env vars)",
+        anodizer_core::git::GITHUB_TOKEN_ENV_LADDER.join(" / ")
+    )
+});
+
 #[derive(Parser)]
 #[command(name = "anodizer", version, about = "Release Rust projects with ease")]
 pub struct Cli {
@@ -74,7 +84,7 @@ pub enum Commands {
         publishers: Vec<String>,
         #[arg(
             long,
-            help = "GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars)"
+            help = TOKEN_HELP.as_str()
         )]
         token: Option<String>,
         #[arg(
@@ -579,7 +589,7 @@ pub enum Commands {
         publishers: Vec<String>,
         #[arg(
             long,
-            help = "GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars)"
+            help = TOKEN_HELP.as_str()
         )]
         token: Option<String>,
     },
@@ -600,7 +610,7 @@ pub enum Commands {
         dry_run: bool,
         #[arg(
             long,
-            help = "GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars)"
+            help = TOKEN_HELP.as_str()
         )]
         token: Option<String>,
         #[arg(long, help = "Custom dist directory (overrides config)")]
@@ -714,7 +724,7 @@ pub enum Commands {
         dist: Option<PathBuf>,
         #[arg(
             long,
-            help = "GitHub token (overrides ANODIZER_GITHUB_TOKEN / GITHUB_TOKEN env vars)"
+            help = TOKEN_HELP.as_str()
         )]
         token: Option<String>,
         #[arg(long, value_delimiter = ',', help = "Skip stages (comma-separated)")]

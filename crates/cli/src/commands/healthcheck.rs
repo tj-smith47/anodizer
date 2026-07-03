@@ -63,7 +63,7 @@ const TOOLS: &[ToolCheck] = &[
     },
 ];
 
-use anodizer_core::tool_detect::{tool_available, tool_version};
+use anodizer_core::tool_detect::{ToolProbe, runs, tool_version};
 
 pub fn run() -> Result<()> {
     let log = StageLogger::new("healthcheck", Verbosity::Normal);
@@ -73,53 +73,66 @@ pub fn run() -> Result<()> {
 
     let mut available_count = 0;
     let mut missing_count = 0;
+    let mut unprobeable_count = 0;
 
     for tool in TOOLS {
-        // tool_available returns Err only when the spawn itself fails (typically
-        // ENOENT — the binary is not on PATH). That is the same observable
-        // outcome as "tool missing" for this surface, so we collapse Err into
-        // the missing branch and log the underlying io::Error at trace level
-        // for verbose-mode debugging.
-        let available = match tool_available(tool.name) {
-            Ok(b) => b,
-            Err(e) => {
-                tracing::trace!(tool = tool.name, error = %e, "probe failed");
-                false
+        match runs(tool.name) {
+            ToolProbe::Available => {
+                let version = match tool_version(tool.name) {
+                    Ok(Some(v)) => v,
+                    Ok(None) => "unknown version".to_string(),
+                    Err(e) => {
+                        tracing::trace!(tool = tool.name, error = %e, "version probe failed");
+                        "unknown version".to_string()
+                    }
+                };
+                log.status(&format!(
+                    "{} {:<20} {} ({})",
+                    "\u{2713}".green().bold(),
+                    tool.name,
+                    tool.description.dimmed(),
+                    version.dimmed()
+                ));
+                available_count += 1;
             }
-        };
-        if available {
-            let version = match tool_version(tool.name) {
-                Ok(Some(v)) => v,
-                Ok(None) => "unknown version".to_string(),
-                Err(e) => {
-                    tracing::trace!(tool = tool.name, error = %e, "version probe failed");
-                    "unknown version".to_string()
-                }
-            };
-            log.status(&format!(
-                "{} {:<20} {} ({})",
-                "\u{2713}".green().bold(),
-                tool.name,
-                tool.description.dimmed(),
-                version.dimmed()
-            ));
-            available_count += 1;
-        } else {
-            log.status(&format!(
-                "{} {:<20} {}",
-                "\u{2717}".red().bold(),
-                tool.name,
-                tool.description.dimmed()
-            ));
-            missing_count += 1;
+            ToolProbe::Unavailable => {
+                log.status(&format!(
+                    "{} {:<20} {}",
+                    "\u{2717}".red().bold(),
+                    tool.name,
+                    tool.description.dimmed()
+                ));
+                missing_count += 1;
+            }
+            // A broken probe is NOT "missing": presence is unknown, and a
+            // health report claiming absence would send the operator to
+            // reinstall a tool that may be present. Render it as its own
+            // outcome and name the error.
+            ToolProbe::ProbeFailed(e) => {
+                log.status(&format!(
+                    "{} {:<20} {} (probe failed: {})",
+                    "?".yellow().bold(),
+                    tool.name,
+                    tool.description.dimmed(),
+                    e
+                ));
+                unprobeable_count += 1;
+            }
         }
     }
 
-    log.status(&format!(
+    let mut summary = format!(
         "{} available, {} missing",
         available_count.to_string().green().bold(),
         missing_count.to_string().yellow().bold()
-    ));
+    );
+    if unprobeable_count > 0 {
+        summary.push_str(&format!(
+            ", {} unprobeable",
+            unprobeable_count.to_string().red().bold()
+        ));
+    }
+    log.status(&summary);
 
     Ok(())
 }
@@ -129,22 +142,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_tool_available_cargo() {
+    fn test_runs_cargo() {
         // cargo should always be available in a Rust project
         assert!(
-            tool_available("cargo").expect("cargo should spawn"),
+            matches!(runs("cargo"), ToolProbe::Available),
             "cargo should be available"
         );
     }
 
     #[test]
-    fn test_tool_available_nonexistent() {
-        // Lifted: the missing-binary case now surfaces as Err(NotFound) instead
-        // of a silently swallowed bool — the regression-test signature is the
-        // whole point of the lift. Callers can collapse Err to "treat as
-        // missing" but the io::Error must reach them.
-        let res = tool_available("this-tool-does-not-exist-12345");
-        assert!(res.is_err(), "nonexistent tool must surface a spawn error");
+    fn test_runs_nonexistent_is_unavailable() {
+        // The NotFound-folds-into-Unavailable decision lives in
+        // `tool_detect::runs`; healthcheck renders it as missing.
+        assert!(matches!(
+            runs("this-tool-does-not-exist-12345"),
+            ToolProbe::Unavailable
+        ));
     }
 
     #[test]

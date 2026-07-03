@@ -1,6 +1,18 @@
-//! Generic external-tool detection — `<tool> --version` and
-//! `<tool> <args>` probes used by the CLI's `healthcheck` command *and*
-//! capability probes elsewhere in core (e.g.
+//! Generic external-tool detection. The one module answering both
+//! availability questions, each right for a different surface:
+//!
+//! - [`on_path`] — "is `<tool>` reachable on `PATH`?" A pure lookup with no
+//!   exec. The right question for **existence gating** (can a stage spawn
+//!   this binary): tools with no version flag (`hdiutil`) or that exit
+//!   non-zero on `--version` (`pkgbuild`, WiX `candle`/`light`) are present
+//!   and runnable yet fail a version probe, so gating on [`runs`] reports
+//!   them missing and hard-fails work that would have succeeded.
+//! - [`runs`] — "does `<tool> <version-flag>` actually run and exit zero?"
+//!   A spawn probe. The right question for **health reporting**
+//!   (`healthcheck`, validator availability): a broken stub on `PATH`
+//!   passes [`on_path`] but not [`runs`].
+//!
+//! Also hosts `<tool> <args>` capability probes (e.g.
 //! `signing::gpg_supports_faked_system_time`, which delegates to
 //! [`tool_runs_with_args`]).
 //!
@@ -11,7 +23,72 @@
 //! modules (signing, etc.) delegate here for the same reason.
 
 use std::io;
+use std::path::Path;
 use std::process::Command;
+
+/// Outcome of a spawn-probe availability check ([`runs`]).
+///
+/// The `NotFound`-folds-into-`Unavailable` decision is made exactly once,
+/// here — and a genuine probe failure is a distinct variant so no call site
+/// can silently masquerade a broken probe as clean tool absence.
+#[derive(Debug)]
+pub enum ToolProbe {
+    /// The probe ran and exited zero — the tool is available.
+    Available,
+    /// The tool is cleanly absent: not on `PATH` (spawn failed with
+    /// `NotFound`), or it ran but exited non-zero on its version flag
+    /// (stub binary / version-flag mismatch).
+    Unavailable,
+    /// The probe itself failed for a non-`NotFound` reason (permission
+    /// denied, exec-format error, …): presence is UNKNOWN, not "absent".
+    /// Callers must surface the error rather than collapse it to
+    /// [`ToolProbe::Unavailable`].
+    ProbeFailed(io::Error),
+}
+
+/// Check whether a binary is reachable on the system — a pure `PATH`
+/// lookup with no exec.
+///
+/// For absolute or relative paths (containing `/`), checks if the file
+/// exists. For bare names, searches each directory in the `PATH`
+/// environment variable for an executable with the given name. This is a
+/// pure-Rust implementation that avoids shelling out to `which` or
+/// `command -v`, making it portable across all platforms.
+pub fn on_path(name: &str) -> bool {
+    if name.contains('/') || name.contains('\\') {
+        return Path::new(name).exists();
+    }
+
+    // On Windows, PATHEXT lists extensions to try (e.g., .COM;.EXE;.BAT;.CMD).
+    // When the caller asks for "upx", we also check for "upx.exe", etc.
+    let extensions: Vec<String> = if cfg!(windows) {
+        std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string())
+            .split(';')
+            .filter(|e| !e.is_empty())
+            .map(|e| e.to_string())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    if let Ok(path_var) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&path_var) {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                return true;
+            }
+            for ext in &extensions {
+                let with_ext = dir.join(format!("{}{}", name, ext));
+                if with_ext.is_file() {
+                    return true;
+                }
+            }
+        }
+    }
+
+    false
+}
 
 /// The version flag `<name>` answers with a zero exit. `--version` for
 /// almost everything; OpenSSH's `ssh` rejects `--version` (exit 255,
@@ -26,24 +103,26 @@ fn version_flag(name: &str) -> &'static str {
 }
 
 /// Probe `<name> --version` (or the tool's own version flag, see
-/// [`version_flag`]) and report whether the tool ran successfully.
+/// [`version_flag`]) and report the tri-state outcome.
 ///
-/// `Ok(true)` — the probe ran and exited zero (tool available).
-/// `Ok(false)` — `<name>` ran but exited non-zero (installed but failing
-///   the version flag; rare, but possible for stub binaries or
-///   version-flag mismatches).
-/// `Err(_)` — `<name>` could not be spawned (typically `NotFound` —
-///   the binary is not on `PATH`). Distinct from `Ok(false)` so callers
-///   can log the underlying `io::Error` at trace level. stdout/stderr
-///   are silenced so a missing tool doesn't pollute the log.
-pub fn tool_available(name: &str) -> io::Result<bool> {
-    Command::new(name)
+/// A missing-on-`PATH` binary (spawn `NotFound`) is folded together with a
+/// ran-but-exited-non-zero probe into [`ToolProbe::Unavailable`] — the one
+/// place that fold happens. Any other spawn error is
+/// [`ToolProbe::ProbeFailed`] and must be surfaced by the caller.
+/// stdout/stderr are silenced so a missing tool doesn't pollute the log.
+pub fn runs(name: &str) -> ToolProbe {
+    match Command::new(name)
         .arg(version_flag(name))
         .current_dir(crate::path_util::probe_dir())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .map(|s| s.success())
+    {
+        Ok(status) if status.success() => ToolProbe::Available,
+        Ok(_) => ToolProbe::Unavailable,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => ToolProbe::Unavailable,
+        Err(e) => ToolProbe::ProbeFailed(e),
+    }
 }
 
 /// Run the tool's version probe (see [`version_flag`]) and return the
@@ -82,7 +161,7 @@ pub fn tool_version(name: &str) -> io::Result<Option<String>> {
 /// whether the local gpg supports deterministic-timestamp signing).
 /// stdout/stderr are silenced; `false` covers both "binary missing"
 /// and "exited non-zero" — callers that need to distinguish those two
-/// cases should use [`tool_available`] / [`tool_version`] instead.
+/// cases should use [`runs`] / [`tool_version`] instead.
 pub fn tool_runs_with_args(name: &str, args: &[&str]) -> bool {
     Command::new(name)
         .args(args)
@@ -124,5 +203,58 @@ mod tests {
     fn version_flag_maps_ssh_to_dash_v() {
         assert_eq!(version_flag("ssh"), "-V");
         assert_eq!(version_flag("git"), "--version");
+    }
+
+    #[test]
+    fn runs_reports_present_tool_available() {
+        assert!(matches!(runs("git"), ToolProbe::Available));
+    }
+
+    /// The missing-binary case is the CLEAN absence outcome: the
+    /// `NotFound`-folds-into-`Unavailable` decision lives in `runs`, not
+    /// at every call site.
+    #[test]
+    fn runs_folds_not_found_into_unavailable() {
+        assert!(matches!(
+            runs("this-tool-does-not-exist-12345"),
+            ToolProbe::Unavailable
+        ));
+    }
+
+    #[test]
+    fn on_path_absolute_path_exists() {
+        if cfg!(windows) {
+            // cmd.exe exists on all Windows systems
+            assert!(on_path("C:\\Windows\\System32\\cmd.exe"));
+        } else {
+            // /usr/bin/env exists on virtually all Unix systems
+            assert!(on_path("/usr/bin/env"));
+        }
+    }
+
+    #[test]
+    fn on_path_absolute_path_does_not_exist() {
+        if cfg!(windows) {
+            assert!(!on_path("C:\\nonexistent\\binary\\path.exe"));
+        } else {
+            assert!(!on_path("/nonexistent/binary/path"));
+        }
+    }
+
+    #[test]
+    fn on_path_bare_name_on_path() {
+        if cfg!(windows) {
+            // "cmd.exe" should be findable on PATH on any Windows system
+            // (on_path does exact name match, no implicit .exe appending)
+            assert!(on_path("cmd.exe"));
+        } else {
+            // "env" should be findable on PATH on any Unix system
+            assert!(on_path("env"));
+        }
+    }
+
+    #[test]
+    fn on_path_bare_name_not_on_path() {
+        assert!(!on_path("nonexistent-binary-xyz-12345"));
     }
 }

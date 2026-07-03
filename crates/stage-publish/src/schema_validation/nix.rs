@@ -1020,9 +1020,10 @@ stdenvNoCC.mkDerivation {
         let log = StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
         // A probe ERROR is not a definitive "absent": surface why so a skip
         // records the broken probe rather than masquerading it as a clean miss.
-        let available = match anodizer_core::tool_detect::tool_available("nix-instantiate") {
-            Ok(present) => present,
-            Err(e) => {
+        let available = match anodizer_core::tool_detect::runs("nix-instantiate") {
+            anodizer_core::tool_detect::ToolProbe::Available => true,
+            anodizer_core::tool_detect::ToolProbe::Unavailable => false,
+            anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
                 eprintln!(
                     "SKIP: nix-instantiate probe failed ({e}); structural floor carries the assertions"
                 );
@@ -1056,15 +1057,15 @@ stdenvNoCC.mkDerivation {
     #[test]
     fn nix_instantiate_layer_bites_on_malformed_input() {
         let log = StageLogger::new("publish", anodizer_core::log::Verbosity::Quiet);
-        match anodizer_core::tool_detect::tool_available("nix-instantiate") {
-            Ok(true) => {}
-            Ok(false) => {
+        match anodizer_core::tool_detect::runs("nix-instantiate") {
+            anodizer_core::tool_detect::ToolProbe::Available => {}
+            anodizer_core::tool_detect::ToolProbe::Unavailable => {
                 eprintln!(
                     "SKIP: nix-instantiate not on PATH; cannot exercise the parse-error bite path"
                 );
                 return;
             }
-            Err(e) => {
+            anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
                 eprintln!(
                     "SKIP: nix-instantiate probe failed ({e}); cannot exercise the parse-error bite path"
                 );

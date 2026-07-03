@@ -106,7 +106,8 @@ pub(crate) fn run_github_backend(
         Some(t) => t.clone(),
         None => {
             anyhow::bail!(
-                "release: no GitHub token available (set GITHUB_TOKEN or ANODIZER_GITHUB_TOKEN, or pass --token)"
+                "release: no GitHub token available ({})",
+                anodizer_core::git::github_token_hint()
             );
         }
     };

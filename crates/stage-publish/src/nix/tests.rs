@@ -1789,13 +1789,13 @@ fn representative_crate_emits_full_expected_meta_block() {
 /// no-op (skip) when it is not on PATH, per the task's "skip gracefully on a
 /// missing tool" requirement. A non-zero parse exit fails the test.
 fn assert_nix_parses_or_skip(expr: &str) {
-    match anodizer_core::tool_detect::tool_available("nix-instantiate") {
-        Ok(true) => {}
-        Ok(false) => {
+    match anodizer_core::tool_detect::runs("nix-instantiate") {
+        anodizer_core::tool_detect::ToolProbe::Available => {}
+        anodizer_core::tool_detect::ToolProbe::Unavailable => {
             eprintln!("nix-instantiate not on PATH — skipping nix syntax floor check");
             return;
         }
-        Err(e) => {
+        anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
             eprintln!("nix-instantiate probe failed ({e}) — skipping nix syntax floor check");
             return;
         }

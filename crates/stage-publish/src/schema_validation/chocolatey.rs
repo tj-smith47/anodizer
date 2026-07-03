@@ -970,15 +970,15 @@ mod tests {
         scope_version(&mut ctx, "1.0.0");
         let log = ctx.logger("publish");
 
-        match anodizer_core::tool_detect::tool_available("xmllint") {
-            Ok(true) => {}
-            Ok(false) => {
+        match anodizer_core::tool_detect::runs("xmllint") {
+            anodizer_core::tool_detect::ToolProbe::Available => {}
+            anodizer_core::tool_detect::ToolProbe::Unavailable => {
                 log.status(
                     "SKIP xmllint_accepts_every_option_nuspec: xmllint not on PATH (XSD layer unexercised)",
                 );
                 return;
             }
-            Err(e) => {
+            anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
                 log.status(&format!(
                     "SKIP xmllint_accepts_every_option_nuspec: xmllint probe failed ({e}) (XSD layer unexercised)"
                 ));
@@ -1005,15 +1005,15 @@ mod tests {
         let ctx = TestContextBuilder::new().snapshot(true).build();
         let log = ctx.logger("publish");
 
-        match anodizer_core::tool_detect::tool_available("xmllint") {
-            Ok(true) => {}
-            Ok(false) => {
+        match anodizer_core::tool_detect::runs("xmllint") {
+            anodizer_core::tool_detect::ToolProbe::Available => {}
+            anodizer_core::tool_detect::ToolProbe::Unavailable => {
                 log.status(
                     "SKIP xmllint_rejects_unknown_element: xmllint not on PATH (XSD layer unexercised)",
                 );
                 return;
             }
-            Err(e) => {
+            anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
                 log.status(&format!(
                     "SKIP xmllint_rejects_unknown_element: xmllint probe failed ({e}) (XSD layer unexercised)"
                 ));

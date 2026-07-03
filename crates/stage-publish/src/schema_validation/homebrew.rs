@@ -896,13 +896,13 @@ end
         add_macos_archive(&mut ctx, "widget", "1.0.0");
         let log = ctx.logger("publish");
 
-        match anodizer_core::tool_detect::tool_available("ruby") {
-            Ok(true) => {}
-            Ok(false) => {
+        match anodizer_core::tool_detect::runs("ruby") {
+            anodizer_core::tool_detect::ToolProbe::Available => {}
+            anodizer_core::tool_detect::ToolProbe::Unavailable => {
                 log.status("SKIP ruby_c_accepts_every_option_formula_and_cask: ruby not on PATH (syntax layer unexercised)");
                 return;
             }
-            Err(e) => {
+            anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
                 log.status(&format!("SKIP ruby_c_accepts_every_option_formula_and_cask: ruby probe failed ({e}) (syntax layer unexercised)"));
                 return;
             }
@@ -938,15 +938,15 @@ end
         let ctx = TestContextBuilder::new().snapshot(true).build();
         let log = ctx.logger("publish");
 
-        match anodizer_core::tool_detect::tool_available("ruby") {
-            Ok(true) => {}
-            Ok(false) => {
+        match anodizer_core::tool_detect::runs("ruby") {
+            anodizer_core::tool_detect::ToolProbe::Available => {}
+            anodizer_core::tool_detect::ToolProbe::Unavailable => {
                 log.status(
                     "SKIP ruby_c_rejects_broken_ruby: ruby not on PATH (syntax layer unexercised)",
                 );
                 return;
             }
-            Err(e) => {
+            anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
                 log.status(&format!(
                     "SKIP ruby_c_rejects_broken_ruby: ruby probe failed ({e}) (syntax layer unexercised)"
                 ));

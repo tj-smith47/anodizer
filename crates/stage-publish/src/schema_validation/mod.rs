@@ -205,24 +205,20 @@ where
     // A missing validator drops real schema coverage. For a moderation
     // one-way-door publisher (chocolatey) on the strict gate that gap is
     // unacceptable — a malformed artifact would clear this floor unchecked and
-    // surface only in the irreversible queue — so escalate it to a finding. A
-    // probe *error* takes the same path as a clean "not on PATH": never coerced
-    // into a silent "tool absent".
-    // `tool_available` reports a binary missing from PATH as `Err(NotFound)`,
-    // NOT `Ok(false)` — so the common "tool not installed" case is an `Err`.
-    // Fold `NotFound` in with `Ok(false)` (installed but the version probe exited
-    // non-zero) as a clean "validator unavailable" that uses the curated
-    // skip_message; reserve the louder "could not probe" warn for a GENUINE probe
-    // I/O failure (permissions, exec-format, …). In every unavailable case a
-    // moderation one-way-door publisher on the strict gate escalates to a finding.
-    let unavailable: Option<(String, bool)> = match anodizer_core::tool_detect::tool_available(tool)
-    {
-        Ok(true) => None,
-        Ok(false) => Some((format!("{tool} is not on PATH"), false)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+    // surface only in the irreversible queue — so escalate it to a finding.
+    // Clean absence uses the curated skip_message; a GENUINE probe I/O
+    // failure (permissions, exec-format, …) gets the louder "could not
+    // probe" warn instead of masquerading as tool absence. In every
+    // unavailable case a moderation one-way-door publisher on the strict
+    // gate escalates to a finding.
+    let unavailable: Option<(String, bool)> = match anodizer_core::tool_detect::runs(tool) {
+        anodizer_core::tool_detect::ToolProbe::Available => None,
+        anodizer_core::tool_detect::ToolProbe::Unavailable => {
             Some((format!("{tool} is not on PATH"), false))
         }
-        Err(e) => Some((format!("could not probe {tool} availability ({e})"), true)),
+        anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
+            Some((format!("could not probe {tool} availability ({e})"), true))
+        }
     };
     if let Some((detail, is_probe_failure)) = unavailable {
         if let Some(finding) = missing_required_tool_finding(cfg, strict, &detail) {
@@ -527,8 +523,9 @@ mod tests {
         );
     }
 
-    /// A tool name guaranteed absent on any host, so `tool_available` returns
-    /// `Err(NotFound)` and the missing-tool path is exercised deterministically.
+    /// A tool name guaranteed absent on any host, so `tool_detect::runs`
+    /// reports `Unavailable` and the missing-tool path is exercised
+    /// deterministically.
     const ABSENT_TOOL: &str = "anodizer-nonexistent-validator-xyz";
 
     fn quiet_log() -> StageLogger {

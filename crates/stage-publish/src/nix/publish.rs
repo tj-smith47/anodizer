@@ -932,25 +932,21 @@ fn run_formatter(nix_cfg: &NixConfig, nix_file: &Path, log: &StageLogger) -> Res
 
     // Detect-and-fail-loud (no runtime auto-install) — consistent with
     // cosign/syft being required-present. The CI base image
-    // (anodizer-action `install:`) provisions the formatter.
-    //
-    // `tool_available` reports a missing-on-PATH binary as `Err(NotFound)` (the
-    // probe could not spawn it), so a genuine probe error is ONLY a non-NotFound
-    // I/O failure (e.g. permission denied). Surface that real error rather than
-    // the misleading "not found on PATH" remedy; fold NotFound back into the
-    // not-on-PATH bail alongside `Ok(false)` (probe ran but exited non-zero).
-    let probe = anodizer_core::tool_detect::tool_available(formatter);
-    if let Err(e) = &probe {
-        if e.kind() != std::io::ErrorKind::NotFound {
+    // (anodizer-action `install:`) provisions the formatter. A genuine probe
+    // error (e.g. permission denied) surfaces as itself rather than the
+    // misleading "not found on PATH" remedy.
+    match anodizer_core::tool_detect::runs(formatter) {
+        anodizer_core::tool_detect::ToolProbe::Available => {}
+        anodizer_core::tool_detect::ToolProbe::Unavailable => {
+            anyhow::bail!(
+                "nix: formatter '{formatter}' not found on PATH — install it \
+                 (anodizer-action install: list / CI base image) so the generated \
+                 derivation is formatted before push"
+            );
+        }
+        anodizer_core::tool_detect::ToolProbe::ProbeFailed(e) => {
             anyhow::bail!("nix: could not probe formatter '{formatter}' availability ({e})");
         }
-    }
-    if !matches!(probe, Ok(true)) {
-        anyhow::bail!(
-            "nix: formatter '{formatter}' not found on PATH — install it \
-             (anodizer-action install: list / CI base image) so the generated \
-             derivation is formatted before push"
-        );
     }
 
     let nix_file_str = nix_file.to_string_lossy();
@@ -2538,7 +2534,7 @@ mod tests {
             let f = tmp.path().join("default.nix");
             std::fs::write(&f, "{}\n").unwrap();
             run_formatter(&cfg, &f, &quiet_log()).expect("formatter success is Ok");
-            // The version-flag probe (`tool_available`) and the format run
+            // The version-flag probe (`tool_detect::runs`) and the format run
             // each invoke the fake tool once.
             let calls = tools.calls("alejandra");
             assert_eq!(

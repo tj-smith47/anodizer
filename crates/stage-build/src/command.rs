@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anodizer_core::config::CrossStrategy;
-use anodizer_core::util::find_binary;
+use anodizer_core::tool_detect::on_path;
 
 // ---------------------------------------------------------------------------
 // BuildCommand — a description of the command to run
@@ -22,7 +22,7 @@ pub struct BuildCommand {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn detect_cross_strategy() -> CrossStrategy {
-    detect_cross_strategy_impl(zigbuild_available(), find_binary("cross"))
+    detect_cross_strategy_impl(zigbuild_available(), on_path("cross"))
 }
 
 /// True when a zigbuild invocation can actually run: `cargo-zigbuild` on
@@ -30,7 +30,7 @@ pub(crate) fn detect_cross_strategy() -> CrossStrategy {
 /// subcommand would select a strategy that fails at spawn time on hosts
 /// where zig itself is missing.
 pub(crate) fn zigbuild_available() -> bool {
-    find_binary("cargo-zigbuild") && zig_available()
+    on_path("cargo-zigbuild") && zig_available()
 }
 
 /// Whether the zig toolchain cargo-zigbuild shells out to is reachable.
@@ -43,7 +43,7 @@ pub(crate) fn zigbuild_available() -> bool {
 fn zig_available() -> bool {
     static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *AVAILABLE.get_or_init(|| {
-        if find_binary("zig") {
+        if on_path("zig") {
             return true;
         }
         ["python3", "python"].iter().any(|py| {
@@ -98,7 +98,7 @@ pub(crate) fn detect_cross_strategy_impl(
 /// (Linux → Windows, Linux → darwin, etc.).
 pub(crate) fn detect_cross_strategy_for_target(target: &str) -> CrossStrategy {
     let host = anodizer_core::partial::detect_host_target().unwrap_or_default();
-    detect_cross_strategy_for_target_impl(&host, target, zigbuild_available(), find_binary("cross"))
+    detect_cross_strategy_for_target_impl(&host, target, zigbuild_available(), on_path("cross"))
 }
 
 /// Decision core of [`detect_cross_strategy_for_target`], with the host
