@@ -71,7 +71,7 @@ pub fn run(opts: BumpOpts) -> Result<()> {
     // the plan builder, and the pin enforcement below. Loading per consumer
     // would re-emit the load-time legacy-alias warnings once per load in a
     // single invocation.
-    let bump_config = load_bump_config(&workspace_root, &opts)?;
+    let bump_config = load_bump_config(&workspace_root, &opts, &log)?;
     // Submitter moderation-queue advisories are verbose-only; emit them once
     // off this single load (hidden at the default log level).
     if let Some(ref cfg) = bump_config {
@@ -327,13 +327,15 @@ fn default_commit_message(rows: &[PlanRow]) -> String {
 /// static-config warning per load.
 ///
 /// `Ok(None)` when no config (and no Cargo.toml fallback) exists — every
-/// consumer degrades to its no-config behavior. An explicit `--config`
-/// pointing at a missing file, or a file that exists but fails to load, is
-/// a hard error: pin enforcement is a correctness gate and must not be
-/// silently skipped.
+/// consumer degrades to its no-config behavior. The Cargo.toml defaults
+/// fallback warns through `log` (the same signal release/tag emit for the
+/// same event). An explicit `--config` pointing at a missing file, or a
+/// file that exists but fails to load, is a hard error: pin enforcement is
+/// a correctness gate and must not be silently skipped.
 fn load_bump_config(
     workspace_root: &std::path::Path,
     opts: &BumpOpts,
+    log: &StageLogger,
 ) -> Result<Option<anodizer_core::config::Config>> {
     let cfg_path = match opts.config_override.as_deref() {
         Some(p) => {
@@ -343,7 +345,12 @@ fn load_bump_config(
             p.to_path_buf()
         }
         None => match crate::pipeline::find_config_in(workspace_root) {
-            Ok(p) => p,
+            Ok(p) => {
+                if p.file_name().and_then(|n| n.to_str()) == Some("Cargo.toml") {
+                    log.warn(crate::pipeline::CARGO_TOML_FALLBACK_WARNING);
+                }
+                p
+            }
             Err(_) => return Ok(None),
         },
     };
@@ -436,5 +443,17 @@ mod tests {
             err.to_string().contains("--changelog requires --commit"),
             "expected the changelog/commit guard to fire, got: {err}"
         );
+    }
+
+    /// `--config <missing file>` must bail loudly, never silently proceed
+    /// with defaults — the same guard every sibling command pins.
+    #[test]
+    #[serial_test::serial]
+    fn missing_config_bails() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut o = opts();
+        o.config_override = Some(tmp.path().join("nope.yaml"));
+        let err = run(o).unwrap_err().to_string();
+        assert!(err.contains("config file not found"), "{err}");
     }
 }

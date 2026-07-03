@@ -206,15 +206,15 @@ pub(crate) fn derive_github_target(
 }
 
 /// Read the first usable `crates[].release.github` (or
-/// `workspaces[].crates[].release.github`) target straight from
-/// `.anodizer.yaml`, for the config-less write path (`bump` / `tag`
-/// changelog sync) that never builds a full release `Context`. A lightweight
-/// raw read, mirroring `render::load_scope_inputs` — the engine crate cannot
-/// pull in the full CLI config loader.
+/// `workspaces[].crates[].release.github`) target straight from the
+/// discovered anodizer config (shared well-known-name candidate list), for
+/// the config-less write path (`bump` / `tag` changelog sync) that never
+/// builds a full release `Context`. A lightweight raw read, mirroring
+/// `render::load_scope_inputs` — the engine crate cannot pull in the full
+/// CLI config loader.
 pub(crate) fn configured_github_target(workspace_root: &Path) -> Option<(String, String)> {
-    let cfg_path = workspace_root.join(".anodizer.yaml");
-    let text = std::fs::read_to_string(&cfg_path).ok()?;
-    let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(&text).ok()?;
+    let cfg_path = anodizer_core::config::find_config_candidate_in(workspace_root)?;
+    let raw = anodizer_core::config::load_raw_config_value(&cfg_path).ok()?;
 
     let crate_target = |c: &serde_yaml_ng::Value| -> Option<(String, String)> {
         let gh = c.get("release")?.get("github")?;

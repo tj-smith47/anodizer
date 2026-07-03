@@ -125,14 +125,36 @@ pub fn runs(name: &str) -> ToolProbe {
     }
 }
 
-/// Run the tool's version probe (see [`version_flag`]) and return the
-/// first output line trimmed.
+/// How many leading output lines [`extract_version_line`] scans for a
+/// version-looking line. Bounded so a chatty tool cannot make the probe
+/// scan megabytes; comfortably clears cosign's ASCII banner (~10 lines
+/// before `GitVersion:`).
+const VERSION_SCAN_LINES: usize = 15;
+
+/// Pick the first version-looking line — non-empty and carrying at least
+/// one digit — from the leading [`VERSION_SCAN_LINES`] lines of `stdout`,
+/// falling back to `stderr` (ssh prints its version there). `None` when
+/// neither stream yields one, so callers omit the version instead of
+/// rendering banner art (cosign leads with a digit-free ASCII banner that
+/// a naive first-line grab would report as its version).
+fn extract_version_line(stdout: &str, stderr: &str) -> Option<String> {
+    let versionish = |text: &str| {
+        text.lines()
+            .take(VERSION_SCAN_LINES)
+            .map(str::trim)
+            .find(|line| !line.is_empty() && line.chars().any(|c| c.is_ascii_digit()))
+            .map(str::to_string)
+    };
+    versionish(stdout).or_else(|| versionish(stderr))
+}
+
+/// Run the tool's version probe (see [`version_flag`]) and return a
+/// version-looking output line.
 ///
-/// `Ok(Some(line))` — tool ran, exited zero, returns the first stdout
-///   line trimmed (first stderr line when stdout is empty — ssh prints
-///   its version to stderr).
-/// `Ok(None)` — tool ran but exited non-zero; no version string to
-///   report.
+/// `Ok(Some(line))` — tool ran, exited zero, and one of the leading
+///   output lines looks like a version (see [`extract_version_line`]).
+/// `Ok(None)` — tool ran but exited non-zero, or produced no
+///   version-looking line; no version string to report.
 /// `Err(_)` — tool could not be spawned. Distinct from `Ok(None)` so
 ///   callers can log why the probe itself failed at trace level rather
 ///   than collapsing every failure to "tool missing".
@@ -142,13 +164,10 @@ pub fn tool_version(name: &str) -> io::Result<Option<String>> {
         .current_dir(crate::path_util::probe_dir())
         .output()?;
     if output.status.success() {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let line = stdout.lines().next().unwrap_or("").trim().to_string();
-        if !line.is_empty() {
-            return Ok(Some(line));
-        }
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        Ok(Some(stderr.lines().next().unwrap_or("").trim().to_string()))
+        Ok(extract_version_line(
+            &String::from_utf8_lossy(&output.stdout),
+            &String::from_utf8_lossy(&output.stderr),
+        ))
     } else {
         Ok(None)
     }
@@ -244,8 +263,10 @@ mod tests {
     #[test]
     fn on_path_bare_name_on_path() {
         if cfg!(windows) {
-            // "cmd.exe" should be findable on PATH on any Windows system
-            // (on_path does exact name match, no implicit .exe appending)
+            // "cmd.exe" should be findable on PATH on any Windows system.
+            // The extension-qualified form matches directly; bare names are
+            // additionally probed with each PATHEXT extension appended, so
+            // plain "cmd" would resolve too.
             assert!(on_path("cmd.exe"));
         } else {
             // "env" should be findable on PATH on any Unix system
@@ -256,5 +277,51 @@ mod tests {
     #[test]
     fn on_path_bare_name_not_on_path() {
         assert!(!on_path("nonexistent-binary-xyz-12345"));
+    }
+
+    /// cosign leads its `version` output with a digit-free ASCII banner;
+    /// the extractor must skip past it to the first version-looking line
+    /// instead of reporting banner art as the version.
+    #[test]
+    fn extract_version_line_skips_cosign_banner() {
+        let stdout = [
+            "  ______   ______        _______. __    _______ .__   __.",
+            " /      | /  __  \\      /       ||  |  /  _____||  \\ |  |",
+            "|  ,----'|  |  |  |    |   (----`|  | |  |  __  |   \\|  |",
+            "|  `----.|  `--'  | .----)   |   |  | |  |__| | |  |\\   |",
+            " \\______| \\______/  |_______/    |__|  \\______| |__| \\__|",
+            "cosign: A tool for Container Signing, Verification and Storage in an OCI registry.",
+            "",
+            "GitVersion:    v2.2.4",
+            "GitCommit:     abc",
+        ]
+        .join("\n");
+        assert_eq!(
+            extract_version_line(&stdout, ""),
+            Some("GitVersion:    v2.2.4".to_string())
+        );
+    }
+
+    /// The common single-line case ("git version 2.43.0") is unchanged by
+    /// the banner-skipping scan.
+    #[test]
+    fn extract_version_line_takes_normal_first_line() {
+        assert_eq!(
+            extract_version_line("git version 2.43.0\n", ""),
+            Some("git version 2.43.0".to_string())
+        );
+        // ssh prints its version to stderr.
+        assert_eq!(
+            extract_version_line("", "OpenSSH_9.6p1, OpenSSL 3.0.13\n"),
+            Some("OpenSSH_9.6p1, OpenSSL 3.0.13".to_string())
+        );
+    }
+
+    /// No digit anywhere in the scanned window → no version to report;
+    /// callers omit the parenthetical rather than print garbage.
+    #[test]
+    fn extract_version_line_returns_none_without_digits() {
+        assert_eq!(extract_version_line("all prose, no version\n", ""), None);
+        assert_eq!(extract_version_line("", ""), None);
     }
 }

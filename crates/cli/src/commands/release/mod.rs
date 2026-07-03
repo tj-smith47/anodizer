@@ -903,11 +903,19 @@ pub(crate) fn resolve_tag_to_crates<'a>(
         .collect()
 }
 
+/// Stages snapshot mode auto-skips: every stage that performs an external
+/// upload with no snapshot-aware internal gate. Deliberately NARROWER than
+/// [`anodizer_core::stages::UPSTREAM_STAGES`]: the remaining upstream
+/// stages (`release`, `docker`, `docker-sign`, `verify-release`) gate their
+/// upstream side effects on snapshot mode internally (the release stage
+/// short-circuits, docker's push flag is disabled) and keep local work
+/// worth running in a snapshot. Pinned as a subset of `UPSTREAM_STAGES` by
+/// test so a future upstream stage must be classified here explicitly.
+const SNAPSHOT_AUTO_SKIP: &[&str] = &["publish", "snapcraft-publish", "blob", "announce"];
+
 /// Merge CLI / workspace / snapshot-implied skip stages into one list.
-/// Snapshot mode auto-skips every stage that performs an external upload
-/// (`publish`, `snapcraft-publish`, `blob`, `announce`); the release stage
-/// handles snapshot mode internally. Skipping `publish` implies skipping
-/// `announce`.
+/// Snapshot mode auto-skips [`SNAPSHOT_AUTO_SKIP`]. Skipping `publish`
+/// implies skipping `announce`.
 fn compute_skip_stages(
     mut skip_stages: Vec<String>,
     workspace_skip: &[String],
@@ -919,7 +927,7 @@ fn compute_skip_stages(
         }
     }
     if snapshot {
-        for stage in &["publish", "snapcraft-publish", "blob", "announce"] {
+        for stage in SNAPSHOT_AUTO_SKIP {
             if !skip_stages.iter().any(|s| s == stage) {
                 skip_stages.push(stage.to_string());
             }
@@ -3473,10 +3481,25 @@ mod tests {
     #[test]
     fn compute_skip_stages_snapshot_adds_upload_stages_and_announce() {
         let got = compute_skip_stages(vec![], &[], true);
-        for stage in ["publish", "snapcraft-publish", "blob", "announce"] {
+        for stage in SNAPSHOT_AUTO_SKIP {
             assert!(
                 got.contains(&stage.to_string()),
                 "snapshot must auto-skip {stage}, got: {got:?}"
+            );
+        }
+    }
+
+    /// The snapshot auto-skip set is a deliberate NARROWING of
+    /// `UPSTREAM_STAGES` (see the const's doc for why the remaining
+    /// upstream stages self-gate); it must never contain a stage the
+    /// upstream classification doesn't — that would mean an auto-skip
+    /// entry with no upstream classification backing it.
+    #[test]
+    fn snapshot_auto_skip_is_subset_of_upstream_stages() {
+        for stage in SNAPSHOT_AUTO_SKIP {
+            assert!(
+                anodizer_core::stages::UPSTREAM_STAGES.contains(stage),
+                "SNAPSHOT_AUTO_SKIP entry '{stage}' is not an UPSTREAM_STAGES member"
             );
         }
     }

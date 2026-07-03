@@ -127,7 +127,9 @@ pub(crate) fn with_published_crate_scope<T>(
 /// Hint forms:
 /// - HTTPS (homebrew / scoop / nix): pass `Some("HOMEBREW_TAP_TOKEN")` so
 ///   the hint reads `check $HOMEBREW_TAP_TOKEN is set in this shell or the
-///   configured ANODIZER_GITHUB_TOKEN fallback`.
+///   configured ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN fallback` (the
+///   fallback ladder is interpolated from
+///   [`anodizer_core::git::github_token_env_hint`], never hand-spelled).
 /// - SSH (AUR): pass `None` and the hint points at the `publish.aur.private_key`
 ///   resolution + `GIT_SSH_COMMAND` env var (AUR has no env-var token fallback).
 pub(crate) fn rollback_failure_warning_msg(
@@ -139,8 +141,9 @@ pub(crate) fn rollback_failure_warning_msg(
 ) -> String {
     let hint = match env_var_hint {
         Some(name) => format!(
-            "; check ${} is set in this shell or the configured ANODIZER_GITHUB_TOKEN fallback",
-            name
+            "; check ${} is set in this shell or the configured {} fallback",
+            name,
+            anodizer_core::git::github_token_env_hint()
         ),
         None => String::from(
             "; check publish.aur.private_key resolves to a usable key and \
@@ -444,7 +447,12 @@ mod tests {
         );
         assert!(msg.contains("auth denied"), "{msg}");
         assert!(msg.contains("$HOMEBREW_TAP_TOKEN"), "{msg}");
-        assert!(msg.contains("ANODIZER_GITHUB_TOKEN"), "{msg}");
+        // The fallback ladder names EVERY var the resolution chain reads,
+        // in precedence order (rendered from GITHUB_TOKEN_ENV_LADDER).
+        assert!(
+            msg.contains("ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN"),
+            "{msg}"
+        );
         assert!(msg.contains("manual cleanup"), "{msg}");
     }
 

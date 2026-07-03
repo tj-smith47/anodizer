@@ -78,20 +78,24 @@ pub fn run() -> Result<()> {
     for tool in TOOLS {
         match runs(tool.name) {
             ToolProbe::Available => {
+                // No version-looking output (or a failed re-probe) → omit
+                // the parenthetical entirely rather than render noise.
                 let version = match tool_version(tool.name) {
-                    Ok(Some(v)) => v,
-                    Ok(None) => "unknown version".to_string(),
+                    Ok(v) => v,
                     Err(e) => {
                         tracing::trace!(tool = tool.name, error = %e, "version probe failed");
-                        "unknown version".to_string()
+                        None
                     }
                 };
+                let parenthetical = version
+                    .map(|v| format!(" ({})", v.dimmed()))
+                    .unwrap_or_default();
                 log.status(&format!(
-                    "{} {:<20} {} ({})",
+                    "{} {:<20} {}{}",
                     "\u{2713}".green().bold(),
                     tool.name,
                     tool.description.dimmed(),
-                    version.dimmed()
+                    parenthetical
                 ));
                 available_count += 1;
             }

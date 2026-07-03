@@ -726,8 +726,8 @@ fn rollback_failure_msg(step: &str, tag: &str, owner: &str, repo: &str, err: &st
     format!(
         "github-release {step} delete failed for {tag} on {owner}/{repo}: {err}; \
          manual cleanup required at https://github.com/{owner}/{repo}/releases/tag/{tag}; \
-         check $GITHUB_TOKEN is set in this shell or the configured \
-         ANODIZER_GITHUB_TOKEN fallback"
+         check {} is set in this shell",
+        anodizer_core::git::github_token_env_hint()
     )
 }
 
@@ -863,6 +863,23 @@ mod publisher_tests {
             }),
             ..Default::default()
         }
+    }
+
+    /// The remediation hint must name the token ladder in real resolution
+    /// order (ANODIZER_GITHUB_TOKEN first), rendered from
+    /// GITHUB_TOKEN_ENV_LADDER — a hand-spelled hint reversed it.
+    #[test]
+    fn rollback_failure_msg_names_token_ladder_in_precedence_order() {
+        let msg = rollback_failure_msg("release", "v1.0.0", "acme", "widget", "boom");
+        assert!(
+            msg.contains("github-release release delete failed"),
+            "{msg}"
+        );
+        assert!(
+            msg.contains("ANODIZER_GITHUB_TOKEN or GITHUB_TOKEN"),
+            "{msg}"
+        );
+        assert!(msg.contains("manual cleanup required"), "{msg}");
     }
 
     #[test]

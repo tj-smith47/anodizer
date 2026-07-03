@@ -750,8 +750,10 @@ pub fn stage_and_commit_in(cwd: &Path, files: &[&str], message: &str) -> Result<
 ///
 /// `range` is the git revision range as a string (e.g. `"HEAD"`,
 /// `"v0.3.0..HEAD"`); the empty string is invalid (caller must pre-filter).
-/// Returns `Ok(Vec::new())` when git fails so callers treat
-/// "range doesn't exist yet" as a non-error.
+/// Returns `Ok(Vec::new())` when the range's base does not exist yet
+/// (unknown/bad revision, empty repo) — a legitimate "no commits" outcome.
+/// Any other git failure (e.g. an invalid pathspec) is an `Err`, never an
+/// empty success.
 pub fn log_subjects_for_range(
     workspace_root: &std::path::Path,
     range: &str,
@@ -773,8 +775,19 @@ pub fn log_subjects_for_range(
         .env("LC_ALL", "C")
         .output()?;
     if !out.status.success() {
-        // Range may not exist yet (no last_tag, path not in history).
-        return Ok(Vec::new());
+        // A range whose base doesn't exist yet (no prior tag, empty repo)
+        // is a legitimate "no commits" outcome. Any other fatal (e.g. an
+        // empty pathspec) must propagate — swallowing it made `bump`
+        // preview Skip on repos whose crate lives at the workspace root.
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let missing_range = stderr.contains("unknown revision")
+            || stderr.contains("bad revision")
+            || stderr.contains("does not have any commits yet");
+        if missing_range {
+            return Ok(Vec::new());
+        }
+        let raw = format!("git log {} failed: {}", range, stderr.trim());
+        bail!("{}", crate::redact::redact_process_env(&raw));
     }
     let text = String::from_utf8_lossy(&out.stdout);
     Ok(text
@@ -2557,6 +2570,21 @@ mod tests {
         // maps that to an empty Vec, not an error.
         let bodies = log_subjects_for_range(dir, "no-such-ref..HEAD", "a").unwrap();
         assert!(bodies.is_empty());
+    }
+
+    /// A pathspec fatal (empty pathspec) is a REAL failure, not an empty
+    /// history — collapsing it into `Ok(vec![])` made `bump` preview Skip
+    /// for root-level crates.
+    #[test]
+    fn log_subjects_for_range_propagates_pathspec_fatal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        init_bare_repo(dir);
+        commit_file(dir, "a", "0", "initial");
+        let err = log_subjects_for_range(dir, "HEAD", "")
+            .expect_err("empty pathspec must be an error, not empty success")
+            .to_string();
+        assert!(err.contains("git log HEAD failed"), "{err}");
     }
 
     // ---- add_path_in + commit_in ----

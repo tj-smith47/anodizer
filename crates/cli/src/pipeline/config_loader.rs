@@ -23,17 +23,20 @@ use super::monorepo::apply_monorepo_defaults;
 const MAX_INCLUDE_DEPTH: usize = 32;
 
 /// The well-known config file names auto-discovery probes, in precedence
-/// order. The single candidate list behind every discovery path
+/// order — re-exported from `anodizer_core::config` (the SSOT the changelog
+/// engine's raw readers also consume) so no command or stage can honor a
+/// different name set. The loader machinery around it
 /// ([`find_config_with_logger`] for cwd-relative lookup, [`find_config_in`]
-/// for an arbitrary base) so no command can honor a different name set.
-const CONFIG_CANDIDATES: &[&str] = &[
-    ".anodizer.yaml",
-    ".anodizer.yml",
-    ".anodizer.toml",
-    "anodizer.yaml",
-    "anodizer.yml",
-    "anodizer.toml",
-];
+/// for an arbitrary base, the include/validation passes in [`load_config`])
+/// stays CLI-side.
+pub use anodizer_core::config::CONFIG_CANDIDATES;
+
+/// The operator signal for the Cargo.toml defaults fallback, shared by every
+/// discovery surface that can fall back (release/tag/check via
+/// [`find_config_with_logger`], bump via [`find_config_in`]) so the same
+/// event always emits the same warn.
+pub(crate) const CARGO_TOML_FALLBACK_WARNING: &str =
+    "no anodizer config found; using defaults from Cargo.toml";
 
 /// Find config file. If `config_override` is provided, use that path directly;
 /// otherwise search the current directory for well-known config file names.
@@ -85,10 +88,9 @@ pub fn find_config_with_logger(
     }
     // Fallback: if Cargo.toml exists, use a default config instead of erroring.
     if Path::new("Cargo.toml").exists() {
-        let msg = "no anodizer config found; using defaults from Cargo.toml";
         match log {
-            Some(l) => l.warn(msg),
-            None => tracing::warn!("{}", msg),
+            Some(l) => l.warn(CARGO_TOML_FALLBACK_WARNING),
+            None => tracing::warn!("{}", CARGO_TOML_FALLBACK_WARNING),
         }
         return Ok(anchor_to_cwd(PathBuf::from("Cargo.toml")));
     }
@@ -110,11 +112,8 @@ pub fn find_config_with_logger(
 /// recognizes the fallback by filename). Best-effort callers (allow-list /
 /// hint derivation) can `.ok()` the result.
 pub fn find_config_in(base: &Path) -> Result<PathBuf> {
-    for name in CONFIG_CANDIDATES {
-        let path = base.join(name);
-        if path.exists() {
-            return Ok(path);
-        }
+    if let Some(path) = anodizer_core::config::find_config_candidate_in(base) {
+        return Ok(path);
     }
     let cargo_toml = base.join("Cargo.toml");
     if cargo_toml.exists() {
@@ -1935,6 +1934,21 @@ crates:
         // special-case.
         let cfg = load_repo_config(tmp.path()).expect("load_repo_config must succeed");
         assert!(cfg.project_name.is_empty());
+    }
+
+    #[test]
+    fn config_candidates_is_the_core_list_not_a_copy() {
+        // The CLI candidate list must be the exact same static as core's
+        // (a re-export, not a duplicated literal) — pointer identity, so a
+        // divergent copy cannot reappear.
+        assert!(std::ptr::eq(
+            CONFIG_CANDIDATES.as_ptr(),
+            anodizer_core::config::CONFIG_CANDIDATES.as_ptr()
+        ));
+        assert_eq!(
+            CONFIG_CANDIDATES.len(),
+            anodizer_core::config::CONFIG_CANDIDATES.len()
+        );
     }
 
     #[test]

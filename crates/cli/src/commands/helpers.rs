@@ -826,9 +826,11 @@ pub fn setup_env(
                     "no Gitea token found. Set GITEA_TOKEN.".to_string()
                 }
                 anodizer_core::scm::ScmTokenType::GitHub => {
+                    // The release surface accepts `--token`, so the hint is
+                    // the --token-inclusive ladder like its siblings.
                     format!(
-                        "no GitHub token found. Set {}.",
-                        anodizer_core::git::github_token_env_hint()
+                        "no GitHub token found: {}.",
+                        anodizer_core::git::github_token_hint()
                     )
                 }
             };

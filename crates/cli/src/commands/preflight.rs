@@ -102,36 +102,51 @@ impl PreflightScope {
     }
 }
 
-/// Collect every environment requirement the resolved config implies,
-/// honoring `--skip` stage selection and the pipeline scope. Per-crate
-/// workspace configs union across all publishable crates: the
-/// stage/publisher derivations walk the full crate universe, so one pass
-/// covers single-crate, lockstep, and per-crate modes alike.
-pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<SourcedRequirement> {
-    let mut out: Vec<SourcedRequirement> = Vec::new();
-    let mut add = |source: &str, reqs: Vec<anodizer_core::EnvRequirement>| {
-        out.extend(reqs.into_iter().map(|r| SourcedRequirement::new(source, r)));
-    };
-    // Computed once per collection pass: the reduced-scope stage membership
-    // derives from the pipeline builders (see `included_stage_set`).
-    let included = scope.included_stage_set();
-    let in_scope =
-        |stage: &str| -> bool { included.as_ref().is_none_or(|set| set.contains(stage)) };
-    let runs = |stage: &str| -> bool { in_scope(stage) && !ctx.should_skip(stage) };
-    // Stages that self-skip at runtime when a `--publishers` allowlist (or
-    // `--skip`) deselects them (docker/docker-sign/blob/snapcraft-publish/
-    // announce) must gate their preflight requirements on the SAME predicate
-    // the runtime uses, or an npm-only `--publishers npm` run is falsely
-    // blocked by cosign/minio/snapcraft tooling those stages will never reach.
-    // Mirrors the publish-loop's `publisher_deselected` lockstep below.
-    let runs_selected =
-        |stage: &str| -> bool { in_scope(stage) && !ctx.publisher_deselected(stage) };
-    // The build stage's preflight is split across two sites — the HARD `cargo`
-    // probe here and the ADVISORY cross-toolchain append after the `add`
-    // closure's last use (a borrow-checker constraint). Decide once so the two
-    // halves can never gate on divergent predicates.
-    let build_runs = runs("build");
+/// Which runtime skip predicate gates a stage's requirement collection.
+enum StageGate {
+    /// The `--skip` stage denylist (`ctx.should_skip`).
+    Skip,
+    /// Stages that self-skip at runtime when a `--publishers` allowlist (or
+    /// `--skip`) deselects them (docker/docker-sign/blob/snapcraft-publish/
+    /// announce) must gate their preflight requirements on the SAME predicate
+    /// the runtime uses (`ctx.publisher_deselected`), or an npm-only
+    /// `--publishers npm` run is falsely blocked by cosign/minio/snapcraft
+    /// tooling those stages will never reach. Mirrors the publish-loop's
+    /// `publisher_deselected` lockstep.
+    Selected,
+}
 
+/// A [`GatedStage`] requirement builder: the `(source, requirements)`
+/// pairs a stage contributes when its gate admits it.
+type SourcedStageRequirements = Vec<(String, Vec<anodizer_core::EnvRequirement>)>;
+
+/// One requirement-gated stage: its release-pipeline stage name, the runtime
+/// skip predicate its gate must mirror, and the builder producing its
+/// `(source, requirements)` pairs.
+struct GatedStage {
+    stage: &'static str,
+    gate: StageGate,
+    requirements: fn(&Context, PreflightScope) -> SourcedStageRequirements,
+}
+
+/// The common [`GATED_STAGES`] row shape: one `stage:<name>` source fed by
+/// the stage crate's requirement derivation.
+macro_rules! gated_stage {
+    ($name:literal, $gate:ident, $reqs:path) => {
+        GatedStage {
+            stage: $name,
+            gate: StageGate::$gate,
+            requirements: |ctx, _scope| vec![(concat!("stage:", $name).to_string(), $reqs(ctx))],
+        }
+    };
+}
+
+/// The SINGLE enumeration of every stage whose requirements preflight
+/// collects. [`collect_requirements`] iterates this table and the
+/// stage-name existence test pins every entry against the real release
+/// pipeline, so a new gated stage cannot be added to the collection loop
+/// without also being covered by the test (they are the same list).
+const GATED_STAGES: &[GatedStage] = &[
     // Build stage: the run path spawns the literal `cargo` from PATH, so
     // probe exactly that, then add the cross-compilation toolchain the build
     // resolves per target (cargo-zigbuild + zig, cross, or a system cross gcc)
@@ -140,37 +155,37 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
     // drops every `Tool` requirement (see `retains`), so these surface only in
     // the full requirement set `anodizer tools` reads — never in the pre-tag
     // secrets gate.
-    if build_runs {
-        // `cargo` is HARD-required: the build literally spawns it from PATH.
-        // The cross-compilation toolchain is ADVISORY and appended after the
-        // `add`-closure collection below (the build degrades gracefully without
-        // it, so a missing zig/cargo-zigbuild must warn, not block the gate).
-        add(
-            "stage:build",
-            vec![anodizer_core::EnvRequirement::Tool {
-                name: "cargo".to_string(),
-            }],
-        );
-    }
-
-    if runs("nfpm") {
-        add("stage:nfpm", anodizer_stage_nfpm::env_requirements(ctx));
-    }
-    if runs("srpm") {
-        add("stage:srpm", anodizer_stage_srpm::env_requirements(ctx));
-    }
-    if runs("snapcraft") {
-        add(
-            "stage:snapcraft",
-            anodizer_stage_snapcraft::build_env_requirements(ctx),
-        );
-    }
-    if runs_selected("snapcraft-publish") {
-        add(
-            "stage:snapcraft-publish",
-            anodizer_stage_snapcraft::publish_env_requirements(ctx),
-        );
-    }
+    //
+    // `cargo` is HARD-required here: the build literally spawns it from
+    // PATH. The cross-compilation toolchain is ADVISORY and appended after
+    // the table loop in `collect_requirements` (the build degrades
+    // gracefully without it, so a missing zig/cargo-zigbuild must warn, not
+    // block the gate); the advisory half reuses this row's gate decision so
+    // the two halves can never gate on divergent predicates.
+    GatedStage {
+        stage: "build",
+        gate: StageGate::Skip,
+        requirements: |_ctx, _scope| {
+            vec![(
+                "stage:build".to_string(),
+                vec![anodizer_core::EnvRequirement::Tool {
+                    name: "cargo".to_string(),
+                }],
+            )]
+        },
+    },
+    gated_stage!("nfpm", Skip, anodizer_stage_nfpm::env_requirements),
+    gated_stage!("srpm", Skip, anodizer_stage_srpm::env_requirements),
+    gated_stage!(
+        "snapcraft",
+        Skip,
+        anodizer_stage_snapcraft::build_env_requirements
+    ),
+    gated_stage!(
+        "snapcraft-publish",
+        Selected,
+        anodizer_stage_snapcraft::publish_env_requirements
+    ),
     // The release pipeline's sign stage drives both `signs:` and
     // `binary_signs:` (BinarySignStage is the `anodizer build` selection),
     // so both slices hang off the `sign` skip gate here. Each slice carries an
@@ -195,130 +210,103 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
     //   `--publish-only` selection. The full release job (`Full` scope, empty
     //   allowlist) still demands binary-signing material, so binaries that ship
     //   are still signed.
-    if runs("sign") {
-        if !anodizer_stage_sign::signs_fully_deselected(ctx) {
-            add(
-                "stage:sign",
-                anodizer_stage_sign::sign_env_requirements(ctx),
-            );
-        }
-        if scope != PreflightScope::PublishOnly {
-            add(
-                "stage:sign",
-                anodizer_stage_sign::binary_sign_env_requirements(ctx),
-            );
-        }
-    }
-    if runs_selected("docker-sign") {
-        add(
-            "stage:docker-sign",
-            anodizer_stage_sign::docker_sign_env_requirements(ctx),
-        );
-    }
-    if runs("sbom") {
-        add("stage:sbom", anodizer_stage_sbom::env_requirements(ctx));
-    }
-    if runs("makeself") {
-        add(
-            "stage:makeself",
-            anodizer_stage_makeself::env_requirements(ctx),
-        );
-    }
-    if runs("upx") {
-        add("stage:upx", anodizer_stage_upx::env_requirements(ctx));
-    }
-    if runs("appimage") {
-        add(
-            "stage:appimage",
-            anodizer_stage_appimage::env_requirements(ctx),
-        );
-    }
-    if runs_selected("docker") {
-        add("stage:docker", anodizer_stage_docker::env_requirements(ctx));
-    }
-    if runs_selected("blob") {
-        add("stage:blob", anodizer_stage_blob::env_requirements(ctx));
-    }
-    if runs("verify-release") {
-        add(
-            "stage:verify-release",
-            anodizer_stage_verify_release::env_requirements(ctx),
-        );
-    }
+    GatedStage {
+        stage: "sign",
+        gate: StageGate::Skip,
+        requirements: |ctx, scope| {
+            let mut pairs = Vec::new();
+            if !anodizer_stage_sign::signs_fully_deselected(ctx) {
+                pairs.push((
+                    "stage:sign".to_string(),
+                    anodizer_stage_sign::sign_env_requirements(ctx),
+                ));
+            }
+            if scope != PreflightScope::PublishOnly {
+                pairs.push((
+                    "stage:sign".to_string(),
+                    anodizer_stage_sign::binary_sign_env_requirements(ctx),
+                ));
+            }
+            pairs
+        },
+    },
+    gated_stage!(
+        "docker-sign",
+        Selected,
+        anodizer_stage_sign::docker_sign_env_requirements
+    ),
+    gated_stage!("sbom", Skip, anodizer_stage_sbom::env_requirements),
+    gated_stage!("makeself", Skip, anodizer_stage_makeself::env_requirements),
+    gated_stage!("upx", Skip, anodizer_stage_upx::env_requirements),
+    gated_stage!("appimage", Skip, anodizer_stage_appimage::env_requirements),
+    gated_stage!("docker", Selected, anodizer_stage_docker::env_requirements),
+    gated_stage!("blob", Selected, anodizer_stage_blob::env_requirements),
+    gated_stage!(
+        "verify-release",
+        Skip,
+        anodizer_stage_verify_release::env_requirements
+    ),
     // Per-platform bundler stages: each gates itself on the configured
     // build targets (a darwin-only matrix never demands makensis, a
     // --single-target host release never demands cross-platform tools).
-    if runs("msi") {
-        add("stage:msi", anodizer_stage_msi::env_requirements(ctx));
-    }
-    if runs("nsis") {
-        add("stage:nsis", anodizer_stage_nsis::env_requirements(ctx));
-    }
-    if runs("pkg") {
-        add("stage:pkg", anodizer_stage_pkg::env_requirements(ctx));
-    }
-    if runs("dmg") {
-        add("stage:dmg", anodizer_stage_dmg::env_requirements(ctx));
-    }
-    if runs("appbundle") {
-        add(
-            "stage:appbundle",
-            anodizer_stage_appbundle::env_requirements(ctx),
-        );
-    }
-    if runs("flatpak") {
-        add(
-            "stage:flatpak",
-            anodizer_stage_flatpak::env_requirements(ctx),
-        );
-    }
-    if runs("notarize") {
-        add(
-            "stage:notarize",
-            anodizer_stage_notarize::env_requirements(ctx),
-        );
-    }
-    if runs_selected("announce") {
-        add(
-            "stage:announce",
-            anodizer_stage_announce::env_requirements(ctx),
-        );
-    }
-
+    gated_stage!("msi", Skip, anodizer_stage_msi::env_requirements),
+    gated_stage!("nsis", Skip, anodizer_stage_nsis::env_requirements),
+    gated_stage!("pkg", Skip, anodizer_stage_pkg::env_requirements),
+    gated_stage!("dmg", Skip, anodizer_stage_dmg::env_requirements),
+    gated_stage!(
+        "appbundle",
+        Skip,
+        anodizer_stage_appbundle::env_requirements
+    ),
+    gated_stage!("flatpak", Skip, anodizer_stage_flatpak::env_requirements),
+    gated_stage!("notarize", Skip, anodizer_stage_notarize::env_requirements),
+    gated_stage!(
+        "announce",
+        Selected,
+        anodizer_stage_announce::env_requirements
+    ),
     // Release stage: GitHub release creation + asset upload authenticate
     // via the github-release publisher's ladder. The publisher is also in
-    // the registry below, but the release stage runs even when `publish`
-    // is skipped — declare it under its own gate (the evaluator dedups).
+    // the registry (the `publish` row below), but the release stage runs even
+    // when `publish` is skipped — declare it under its own gate (the
+    // evaluator dedups).
     //
     // github-release is a real publisher, so the release stage self-skips at
     // runtime when a `--publishers` allowlist deselects it (keyed on the
     // PUBLISHER name `github-release`, the same predicate `ReleaseStage::run`
-    // and the publish-loop below use) — gate the preflight demand on that too,
+    // and the publish-loop use) — gate the preflight demand on that too,
     // so an npm-only `--publishers npm` run is not asked for the GitHub token
     // ladder for a release it will never create. The `--skip` stage gate stays
-    // on the STAGE name `release` (`runs("release")`), since `--skip=release`
-    // is a stage-name denylist; the publisher-name gate is additive on top of
-    // it. An EMPTY allowlist deselects nothing, so the main release job
-    // (empty allowlist + `--skip=npm`) still demands the ladder.
-    let release_skipped = ctx
-        .config
-        .release
-        .as_ref()
-        .and_then(|r| r.skip.as_ref())
-        .is_some_and(|s| {
-            s.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
-                .unwrap_or(false)
-        });
-    if runs("release") && !ctx.publisher_deselected("github-release") && !release_skipped {
-        add(
-            "stage:release",
-            anodizer_core::Publisher::requirements(
-                &anodizer_stage_release::publisher::GithubReleasePublisher::new(),
-                ctx,
-            ),
-        );
-    }
-
+    // on the STAGE name `release` (this row's Skip gate), since
+    // `--skip=release` is a stage-name denylist; the publisher-name gate is
+    // additive on top of it. An EMPTY allowlist deselects nothing, so the
+    // main release job (empty allowlist + `--skip=npm`) still demands the
+    // ladder.
+    GatedStage {
+        stage: "release",
+        gate: StageGate::Skip,
+        requirements: |ctx, _scope| {
+            let release_skipped = ctx
+                .config
+                .release
+                .as_ref()
+                .and_then(|r| r.skip.as_ref())
+                .is_some_and(|s| {
+                    s.try_evaluates_to_true(|tmpl| ctx.render_template(tmpl))
+                        .unwrap_or(false)
+                });
+            if ctx.publisher_deselected("github-release") || release_skipped {
+                return Vec::new();
+            }
+            vec![(
+                "stage:release".to_string(),
+                anodizer_core::Publisher::requirements(
+                    &anodizer_stage_release::publisher::GithubReleasePublisher::new(),
+                    ctx,
+                ),
+            )]
+        },
+    },
     // The full registry, not `configured_publishers`: requirement derivation
     // must see publishers configured only on workspace crates, which the
     // registry's top-level-crate predicates cannot — each
@@ -328,14 +316,59 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
     // run that will never invoke them — `publisher_deselected` is the same
     // predicate the publish dispatch layer uses, keeping preflight and
     // dispatch in lockstep across every config mode.
-    if runs("publish") {
-        for publisher in anodizer_stage_publish::registry::all_publishers() {
-            if ctx.publisher_deselected(publisher.name()) {
-                continue;
-            }
-            add(
-                &format!("publish:{}", publisher.name()),
-                publisher.requirements(ctx),
+    GatedStage {
+        stage: "publish",
+        gate: StageGate::Skip,
+        requirements: |ctx, _scope| {
+            anodizer_stage_publish::registry::all_publishers()
+                .into_iter()
+                .filter(|publisher| !ctx.publisher_deselected(publisher.name()))
+                .map(|publisher| {
+                    (
+                        format!("publish:{}", publisher.name()),
+                        publisher.requirements(ctx),
+                    )
+                })
+                .collect()
+        },
+    },
+];
+
+/// Collect every environment requirement the resolved config implies,
+/// honoring `--skip` stage selection and the pipeline scope, by walking
+/// the [`GATED_STAGES`] table. Per-crate workspace configs union across
+/// all publishable crates: the stage/publisher derivations walk the full
+/// crate universe, so one pass covers single-crate, lockstep, and
+/// per-crate modes alike.
+pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<SourcedRequirement> {
+    let mut out: Vec<SourcedRequirement> = Vec::new();
+    // Computed once per collection pass: the reduced-scope stage membership
+    // derives from the pipeline builders (see `included_stage_set`).
+    let included = scope.included_stage_set();
+    let in_scope =
+        |stage: &str| -> bool { included.as_ref().is_none_or(|set| set.contains(stage)) };
+
+    // The build stage's preflight is split across two sites — the HARD
+    // `cargo` probe in its table row and the ADVISORY cross-toolchain append
+    // after the loop. The gate is decided ONCE, at the table row, so the two
+    // halves can never gate on divergent predicates.
+    let mut build_runs = false;
+    for gated in GATED_STAGES {
+        let stage_on = in_scope(gated.stage)
+            && match gated.gate {
+                StageGate::Skip => !ctx.should_skip(gated.stage),
+                StageGate::Selected => !ctx.publisher_deselected(gated.stage),
+            };
+        if gated.stage == "build" {
+            build_runs = stage_on;
+        }
+        if !stage_on {
+            continue;
+        }
+        for (source, reqs) in (gated.requirements)(ctx, scope) {
+            out.extend(
+                reqs.into_iter()
+                    .map(|r| SourcedRequirement::new(&source, r)),
             );
         }
     }
@@ -345,9 +378,9 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
     // absent (zigbuild → cargo → system gcc; see stage-build's
     // `detect_cross_strategy`), so a missing `zig`/`cargo-zigbuild` must WARN,
     // never block a release. `anodizer tools` still self-reports these as the
-    // recommended toolchain. Appended here — after the `add` closure's last use,
-    // so it can push to `out` directly — and BEFORE the scope `retain`, so
-    // SecretsOnly drops it from the pre-tag gate exactly like every other Tool.
+    // recommended toolchain. Appended after the table loop and BEFORE the
+    // scope `retain`, so SecretsOnly drops it from the pre-tag gate exactly
+    // like every other Tool.
     if build_runs {
         out.extend(
             anodizer_stage_build::cross_tool_requirements(ctx)
@@ -1710,40 +1743,28 @@ builds:
     /// Every stage name `collect_requirements` gates on must be a real stage
     /// registered in the full release pipeline — a typo'd or renamed stage
     /// name would silently drop that stage's requirements from every scope.
+    /// Iterates the PRODUCTION `GATED_STAGES` table (the same list the
+    /// collection loop walks), so a stage added to one is covered by the
+    /// other by construction.
     #[test]
     fn requirement_gated_stage_names_exist_in_release_pipeline() {
-        const GATED_STAGES: &[&str] = &[
-            "build",
-            "nfpm",
-            "srpm",
-            "snapcraft",
-            "snapcraft-publish",
-            "sign",
-            "docker-sign",
-            "sbom",
-            "makeself",
-            "upx",
-            "appimage",
-            "docker",
-            "blob",
-            "verify-release",
-            "msi",
-            "nsis",
-            "pkg",
-            "dmg",
-            "appbundle",
-            "flatpak",
-            "notarize",
-            "announce",
-            "release",
-            "publish",
-        ];
         let release = crate::pipeline::build_release_pipeline();
         let names = release.stage_names();
-        for stage in GATED_STAGES {
+        for gated in GATED_STAGES {
             assert!(
-                names.contains(stage),
-                "collect_requirements gates on '{stage}' but the release pipeline has no such stage: {names:?}"
+                names.contains(&gated.stage),
+                "collect_requirements gates on '{}' but the release pipeline has no such stage: {names:?}",
+                gated.stage
+            );
+        }
+        // The table must stay one row per stage name (aside from sources a
+        // row emits itself) — a duplicate row would double-collect.
+        let mut seen = std::collections::BTreeSet::new();
+        for gated in GATED_STAGES {
+            assert!(
+                seen.insert(gated.stage),
+                "duplicate GATED_STAGES row for '{}'",
+                gated.stage
             );
         }
     }

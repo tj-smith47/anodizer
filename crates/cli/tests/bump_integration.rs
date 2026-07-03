@@ -551,6 +551,66 @@ fn infer_picks_per_crate_level_from_commits() {
     assert_eq!(by_name["cli"]["next"], "0.1.1");
 }
 
+/// A crate living AT the workspace root strips to an empty relative path;
+/// git rejects an empty pathspec, and the swallowed failure made
+/// `bump --dry-run` preview Skip ("no commits touching this crate") on
+/// every single-crate-at-root repo.
+#[test]
+fn infer_previews_minor_for_root_level_crate() {
+    let tmp = TempDir::new().unwrap();
+    single_crate_workspace(tmp.path());
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+    git_commit_empty_on_path(
+        tmp.path(),
+        "feature.rs",
+        "pub fn f() {}",
+        "feat: add feature",
+    );
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["bump", "--dry-run", "--output", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "root-crate infer dry-run failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let row = &v.as_array().unwrap()[0];
+    assert_eq!(row["crate"], "demo");
+    assert_eq!(row["level"], "minor", "feat commit must preview minor: {v}");
+    assert_eq!(row["next"], "0.2.0");
+}
+
+/// bump's discovery falls back to Cargo.toml defaults like release/tag do —
+/// and must emit the SAME operator warn for that event (it was silent).
+#[test]
+fn bump_warns_on_cargo_toml_defaults_fallback() {
+    let tmp = TempDir::new().unwrap();
+    single_crate_workspace(tmp.path());
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["bump", "patch", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "bump dry-run failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("no anodizer config found; using defaults from Cargo.toml"),
+        "missing Cargo.toml-fallback warn on stderr: {stderr}"
+    );
+}
+
 #[test]
 fn multi_crate_without_selection_errors() {
     let tmp = TempDir::new().unwrap();

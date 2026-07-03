@@ -18,6 +18,17 @@ static TOKEN_HELP: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
     )
 });
 
+/// `--prepare` help, rendered from `UPSTREAM_STAGES` so the documented skip
+/// set can never drift from the set the flag actually skips.
+static PREPARE_HELP: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    format!(
+        "Run local build + archive + sign + checksum + sbom stages but skip every \
+         upstream-reaching stage ({}) — GoReleaser Pro parity. Artifacts stay in dist/ \
+         for inspection. `--prepare-only` is accepted as an alias for GR-imported scripts.",
+        anodizer_core::stages::UPSTREAM_STAGES.join(", ")
+    )
+});
+
 #[derive(Parser)]
 #[command(name = "anodizer", version, about = "Release Rust projects with ease")]
 pub struct Cli {
@@ -276,7 +287,7 @@ pub enum Commands {
             long,
             alias = "prepare-only",
             conflicts_with_all = ["publish_only", "announce_only", "rollback_only"],
-            help = "Run local build + archive + sign + checksum + sbom stages but skip every upstream-reaching stage: release, docker build/push + signature push, blob, publish, snapcraft upload, announce, post-publish verification (GoReleaser Pro parity). Artifacts stay in dist/ for inspection. `--prepare-only` is accepted as an alias for GR-imported scripts."
+            help = PREPARE_HELP.as_str()
         )]
         prepare: bool,
         #[arg(

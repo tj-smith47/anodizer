@@ -13,7 +13,7 @@ Anodizer's release pipeline is one ordered list of stages. Most operators run it
 |---|---|---|---|
 | `anodizer release` | all | none | normal release |
 | `anodizer release --snapshot` | local stages | blob, publish, snapcraft-publish, announce | local dry-run (no upstream side effects) |
-| `anodizer release --prepare` (alias `--prepare-only`) | build, archive, nfpm, sbom, checksum, sign | release, blob, publish, snapcraft-publish, announce | split-merge flow: prepare artifacts locally before manual review |
+| `anodizer release --prepare` (alias `--prepare-only`) | build, archive, nfpm, sbom, checksum, sign | release, docker, docker-sign, blob, publish, snapcraft-publish, announce, verify-release | split-merge flow: prepare artifacts locally before manual review |
 | `anodizer release --publish-only` | sign, release, blob, publish, snapcraft-publish, announce | build, archive, nfpm, sbom, checksum | resume from prepared `dist/` after manual review or after the Determinism Harness preserved `dist/` |
 | `anodizer release --announce-only` | announce, after-hooks | every other stage | re-fire announcers after a transient announce failure (Slack 502, Discord 5xx) |
 | `anodizer publish` | release, blob, publish, snapcraft-publish | every other stage | publish-only subcommand; overlaps with `release --publish-only` (see below) |

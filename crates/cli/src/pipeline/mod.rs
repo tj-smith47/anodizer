@@ -28,6 +28,7 @@ pub use builders::{
     build_announce_pipeline, build_merge_pipeline, build_publish_pipeline, build_release_pipeline,
     build_split_pipeline,
 };
+pub(crate) use config_loader::CARGO_TOML_FALLBACK_WARNING;
 pub use config_loader::{
     emit_config_advisories, emit_config_advisories_filtered, find_config, find_config_in,
     find_config_with_logger, load_config, load_config_logged, load_repo_config,

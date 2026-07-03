@@ -570,23 +570,23 @@ pub struct ChangelogUpdate {
     pub insertion_mode: InsertionMode,
 }
 
-/// Load the `changelog:` block from `<workspace_root>/.anodizer.yaml`.
+/// Load the `changelog:` block from the workspace's anodizer config,
+/// discovered via the shared well-known-name candidate list
+/// ([`anodizer_core::config::find_config_candidate_in`] — the same set
+/// every CLI command honors, so a repo using `anodizer.yaml` doesn't get a
+/// silently-degraded changelog).
 ///
-/// Returns `Ok(None)` when the file is absent or carries no `changelog:`
+/// Returns `Ok(None)` when no config exists or it carries no `changelog:`
 /// section. Deliberately skips the include/deprecation machinery in
 /// `cli::pipeline::load_config` so this stays usable from non-CLI contexts
 /// (core is already in the dep graph; pulling cli in would create a cycle).
 fn load_changelog_config(
     workspace_root: &std::path::Path,
 ) -> Result<Option<anodizer_core::config::ChangelogConfig>> {
-    let cfg_path = workspace_root.join(".anodizer.yaml");
-    if !cfg_path.is_file() {
+    let Some(cfg_path) = anodizer_core::config::find_config_candidate_in(workspace_root) else {
         return Ok(None);
-    }
-    let cfg_text = std::fs::read_to_string(&cfg_path)
-        .with_context(|| format!("failed to read {}", cfg_path.display()))?;
-    let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(&cfg_text)
-        .with_context(|| format!("failed to parse YAML at {}", cfg_path.display()))?;
+    };
+    let raw = anodizer_core::config::load_raw_config_value(&cfg_path)?;
     let changelog_yaml = match raw.get("changelog") {
         Some(v) => v.clone(),
         None => return Ok(None),
@@ -601,9 +601,9 @@ fn load_changelog_config(
     Ok(Some(cfg))
 }
 
-/// The scoping inputs read from `.anodizer.yaml` beyond the `changelog` block:
-/// every declared crate's directory and the optional `monorepo.dir`, used to
-/// build the aggregate union in [`anodizer_core::changelog_scope`].
+/// The scoping inputs read from the anodizer config beyond the `changelog`
+/// block: every declared crate's directory and the optional `monorepo.dir`,
+/// used to build the aggregate union in [`anodizer_core::changelog_scope`].
 #[derive(Default)]
 pub struct ScopeInputs {
     /// Every declared crate's `path` (top-level `crates:` and any nested
@@ -614,7 +614,8 @@ pub struct ScopeInputs {
     pub monorepo_dir: Option<String>,
 }
 
-/// Read the crate directories and `monorepo.dir` from `.anodizer.yaml` so every
+/// Read the crate directories and `monorepo.dir` from the discovered
+/// anodizer config (shared well-known-name candidate list) so every
 /// changelog format builds the aggregate scope from the SAME crate-dir source
 /// (the engine-backed `keep-a-changelog`/`json` formats and the `release-notes`
 /// stage both call this), guaranteeing they cannot drift.
@@ -624,14 +625,10 @@ pub struct ScopeInputs {
 /// these two fields. Missing / empty returns an empty [`ScopeInputs`] (the
 /// resolver then falls back to the whole-repo aggregate).
 pub fn load_scope_inputs(workspace_root: &std::path::Path) -> Result<ScopeInputs> {
-    let cfg_path = workspace_root.join(".anodizer.yaml");
-    if !cfg_path.is_file() {
+    let Some(cfg_path) = anodizer_core::config::find_config_candidate_in(workspace_root) else {
         return Ok(ScopeInputs::default());
-    }
-    let cfg_text = std::fs::read_to_string(&cfg_path)
-        .with_context(|| format!("failed to read {}", cfg_path.display()))?;
-    let raw: serde_yaml_ng::Value = serde_yaml_ng::from_str(&cfg_text)
-        .with_context(|| format!("failed to parse YAML at {}", cfg_path.display()))?;
+    };
+    let raw = anodizer_core::config::load_raw_config_value(&cfg_path)?;
 
     let mut crate_dirs: Vec<String> = Vec::new();
     if let Some(crates) = raw.get("crates").and_then(|c| c.as_sequence()) {
@@ -770,8 +767,8 @@ fn render_section_config_fields(
 ///
 /// Returns the resolved [`ChangelogConfig`] alongside the grouped tree.
 /// Returns `Ok(None)` under the conditions every caller treats as "nothing to
-/// release": `.anodizer.yaml` is absent / has no `changelog:` block, or there
-/// are no qualifying commits in range (after filtering/grouping).
+/// release": no anodizer config is present / it has no `changelog:` block, or
+/// there are no qualifying commits in range (after filtering/grouping).
 fn group_section_commits(
     workspace_root: &std::path::Path,
     crate_path: &std::path::Path,
@@ -1268,8 +1265,9 @@ fn crate_h1(crate_name: &str) -> String {
 }
 
 /// The H1 for the SHARED ROOT `CHANGELOG.md`: the project header. Renders
-/// `changelog.header` from `.anodizer.yaml` when it is an inline string
-/// (resolving `{{ ProjectName }}` against `project_name`), else `# Changelog`.
+/// `changelog.header` from the discovered anodizer config when it is an
+/// inline string (resolving `{{ ProjectName }}` against `project_name`),
+/// else `# Changelog`.
 ///
 /// A root H1 must NEVER carry a crate name. `from_file` / `from_url` header
 /// sources need a full release [`Context`] to resolve and are handled by the
@@ -1278,11 +1276,10 @@ fn crate_h1(crate_name: &str) -> String {
 /// default only applies on first creation).
 fn project_h1(workspace_root: &std::path::Path) -> String {
     const DEFAULT: &str = "# Changelog";
-    let cfg_path = workspace_root.join(".anodizer.yaml");
-    let Ok(text) = std::fs::read_to_string(&cfg_path) else {
+    let Some(cfg_path) = anodizer_core::config::find_config_candidate_in(workspace_root) else {
         return DEFAULT.to_string();
     };
-    let Ok(raw) = serde_yaml_ng::from_str::<serde_yaml_ng::Value>(&text) else {
+    let Ok(raw) = anodizer_core::config::load_raw_config_value(&cfg_path) else {
         return DEFAULT.to_string();
     };
 
@@ -1637,8 +1634,8 @@ fn finish(lines: Vec<String>, trailing_newline: bool) -> String {
 /// so a version bump can bundle the changelog edit into one staged commit.
 ///
 /// Returns `Ok(None)` when:
-///   - `<workspace_root>/.anodizer.yaml` is absent, unreadable, or has no
-///     `changelog:` section
+///   - no anodizer config exists under `workspace_root` (well-known
+///     candidate names), or it has no `changelog:` section
 ///   - there are no qualifying commits since `from_tag` (or `HEAD` history,
 ///     when `from_tag` is `None`) touching `crate_path`
 ///
@@ -3649,6 +3646,30 @@ mod root_section_tests {
       order: 1
 "#;
         std::fs::write(dir.join(".anodizer.yaml"), yaml).expect("write .anodizer.yaml");
+    }
+
+    /// The changelog engine's config discovery must honor the full shared
+    /// candidate list, not just `.anodizer.yaml` — a repo configured via
+    /// `anodizer.yaml` previously got a silently-degraded changelog
+    /// (default groups, no filters) while every CLI command honored it.
+    #[test]
+    fn changelog_config_discovered_from_non_dot_anodizer_yaml() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let yaml = r#"changelog:
+  groups:
+    - title: Features
+      regexp: '^feat'
+      order: 0
+"#;
+        std::fs::write(root.join("anodizer.yaml"), yaml).expect("write anodizer.yaml");
+
+        let cfg = load_changelog_config(root)
+            .expect("discovery succeeds")
+            .expect("changelog block found via the shared candidate list");
+        let groups = cfg.groups.expect("groups parsed");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].title, "Features");
     }
 
     /// Write a `changelog:` block whose group title is a `{{ .ProjectName }}`

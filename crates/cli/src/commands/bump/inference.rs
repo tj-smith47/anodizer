@@ -32,12 +32,17 @@ pub fn infer_for_crate(
 ) -> Result<InferenceResult> {
     let last_tag = find_last_tag_for_prefix(workspace_root, tag_prefix)?;
 
-    let rel_crate_dir = m
+    let rel = m
         .crate_dir
         .strip_prefix(workspace_root)
-        .unwrap_or(&m.crate_dir)
-        .to_string_lossy()
-        .to_string();
+        .unwrap_or(&m.crate_dir);
+    // A crate rooted at the workspace root strips to "" — git rejects an
+    // empty pathspec outright (rc 128), so scope to the whole tree instead.
+    let rel_crate_dir = if rel.as_os_str().is_empty() {
+        ".".to_string()
+    } else {
+        rel.to_string_lossy().to_string()
+    };
 
     let range_from = last_tag.clone().unwrap_or_default();
     let messages = git_log_subjects(workspace_root, &range_from, &rel_crate_dir)?;
