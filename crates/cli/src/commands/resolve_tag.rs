@@ -21,18 +21,7 @@ pub fn run(opts: ResolveTagOpts) -> Result<()> {
     };
 
     // Collect all crates from top-level and workspaces.
-    let all_crates: Vec<_> = config
-        .crates
-        .iter()
-        .chain(
-            config
-                .workspaces
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .flat_map(|w| &w.crates),
-        )
-        .collect();
+    let all_crates = config.crate_universe();
 
     // Match the tag against each crate's tag_template prefix.
     // Prefer the longest matching prefix (most specific) to avoid ambiguity

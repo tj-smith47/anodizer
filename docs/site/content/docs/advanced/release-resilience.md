@@ -345,7 +345,13 @@ What runs:
 - No new publishing. No new build. No new release creation.
 - For each prior `Succeeded` entry, the same publisher's `rollback` runs.
 - For each `RollbackFailed` entry, the rollback is re-attempted.
-- For everything else (`Skipped*`, `Failed`, already-`RolledBack`), no action.
+- For each `RollbackSkippedNoScope` entry, the rollback is re-attempted now
+  that the scope env var can be exported (`retain_on_rollback` and the scope
+  check are still honored; previously these rows were stranded).
+- A `Failed` Submitter entry re-runs only a declared programmatic rollback
+  (cargo's idempotent yank).
+- For everything else (`Skipped`, already-`RolledBack`, `PendingModeration`,
+  `PublishedNoRollback`), no action.
 
 The replay path uses the same code that drives the rollback step inside
 `PublishStage`, so a green replay means every reversible publisher was

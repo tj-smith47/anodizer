@@ -88,7 +88,7 @@ fn collect_run_targets(ctx: &Context) -> Vec<HomebrewTarget> {
 
     // Per-crate formulae (and same-tap casks share the formula's tap).
     let selected = &ctx.options.selected_crates;
-    for c in &ctx.config.crates {
+    for c in ctx.config.crate_universe() {
         if !selected.is_empty() && !selected.contains(&c.name) {
             continue;
         }

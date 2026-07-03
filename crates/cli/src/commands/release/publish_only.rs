@@ -215,8 +215,8 @@ pub(super) fn run_per_crate(
     // Why per-iteration scoping in the first place:
     //
     // * `selected_crates`: publishers resolve their effective crate
-    //   set via `effective_publish_crates`, which falls back to
-    //   `util::all_crates` (workspace-flattened) when this Vec is
+    //   set via `effective_publish_crates`, which falls back to the
+    //   full crate universe (workspace-flattened) when this Vec is
     //   empty. Without scoping every publisher in cfgd-core's
     //   iteration would iterate every workspace crate, find no
     //   applicable config, and either skip-all (which the homebrew
@@ -697,20 +697,8 @@ fn peek_preserved_version(crate_dist: &Path) -> Option<String> {
 }
 
 fn apply_per_crate_tag(ctx: &mut Context, config: &Config, crate_name: &str, log: &StageLogger) {
-    let tag_template = ctx
-        .config
-        .crates
-        .iter()
-        .find(|c| c.name == crate_name)
-        .or_else(|| {
-            config
-                .workspaces
-                .as_deref()
-                .into_iter()
-                .flatten()
-                .flat_map(|ws| ws.crates.iter())
-                .find(|c| c.name == crate_name)
-        })
+    let tag_template = config
+        .find_crate(crate_name)
         .map(|c| c.tag_template.clone());
     let Some(tag_template) = tag_template.filter(|t| !t.is_empty()) else {
         return;

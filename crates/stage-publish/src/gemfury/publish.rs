@@ -200,7 +200,7 @@ pub(crate) fn resolve_api_token(ctx: &Context, cfg: &GemFuryConfig) -> Result<St
 /// operator wanted.
 fn preflight_multi_format_unambiguous(ctx: &Context, cfg: &GemFuryConfig) -> Result<()> {
     let id_filter = cfg.ids.as_ref();
-    for krate in &ctx.config.crates {
+    for krate in ctx.config.crate_universe() {
         let matches = match id_filter {
             Some(ids) => ids.iter().any(|id| id == &krate.name),
             None => true,

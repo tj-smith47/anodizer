@@ -149,6 +149,13 @@ pub fn run(args: CheckDeterminismArgs, verbose: bool, debug: bool, quiet: bool) 
     // here off the single load (hidden at the default log level).
     if let Some(ref cfg) = repo_config {
         crate::pipeline::emit_config_advisories(cfg, &log);
+        // The harness resolves stages/producers through the deduped crate
+        // universe, which silently DROPS a shadowed same-name crate — warn
+        // here (as the publish stage does) so the dedup is never invisible
+        // to an operator whose colliding crate simply isn't checked.
+        for w in cfg.crate_universe_collision_warnings() {
+            log.warn(&w);
+        }
     }
 
     // Seed the compile-time allow-list from the centralized

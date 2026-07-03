@@ -54,7 +54,7 @@ fn dedup_nix_targets(targets: &[NixTarget]) -> Vec<NixTarget> {
 fn collect_nix_run_targets(ctx: &Context) -> Vec<NixTarget> {
     let mut out: Vec<NixTarget> = Vec::new();
     let selected = &ctx.options.selected_crates;
-    for c in &ctx.config.crates {
+    for c in ctx.config.crate_universe() {
         if !selected.is_empty() && !selected.contains(&c.name) {
             continue;
         }

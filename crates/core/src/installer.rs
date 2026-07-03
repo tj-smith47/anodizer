@@ -347,15 +347,8 @@ pub fn installer_crate(config: &Config) -> Option<CrateConfig> {
     };
 
     config
-        .crates
-        .iter()
-        .chain(
-            config
-                .workspaces
-                .iter()
-                .flatten()
-                .flat_map(|w| w.crates.iter()),
-        )
+        .crate_universe()
+        .into_iter()
         .find(|c| produces_project_binary(c) && crate::binstall::binstallable_archive(c).is_some())
         .cloned()
 }

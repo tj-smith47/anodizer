@@ -75,7 +75,7 @@ pub(crate) fn is_chocolatey_per_crate_configured(ctx: &Context, crate_name: &str
 /// `publish_to_chocolatey` will push. Returns `None` when no chocolatey
 /// block is configured (matches the publish path's skip semantics).
 fn collect_chocolatey_target(ctx: &Context, crate_name: &str) -> Option<ChocolateyTarget> {
-    let c = ctx.config.crates.iter().find(|c| c.name == crate_name)?;
+    let c = crate::util::find_crate_in_universe(ctx, crate_name)?;
     let cfg = c.publish.as_ref().and_then(|p| p.chocolatey.as_ref())?;
     let package_id = cfg.name.as_deref().unwrap_or(crate_name).to_string();
     Some(ChocolateyTarget {
@@ -799,6 +799,28 @@ mod publisher_tests {
             .build();
         let t = collect_chocolatey_target(&ctx, "demo").expect("target");
         assert_eq!(t.package_id, "demo");
+    }
+
+    /// A workspace-only crate (pure-workspace config) must snapshot a
+    /// rollback target: the nupkg enters the moderation queue (a one-way
+    /// door), so a `None` here means no manual-withdrawal pointer and no
+    /// `primary_ref` for a package that WAS submitted.
+    #[test]
+    fn chocolatey_collect_target_sees_workspace_only_crate() {
+        let ctx = TestContextBuilder::new()
+            .workspaces(vec![anodizer_core::config::WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![choco_crate("ws-only", Some("WsTool"))],
+                ..Default::default()
+            }])
+            .build();
+        assert!(
+            ctx.config.crates.is_empty(),
+            "fixture must be a pure-workspace config"
+        );
+        let t = collect_chocolatey_target(&ctx, "ws-only").expect("target snapshot");
+        assert_eq!(t.crate_name, "ws-only");
+        assert_eq!(t.package_id, "WsTool");
     }
 
     // Log-message helpers — the operator-facing log strings the publisher

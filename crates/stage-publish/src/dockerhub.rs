@@ -162,9 +162,10 @@ fn configured_username(entry: &anodizer_core::config::DockerHubConfig) -> Option
 /// (maps `Err` to a Warning naming the render failure, so a template typo
 /// is reported as a template problem instead of probing the login endpoint
 /// with the literal template string and misreporting a credential
-/// failure). A config value that renders to the empty string resolves to
-/// `None` without falling back to the env var — the config explicitly
-/// owns the field when present.
+/// failure). A config value that renders to the empty string is an `Err`
+/// naming the template — the config explicitly owns the field when
+/// present, so falling back to the env var (or reporting "'username' is
+/// required" when it IS set) would misattribute the problem.
 fn resolve_dockerhub_username(
     ctx: &Context,
     entry: &anodizer_core::config::DockerHubConfig,
@@ -173,7 +174,10 @@ fn resolve_dockerhub_username(
         let rendered = ctx
             .render_template(u)
             .with_context(|| format!("dockerhub: render username template {u:?}"))?;
-        return Ok(Some(rendered).filter(|r| !r.is_empty()));
+        if rendered.is_empty() {
+            bail!("dockerhub: username template {u:?} rendered to an empty string");
+        }
+        return Ok(Some(rendered));
     }
     Ok(ctx.env_var("DOCKER_USERNAME").filter(|u| !u.is_empty()))
 }
@@ -1232,6 +1236,37 @@ dockerhub:
             err.to_string().contains("'username' is required"),
             "unexpected error: {}",
             err
+        );
+    }
+
+    /// A `username:` that IS set but whose template renders to "" must fail
+    /// naming the template — not "'username' is required (set in config…)",
+    /// which tells an operator who DID set it to set it.
+    #[test]
+    fn test_dockerhub_username_template_rendering_empty_names_the_template() {
+        let mut config = Config::default();
+        config.dockerhub = Some(vec![DockerHubConfig {
+            username: Some("{{ .Env.ORG }}".to_string()),
+            images: Some(vec!["myorg/myapp".to_string()]),
+            description: Some("My app".to_string()),
+            ..Default::default()
+        }]);
+        let mut ctx = dry_run_ctx(config);
+        ctx.template_vars_mut().set_env("ORG", "");
+        let log = ctx.logger("dockerhub");
+        let err = publish_to_dockerhub(&ctx, &log).unwrap_err();
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("rendered to an empty string"),
+            "error must name the empty render: {chain}"
+        );
+        assert!(
+            chain.contains(".Env.ORG"),
+            "error must name the offending template: {chain}"
+        );
+        assert!(
+            !chain.contains("'username' is required"),
+            "must not claim username is unset when it IS set: {chain}"
         );
     }
 

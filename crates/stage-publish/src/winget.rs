@@ -1824,7 +1824,7 @@ fn collect_winget_target(
     crate_name: &str,
     log: &StageLogger,
 ) -> Result<Option<WingetTarget>> {
-    let Some(c) = ctx.config.crates.iter().find(|c| c.name == crate_name) else {
+    let Some(c) = crate::util::find_crate_in_universe(ctx, crate_name) else {
         return Ok(None);
     };
     let Some(cfg) = c.publish.as_ref().and_then(|p| p.winget.as_ref()) else {

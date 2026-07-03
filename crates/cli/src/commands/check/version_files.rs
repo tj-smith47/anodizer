@@ -161,17 +161,7 @@ struct EnrolledUnit {
 fn enrolled_units(config: &Config) -> Vec<EnrolledUnit> {
     let top_level = config.version_files.as_deref().unwrap_or_default();
 
-    let all_crates: Vec<&CrateConfig> = config
-        .crates
-        .iter()
-        .chain(
-            config
-                .workspaces
-                .iter()
-                .flatten()
-                .flat_map(|ws| ws.crates.iter()),
-        )
-        .collect();
+    let all_crates: Vec<&CrateConfig> = config.crate_universe();
 
     let mut units: Vec<EnrolledUnit> = all_crates
         .iter()

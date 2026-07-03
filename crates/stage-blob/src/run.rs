@@ -342,8 +342,8 @@ pub(crate) fn record_blob_deselected(ctx: &mut Context) {
 pub(crate) fn derive_blob_required(ctx: &Context) -> bool {
     let selected = &ctx.options.selected_crates;
     ctx.config
-        .crates
-        .iter()
+        .crate_universe()
+        .into_iter()
         .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .filter_map(|c| c.blobs.as_ref())
         .flat_map(|configs| configs.iter())
@@ -1106,6 +1106,41 @@ mod run_tests {
         assert!(
             !msg.contains("(none configured)"),
             "a configured workspace blob must never report '(none configured)': {msg}",
+        );
+    }
+
+    /// `required: true` on a workspace-only crate's blob config must
+    /// escalate the stage's aggregated required bit — the retain collapse
+    /// already walks the universe, so a `config.crates`-only required
+    /// derivation would silently demote the workspace crate's gate.
+    #[test]
+    fn derive_blob_required_sees_workspace_only_crate() {
+        let config = Config {
+            workspaces: Some(vec![anodizer_core::config::WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![CrateConfig {
+                    name: "ws-only".to_string(),
+                    path: ".".to_string(),
+                    blobs: Some(vec![BlobConfig {
+                        provider: "s3".to_string(),
+                        bucket: "ws-releases".to_string(),
+                        required: Some(true),
+                        ..Default::default()
+                    }]),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let ctx = Context::new(config, ContextOptions::default());
+        assert!(
+            ctx.config.crates.is_empty(),
+            "fixture must be a pure-workspace config"
+        );
+        assert!(
+            derive_blob_required(&ctx),
+            "workspace-only `required: true` must escalate the stage gate"
         );
     }
 

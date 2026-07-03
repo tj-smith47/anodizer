@@ -427,15 +427,8 @@ fn mcp_owning_crate_name(ctx: &Context) -> Option<&str> {
         return None;
     }
     ctx.config
-        .crates
-        .iter()
-        .chain(
-            ctx.config
-                .workspaces
-                .iter()
-                .flatten()
-                .flat_map(|w| w.crates.iter()),
-        )
+        .crate_universe()
+        .into_iter()
         .find(|c| {
             c.dockers_v2
                 .as_ref()

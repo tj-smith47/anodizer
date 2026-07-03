@@ -403,8 +403,8 @@ fn rollback_via_object_store(
 pub fn is_configured(ctx: &Context) -> bool {
     let selected = &ctx.options.selected_crates;
     ctx.config
-        .crates
-        .iter()
+        .crate_universe()
+        .into_iter()
         .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .any(|c| c.blobs.as_ref().is_some_and(|v| !v.is_empty()))
 }
@@ -513,6 +513,38 @@ mod publisher_tests {
             ..Default::default()
         };
         let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+        assert!(is_configured(&ctx));
+    }
+
+    /// A pure-workspace config (`blobs:` only under `workspaces[].crates`)
+    /// must register as configured: `BlobStage::run` uploads the workspace
+    /// crate's blobs, so a `false` here means the rollback path cannot
+    /// resolve the `blob` publisher ("publisher not found") for objects
+    /// that WERE uploaded — and `--publishers blob` would reject the run.
+    #[test]
+    fn is_configured_true_for_workspace_only_blobs() {
+        let crate_cfg = CrateConfig {
+            name: "ws-only".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            blobs: Some(vec![BlobConfig {
+                provider: "s3".to_string(),
+                bucket: "ws-bucket".to_string(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .workspaces(vec![anodizer_core::config::WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![crate_cfg],
+                ..Default::default()
+            }])
+            .build();
+        assert!(
+            ctx.config.crates.is_empty(),
+            "fixture must be a pure-workspace config"
+        );
         assert!(is_configured(&ctx));
     }
 

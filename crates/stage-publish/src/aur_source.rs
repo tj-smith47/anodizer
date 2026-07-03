@@ -45,7 +45,7 @@ fn aur_source_arches(ctx: &Context, crate_name: &str) -> Result<Vec<String>> {
 
     // Per-crate builds take precedence so per-crate config mode resolves its
     // own target set (no cross-crate leakage); otherwise inherit the defaults.
-    let crate_cfg = ctx.config.crates.iter().find(|c| c.name == crate_name);
+    let crate_cfg = crate::util::find_crate_in_universe(ctx, crate_name);
     let triples: Vec<String> = match crate_cfg.and_then(|c| c.builds.as_deref()) {
         Some(builds) if !builds.is_empty() => {
             let mut seen = std::collections::BTreeSet::new();
@@ -342,11 +342,7 @@ pub(crate) fn render_aur_source_pkgbuild_and_srcinfo_for_crate(
     crate_name: &str,
     log: &StageLogger,
 ) -> Result<Option<AurRendered>> {
-    let Some(cfg) = ctx
-        .config
-        .crates
-        .iter()
-        .find(|c| c.name == crate_name)
+    let Some(cfg) = crate::util::find_crate_in_universe(ctx, crate_name)
         .and_then(|c| c.publish.as_ref())
         .and_then(|p| p.aur_source.as_ref())
         .cloned()
@@ -605,11 +601,7 @@ pub fn publish_to_aur_source(
     crate_name: &str,
     log: &StageLogger,
 ) -> Result<bool> {
-    let crate_cfg = ctx
-        .config
-        .crates
-        .iter()
-        .find(|c| c.name == crate_name)
+    let crate_cfg = crate::util::find_crate_in_universe(ctx, crate_name)
         .ok_or_else(|| anyhow::anyhow!("aur_source: crate '{}' not found", crate_name))?;
     let publish_cfg = crate_cfg
         .publish
@@ -1080,7 +1072,7 @@ fn aur_source_push_git_url(cfg: &AurSourceConfig, pkg_name: &str) -> String {
 
 /// Build an [`AurSourceTarget`] for a single per-crate `aur_source:` block.
 fn collect_aur_source_per_crate_target(ctx: &Context, crate_name: &str) -> Option<AurSourceTarget> {
-    let c = ctx.config.crates.iter().find(|c| c.name == crate_name)?;
+    let c = crate::util::find_crate_in_universe(ctx, crate_name)?;
     let cfg = c.publish.as_ref().and_then(|p| p.aur_source.as_ref())?;
     let pkg_name = resolve_aur_source_package_name(cfg, crate_name, false);
     let git_url = aur_source_push_git_url(cfg, &pkg_name);
@@ -1204,10 +1196,10 @@ impl anodizer_core::Publisher for AurSourcePublisher {
             // Defensive guard for explicit `--crate=X` selection when X has
             // no aur_source block; implicit-all is already filtered above.
             if !is_aur_source_per_crate_configured(ctx, crate_name) {
-                log.status(&crate::publisher_helpers::no_config_block_message(
-                    "aur_source",
-                    crate_name,
-                ));
+                log.skip_line(
+                    ctx.options.show_skipped,
+                    &crate::publisher_helpers::no_config_block_message("aur_source", crate_name),
+                );
                 continue;
             }
             // Re-scope the version/name template vars to THIS crate's own tag so
@@ -1553,6 +1545,101 @@ mod publisher_tests {
         let t = collect_aur_source_per_crate_target(&ctx, "demo").expect("target");
         assert_eq!(t.package, "demo");
         assert_eq!(t.git_url, "ssh://aur@aur.archlinux.org/demo.git");
+    }
+
+    /// A workspace-only crate (pure-workspace config) must snapshot a
+    /// rollback target: without the universe lookup the publish pushes the
+    /// AUR repo but records nothing, orphaning the push from rollback.
+    #[test]
+    fn aur_source_collect_per_crate_target_sees_workspace_only_crate() {
+        let ctx = TestContextBuilder::new()
+            .workspaces(vec![anodizer_core::config::WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![aur_source_crate(
+                    "ws-only",
+                    "ssh://aur@aur.archlinux.org/ws-only.git",
+                )],
+                ..Default::default()
+            }])
+            .build();
+        assert!(
+            ctx.config.crates.is_empty(),
+            "fixture must be a pure-workspace config"
+        );
+        let t = collect_aur_source_per_crate_target(&ctx, "ws-only").expect("target snapshot");
+        assert_eq!(t.package, "ws-only");
+    }
+
+    /// The `arch=()` array comes from the workspace-only crate's own
+    /// `builds[].targets` — a `config.crates`-only lookup missed the crate
+    /// and silently fell back to the default target set, advertising the
+    /// wrong architectures for the source package.
+    #[test]
+    fn aur_source_arches_uses_workspace_only_crate_builds() {
+        let ws_crate = CrateConfig {
+            name: "ws-only".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            builds: Some(vec![anodizer_core::config::BuildConfig {
+                targets: Some(vec!["aarch64-unknown-linux-gnu".to_string()]),
+                ..Default::default()
+            }]),
+            publish: Some(PublishConfig {
+                aur_source: Some(AurSourceConfig::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .workspaces(vec![anodizer_core::config::WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![ws_crate],
+                ..Default::default()
+            }])
+            .build();
+        let arches = aur_source_arches(&ctx, "ws-only").expect("arches");
+        assert_eq!(
+            arches,
+            vec!["aarch64".to_string()],
+            "arches must come from the crate's own builds, not the default target fallback"
+        );
+    }
+
+    /// The per-crate "no aur_source config block" line routes through
+    /// `skip_line` (Debug by default) like the other per-crate publishers —
+    /// not an unconditional `status`, which would emit one line per
+    /// non-applicable crate at default verbosity under `--crate` selection.
+    #[test]
+    fn aur_source_no_config_skip_is_debug_level_by_default() {
+        use anodizer_core::log::LogLevel;
+        let capture = anodizer_core::log::LogCapture::new();
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![
+                aur_source_crate("configured", "ssh://aur@aur.archlinux.org/configured.git"),
+                CrateConfig {
+                    name: "unconfigured".to_string(),
+                    path: ".".to_string(),
+                    tag_template: "v{{ .Version }}".to_string(),
+                    publish: Some(PublishConfig::default()),
+                    ..Default::default()
+                },
+            ])
+            .selected_crates(vec!["unconfigured".to_string()])
+            .show_skipped(false)
+            .build();
+        ctx.with_log_capture(capture.clone());
+        let p = AurSourcePublisher::new();
+        let _ = p.run(&mut ctx);
+        let lines = capture.all_messages();
+        let skip = lines
+            .iter()
+            .find(|(_, m)| m.contains("no aur_source config block"))
+            .unwrap_or_else(|| panic!("skip line must be recorded: {lines:?}"));
+        assert_eq!(
+            skip.0,
+            LogLevel::Debug,
+            "no-config skip must not record at Status by default: {lines:?}"
+        );
     }
 }
 
@@ -2511,6 +2598,37 @@ crates:
         let out = render_aur_source_pkgbuild_and_srcinfo_for_crate(&ctx, "demo", &quiet_log())
             .expect("render ok");
         assert!(out.is_none(), "skip=true → None");
+    }
+
+    /// A workspace-only crate (pure-workspace config) renders: the emission
+    /// validator drives this entry point per crate, so an `Ok(None)` here
+    /// would silently exclude the workspace crate's PKGBUILD from
+    /// validation while the live publish still pushes it.
+    #[test]
+    fn render_per_crate_resolves_workspace_only_crate() {
+        let mut config = Config::default();
+        config.workspaces = Some(vec![anodizer_core::config::WorkspaceConfig {
+            name: "ws".to_string(),
+            crates: vec![crate_with_aur_source(
+                "ws-only",
+                AurSourceConfig {
+                    description: Some("ws tool".to_string()),
+                    ..Default::default()
+                },
+            )],
+            ..Default::default()
+        }]);
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        ctx.template_vars_mut()
+            .set("GitURL", "https://github.com/o/ws-only.git");
+        ctx.template_vars_mut().set("ProjectName", "ws-only");
+        let rendered =
+            render_aur_source_pkgbuild_and_srcinfo_for_crate(&ctx, "ws-only", &quiet_log())
+                .expect("render ok")
+                .expect("workspace-only crate must resolve, not silently skip");
+        assert_eq!(rendered.package_name, "ws-only");
     }
 
     /// Top-level `aur_sources` array: empty/unset → empty Vec; populated →

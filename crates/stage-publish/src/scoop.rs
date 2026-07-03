@@ -1184,7 +1184,7 @@ pub fn publish_to_scoop(ctx: &mut Context, crate_name: &str, log: &StageLogger) 
 // manifest is recorded so a `--rollback-only` re-clones the bucket,
 // runs `git revert HEAD --no-edit`, and pushes the revert. Scoop is
 // always per-crate (no top-level Scoop config block), so the run loop
-// only walks `ctx.config.crates`.
+// only walks the per-crate universe (`Config::crate_universe`).
 //
 // CREDENTIAL HANDLING: ScoopTarget stores `token_env_var` — the NAME of
 // the env var — not the resolved token VALUE. The token is read from the
@@ -1230,7 +1230,7 @@ fn dedup_scoop_targets(targets: &[ScoopTarget]) -> Vec<ScoopTarget> {
 fn collect_scoop_run_targets(ctx: &Context) -> Vec<ScoopTarget> {
     let mut out: Vec<ScoopTarget> = Vec::new();
     let selected = &ctx.options.selected_crates;
-    for c in &ctx.config.crates {
+    for c in ctx.config.crate_universe() {
         if !selected.is_empty() && !selected.contains(&c.name) {
             continue;
         }
@@ -1594,6 +1594,29 @@ mod publisher_tests {
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].target, "demo");
         assert_eq!(targets[0].branch.as_deref(), Some("main"));
+    }
+
+    /// A pure-workspace config (empty top-level `crates:`, the cfgd shape)
+    /// must still record an evidence/rollback target: the run loop
+    /// dispatches the workspace crate and pushes the bucket commit, so an
+    /// empty target list here means a push with no rollback evidence
+    /// ("no targets recorded").
+    #[test]
+    fn scoop_collect_run_targets_sees_workspace_only_crate() {
+        let ctx = TestContextBuilder::new()
+            .workspaces(vec![anodizer_core::config::WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![scoop_crate("ws-only")],
+                ..Default::default()
+            }])
+            .build();
+        assert!(
+            ctx.config.crates.is_empty(),
+            "fixture must be a pure-workspace config"
+        );
+        let targets = collect_scoop_run_targets(&ctx);
+        assert_eq!(targets.len(), 1, "{targets:?}");
+        assert_eq!(targets[0].target, "ws-only");
     }
 
     #[test]

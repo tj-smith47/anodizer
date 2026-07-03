@@ -85,9 +85,14 @@ pub(crate) fn is_any_crate_block_configured<T>(
 /// wording aligned only by copy discipline, and upstream-AUR shipped with
 /// no entry line at all).
 pub(crate) fn run_start_message(publisher: &str, selected_total: usize) -> String {
+    let article = if publisher.starts_with(['a', 'e', 'i', 'o', 'u']) {
+        "an"
+    } else {
+        "a"
+    };
     format!(
         "starting {publisher} publish — scanning {selected_total} selected crate(s) \
-         for a {publisher} config block"
+         for {article} {publisher} config block"
     )
 }
 
@@ -718,6 +723,12 @@ mod tests {
         assert_eq!(
             run_start_message("scoop", 3),
             "starting scoop publish — scanning 3 selected crate(s) for a scoop config block"
+        );
+        // Vowel-initial publishers take "an" ("an aur", "an aur_source"),
+        // matching aur's original hand-written entry line.
+        assert_eq!(
+            run_start_message("aur", 2),
+            "starting aur publish — scanning 2 selected crate(s) for an aur config block"
         );
         assert_eq!(
             no_config_block_message("krew", "demo"),

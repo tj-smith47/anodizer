@@ -63,11 +63,11 @@ pub(crate) fn get_publish_config<'a>(
 /// ([`anodizer_core::config::Config::crate_universe`] — top-level wins on a
 /// name collision). Returns a reference tied to `ctx` so callers can keep
 /// zero-copy `&CrateConfig` access without cloning the whole universe.
-fn find_crate_in_universe<'a>(ctx: &'a Context, crate_name: &str) -> Option<&'a CrateConfig> {
-    ctx.config
-        .crate_universe()
-        .into_iter()
-        .find(|c| c.name == crate_name)
+pub(crate) fn find_crate_in_universe<'a>(
+    ctx: &'a Context,
+    crate_name: &str,
+) -> Option<&'a CrateConfig> {
+    ctx.config.find_crate(crate_name)
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +437,7 @@ mod tests {
 
     #[test]
     fn get_publish_config_top_level_wins_over_workspace_on_name_collision() {
-        // Mirrors `all_crates` precedence: a top-level entry shadows a
+        // Mirrors `crate_universe` precedence: a top-level entry shadows a
         // workspace entry sharing its name.
         let mut top = nix_binstall_crate("dup");
         top.path = "crates/top".to_string();

@@ -226,14 +226,7 @@ pub(crate) fn find_crate_in_config<'a>(
     cfg: &'a anodizer_core::config::Config,
     name: &str,
 ) -> Option<&'a anodizer_core::config::CrateConfig> {
-    if let Some(c) = cfg.crates.iter().find(|c| c.name == name) {
-        return Some(c);
-    }
-    cfg.workspaces
-        .as_ref()?
-        .iter()
-        .flat_map(|w| w.crates.iter())
-        .find(|c| c.name == name)
+    cfg.find_crate(name)
 }
 
 /// Resolve a member's effective current version: its literal own

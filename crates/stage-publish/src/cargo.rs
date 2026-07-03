@@ -2217,9 +2217,10 @@ simple_publisher!(
     Some("CARGO_REGISTRY_TOKEN yank"),
 );
 
-/// Operator-visible start line for the cargo publisher. Mirrors the
-/// `run_start_message` helper every per-crate publisher exposes so the
-/// dispatch table can't silently report success on a no-op run.
+/// Operator-visible start line for the cargo publisher. Worded apart from
+/// [`crate::publisher_helpers::run_start_message`] on purpose: cargo
+/// processes every selected crate rather than scanning them for a config
+/// block, so "scanning … for a cargo config block" would misdescribe it.
 pub(crate) fn run_start_message(selected_total: usize) -> String {
     format!(
         "starting cargo publish — processing {} selected crate(s)",
@@ -2261,9 +2262,9 @@ pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
     )
 }
 
-/// True when `ctx.config.crates` contains at least one crate with a
-/// `publish.cargo` block. Used by the publisher's run wrapper to choose
-/// between the `done` and `no-eligible-crates` log paths.
+/// Count of crates in the crate universe (after `--crate` / `--all`
+/// selection) carrying a `publish.cargo` block. Used by the publisher's run
+/// wrapper to choose between the `done` and `no-eligible-crates` log paths.
 fn count_cargo_configured_crates(ctx: &Context) -> usize {
     let all = ctx.config.crate_universe();
     let selected = &ctx.options.selected_crates;
@@ -2543,12 +2544,12 @@ struct PublishedCrateRef {
 fn first_published_crate(ctx: &Context) -> Option<PublishedCrateRef> {
     let eligible = |c: &&CrateConfig| c.publish.as_ref().and_then(|p| p.cargo.as_ref()).is_some();
     let project_name = ctx.config.project_name.as_str();
-    let name = ctx
-        .config
-        .crates
+    let universe = ctx.config.crate_universe();
+    let name = universe
         .iter()
+        .copied()
         .find(|c| !project_name.is_empty() && c.name == project_name && eligible(c))
-        .or_else(|| ctx.config.crates.iter().find(eligible))
+        .or_else(|| universe.iter().copied().find(eligible))
         .map(|c| c.name.clone())?;
     let version = {
         let tag = ctx

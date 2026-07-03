@@ -284,7 +284,7 @@ fn preflight_multi_format_unambiguous(
         return Ok(());
     }
     let id_filter = cfg.ids.as_ref();
-    for krate in &ctx.config.crates {
+    for krate in ctx.config.crate_universe() {
         let matches = if let Some(ids) = id_filter {
             ids.iter().any(|id| id == &krate.name)
         } else {

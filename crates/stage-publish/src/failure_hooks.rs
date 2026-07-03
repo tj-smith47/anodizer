@@ -39,7 +39,7 @@ use anodizer_core::{PublisherGroup, PublisherResult};
 /// call.
 fn resolve_on_error_hooks(ctx: &Context) -> Vec<HookEntry> {
     let selected = &ctx.options.selected_crates;
-    for c in &ctx.config.crates {
+    for c in ctx.config.crate_universe() {
         if !selected.is_empty() && !selected.iter().any(|s| s == &c.name) {
             continue;
         }
@@ -234,6 +234,36 @@ mod tests {
             outcome: PublisherOutcome::Failed("boom".to_string()),
             evidence: None,
         }
+    }
+
+    /// A workspace-only crate's `publish.on_error` hooks must fire: a
+    /// `config.crates`-only walk resolved no hooks for a pure-workspace
+    /// config, so a failed publish never ran the operator's hook.
+    #[test]
+    fn on_error_fires_from_workspace_only_crate() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("fired.txt");
+        let out_str = out.display().to_string().replace('\\', "/");
+        let publish = PublishConfig {
+            on_error: Some(vec![cmd_hook(&format!("printf 'ws-hook\\n' >> {out_str}"))]),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .workspaces(vec![anodizer_core::config::WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![crate_with_publish("ws-only", publish)],
+                ..Default::default()
+            }])
+            .build();
+        assert!(
+            ctx.config.crates.is_empty(),
+            "fixture must be a pure-workspace config"
+        );
+        let res = result("homebrew", PublisherGroup::Manager, true);
+        fire_on_error(&ctx, &res, "tap push rejected", false, &log());
+        let body = std::fs::read_to_string(&out).expect("hook must have written output");
+        assert_eq!(body, "ws-hook\n");
     }
 
     /// Lockstep workspace (multiple crates, no per-crate scoping):

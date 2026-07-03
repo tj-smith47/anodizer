@@ -1978,9 +1978,9 @@ mod tests {
 
     /// A workspace-only crate that carries a non-cargo publisher block
     /// (homebrew/scoop/aur/...) must be visible to `crates_with_publisher`,
-    /// matching the universe `cargo.rs::publish_to_cargo` walks. Before the
-    /// shared `util::all_crates` lift, this crate would silently disappear
-    /// from every non-cargo dispatcher even though cargo would still publish it.
+    /// matching the universe `cargo.rs::publish_to_cargo` walks. Under a
+    /// `config.crates`-only walk, this crate would silently disappear from
+    /// every non-cargo dispatcher even though cargo would still publish it.
     #[test]
     fn test_crates_with_publisher_includes_workspace_only_crates() {
         let mut config = Config::default();
@@ -2040,6 +2040,52 @@ mod tests {
             names,
             vec!["shared".to_string()],
             "top-level entry must win on name collision and not be doubled"
+        );
+    }
+
+    /// `PublishStage::run` actually EMITS the universe collision warnings —
+    /// the walker itself is silent, so without this call site a name
+    /// collision with diverging paths (almost certainly a config mistake)
+    /// would be invisible to the operator whose workspace crate is dropped.
+    /// Snapshot mode is used because the warnings must surface BEFORE the
+    /// snapshot skip.
+    #[test]
+    fn publish_stage_run_emits_collision_warnings() {
+        use anodizer_core::log::{LogCapture, LogLevel};
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "shared".to_string(),
+            path: "top".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }];
+        config.workspaces = Some(vec![WorkspaceConfig {
+            name: "ws".to_string(),
+            crates: vec![CrateConfig {
+                // Same name, DIFFERENT path — the shape the warning flags.
+                name: "shared".to_string(),
+                path: "ws/shared".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }]);
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                snapshot: true,
+                ..Default::default()
+            },
+        );
+        let cap = LogCapture::new();
+        ctx.with_log_capture(cap.clone());
+        assert!(PublishStage.run(&mut ctx).is_ok());
+        let lines = cap.all_messages();
+        assert!(
+            lines
+                .iter()
+                .any(|(l, m)| *l == LogLevel::Warn && m.contains("shadowed by")),
+            "run() must emit the collision warning: {lines:?}"
         );
     }
 

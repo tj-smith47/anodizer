@@ -1320,7 +1320,7 @@ struct AurOurTarget {
     git_ssh_command: Option<String>,
 }
 
-/// Walk `ctx.config.crates` for a `publish.aur` block whose `git_url`
+/// Walk the crate universe for a `publish.aur` block whose `git_url`
 /// matches `git_url` and return the resolved
 /// `(private_key, git_ssh_command)` pair. Used at rollback time so
 /// the SSH credentials never need to round-trip through serialized
@@ -1333,7 +1333,7 @@ fn resolve_aur_credentials_from_config(
     ctx: &Context,
     git_url: &str,
 ) -> anyhow::Result<(Option<String>, Option<String>)> {
-    for c in &ctx.config.crates {
+    for c in ctx.config.crate_universe() {
         let Some(ac) = c.publish.as_ref().and_then(|p| p.aur.as_ref()) else {
             continue;
         };
@@ -1419,7 +1419,7 @@ fn decode_aur_our_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec<Au
 fn collect_aur_our_run_targets(ctx: &Context, log: &StageLogger) -> Result<Vec<AurOurTarget>> {
     let mut out: Vec<AurOurTarget> = Vec::new();
     let selected = &ctx.options.selected_crates;
-    for c in &ctx.config.crates {
+    for c in ctx.config.crate_universe() {
         if !selected.is_empty() && !selected.contains(&c.name) {
             continue;
         }

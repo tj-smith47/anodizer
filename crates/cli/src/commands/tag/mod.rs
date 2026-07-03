@@ -2030,20 +2030,7 @@ fn load_crate_tag_info(
     config: &anodizer_core::config::Config,
     crate_name: &str,
 ) -> Option<CrateTagInfo> {
-    // Search top-level crates first, then workspace crates.
-    let crate_cfg = config
-        .crates
-        .iter()
-        .find(|c| c.name == crate_name)
-        .or_else(|| {
-            config
-                .workspaces
-                .as_deref()
-                .unwrap_or_default()
-                .iter()
-                .flat_map(|w| &w.crates)
-                .find(|c| c.name == crate_name)
-        })?;
+    let crate_cfg = config.find_crate(crate_name)?;
 
     let tag_prefix = git::extract_tag_prefix(&crate_cfg.tag_template)?;
     let version_sync = crate_cfg

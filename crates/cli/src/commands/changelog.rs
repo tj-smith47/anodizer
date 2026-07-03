@@ -206,16 +206,8 @@ fn resolve_start_bound(
 /// returning `(crate_name, prefix)`. Mirrors the `resolve-tag` command:
 /// longest-matching prefix wins, and the remainder must look like a version.
 fn resolve_tag_owner(config: &Config, tag: &str) -> Result<(String, String)> {
-    let all_crates = config.crates.iter().chain(
-        config
-            .workspaces
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .flat_map(|w| &w.crates),
-    );
     let mut best: Option<(&str, String)> = None;
-    for c in all_crates {
+    for c in config.crate_universe() {
         let prefix = git::per_crate_tag_prefix(&c.name, &c.tag_template);
         if let Some(remainder) = tag.strip_prefix(&prefix) {
             let is_version = remainder
@@ -294,16 +286,8 @@ fn select_crates(
                 // global-prefixed target at its directory (workspace root when no
                 // crate is defined). A crate's own `tag_template` still wins when
                 // it sets one; otherwise it inherits the global prefix.
-                let c = config.crates.first().or_else(|| {
-                    config
-                        .workspaces
-                        .as_deref()
-                        .unwrap_or_default()
-                        .iter()
-                        .flat_map(|w| &w.crates)
-                        .next()
-                });
-                match c {
+                let universe = config.crate_universe();
+                match universe.first() {
                     Some(c) => vec![(
                         c.name.clone(),
                         workspace_root.join(&c.path),

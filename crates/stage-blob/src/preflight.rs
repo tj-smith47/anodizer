@@ -91,7 +91,7 @@ pub(crate) fn run_preflight(ctx: &Context) -> Result<PreflightCheck> {
     Ok(acc)
 }
 
-/// Walk the same crate set the publish path iterates (`config.crates`
+/// Walk the same crate set the publish path iterates (the crate universe
 /// filtered by `--crate` selection), render each active blob config's
 /// addressing, and dedupe into `(provider, bucket, region, endpoint)`
 /// destinations. A render failure for an addressing field is indeterminate
@@ -106,8 +106,8 @@ fn collect_targets(
 
     for krate in ctx
         .config
-        .crates
-        .iter()
+        .crate_universe()
+        .into_iter()
         .filter(|c| selected.is_empty() || selected.contains(&c.name))
     {
         let Some(blob_configs) = krate.blobs.as_ref() else {

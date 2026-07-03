@@ -108,11 +108,12 @@ fn merge_collapsed(
 
 /// Returns the publishers configured for this release run.
 ///
-/// Walks `ctx.config.crates[*].publish` and the top-level publisher blocks
-/// (`dockerhub`, `artifactories`, `cloudsmiths`) and instantiates a
-/// `Box<dyn Publisher>` for each configured publisher. The returned slice
-/// is the single source of truth that [`crate::dispatch::dispatch`]
-/// iterates.
+/// Walks the crate universe's `publish:` blocks
+/// ([`anodizer_core::config::Config::crate_universe`] — top-level plus
+/// workspace crates) and the top-level publisher blocks (`dockerhub`,
+/// `artifactories`, `cloudsmiths`) and instantiates a `Box<dyn Publisher>`
+/// for each configured publisher. The returned slice is the single source
+/// of truth that [`crate::dispatch::dispatch`] iterates.
 ///
 /// These publishers run via the trait registry. Blob and Snapcraft do NOT
 /// — they own their own pipeline stages (`BlobStage`,
@@ -526,12 +527,9 @@ pub fn warn_release_optional_with_dependent_publisher(ctx: &Context, log: &Stage
     if !is_github_release_configured(ctx) {
         return;
     }
-    let release_required = collapse_required(
-        ctx.config
-            .crates
-            .iter()
-            .map(|c| c.release.as_ref().and_then(|r| r.required)),
-    );
+    // Same collapse the release publisher's registration uses, so the
+    // warning and the gate agree on what `release.required` resolves to.
+    let (release_required, _) = collapse_crate_overrides(ctx, |c| c.release.as_ref());
     // Only warn on an EXPLICIT opt-out. `None` keeps the publisher default and
     // is not a deliberate weakening of the gate.
     if release_required != Some(false) {
@@ -754,16 +752,15 @@ pub fn validate_publisher_allowlist_configured(
 /// --publishers <stage>` validates against the real config, mirroring how the
 /// trait publishers go through [`configured_publishers`].
 fn configured_publish_stage_publishers(ctx: &Context) -> Vec<&'static str> {
+    let universe = ctx.config.crate_universe();
     let mut out = Vec::new();
-    if ctx.config.crates.iter().any(|c| c.blobs.is_some()) {
+    if universe.iter().any(|c| c.blobs.is_some()) {
         out.push(PublisherKind::Blob.token());
     }
-    if ctx.config.crates.iter().any(|c| c.snapcrafts.is_some()) {
+    if universe.iter().any(|c| c.snapcrafts.is_some()) {
         out.push(PublisherKind::SnapcraftPublish.token());
     }
-    if ctx
-        .config
-        .crates
+    if universe
         .iter()
         .any(|c| c.dockers_v2.is_some() || c.docker_manifests.is_some())
     {
@@ -931,6 +928,40 @@ mod tests {
     fn allowlist_configured_accepts_empty() {
         let ctx = cargo_configured_ctx();
         assert!(validate_publisher_allowlist_configured(&[], &ctx).is_ok());
+    }
+
+    /// `release --publishers blob` on a pure-workspace config whose `blobs:`
+    /// lives only under a workspace crate must validate — the out-of-dispatch
+    /// stage gate walks the universe. A `config.crates`-only gate hard-errored
+    /// "publisher 'blob' named in --publishers is not configured" for a config
+    /// whose blob upload WOULD run.
+    #[test]
+    fn allowlist_configured_accepts_workspace_only_blob() {
+        use anodizer_core::config::WorkspaceConfig;
+        let ws_crate = CrateConfig {
+            name: "ws-only".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            blobs: Some(vec![anodizer_core::config::BlobConfig {
+                provider: "s3".to_string(),
+                bucket: "ws-releases".to_string(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .workspaces(vec![WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![ws_crate],
+                ..Default::default()
+            }])
+            .build();
+        assert!(
+            ctx.config.crates.is_empty(),
+            "fixture must be a pure-workspace config"
+        );
+        let allow = vec!["blob".to_string()];
+        assert!(validate_publisher_allowlist_configured(&allow, &ctx).is_ok());
     }
 
     #[test]

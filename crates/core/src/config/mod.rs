@@ -387,15 +387,27 @@ impl Config {
     /// `workspaces[].crates` entry, deduplicated by name (first-seen wins,
     /// so a top-level entry shadows a same-named workspace entry).
     ///
-    /// Single source of the "all crates that can carry per-crate config"
-    /// walk. Publisher registration, required/retain gate collapsing,
-    /// per-crate dispatch, requirement derivation, and `--crate`/`--all`
-    /// selection must all resolve through this walker so a workspace-only
-    /// crate carrying a publisher block is either visible everywhere or
-    /// nowhere — a consumer iterating `config.crates` directly silently
-    /// excludes workspace crates and hides their publishes.
+    /// Single source of the read-only "all crates that can carry per-crate
+    /// config" walk. Publisher registration, required/retain gate
+    /// collapsing, per-crate dispatch, requirement derivation, and
+    /// `--crate`/`--all` selection must all resolve through this walker so
+    /// a workspace-only crate carrying a publisher block is either visible
+    /// everywhere or nowhere — a consumer iterating `config.crates`
+    /// directly silently excludes workspace crates and hides their
+    /// publishes. Only two shapes may keep a raw chained walk: mutation
+    /// passes (`&mut` access — this walker hands out shared borrows) and
+    /// validation/diagnostics that must see every entry as written,
+    /// including the shadowed duplicates this walker dedups away.
     pub fn crate_universe(&self) -> Vec<&CrateConfig> {
         self.crate_universe_walk().0
+    }
+
+    /// Borrow a crate by name from [`Self::crate_universe`] (top-level wins
+    /// on a name collision). The single by-name lookup every consumer must
+    /// use — a `config.crates.iter().find(...)` cannot see workspace-only
+    /// crates.
+    pub fn find_crate(&self, name: &str) -> Option<&CrateConfig> {
+        self.crate_universe().into_iter().find(|c| c.name == name)
     }
 
     /// Operator-facing warnings for crate-name collisions in the universe
@@ -504,16 +516,7 @@ impl Config {
     /// project-level publishers (e.g. top-level `homebrew_casks:`) that are
     /// not bound to a single crate.
     fn primary_crate_name(&self) -> Option<&str> {
-        self.crates
-            .first()
-            .or_else(|| {
-                self.workspaces
-                    .iter()
-                    .flatten()
-                    .flat_map(|w| w.crates.iter())
-                    .next()
-            })
-            .map(|c| c.name.as_str())
+        self.crate_universe().first().map(|c| c.name.as_str())
     }
 
     /// Project homepage: top-level `metadata.homepage` wins, else the primary
@@ -682,14 +685,8 @@ impl Config {
     /// entry (harmless — the accessors treat it as "no value").
     pub fn populate_derived_metadata(&mut self, base_dir: &std::path::Path) {
         let crate_paths: Vec<(String, String)> = self
-            .crates
-            .iter()
-            .chain(
-                self.workspaces
-                    .iter()
-                    .flatten()
-                    .flat_map(|w| w.crates.iter()),
-            )
+            .crate_universe()
+            .into_iter()
             .map(|c| (c.name.clone(), c.path.clone()))
             .collect();
         for (name, path) in crate_paths {
@@ -1089,6 +1086,9 @@ pub fn validate_release_backends(config: &Config) -> Result<(), String> {
 /// — but it would never be read; rejecting the misplacement at config
 /// load keeps a policy choice from being silently ignored.
 pub fn validate_on_failure_root_only(config: &Config) -> Result<(), String> {
+    // Deliberately raw (not `crate_universe()`): validation must flag every
+    // entry as written, including a workspace entry the dedup would shadow —
+    // a policy violation on a shadowed crate is still a config mistake.
     let mut offenders: Vec<&str> = config
         .crates
         .iter()

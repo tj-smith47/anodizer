@@ -62,18 +62,9 @@ pub fn cross_tool_requirements(ctx: &Context) -> Vec<EnvRequirement> {
         .and_then(|b| b.ignore.clone())
         .unwrap_or_default();
 
-    let all_crates = ctx.config.crates.iter().chain(
-        ctx.config
-            .workspaces
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .flat_map(|w| w.crates.iter()),
-    );
-
     let mut tools: BTreeSet<String> = BTreeSet::new();
 
-    for krate in all_crates {
+    for krate in ctx.config.crate_universe() {
         if !selected.is_empty() && !selected.contains(&krate.name) {
             continue;
         }

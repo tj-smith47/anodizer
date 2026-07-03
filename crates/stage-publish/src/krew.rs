@@ -3654,7 +3654,7 @@ fn collect_krew_target(
     log: &StageLogger,
 ) -> Result<Option<KrewPrTarget>> {
     let version = ctx.version();
-    let Some(c) = ctx.config.crates.iter().find(|c| c.name == crate_name) else {
+    let Some(c) = crate::util::find_crate_in_universe(ctx, crate_name) else {
         return Ok(None);
     };
     let Some(krew_cfg) = c.publish.as_ref().and_then(|p| p.krew.as_ref()) else {
