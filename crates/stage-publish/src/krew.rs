@@ -3684,13 +3684,17 @@ fn collect_krew_target(
     }))
 }
 
-/// True when the crate has a `publish.krew` block — mirrors the
-/// `per_crate!` predicate in `lib.rs` so the publisher iterates
-/// exactly the same crate universe.
+/// The crate-level `publish.krew` block — the single accessor the
+/// registry gate, the gate-override collapse, and the per-crate dispatch
+/// predicate all key on.
+pub(crate) fn block(
+    p: &anodizer_core::config::PublishConfig,
+) -> Option<&anodizer_core::config::KrewConfig> {
+    p.krew.as_ref()
+}
+
 pub(crate) fn is_krew_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
-    crate::util::all_crates(ctx)
-        .into_iter()
-        .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.krew.is_some()))
+    crate::publisher_helpers::is_per_crate_block_configured(ctx, crate_name, block)
 }
 
 /// Message emitted at publisher entry. Names how many crates the publisher
@@ -3789,7 +3793,8 @@ impl anodizer_core::Publisher for KrewPublisher {
         // for the index probe + webhook), and the PR-direct flow clones
         // with git. `git` is declared unconditionally because `auto` mode
         // can resolve to PR-direct at run time.
-        anodizer_core::env_preflight::crate_universe(&ctx.config)
+        ctx.config
+            .crate_universe()
             .into_iter()
             .filter_map(|c| c.publish.as_ref()?.krew.as_ref())
             .filter(|k| {
@@ -4068,7 +4073,8 @@ impl anodizer_core::Publisher for KrewPublisher {
             ctx,
             &policy,
             "KREW_INDEX_TOKEN",
-            anodizer_core::env_preflight::crate_universe(&ctx.config)
+            ctx.config
+                .crate_universe()
                 .into_iter()
                 .filter_map(|c| c.publish.as_ref().and_then(|p| p.krew.as_ref())),
             |k| {

@@ -107,7 +107,9 @@ mod tests;
 pub fn env_requirements(
     ctx: &anodizer_core::context::Context,
 ) -> Vec<anodizer_core::EnvRequirement> {
-    let any = anodizer_core::env_preflight::crate_universe(&ctx.config)
+    let any = ctx
+        .config
+        .crate_universe()
         .into_iter()
         .flat_map(|c| c.dockers_v2.iter().flatten())
         .any(|d| {

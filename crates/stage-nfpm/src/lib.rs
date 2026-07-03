@@ -73,7 +73,7 @@ pub fn env_requirements(
 ) -> Vec<anodizer_core::EnvRequirement> {
     let mut out = Vec::new();
     let mut any = false;
-    for c in anodizer_core::env_preflight::crate_universe(&ctx.config) {
+    for c in ctx.config.crate_universe() {
         for n in c.nfpms.iter().flatten() {
             any = true;
             if let Some(sig) = n.rpm.as_ref().and_then(|f| f.signature.as_ref()) {

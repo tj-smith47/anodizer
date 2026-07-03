@@ -137,7 +137,8 @@ fn mcp_image_owned_by_selected(ctx: &Context) -> bool {
         return true;
     }
 
-    crate::util::all_crates(ctx)
+    ctx.config
+        .crate_universe()
         .iter()
         .filter(|c| selected.iter().any(|s| s == &c.name))
         .filter_map(|c| c.dockers_v2.as_ref())

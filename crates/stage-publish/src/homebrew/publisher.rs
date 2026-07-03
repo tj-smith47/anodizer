@@ -258,7 +258,9 @@ impl anodizer_core::Publisher for HomebrewPublisher {
 
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
         let mut out = Vec::new();
-        let formula_repos = anodizer_core::env_preflight::crate_universe(&ctx.config)
+        let formula_repos = ctx
+            .config
+            .crate_universe()
             .into_iter()
             .filter_map(|c| c.publish.as_ref()?.homebrew.as_ref())
             .filter(|h| {
@@ -420,7 +422,8 @@ impl anodizer_core::Publisher for HomebrewPublisher {
             ctx,
             &policy,
             "HOMEBREW_TAP_TOKEN",
-            anodizer_core::env_preflight::crate_universe(&ctx.config)
+            ctx.config
+                .crate_universe()
                 .into_iter()
                 .filter_map(|c| c.publish.as_ref().and_then(|p| p.homebrew.as_ref())),
             |h| {
@@ -454,13 +457,17 @@ impl anodizer_core::Publisher for HomebrewPublisher {
     }
 }
 
-/// True when the crate has a `publish.homebrew` block — mirrors the
-/// `per_crate!` predicate in `lib.rs` so the publisher iterates
-/// exactly the same crate universe.
+/// The crate-level `publish.homebrew` block — the single accessor the
+/// registry gate, the gate-override collapse, and the per-crate dispatch
+/// predicate all key on.
+pub(crate) fn block(
+    p: &anodizer_core::config::PublishConfig,
+) -> Option<&anodizer_core::config::HomebrewConfig> {
+    p.homebrew.as_ref()
+}
+
 pub(crate) fn is_homebrew_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
-    crate::util::all_crates(ctx)
-        .into_iter()
-        .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.homebrew.is_some()))
+    crate::publisher_helpers::is_per_crate_block_configured(ctx, crate_name, block)
 }
 
 #[cfg(test)]

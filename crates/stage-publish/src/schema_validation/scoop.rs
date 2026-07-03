@@ -57,11 +57,13 @@ impl PublisherSchemaValidator for ScoopSchemaValidator {
             // archive was not built in this run rather than fail on the
             // publisher's own "no Windows archive" guard — there is nothing to
             // render or validate.
-            let Some(scoop_cfg) = crate::util::all_crates(ctx)
+            let Some(scoop_cfg) = ctx
+                .config
+                .crate_universe()
                 .into_iter()
                 .find(|c| &c.name == crate_name)
-                .and_then(|c| c.publish)
-                .and_then(|p| p.scoop)
+                .and_then(|c| c.publish.as_ref())
+                .and_then(|p| p.scoop.clone())
             else {
                 continue;
             };

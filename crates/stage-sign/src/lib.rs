@@ -707,7 +707,9 @@ pub fn binary_sign_env_requirements(
 pub fn docker_sign_env_requirements(
     ctx: &anodizer_core::context::Context,
 ) -> Vec<anodizer_core::EnvRequirement> {
-    let any_images = anodizer_core::env_preflight::crate_universe(&ctx.config)
+    let any_images = ctx
+        .config
+        .crate_universe()
         .into_iter()
         .flat_map(|c| c.dockers_v2.iter().flatten())
         .any(|d| {

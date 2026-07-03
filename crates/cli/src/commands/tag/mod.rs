@@ -1510,7 +1510,7 @@ fn compute_per_crate_tags(
     preloaded_config: Option<&anodizer_core::config::Config>,
     log: &StageLogger,
 ) -> Result<Vec<GroupTagResult>> {
-    use crate::commands::release::{detect_changed_crates_pub, flatten_known_crates};
+    use crate::commands::release::detect_changed_crates_pub;
 
     // Use the already-loaded config when available to avoid a redundant disk
     // read; fall back to a fresh load, then to an empty default for fixture
@@ -1530,7 +1530,11 @@ fn compute_per_crate_tags(
     };
 
     // Run change detection across ALL crates so depends_on propagation works.
-    let all_known = flatten_known_crates(anodizer_config);
+    let all_known: Vec<CrateConfig> = anodizer_config
+        .crate_universe()
+        .into_iter()
+        .cloned()
+        .collect();
     let changed_names = detect_changed_crates_pub(
         workspace_root,
         &all_known,

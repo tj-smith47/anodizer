@@ -28,7 +28,6 @@ use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result, bail};
 
 use crate::nix;
-use crate::util;
 
 /// Entry point: validate every in-scope crate's snapshot emissions.
 ///
@@ -217,9 +216,11 @@ fn restore_artifact_version(ctx: &mut Context, prior: (Option<String>, Option<St
 /// all four config modes.
 fn in_scope_crates(ctx: &Context) -> Vec<CrateConfig> {
     let selected = &ctx.options.selected_crates;
-    util::all_crates(ctx)
+    ctx.config
+        .crate_universe()
         .into_iter()
         .filter(|c| selected.is_empty() || selected.contains(&c.name))
+        .cloned()
         .collect()
 }
 

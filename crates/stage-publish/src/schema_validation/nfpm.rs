@@ -49,10 +49,11 @@ pub(crate) struct NfpmSchemaValidator;
 /// build's `run` loop iterates (`c.nfpms.is_some()`, where an empty list yields
 /// no packages).
 fn is_nfpm_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
-    crate::util::all_crates(ctx)
+    ctx.config
+        .crate_universe()
         .into_iter()
         .find(|c| c.name == crate_name)
-        .and_then(|c| c.nfpms)
+        .and_then(|c| c.nfpms.as_ref())
         .is_some_and(|cfgs| !cfgs.is_empty())
 }
 

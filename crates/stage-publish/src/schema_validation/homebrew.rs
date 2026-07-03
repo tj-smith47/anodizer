@@ -73,11 +73,13 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
             // project-wide and stays under the global scope.
             let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
                 let mut findings = Vec::new();
-                let hb_cfg = crate::util::all_crates(ctx)
+                let hb_cfg = ctx
+                    .config
+                    .crate_universe()
                     .into_iter()
                     .find(|c| &c.name == crate_name)
-                    .and_then(|c| c.publish)
-                    .and_then(|p| p.homebrew);
+                    .and_then(|c| c.publish.as_ref())
+                    .and_then(|p| p.homebrew.clone());
 
                 // FORMULA path. A real release always builds at least one archive
                 // a formula can point at, but a sharded / single-target snapshot

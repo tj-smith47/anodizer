@@ -73,10 +73,17 @@ fn collect_nix_run_targets(ctx: &Context) -> Vec<NixTarget> {
     out
 }
 
+/// The crate-level `publish.nix` block — the single accessor the
+/// registry gate, the gate-override collapse, and the per-crate dispatch
+/// predicate all key on.
+pub(crate) fn block(
+    p: &anodizer_core::config::PublishConfig,
+) -> Option<&anodizer_core::config::NixConfig> {
+    p.nix.as_ref()
+}
+
 pub(crate) fn is_nix_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
-    crate::util::all_crates(ctx)
-        .into_iter()
-        .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.nix.is_some()))
+    crate::publisher_helpers::is_per_crate_block_configured(ctx, crate_name, block)
 }
 
 /// Message emitted at publisher entry. Names how many crates the publisher
@@ -175,7 +182,8 @@ impl anodizer_core::Publisher for NixPublisher {
     }
 
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        anodizer_core::env_preflight::crate_universe(&ctx.config)
+        ctx.config
+            .crate_universe()
             .into_iter()
             .filter_map(|c| c.publish.as_ref()?.nix.as_ref())
             .filter(|n| {
@@ -293,7 +301,8 @@ impl anodizer_core::Publisher for NixPublisher {
             ctx,
             &policy,
             "NIX_PKGS_TOKEN",
-            anodizer_core::env_preflight::crate_universe(&ctx.config)
+            ctx.config
+                .crate_universe()
                 .into_iter()
                 .filter_map(|c| c.publish.as_ref().and_then(|p| p.nix.as_ref())),
             |n| {

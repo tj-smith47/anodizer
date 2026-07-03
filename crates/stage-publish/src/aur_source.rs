@@ -1027,30 +1027,26 @@ fn decode_aur_source_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec
     }
 }
 
-/// True when at least one crate has a `publish.aur_source` block OR the
-/// top-level `aur_sources:` array is non-empty. Mirrors the dispatch in
-/// `lib.rs` so the publisher runs whenever the existing per-crate +
-/// top-level macros would have.
+/// True when at least one crate in the full crate universe has a
+/// `publish.aur_source` block OR the top-level `aur_sources:` array is
+/// non-empty — the same universe + accessor the per-crate dispatch keys
+/// on, so the publisher registers whenever `run()` would emit.
 pub(crate) fn is_aur_source_configured(ctx: &Context) -> bool {
-    let per_crate = ctx
-        .config
-        .crates
-        .iter()
-        .any(|c| c.publish.as_ref().is_some_and(|p| p.aur_source.is_some()));
-    let top_level = ctx
-        .config
-        .aur_sources
-        .as_ref()
-        .is_some_and(|v| !v.is_empty());
-    per_crate || top_level
+    crate::publisher_helpers::is_any_crate_block_configured(ctx, block)
+        || crate::publisher_helpers::is_top_level_block_configured(ctx.config.aur_sources.as_ref())
 }
 
-/// True when the named crate has a `publish.aur_source` block. Per-crate
-/// gate for the iteration in `run()`.
+/// The crate-level `publish.aur_source` block — the single accessor the
+/// registry gate, the gate-override collapse, and the per-crate dispatch
+/// predicate all key on.
+pub(crate) fn block(
+    p: &anodizer_core::config::PublishConfig,
+) -> Option<&anodizer_core::config::AurSourceConfig> {
+    p.aur_source.as_ref()
+}
+
 pub(crate) fn is_aur_source_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
-    crate::util::all_crates(ctx)
-        .into_iter()
-        .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.aur_source.is_some()))
+    crate::publisher_helpers::is_per_crate_block_configured(ctx, crate_name, block)
 }
 
 /// Reproduce the AUR-source package-name resolution that
@@ -1146,7 +1142,9 @@ impl anodizer_core::Publisher for AurSourcePublisher {
         // Both config homes: per-crate `publish.aur_source` and the
         // top-level `aur_sources:` block (the same union
         // `is_aur_source_configured` gates dispatch on).
-        let per_crate = anodizer_core::env_preflight::crate_universe(&ctx.config)
+        let per_crate = ctx
+            .config
+            .crate_universe()
             .into_iter()
             .filter_map(|c| c.publish.as_ref()?.aur_source.as_ref())
             .filter(|a| {
@@ -1282,7 +1280,9 @@ impl anodizer_core::Publisher for AurSourcePublisher {
     /// destructive variant), so an unauthorized key is worth surfacing early —
     /// but the SSH handshake is flaky, so a failure warns rather than blocks.
     fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
-        let per_crate = anodizer_core::env_preflight::crate_universe(&ctx.config)
+        let per_crate = ctx
+            .config
+            .crate_universe()
             .into_iter()
             .filter_map(|c| c.publish.as_ref()?.aur_source.as_ref())
             .filter(|a| {

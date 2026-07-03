@@ -153,7 +153,7 @@ fn first_non_release_version(ctx: &crate::context::Context) -> Option<(String, &
     // (it would fail loud later at `with_crate_scope`); only an actually
     // resolved, non-release per-crate version trips the guard.
     let selected = &ctx.options.selected_crates;
-    for crate_cfg in crate::env_preflight::crate_universe(&ctx.config) {
+    for crate_cfg in ctx.config.crate_universe() {
         if !selected.is_empty() && !selected.contains(&crate_cfg.name) {
             continue;
         }

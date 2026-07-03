@@ -1801,12 +1801,17 @@ fn resolve_winget_upstream(winget_cfg: &anodizer_core::config::WingetConfig) -> 
     ("microsoft".to_string(), "winget-pkgs".to_string())
 }
 
-/// True when the crate has a `publish.winget` block — mirrors the
-/// `per_crate!` predicate in `lib.rs`.
+/// The crate-level `publish.winget` block — the single accessor the
+/// registry gate, the gate-override collapse, and the per-crate dispatch
+/// predicate all key on.
+pub(crate) fn block(
+    p: &anodizer_core::config::PublishConfig,
+) -> Option<&anodizer_core::config::WingetConfig> {
+    p.winget.as_ref()
+}
+
 pub(crate) fn is_winget_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
-    crate::util::all_crates(ctx)
-        .into_iter()
-        .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.winget.is_some()))
+    crate::publisher_helpers::is_per_crate_block_configured(ctx, crate_name, block)
 }
 
 /// Build a [`WingetTarget`] for the given crate. Reads config + the
@@ -1951,7 +1956,8 @@ impl anodizer_core::Publisher for WingetPublisher {
     }
 
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        anodizer_core::env_preflight::crate_universe(&ctx.config)
+        ctx.config
+            .crate_universe()
             .into_iter()
             .filter_map(|c| c.publish.as_ref()?.winget.as_ref())
             .filter(|w| {
@@ -2076,7 +2082,8 @@ impl anodizer_core::Publisher for WingetPublisher {
             ctx,
             &policy,
             "WINGET_PKGS_TOKEN",
-            anodizer_core::env_preflight::crate_universe(&ctx.config)
+            ctx.config
+                .crate_universe()
                 .into_iter()
                 .filter_map(|c| c.publish.as_ref().and_then(|p| p.winget.as_ref())),
             |w| {

@@ -486,7 +486,9 @@ impl anodizer_core::Publisher for GithubReleasePublisher {
         // block existing anywhere in the crate universe so ungated
         // requirement collection never demands a token from a config that
         // creates no release.
-        let configured = anodizer_core::env_preflight::crate_universe(&ctx.config)
+        let configured = ctx
+            .config
+            .crate_universe()
             .into_iter()
             .any(|c| c.release.is_some());
         if !configured || ctx.options.token.as_deref().is_some_and(|t| !t.is_empty()) {

@@ -495,23 +495,6 @@ pub fn template_env_refs(s: &str) -> Vec<String> {
     out
 }
 
-/// The full crate universe of a resolved config: top-level `crates` plus
-/// every workspace's crates (first-seen name wins, matching the publish
-/// path's `all_crates`). Requirement derivation must union across ALL
-/// publishable crates so per-crate workspace mode preflights the same
-/// surface the per-crate pipeline will run.
-pub fn crate_universe(config: &crate::config::Config) -> Vec<&crate::config::CrateConfig> {
-    let mut out: Vec<&crate::config::CrateConfig> = config.crates.iter().collect();
-    for ws in config.workspaces.iter().flatten() {
-        for c in &ws.crates {
-            if !out.iter().any(|e| e.name == c.name) {
-                out.push(c);
-            }
-        }
-    }
-    out
-}
-
 /// The artifact-producing stage tokens a resolved config actually
 /// configures — i.e. carries a non-empty config block for. Tokens match the
 /// determinism harness's stage names (`nfpm`, `flatpak`, `dmg`, …) and the
@@ -519,7 +502,7 @@ pub fn crate_universe(config: &crate::config::Config) -> Vec<&crate::config::Cra
 ///
 /// Each token gates on the SAME `Config` / `CrateConfig` field the matching
 /// stage crate's `env_requirements` reads (per-crate blocks unioned across
-/// [`crate_universe`]; top-level blocks read directly), so a consumer of this
+/// [`crate::config::Config::crate_universe`]; top-level blocks read directly), so a consumer of this
 /// set cannot drift from which producers the pipeline will actually run. The
 /// determinism harness intersects its OS-native default partition with this
 /// set so a `--stages`-absent run only byte-verifies — and, under
@@ -541,7 +524,7 @@ pub fn crate_universe(config: &crate::config::Config) -> Vec<&crate::config::Cra
 pub fn configured_producer_stages(
     config: &crate::config::Config,
 ) -> std::collections::BTreeSet<&'static str> {
-    let crates = crate_universe(config);
+    let crates = config.crate_universe();
     CONFIGURED_PRODUCERS
         .iter()
         .filter(|p| (p.configured)(config, &crates))
@@ -582,7 +565,7 @@ struct ConfiguredProducer {
     /// whose native toolchain builds this producer's payload binary.
     native_os: &'static str,
     /// Fires when the resolved config carries ≥1 block for this producer
-    /// (per-crate blocks unioned across the supplied [`crate_universe`];
+    /// (per-crate blocks unioned across the supplied [`crate::config::Config::crate_universe`];
     /// top-level blocks read off `Config` directly).
     configured: fn(&crate::config::Config, &[&crate::config::CrateConfig]) -> bool,
 }
@@ -818,7 +801,7 @@ pub fn configured_build_targets(ctx: &crate::context::Context) -> Vec<String> {
             out.push(t.to_string());
         }
     };
-    for krate in crate_universe(&ctx.config) {
+    for krate in ctx.config.crate_universe() {
         // A library crate with no default binary yields no builds, so it
         // contributes nothing — the planner's compile/artifact gate.
         let Some(builds) = crate::build_plan::planned_builds(krate) else {

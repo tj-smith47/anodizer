@@ -146,7 +146,7 @@ pub fn wix_version_tools(version: WixVersion) -> Vec<&'static str> {
 /// when no active MSI config exists.
 pub fn required_msi_tools(ctx: &anodizer_core::context::Context) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for krate in anodizer_core::env_preflight::crate_universe(&ctx.config) {
+    for krate in ctx.config.crate_universe() {
         for cfg in krate.msis.iter().flatten() {
             if anodizer_core::env_preflight::entry_inactive(
                 ctx,

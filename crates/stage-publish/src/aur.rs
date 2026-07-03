@@ -1456,10 +1456,17 @@ fn collect_aur_our_run_targets(ctx: &Context, log: &StageLogger) -> Result<Vec<A
     Ok(out)
 }
 
+/// The crate-level `publish.aur` block — the single accessor the
+/// registry gate, the gate-override collapse, and the per-crate dispatch
+/// predicate all key on.
+pub(crate) fn block(
+    p: &anodizer_core::config::PublishConfig,
+) -> Option<&anodizer_core::config::AurConfig> {
+    p.aur.as_ref()
+}
+
 pub(crate) fn is_aur_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
-    crate::util::all_crates(ctx)
-        .into_iter()
-        .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.aur.is_some()))
+    crate::publisher_helpers::is_per_crate_block_configured(ctx, crate_name, block)
 }
 
 /// Message emitted at publisher entry. Names how many crates the publisher
@@ -1554,7 +1561,8 @@ impl anodizer_core::Publisher for AurOurPublisher {
     }
 
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        anodizer_core::env_preflight::crate_universe(&ctx.config)
+        ctx.config
+            .crate_universe()
             .into_iter()
             .filter_map(|c| c.publish.as_ref()?.aur.as_ref())
             .filter(|a| {
@@ -1679,7 +1687,9 @@ impl anodizer_core::Publisher for AurOurPublisher {
     /// remote *accepts* it. Warning-only: an overwritable git push is
     /// recoverable and an SSH handshake is flaky.
     fn preflight(&self, ctx: &Context) -> anyhow::Result<anodizer_core::PreflightCheck> {
-        let entries = anodizer_core::env_preflight::crate_universe(&ctx.config)
+        let entries = ctx
+            .config
+            .crate_universe()
             .into_iter()
             .filter_map(|c| c.publish.as_ref()?.aur.as_ref())
             .filter(|a| {

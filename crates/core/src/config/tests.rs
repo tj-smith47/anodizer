@@ -10225,3 +10225,90 @@ fn default_cross_strategy_uses_configured_strategy() {
     });
     assert_eq!(cfg.default_cross_strategy(), CrossStrategy::Cross);
 }
+
+// ---- crate_universe tests ----
+
+/// One crate config with just name + path, for universe-walk tests.
+fn universe_crate(name: &str, path: &str) -> super::CrateConfig {
+    super::CrateConfig {
+        name: name.to_string(),
+        path: path.to_string(),
+        ..Default::default()
+    }
+}
+
+/// The universe unions top-level `crates` with every workspace's crates,
+/// preserving first-seen order (top-level first).
+#[test]
+fn crate_universe_unions_top_level_and_workspace_crates() {
+    let config = Config {
+        crates: vec![universe_crate("top", "crates/top")],
+        workspaces: Some(vec![
+            WorkspaceConfig {
+                name: "ws-a".to_string(),
+                crates: vec![universe_crate("ws_a", "crates/ws_a")],
+                ..Default::default()
+            },
+            WorkspaceConfig {
+                name: "ws-b".to_string(),
+                crates: vec![universe_crate("ws_b", "crates/ws_b")],
+                ..Default::default()
+            },
+        ]),
+        ..Default::default()
+    };
+    let names: Vec<&str> = config
+        .crate_universe()
+        .into_iter()
+        .map(|c| c.name.as_str())
+        .collect();
+    assert_eq!(names, vec!["top", "ws_a", "ws_b"]);
+}
+
+/// Same-name-same-path duplicates (the legitimate "referenced from both
+/// levels" shape) dedup silently: one entry, no collision warning.
+#[test]
+fn crate_universe_dedups_silently_when_paths_match() {
+    let config = Config {
+        crates: vec![universe_crate("foo", ".")],
+        workspaces: Some(vec![WorkspaceConfig {
+            name: "ws-a".to_string(),
+            crates: vec![universe_crate("foo", ".")],
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    assert_eq!(config.crate_universe().len(), 1);
+    assert!(
+        config.crate_universe_collision_warnings().is_empty(),
+        "same-path dedup must stay silent"
+    );
+}
+
+/// Same-name-different-path collisions keep the top-level entry and emit
+/// an operator warning naming the crate, the workspace, and the dropped
+/// path — this is almost certainly two distinct crates sharing a name.
+#[test]
+fn crate_universe_warns_when_name_collides_with_different_paths() {
+    let config = Config {
+        crates: vec![universe_crate("foo", "crates/foo")],
+        workspaces: Some(vec![WorkspaceConfig {
+            name: "ws-a".to_string(),
+            crates: vec![universe_crate("foo", "other/path/foo")],
+            ..Default::default()
+        }]),
+        ..Default::default()
+    };
+    let universe = config.crate_universe();
+    assert_eq!(universe.len(), 1, "workspace entry must be dropped");
+    assert_eq!(universe[0].path, "crates/foo", "top-level entry wins");
+    let warnings = config.crate_universe_collision_warnings();
+    assert_eq!(warnings.len(), 1);
+    let w = &warnings[0];
+    assert!(w.contains("foo"), "warn must name the crate: {w}");
+    assert!(w.contains("ws-a"), "warn must name the workspace: {w}");
+    assert!(
+        w.contains("other/path/foo"),
+        "warn must show the dropped path: {w}"
+    );
+}

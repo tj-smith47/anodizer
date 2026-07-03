@@ -1,6 +1,5 @@
 //! Config / context lookups & resolution helpers shared across publishers.
 //!
-//! - Crate-universe walker (`all_crates`).
 //! - Publisher config lookup (`get_publish_config`).
 //! - Artifact-kind resolution (`resolve_artifact_kind`).
 //! - Token / secret resolution (`resolve_token`, `resolve_repo_token`,
@@ -13,49 +12,6 @@ use anodizer_core::config::{CrateConfig, PublishConfig};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anyhow::{Context as _, Result};
-
-// ---------------------------------------------------------------------------
-// Crate universe walker (shared across publisher dispatch + cargo flatten)
-// ---------------------------------------------------------------------------
-
-/// Flatten `ctx.config.crates` plus every `ctx.config.workspaces[].crates`
-/// into a single de-duplicated `Vec<CrateConfig>` (dedup by `name`,
-/// `ctx.config.crates` wins on collision). This is the universe of crates
-/// every per-crate publisher must walk — without this, a workspace-only
-/// crate carrying a non-cargo publisher block (homebrew, scoop, ...) is
-/// invisible because the dispatcher only looks at `ctx.config.crates`,
-/// while `cargo.rs` flattens both. The cargo + non-cargo walkers must
-/// share one universe so a crate with both `cargo:` and `homebrew:` is
-/// either eligible everywhere or skipped everywhere.
-///
-/// On a name collision where the colliding entries point at different
-/// `path` values (almost certainly a config mistake — two distinct crates
-/// sharing a name), emit a warning so the operator notices the dropped
-/// workspace entry. The dedup itself stays silent for the legitimate
-/// case (the same crate referenced from both top-level and a workspace).
-pub(crate) fn all_crates(ctx: &Context) -> Vec<CrateConfig> {
-    let mut acc = ctx.config.crates.clone();
-    if let Some(ref ws_list) = ctx.config.workspaces {
-        let log = ctx.logger("publish");
-        for ws in ws_list {
-            for c in &ws.crates {
-                if let Some(existing) = acc.iter().find(|e| e.name == c.name) {
-                    if existing.path != c.path {
-                        log.warn(&format!(
-                            "workspace '{}' crate '{}' path '{}' shadowed by \
-                             prior entry with path '{}'; workspace entry dropped (name \
-                             collision with different paths — likely a config mistake)",
-                            ws.name, c.name, c.path, existing.path
-                        ));
-                    }
-                    continue;
-                }
-                acc.push(c.clone());
-            }
-        }
-    }
-    acc
-}
 
 // ---------------------------------------------------------------------------
 // Secret-name resolution
@@ -79,14 +35,14 @@ pub(crate) fn resolve_secret_name(
 /// Look up a crate's config and its `publish` section by name, returning a
 /// descriptive error when either is missing.
 ///
-/// Resolves against the full crate universe — top-level `ctx.config.crates`
-/// PLUS every `ctx.config.workspaces[].crates` — so a workspace-only crate
-/// (the only shape in a pure-workspace config like a multi-crate monorepo)
-/// is found by name. Top-level entries take precedence on a name collision,
-/// matching [`all_crates`]'s dedup order. Without the workspace fallthrough
-/// every per-publisher lookup (nix, homebrew, scoop, aur, krew, winget,
-/// chocolatey) — and the snapshot emission validator that drives them —
-/// would `bail!` "not found" for a crate defined under `workspaces:`.
+/// Resolves against the full crate universe
+/// ([`anodizer_core::config::Config::crate_universe`]) — top-level
+/// `ctx.config.crates` PLUS every `ctx.config.workspaces[].crates` — so a
+/// workspace-only crate (the only shape in a pure-workspace config like a
+/// multi-crate monorepo) is found by name. Without the workspace
+/// fallthrough every per-publisher lookup (nix, homebrew, scoop, aur, krew,
+/// winget, chocolatey) — and the snapshot emission validator that drives
+/// them — would `bail!` "not found" for a crate defined under `workspaces:`.
 pub(crate) fn get_publish_config<'a>(
     ctx: &'a Context,
     crate_name: &str,
@@ -103,20 +59,14 @@ pub(crate) fn get_publish_config<'a>(
     Ok((crate_cfg, publish))
 }
 
-/// Borrow a crate by name from the full crate universe: `ctx.config.crates`
-/// first (top-level wins, mirroring [`all_crates`] dedup precedence), then
-/// the first matching `ctx.config.workspaces[].crates` entry. Returns a
-/// reference tied to `ctx` so callers can keep zero-copy `&CrateConfig`
-/// access without cloning the whole universe.
+/// Borrow a crate by name from the full crate universe
+/// ([`anodizer_core::config::Config::crate_universe`] — top-level wins on a
+/// name collision). Returns a reference tied to `ctx` so callers can keep
+/// zero-copy `&CrateConfig` access without cloning the whole universe.
 fn find_crate_in_universe<'a>(ctx: &'a Context, crate_name: &str) -> Option<&'a CrateConfig> {
-    if let Some(c) = ctx.config.crates.iter().find(|c| c.name == crate_name) {
-        return Some(c);
-    }
     ctx.config
-        .workspaces
-        .as_ref()?
-        .iter()
-        .flat_map(|ws| ws.crates.iter())
+        .crate_universe()
+        .into_iter()
         .find(|c| c.name == crate_name)
 }
 
@@ -334,7 +284,6 @@ mod tests {
     use anodizer_core::config::{
         BinstallConfig, CrateConfig, NixConfig, PublishConfig, RepositoryConfig, WorkspaceConfig,
     };
-    use anodizer_core::log::LogCapture;
     use anodizer_core::test_helpers::TestContextBuilder;
 
     /// `resolve_rollback_token` must empty-filter every link: a set-but-blank
@@ -436,15 +385,6 @@ mod tests {
             resolve_repo_token(&ctx, Some(&repo), None).as_deref(),
             Some("ghp_literal")
         );
-    }
-
-    fn crate_with(name: &str, path: &str) -> CrateConfig {
-        CrateConfig {
-            name: name.to_string(),
-            path: path.to_string(),
-            tag_template: "v{{ .Version }}".to_string(),
-            ..Default::default()
-        }
     }
 
     /// A crate carrying a `publish.nix` block plus an enabled binstall
@@ -560,61 +500,6 @@ mod tests {
         assert!(
             err.to_string().contains("not found in config"),
             "missing crate must still bail: {err}"
-        );
-    }
-
-    #[test]
-    fn all_crates_dedups_silently_when_paths_match() {
-        let mut ctx = TestContextBuilder::new()
-            .crates(vec![crate_with("foo", ".")])
-            .workspaces(vec![WorkspaceConfig {
-                name: "ws-a".to_string(),
-                crates: vec![crate_with("foo", ".")],
-                ..Default::default()
-            }])
-            .build();
-        let cap = LogCapture::new();
-        ctx.with_log_capture(cap.clone());
-
-        let out = all_crates(&ctx);
-        assert_eq!(out.len(), 1, "dedup keeps one entry: {:?}", out);
-        assert_eq!(cap.warn_count(), 0, "same-path dedup must stay silent");
-    }
-
-    #[test]
-    fn all_crates_warns_when_name_collides_with_different_paths() {
-        let mut ctx = TestContextBuilder::new()
-            .crates(vec![crate_with("foo", "crates/foo")])
-            .workspaces(vec![WorkspaceConfig {
-                name: "ws-a".to_string(),
-                crates: vec![crate_with("foo", "other/path/foo")],
-                ..Default::default()
-            }])
-            .build();
-        let cap = LogCapture::new();
-        ctx.with_log_capture(cap.clone());
-
-        let out = all_crates(&ctx);
-        assert_eq!(out.len(), 1, "workspace entry must be dropped");
-        assert_eq!(out[0].path, "crates/foo", "top-level entry wins");
-        assert_eq!(
-            cap.warn_count(),
-            1,
-            "operator must be warned about the dropped workspace entry"
-        );
-        let msgs = cap.all_messages();
-        let warn_msg = &msgs[0].1;
-        assert!(
-            warn_msg.contains("foo"),
-            "warn must name the crate: {warn_msg}"
-        );
-        assert!(
-            warn_msg.contains("ws-a"),
-            "warn must name the workspace: {warn_msg}"
-        );
-        assert!(
-            warn_msg.contains("other/path/foo"),
-            "warn must show the dropped path: {warn_msg}"
         );
     }
 }

@@ -363,7 +363,8 @@ pub(crate) fn derive_blob_required(ctx: &Context) -> bool {
 /// rather than reporting `(none configured)`.
 fn blob_destinations(ctx: &Context) -> Vec<String> {
     let selected = &ctx.options.selected_crates;
-    anodizer_core::env_preflight::crate_universe(&ctx.config)
+    ctx.config
+        .crate_universe()
         .into_iter()
         .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .filter_map(|c| c.blobs.as_ref())

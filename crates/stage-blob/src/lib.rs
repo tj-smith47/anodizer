@@ -36,7 +36,7 @@ pub fn env_requirements(
 ) -> Vec<anodizer_core::EnvRequirement> {
     use anodizer_core::env_preflight::template_env_refs;
     let mut out = Vec::new();
-    for c in anodizer_core::env_preflight::crate_universe(&ctx.config) {
+    for c in ctx.config.crate_universe() {
         for b in c.blobs.iter().flatten() {
             // Unknown providers are config-validation territory, not preflight's.
             let Ok(provider) = Provider::parse(&b.provider) else {

@@ -83,11 +83,13 @@ impl PublisherSchemaValidator for NixSchemaValidator {
             let (crate_findings, flake_pkg) =
                 with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
                     let mut out = Vec::new();
-                    let nix_cfg = crate::util::all_crates(ctx)
+                    let nix_cfg = ctx
+                        .config
+                        .crate_universe()
                         .into_iter()
                         .find(|c| &c.name == crate_name)
-                        .and_then(|c| c.publish)
-                        .and_then(|p| p.nix);
+                        .and_then(|c| c.publish.as_ref())
+                        .and_then(|p| p.nix.clone());
 
                     // A real release always builds at least one archive the
                     // derivation `src` points at, but a sharded / single-target

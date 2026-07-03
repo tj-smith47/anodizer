@@ -585,7 +585,7 @@ fn run_preflight_inner(
     let version = ctx.version();
 
     // Walk every crate in the universe and collect per-publisher entries.
-    let crates = util::all_crates(ctx);
+    let crates = ctx.config.crate_universe();
     let selected = &ctx.options.selected_crates;
 
     for krate in &crates {

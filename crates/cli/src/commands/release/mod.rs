@@ -270,7 +270,7 @@ pub fn run(mut opts: ReleaseOpts) -> Result<()> {
 
     apply_release_meta_overrides(&mut config, &opts)?;
 
-    let all_known_crates = flatten_known_crates(&config);
+    let all_known_crates: Vec<CrateConfig> = config.crate_universe().into_iter().cloned().collect();
     let selected_sorted = resolve_selected_crates(&opts, &all_known_crates, &config, &log)?;
 
     // Tags-at-HEAD default path: when no --crate and no --all were given and
@@ -534,7 +534,8 @@ fn dispatch_release_modes(
                     with_subdir.join(", "),
                 );
             }
-            let all_known = flatten_known_crates(config);
+            let all_known: Vec<CrateConfig> =
+                config.crate_universe().into_iter().cloned().collect();
             let sorted = topo_sort_selected(&all_known, &with_subdir);
             let order = if sorted.is_empty() {
                 with_subdir
@@ -552,7 +553,8 @@ fn dispatch_release_modes(
                 // Topo-sort discovered crate names so depends_on ordering
                 // is respected. Fall back to alphabetical when none of the
                 // discovered names match any configured crate.
-                let all_known = flatten_known_crates(config);
+                let all_known: Vec<CrateConfig> =
+                    config.crate_universe().into_iter().cloned().collect();
                 let sorted = topo_sort_selected(&all_known, &subdirs);
                 let order = if sorted.is_empty() { subdirs } else { sorted };
                 return publish_only::run_per_crate(ctx, config, log, run_opts, dist, order);
@@ -737,23 +739,6 @@ fn enforce_dist_state(config: &Config, opts: &ReleaseOpts, log: &StageLogger) ->
         }
     }
     Ok(())
-}
-
-/// Flatten every known crate — top-level plus anything under workspaces —
-/// so `--crate X` and `--all` resolve the same way regardless of whether
-/// the config is flat or workspace-based.
-pub(crate) fn flatten_known_crates(config: &Config) -> Vec<CrateConfig> {
-    let mut acc: Vec<CrateConfig> = config.crates.clone();
-    if let Some(ref ws_list) = config.workspaces {
-        for ws in ws_list {
-            for c in &ws.crates {
-                if !acc.iter().any(|existing| existing.name == c.name) {
-                    acc.push(c.clone());
-                }
-            }
-        }
-    }
-    acc
 }
 
 /// Resolve the crate selection (`--all` + change detection, `--all --force`,
@@ -3520,11 +3505,13 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // flatten_known_crates
+    // crate-universe selection boundary
     // -----------------------------------------------------------------------
 
+    /// `--crate X` / `--all` resolve against `Config::crate_universe` — a
+    /// workspace-only crate must be selectable exactly like a top-level one.
     #[test]
-    fn flatten_known_crates_unions_top_level_and_workspace_crates() {
+    fn selection_universe_unions_top_level_and_workspace_crates() {
         let config = Config {
             crates: vec![make_crate("top", None)],
             workspaces: Some(vec![WorkspaceConfig {
@@ -3533,15 +3520,16 @@ mod tests {
             }]),
             ..Default::default()
         };
-        let names: Vec<String> = flatten_known_crates(&config)
+        let names: Vec<&str> = config
+            .crate_universe()
             .into_iter()
-            .map(|c| c.name)
+            .map(|c| c.name.as_str())
             .collect();
         assert_eq!(names, vec!["top", "ws_a", "ws_b"]);
     }
 
     #[test]
-    fn flatten_known_crates_dedupes_by_name_keeping_top_level() {
+    fn selection_universe_dedupes_by_name_keeping_top_level() {
         let config = Config {
             crates: vec![make_crate("dup", None)],
             workspaces: Some(vec![WorkspaceConfig {
@@ -3550,9 +3538,10 @@ mod tests {
             }]),
             ..Default::default()
         };
-        let names: Vec<String> = flatten_known_crates(&config)
+        let names: Vec<&str> = config
+            .crate_universe()
             .into_iter()
-            .map(|c| c.name)
+            .map(|c| c.name.as_str())
             .collect();
         assert_eq!(names, vec!["dup", "unique"]);
     }

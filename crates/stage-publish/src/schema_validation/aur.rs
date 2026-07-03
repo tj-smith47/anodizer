@@ -67,11 +67,13 @@ impl PublisherSchemaValidator for AurSchemaValidator {
             // `pkgver` against its own version, not the first crate's).
             let crate_findings = with_validated_crate_scope(ctx, crate_name, resolve_tag, |ctx| {
                 let mut out = Vec::new();
-                let aur_cfg = crate::util::all_crates(ctx)
+                let aur_cfg = ctx
+                    .config
+                    .crate_universe()
                     .into_iter()
                     .find(|c| &c.name == crate_name)
-                    .and_then(|c| c.publish)
-                    .and_then(|p| p.aur);
+                    .and_then(|c| c.publish.as_ref())
+                    .and_then(|p| p.aur.clone());
 
                 // A real release always builds at least one Linux archive the
                 // PKGBUILD points at, but a sharded / single-target snapshot may

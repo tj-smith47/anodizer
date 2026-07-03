@@ -315,9 +315,14 @@ pub(crate) fn with_validated_crate_scope<T>(
     resolve_tag: TagResolver<'_>,
     body: impl FnOnce(&mut Context) -> Result<T>,
 ) -> Result<T> {
-    let crate_cfg = crate::util::all_crates(ctx)
+    // Cloned (not borrowed) because `body` takes `ctx` mutably while the
+    // scope guard still needs the crate's tag template.
+    let crate_cfg = ctx
+        .config
+        .crate_universe()
         .into_iter()
         .find(|c| c.name == crate_name)
+        .cloned()
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "schema-validation: crate '{crate_name}' is not present in the crate universe"

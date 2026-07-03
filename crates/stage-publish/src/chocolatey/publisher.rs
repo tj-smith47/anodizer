@@ -57,13 +57,17 @@ fn decode_chocolatey_targets(extra: &anodizer_core::PublishEvidenceExtra) -> Vec
     }
 }
 
-/// True when the crate has a `publish.chocolatey` block — mirrors the
-/// `per_crate!` predicate in `lib.rs` so the publisher iterates
-/// exactly the same crate universe.
+/// The crate-level `publish.chocolatey` block — the single accessor the
+/// registry gate, the gate-override collapse, and the per-crate dispatch
+/// predicate all key on.
+pub(crate) fn block(
+    p: &anodizer_core::config::PublishConfig,
+) -> Option<&anodizer_core::config::ChocolateyConfig> {
+    p.chocolatey.as_ref()
+}
+
 pub(crate) fn is_chocolatey_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
-    crate::util::all_crates(ctx)
-        .into_iter()
-        .any(|c| c.name == crate_name && c.publish.as_ref().is_some_and(|p| p.chocolatey.is_some()))
+    crate::publisher_helpers::is_per_crate_block_configured(ctx, crate_name, block)
 }
 
 /// Build a [`ChocolateyTarget`] for the given crate. Reads config + the
@@ -171,7 +175,8 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
         // Mirrors `resolve_api_key`: templated `api_key` from config, else
         // the CHOCOLATEY_API_KEY env var. The push itself is plain HTTPS
         // (no choco CLI).
-        anodizer_core::env_preflight::crate_universe(&ctx.config)
+        ctx.config
+            .crate_universe()
             .into_iter()
             .filter_map(|c| c.publish.as_ref()?.chocolatey.as_ref())
             .filter(|ch| {
@@ -326,7 +331,7 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
         // (or a transient, which always degrades to Warning below) aborts pre-tag.
         let fail = FailSeverity::for_required(Self::resolved_required(self));
         let mut acc = PreflightCheck::Pass;
-        for c in anodizer_core::env_preflight::crate_universe(&ctx.config) {
+        for c in ctx.config.crate_universe() {
             let Some(ch) = c.publish.as_ref().and_then(|p| p.chocolatey.as_ref()) else {
                 continue;
             };

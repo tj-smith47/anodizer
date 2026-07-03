@@ -1346,7 +1346,9 @@ pub fn env_requirements(
     {
         return Vec::new();
     }
-    let configured = anodizer_core::env_preflight::crate_universe(&ctx.config)
+    let configured = ctx
+        .config
+        .crate_universe()
         .into_iter()
         .flat_map(|c| c.pkgs.iter().flatten())
         .any(|cfg| {

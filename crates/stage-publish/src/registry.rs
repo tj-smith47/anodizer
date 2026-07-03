@@ -4,6 +4,7 @@
 //! a `Box<dyn Publisher>` for each configured publisher. The returned slice
 //! is what [`crate::dispatch::dispatch`] iterates over.
 
+use anodizer_core::config::{CrateConfig, PublisherGateOverrides};
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
 use anodizer_core::{Publisher, PublisherGroup, PublisherKind};
@@ -33,6 +34,78 @@ fn collapse_required(overrides: impl Iterator<Item = Option<bool>>) -> Option<bo
     result
 }
 
+/// Collapse the `(required, retain_on_rollback)` overrides of a crate-level
+/// config block across the FULL crate universe (top-level plus workspace
+/// crates), so a workspace-only crate's `required: true` escalates the gate
+/// exactly like a top-level crate's.
+///
+/// `block` picks the publisher's block off a [`CrateConfig`]
+/// (`|c| c.release.as_ref()` for the one non-`publish` block); publishers
+/// under `publish:` go through [`collapse_per_crate_overrides`]. Both
+/// override fields are read via [`PublisherGateOverrides`], so a publisher
+/// cannot collapse `required` while forgetting `retain_on_rollback`.
+fn collapse_crate_overrides<T: PublisherGateOverrides>(
+    ctx: &Context,
+    block: impl Fn(&CrateConfig) -> Option<&T>,
+) -> (Option<bool>, Option<bool>) {
+    let universe = ctx.config.crate_universe();
+    let req = collapse_required(
+        universe
+            .iter()
+            .map(|c| block(c).and_then(T::required_override)),
+    );
+    let retain = collapse_required(
+        universe
+            .iter()
+            .map(|c| block(c).and_then(T::retain_on_rollback_override)),
+    );
+    (req, retain)
+}
+
+/// [`collapse_crate_overrides`] for a `publish.<X>` block: `block` is the
+/// publisher's single config accessor (e.g. `crate::scoop::block`), shared
+/// with its registration gate and per-crate dispatch predicate.
+fn collapse_per_crate_overrides<T: PublisherGateOverrides>(
+    ctx: &Context,
+    block: impl Fn(&anodizer_core::config::PublishConfig) -> Option<&T>,
+) -> (Option<bool>, Option<bool>) {
+    collapse_crate_overrides(ctx, |c| c.publish.as_ref().and_then(&block))
+}
+
+/// Collapse the `(required, retain_on_rollback)` overrides across a
+/// top-level entry list (`dockerhub:`, `artifactories:`, `npms:`, …).
+fn collapse_entry_overrides<T: PublisherGateOverrides>(
+    entries: Option<&Vec<T>>,
+) -> (Option<bool>, Option<bool>) {
+    let req = collapse_required(
+        entries
+            .iter()
+            .flat_map(|v| v.iter())
+            .map(T::required_override),
+    );
+    let retain = collapse_required(
+        entries
+            .iter()
+            .flat_map(|v| v.iter())
+            .map(T::retain_on_rollback_override),
+    );
+    (req, retain)
+}
+
+/// Merge two already-collapsed override pairs for a composite publisher
+/// with both a per-crate and a top-level config source (homebrew formulas +
+/// `homebrew_casks:`, per-crate `aur_source` + `aur_sources:`):
+/// escalate-to-true across both sources for each field.
+fn merge_collapsed(
+    a: (Option<bool>, Option<bool>),
+    b: (Option<bool>, Option<bool>),
+) -> (Option<bool>, Option<bool>) {
+    (
+        collapse_required([a.0, b.0].into_iter()),
+        collapse_required([a.1, b.1].into_iter()),
+    )
+}
+
 /// Returns the publishers configured for this release run.
 ///
 /// Walks `ctx.config.crates[*].publish` and the top-level publisher blocks
@@ -58,18 +131,7 @@ fn collapse_required(overrides: impl Iterator<Item = Option<bool>>) -> Option<bo
 pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     let mut v: Vec<Box<dyn Publisher>> = Vec::new();
     if is_cargo_configured(ctx) {
-        // Escalate-to-true across crates: any crate's `required: true` wins.
-        let req = collapse_required(
-            ctx.config
-                .crates
-                .iter()
-                .map(|c| c.publish.as_ref().and_then(|p| p.cargo.as_ref()?.required)),
-        );
-        let retain = collapse_required(ctx.config.crates.iter().map(|c| {
-            c.publish
-                .as_ref()
-                .and_then(|p| p.cargo.as_ref()?.retain_on_rollback)
-        }));
+        let (req, retain) = collapse_per_crate_overrides(ctx, crate::cargo::block);
         v.push(Box::new(crate::cargo::CargoPublisher::with_overrides(
             req, retain,
         )));
@@ -78,184 +140,68 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
     // `blob` is also Assets-group but runs as its own `BlobStage` (see
     // doc on `configured_publishers` above for why it's not registered).
     if is_dockerhub_configured(ctx) {
-        // Escalate-to-true across `dockerhub:` entries.
-        let req = collapse_required(ctx.config.dockerhub.iter().flatten().map(|c| c.required));
-        let retain = collapse_required(
-            ctx.config
-                .dockerhub
-                .iter()
-                .flatten()
-                .map(|c| c.retain_on_rollback),
-        );
+        let (req, retain) = collapse_entry_overrides(ctx.config.dockerhub.as_ref());
         v.push(Box::new(
             crate::dockerhub::DockerhubPublisher::with_overrides(req, retain),
         ));
     }
     if is_artifactory_configured(ctx) {
-        // Escalate-to-true across `artifactories:` entries.
-        let req = collapse_required(
-            ctx.config
-                .artifactories
-                .iter()
-                .flatten()
-                .map(|c| c.required),
-        );
-        let retain = collapse_required(
-            ctx.config
-                .artifactories
-                .iter()
-                .flatten()
-                .map(|c| c.retain_on_rollback),
-        );
+        let (req, retain) = collapse_entry_overrides(ctx.config.artifactories.as_ref());
         v.push(Box::new(
             crate::artifactory::ArtifactoryPublisher::with_overrides(req, retain),
         ));
     }
     if is_uploads_configured(ctx) {
-        // Escalate-to-true across `uploads:` entries.
-        let req = collapse_required(ctx.config.uploads.iter().flatten().map(|c| c.required));
-        let retain = collapse_required(
-            ctx.config
-                .uploads
-                .iter()
-                .flatten()
-                .map(|c| c.retain_on_rollback),
-        );
+        let (req, retain) = collapse_entry_overrides(ctx.config.uploads.as_ref());
         v.push(Box::new(crate::uploads::UploadsPublisher::with_overrides(
             req, retain,
         )));
     }
     if is_cloudsmith_configured(ctx) {
-        // Escalate-to-true across `cloudsmiths:` entries.
-        let req = collapse_required(ctx.config.cloudsmiths.iter().flatten().map(|c| c.required));
-        let retain = collapse_required(
-            ctx.config
-                .cloudsmiths
-                .iter()
-                .flatten()
-                .map(|c| c.retain_on_rollback),
-        );
+        let (req, retain) = collapse_entry_overrides(ctx.config.cloudsmiths.as_ref());
         v.push(Box::new(
             crate::cloudsmith::CloudsmithPublisher::with_overrides(req, retain),
         ));
     }
     if is_github_release_configured(ctx) {
-        // Escalate-to-true across crates' `release.required`.
-        let req = collapse_required(
-            ctx.config
-                .crates
-                .iter()
-                .map(|c| c.release.as_ref().and_then(|r| r.required)),
-        );
-        let retain = collapse_required(
-            ctx.config
-                .crates
-                .iter()
-                .map(|c| c.release.as_ref().and_then(|r| r.retain_on_rollback)),
-        );
+        let (req, retain) = collapse_crate_overrides(ctx, |c| c.release.as_ref());
         v.push(Box::new(
             anodizer_stage_release::publisher::GithubReleasePublisher::with_overrides(req, retain),
         ));
     }
     // Manager group — git-revert rollback against publisher-owned repo.
     if is_homebrew_configured(ctx) {
-        // Escalate-to-true across per-crate `publish.homebrew.required` AND
-        // top-level `homebrew_casks:` entries: a `required: true` anywhere
-        // (formula or cask config) wins, so a cask-only setup with no per-crate
-        // publish block can still escalate the gate.
-        let per_crate_req = ctx.config.crates.iter().map(|c| {
-            c.publish
-                .as_ref()
-                .and_then(|p| p.homebrew.as_ref()?.required)
-        });
-        let casks_req = ctx
-            .config
-            .homebrew_casks
-            .iter()
-            .flatten()
-            .map(|c| c.required);
-        let req = collapse_required(per_crate_req.chain(casks_req));
-        let per_crate_retain = ctx.config.crates.iter().map(|c| {
-            c.publish
-                .as_ref()
-                .and_then(|p| p.homebrew.as_ref()?.retain_on_rollback)
-        });
-        let casks_retain = ctx
-            .config
-            .homebrew_casks
-            .iter()
-            .flatten()
-            .map(|c| c.retain_on_rollback);
-        let retain = collapse_required(per_crate_retain.chain(casks_retain));
+        // A `required: true` anywhere (formula or cask config) wins, so a
+        // cask-only setup with no per-crate publish block still escalates.
+        let (req, retain) = merge_collapsed(
+            collapse_per_crate_overrides(ctx, crate::homebrew::publisher::block),
+            collapse_entry_overrides(ctx.config.homebrew_casks.as_ref()),
+        );
         v.push(Box::new(
             crate::homebrew::publisher::HomebrewPublisher::with_overrides(req, retain),
         ));
     }
     if is_scoop_configured(ctx) {
-        // Escalate-to-true across crates.
-        let req = collapse_required(
-            ctx.config
-                .crates
-                .iter()
-                .map(|c| c.publish.as_ref().and_then(|p| p.scoop.as_ref()?.required)),
-        );
-        let retain = collapse_required(ctx.config.crates.iter().map(|c| {
-            c.publish
-                .as_ref()
-                .and_then(|p| p.scoop.as_ref()?.retain_on_rollback)
-        }));
+        let (req, retain) = collapse_per_crate_overrides(ctx, crate::scoop::block);
         v.push(Box::new(crate::scoop::ScoopPublisher::with_overrides(
             req, retain,
         )));
     }
     if is_nix_configured(ctx) {
-        // Escalate-to-true across crates.
-        let req = collapse_required(
-            ctx.config
-                .crates
-                .iter()
-                .map(|c| c.publish.as_ref().and_then(|p| p.nix.as_ref()?.required)),
-        );
-        let retain = collapse_required(ctx.config.crates.iter().map(|c| {
-            c.publish
-                .as_ref()
-                .and_then(|p| p.nix.as_ref()?.retain_on_rollback)
-        }));
+        let (req, retain) = collapse_per_crate_overrides(ctx, crate::nix::publisher::block);
         v.push(Box::new(
             crate::nix::publisher::NixPublisher::with_overrides(req, retain),
         ));
     }
     if is_aur_configured(ctx) {
-        // Escalate-to-true across crates.
-        let req = collapse_required(
-            ctx.config
-                .crates
-                .iter()
-                .map(|c| c.publish.as_ref().and_then(|p| p.aur.as_ref()?.required)),
-        );
-        let retain = collapse_required(ctx.config.crates.iter().map(|c| {
-            c.publish
-                .as_ref()
-                .and_then(|p| p.aur.as_ref()?.retain_on_rollback)
-        }));
+        let (req, retain) = collapse_per_crate_overrides(ctx, crate::aur::block);
         v.push(Box::new(crate::aur::AurOurPublisher::with_overrides(
             req, retain,
         )));
     }
     // Manager group — close-PR / registry rollback.
     if is_krew_configured(ctx) {
-        // Escalate-to-true across crates.
-        let req = collapse_required(
-            ctx.config
-                .crates
-                .iter()
-                .map(|c| c.publish.as_ref().and_then(|p| p.krew.as_ref()?.required)),
-        );
-        let retain = collapse_required(ctx.config.crates.iter().map(|c| {
-            c.publish
-                .as_ref()
-                .and_then(|p| p.krew.as_ref()?.retain_on_rollback)
-        }));
+        let (req, retain) = collapse_per_crate_overrides(ctx, crate::krew::block);
         v.push(Box::new(crate::krew::KrewPublisher::with_overrides(
             req, retain,
         )));
@@ -278,89 +224,37 @@ pub fn configured_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
         ));
     }
     if is_npm_configured(ctx) {
-        // Escalate-to-true across `npms:` entries.
-        let req = collapse_required(ctx.config.npms.iter().flatten().map(|c| c.required));
-        let retain = collapse_required(
-            ctx.config
-                .npms
-                .iter()
-                .flatten()
-                .map(|c| c.retain_on_rollback),
-        );
+        let (req, retain) = collapse_entry_overrides(ctx.config.npms.as_ref());
         v.push(Box::new(crate::npm::NpmPublisher::with_overrides(
             req, retain,
         )));
     }
     if is_gemfury_configured(ctx) {
-        // Escalate-to-true across `gemfury:` entries.
-        let req = collapse_required(ctx.config.gemfury.iter().flatten().map(|c| c.required));
-        let retain = collapse_required(
-            ctx.config
-                .gemfury
-                .iter()
-                .flatten()
-                .map(|c| c.retain_on_rollback),
-        );
+        let (req, retain) = collapse_entry_overrides(ctx.config.gemfury.as_ref());
         v.push(Box::new(crate::gemfury::GemFuryPublisher::with_overrides(
             req, retain,
         )));
     }
     // Submitter group (no programmatic rollback — warn-only).
     if is_chocolatey_configured(ctx) {
-        // Escalate-to-true across crates.
-        let req = collapse_required(ctx.config.crates.iter().map(|c| {
-            c.publish
-                .as_ref()
-                .and_then(|p| p.chocolatey.as_ref()?.required)
-        }));
-        let retain = collapse_required(ctx.config.crates.iter().map(|c| {
-            c.publish
-                .as_ref()
-                .and_then(|p| p.chocolatey.as_ref()?.retain_on_rollback)
-        }));
+        let (req, retain) = collapse_per_crate_overrides(ctx, crate::chocolatey::publisher::block);
         v.push(Box::new(
             crate::chocolatey::ChocolateyPublisher::with_overrides(req, retain),
         ));
     }
     if is_winget_configured(ctx) {
-        // Escalate-to-true across crates.
-        let req = collapse_required(
-            ctx.config
-                .crates
-                .iter()
-                .map(|c| c.publish.as_ref().and_then(|p| p.winget.as_ref()?.required)),
-        );
-        let retain = collapse_required(ctx.config.crates.iter().map(|c| {
-            c.publish
-                .as_ref()
-                .and_then(|p| p.winget.as_ref()?.retain_on_rollback)
-        }));
+        let (req, retain) = collapse_per_crate_overrides(ctx, crate::winget::block);
         v.push(Box::new(crate::winget::WingetPublisher::with_overrides(
             req, retain,
         )));
     }
     if crate::aur_source::is_aur_source_configured(ctx) {
-        // Escalate-to-true across per-crate `publish.aur_source.required` AND
-        // top-level `aur_sources:` entries: a `required: true` anywhere wins.
-        let per_crate_req = ctx.config.crates.iter().map(|c| {
-            c.publish
-                .as_ref()
-                .and_then(|p| p.aur_source.as_ref()?.required)
-        });
-        let top_req = ctx.config.aur_sources.iter().flatten().map(|c| c.required);
-        let req = collapse_required(per_crate_req.chain(top_req));
-        let per_crate_retain = ctx.config.crates.iter().map(|c| {
-            c.publish
-                .as_ref()
-                .and_then(|p| p.aur_source.as_ref()?.retain_on_rollback)
-        });
-        let top_retain = ctx
-            .config
-            .aur_sources
-            .iter()
-            .flatten()
-            .map(|c| c.retain_on_rollback);
-        let retain = collapse_required(per_crate_retain.chain(top_retain));
+        // A `required: true` anywhere (per-crate block or top-level
+        // `aur_sources:` entry) wins.
+        let (req, retain) = merge_collapsed(
+            collapse_per_crate_overrides(ctx, crate::aur_source::block),
+            collapse_entry_overrides(ctx.config.aur_sources.as_ref()),
+        );
         v.push(Box::new(
             crate::aur_source::AurSourcePublisher::with_overrides(req, retain),
         ));
@@ -401,8 +295,8 @@ pub fn rollback_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
         // contributing config asked to retain them.
         let retain = collapse_required(
             ctx.config
-                .crates
-                .iter()
+                .crate_universe()
+                .into_iter()
                 .flat_map(|c| c.blobs.iter().flatten())
                 .map(|b| b.retain_on_rollback),
         );
@@ -417,9 +311,8 @@ pub fn rollback_publishers(ctx: &Context) -> Vec<Box<dyn Publisher>> {
 ///
 /// Built for environment-preflight requirement collection: each
 /// [`Publisher::requirements`] self-gates on the resolved config (returning
-/// empty when unconfigured) and walks the FULL crate universe — including
-/// workspace crates that [`configured_publishers`]'s top-level-crate
-/// predicates cannot see before the per-crate overlay flattens them. Never
+/// empty when unconfigured) and walks the same FULL crate universe
+/// [`configured_publishers`]'s registration predicates gate on. Never
 /// use this list for dispatch; `run`/`rollback` on an unconfigured
 /// publisher is not a supported path.
 pub fn all_publishers() -> Vec<Box<dyn Publisher>> {
@@ -472,74 +365,57 @@ fn new_trait_publisher(kind: PublisherKind) -> Option<Box<dyn Publisher>> {
     Some(publisher)
 }
 
-/// True when at least one crate has a `publish.chocolatey` block.
+/// True when at least one crate in the full crate universe has a
+/// `publish.chocolatey` block.
 fn is_chocolatey_configured(ctx: &Context) -> bool {
-    ctx.config
-        .crates
-        .iter()
-        .any(|c| c.publish.as_ref().is_some_and(|p| p.chocolatey.is_some()))
+    crate::publisher_helpers::is_any_crate_block_configured(
+        ctx,
+        crate::chocolatey::publisher::block,
+    )
 }
 
-/// True when at least one crate has a `publish.winget` block.
+/// True when at least one crate in the full crate universe has a
+/// `publish.winget` block.
 fn is_winget_configured(ctx: &Context) -> bool {
-    ctx.config
-        .crates
-        .iter()
-        .any(|c| c.publish.as_ref().is_some_and(|p| p.winget.is_some()))
+    crate::publisher_helpers::is_any_crate_block_configured(ctx, crate::winget::block)
 }
 
-/// True when ANY crate has `publish.homebrew` OR the top-level
-/// `homebrew_casks:` block is non-empty. Mirrors the dispatch in
-/// `lib.rs` so the publisher runs whenever the existing per_crate +
-/// top_level macros would have.
+/// True when ANY crate in the full crate universe has `publish.homebrew`
+/// OR the top-level `homebrew_casks:` block is non-empty — the same
+/// universe + accessor the per-crate dispatch keys on.
 fn is_homebrew_configured(ctx: &Context) -> bool {
-    let per_crate = ctx
-        .config
-        .crates
-        .iter()
-        .any(|c| c.publish.as_ref().is_some_and(|p| p.homebrew.is_some()));
-    let top_level = ctx
-        .config
-        .homebrew_casks
-        .as_ref()
-        .is_some_and(|v| !v.is_empty());
-    per_crate || top_level
+    crate::publisher_helpers::is_any_crate_block_configured(ctx, crate::homebrew::publisher::block)
+        || crate::publisher_helpers::is_top_level_block_configured(
+            ctx.config.homebrew_casks.as_ref(),
+        )
 }
 
-/// True when at least one crate has a `publish.scoop` block.
+/// True when at least one crate in the full crate universe has a
+/// `publish.scoop` block.
 fn is_scoop_configured(ctx: &Context) -> bool {
-    ctx.config
-        .crates
-        .iter()
-        .any(|c| c.publish.as_ref().is_some_and(|p| p.scoop.is_some()))
+    crate::publisher_helpers::is_any_crate_block_configured(ctx, crate::scoop::block)
 }
 
-/// True when at least one crate has a `publish.nix` block.
+/// True when at least one crate in the full crate universe has a
+/// `publish.nix` block.
 fn is_nix_configured(ctx: &Context) -> bool {
-    ctx.config
-        .crates
-        .iter()
-        .any(|c| c.publish.as_ref().is_some_and(|p| p.nix.is_some()))
+    crate::publisher_helpers::is_any_crate_block_configured(ctx, crate::nix::publisher::block)
 }
 
-/// True when at least one crate has a `publish.aur` block. The
-/// `publish.aur_source` upstream-AUR publisher is intentionally NOT
-/// gated by this predicate — it has its own Submitter-group
-/// publisher (see [`crate::aur_source::AurSourcePublisher`] +
+/// True when at least one crate in the full crate universe has a
+/// `publish.aur` block. The `publish.aur_source` upstream-AUR publisher is
+/// intentionally NOT gated by this predicate — it has its own
+/// Submitter-group publisher (see
+/// [`crate::aur_source::AurSourcePublisher`] +
 /// [`crate::aur_source::is_aur_source_configured`]).
 fn is_aur_configured(ctx: &Context) -> bool {
-    ctx.config
-        .crates
-        .iter()
-        .any(|c| c.publish.as_ref().is_some_and(|p| p.aur.is_some()))
+    crate::publisher_helpers::is_any_crate_block_configured(ctx, crate::aur::block)
 }
 
-/// True when at least one crate has a `publish.krew` block.
+/// True when at least one crate in the full crate universe has a
+/// `publish.krew` block.
 fn is_krew_configured(ctx: &Context) -> bool {
-    ctx.config
-        .crates
-        .iter()
-        .any(|c| c.publish.as_ref().is_some_and(|p| p.krew.is_some()))
+    crate::publisher_helpers::is_any_crate_block_configured(ctx, crate::krew::block)
 }
 
 /// True when the top-level `schemastore:` block carries at least one schema
@@ -574,22 +450,20 @@ fn is_mcp_configured(ctx: &Context) -> bool {
         .is_some_and(|s| !s.is_empty())
 }
 
-/// True when at least one crate in the active config has a
+/// True when at least one crate in the full crate universe has a
 /// `publish.cargo` block. Presence of the block is the opt-in; the
 /// per-crate `skip:` template is evaluated later in
 /// [`crate::cargo::publish_to_cargo`].
 ///
-/// Shape note: per-crate predicates use `.is_some()` because the inner
-/// `CargoPublishConfig` is itself the opt-in — there is no list to count
+/// Shape note: per-crate predicates gate on block presence (via
+/// [`crate::publisher_helpers::is_any_crate_block_configured`]) because the
+/// inner config struct is itself the opt-in — there is no list to count
 /// non-empty. Top-level publishers (dockerhub, artifactories,
 /// cloudsmiths) instead go through
 /// [`crate::publisher_helpers::is_top_level_block_configured`], which
 /// folds `Option<Vec<_>>` into a single uniform shape.
 fn is_cargo_configured(ctx: &Context) -> bool {
-    ctx.config
-        .crates
-        .iter()
-        .any(|c| c.publish.as_ref().and_then(|p| p.cargo.as_ref()).is_some())
+    crate::publisher_helpers::is_any_crate_block_configured(ctx, crate::cargo::block)
 }
 
 /// True when the top-level `dockerhub:` block has at least one entry.
@@ -630,8 +504,8 @@ fn is_github_release_configured(ctx: &Context) -> bool {
     }
     let selected = &ctx.options.selected_crates;
     ctx.config
-        .crates
-        .iter()
+        .crate_universe()
+        .into_iter()
         .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .any(|c| c.release.is_some())
 }
@@ -2049,6 +1923,91 @@ mod tests {
             "registry entry count {} != trait PublisherKind variant count {}",
             registered.len(),
             trait_tokens.len(),
+        );
+    }
+
+    /// A crate that exists ONLY under `workspaces[].crates` and carries a
+    /// `publish.scoop` block must register the scoop publisher: the
+    /// registration gate walks the full crate universe, not just
+    /// `config.crates`. A `config.crates`-only gate silently drops the
+    /// publish (never registered, never preflighted, never dispatched)
+    /// while `run()`/`requirements()` would have included the crate.
+    #[test]
+    fn workspace_only_crate_registers_per_crate_publisher() {
+        use anodizer_core::config::{ScoopConfig, WorkspaceConfig};
+        let ws_crate = CrateConfig {
+            name: "ws-only".to_string(),
+            path: "crates/ws-only".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                scoop: Some(ScoopConfig::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .workspaces(vec![WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![ws_crate],
+                ..Default::default()
+            }])
+            .build();
+        assert!(
+            ctx.config.crates.is_empty(),
+            "fixture must be a pure-workspace config"
+        );
+        let publishers = configured_publishers(&ctx);
+        assert!(
+            publishers.iter().any(|p| p.name() == "scoop"),
+            "scoop publisher must register off a workspace-only crate"
+        );
+    }
+
+    /// `required: true` on a workspace crate's publisher block must
+    /// escalate the release gate exactly like a top-level crate's: the
+    /// required/retain collapse walks the full crate universe.
+    #[test]
+    fn workspace_crate_required_true_escalates_gate() {
+        use anodizer_core::config::{KrewConfig, WorkspaceConfig};
+        let top = CrateConfig {
+            name: "top".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                krew: Some(KrewConfig::default()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ws_crate = CrateConfig {
+            name: "ws-required".to_string(),
+            path: "crates/ws-required".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            publish: Some(PublishConfig {
+                krew: Some(KrewConfig {
+                    required: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .crates(vec![top])
+            .workspaces(vec![WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![ws_crate],
+                ..Default::default()
+            }])
+            .build();
+        let publishers = configured_publishers(&ctx);
+        let p = publishers
+            .iter()
+            .find(|p| p.name() == "krew")
+            .expect("krew registered");
+        assert!(
+            p.required(),
+            "workspace crate's krew.required = Some(true) must escalate the gate"
         );
     }
 }

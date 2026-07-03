@@ -383,6 +383,56 @@ impl Default for Config {
 }
 
 impl Config {
+    /// The full crate universe: top-level `crates` plus every
+    /// `workspaces[].crates` entry, deduplicated by name (first-seen wins,
+    /// so a top-level entry shadows a same-named workspace entry).
+    ///
+    /// Single source of the "all crates that can carry per-crate config"
+    /// walk. Publisher registration, required/retain gate collapsing,
+    /// per-crate dispatch, requirement derivation, and `--crate`/`--all`
+    /// selection must all resolve through this walker so a workspace-only
+    /// crate carrying a publisher block is either visible everywhere or
+    /// nowhere — a consumer iterating `config.crates` directly silently
+    /// excludes workspace crates and hides their publishes.
+    pub fn crate_universe(&self) -> Vec<&CrateConfig> {
+        self.crate_universe_walk().0
+    }
+
+    /// Operator-facing warnings for crate-name collisions in the universe
+    /// where the colliding entries disagree on `path` — almost certainly a
+    /// config mistake (two distinct crates sharing a name). The legitimate
+    /// duplicate (the same crate referenced from both top-level and a
+    /// workspace) dedups silently. Emitted by the publish stage at entry so
+    /// the warning appears once per run rather than once per universe walk.
+    pub fn crate_universe_collision_warnings(&self) -> Vec<String> {
+        self.crate_universe_walk().1
+    }
+
+    /// The one walk both [`Self::crate_universe`] and
+    /// [`Self::crate_universe_collision_warnings`] derive from, so the
+    /// merge/dedup policy and its diagnostics cannot diverge.
+    fn crate_universe_walk(&self) -> (Vec<&CrateConfig>, Vec<String>) {
+        let mut out: Vec<&CrateConfig> = self.crates.iter().collect();
+        let mut warnings = Vec::new();
+        for ws in self.workspaces.iter().flatten() {
+            for c in &ws.crates {
+                if let Some(existing) = out.iter().find(|e| e.name == c.name) {
+                    if existing.path != c.path {
+                        warnings.push(format!(
+                            "workspace '{}' crate '{}' path '{}' shadowed by \
+                             prior entry with path '{}'; workspace entry dropped (name \
+                             collision with different paths — likely a config mistake)",
+                            ws.name, c.name, c.path, existing.path
+                        ));
+                    }
+                    continue;
+                }
+                out.push(c);
+            }
+        }
+        (out, warnings)
+    }
+
     /// Return the monorepo tag prefix, if configured.
     ///
     /// Shorthand for `config.monorepo.as_ref().and_then(|m| m.tag_prefix.as_deref())`.

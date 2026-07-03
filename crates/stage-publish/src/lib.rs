@@ -300,16 +300,18 @@ pub fn write_report_to_run_dir(ctx: &Context, log: &StageLogger) {
 /// (`homebrew:`, `scoop:`, `aur:`, ...) is dispatched alongside the
 /// crates from the top-level list. Without this, cargo would publish
 /// the workspace crate but every other publisher would silently skip
-/// it. See `util::all_crates` for the dedup rule.
+/// it. See [`anodizer_core::config::Config::crate_universe`] for the
+/// dedup rule.
 fn crates_with_publisher<F>(ctx: &Context, selected: &[String], has_config: F) -> Vec<String>
 where
     F: Fn(&PublishConfig) -> bool,
 {
-    util::all_crates(ctx)
+    ctx.config
+        .crate_universe()
         .into_iter()
         .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .filter(|c| c.publish.as_ref().is_some_and(&has_config))
-        .map(|c| c.name)
+        .map(|c| c.name.clone())
         .collect()
 }
 
@@ -375,11 +377,13 @@ where
         return out;
     }
     for crate_name in crates_with_publisher(ctx, selected, |p| selector(p).is_some()) {
-        let cfg_opt = util::all_crates(ctx)
+        let cfg_opt = ctx
+            .config
+            .crate_universe()
             .into_iter()
             .find(|c| c.name == crate_name)
-            .and_then(|c| c.publish)
-            .and_then(|p| selector(&p));
+            .and_then(|c| c.publish.as_ref())
+            .and_then(&selector);
         let Some(cfg) = cfg_opt else {
             continue;
         };
@@ -1066,6 +1070,13 @@ impl Stage for PublishStage {
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("publish");
+        // The crate-universe walker is silent (it runs once per predicate /
+        // collapse / dispatch call), so its config-shape diagnostics surface
+        // here, once per run — before the snapshot skip, because a snapshot
+        // preview of a colliding config should surface the mistake too.
+        for w in ctx.config.crate_universe_collision_warnings() {
+            log.warn(&w);
+        }
         if ctx.skip_in_snapshot(&log, "publish") {
             return Ok(());
         }

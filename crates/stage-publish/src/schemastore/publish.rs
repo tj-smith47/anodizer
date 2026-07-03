@@ -524,7 +524,7 @@ fn plan_schema_scoped(
     let crate_name = entry
         .crate_
         .clone()
-        .or_else(|| crate::util::all_crates(ctx).first().map(|c| c.name.clone()))
+        .or_else(|| ctx.config.crate_universe().first().map(|c| c.name.clone()))
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "{}: versioned vendor entry needs a `crate` to bind its version scope",

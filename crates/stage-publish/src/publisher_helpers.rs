@@ -44,6 +44,40 @@ pub(crate) fn is_top_level_block_configured<T>(field: Option<&Vec<T>>) -> bool {
     field.is_some_and(|v| !v.is_empty())
 }
 
+/// Canonical per-crate dispatch predicate: true when the named crate (in
+/// the FULL crate universe — top-level plus workspace crates) carries the
+/// publisher's `publish.<X>` block.
+///
+/// `block` is the publisher's single config accessor (e.g.
+/// `crate::scoop::block`), shared with the registry's any-crate gate
+/// ([`is_any_crate_block_configured`]) so a publisher's dispatch universe
+/// and its registration gate key on the same field by construction.
+pub(crate) fn is_per_crate_block_configured<T>(
+    ctx: &anodizer_core::context::Context,
+    crate_name: &str,
+    block: impl Fn(&anodizer_core::config::PublishConfig) -> Option<&T>,
+) -> bool {
+    ctx.config
+        .crate_universe()
+        .into_iter()
+        .any(|c| c.name == crate_name && c.publish.as_ref().and_then(&block).is_some())
+}
+
+/// Canonical any-crate registration gate: true when ANY crate in the full
+/// crate universe carries the publisher's `publish.<X>` block. Shares the
+/// same per-publisher `block` accessor as
+/// [`is_per_crate_block_configured`], so a publisher's registration gate
+/// cannot exclude a crate its per-crate dispatch would include.
+pub(crate) fn is_any_crate_block_configured<T>(
+    ctx: &anodizer_core::context::Context,
+    block: impl Fn(&anodizer_core::config::PublishConfig) -> Option<&T>,
+) -> bool {
+    ctx.config
+        .crate_universe()
+        .into_iter()
+        .any(|c| c.publish.as_ref().and_then(&block).is_some())
+}
+
 /// Resolve the effective list of crates a per-crate publisher should
 /// iterate over.
 ///
@@ -51,10 +85,11 @@ pub(crate) fn is_top_level_block_configured<T>(field: Option<&Vec<T>>) -> bool {
 ///   verbatim (operator passed `--crate` and the run honors that scope).
 /// - When `ctx.options.selected_crates` is empty: returns every crate in
 ///   the full crate universe (top-level + workspace crates) for which
-///   `is_per_crate_configured` returns true. Uses `util::all_crates` so
-///   workspace-only crates carrying a publisher block are not silently
-///   skipped — they are visible under `--all` and must be equally visible
-///   in this implicit-all path.
+///   `is_per_crate_configured` returns true. Uses
+///   [`anodizer_core::config::Config::crate_universe`] so workspace-only
+///   crates carrying a publisher block are not silently skipped — they are
+///   visible under `--all` and must be equally visible in this
+///   implicit-all path.
 pub(crate) fn effective_publish_crates(
     ctx: &anodizer_core::context::Context,
     is_per_crate_configured: impl Fn(&anodizer_core::context::Context, &str) -> bool,
@@ -62,10 +97,11 @@ pub(crate) fn effective_publish_crates(
     if !ctx.options.selected_crates.is_empty() {
         return ctx.options.selected_crates.clone();
     }
-    crate::util::all_crates(ctx)
+    ctx.config
+        .crate_universe()
         .into_iter()
         .filter(|c| is_per_crate_configured(ctx, &c.name))
-        .map(|c| c.name)
+        .map(|c| c.name.clone())
         .collect()
 }
 
@@ -103,9 +139,14 @@ pub(crate) fn with_published_crate_scope<T>(
     ) -> Option<String>,
     body: impl FnOnce(&mut anodizer_core::context::Context) -> anyhow::Result<T>,
 ) -> anyhow::Result<T> {
-    let crate_cfg = crate::util::all_crates(ctx)
+    // Cloned (not borrowed) because `body` takes `ctx` mutably while the
+    // scope guard still needs the crate's tag template.
+    let crate_cfg = ctx
+        .config
+        .crate_universe()
         .into_iter()
         .find(|c| c.name == crate_name)
+        .cloned()
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "publish: crate '{crate_name}' selected for a per-crate emission \

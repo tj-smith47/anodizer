@@ -61,11 +61,13 @@ impl PublisherSchemaValidator for KrewSchemaValidator {
             // "no archive artifacts" guard — there is nothing to render or
             // validate. The eligibility predicate is the SAME collector the live
             // publish uses, so the skipped set never diverges.
-            let Some(krew_cfg) = crate::util::all_crates(ctx)
+            let Some(krew_cfg) = ctx
+                .config
+                .crate_universe()
                 .into_iter()
                 .find(|c| &c.name == crate_name)
-                .and_then(|c| c.publish)
-                .and_then(|p| p.krew)
+                .and_then(|c| c.publish.as_ref())
+                .and_then(|p| p.krew.clone())
             else {
                 continue;
             };

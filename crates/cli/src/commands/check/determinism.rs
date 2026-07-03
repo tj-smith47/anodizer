@@ -814,11 +814,9 @@ fn detect_docker_backend_hint(cfg: &anodizer_core::config::Config) -> Option<Str
     }
 }
 
-/// Iterate the crate universe (top-level `crates:` chained with every
-/// `workspaces[].crates[]`), optionally scoped to `crate_name`.
+/// The crate universe ([`anodizer_core::config::Config::crate_universe`]),
+/// optionally scoped to `crate_name`.
 ///
-/// Mirrors `Config::populate_derived_metadata` and the msi/upx tool resolvers
-/// so a workspace-only project (cfgd) is walked the same as a single-crate one.
 /// `--crate` scopes to one; a whole-project run (`crate_name == None`) takes
 /// all. `defaults.dockers_v2` is materialized onto crates by `apply_defaults`
 /// before this runs, so a producer declared only under `defaults:` is seen too.
@@ -826,14 +824,8 @@ fn crate_universe<'a>(
     cfg: &'a anodizer_core::config::Config,
     crate_name: Option<&'a str>,
 ) -> impl Iterator<Item = &'a anodizer_core::config::CrateConfig> {
-    cfg.crates
-        .iter()
-        .chain(
-            cfg.workspaces
-                .iter()
-                .flatten()
-                .flat_map(|w| w.crates.iter()),
-        )
+    cfg.crate_universe()
+        .into_iter()
         .filter(move |k| crate_name.is_none_or(|n| k.name == n))
 }
 

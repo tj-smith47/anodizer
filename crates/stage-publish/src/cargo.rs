@@ -1625,7 +1625,7 @@ pub(crate) fn cargo_publish_plan(
     selected: &[String],
     log: &StageLogger,
 ) -> Result<CargoPublishPlan> {
-    let all_crates: Vec<CrateConfig> = crate::util::all_crates(ctx);
+    let all_crates: Vec<CrateConfig> = ctx.config.crate_universe().into_iter().cloned().collect();
 
     let expanded_selection: Vec<String> = if selected.is_empty() {
         Vec::new()
@@ -2201,6 +2201,14 @@ fn publish_to_cargo_with_guard(
 // `Submitter` + `required=true`: crates.io publish is effectively one-way
 // (versions cannot be re-uploaded), so a failure here must fail the release
 // and other Submitter publishers must already be gated.
+/// The crate-level `publish.cargo` block — the single accessor the
+/// registry gate and the gate-override collapse key on.
+pub(crate) fn block(
+    p: &anodizer_core::config::PublishConfig,
+) -> Option<&anodizer_core::config::CargoPublishConfig> {
+    p.cargo.as_ref()
+}
+
 simple_publisher!(
     CargoPublisher,
     "cargo",
@@ -2257,7 +2265,7 @@ pub(crate) fn run_no_eligible_crates_warning(selected_total: usize) -> String {
 /// `publish.cargo` block. Used by the publisher's run wrapper to choose
 /// between the `done` and `no-eligible-crates` log paths.
 fn count_cargo_configured_crates(ctx: &Context) -> usize {
-    let all = crate::util::all_crates(ctx);
+    let all = ctx.config.crate_universe();
     let selected = &ctx.options.selected_crates;
     all.iter()
         .filter(|c| c.publish.as_ref().and_then(|p| p.cargo.as_ref()).is_some())
@@ -2286,7 +2294,9 @@ impl anodizer_core::Publisher for CargoPublisher {
         // `cargo publish` resolves the crates.io token from
         // CARGO_REGISTRY_TOKEN; the run path spawns the literal `cargo`
         // from PATH, so probe exactly that.
-        let configured = anodizer_core::env_preflight::crate_universe(&ctx.config)
+        let configured = ctx
+            .config
+            .crate_universe()
             .into_iter()
             .filter_map(|c| c.publish.as_ref()?.cargo.as_ref())
             .any(|cargo| {
@@ -2465,7 +2475,9 @@ impl anodizer_core::Publisher for CargoPublisher {
         // perfectly valid private-registry release. Holds across single-crate,
         // lockstep, and per-crate modes (per-crate entries may each pick a
         // different registry).
-        let probes_crates_io = anodizer_core::env_preflight::crate_universe(&ctx.config)
+        let probes_crates_io = ctx
+            .config
+            .crate_universe()
             .into_iter()
             .filter_map(|c| c.publish.as_ref()?.cargo.as_ref())
             .filter(|cargo| {

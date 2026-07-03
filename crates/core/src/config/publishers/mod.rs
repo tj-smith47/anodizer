@@ -372,3 +372,59 @@ impl WaitForWorkspaceDepsConfig {
             .unwrap_or(Self::DEFAULT_MAX_WAIT)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Publisher gate overrides
+// ---------------------------------------------------------------------------
+
+/// Uniform access to the `required` / `retain_on_rollback` release-gate
+/// overrides that every publisher config block carries.
+///
+/// The publish registry collapses these overrides across all of a
+/// publisher's config sources (per-crate blocks over the full crate
+/// universe, top-level entry lists) into a single publisher-level value.
+/// Implementing this trait — rather than hand-copying the field accessor
+/// chain per publisher — makes it impossible for a publisher to collapse
+/// `required` but forget the parallel `retain_on_rollback` collapse (or
+/// vice versa).
+pub trait PublisherGateOverrides {
+    /// Config-level `required:` override. `None` keeps the publisher's
+    /// built-in default; `Some(true)` anywhere escalates the release gate.
+    fn required_override(&self) -> Option<bool>;
+    /// Config-level `retain_on_rollback:` override. `Some(true)` anywhere
+    /// opts the publisher's successful work out of rollback.
+    fn retain_on_rollback_override(&self) -> Option<bool>;
+}
+
+macro_rules! impl_publisher_gate_overrides {
+    ($($t:ty),+ $(,)?) => {
+        $(impl PublisherGateOverrides for $t {
+            fn required_override(&self) -> Option<bool> {
+                self.required
+            }
+            fn retain_on_rollback_override(&self) -> Option<bool> {
+                self.retain_on_rollback
+            }
+        })+
+    };
+}
+
+impl_publisher_gate_overrides!(
+    CargoPublishConfig,
+    HomebrewConfig,
+    HomebrewCaskConfig,
+    ScoopConfig,
+    ChocolateyConfig,
+    WingetConfig,
+    AurConfig,
+    AurSourceConfig,
+    KrewConfig,
+    NixConfig,
+    super::ReleaseConfig,
+    super::DockerHubConfig,
+    super::ArtifactoryConfig,
+    super::UploadConfig,
+    super::CloudSmithConfig,
+    super::NpmConfig,
+    super::GemFuryConfig,
+);
