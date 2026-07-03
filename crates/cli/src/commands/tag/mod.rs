@@ -928,11 +928,9 @@ pub fn run(opts: TagOpts) -> Result<()> {
             bump_commit_created = git::stage_and_commit_in(
                 &workspace_root_path,
                 &files_to_stage,
-                &format!(
-                    "chore(release): bump {} → {}{}",
-                    path,
-                    new_version,
-                    skip_ci_suffix(cfg.skip_ci_on_bump)
+                &git::release_bump_subject(
+                    &format!("{} → {}", path, new_version),
+                    skip_ci_suffix(cfg.skip_ci_on_bump),
                 ),
             )?;
         }
@@ -1254,10 +1252,9 @@ fn apply_workspace_bump(
     git::stage_and_commit_in(
         workspace_root,
         &staged_refs,
-        &format!(
-            "chore(release): bump workspace → {}{}",
-            new_version,
-            skip_ci_suffix(skip_ci_on_bump)
+        &git::release_bump_subject(
+            &format!("workspace → {}", new_version),
+            skip_ci_suffix(skip_ci_on_bump),
         ),
     )?;
 
@@ -1925,11 +1922,7 @@ fn run_per_crate_tag(
         git::stage_and_commit_in(
             &workspace_root,
             &staged_refs,
-            &format!(
-                "chore(release): bump {}{}",
-                bump_summary,
-                skip_ci_suffix(cfg.skip_ci_on_bump)
-            ),
+            &git::release_bump_subject(&bump_summary, skip_ci_suffix(cfg.skip_ci_on_bump)),
         )?;
 
         // Create all tags locally; push happens atomically below. Crates that
@@ -2323,57 +2316,21 @@ fn detect_bump_from_tokens(
 /// messages. The caller decides how to treat `None` — typically fall back
 /// to the configured `default_bump`.
 ///
-/// Patterns:
-/// - `BREAKING CHANGE` in any line, or a `<type>!:` shorthand → major
-/// - Message starts with `feat:` / `feat(scope):` → minor
-/// - Message starts with `fix:` / `perf:` / `revert:` (and scoped variants)
-///   → patch
+/// Per-commit classification delegates to the shared
+/// [`anodizer_core::git::classify_commit`] rules (the same classifier
+/// `anodizer bump` infers from, so a `bump --dry-run` preview and the
+/// auto-tag cut can never disagree); the strongest signal in the range wins.
 fn detect_conventional_bump(messages: &[String]) -> Option<BumpKind> {
-    let mut has_breaking = false;
-    let mut has_feat = false;
-    let mut has_fix_or_perf = false;
-
-    for msg in messages {
-        // BREAKING CHANGE footer or body line → major
-        if msg.contains("BREAKING CHANGE") || msg.contains("BREAKING-CHANGE") {
-            has_breaking = true;
-        }
-        // Inspect only the subject line for the type prefix.
-        let subject = msg.lines().next().unwrap_or("").trim_start();
-        let (ty, rest) = match subject.split_once(':') {
-            Some(pair) => pair,
-            None => continue,
-        };
-        // Strip a `(scope)` suffix and capture the `!` breaking marker.
-        let (head, marker) = ty.split_once('(').map_or((ty, ""), |(h, scope_rest)| {
-            // scope_rest is like `scope)!` or `scope)` — extract the post-`)` part.
-            let after_scope = scope_rest.split_once(')').map_or("", |x| x.1);
-            (h, after_scope)
-        });
-        let is_breaking_shorthand = marker.starts_with('!') || ty.ends_with('!');
-        // Ignore pattern where `rest` is empty (e.g. `feat:` with nothing after) —
-        // still counts as a typed commit; only the prefix match is required.
-        let _ = rest;
-
-        if is_breaking_shorthand {
-            has_breaking = true;
-        }
-        match head.trim() {
-            "feat" => has_feat = true,
-            "fix" | "perf" | "revert" => has_fix_or_perf = true,
-            _ => {}
-        }
-    }
-
-    if has_breaking {
-        Some(BumpKind::Major)
-    } else if has_feat {
-        Some(BumpKind::Minor)
-    } else if has_fix_or_perf {
-        Some(BumpKind::Patch)
-    } else {
-        None
-    }
+    use anodizer_core::git::ConventionalLevel;
+    messages
+        .iter()
+        .filter_map(|msg| anodizer_core::git::classify_commit(msg))
+        .max()
+        .map(|level| match level {
+            ConventionalLevel::Major => BumpKind::Major,
+            ConventionalLevel::Minor => BumpKind::Minor,
+            ConventionalLevel::Patch => BumpKind::Patch,
+        })
 }
 
 /// Bare semver version embedded in a tag string (the tag with its prefix
@@ -4112,6 +4069,61 @@ tag_post_hooks:
             "refactor!: z".to_string(),
         ];
         assert_eq!(detect_conventional_bump(&msgs), Some(BumpKind::Major));
+    }
+
+    /// The same commit corpus must classify identically through the `tag`
+    /// consumer (`detect_conventional_bump`, feeding the auto-tag precedence
+    /// layers) and the `bump` consumer (`inference::classify`, feeding the
+    /// dry-run plan) — the two commands previewing/cutting different releases
+    /// from the same range is the drift this pins against.
+    #[test]
+    fn conventional_classification_is_lockstep_between_tag_and_bump() {
+        use crate::commands::bump::inference;
+        use crate::commands::bump::plan::BumpLevel;
+
+        let corpus: &[(&[&str], Option<BumpKind>)] = &[
+            (&["revert: undo broken feature"], Some(BumpKind::Patch)),
+            (
+                &["feat: x\n\nBREAKING CHANGE removed the old endpoint"],
+                Some(BumpKind::Major),
+            ),
+            (
+                &["fix: y\n\nBREAKING-CHANGE: dropped the flag"],
+                Some(BumpKind::Major),
+            ),
+            (&["feat!: drop legacy auth"], Some(BumpKind::Major)),
+            (&["feat(core)!: rewrite pipeline"], Some(BumpKind::Major)),
+            (&["refactor!: drop the shim"], Some(BumpKind::Major)),
+            (&["feat: new stage"], Some(BumpKind::Minor)),
+            (&["feat(build): add cache key"], Some(BumpKind::Minor)),
+            (&["fix: race"], Some(BumpKind::Patch)),
+            (&["perf: faster loop"], Some(BumpKind::Patch)),
+            (&["feat(broken: unclosed scope"], Some(BumpKind::Minor)),
+            (&["chore: deps", "docs: tweak"], None),
+            (&["random subject"], None),
+            (&["fix: a", "feat: b", "chore: c"], Some(BumpKind::Minor)),
+            (&["fix: a", "feat!: b"], Some(BumpKind::Major)),
+        ];
+
+        for (msgs, expected_tag) in corpus {
+            let msgs: Vec<String> = msgs.iter().map(|s| s.to_string()).collect();
+            assert_eq!(
+                detect_conventional_bump(&msgs),
+                *expected_tag,
+                "tag-side classification for {msgs:?}"
+            );
+            let expected_bump = match expected_tag {
+                Some(BumpKind::Major) => BumpLevel::Major,
+                Some(BumpKind::Minor) => BumpLevel::Minor,
+                Some(BumpKind::Patch) => BumpLevel::Patch,
+                Some(BumpKind::None) | None => BumpLevel::Skip,
+            };
+            let (level, _) = inference::classify(&msgs);
+            assert_eq!(
+                level, expected_bump,
+                "bump-side classification for {msgs:?}"
+            );
+        }
     }
 
     // -----------------------------------------------------------------------

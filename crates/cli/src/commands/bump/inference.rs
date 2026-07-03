@@ -1,14 +1,14 @@
 //! Conventional-Commit → semver-level inference for `anodizer bump`.
 //!
-//! Rules:
-//!   - `BREAKING CHANGE:` / `BREAKING-CHANGE:` footer, or `!` after the type → major
-//!   - `feat(...)` → minor
-//!   - `fix(...)`, `perf(...)` → patch
-//!   - `chore / docs / refactor / test / build / ci / style` → no bump
+//! Per-commit classification is [`anodizer_core::git::classify_commit`] —
+//! the same rules the `tag` command's auto-bump layer consumes (breaking
+//! change / `<type>!:` → major, `feat:` → minor, `fix:`/`perf:`/`revert:` →
+//! patch, everything else → no bump) — so a `bump --dry-run` preview always
+//! matches what auto-tag would cut.
 //!
 //! Commit scope is the crate's directory, matched against the last tag
-//! whose name follows `<crate>-v<semver>`. If no such tag exists, we walk
-//! from the beginning of the repo history for that crate.
+//! whose name starts with the crate's resolved tag prefix. If no such tag
+//! exists, we walk from the beginning of the repo history for that crate.
 
 use anyhow::Result;
 
@@ -22,19 +22,15 @@ pub struct InferenceResult {
 
 /// Infer the per-crate bump level from commits since the crate's last tag.
 ///
-/// `tag_prefix_override` is the prefix to scan for tags (typically derived
-/// from the crate's `.anodizer.yaml` `tag_template`). When `None`, the
-/// fallback `<crate-name>-v` convention is used — handy for workspaces
-/// that have no `.anodizer.yaml` at all.
+/// `tag_prefix` is the crate's resolved tag-family prefix
+/// ([`anodizer_core::git::per_crate_tag_prefix`] — the `tag_template`
+/// extraction with the `<crate-name>-v` fallback already applied).
 pub fn infer_for_crate(
     workspace_root: &std::path::Path,
     m: &MemberInfo,
-    tag_prefix_override: Option<&str>,
+    tag_prefix: &str,
 ) -> Result<InferenceResult> {
-    let tag_prefix = tag_prefix_override
-        .map(|s| s.to_string())
-        .unwrap_or_else(|| format!("{}-v", m.name));
-    let last_tag = find_last_tag_for_prefix(workspace_root, &tag_prefix)?;
+    let last_tag = find_last_tag_for_prefix(workspace_root, tag_prefix)?;
 
     let rel_crate_dir = m
         .crate_dir
@@ -64,22 +60,22 @@ pub fn infer_for_crate(
 }
 
 #[derive(Default, Debug, Clone, Copy)]
-struct LevelCounts {
+pub(crate) struct LevelCounts {
     major: usize,
     minor: usize,
     patch: usize,
     other: usize,
 }
 
-fn classify(messages: &[String]) -> (BumpLevel, LevelCounts) {
+pub(crate) fn classify(messages: &[String]) -> (BumpLevel, LevelCounts) {
+    use anodizer_core::git::ConventionalLevel;
     let mut counts = LevelCounts::default();
     for msg in messages {
-        let hit = classify_one(msg);
-        match hit {
-            BumpLevel::Major => counts.major += 1,
-            BumpLevel::Minor => counts.minor += 1,
-            BumpLevel::Patch => counts.patch += 1,
-            _ => counts.other += 1,
+        match anodizer_core::git::classify_commit(msg) {
+            Some(ConventionalLevel::Major) => counts.major += 1,
+            Some(ConventionalLevel::Minor) => counts.minor += 1,
+            Some(ConventionalLevel::Patch) => counts.patch += 1,
+            None => counts.other += 1,
         }
     }
     let level = if counts.major > 0 {
@@ -92,55 +88,6 @@ fn classify(messages: &[String]) -> (BumpLevel, LevelCounts) {
         BumpLevel::Skip
     };
     (level, counts)
-}
-
-fn classify_one(msg: &str) -> BumpLevel {
-    // Check for BREAKING CHANGE: / BREAKING-CHANGE: footer (checked on raw message,
-    // allows for multi-line commits which git log --format=%B would include).
-    if msg.contains("BREAKING CHANGE:") || msg.contains("BREAKING-CHANGE:") {
-        return BumpLevel::Major;
-    }
-    // Subject line only for type prefix + `!`.
-    let subject = msg.lines().next().unwrap_or("").trim();
-    let (ty, bang) = parse_type(subject);
-    if bang {
-        return BumpLevel::Major;
-    }
-    match ty.as_deref() {
-        Some("feat") => BumpLevel::Minor,
-        Some("fix") | Some("perf") => BumpLevel::Patch,
-        _ => BumpLevel::Skip,
-    }
-}
-
-/// Parse the `type(scope)?!?:` prefix from a commit subject.
-/// Returns `(type, breaking)` — type is `None` if the subject isn't conventional.
-fn parse_type(subject: &str) -> (Option<String>, bool) {
-    let colon = match subject.find(':') {
-        Some(i) => i,
-        None => return (None, false),
-    };
-    let head = &subject[..colon];
-    // Strip optional scope.
-    let (ty, rest) = match head.find('(') {
-        Some(paren) => {
-            let close = match head.find(')') {
-                Some(c) => c,
-                None => return (None, false),
-            };
-            if close <= paren {
-                return (None, false);
-            }
-            (&head[..paren], &head[close + 1..])
-        }
-        None => (head, ""),
-    };
-    let bang = rest.contains('!') || ty.ends_with('!');
-    let ty = ty.trim_end_matches('!').trim().to_string();
-    if ty.is_empty() || !ty.chars().all(|c| c.is_ascii_alphabetic()) {
-        return (None, false);
-    }
-    (Some(ty), bang)
 }
 
 fn format_reason(level: BumpLevel, c: &LevelCounts, last_tag: Option<&str>) -> String {
@@ -165,9 +112,9 @@ fn format_reason(level: BumpLevel, c: &LevelCounts, last_tag: Option<&str>) -> S
         }
         BumpLevel::Patch => {
             let label = if c.patch == 1 {
-                "fix/perf commit"
+                "fix/perf/revert commit"
             } else {
-                "fix/perf commits"
+                "fix/perf/revert commits"
             };
             format!("{} {}{}", c.patch, label, scope)
         }
@@ -219,59 +166,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn classify_breaking_footer_is_major() {
-        assert!(matches!(
-            classify_one("feat(api): new endpoint\n\nBREAKING CHANGE: old endpoint removed"),
-            BumpLevel::Major
-        ));
-    }
-
-    #[test]
-    fn classify_bang_is_major() {
-        assert!(matches!(
-            classify_one("feat!: drop legacy auth"),
-            BumpLevel::Major
-        ));
-        assert!(matches!(
-            classify_one("feat(core)!: rewrite pipeline"),
-            BumpLevel::Major
-        ));
-    }
-
-    #[test]
-    fn classify_feat_is_minor() {
-        assert!(matches!(classify_one("feat: new stage"), BumpLevel::Minor));
-        assert!(matches!(
-            classify_one("feat(build): add cache key"),
-            BumpLevel::Minor
-        ));
-    }
-
-    #[test]
-    fn classify_fix_and_perf_are_patch() {
-        assert!(matches!(classify_one("fix: race"), BumpLevel::Patch));
-        assert!(matches!(
-            classify_one("perf: faster loop"),
-            BumpLevel::Patch
-        ));
-    }
-
-    #[test]
-    fn classify_chore_is_skip() {
-        assert!(matches!(
-            classify_one("chore: update deps"),
-            BumpLevel::Skip
-        ));
-        assert!(matches!(classify_one("docs: fix link"), BumpLevel::Skip));
-        assert!(matches!(classify_one("refactor: rename"), BumpLevel::Skip));
-    }
-
-    #[test]
-    fn classify_non_conventional_is_skip() {
-        assert!(matches!(classify_one("random subject"), BumpLevel::Skip));
-    }
-
-    #[test]
     fn aggregate_takes_highest_severity() {
         let msgs: Vec<String> = vec!["chore: x".into(), "fix: y".into(), "feat: z".into()];
         let (lvl, _) = classify(&msgs);
@@ -280,5 +174,21 @@ mod tests {
         let msgs: Vec<String> = vec!["fix: a".into(), "feat!: b".into(), "feat: c".into()];
         let (lvl, _) = classify(&msgs);
         assert_eq!(lvl, BumpLevel::Major);
+    }
+
+    #[test]
+    fn aggregate_of_non_release_worthy_commits_is_skip() {
+        let msgs: Vec<String> = vec!["chore: deps".into(), "random subject".into()];
+        let (lvl, counts) = classify(&msgs);
+        assert_eq!(lvl, BumpLevel::Skip);
+        assert_eq!(counts.other, 2);
+    }
+
+    #[test]
+    fn aggregate_counts_revert_as_patch() {
+        let msgs: Vec<String> = vec!["revert: undo broken feature".into()];
+        let (lvl, counts) = classify(&msgs);
+        assert_eq!(lvl, BumpLevel::Patch);
+        assert_eq!(counts.patch, 1);
     }
 }

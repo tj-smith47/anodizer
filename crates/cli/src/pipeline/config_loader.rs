@@ -22,6 +22,19 @@ use super::monorepo::apply_monorepo_defaults;
 /// which this include walker recurses synchronously.
 const MAX_INCLUDE_DEPTH: usize = 32;
 
+/// The well-known config file names auto-discovery probes, in precedence
+/// order. The single candidate list behind every discovery path
+/// ([`find_config_with_logger`] for cwd-relative lookup, [`find_config_in`]
+/// for an arbitrary base) so no command can honor a different name set.
+const CONFIG_CANDIDATES: &[&str] = &[
+    ".anodizer.yaml",
+    ".anodizer.yml",
+    ".anodizer.toml",
+    "anodizer.yaml",
+    "anodizer.yml",
+    "anodizer.toml",
+];
+
 /// Find config file. If `config_override` is provided, use that path directly;
 /// otherwise search the current directory for well-known config file names.
 ///
@@ -64,15 +77,7 @@ pub fn find_config_with_logger(
         }
         bail!("config file not found: {}", path.display());
     }
-    let candidates = [
-        ".anodizer.yaml",
-        ".anodizer.yml",
-        ".anodizer.toml",
-        "anodizer.yaml",
-        "anodizer.yml",
-        "anodizer.toml",
-    ];
-    for name in &candidates {
+    for name in CONFIG_CANDIDATES {
         let path = PathBuf::from(name);
         if path.exists() {
             return Ok(anchor_to_cwd(path));
@@ -89,7 +94,7 @@ pub fn find_config_with_logger(
     }
     bail!(
         "no anodizer config file found (tried: {}). Run `anodizer init` to generate one.",
-        candidates.join(", ")
+        CONFIG_CANDIDATES.join(", ")
     )
 }
 
@@ -105,15 +110,7 @@ pub fn find_config_with_logger(
 /// recognizes the fallback by filename). Best-effort callers (allow-list /
 /// hint derivation) can `.ok()` the result.
 pub fn find_config_in(base: &Path) -> Result<PathBuf> {
-    let candidates = [
-        ".anodizer.yaml",
-        ".anodizer.yml",
-        ".anodizer.toml",
-        "anodizer.yaml",
-        "anodizer.yml",
-        "anodizer.toml",
-    ];
-    for name in &candidates {
+    for name in CONFIG_CANDIDATES {
         let path = base.join(name);
         if path.exists() {
             return Ok(path);
@@ -126,7 +123,7 @@ pub fn find_config_in(base: &Path) -> Result<PathBuf> {
     bail!(
         "no anodizer config file found under {} (tried: {}). Run `anodizer init` to generate one.",
         base.display(),
-        candidates.join(", ")
+        CONFIG_CANDIDATES.join(", ")
     )
 }
 

@@ -1060,6 +1060,61 @@ crates:
     );
 }
 
+/// `bump` must discover the config through the same well-known-name candidate
+/// walk every other command uses — a repo configured via `anodizer.yaml`
+/// (a non-`.anodizer.yaml` candidate) gets its `tag_template` honored, not
+/// silently degraded to the `<name>-v` fallback family.
+#[test]
+fn bump_discovers_non_dot_anodizer_yaml_config() {
+    let tmp = TempDir::new().unwrap();
+    two_crate_workspace(tmp.path());
+    fs::write(
+        tmp.path().join("anodizer.yaml"),
+        r#"version: 2
+project_name: non-dot-config-fixture
+crates:
+  - name: cli
+    path: crates/cli
+    tag_template: "v{{ Version }}"
+"#,
+    )
+    .unwrap();
+    git_init(tmp.path());
+    git_add_commit(tmp.path(), "initial");
+    run_git(tmp.path(), &["tag", "v0.1.0"]);
+    git_commit_empty_on_path(
+        tmp.path(),
+        "crates/cli/feature.rs",
+        "pub fn f() {}",
+        "feat(cli): add feature",
+    );
+
+    let out = anodizer()
+        .current_dir(tmp.path())
+        .args(["bump", "--workspace", "--dry-run", "--output", "json"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "infer dry-run failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).expect("json");
+    let cli_row = v
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["crate"] == "cli")
+        .expect("cli row");
+    assert_eq!(cli_row["level"], "minor");
+    let reason = cli_row["reason"].as_str().unwrap();
+    assert!(
+        reason.contains("since v0.1.0"),
+        "anodizer.yaml's tag_template must be honored (range bounded at \
+         v0.1.0, not the cli-v fallback family): {reason}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Strict-mode version-pin enforcement
 // ---------------------------------------------------------------------------

@@ -293,9 +293,12 @@ fn render_yaml(project_name: &str, crates: &[&CrateInfo]) -> Result<String> {
     for c in crates {
         out.push_str(&format!("  - name: {}\n", c.name));
         out.push_str(&format!("    path: {}\n", c.path));
+        // The generated template must mint tags in the same family the
+        // no-template fallback scans, so compose it from the shared
+        // fallback-prefix convention rather than restating `{name}-v`.
         out.push_str(&format!(
-            "    tag_template: \"{}-v{{{{ .Version }}}}\"\n",
-            c.name
+            "    tag_template: \"{}{{{{ .Version }}}}\"\n",
+            anodizer_core::git::per_crate_tag_prefix(&c.name, "")
         ));
 
         if let Some(deps) = non_empty_deps(&c.depends_on) {

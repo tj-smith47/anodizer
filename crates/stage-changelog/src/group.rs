@@ -119,13 +119,20 @@ pub(crate) fn extract_co_authors(message: &str) -> Vec<String> {
 // apply_filters
 // ---------------------------------------------------------------------------
 
-/// Subject prefix of the version-sync bump commit anodizer writes after a bump
-/// (`chore(release): bump workspace → …` / `chore(release): bump <crate> → …`,
-/// optionally ` [skip ci]`). Excluded from generated changelogs by default so
-/// the release machinery anodizer authors never leaks into the notes. Anchored
-/// on anodizer's exact prefix, so a hand-written commit — or a `Revert
-/// "chore(release): bump …"` — is not swept up.
-pub(crate) const VERSION_SYNC_BUMP_PATTERN: &str = r"^chore\(release\): bump ";
+/// Regex matching the subject of the version-sync bump commit anodizer writes
+/// after a bump (`chore(release): bump workspace → …` /
+/// `chore(release): bump <crate> → …`, optionally ` [skip ci]`). Excluded from
+/// generated changelogs by default so the release machinery anodizer authors
+/// never leaks into the notes. Anchored on anodizer's exact prefix — composed
+/// from the same shared subject builder the writers use, so a reworded bump
+/// subject can never silently stop being filtered — so a hand-written commit
+/// or a `Revert "chore(release): bump …"` is not swept up.
+pub(crate) static VERSION_SYNC_BUMP_PATTERN: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "^{}",
+        regex::escape(&anodizer_core::git::release_bump_subject_prefix())
+    )
+});
 
 /// The effective exclude set: the user's `changelog.filters.exclude` patterns,
 /// plus [`VERSION_SYNC_BUMP_PATTERN`] unless
@@ -143,7 +150,7 @@ pub(crate) fn exclude_filters_with_version_sync(filters: Option<&ChangelogFilter
         .and_then(|f| f.exclude_version_sync_commits)
         .unwrap_or(true);
     if exclude_version_sync {
-        exclude.push(VERSION_SYNC_BUMP_PATTERN.to_string());
+        exclude.push(VERSION_SYNC_BUMP_PATTERN.clone());
     }
     exclude
 }

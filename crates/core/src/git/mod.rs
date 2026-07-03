@@ -3,6 +3,7 @@ use std::path::Path;
 use std::process::Command;
 
 mod commits;
+mod conventional;
 mod detect;
 mod github_api;
 mod github_probe;
@@ -19,8 +20,8 @@ pub mod worktree;
 mod tests;
 
 pub use commits::{
-    Commit, CommitWithFiles, CommitterIdentity, SHORT_COMMIT_LEN, add_path_in,
-    branches_containing_sha_in, commit_in, commit_subject_in, commits_between_in,
+    Commit, CommitWithFiles, CommitterIdentity, RELEASE_COMMIT_PREFIX, SHORT_COMMIT_LEN,
+    add_path_in, branches_containing_sha_in, commit_in, commit_subject_in, commits_between_in,
     commits_with_subjects_in, count_commits_since_last_tag_in, get_all_commits, get_all_commits_in,
     get_all_commits_paths, get_all_commits_paths_in, get_all_commits_paths_with_files_in,
     get_commit_messages_between, get_commit_messages_between_in, get_commit_messages_between_path,
@@ -33,10 +34,12 @@ pub use commits::{
     get_short_commit, get_short_commit_in, has_changes_since, has_changes_since_in,
     has_commits_since_tag, has_commits_since_tag_in, head_commit_hash_in, head_commit_timestamp_in,
     is_branchlike, log_subjects_for_range, parse_commit_output, parse_commit_output_with_files,
-    paths_changed_since_tag, paths_changed_since_tag_in, push_branch_in, reset_hard_in,
-    resolve_rollback_identity, rev_parse_in, rev_verify_commit_in, revert_commit_in,
-    short_commit_str, stage_and_commit, stage_and_commit_in,
+    paths_changed_since_tag, paths_changed_since_tag_in, push_branch_in, release_bump_subject,
+    release_bump_subject_prefix, reset_hard_in, resolve_rollback_identity, rev_parse_in,
+    rev_verify_commit_in, revert_commit_in, short_commit_str, stage_and_commit,
+    stage_and_commit_in,
 };
+pub use conventional::{ConventionalLevel, classify_commit};
 pub use detect::{GitInfo, detect_git_info, detect_git_info_in};
 pub use github_api::{
     GITHUB_TOKEN_ENV_LADDER, commit_author_login, commit_author_login_with_binary,
@@ -72,8 +75,9 @@ pub use tags::{
     find_previous_tag_with_prefix, find_previous_tag_with_prefix_in, get_all_semver_tags,
     get_all_semver_tags_in, get_branch_semver_tags, get_branch_semver_tags_in, get_first_commit,
     get_first_commit_in, get_tags_at_head, get_tags_at_head_in, get_tags_at_sha_in,
-    has_version_placeholder, head_is_at_tag, list_tags_with_prefix, push_branch_and_tags_atomic_in,
-    render_ignore_patterns, strip_monorepo_prefix, tag_points_at_head, tag_points_at_head_in,
+    has_version_placeholder, head_is_at_tag, list_tags_with_prefix, per_crate_tag_prefix,
+    push_branch_and_tags_atomic_in, render_ignore_patterns, strip_monorepo_prefix,
+    tag_points_at_head, tag_points_at_head_in,
 };
 pub use worktree::Worktree;
 

@@ -216,8 +216,7 @@ fn resolve_tag_owner(config: &Config, tag: &str) -> Result<(String, String)> {
     );
     let mut best: Option<(&str, String)> = None;
     for c in all_crates {
-        let prefix =
-            git::extract_tag_prefix(&c.tag_template).unwrap_or_else(|| format!("{}-v", c.name));
+        let prefix = git::per_crate_tag_prefix(&c.name, &c.tag_template);
         if let Some(remainder) = tag.strip_prefix(&prefix) {
             let is_version = remainder
                 .split('.')
@@ -285,7 +284,7 @@ fn select_crates(
     crate_filter: Option<&str>,
 ) -> Vec<(String, PathBuf, String)> {
     let prefix_for = |c: &anodizer_core::config::CrateConfig| -> String {
-        git::extract_tag_prefix(&c.tag_template).unwrap_or_else(|| format!("{}-v", c.name))
+        git::per_crate_tag_prefix(&c.name, &c.tag_template)
     };
     let global_prefix = global_tag_prefix(config);
     let entries: Vec<(String, PathBuf, String)> =

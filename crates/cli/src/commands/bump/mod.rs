@@ -191,13 +191,14 @@ fn commit_plan(
             None => continue,
         };
         // Resolve the crate's tag prefix from its configured `tag_template`
-        // (matching the version-inference path), so the previous-tag range and
-        // the promoted heading honor a `v{{ Version }}` / custom scheme. Fall
-        // back to `{crate}-v` only when no template is configured.
-        let tag_prefix = changelog_config
+        // (the same shared resolution the version-inference path uses), so
+        // the previous-tag range and the promoted heading honor a
+        // `v{{ Version }}` / custom scheme.
+        let tag_template = changelog_config
             .and_then(|cfg| plan::find_crate_in_config(cfg, &row.crate_name))
-            .and_then(|c| anodizer_core::git::extract_tag_prefix(&c.tag_template))
-            .unwrap_or_else(|| format!("{}-v", row.crate_name));
+            .map(|c| c.tag_template.as_str())
+            .unwrap_or("");
+        let tag_prefix = anodizer_core::git::per_crate_tag_prefix(&row.crate_name, tag_template);
         let from_tag = inference::find_last_tag_for_prefix(workspace_root, &tag_prefix)?;
         let full_tag = format!("{}{}", tag_prefix, row.next);
         changelog_targets.push(crate::commands::changelog_sync::ChangelogTarget {
@@ -304,40 +305,48 @@ fn commit_plan(
 }
 
 fn default_commit_message(rows: &[PlanRow]) -> String {
-    if rows.len() == 1 {
+    let summary = if rows.len() == 1 {
         let r = &rows[0];
-        format!("chore(release): bump {} → {}", r.crate_name, r.next)
+        format!("{} → {}", r.crate_name, r.next)
     } else {
-        let summary = rows
-            .iter()
+        rows.iter()
             .map(|r| format!("{} → {}", r.crate_name, r.next))
             .collect::<Vec<_>>()
-            .join(", ");
-        format!("chore(release): bump {}", summary)
-    }
+            .join(", ")
+    };
+    anodizer_core::git::release_bump_subject(&summary, "")
 }
 
-/// Load `.anodizer.yaml` once for the whole bump run (`--config` override,
-/// else `<workspace_root>/.anodizer.yaml`). The single result is shared by
-/// the coherence guard, the plan builder's `tag_template` lookup, the pin
-/// enforcement, and the changelog gate — each consumer loading separately
-/// would re-emit every static-config warning per load.
+/// Load the anodizer config once for the whole bump run (`--config`
+/// override, else the shared well-known-name discovery
+/// ([`crate::pipeline::find_config_in`]) rooted at `workspace_root` — the
+/// same candidate set every other command honors, including the Cargo.toml
+/// defaults fallback). The single result is shared by the coherence guard,
+/// the plan builder's `tag_template` lookup, the pin enforcement, and the
+/// changelog gate — each consumer loading separately would re-emit every
+/// static-config warning per load.
 ///
-/// `Ok(None)` when no config file exists (every consumer degrades to its
-/// no-config behavior). A file that exists but fails to load is a hard
-/// error: pin enforcement is a correctness gate and must not be silently
-/// skipped on a malformed config.
+/// `Ok(None)` when no config (and no Cargo.toml fallback) exists — every
+/// consumer degrades to its no-config behavior. An explicit `--config`
+/// pointing at a missing file, or a file that exists but fails to load, is
+/// a hard error: pin enforcement is a correctness gate and must not be
+/// silently skipped.
 fn load_bump_config(
     workspace_root: &std::path::Path,
     opts: &BumpOpts,
 ) -> Result<Option<anodizer_core::config::Config>> {
     let cfg_path = match opts.config_override.as_deref() {
-        Some(p) => p.to_path_buf(),
-        None => workspace_root.join(".anodizer.yaml"),
+        Some(p) => {
+            if !p.is_file() {
+                bail!("config file not found: {}", p.display());
+            }
+            p.to_path_buf()
+        }
+        None => match crate::pipeline::find_config_in(workspace_root) {
+            Ok(p) => p,
+            Err(_) => return Ok(None),
+        },
     };
-    if !cfg_path.is_file() {
-        return Ok(None);
-    }
     crate::pipeline::load_config(&cfg_path)
         .map(Some)
         .with_context(|| format!("failed to load {}", cfg_path.display()))

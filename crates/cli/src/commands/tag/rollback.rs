@@ -178,7 +178,10 @@ fn build_revert_message(target_sha: &str, deleted_tags: &[String], dry_run: bool
     } else {
         target_sha
     };
-    let mut body = format!("chore(release): rollback {primary} [skip ci]\n\nReverts {short}.",);
+    let mut body = format!(
+        "{} {primary} [skip ci]\n\nReverts {short}.",
+        rollback_subject_prefix()
+    );
     if !deleted_tags.is_empty() {
         let label = if dry_run {
             "Tags that WOULD be deleted"
@@ -190,12 +193,23 @@ fn build_revert_message(target_sha: &str, deleted_tags: &[String], dry_run: bool
     body
 }
 
-/// Prefix that anodize's own `build_revert_message` always produces.
-/// Used by the rollback safety check to recognise its own prior revert
-/// commit (so re-runs are idempotent) without absorbing unrelated
-/// `Revert "<...>"` commits that GitHub's "Revert this PR" button emits
-/// with arbitrary upstream subjects.
-const ANODIZE_REVERT_SUBJECT_PREFIX: &str = "Revert \"chore(release): ";
+/// Subject prefix of anodize's own rollback commits
+/// (`chore(release): rollback …`), composed from the shared
+/// release-machinery prefix so the writer ([`build_revert_message`]) and
+/// the safety-check matcher below can never drift apart.
+fn rollback_subject_prefix() -> String {
+    format!("{}rollback", git::RELEASE_COMMIT_PREFIX)
+}
+
+/// Prefix that a plain `git revert` of an anodize release-machinery commit
+/// produces (the amend-failure window, where the custom rollback subject
+/// was never applied). Used by the rollback safety check to recognise its
+/// own prior revert commit (so re-runs are idempotent) without absorbing
+/// unrelated `Revert "<...>"` commits that GitHub's "Revert this PR"
+/// button emits with arbitrary upstream subjects. Composed from the shared
+/// prefix the bump/rollback writers stamp.
+static ANODIZE_REVERT_SUBJECT_PREFIX: LazyLock<String> =
+    LazyLock::new(|| format!("Revert \"{}", git::RELEASE_COMMIT_PREFIX));
 
 pub fn run(opts: RollbackOpts) -> Result<()> {
     run_with_gh(opts, std::path::Path::new("gh"))
@@ -275,8 +289,8 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
         let intervening = git::commits_with_subjects_in(&cwd, &target_sha)?;
         let mut suspicious: Vec<(String, String)> = Vec::new();
         for (sha, subject) in &intervening {
-            if subject.starts_with(ANODIZE_REVERT_SUBJECT_PREFIX)
-                || subject.starts_with("chore(release): rollback")
+            if subject.starts_with(ANODIZE_REVERT_SUBJECT_PREFIX.as_str())
+                || subject.starts_with(&rollback_subject_prefix())
             {
                 continue;
             }
@@ -853,13 +867,13 @@ mod tests {
         // anodize's own prior revert subject — admissible.
         let anodize_subject = "Revert \"chore(release): rollback v1.2.3 [skip ci]\"";
         assert!(
-            anodize_subject.starts_with(ANODIZE_REVERT_SUBJECT_PREFIX),
+            anodize_subject.starts_with(ANODIZE_REVERT_SUBJECT_PREFIX.as_str()),
             "anodize-generated revert must be recognised"
         );
         // GitHub's "Revert this PR" button subject — must NOT be admitted.
         let github_subject = "Revert \"feat: add new flag\"";
         assert!(
-            !github_subject.starts_with(ANODIZE_REVERT_SUBJECT_PREFIX),
+            !github_subject.starts_with(ANODIZE_REVERT_SUBJECT_PREFIX.as_str()),
             "unrelated revert PR subjects must NOT be admitted as anodize-shaped"
         );
     }

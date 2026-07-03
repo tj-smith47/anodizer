@@ -4,6 +4,26 @@ use std::process::Command;
 
 use super::git_output_in;
 
+/// Subject prefix anodizer stamps on its own release-machinery commits
+/// (version-sync bumps, rollback reverts). The matchers that must recognise
+/// those commits — rollback's idempotency check, the changelog stage's
+/// version-sync exclusion — compose their patterns from this same constant
+/// so a reworded writer can never silently break a matcher.
+pub const RELEASE_COMMIT_PREFIX: &str = "chore(release): ";
+
+/// `chore(release): bump ` — the subject prefix shared by every version-sync
+/// bump commit (see [`release_bump_subject`]).
+pub fn release_bump_subject_prefix() -> String {
+    format!("{RELEASE_COMMIT_PREFIX}bump ")
+}
+
+/// Build a version-sync bump commit subject:
+/// `chore(release): bump <summary><suffix>`. `suffix` carries the optional
+/// ` [skip ci]` marker (empty when none applies).
+pub fn release_bump_subject(summary: &str, suffix: &str) -> String {
+    format!("{}{summary}{suffix}", release_bump_subject_prefix())
+}
+
 #[derive(Debug, Clone)]
 pub struct Commit {
     pub hash: String,

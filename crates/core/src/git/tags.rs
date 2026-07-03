@@ -75,6 +75,19 @@ pub fn extract_tag_prefix(template: &str) -> Option<String> {
     None
 }
 
+/// The tag-family prefix used for a crate: the prefix extracted from its
+/// `tag_template`, falling back to the `<name>-v` convention when the
+/// template is empty or carries no recognised version placeholder.
+///
+/// Every surface that scans or mints per-crate tags (`tag`, `bump` range
+/// inference, `changelog` tag-owner resolution and crate selection) must
+/// resolve the SAME family from the same inputs: a drifted fallback makes
+/// the last-tag probe come up empty and silently widens the commit range
+/// to full history.
+pub fn per_crate_tag_prefix(name: &str, tag_template: &str) -> String {
+    extract_tag_prefix(tag_template).unwrap_or_else(|| format!("{name}-v"))
+}
+
 /// Strip a monorepo tag prefix from a tag string.
 ///
 /// If `tag` starts with `prefix`, returns the remainder; otherwise returns
