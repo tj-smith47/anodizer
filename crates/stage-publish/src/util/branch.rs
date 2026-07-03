@@ -22,21 +22,6 @@ pub(crate) fn resolve_branch(ctx: &Context, repo: Option<&RepositoryConfig>) -> 
         .map(|b| ctx.render_template(b).unwrap_or_else(|_| b.to_string()))
 }
 
-/// Resolve the GitHub REST API base URL through an injected env
-/// source. Honors the undocumented `ANODIZER_GITHUB_API_BASE` override
-/// so unit tests can redirect requests to an in-process responder via a
-/// [`MapEnvSource`](anodizer_core::MapEnvSource); defaults to the
-/// canonical `https://api.github.com` in production where production
-/// callers pass `ProcessEnvSource` and the var is unset. Any trailing
-/// `/` is stripped so callers can unconditionally `format!` with a
-/// `/`-prefixed suffix without producing a double slash.
-pub(super) fn github_api_base_from<E: EnvSource + ?Sized>(env: &E) -> String {
-    let raw = env
-        .var("ANODIZER_GITHUB_API_BASE")
-        .unwrap_or_else(|| "https://api.github.com".to_string());
-    raw.trim_end_matches('/').to_string()
-}
-
 /// Look up a GitHub repo's `default_branch` via the REST API, resolving
 /// the API base through the injected `env` (honoring
 /// `ANODIZER_GITHUB_API_BASE`) so an in-process responder can intercept
@@ -49,7 +34,7 @@ pub(super) fn fetch_default_branch_with_env<E: EnvSource + ?Sized>(
     token: Option<&str>,
     env: &E,
 ) -> Option<String> {
-    let base = github_api_base_from(env);
+    let base = anodizer_core::http::github_api_base(env);
     let url = format!("{base}/repos/{owner}/{name}");
     let mut req = anodizer_core::http::blocking_client(std::time::Duration::from_secs(10))
         .ok()?
@@ -226,24 +211,5 @@ mod tests {
         ]);
         let env = env_with_base(&format!("http://{addr}"));
         assert!(fetch_default_branch_with_env("o", "n", None, &env).is_none());
-    }
-
-    /// Trailing `/` on the base is stripped so callers can append a
-    /// `/`-prefixed suffix without producing `//repos/...` (which 404s
-    /// on real GitHub). Pure-fn coverage of the env-injection path so a
-    /// regression doesn't require an HTTP responder to surface.
-    #[test]
-    fn github_api_base_from_strips_trailing_slash() {
-        let env = env_with_base("https://example.com/api/");
-        assert_eq!(github_api_base_from(&env), "https://example.com/api");
-    }
-
-    /// Default base URL when the env source has no override is the
-    /// canonical `https://api.github.com`. Pins the production default
-    /// so a regression to a typo'd host doesn't ship silently.
-    #[test]
-    fn github_api_base_from_defaults_when_env_unset() {
-        let env = MapEnvSource::new();
-        assert_eq!(github_api_base_from(&env), "https://api.github.com");
     }
 }

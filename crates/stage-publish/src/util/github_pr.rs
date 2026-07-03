@@ -36,7 +36,7 @@ use std::time::Duration;
 use anodizer_core::{EnvSource, ProcessEnvSource};
 use anyhow::Context as _;
 
-use super::branch::github_api_base_from;
+use anodizer_core::http::github_api_base;
 
 // ---------------------------------------------------------------------------
 // CloseOutcome — bucket the close-PR PATCH response
@@ -271,7 +271,7 @@ pub(crate) fn find_open_pr_numbers_for_head_with_env<E: EnvSource + ?Sized>(
     env: &E,
 ) -> Result<Vec<u64>, FindPrError> {
     const PAGE_CAP: usize = 10;
-    let base = github_api_base_from(env);
+    let base = github_api_base(env);
     let head = format!("{}:{}", fork_owner, branch);
     let first_url = format!(
         "{}/repos/{}/{}/pulls?state=open&head={}&per_page=100",
@@ -412,7 +412,7 @@ pub(crate) fn close_pr_via_api_with_env<E: EnvSource + ?Sized>(
     token: &str,
     env: &E,
 ) -> CloseOutcome {
-    let base = github_api_base_from(env);
+    let base = github_api_base(env);
     let url = format!(
         "{}/repos/{}/{}/pulls/{}",
         base, upstream_owner, upstream_repo, pr_number

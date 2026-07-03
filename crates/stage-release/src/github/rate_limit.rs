@@ -60,22 +60,6 @@ pub(crate) fn compute_rate_limit_sleep_secs(
     Some(secs)
 }
 
-/// Resolve the GitHub REST API base URL through an injected env
-/// source. Honors the undocumented `ANODIZER_GITHUB_API_BASE` override
-/// so unit tests can redirect `/rate_limit` polls to an in-process
-/// responder via a [`MapEnvSource`](anodizer_core::MapEnvSource);
-/// defaults to the canonical `https://api.github.com` in production
-/// where production callers pass [`ProcessEnvSource`] and the var is
-/// unset. Trailing `/` is stripped so the caller can append a
-/// `/`-prefixed suffix without producing a double slash. Mirrors the
-/// sibling helper in `stage-publish/src/util/branch.rs`.
-fn github_api_base_from<E: EnvSource + ?Sized>(env: &E) -> String {
-    let raw = env
-        .var("ANODIZER_GITHUB_API_BASE")
-        .unwrap_or_else(|| "https://api.github.com".to_string());
-    raw.trim_end_matches('/').to_string()
-}
-
 /// Proactively check the GitHub core rate limit before issuing a request.
 ///
 /// If `remaining > threshold` returns immediately. Otherwise sleeps until the
@@ -124,7 +108,7 @@ pub(crate) async fn check_github_rate_limit_with_sleep<E: EnvSource + ?Sized>(
     env: &E,
     sleep_fn: SleepFn,
 ) {
-    let url = format!("{}/rate_limit", github_api_base_from(env));
+    let url = format!("{}/rate_limit", anodizer_core::http::github_api_base(env));
     let resp = match client
         .get(&url)
         .header("Authorization", format!("Bearer {}", token))
@@ -361,7 +345,6 @@ mod http_tests {
     //! using a sub-second reset window so the wall-clock cost is bounded.
     use super::test_helpers::{canned_json_200, env_with_base};
     use super::*;
-    use anodizer_core::MapEnvSource;
     use anodizer_core::test_helpers::https_responder::{
         https_test_client, spawn_oneshot_https_responder,
     };
@@ -477,27 +460,6 @@ mod http_tests {
             "missing JSON pointer must fall back to u64::MAX (no sleep)"
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-    }
-
-    /// `github_api_base_from` strips a trailing slash so callers can
-    /// unconditionally append `/rate_limit` without producing
-    /// `//rate_limit` (which 404s on GitHub). Mirror of the contract
-    /// pinned in `stage-publish/src/util/branch.rs`.
-    #[test]
-    fn base_url_strips_trailing_slash() {
-        let env = env_with_base("https://example.com/api/");
-        assert_eq!(github_api_base_from(&env), "https://example.com/api");
-    }
-
-    /// Default base URL when the env source has no override is the
-    /// canonical `https://api.github.com` — pins the production default
-    /// so a regression to a typo'd host doesn't ship silently. The empty
-    /// [`MapEnvSource`] mimics a production process where the env var
-    /// has never been exported.
-    #[test]
-    fn base_url_defaults_to_api_github_com() {
-        let env = MapEnvSource::new();
-        assert_eq!(github_api_base_from(&env), "https://api.github.com");
     }
 
     /// Drive `check_github_rate_limit` through the real sleep + select

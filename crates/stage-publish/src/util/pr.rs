@@ -19,8 +19,9 @@ use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 
-use super::branch::{fetch_default_branch_with_env, github_api_base_from};
+use super::branch::fetch_default_branch_with_env;
 use super::cmd::{run_cmd_in, run_cmd_in_timeout};
+use anodizer_core::http::github_api_base;
 
 /// Wall-clock bound on `gh pr create` — a lightweight PR submission against the
 /// GitHub API. A hung API call would otherwise hang the release with no
@@ -365,7 +366,7 @@ fn create_pr_via_api_with_env<E: EnvSource + ?Sized>(
         draft,
         update_existing_pr,
     } = *spec;
-    let base = github_api_base_from(env);
+    let base = github_api_base(env);
     let url = format!("{base}/repos/{owner}/{name}/pulls");
     let payload = serde_json::json!({
         "title": title, "head": head, "base": base_branch, "body": body, "draft": draft,

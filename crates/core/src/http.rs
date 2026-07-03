@@ -33,6 +33,26 @@ pub fn async_client(timeout: Duration) -> Result<reqwest::Client> {
         .context("build async HTTP client")
 }
 
+/// Resolve the GitHub REST API base URL through an injected env source.
+///
+/// Honors the undocumented `ANODIZER_GITHUB_API_BASE` override so unit tests
+/// can redirect GitHub REST calls to an in-process responder via a
+/// [`MapEnvSource`](crate::MapEnvSource); defaults to the canonical
+/// `https://api.github.com` in production where callers pass
+/// [`ProcessEnvSource`](crate::ProcessEnvSource) and the var is unset. Any
+/// trailing `/` is stripped so callers can unconditionally `format!` with a
+/// `/`-prefixed suffix without producing a double slash.
+///
+/// Every GitHub REST caller (release-stage rate-limit polls, publish-stage
+/// default-branch / PR lookups) must resolve its base through this one
+/// helper so a single override redirects the whole run to the same host.
+pub fn github_api_base<E: crate::EnvSource + ?Sized>(env: &E) -> String {
+    let raw = env
+        .var("ANODIZER_GITHUB_API_BASE")
+        .unwrap_or_else(|| "https://api.github.com".to_string());
+    raw.trim_end_matches('/').to_string()
+}
+
 /// Format an HTTP body-read failure as a descriptive placeholder string.
 ///
 /// Used by [`body_of`] / [`body_of_blocking`]: a transport-level
@@ -81,6 +101,19 @@ pub fn body_of_blocking(resp: reqwest::blocking::Response) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn github_api_base_strips_trailing_slash() {
+        let env =
+            crate::MapEnvSource::new().with("ANODIZER_GITHUB_API_BASE", "https://example.com/api/");
+        assert_eq!(github_api_base(&env), "https://example.com/api");
+    }
+
+    #[test]
+    fn github_api_base_defaults_when_env_unset() {
+        let env = crate::MapEnvSource::new();
+        assert_eq!(github_api_base(&env), "https://api.github.com");
+    }
 
     #[test]
     fn test_body_read_error_message_uses_descriptive_prefix() {
