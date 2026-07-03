@@ -800,7 +800,7 @@ fn detect_docker_backend_hint(cfg: &anodizer_core::config::Config) -> Option<Str
     {
         iter.push(&v2.use_backend);
     }
-    for c in &cfg.crates {
+    for c in cfg.crate_universe() {
         if let Some(ref v2s) = c.dockers_v2 {
             for v in v2s {
                 iter.push(&v.use_backend);

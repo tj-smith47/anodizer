@@ -389,8 +389,9 @@ impl Config {
     ///
     /// Single source of the read-only "all crates that can carry per-crate
     /// config" walk. Publisher registration, required/retain gate
-    /// collapsing, per-crate dispatch, requirement derivation, and
-    /// `--crate`/`--all` selection must all resolve through this walker so
+    /// collapsing, per-crate dispatch, requirement derivation,
+    /// `--crate`/`--all` selection, tool-need detection, artifact guards,
+    /// and default-naming decisions must all resolve through this walker so
     /// a workspace-only crate carrying a publisher block is either visible
     /// everywhere or nowhere — a consumer iterating `config.crates`
     /// directly silently excludes workspace crates and hides their

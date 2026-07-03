@@ -625,13 +625,17 @@ fn apply_workspace_overlay_for_opts(
         let ws = resolve_workspace(config, ws_name)?.clone();
         workspace_skip = ws.skip.clone();
         helpers::apply_workspace_overlay(config, &ws);
-    } else if !opts.crate_names.is_empty() && config.crates.is_empty() {
-        // No --workspace given, but --crate X was — infer the workspace that
-        // contains X and apply its overlay. Without this, every downstream
-        // stage iterates `ctx.config.crates` which is empty in workspace-based
-        // configs and silently does nothing. Matches user intuition: "release
-        // crate X" should release X's workspace.
-        let target = &opts.crate_names[0];
+    } else if let Some(target) = opts
+        .crate_names
+        .first()
+        .filter(|t| !config.crates.iter().any(|c| c.name == **t))
+    {
+        // No --workspace given, but --crate X was and X is not a top-level
+        // crate — infer the workspace that contains X and apply its overlay
+        // so X's workspace-level context (skip/env/signs) applies. A
+        // top-level entry with the same name wins (the universe's
+        // first-seen shadowing), so it suppresses the inference. Matches
+        // user intuition: "release crate X" should release X's workspace.
         let ws_for_target = config
             .workspaces
             .as_ref()

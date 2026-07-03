@@ -778,8 +778,8 @@ pub fn setup_env(
         && !ctx.options.publish_only
         && !ctx.options.preflight_secrets
     {
-        let release_skipped = match config
-            .crates
+        let universe = config.crate_universe();
+        let release_skipped = match universe
             .first()
             .and_then(|c| c.release.as_ref()?.skip.as_ref())
         {
@@ -788,7 +788,7 @@ pub fn setup_env(
                 .with_context(|| "release: render skip template")?,
             None => false,
         };
-        let needs_token = config.crates.iter().any(|c| c.release.is_some())
+        let needs_token = universe.iter().any(|c| c.release.is_some())
             && !ctx.should_skip("release")
             && !release_skipped;
         if needs_token {
@@ -1066,7 +1066,18 @@ pub fn auto_detect_github(config: &mut Config, log: &StageLogger) {
     // Resolve the slug once from the origin remote (no config override here —
     // this fills the per-crate override precisely when it is absent).
     let detected_github = git::resolve_github_slug(None, None).ok();
-    for crate_cfg in &mut config.crates {
+    // Raw chained walk (not `crate_universe()`): this is a mutation pass and
+    // the universe walker only hands out shared borrows. Filling every entry
+    // as written (shadowed ones included) is also correct here since dedup
+    // happens at read time.
+    let crates_iter = config.crates.iter_mut().chain(
+        config
+            .workspaces
+            .iter_mut()
+            .flatten()
+            .flat_map(|w| w.crates.iter_mut()),
+    );
+    for crate_cfg in crates_iter {
         if let Some(ref mut release) = crate_cfg.release
             && release.github.is_none()
         {

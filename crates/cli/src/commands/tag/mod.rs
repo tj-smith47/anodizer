@@ -1337,6 +1337,8 @@ pub(crate) enum RepoShape {
 /// Reads the Cargo workspace and anodizer config. Precedence:
 /// 1. If anodizer config has `workspaces:` with groups → `PerCrate` (hybrid;
 ///    explicit operator intent, wins over a lockstep `[workspace.package].version`).
+///    Top-level `crates:` entries not in any group join as singleton groups
+///    (independent tracks).
 /// 2. If `[workspace.package].version` is set → `Lockstep`.
 /// 3. If anodizer config has `crates:` with >1 entry:
 ///    - all sharing ONE explicit tag prefix → `FlatAggregate` (one prefix = one
@@ -1360,7 +1362,19 @@ pub(crate) fn detect_repo_shape(
         && let Some(ref ws_list) = config.workspaces
         && !ws_list.is_empty()
     {
-        let groups: Vec<Vec<CrateConfig>> = ws_list.iter().map(|ws| ws.crates.clone()).collect();
+        let mut groups: Vec<Vec<CrateConfig>> =
+            ws_list.iter().map(|ws| ws.crates.clone()).collect();
+        // A top-level crate alongside `workspaces:` is its own independent
+        // track (a singleton group, exactly like the flat PerCrate arm
+        // below) — dropping it would leave it untagged forever. One that
+        // also appears in a workspace group stays with its group: the group
+        // defines its lockstep cadence, and the top-level duplicate is the
+        // same crate (the universe's first-seen dedup), not a second track.
+        for c in &config.crates {
+            if !groups.iter().flatten().any(|g| g.name == c.name) {
+                groups.push(vec![c.clone()]);
+            }
+        }
         return RepoShape::PerCrate(groups);
     }
 
@@ -1387,6 +1401,9 @@ pub(crate) fn detect_repo_shape(
         None => return RepoShape::Single,
     };
 
+    // Raw `config.crates` walks from here on are the whole universe: a
+    // config with `workspaces:` entries returned in the precedence branch
+    // above, so no workspace crate can reach this point.
     if config.crates.len() > 1 {
         // A flat `crates:` list that ALL share one explicit tag prefix lives in
         // one tag namespace: `v0.2.0` cannot simultaneously be two crates'
@@ -3461,6 +3478,46 @@ tag_post_hooks:
         let root = empty_root();
         let shape = detect_repo_shape(root.path(), Some(&config), Some(&ws));
         assert!(matches!(shape, RepoShape::Lockstep));
+    }
+
+    #[test]
+    fn detect_repo_shape_mixed_config_keeps_top_level_crates_as_tracks() {
+        // Top-level `crates:` alongside `workspaces:`: the workspace group
+        // stays intact and each top-level crate not in any group becomes
+        // its own singleton track — never silently dropped from tag
+        // dispatch. A top-level duplicate of a group member stays with its
+        // group (no double dispatch).
+        let config = anodizer_core::config::Config {
+            project_name: "ws".to_string(),
+            crates: vec![
+                crate_cfg("root", ".", "root-v{{ .Version }}"),
+                crate_cfg("member", "crates/member", "member-v{{ .Version }}"),
+            ],
+            workspaces: Some(vec![anodizer_core::config::WorkspaceConfig {
+                name: "grp".to_string(),
+                crates: vec![
+                    crate_cfg("member", "crates/member", "member-v{{ .Version }}"),
+                    crate_cfg("sibling", "crates/sibling", "sibling-v{{ .Version }}"),
+                ],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let root = empty_root();
+        let shape = detect_repo_shape(root.path(), Some(&config), None);
+        match shape {
+            RepoShape::PerCrate(groups) => {
+                let names: Vec<Vec<&str>> = groups
+                    .iter()
+                    .map(|g| g.iter().map(|c| c.name.as_str()).collect())
+                    .collect();
+                assert_eq!(names, vec![vec!["member", "sibling"], vec!["root"]]);
+            }
+            other => panic!(
+                "expected PerCrate, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
     }
 
     #[test]

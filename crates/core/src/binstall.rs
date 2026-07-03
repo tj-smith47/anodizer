@@ -367,8 +367,7 @@ pub fn crate_archive_asset_names(
 
     // The name template the archive stage will use for this crate (user's
     // `name_template:` wins; otherwise the canonical default — multi-crate when
-    // the workspace has more than one crate, matching the archive stage's own
-    // single-vs-multi default selection).
+    // the archive stage's own work list holds more than one crate).
     let name_template = archive
         .name_template
         .clone()
@@ -510,10 +509,18 @@ fn restore_version(ctx: &mut Context, prior: Vec<(&'static str, Option<String>)>
 }
 
 /// The default `archive.name_template` the archive stage uses for this crate:
-/// the multi-crate default when the workspace has more than one crate, else the
-/// single-crate default. Matches the archive stage's own default selection.
+/// the multi-crate default when the archive stage's work list holds more than
+/// one crate, else the single-crate default. Resolves through the same
+/// selection the stage itself uses ([`crate::archive_selection`]) so the
+/// decision basis cannot drift from the stage's real work list — a
+/// workspace-only crate counts here exactly as it does there.
 fn default_archive_name_template(ctx: &Context) -> String {
-    if ctx.config.crates.len() > 1 {
+    let producing = crate::archive_selection::archive_producing_crates(
+        &ctx.config,
+        &ctx.artifacts,
+        &ctx.options.selected_crates,
+    );
+    if producing.len() > 1 {
         crate::archive_name::DEFAULT_NAME_TEMPLATE_MULTI_CRATE.to_string()
     } else {
         crate::archive_name::DEFAULT_NAME_TEMPLATE.to_string()

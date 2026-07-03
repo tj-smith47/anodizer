@@ -376,7 +376,7 @@ fn run_per_crate_lifecycle_hooks(
     if ctx.should_skip(label) {
         return Ok(());
     }
-    let Some(crate_cfg) = ctx.config.crates.iter().find(|c| c.name == crate_name) else {
+    let Some(crate_cfg) = ctx.config.find_crate(crate_name) else {
         return Ok(());
     };
     let block = match kind {

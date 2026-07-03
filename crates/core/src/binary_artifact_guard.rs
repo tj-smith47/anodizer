@@ -59,7 +59,7 @@ pub fn check(
     selected_crates: &[String],
     built_crate_names: Option<&HashSet<String>>,
 ) -> anyhow::Result<()> {
-    for krate in &config.crates {
+    for krate in config.crate_universe() {
         if !selected_crates.is_empty() && !selected_crates.contains(&krate.name) {
             continue;
         }
@@ -458,6 +458,33 @@ mod tests {
             .to_string();
         assert!(err.contains("crate 'bin-crate'"), "{err}");
         assert!(err.contains("binstall"), "{err}");
+    }
+
+    #[test]
+    fn workspace_only_crate_with_missing_binary_is_caught() {
+        // A crate declared only under `workspaces[].crates` builds like any
+        // other; if its expected binary was not produced the guard must fire
+        // rather than silently pass a top-level-only walk.
+        let mut member = crate_named("ws-svc");
+        member.dockers_v2 = Some(vec![DockerV2Config::default()]);
+        let config = Config {
+            workspaces: Some(vec![crate::config::WorkspaceConfig {
+                name: "grp".to_string(),
+                crates: vec![member],
+                ..crate::config::WorkspaceConfig::default()
+            }]),
+            ..Config::default()
+        };
+
+        let mut artifacts = ArtifactRegistry::new();
+        artifacts.add(source_artifact("ws-svc"));
+
+        let err = check(&config, &artifacts, &[], None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("crate 'ws-svc'"), "{err}");
+        assert!(err.contains("dockers_v2"), "{err}");
+        assert!(err.contains("no binary artifacts"), "{err}");
     }
 
     #[test]

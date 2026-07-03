@@ -219,7 +219,7 @@ fn resolve_milestone_repo(
     // provider, once for any provider — which produced two near-identical
     // loops with different short-circuit behaviour.
     let mut fallback: Option<(String, String)> = None;
-    for crate_cfg in &config.crates {
+    for crate_cfg in config.crate_universe() {
         let Some(ref release_cfg) = crate_cfg.release else {
             continue;
         };

@@ -25,15 +25,10 @@ use crate::{
     default_name_template_multi_crate,
 };
 
-/// Artifact kinds eligible for archiving: binaries, universal binaries,
-/// C headers, C static archives, and C shared libraries.
-const ARCHIVABLE_KINDS: &[ArtifactKind] = &[
-    ArtifactKind::Binary,
-    ArtifactKind::UniversalBinary,
-    ArtifactKind::Header,
-    ArtifactKind::CArchive,
-    ArtifactKind::CShared,
-];
+/// Artifact kinds eligible for archiving — bound to the shared selection
+/// SSOT's list so this stage and the name-deriving consumers (binstall
+/// `pkg_url`, remote installer) can never disagree on what counts.
+const ARCHIVABLE_KINDS: &[ArtifactKind] = anodizer_core::archive_selection::ARCHIVABLE_KINDS;
 
 impl Stage for ArchiveStage {
     fn name(&self) -> &str {
@@ -225,14 +220,6 @@ fn collect_archivable_crates(
     ctx: &Context,
     selected: &[String],
 ) -> Result<Vec<(String, PathBuf, Vec<ArchiveConfig>)>> {
-    let crates: Vec<_> = ctx
-        .config
-        .crate_universe()
-        .into_iter()
-        .filter(|c| selected.is_empty() || selected.contains(&c.name))
-        .cloned()
-        .collect();
-
     let project_root = ctx
         .options
         .project_root
@@ -240,30 +227,27 @@ fn collect_archivable_crates(
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."));
 
-    Ok(crates
-        .into_iter()
-        .filter_map(|c| match &c.archives {
-            ArchivesConfig::Disabled => None,
-            ArchivesConfig::Configs(cfgs) => {
-                let has_builds = c.builds.as_ref().map(|b| !b.is_empty()).unwrap_or(false);
-                let has_meta_archive = cfgs.iter().any(|cfg| cfg.meta.unwrap_or(false));
-                let has_existing_artifacts = !ctx
-                    .artifacts
-                    .by_kinds_and_crate(ARCHIVABLE_KINDS, &c.name)
-                    .is_empty();
-                if !has_builds && !has_meta_archive && !has_existing_artifacts {
-                    return None;
-                }
-                let archive_cfgs = if cfgs.is_empty() {
-                    vec![ArchiveConfig::default()]
-                } else {
-                    cfgs.clone()
-                };
-                let crate_dir = project_root.join(&c.path);
-                Some((c.name.clone(), crate_dir, archive_cfgs))
-            }
-        })
-        .collect())
+    // Selection is delegated to the shared SSOT so the name-deriving
+    // consumers (binstall `pkg_url`, remote installer) count the exact same
+    // work list this stage processes.
+    Ok(anodizer_core::archive_selection::archive_producing_crates(
+        &ctx.config,
+        &ctx.artifacts,
+        selected,
+    )
+    .into_iter()
+    .filter_map(|c| {
+        let ArchivesConfig::Configs(cfgs) = &c.archives else {
+            return None;
+        };
+        let archive_cfgs = if cfgs.is_empty() {
+            vec![ArchiveConfig::default()]
+        } else {
+            cfgs.clone()
+        };
+        Some((c.name.clone(), project_root.join(&c.path), archive_cfgs))
+    })
+    .collect())
 }
 
 /// Pick the host-native binary artifact from a crate's binaries, for mode-A

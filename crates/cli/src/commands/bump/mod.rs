@@ -377,7 +377,7 @@ fn enforce_version_pins(
         if row.level == plan::BumpLevel::Skip {
             continue;
         }
-        let Some(crate_cfg) = config.crates.iter().find(|c| c.name == row.crate_name) else {
+        let Some(crate_cfg) = config.find_crate(&row.crate_name) else {
             continue;
         };
         let Some(pin) = crate_cfg.version.as_deref() else {

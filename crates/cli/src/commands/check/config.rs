@@ -109,15 +109,11 @@ pub fn run_checks(config: &Config, check_env: bool, log: &StageLogger) -> Result
 /// (e.g. a workspace crate depending on a crate in another workspace). The
 /// validator must mirror that resolution to avoid false positives.
 fn flatten_crate_names(config: &Config) -> HashSet<&str> {
-    let mut s: HashSet<&str> = config.crates.iter().map(|c| c.name.as_str()).collect();
-    if let Some(ref workspaces) = config.workspaces {
-        for ws in workspaces {
-            for c in &ws.crates {
-                s.insert(c.name.as_str());
-            }
-        }
-    }
-    s
+    config
+        .crate_universe()
+        .into_iter()
+        .map(|c| c.name.as_str())
+        .collect()
 }
 
 /// Validate workspace names (non-empty, unique) plus per-workspace crate
@@ -176,6 +172,10 @@ fn check_workspaces(config: &Config, all_crate_names: &HashSet<&str>, errors: &m
 
 /// Top-level crate names must be non-empty.
 fn check_top_level_crate_names(config: &Config, errors: &mut Vec<String>) {
+    // Raw walk (not `crate_universe()`): index-based messages need the
+    // top-level declaration order, and the walker's dedup would hide a
+    // duplicate entry from validation. Workspace crate names get the same
+    // check from `check_workspaces`'s own loop.
     for (i, c) in config.crates.iter().enumerate() {
         if c.name.trim().is_empty() {
             errors.push(format!("crate at index {}: name must not be empty", i));
@@ -191,6 +191,9 @@ fn check_top_level_depends_on(
     all_crate_names: &HashSet<&str>,
     errors: &mut Vec<String>,
 ) {
+    // Raw walk (not `crate_universe()`): every entry as written must be
+    // validated, including one the walker's dedup would shadow. Workspace
+    // crates' `depends_on` gets the same check from `check_workspaces`.
     for c in &config.crates {
         if let Some(deps) = &c.depends_on {
             for dep in deps {
@@ -205,9 +208,12 @@ fn check_top_level_depends_on(
     }
 }
 
-/// DFS-based cycle detection across top-level crates.
+/// DFS-based cycle detection across the whole crate universe. The release
+/// engine topo-sorts the flattened set, so a cycle through a workspace crate
+/// breaks a release exactly like a top-level one and must be flagged here.
 fn check_cycles(config: &Config, errors: &mut Vec<String>) {
-    if let Some(cycle) = find_cycle(&config.crates) {
+    let universe: Vec<CrateConfig> = config.crate_universe().into_iter().cloned().collect();
+    if let Some(cycle) = find_cycle(&universe) {
         errors.push(format!("depends_on cycle detected: {}", cycle.join(" → ")));
     }
 }
@@ -215,6 +221,9 @@ fn check_cycles(config: &Config, errors: &mut Vec<String>) {
 /// Top-level `tag_template` must contain `{{ .Version }}` or `{{ Version }}`
 /// (Tera-native).
 fn check_top_level_tag_templates(config: &Config, errors: &mut Vec<String>) {
+    // Raw walk (not `crate_universe()`): every entry as written must be
+    // validated, including one the walker's dedup would shadow. Workspace
+    // crates' tag templates get the same check from `check_workspaces`.
     for c in &config.crates {
         validate_tag_template(&c.tag_template, &format!("crate '{}'", c.name), errors);
     }
@@ -225,7 +234,7 @@ fn check_top_level_tag_templates(config: &Config, errors: &mut Vec<String>) {
 /// when the per-build `binary` field is omitted (e.g. when defaults supply a
 /// template without `binary:`).
 fn check_copy_from(config: &Config, errors: &mut Vec<String>) {
-    for c in &config.crates {
+    for c in config.crate_universe() {
         if let Some(builds) = &c.builds {
             let effective: Vec<&str> = builds
                 .iter()
@@ -283,7 +292,7 @@ fn check_target_triples(config: &Config, warnings: &mut Vec<String>) {
             check_triple(t, "defaults.targets");
         }
     }
-    for c in &config.crates {
+    for c in config.crate_universe() {
         if let Some(builds) = &c.builds {
             for b in builds {
                 if let Some(targets) = &b.targets {
@@ -552,7 +561,7 @@ fn check_checksum_skip_conflicts(config: &Config, warnings: &mut Vec<String>) {
         }
     }
 
-    for c in &config.crates {
+    for c in config.crate_universe() {
         if let Some(cksum) = &c.checksum
             && cksum.skip.as_ref().is_some_and(|d| d.as_bool())
         {
@@ -572,7 +581,7 @@ fn check_checksum_skip_conflicts(config: &Config, warnings: &mut Vec<String>) {
 
 /// Each non-empty crate `path` must point to an existing directory.
 fn check_crate_paths(config: &Config, errors: &mut Vec<String>) {
-    for c in &config.crates {
+    for c in config.crate_universe() {
         if !c.path.is_empty() {
             let p = std::path::Path::new(&c.path);
             if !p.exists() {
@@ -637,7 +646,7 @@ fn check_checksum_algorithms(config: &Config, warnings: &mut Vec<String>) {
             valid_algorithms.join(", ")
         ));
     }
-    for c in &config.crates {
+    for c in config.crate_universe() {
         if let Some(cksum) = &c.checksum
             && let Some(ref algo) = cksum.algorithm
             && !valid_algorithms.contains(&algo.as_str())
@@ -702,7 +711,7 @@ fn check_sbom_configs(config: &Config, errors: &mut Vec<String>) {
 /// `bucket`.
 fn check_blob_configs(config: &Config, errors: &mut Vec<String>) {
     let valid_blob_providers = ["s3", "gs", "gcs", "azblob", "azure"];
-    for c in &config.crates {
+    for c in config.crate_universe() {
         if let Some(ref blobs) = c.blobs {
             for (i, blob) in blobs.iter().enumerate() {
                 let idx = i.to_string();
@@ -747,7 +756,8 @@ fn check_environment(config: &Config, warnings: &mut Vec<String>) {
 }
 
 fn check_cross_tooling(config: &Config, warnings: &mut Vec<String>) {
-    let needs_cross = config.crates.iter().any(|c| {
+    let universe = config.crate_universe();
+    let needs_cross = universe.iter().any(|c| {
         use anodizer_core::config::CrossStrategy;
         matches!(
             &c.cross,
@@ -759,7 +769,7 @@ fn check_cross_tooling(config: &Config, warnings: &mut Vec<String>) {
             .is_some_and(|cs| matches!(cs, CrossStrategy::Zigbuild | CrossStrategy::Auto))
     });
 
-    if needs_cross || config.crates.iter().any(|c| c.builds.is_some()) {
+    if needs_cross || universe.iter().any(|c| c.builds.is_some()) {
         if !anodizer_core::tool_detect::on_path("cargo-zigbuild") {
             warnings.push(
                 "cargo-zigbuild is not installed (needed for cross-compilation via zigbuild)"
@@ -775,8 +785,7 @@ fn check_cross_tooling(config: &Config, warnings: &mut Vec<String>) {
 }
 
 fn check_docker_tooling(config: &Config, warnings: &mut Vec<String>) {
-    let needs_docker = config.crates.iter().any(|c| c.dockers_v2.is_some());
-    if !needs_docker {
+    if !config_needs_docker(config) {
         return;
     }
     if !anodizer_core::tool_detect::on_path("docker") {
@@ -804,10 +813,9 @@ fn check_docker_tooling(config: &Config, warnings: &mut Vec<String>) {
 }
 
 fn check_github_token(config: &Config, warnings: &mut Vec<String>) {
-    let needs_release = config.crates.iter().any(|c| c.release.is_some());
     // Route through the canonical resolver so an empty `GITHUB_TOKEN=""`
     // (set-but-blank) is correctly reported as "no token", same as unset.
-    if needs_release && anodizer_core::git::resolve_github_token(None).is_none() {
+    if config_needs_release(config) && anodizer_core::git::resolve_github_token(None).is_none() {
         warnings.push(format!(
             "no GitHub token found but release sections are configured; set {}",
             anodizer_core::git::github_token_env_hint()
@@ -816,10 +824,30 @@ fn check_github_token(config: &Config, warnings: &mut Vec<String>) {
 }
 
 fn check_nfpm_tool(config: &Config, warnings: &mut Vec<String>) {
-    let needs_nfpm = config.crates.iter().any(|c| c.nfpms.is_some());
-    if needs_nfpm && !anodizer_core::tool_detect::on_path("nfpm") {
+    if config_needs_nfpm(config) && !anodizer_core::tool_detect::on_path("nfpm") {
         warnings.push("nfpm is not installed but nfpm sections are configured".to_string());
     }
+}
+
+/// `true` when any crate in the universe configures `dockers_v2` — docker +
+/// buildx are then release-time requirements.
+fn config_needs_docker(config: &Config) -> bool {
+    config
+        .crate_universe()
+        .iter()
+        .any(|c| c.dockers_v2.is_some())
+}
+
+/// `true` when any crate in the universe configures a `release:` block — a
+/// forge token is then a release-time requirement.
+fn config_needs_release(config: &Config) -> bool {
+    config.crate_universe().iter().any(|c| c.release.is_some())
+}
+
+/// `true` when any crate in the universe configures `nfpms:` — the nfpm
+/// binary is then a release-time requirement.
+fn config_needs_nfpm(config: &Config) -> bool {
+    config.crate_universe().iter().any(|c| c.nfpms.is_some())
 }
 
 fn check_signing_tools(config: &Config, warnings: &mut Vec<String>) {
@@ -1250,6 +1278,29 @@ mod tests {
     }
 
     // ---- Workspace validation tests ----
+
+    #[test]
+    fn workspace_only_crates_flag_tool_needs() {
+        // A crate declared only under `workspaces[].crates` must arm the
+        // same tool-requirement checks a top-level crate does; a
+        // top-level-only walk would let its docker/release/nfpm needs pass
+        // `check config` silently.
+        use anodizer_core::config::{DockerV2Config, NfpmConfig, ReleaseConfig};
+        let mut member = make_crate("svc", "svc-v{{ .Version }}", None);
+        member.dockers_v2 = Some(vec![DockerV2Config::default()]);
+        member.release = Some(ReleaseConfig::default());
+        member.nfpms = Some(vec![NfpmConfig::default()]);
+        let mut config = make_config(vec![]);
+        config.workspaces = Some(vec![WorkspaceConfig {
+            name: "grp".to_string(),
+            crates: vec![member],
+            ..Default::default()
+        }]);
+
+        assert!(config_needs_docker(&config));
+        assert!(config_needs_release(&config));
+        assert!(config_needs_nfpm(&config));
+    }
 
     #[test]
     fn test_workspace_names_unique_passes() {

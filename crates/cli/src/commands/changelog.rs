@@ -433,6 +433,54 @@ fn run_refresh(
     Ok(())
 }
 
+/// Rewrite `config.crates` into the release-notes render set for an
+/// unfiltered run, from the crate universe:
+///
+/// - empty universe → bare-lockstep / config-less single crate: synthesize
+///   ONE project-name aggregate at the workspace root, matching
+///   `select_crates`'s lockstep/single arm;
+/// - multi-crate universe resolving single-track (a shared-prefix flat
+///   aggregate on shared-root-only routing) → collapse to ONE path-cleared
+///   crate whose body spans the workspace, instead of N path-filtered
+///   duplicates joined by `---` separators. The DECISION lives in
+///   `select_crates`/`detect_repo_shape` consumed via
+///   `resolve_single_track`, so the predicate can't drift; only the
+///   APPLICATION differs because the changelog stage iterates
+///   `config.crates` rather than a tuple list;
+/// - otherwise → the universe itself, so a crate declared under
+///   `workspaces[].crates` gets a release-notes track exactly like a
+///   top-level one.
+fn materialize_release_notes_render_set(workspace_root: &Path, config: &mut Config) -> Result<()> {
+    let universe: Vec<anodizer_core::config::CrateConfig> =
+        config.crate_universe().into_iter().cloned().collect();
+    if universe.is_empty() {
+        let global_prefix = global_tag_prefix(config);
+        config.crates = vec![anodizer_core::config::CrateConfig {
+            name: config.project_name.clone(),
+            path: String::new(),
+            tag_template: format!("{}{{{{ Version }}}}", global_prefix),
+            ..Default::default()
+        }];
+        return Ok(());
+    }
+    let single_track = if universe.len() > 1 {
+        let empty = anodizer_core::config::ChangelogConfig::default();
+        let routing = ChangelogRouting::from_config(config.changelog.as_ref().unwrap_or(&empty));
+        let workspace = load_workspace(workspace_root)?;
+        let selected = select_crates(workspace_root, config, workspace.as_ref(), None);
+        resolve_single_track(&selected, routing.root_enabled, routing.per_crate, false)
+    } else {
+        false
+    };
+    if single_track && let Some(mut first) = universe.first().cloned() {
+        first.path = String::new();
+        config.crates = vec![first];
+    } else {
+        config.crates = universe;
+    }
+    Ok(())
+}
+
 /// release-notes: the historical grouped-bullet GitHub-body markdown to stdout,
 /// driven by the resolved range. Honors `--crate` and `--snapshot`.
 #[allow(clippy::too_many_arguments)]
@@ -451,63 +499,14 @@ fn run_release_notes(
 
     log.status("generating release notes");
 
-    // Collapse a flat-aggregate to ONE whole-workspace body (mirroring kac/json):
-    // without an explicit `--crate`, a flat `crates:` list sharing one tag track
-    // and one root file is a single lockstep aggregate, so the stage renders one
-    // whole-repo body instead of N path-filtered duplicates joined by `---`
-    // separators. The DECISION lives in `select_crates`/`detect_repo_shape` (a
-    // flat-aggregate collapses to ONE shared-root entry) consumed via
-    // `resolve_single_track`, so the predicate can't drift; release-notes only
-    // differs in how it APPLIES the result — the changelog stage iterates
-    // `config.crates` (not a tuple list), so the aggregate is realized by
-    // retaining one path-cleared crate whose body then spans the workspace.
-    if effective_filter.is_none() && config.crates.len() > 1 {
-        let empty = anodizer_core::config::ChangelogConfig::default();
-        let routing = ChangelogRouting::from_config(config.changelog.as_ref().unwrap_or(&empty));
-        let workspace = load_workspace(workspace_root)?;
-        let selected = select_crates(workspace_root, &config, workspace.as_ref(), None);
-        let single_track =
-            resolve_single_track(&selected, routing.root_enabled, routing.per_crate, false);
-        if single_track && let Some(mut first) = config.crates.first().cloned() {
-            first.path = String::new();
-            config.crates = vec![first];
-        }
-    }
-
-    // Both bare-lockstep and `workspaces:`-multi-track configs leave
-    // `config.crates` empty, so the changelog stage (which iterates
-    // `config.crates`) would render nothing. kac/json avoid this because
-    // `select_crates`/`detect_repo_shape` materialize the render set for these
-    // shapes; mirror that here. Skipped when an explicit `--crate` filter
-    // targets a member (handled by the overlay below) so a synthetic/flattened
-    // entry never shadows the real per-crate context.
-    if effective_filter.is_none() && config.crates.is_empty() {
-        let workspace_crates: Vec<anodizer_core::config::CrateConfig> = config
-            .workspaces
-            .as_deref()
-            .unwrap_or_default()
-            .iter()
-            .flat_map(|w| w.crates.iter().cloned())
-            .collect();
-        if workspace_crates.is_empty() {
-            // No `workspaces:` either: bare-lockstep / config-less single crate
-            // (version from `[workspace.package]`). Synthesize ONE project-name
-            // aggregate at the workspace root, matching `select_crates`'s
-            // lockstep/single arm.
-            let global_prefix = global_tag_prefix(&config);
-            config.crates = vec![anodizer_core::config::CrateConfig {
-                name: config.project_name.clone(),
-                path: String::new(),
-                tag_template: format!("{}{{{{ Version }}}}", global_prefix),
-                ..Default::default()
-            }];
-        } else {
-            // `workspaces:`-multi-track: flatten every workspace's crates into
-            // the render set so each track's release-notes body is generated and
-            // joined by the multi-crate separator below — matching the kac/json
-            // `detect_repo_shape::PerCrate` output for this shape.
-            config.crates = workspace_crates;
-        }
+    // Without an explicit `--crate`, materialize the render set (the
+    // changelog stage iterates `config.crates`) so every shape renders the
+    // same tracks the kac/json formats derive via
+    // `select_crates`/`detect_repo_shape`. Skipped when a `--crate` filter
+    // targets a member (handled by the overlay below) so a
+    // synthetic/flattened entry never shadows the real per-crate context.
+    if effective_filter.is_none() {
+        materialize_release_notes_render_set(workspace_root, &mut config)?;
     }
 
     let selected_crates: Vec<String> = match effective_filter.as_ref() {
@@ -515,11 +514,14 @@ fn run_release_notes(
         None => Vec::new(),
     };
 
-    // Apply the workspace overlay when the filter resolves to a workspace crate
-    // so monorepo configs (top-level `workspaces:` rather than `crates:`) hand
-    // the changelog stage the right per-crate context.
+    // Apply the workspace overlay when the filter resolves to a workspace
+    // crate so the changelog stage gets the right per-crate context. A
+    // top-level entry with the same name wins (the universe's first-seen
+    // shadowing), so the overlay engages only when the target is not a
+    // top-level crate — covering both pure-`workspaces:` and mixed
+    // top-level-plus-`workspaces:` configs.
     if let Some(ref target) = effective_filter
-        && config.crates.is_empty()
+        && !config.crates.iter().any(|c| &c.name == target)
     {
         let ws_for_target = config
             .workspaces
@@ -708,6 +710,30 @@ mod tests {
             debug: false,
             quiet: true,
         }
+    }
+
+    #[test]
+    fn release_notes_render_set_includes_workspace_crates() {
+        // Mixed shape: one top-level crate plus one `workspaces[].crates`
+        // member. The render set must carry BOTH so the workspace crate
+        // gets its own release-notes track (a top-level-only walk dropped
+        // it entirely).
+        let dir = tempfile::tempdir().unwrap();
+        let mut config = Config {
+            project_name: "proj".to_string(),
+            crates: vec![crate_cfg("root", "root-v{{ .Version }}")],
+            ..Default::default()
+        };
+        config.workspaces = Some(vec![anodizer_core::config::WorkspaceConfig {
+            name: "grp".to_string(),
+            crates: vec![crate_cfg("member", "member-v{{ .Version }}")],
+            ..Default::default()
+        }]);
+
+        materialize_release_notes_render_set(dir.path(), &mut config).unwrap();
+
+        let names: Vec<&str> = config.crates.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["root", "member"]);
     }
 
     fn crate_cfg(name: &str, tag_template: &str) -> CrateConfig {

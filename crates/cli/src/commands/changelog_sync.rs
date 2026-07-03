@@ -119,8 +119,9 @@ pub(crate) fn crate_in_root(crate_name: &str, filter: Option<&[String]>) -> bool
     filter.is_none_or(|names| names.iter().any(|n| n == crate_name))
 }
 
-/// Every crate name declared in `config` (flat `crates:` and every
-/// `workspaces[].crates`), narrowed to the `root_crates` allow-list. Drives the
+/// Every crate name in the crate universe (flat `crates:` and every
+/// `workspaces[].crates`, deduplicated), narrowed to the `root_crates`
+/// allow-list. Drives the
 /// root renderer's crate-name-aware subsection classification on a `--crate`-
 /// filtered single-target run, where the target list alone can't supply the full
 /// set. Returns an empty list for a config-less / single-crate-at-root project.
@@ -128,12 +129,11 @@ pub(crate) fn config_root_crate_names(
     config: &Config,
     root_crates: Option<&[String]>,
 ) -> Vec<String> {
-    let mut names: Vec<String> = config.crates.iter().map(|c| c.name.clone()).collect();
-    if let Some(workspaces) = config.workspaces.as_deref() {
-        for ws in workspaces {
-            names.extend(ws.crates.iter().map(|c| c.name.clone()));
-        }
-    }
+    let mut names: Vec<String> = config
+        .crate_universe()
+        .into_iter()
+        .map(|c| c.name.clone())
+        .collect();
     names.retain(|n| crate_in_root(n, root_crates));
     names
 }
