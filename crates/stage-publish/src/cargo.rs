@@ -2002,8 +2002,8 @@ fn publish_to_cargo_with_guard(
         // and never reverts it, so there is no second tree to keep in sync. The
         // tree was verified clean once before the loop, so this is the only
         // dirtiness `cargo package` will see — matching the original publish.
-        if let Some(crate_cfg) = all_crates.iter().find(|c| &c.name == name).cloned() {
-            ensure_binstall_metadata_with(ctx, &crate_cfg, false, log, resolve_tag)?;
+        if let Some(crate_cfg) = crate_cfg {
+            ensure_binstall_metadata_with(ctx, crate_cfg, false, log, resolve_tag)?;
         }
 
         // Idempotency + poison guard: if this version already exists on

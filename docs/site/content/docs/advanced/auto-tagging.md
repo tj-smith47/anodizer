@@ -325,8 +325,8 @@ A bare `anodizer tag` groups this shape as follows:
 
 ```bash
 $ anodizer tag --dry-run   # feat on alpha + fix on beta, prev tag v0.1.0
-• running auto-tag (per-crate) (dry-run)
-• (dry-run) would push branch 'master' + tags [v0.2.0] to 'origin' atomically
+   • running auto-tag (per-crate) (dry-run)
+   • (dry-run) would push branch 'master' + tags [v0.2.0] to 'origin' atomically
 anodizer-output crates=["alpha","beta"]
 anodizer-output versions={"alpha":"0.2.0","beta":"0.2.0"}
 ```

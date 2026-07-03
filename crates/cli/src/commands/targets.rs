@@ -80,6 +80,15 @@ pub fn run(opts: TargetsOpts) -> Result<()> {
         None => bail!("no anodizer config found"),
     };
 
+    // An unknown `--crate` is a hard error, shared with release/build/tag/
+    // changelog: `collect_build_targets` filters unknown names to an empty
+    // set, so a typo would print an empty matrix and exit 0.
+    crate::commands::helpers::validate_selection_against_universe(
+        &config,
+        &opts.crate_names,
+        None,
+    )?;
+
     let targets = collect_build_targets(&config, &opts.crate_names);
     let matrix = build_matrix(&targets);
 
@@ -237,6 +246,35 @@ mod tests {
         };
         let targets = collect_build_targets(&config, &[]);
         assert_eq!(targets.len(), 1);
+    }
+
+    #[test]
+    fn run_rejects_unknown_crate_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cfg = tmp.path().join(".anodizer.yaml");
+        std::fs::write(
+            &cfg,
+            "project_name: test\ncrates:\n  - name: a\n    path: .\n    tag_template: \"v{{ Version }}\"\n",
+        )
+        .unwrap();
+        let err = run(TargetsOpts {
+            json: true,
+            crate_names: vec!["nope".to_string()],
+            config_override: Some(cfg.clone()),
+        })
+        .expect_err("an unknown --crate must be a hard error, not an empty matrix");
+        assert!(
+            err.to_string()
+                .contains("no such crate in the configuration"),
+            "must be the shared selection error: {err}"
+        );
+        // A known name keeps working.
+        run(TargetsOpts {
+            json: true,
+            crate_names: vec!["a".to_string()],
+            config_override: Some(cfg),
+        })
+        .expect("a known --crate name must validate");
     }
 
     #[test]

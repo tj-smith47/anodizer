@@ -905,17 +905,9 @@ fn compute_skip_stages(
     workspace_skip: &[String],
     snapshot: bool,
 ) -> Vec<String> {
-    for stage in workspace_skip {
-        if !skip_stages.iter().any(|s| s == stage) {
-            skip_stages.push(stage.clone());
-        }
-    }
+    helpers::merge_skip_stages(&mut skip_stages, workspace_skip);
     if snapshot {
-        for stage in SNAPSHOT_AUTO_SKIP {
-            if !skip_stages.iter().any(|s| s == stage) {
-                skip_stages.push(stage.to_string());
-            }
-        }
+        helpers::merge_skip_stages(&mut skip_stages, SNAPSHOT_AUTO_SKIP);
     }
     if skip_stages.contains(&"publish".to_string())
         && !skip_stages.contains(&"announce".to_string())

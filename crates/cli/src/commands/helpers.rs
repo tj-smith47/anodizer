@@ -416,11 +416,33 @@ pub fn validate_selection_against_universe(
             ws,
             known
         ),
+        // An empty universe means NO name could ever validate, so "known
+        // crates: (none)" would state the problem without a way out — name
+        // the two exits instead.
+        None if universe.is_empty() => anyhow::bail!(
+            "--crate {}: the configuration defines no crates; drop --crate to run at the \
+             repo level, or add a `crates:` entry for '{}'",
+            unknown.join(", "),
+            unknown.join(", ")
+        ),
         None => anyhow::bail!(
             "--crate {}: no such crate in the configuration (known crates: {})",
             unknown.join(", "),
             known
         ),
+    }
+}
+
+/// Append every stage in `extra` to `skip_stages`, skipping names already
+/// present. The one merge used everywhere a workspace-implied (or
+/// mode-implied) skip list joins the CLI's `--skip` set, so the dedup
+/// semantics cannot drift between commands.
+pub fn merge_skip_stages<S: AsRef<str>>(skip_stages: &mut Vec<String>, extra: &[S]) {
+    for stage in extra {
+        let stage = stage.as_ref();
+        if !skip_stages.iter().any(|s| s == stage) {
+            skip_stages.push(stage.to_string());
+        }
     }
 }
 
@@ -3987,6 +4009,29 @@ list:
             None,
         )
         .expect("known names must validate");
+    }
+
+    #[test]
+    fn validate_selection_empty_universe_names_the_remediation() {
+        let config = Config {
+            project_name: "solo".to_string(),
+            ..Default::default()
+        };
+        let err = validate_selection_against_universe(&config, &["alpha".to_string()], None)
+            .expect_err("an empty crate universe must reject any --crate name");
+        assert_eq!(
+            err.to_string(),
+            "--crate alpha: the configuration defines no crates; drop --crate to run at the \
+             repo level, or add a `crates:` entry for 'alpha'"
+        );
+    }
+
+    #[test]
+    fn merge_skip_stages_appends_only_missing_names() {
+        let mut skips = vec!["publish".to_string()];
+        merge_skip_stages(&mut skips, &["publish", "announce"]);
+        merge_skip_stages(&mut skips, &["announce".to_string(), "blob".to_string()]);
+        assert_eq!(skips, ["publish", "announce", "blob"]);
     }
 
     #[test]

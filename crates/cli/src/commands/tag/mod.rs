@@ -163,7 +163,7 @@ fn skip_ci_suffix(skip_ci_on_bump: bool) -> &'static str {
     if skip_ci_on_bump { " [skip ci]" } else { "" }
 }
 
-pub fn run(opts: TagOpts) -> Result<()> {
+pub fn run(mut opts: TagOpts) -> Result<()> {
     // Discover the workspace root once, config-derived, so `tag` resolves the
     // same root whether invoked from the repo root or a subdirectory (matching
     // `bump` and `changelog`); every workspace-load / git-working-dir site below
@@ -175,28 +175,39 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // read on lockstep repos). Resolved at the discovered workspace root so a
     // subdirectory invocation still finds the repo-root `.anodizer.yaml` and its
     // `version_files` enrollment, not just whatever sits in the cwd.
-    let loaded_config: Option<anodizer_core::config::Config> =
-        Some(load_config_at(&opts, &workspace_root_path)?);
+    let loaded_config: anodizer_core::config::Config = load_config_at(&opts, &workspace_root_path)?;
     let loaded_workspace: Option<WorkspaceInfo> = load_workspace(&workspace_root_path)?;
 
-    let tag_config = loaded_config
-        .as_ref()
-        .and_then(|c| c.tag.clone())
-        .unwrap_or_default();
-    let git_config: Option<anodizer_core::config::GitConfig> =
-        loaded_config.as_ref().and_then(|c| c.git.clone());
+    // `--crate` naming the shared-root aggregate itself selects the same unit
+    // a bare `tag` releases (the aggregate's name never appears in the crate
+    // universe), so the flag is dropped and the run proceeds exactly as an
+    // unfiltered tag. Rejecting it would break scripted `tag --crate $PROJECT`
+    // invocations on lockstep repos, where that spelling has always meant
+    // repo-level tagging.
+    if let Some(ref name) = opts.crate_name
+        && shared_root_aggregate_name(
+            &workspace_root_path,
+            &loaded_config,
+            loaded_workspace.as_ref(),
+        ) == Some(name.as_str())
+    {
+        opts.crate_name = None;
+    }
+
+    let tag_config = loaded_config.tag.clone().unwrap_or_default();
+    let git_config: Option<anodizer_core::config::GitConfig> = loaded_config.git.clone();
 
     // Refresh CHANGELOG.md into the version-bump commit (riding the same
     // `git add` as the Cargo.toml / version_files edits) when `changelog:` is
     // configured and not skipped — `tag` is what release CI runs, so without
     // this the changelogs rot between releases even though `bump` refreshes them.
-    let changelog_enabled = resolve_changelog_enabled(loaded_config.as_ref(), opts.changelog);
+    let changelog_enabled = resolve_changelog_enabled(Some(&loaded_config), opts.changelog);
 
     // Reject an incoherent flat-aggregate config (members sharing one tag prefix
     // but disagreeing on `[package].version`) before any work, identically to
     // `changelog` and `bump`.
     guard_flat_aggregate_coherence(
-        loaded_config.as_ref(),
+        Some(&loaded_config),
         loaded_workspace.as_ref(),
         &workspace_root_path,
     )?;
@@ -239,19 +250,12 @@ pub fn run(opts: TagOpts) -> Result<()> {
     let mut version_sync_enabled = false;
     let mut crate_version_files: Vec<String> = Vec::new();
     if let Some(ref crate_name) = opts.crate_name {
-        let Some(config) = loaded_config.as_ref() else {
-            bail!(
-                "--crate '{}': no anodizer configuration found, so no crates are defined; \
-                 drop --crate or add the crate to the configuration",
-                crate_name
-            );
-        };
         crate::commands::helpers::validate_selection_against_universe(
-            config,
+            &loaded_config,
             std::slice::from_ref(crate_name),
             None,
         )?;
-        let info = load_crate_tag_info(config, crate_name).ok_or_else(|| {
+        let info = load_crate_tag_info(&loaded_config, crate_name).ok_or_else(|| {
             anyhow::anyhow!(
                 "--crate '{}': crate resolved but its tag info could not be loaded",
                 crate_name
@@ -280,7 +284,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
         if matches!(
             detect_repo_shape(
                 &workspace_root_path,
-                loaded_config.as_ref(),
+                Some(&loaded_config),
                 loaded_workspace.as_ref()
             ),
             RepoShape::PerCrate(_)
@@ -303,7 +307,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
         && matches!(
             detect_repo_shape(
                 &workspace_root_path,
-                loaded_config.as_ref(),
+                Some(&loaded_config),
                 loaded_workspace.as_ref()
             ),
             RepoShape::PerCrate(_) | RepoShape::FlatAggregate(_)
@@ -328,7 +332,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
         let mut is_flat_aggregate = false;
         let groups = match detect_repo_shape(
             &workspace_root_path,
-            loaded_config.as_ref(),
+            Some(&loaded_config),
             loaded_workspace.as_ref(),
         ) {
             RepoShape::PerCrate(groups) => Some(groups),
@@ -352,9 +356,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
             );
             // Submitter moderation-queue advisories are verbose-only; emit them
             // once off the single load (hidden at the default log level).
-            if let Some(c) = loaded_config.as_ref() {
-                crate::pipeline::emit_config_advisories(c, &log);
-            }
+            crate::pipeline::emit_config_advisories(&loaded_config, &log);
             log.status(&format!(
                 "running auto-tag (per-crate){}",
                 if opts.dry_run { " (dry-run)" } else { "" }
@@ -368,7 +370,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
                 &opts,
                 &cfg,
                 git_config.as_ref(),
-                loaded_config.as_ref(),
+                Some(&loaded_config),
                 PushControls {
                     remote: &remote,
                     config_push,
@@ -401,9 +403,7 @@ pub fn run(opts: TagOpts) -> Result<()> {
     );
     // Submitter moderation-queue advisories are verbose-only; emit them once
     // off the single load (hidden at the default log level).
-    if let Some(c) = loaded_config.as_ref() {
-        crate::pipeline::emit_config_advisories(c, &log);
-    }
+    crate::pipeline::emit_config_advisories(&loaded_config, &log);
 
     log.status(&format!(
         "running auto-tag{}",
@@ -496,8 +496,8 @@ pub fn run(opts: TagOpts) -> Result<()> {
             // remote) and hand it to the API tagger so it agrees with the
             // rest of the pipeline instead of re-parsing the remote itself.
             let release_github = loaded_config
+                .release
                 .as_ref()
-                .and_then(|c| c.release.as_ref())
                 .and_then(|r| r.github.as_ref());
             let slug = git::resolve_github_slug_in(
                 release_github.map(|g| g.owner.as_str()),
@@ -770,10 +770,10 @@ pub fn run(opts: TagOpts) -> Result<()> {
         // Lockstep shares one version across the whole workspace, so the
         // top-level `Config.version_files` list (no single crate to scope to)
         // is the enrollment, rewritten with the shared old→new.
-        let ws_version_files = resolve_version_files(None, loaded_config.as_ref());
+        let ws_version_files = resolve_version_files(None, Some(&loaded_config));
         let ws_old = bare_version_from_tag(old_tag_str);
         let ws_from_tag = (!old_tag_str.is_empty()).then_some(old_tag_str);
-        let cl_config = changelog_config_for(loaded_config.as_ref());
+        let cl_config = changelog_config_for(Some(&loaded_config));
         let cl_routing = ChangelogRouting::from_config(&cl_config);
         bump_commit_created = apply_workspace_bump(
             root,
@@ -887,18 +887,16 @@ pub fn run(opts: TagOpts) -> Result<()> {
                     }]
                 })
                 .unwrap_or_default();
-            let cl_config = changelog_config_for(loaded_config.as_ref());
+            let cl_config = changelog_config_for(Some(&loaded_config));
             let mut routing = ChangelogRouting::from_config(&cl_config);
             // `--crate <name>` single-target on a PerCrate workspace: topology
             // count is 1, so the renderer relies on the crate-name-aware
             // fallback. Supply the FULL root-routed crate set so an existing
             // `### <crate>` subsection is detected and a foreign heading is not.
-            if let Some(cfg) = loaded_config.as_ref() {
-                routing.root_crate_names = crate::commands::changelog_sync::config_root_crate_names(
-                    cfg,
-                    routing.root_crates,
-                );
-            }
+            routing.root_crate_names = crate::commands::changelog_sync::config_root_crate_names(
+                &loaded_config,
+                routing.root_crates,
+            );
             render_and_stage_changelogs(ws_root, &targets, &routing, opts.dry_run, &log)?
         } else {
             Vec::new()
@@ -1445,6 +1443,29 @@ pub(crate) fn detect_repo_shape(
     }
 
     RepoShape::Single
+}
+
+/// The shared-root aggregate's own selectable name — `project_name` — when
+/// the repo shape collapses to ONE workspace-root release unit: `Lockstep`,
+/// `FlatAggregate`, or a `Single` with no configured crates. `None` on shapes
+/// whose selectable names are the crate universe itself. This is the single
+/// selection rule for whether `--crate <project_name>` addresses the
+/// aggregate (and therefore the whole repo-level release) rather than a
+/// universe crate — the aggregate's name never appears in `crate_universe()`,
+/// so validating it there would reject the one name that legitimately selects
+/// everything a bare invocation operates on.
+pub(crate) fn shared_root_aggregate_name<'a>(
+    workspace_root: &Path,
+    config: &'a anodizer_core::config::Config,
+    workspace: Option<&WorkspaceInfo>,
+) -> Option<&'a str> {
+    match detect_repo_shape(workspace_root, Some(config), workspace) {
+        RepoShape::Lockstep | RepoShape::FlatAggregate(_) => Some(config.project_name.as_str()),
+        RepoShape::Single if config.crate_universe().is_empty() => {
+            Some(config.project_name.as_str())
+        }
+        RepoShape::Single | RepoShape::PerCrate(_) => None,
+    }
 }
 
 /// Group a crate list by extracted tag prefix: every subset of crates whose
@@ -3666,6 +3687,89 @@ tag_post_hooks:
         let root = empty_root();
         let shape = detect_repo_shape(root.path(), Some(&config), Some(&ws));
         assert!(matches!(shape, RepoShape::Lockstep));
+    }
+
+    #[test]
+    fn shared_root_aggregate_name_lockstep_is_project_name() {
+        let config = anodizer_core::config::Config {
+            project_name: "ws".to_string(),
+            crates: vec![
+                crate_cfg("a", "crates/a", "v{{ .Version }}"),
+                crate_cfg("b", "crates/b", "v{{ .Version }}"),
+            ],
+            ..Default::default()
+        };
+        let ws = WorkspaceInfo {
+            workspace_package_version: Some("0.1.0".to_string()),
+            members: vec![],
+        };
+        let root = empty_root();
+        assert_eq!(
+            shared_root_aggregate_name(root.path(), &config, Some(&ws)),
+            Some("ws")
+        );
+    }
+
+    #[test]
+    fn shared_root_aggregate_name_flat_aggregate_is_project_name() {
+        // Same explicit prefix on every flat crate → FlatAggregate → the
+        // project name selects the shared unit.
+        let config = anodizer_core::config::Config {
+            project_name: "agg".to_string(),
+            crates: vec![
+                crate_cfg("a", "crates/a", "v{{ .Version }}"),
+                crate_cfg("b", "crates/b", "v{{ .Version }}"),
+            ],
+            ..Default::default()
+        };
+        let root = empty_root();
+        assert_eq!(
+            shared_root_aggregate_name(root.path(), &config, None),
+            Some("agg")
+        );
+    }
+
+    #[test]
+    fn shared_root_aggregate_name_empty_universe_single_is_project_name() {
+        // Config-less repos (Cargo.toml fallback) have no crate universe at
+        // all; the project name is the only spelling that can select the
+        // repo-level unit.
+        let config = anodizer_core::config::Config {
+            project_name: "solo".to_string(),
+            ..Default::default()
+        };
+        let root = empty_root();
+        assert_eq!(
+            shared_root_aggregate_name(root.path(), &config, None),
+            Some("solo")
+        );
+    }
+
+    #[test]
+    fn shared_root_aggregate_name_none_on_per_crate_and_named_single() {
+        // Per-crate: every selectable name is a universe crate — the project
+        // name selects nothing.
+        let per_crate = anodizer_core::config::Config {
+            project_name: "ws".to_string(),
+            crates: vec![
+                crate_cfg("a", "crates/a", "a-v{{ .Version }}"),
+                crate_cfg("b", "crates/b", "b-v{{ .Version }}"),
+            ],
+            ..Default::default()
+        };
+        let root = empty_root();
+        assert_eq!(
+            shared_root_aggregate_name(root.path(), &per_crate, None),
+            None
+        );
+        // Single WITH a configured crate: that crate's own name is the
+        // selectable spelling, so the project name stays invalid.
+        let single = anodizer_core::config::Config {
+            project_name: "proj".to_string(),
+            crates: vec![crate_cfg("app", ".", "v{{ .Version }}")],
+            ..Default::default()
+        };
+        assert_eq!(shared_root_aggregate_name(root.path(), &single, None), None);
     }
 
     #[test]

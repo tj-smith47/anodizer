@@ -110,12 +110,17 @@ pub fn run(opts: ChangelogOpts) -> Result<()> {
     // An unknown `--crate` is a hard error, shared with release/build/tag:
     // every format's selection silently filters unknown names to an empty
     // set (refresh warns, release-notes renders nothing) and exits 0 — a
-    // typo would look like "no changes". A name select_crates resolves (a
-    // universe crate, or the shared-root aggregate's own name on
-    // lockstep/flat-aggregate shapes) is valid.
+    // typo would look like "no changes". The shared-root aggregate's own
+    // name (`shared_root_aggregate_name`, the selection rule `tag` also
+    // routes through) is valid alongside the universe crates: on
+    // lockstep/flat-aggregate shapes it is the one selectable target.
     if let Some(ref name) = crate_name {
-        let selectable = select_crates(&workspace_root, &config, workspace.as_ref(), Some(name));
-        if selectable.is_empty() {
+        let is_aggregate = crate::commands::tag::shared_root_aggregate_name(
+            &workspace_root,
+            &config,
+            workspace.as_ref(),
+        ) == Some(name.as_str());
+        if !is_aggregate {
             crate::commands::helpers::validate_selection_against_universe(
                 &config,
                 std::slice::from_ref(name),

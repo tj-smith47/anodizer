@@ -32,20 +32,29 @@ pub fn run(
         run_checks(&config, true, &log)?;
     }
 
+    // Resolve the overlaid config ONCE when `--workspace` is given: both the
+    // publisher-allowlist validation and the resolved-config check pass below
+    // must see the SAME overlay, so building it twice would be a drift seam.
+    let overlaid: Option<(&str, Config)> = match workspace {
+        Some(ws_name) => {
+            let ws = helpers::resolve_workspace(&config, ws_name)?;
+            let mut resolved = config.clone();
+            helpers::apply_workspace_overlay(&mut resolved, ws);
+            Some((ws_name, resolved))
+        }
+        None => None,
+    };
+
     // `--publishers` is a config-validation selector: each name must be a
     // publisher the active config actually enables, so the configured (not
     // merely the known) set is the floor. Validate against the config the
     // pipeline would resolve for this invocation — overlaid when --workspace
     // is given — so a per-workspace publish block is honored.
-    let publisher_config = if let Some(ws_name) = workspace {
-        let ws = helpers::resolve_workspace(&config, ws_name)?;
-        let mut resolved = config.clone();
-        helpers::apply_workspace_overlay(&mut resolved, ws);
-        resolved
-    } else {
-        config.clone()
-    };
     if !publishers.is_empty() {
+        let publisher_config = overlaid
+            .as_ref()
+            .map(|(_, resolved)| resolved.clone())
+            .unwrap_or_else(|| config.clone());
         let ctx = anodizer_core::context::Context::new(
             publisher_config,
             anodizer_core::context::ContextOptions::default(),
@@ -61,15 +70,12 @@ pub fn run(
     }
 
     // When --workspace is specified, validate the resolved (overlaid) config
-    if let Some(ws_name) = workspace {
-        let ws = helpers::resolve_workspace(&config, ws_name)?;
-        let mut resolved = config.clone();
-        helpers::apply_workspace_overlay(&mut resolved, ws);
+    if let Some((ws_name, resolved)) = &overlaid {
         log.status(&format!(
             "validating resolved config for workspace '{}'",
             ws_name
         ));
-        run_checks(&resolved, true, &log)?;
+        run_checks(resolved, true, &log)?;
     }
 
     Ok(())

@@ -203,10 +203,11 @@ fn workspace_mode_dry_run_touches_nothing() {
 
 #[test]
 fn workspace_mode_skipped_when_crate_flag_used() {
-    // With --crate pointing at a single crate and no .anodizer.yaml config for
-    // it, tag falls through to its non-workspace branch. The important
-    // behavior here: workspace-mode must NOT silently overwrite the
-    // user-chosen single-crate flow.
+    // With --crate naming a crate that no configuration defines (the
+    // Cargo.toml fallback config has an empty crate universe), tag must
+    // hard-error with remediation rather than silently fall through to a
+    // repo-wide tag the user explicitly scoped away from — and the
+    // workspace must be untouched.
     let tmp = TempDir::new().unwrap();
     inheriting_workspace_with_deps(tmp.path());
     git_init(tmp.path());
@@ -220,11 +221,15 @@ fn workspace_mode_skipped_when_crate_flag_used() {
         .args(["tag", "--crate", "a"])
         .output()
         .unwrap();
-    // With no .anodizer.yaml, --crate silently no-ops on config lookup and
-    // falls through to the base non-version-sync flow. The root Cargo.toml
-    // must remain at 0.1.0 — workspace mode must NOT fire when --crate is
-    // given.
-    let _ = out; // just verify the workspace wasn't touched
+    assert!(
+        !out.status.success(),
+        "--crate with no configured crates must be a hard error"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("defines no crates") && stderr.contains("drop --crate"),
+        "the empty-universe error must carry remediation: {stderr}"
+    );
     assert_eq!(read_workspace_package_version(tmp.path()), "0.1.0");
     assert_eq!(
         read_workspace_dep_version(tmp.path(), "a").as_deref(),
@@ -392,6 +397,77 @@ fn lockstep_tag_dry_run_from_subdir_matches_root() {
     git_add_commit(root, "fix: a deref issue");
 
     assert_tag_subdir_matches_root(root, "crates/a");
+}
+
+/// On a lockstep repo, `--crate <project_name>` names the shared-root
+/// aggregate itself: it must behave byte-identically to a bare `tag`
+/// (repo-level tagging), never fail crate-universe validation — the
+/// aggregate's name is not a universe crate, but it IS the one selectable
+/// spelling for the whole release unit.
+#[test]
+fn lockstep_tag_crate_project_name_matches_bare_tag() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    inheriting_workspace_with_deps(root);
+    fs::write(root.join(".anodizer.yaml"), "project_name: ws\n").unwrap();
+    git_init(root);
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/a/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "fix: a deref issue");
+
+    let config = root.join(".anodizer.yaml");
+    let bare = tag_dry_run_from(root, &config);
+    assert!(bare.success, "bare tag --dry-run failed: {}", bare.stdout);
+
+    let out = anodizer()
+        .current_dir(root)
+        .args([
+            "tag",
+            "--crate",
+            "ws",
+            "--dry-run",
+            "-q",
+            "--config",
+            config.to_str().expect("utf8 config path"),
+        ])
+        .output()
+        .unwrap();
+    let by_name =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    assert!(
+        out.status.success(),
+        "tag --crate ws --dry-run failed: {by_name}"
+    );
+    assert_eq!(
+        normalize_versions(&by_name),
+        normalize_versions(&bare.stdout),
+        "tag --crate <project_name> must match the bare tag preview on a lockstep repo"
+    );
+
+    // An unknown name still hard-errors — the carve-out is exactly the
+    // aggregate's own name, not a general fall-through.
+    let out = anodizer()
+        .current_dir(root)
+        .args([
+            "tag",
+            "--crate",
+            "nope",
+            "--dry-run",
+            "--config",
+            config.to_str().expect("utf8 config path"),
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "an unknown --crate name must remain a hard error"
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.contains("nope"),
+        "error must name the unknown crate: {stderr}"
+    );
 }
 
 #[test]

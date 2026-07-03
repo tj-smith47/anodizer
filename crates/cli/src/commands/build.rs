@@ -43,11 +43,7 @@ pub fn run(opts: BuildOpts) -> Result<()> {
         &log,
     )?;
     let mut skip_stages = opts.skip;
-    for stage in workspace_skip {
-        if !skip_stages.contains(&stage) {
-            skip_stages.push(stage);
-        }
-    }
+    helpers::merge_skip_stages(&mut skip_stages, &workspace_skip);
 
     // Auto-infer project_name from Cargo.toml when not set in config.
     helpers::infer_project_name(&mut config, &log);
