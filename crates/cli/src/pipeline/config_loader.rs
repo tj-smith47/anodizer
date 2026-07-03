@@ -80,11 +80,11 @@ pub fn find_config_with_logger(
         }
         bail!("config file not found: {}", path.display());
     }
-    for name in CONFIG_CANDIDATES {
-        let path = PathBuf::from(name);
-        if path.exists() {
-            return Ok(anchor_to_cwd(path));
-        }
+    // An empty base joins to the bare candidate names, so core's shared walk
+    // probes cwd-relative here and `anchor_to_cwd` keeps the getcwd-failure
+    // degradation (bare filename) unchanged.
+    if let Some(path) = anodizer_core::config::find_config_candidate_in(Path::new("")) {
+        return Ok(anchor_to_cwd(path));
     }
     // Fallback: if Cargo.toml exists, use a default config instead of erroring.
     if Path::new("Cargo.toml").exists() {
@@ -473,11 +473,8 @@ fn load_toml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
     }
 
     // Convert the base TOML to a YAML Value so we can use the existing
-    // deep-merge logic. Round-trip through serde_json::Value as an
-    // intermediate format that both serde_yaml_ng and toml support.
-    let base_json = serde_json::to_value(&base_toml)
-        .with_context(|| "failed to convert TOML config to JSON for merging")?;
-    let base_yaml: serde_yaml_ng::Value = serde_yaml_ng::to_value(&base_json)
+    // deep-merge logic.
+    let base_yaml: serde_yaml_ng::Value = anodizer_core::config::toml_value_to_yaml(&base_toml)
         .with_context(|| "failed to convert TOML config to YAML for merging")?;
 
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
@@ -489,9 +486,7 @@ fn load_toml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
     let mut merged = serde_yaml_ng::Value::Mapping(serde_yaml_ng::Mapping::new());
     for entry in &include_entries {
         // Convert each TOML include entry to a YAML value so resolve_include can handle it.
-        let json_entry = serde_json::to_value(entry)
-            .with_context(|| "failed to convert TOML include entry to JSON")?;
-        let yaml_entry: serde_yaml_ng::Value = serde_yaml_ng::to_value(&json_entry)
+        let yaml_entry: serde_yaml_ng::Value = anodizer_core::config::toml_value_to_yaml(entry)
             .with_context(|| "failed to convert TOML include entry to YAML")?;
         let overlay = resolve_include_recursive(
             &yaml_entry,
@@ -616,14 +611,7 @@ fn fetch_url_as_yaml(
                 config_path.display()
             )
         })?;
-        let json_val = serde_json::to_value(&toml_val).with_context(|| {
-            format!(
-                "failed to convert TOML to JSON from include URL '{}' (referenced from {})",
-                url,
-                config_path.display()
-            )
-        })?;
-        serde_yaml_ng::to_value(&json_val).with_context(|| {
+        anodizer_core::config::toml_value_to_yaml(&toml_val).with_context(|| {
             format!(
                 "failed to convert TOML to YAML from include URL '{}' (referenced from {})",
                 url,
@@ -848,13 +836,7 @@ fn load_include_as_yaml(
             let toml_val: toml::Value = toml::from_str(include_content).with_context(|| {
                 format!("failed to parse include file: {}", include_path.display())
             })?;
-            let json_val = serde_json::to_value(&toml_val).with_context(|| {
-                format!(
-                    "failed to convert TOML include to JSON: {}",
-                    include_path.display()
-                )
-            })?;
-            serde_yaml_ng::to_value(&json_val).with_context(|| {
+            anodizer_core::config::toml_value_to_yaml(&toml_val).with_context(|| {
                 format!(
                     "failed to convert TOML include to YAML: {}",
                     include_path.display()

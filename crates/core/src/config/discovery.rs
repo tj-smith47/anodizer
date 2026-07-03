@@ -23,11 +23,27 @@ pub const CONFIG_CANDIDATES: &[&str] = &[
 /// Find the first [`CONFIG_CANDIDATES`] entry that exists under `base`,
 /// joined against `base`. `None` when no candidate exists — callers with a
 /// `Cargo.toml` defaults fallback (the CLI loader) layer it on top of this.
+///
+/// An empty `base` joins to the bare candidate names, so the probe runs
+/// relative to the process cwd and the returned path stays relative —
+/// the CLI's cwd-anchored discovery builds on that.
 pub fn find_config_candidate_in(base: &Path) -> Option<PathBuf> {
     CONFIG_CANDIDATES
         .iter()
         .map(|name| base.join(name))
         .find(|path| path.exists())
+}
+
+/// Transcode a parsed `toml::Value` into a `serde_yaml_ng::Value` — the one
+/// conversion route shared by every TOML-accepting config surface (the raw
+/// readers here and the CLI loader's include merging). Serializes the TOML
+/// tree straight into YAML with no `serde_json` intermediate hop: the two
+/// routes differ only on non-finite floats (`inf`/`nan`, which TOML and YAML
+/// both represent but JSON cannot), and the direct route preserves them.
+pub fn toml_value_to_yaml(
+    value: &toml::Value,
+) -> std::result::Result<serde_yaml_ng::Value, serde_yaml_ng::Error> {
+    serde_yaml_ng::to_value(value)
 }
 
 /// Read a discovered config file into a raw `serde_yaml_ng::Value`,
@@ -48,7 +64,7 @@ pub fn load_raw_config_value(path: &Path) -> Result<serde_yaml_ng::Value> {
         "toml" => {
             let value: toml::Value = toml::from_str(&text)
                 .with_context(|| format!("failed to parse TOML at {}", path.display()))?;
-            serde_yaml_ng::to_value(value)
+            toml_value_to_yaml(&value)
                 .with_context(|| format!("failed to convert TOML at {}", path.display()))
         }
         other => bail!(
@@ -76,6 +92,25 @@ mod tests {
     fn find_config_candidate_returns_none_when_absent() {
         let tmp = tempfile::tempdir().unwrap();
         assert!(find_config_candidate_in(tmp.path()).is_none());
+    }
+
+    #[test]
+    fn toml_value_to_yaml_preserves_non_finite_floats() {
+        // Pins the direct toml→yaml route: a serde_json hop would reject
+        // `inf`/`nan` (JSON cannot represent them) even though both TOML
+        // and YAML can. These must survive the transcode.
+        let value: toml::Value = toml::from_str("a = inf\nb = -inf\nc = nan\n").unwrap();
+        let yaml = toml_value_to_yaml(&value).expect("non-finite floats must transcode");
+        assert_eq!(yaml.get("a").and_then(|v| v.as_f64()), Some(f64::INFINITY));
+        assert_eq!(
+            yaml.get("b").and_then(|v| v.as_f64()),
+            Some(f64::NEG_INFINITY)
+        );
+        assert!(
+            yaml.get("c")
+                .and_then(|v| v.as_f64())
+                .is_some_and(f64::is_nan)
+        );
     }
 
     #[test]
