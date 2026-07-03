@@ -372,6 +372,7 @@ impl Stage for NsisStage {
                         // builds of one target.
                         anodizer_core::archive_name::seed_amd64_variant_var(
                             &mut name_vars,
+                            &arch,
                             amd64_variant.as_deref(),
                         );
 

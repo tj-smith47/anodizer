@@ -32,6 +32,8 @@ ARCH="$(detect_arch)"
 
 if [ "$OS" = "unsupported" ] || [ "$ARCH" = "unsupported" ]; then
     echo "Error: unsupported platform $(uname -s)/$(uname -m)" >&2
+    echo "Prebuilt binaries: {{ InstallerSupportedPlatforms }}" >&2
+    echo "All assets: https://github.com/${REPO}/releases/tag/v${VERSION}" >&2
     exit 1
 fi
 
@@ -43,6 +45,8 @@ case "${OS}-${ARCH}" in
 {{ InstallerAssetCases }}
     *)
         echo "Error: no prebuilt ${PROJECT} binary for ${OS}/${ARCH}" >&2
+        echo "Prebuilt binaries: {{ InstallerSupportedPlatforms }}" >&2
+        echo "All assets: https://github.com/${REPO}/releases/tag/v${VERSION}" >&2
         exit 1
         ;;
 esac

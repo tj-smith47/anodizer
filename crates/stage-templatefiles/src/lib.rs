@@ -47,6 +47,10 @@ impl Stage for TemplateFilesStage {
             "InstallerDetectArchCases",
             &installer_cases.detect_arch_cases,
         );
+        ctx.template_vars_mut().set(
+            "InstallerSupportedPlatforms",
+            &installer_cases.supported_platforms,
+        );
 
         for entry in &entries {
             let id = entry.id.as_deref().unwrap_or("default");
@@ -671,6 +675,24 @@ mod tests {
         assert!(
             rendered.contains("no prebuilt ${PROJECT} binary"),
             "fallback error arm must be present"
+        );
+        // Both error paths list the platforms that DO have prebuilt binaries.
+        assert_eq!(
+            rendered
+                .matches(
+                    "Prebuilt binaries: darwin-amd64 darwin-arm64 linux-amd64 \
+                     linux-arm64 windows-amd64 windows-arm64"
+                )
+                .count(),
+            2,
+            "both error paths must list the supported platforms"
+        );
+        assert_eq!(
+            rendered
+                .matches("All assets: https://github.com/${REPO}/releases/tag/v${VERSION}")
+                .count(),
+            2,
+            "both error paths must link the release's asset page"
         );
 
         // The uname detection arms are generated from the same released

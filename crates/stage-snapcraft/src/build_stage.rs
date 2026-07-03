@@ -752,14 +752,14 @@ fn compute_snap_filename(
         // the vars it reads must be seeded identically.
         Some(t) => anodizer_core::archive_name::seed_target_vars(ctx, t),
         // Host-target build (no triple): seed the caller-derived Os/Arch and
-        // clear the variant vars the default template reads. An empty
+        // clear ALL variant vars — resetting a subset would leak a previous
+        // target's `Arm64`/`I386` into a user name_template. An empty
         // `{{ .Target }}` renders as the empty string in user templates.
         None => {
             ctx.template_vars_mut().set("Os", os);
             ctx.template_vars_mut().set("Arch", arch);
-            ctx.template_vars_mut().set("Arm", "");
-            ctx.template_vars_mut().set("Mips", "");
             ctx.template_vars_mut().set("Target", "");
+            anodizer_core::archive_name::reset_variant_vars(ctx.template_vars_mut());
         }
     }
     // The amd64 micro-architecture variant comes from the built binary's
@@ -767,7 +767,11 @@ fn compute_snap_filename(
     // suppresses the `v1` baseline so `None`/`"v1"` preserve historical
     // single-variant snap names, while a non-`v1` variant (e.g. `"v3"`)
     // appends the suffix.
-    anodizer_core::archive_name::seed_amd64_variant_var(ctx.template_vars_mut(), amd64_variant);
+    anodizer_core::archive_name::seed_amd64_variant_var(
+        ctx.template_vars_mut(),
+        arch,
+        amd64_variant,
+    );
     let tmpl = snap_cfg
         .name_template
         .as_deref()
@@ -1566,5 +1570,38 @@ mod id_binding_tests {
             4,
             "all four targets/variants produce distinct names"
         );
+    }
+
+    #[test]
+    fn host_build_resets_every_variant_var() {
+        // A host-target (no triple) render after an aarch64 target render:
+        // the stale `Arm64="v8"` (and any other variant var) must not leak
+        // into a user name_template that references it.
+        use anodizer_core::test_helpers::TestContextBuilder;
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.2.3")
+            .build();
+
+        // Prior target render seeds Arm64="v8" (plus I386 via a 386 pass).
+        ctx.template_vars_mut().set("Arm64", "v8");
+        ctx.template_vars_mut().set("I386", "sse2");
+        ctx.template_vars_mut().set("Arm", "7");
+        ctx.template_vars_mut().set("Mips", "stale");
+
+        let snap_cfg = SnapcraftConfig {
+            name_template: Some(
+                "{{ ProjectName }}_{{ Os }}_{{ Arch }}{{ Arm }}{{ Arm64 }}{{ Amd64 }}{{ Mips }}{{ I386 }}"
+                    .to_string(),
+            ),
+            ..Default::default()
+        };
+        let name = compute_snap_filename(
+            &mut ctx, &snap_cfg, "myapp", "mysnap", None, "linux", "amd64", None,
+        )
+        .expect("render snap filename");
+        // Amd64 renders the unified untagged baseline; every other variant
+        // var must be empty — no `v8`/`sse2`/`7`/`stale` leak.
+        assert_eq!(name, "mysnap_linux_amd64v1.snap");
     }
 }

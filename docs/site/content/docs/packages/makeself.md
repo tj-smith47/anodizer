@@ -97,6 +97,19 @@ The `makeself` command must be installed and available on PATH.
 - IDs must be unique across all makeself configs
 - Skippable with `--skip makeself`
 
+## Default filenames
+
+The default filename is `{project}_{version}_{os}_{arch}.run`, e.g.
+`myapp_1.2.3_linux_amd64.run` or `myapp_1.2.3_linux_armv7.run`. Two amd64
+builds of one target (a baseline and a `-Ctarget-cpu=x86-64-v2`/`v3` tune)
+are disambiguated by the micro-architecture level:
+
+```
+myapp_1.2.3_linux_amd64.run      # baseline (v1 — no suffix)
+myapp_1.2.3_linux_amd64v2.run    # x86-64-v2 tuned build
+myapp_1.2.3_linux_amd64v3.run    # x86-64-v3 tuned build
+```
+
 ## Compression
 
 Override the default compression method:

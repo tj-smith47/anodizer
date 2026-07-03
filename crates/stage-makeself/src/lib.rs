@@ -2375,6 +2375,39 @@ crates:
     }
 
     #[test]
+    fn default_filename_armv7_single_arch_token() {
+        // Arch carries the composite armv7 token, so the default template's
+        // `{% if Arm %}v{{ Arm }}` clause must add nothing — never the doubled
+        // `myapp_1.2.3_linux_armv7v7.run` (same class as the mips guard).
+        let ctx = seeded_ctx("armv7-unknown-linux-gnueabihf", None);
+        let name = resolve_makeself_filename(
+            &ctx,
+            &default_name_template(),
+            "myapp",
+            "1.2.3",
+            "linux",
+            "armv7",
+        )
+        .unwrap();
+        assert_eq!(name, "myapp_1.2.3_linux_armv7.run");
+    }
+
+    #[test]
+    fn default_filename_armv6_single_arch_token() {
+        let ctx = seeded_ctx("armv6-unknown-linux-gnueabihf", None);
+        let name = resolve_makeself_filename(
+            &ctx,
+            &default_name_template(),
+            "myapp",
+            "1.2.3",
+            "linux",
+            "armv6",
+        )
+        .unwrap();
+        assert_eq!(name, "myapp_1.2.3_linux_armv6.run");
+    }
+
+    #[test]
     fn untagged_x86_64_amd64_matches_build_baseline() {
         // Same value the build stage seeds for an untagged x86_64 binary name
         // ("v1"), and the default filename stays suffix-free (v1 baseline).

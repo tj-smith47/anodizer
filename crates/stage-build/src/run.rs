@@ -1244,12 +1244,12 @@ mod per_target_var_tests {
 
     #[test]
     fn arm_and_i386_variants() {
-        assert_eq!(
-            vars_for("armv7-unknown-linux-gnueabihf", "linux", "")
-                .get("Arm")
-                .map(String::as_str),
-            Some("7")
-        );
+        // `Arch` carries the composite armv7 token, so `Arm` must stay empty —
+        // a seeded Arm would double a `{{ .Arch }}v{{ .Arm }}` binary name to
+        // `armv7v7` (same class as the mips guard below).
+        let armv7 = vars_for("armv7-unknown-linux-gnueabihf", "linux", "");
+        assert_eq!(armv7.get("Arch").map(String::as_str), Some("armv7"));
+        assert_eq!(armv7.get("Arm").map(String::as_str), Some(""));
         assert_eq!(
             vars_for("i686-unknown-linux-gnu", "linux", "")
                 .get("I386")

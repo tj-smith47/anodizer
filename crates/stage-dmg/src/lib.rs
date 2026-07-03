@@ -491,6 +491,7 @@ impl Stage for DmgStage {
                         // template disambiguates two amd64 builds of one target.
                         anodizer_core::archive_name::seed_amd64_variant_var(
                             ctx.template_vars_mut(),
+                            &arch,
                             amd64_variant.as_deref(),
                         );
 

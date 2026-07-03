@@ -17,7 +17,12 @@ pub const DEFAULT_TARGETS: &[&str] = &[
     "aarch64-unknown-linux-gnu",
 ];
 
-/// The one Rust-arch-token → Go/OCI arch-name table.
+/// The one Rust-arch-token → anodizer-arch-vocabulary table: Go arch names,
+/// except the mips family, which keeps the Rust spellings (`mipsel` /
+/// `mips64el`, never Go's `mipsle` / `mips64le`). The mips exception exists
+/// because anodizer derives asset names from Rust target triples — the Rust
+/// spelling is the vocabulary every asset name, package arch table, and
+/// template var already carries.
 ///
 /// Accepts both vocabularies that carry a Rust architecture token: target
 /// triple first components (`powerpc64le`, `mips64el`, `riscv64gc`, …), which

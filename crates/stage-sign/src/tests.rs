@@ -3227,6 +3227,75 @@ fn test_binary_signs_arm_target_splits_arch_correctly() {
     );
 }
 
+/// A signature template referencing `{{ Amd64 }}` must render the binary's
+/// real `amd64_variant` metadata — the key the build stage writes — not a
+/// dead metadata key that silently falls back to the baseline. An untagged
+/// binary renders the unified `"v1"` baseline.
+#[test]
+fn test_binary_signs_amd64_variant_metadata_renders_in_signature_template() {
+    use anodizer_core::artifact::Artifact;
+
+    // Registered names are target-qualified, so pin the rendered stem
+    // (`myapp.<variant>`) rather than the full basename.
+    for (metadata, expected) in [
+        (
+            std::collections::HashMap::from([("amd64_variant".to_string(), "v3".to_string())]),
+            "myapp.v3",
+        ),
+        (Default::default(), "myapp.v1"),
+    ] {
+        let binary_sign_cfg = SignConfig {
+            id: None,
+            artifacts: Some("binary".to_string()),
+            cmd: Some("true".to_string()),
+            args: Some(vec![]),
+            signature: Some("{{ .Artifact }}.{{ Amd64 }}.sig".to_string()),
+            stdin: None,
+            stdin_file: None,
+            ids: None,
+            env: None,
+            certificate: None,
+            output: None,
+            authenticode: None,
+            if_condition: None,
+        };
+        let mut ctx = TestContextBuilder::new()
+            .binary_signs(vec![binary_sign_cfg])
+            .dry_run(true)
+            .build();
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: "myapp".to_string(),
+            path: std::path::PathBuf::from("/dist/myapp"),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "test".to_string(),
+            metadata,
+            size: None,
+        });
+
+        let log = ctx.logger("binary-sign");
+        let binary_sign_configs = ctx.config.binary_signs.clone();
+        process_sign_configs(
+            &binary_sign_configs,
+            &mut ctx,
+            &log,
+            ArtifactFilter::BinaryOnly,
+            "binary-sign",
+        )
+        .unwrap();
+
+        let sigs: Vec<_> = ctx.artifacts.by_kind(ArtifactKind::Signature);
+        assert_eq!(sigs.len(), 1);
+        assert!(
+            sigs[0].name.starts_with(expected) && sigs[0].name.ends_with(".sig"),
+            "signature name must render the binary's amd64_variant \
+             (expected stem '{expected}'): got '{}'",
+            sigs[0].name
+        );
+    }
+}
+
 #[test]
 fn test_binary_signs_register_target_qualified_names_per_target() {
     use anodizer_core::artifact::Artifact;

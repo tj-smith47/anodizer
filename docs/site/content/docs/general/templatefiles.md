@@ -86,16 +86,18 @@ Each entry gets its own artifact ID, so you can reference them individually in p
 
 ## Remote installer case tables
 
-Three template variables carry engine-generated POSIX-`sh` `case` arms for a
+Four template variables carry engine-generated POSIX-`sh` snippets for a
 `curl | sh` installer script, derived from the release's configured targets and
 the archive stage's own asset naming — so the script never hardcodes an asset
-name that 404s or a `uname` mapping that strands a released target:
+name that 404s, and the detection arms track the same vocabulary that keys the
+asset arms instead of a hand-written `uname` mapping that silently drifts:
 
 | Variable | Contents |
 |----------|----------|
 | `InstallerAssetCases` | `case "${OS}-${ARCH}"` arms mapping each released `os-arch` pair to its exact asset filename (sets `ARCHIVE=`) |
 | `InstallerDetectOsCases` | `case "$(uname -s)"` arms echoing the OS tokens the asset arms are keyed by |
 | `InstallerDetectArchCases` | `case "$(uname -m)"` arms echoing the arch tokens the asset arms are keyed by |
+| `InstallerSupportedPlatforms` | The reachable `os-arch` keys, space-joined — for error messages that list what IS available |
 
 ```bash
 #!/bin/sh
@@ -134,6 +136,35 @@ and each asset arm resolves to the same filename the archive stage uploads
 (`ARCHIVE="myapp_1.2.3_linux_amd64.tar.gz"`), including `format_overrides`
 (e.g. `zip` on Windows). A `darwin-universal` build is fanned out to the
 `darwin-amd64` / `darwin-arm64` keys, with arch-specific assets taking
-precedence. Each snippet omits the `*)` fallback arm — your template owns the
-error path. All three render empty when no crate builds a binary named after
+precedence.
+
+The mips family is deliberately absent from the generated `uname -m` arms:
+`uname -m` reports `mips`/`mips64` for both endiannesses, so the script cannot
+safely choose between same-name big- and little-endian assets — mips hosts get
+the explicit unsupported-platform error rather than a wrong-endian binary.
+illumos hosts (`uname -s` = `SunOS`, mapped to `solaris`) are likewise
+undetectable. Releasing such a target still emits its asset arm, but anodizer
+prints a warning naming the stranded target so you know those hosts fall
+through to the error path.
+
+Each snippet omits the `*)` fallback arm — your template owns the error path.
+`InstallerSupportedPlatforms` is made for exactly that arm: it lists the keys
+a host can actually reach, so the error can point users at the assets that do
+exist:
+
+```sh
+    *)
+        echo "Error: no prebuilt ${PROJECT} binary for ${OS}/${ARCH}" >&2
+        echo "Prebuilt binaries: {{ InstallerSupportedPlatforms }}" >&2
+        exit 1
+        ;;
+```
+
+renders as:
+
+```sh
+        echo "Prebuilt binaries: darwin-amd64 darwin-arm64 linux-amd64 linux-arm64 windows-amd64 windows-arm64" >&2
+```
+
+All four variables render empty when no crate builds a binary named after
 the project with a binstallable archive.

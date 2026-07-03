@@ -600,35 +600,27 @@ pub(crate) fn process_sign_configs(
 
             if matches!(filter_mode, ArtifactFilter::BinaryOnly) {
                 if let Some(target) = artifact_target {
+                    // The build-policy seeding: composite `Arch` from
+                    // map_target plus the shared variant-var policy, with the
+                    // amd64 micro-arch level read from the binary's real
+                    // `amd64_variant` metadata (the key every producing stage
+                    // writes) — a v3-tuned binary's signature/certificate
+                    // template renders the same `{{ Amd64 }}` its own name
+                    // was built from.
                     let (os, arch) = map_target(target);
-                    ctx.template_vars_mut().set("Os", &os);
-                    if let Some(version) = arch.strip_prefix("armv") {
-                        ctx.template_vars_mut().set("Arch", "arm");
-                        ctx.template_vars_mut().set("Arm", version);
-                    } else {
-                        ctx.template_vars_mut().set("Arch", &arch);
-                        ctx.template_vars_mut().set("Arm", "");
-                    }
-                    let amd64 = if arch == "amd64" {
-                        artifact_metadata
-                            .get("amd64_level")
-                            .map(|s| s.as_str())
-                            .unwrap_or("v1")
-                    } else {
-                        ""
-                    };
-                    ctx.template_vars_mut().set("Amd64", amd64);
-                    let mips = artifact_metadata
-                        .get("mips_variant")
-                        .map(|s| s.as_str())
-                        .unwrap_or("");
-                    ctx.template_vars_mut().set("Mips", mips);
+                    let vars = ctx.template_vars_mut();
+                    vars.set("Os", &os);
+                    vars.set("Arch", &arch);
+                    anodizer_core::archive_name::seed_variant_vars(
+                        vars,
+                        target,
+                        artifact_metadata.get("amd64_variant").map(String::as_str),
+                    );
                 } else {
-                    ctx.template_vars_mut().set("Os", "");
-                    ctx.template_vars_mut().set("Arch", "");
-                    ctx.template_vars_mut().set("Arm", "");
-                    ctx.template_vars_mut().set("Amd64", "");
-                    ctx.template_vars_mut().set("Mips", "");
+                    let vars = ctx.template_vars_mut();
+                    vars.set("Os", "");
+                    vars.set("Arch", "");
+                    anodizer_core::archive_name::reset_variant_vars(vars);
                 }
             }
 

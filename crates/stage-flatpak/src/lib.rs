@@ -720,7 +720,11 @@ fn process_binary_iteration(
         .set("Target", target.as_deref().unwrap_or(""));
     // Seed the amd64 variant so the default (or a custom) name template
     // disambiguates two amd64 builds of one target.
-    anodizer_core::archive_name::seed_amd64_variant_var(ctx.template_vars_mut(), amd64_variant);
+    anodizer_core::archive_name::seed_amd64_variant_var(
+        ctx.template_vars_mut(),
+        &arch,
+        amd64_variant,
+    );
 
     let default_name = default_name_template();
     let (output_name, resolved_template) =

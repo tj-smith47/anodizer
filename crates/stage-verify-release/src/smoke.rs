@@ -265,19 +265,30 @@ pub fn docker_platform(target_triple: &str) -> Option<String> {
         return None;
     }
     let (_, arch) = anodizer_core::target::map_target(target_triple);
-    let docker_arch = match arch.as_str() {
-        "amd64" => "amd64",
-        "arm64" => "arm64",
-        "386" => "386",
-        "armv7" => "arm/v7",
-        "armv6" => "arm/v6",
-        "s390x" => "s390x",
-        "ppc64le" => "ppc64le",
-        "riscv64" => "riscv64",
-        "loong64" => "loong64",
-        _ => return None,
-    };
-    Some(format!("linux/{docker_arch}"))
+    arch_docker_platform(&arch)
+}
+
+/// The one arch-token → Docker platform subset definition, shared by the
+/// triple path ([`docker_platform`]) and the host path
+/// ([`host_docker_platform_for`]) so the two can never disagree on which
+/// architectures Docker can run.
+///
+/// Accepts the arch vocabulary [`anodizer_core::target::map_target`] /
+/// [`anodizer_core::target::rust_arch_to_goarch`] emit. The 32-bit ARM
+/// composites spell their variant in the platform PATH (`linux/arm/v7`), not
+/// the token; they only ever arrive via the triple path
+/// (`rust_arch_to_goarch` has no 32-bit-ARM rows), so the host path naturally
+/// excludes them. Tokens with no practical Docker platform (the mips family,
+/// sparc64, big-endian ppc64) return `None`.
+fn arch_docker_platform(arch: &str) -> Option<String> {
+    match arch {
+        "armv7" => Some("linux/arm/v7".to_string()),
+        "armv6" => Some("linux/arm/v6".to_string()),
+        "amd64" | "arm64" | "386" | "s390x" | "ppc64le" | "riscv64" | "loong64" => {
+            Some(format!("linux/{arch}"))
+        }
+        _ => None,
+    }
 }
 
 /// The host's Docker platform spec (`linux/<arch>`), or `None` when the host
@@ -289,24 +300,18 @@ fn host_docker_platform() -> Option<String> {
 /// Pure mapping seam for [`host_docker_platform`]: Rust `target_arch` name →
 /// Docker platform spec.
 ///
-/// Docker platform arch names ARE GOARCH names, so the arch token comes from
-/// the shared [`anodizer_core::target::rust_arch_to_goarch`] table (the same
-/// one `platform_is_native`'s comparison targets derive from via `map_target`
-/// — a private copy here mis-answers the native check the moment it drifts).
+/// The arch token comes from the shared
+/// [`anodizer_core::target::rust_arch_to_goarch`] table (the same one
+/// `platform_is_native`'s comparison targets derive from via `map_target` — a
+/// private copy here mis-answers the native check the moment it drifts), then
+/// through the same [`arch_docker_platform`] subset the triple path uses.
 /// `little_endian` disambiguates the endian-ambiguous `ARCH` values
-/// (`powerpc64` is both ppc64 and ppc64le hosts). On top of the table sits the
-/// one Docker-specific delta: goarches without a practical Docker platform
-/// (the mips family, sparc64, big-endian ppc64) return `None`, which
-/// `platform_is_native` treats as "unknown host — let the emulation probe
-/// decide".
+/// (`powerpc64` is both ppc64 and ppc64le hosts). An unsupported host arch
+/// returns `None`, which `platform_is_native` treats as "unknown host — let
+/// the emulation probe decide".
 fn host_docker_platform_for(rust_arch: &str, little_endian: bool) -> Option<String> {
     let goarch = anodizer_core::target::rust_arch_to_goarch(rust_arch, little_endian)?;
-    match goarch {
-        "amd64" | "arm64" | "386" | "s390x" | "ppc64le" | "riscv64" | "loong64" => {
-            Some(format!("linux/{goarch}"))
-        }
-        _ => None,
-    }
+    arch_docker_platform(goarch)
 }
 
 /// Whether `platform` matches the host's native Docker platform. `false`
@@ -1003,6 +1008,44 @@ mod tests {
             host_docker_platform_for("loongarch64", true).as_deref(),
             Some("linux/loong64")
         );
+    }
+
+    /// Coupling: the triple path and the host path route through the ONE
+    /// `arch_docker_platform` subset, so for every arch token both sides know
+    /// they must produce the identical platform spec — and the 32-bit ARM
+    /// composites are triple-path-only (no Rust host `ARCH` maps to them).
+    #[test]
+    fn triple_and_host_paths_share_one_docker_subset() {
+        // Same arch, two entry points, one answer.
+        for (triple, rust_arch, little_endian) in [
+            ("x86_64-unknown-linux-gnu", "x86_64", true),
+            ("aarch64-unknown-linux-gnu", "aarch64", true),
+            ("i686-unknown-linux-gnu", "x86", true),
+            ("s390x-unknown-linux-gnu", "s390x", false),
+            ("powerpc64le-unknown-linux-gnu", "powerpc64", true),
+            ("riscv64gc-unknown-linux-gnu", "riscv64", true),
+            ("loongarch64-unknown-linux-gnu", "loongarch64", true),
+            // No Docker platform on either side.
+            ("sparc64-unknown-linux-gnu", "sparc64", false),
+            ("mips64el-unknown-linux-gnuabi64", "mips64", true),
+        ] {
+            assert_eq!(
+                docker_platform(triple),
+                host_docker_platform_for(rust_arch, little_endian),
+                "triple {triple} vs host {rust_arch}"
+            );
+        }
+        // The ARM variants exist only through the triple path: the shared
+        // goarch table has no 32-bit-ARM rows, so no host token reaches them.
+        assert_eq!(
+            docker_platform("armv7-unknown-linux-gnueabihf").as_deref(),
+            Some("linux/arm/v7")
+        );
+        assert_eq!(
+            docker_platform("armv6-unknown-linux-gnueabihf").as_deref(),
+            Some("linux/arm/v6")
+        );
+        assert_eq!(host_docker_platform_for("arm", true), None);
     }
 
     /// The host platform table is the shared goarch table plus ONLY the

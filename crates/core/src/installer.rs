@@ -84,6 +84,12 @@ pub struct InstallerCases {
     /// `case "$(uname -m)"` arms mapping machine names to the arch tokens the
     /// asset arms are keyed by (bind to `InstallerDetectArchCases`).
     pub detect_arch_cases: String,
+    /// The reachable asset-arm keys — the `os-arch` pairs the detect arms can
+    /// actually emit — space-joined in arm order (bind to
+    /// `InstallerSupportedPlatforms`). Lets the script's error paths list the
+    /// prebuilt binaries that DO exist instead of a bare "unsupported
+    /// platform".
+    pub supported_platforms: String,
 }
 
 /// Render the installer's POSIX-`sh` case-arm snippets: the `os-arch` →
@@ -100,6 +106,14 @@ pub struct InstallerCases {
 /// stranded behind a hand-written shell mapping that never emits its key, and
 /// a vocabulary rename in [`map_target`] moves both halves together.
 ///
+/// Two families are undetectable by construction and get NO detect arm: the
+/// mips family (`uname -m` reports `mips`/`mips64` for both endiannesses, so
+/// an arm could fetch the wrong-endian binary) and illumos (`uname -s` is
+/// `SunOS`, mapped to `solaris` only). Releasing such a target leaves its
+/// asset arm unreachable; a default-visible warning names the stranded
+/// target(s) so the release operator knows those hosts fall through to the
+/// unsupported-platform error.
+///
 /// A `darwin-universal` build's asset is fanned out to the `darwin-amd64` /
 /// `darwin-arm64` keys (real `uname -m` values), with arch-specific assets
 /// taking precedence — a universal-only release is installable on both CPU
@@ -113,6 +127,7 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
         asset_cases: String::new(),
         detect_os_cases: String::new(),
         detect_arch_cases: String::new(),
+        supported_platforms: String::new(),
     };
     let Some(crate_cfg) = installer_crate(&ctx.config) else {
         return Ok(empty());
@@ -169,6 +184,43 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
         }
     }
 
+    // Which released tokens the generated detect arms can actually emit. A
+    // token with no row in the detection tables (the mips family, illumos)
+    // makes every asset arm keyed by it unreachable — the release ships the
+    // asset, but no host can ever select it.
+    let detectable_os: BTreeSet<&str> = UNAME_OS_CASES.iter().map(|(_, t)| *t).collect();
+    let detectable_arch: BTreeSet<&str> = UNAME_ARCH_CASES.iter().map(|(_, t)| *t).collect();
+    let key_is_reachable = |key: &str| -> bool {
+        // Keys are `{os}-{arch}` and neither token contains `-`.
+        key.split_once('-')
+            .is_some_and(|(os, arch)| detectable_os.contains(os) && detectable_arch.contains(arch))
+    };
+
+    let stranded: Vec<&str> = assets
+        .iter()
+        .filter(|(target, _)| {
+            let (os, arch) = map_target(target);
+            arch != "all" && !key_is_reachable(&format!("{os}-{arch}"))
+        })
+        .map(|(target, _)| target.as_str())
+        .collect();
+    if !stranded.is_empty() {
+        ctx.logger("templatefiles").warn(&format!(
+            "installer script cannot detect released target(s) {}: their uname \
+             tokens are ambiguous or unmapped (`uname -m` reports the same \
+             token for both mips endiannesses; illumos reports `SunOS`), so \
+             their asset arms are unreachable — matching hosts get the \
+             unsupported-platform error",
+            stranded.join(", ")
+        ));
+    }
+
+    let supported: Vec<&str> = arms
+        .keys()
+        .filter(|key| key_is_reachable(key))
+        .map(String::as_str)
+        .collect();
+
     let lines: Vec<String> = arms
         .iter()
         .map(|(key, asset)| format!("    {key})\n        ARCHIVE=\"{asset}\"\n        ;;"))
@@ -177,6 +229,7 @@ pub fn render_installer_cases(ctx: &mut Context) -> Result<InstallerCases> {
         asset_cases: lines.join("\n"),
         detect_os_cases: render_uname_cases(UNAME_OS_CASES, &released_os),
         detect_arch_cases: render_uname_cases(UNAME_ARCH_CASES, &released_arch),
+        supported_platforms: supported.join(" "),
     })
 }
 
@@ -416,6 +469,7 @@ mod tests {
         assert_eq!(cases.asset_cases, "");
         assert_eq!(cases.detect_os_cases, "");
         assert_eq!(cases.detect_arch_cases, "");
+        assert_eq!(cases.supported_platforms, "");
     }
 
     /// Every `uname -m` alias must round-trip through `map_target` to the
@@ -518,6 +572,69 @@ mod tests {
             arms.get("darwin-arm64").map(String::as_str),
             Some("anodizer-0.13.0-darwin-arm64.tar.gz"),
             "the arch-specific asset wins its own key over the universal"
+        );
+    }
+
+    /// `supported_platforms` lists every reachable arm key, space-joined in
+    /// arm (BTreeMap) order — the value the script's error paths print.
+    #[test]
+    fn supported_platforms_lists_reachable_keys() {
+        let mut ctx = anodize_ctx(None);
+        let cases = render_installer_cases(&mut ctx).unwrap();
+        assert_eq!(
+            cases.supported_platforms,
+            "darwin-amd64 darwin-arm64 linux-amd64 linux-arm64 \
+             windows-amd64 windows-arm64"
+        );
+    }
+
+    /// A released mips-family target has an asset arm but no detect arm
+    /// (`uname -m` is endian-ambiguous): the render warns naming the stranded
+    /// target and excludes its key from `supported_platforms`.
+    #[test]
+    fn undetectable_mips_target_warns_and_is_not_listed_supported() {
+        let mut ctx = anodize_ctx(None);
+        ctx.config.defaults.as_mut().unwrap().targets = Some(vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+            "mips64el-unknown-linux-gnuabi64".to_string(),
+        ]);
+        let capture = crate::log::LogCapture::new();
+        ctx.with_log_capture(capture.clone());
+
+        let cases = render_installer_cases(&mut ctx).unwrap();
+
+        // The asset arm exists (the release ships it) …
+        assert!(
+            parse_arms(&cases.asset_cases).contains_key("linux-mips64el"),
+            "asset arm for the mips target must still be emitted"
+        );
+        // … but it is unreachable, so it is not advertised as supported …
+        assert_eq!(cases.supported_platforms, "linux-amd64");
+        // … and the operator is told which target is stranded.
+        assert_eq!(capture.warn_count(), 1, "exactly one stranded-target warn");
+        assert!(
+            capture
+                .warn_messages()
+                .iter()
+                .any(|m| m.contains("mips64el-unknown-linux-gnuabi64")),
+            "warn must name the stranded target: {:?}",
+            capture.warn_messages()
+        );
+    }
+
+    /// A fully-detectable release (the standard 6-triple matrix) renders no
+    /// stranded-target warning.
+    #[test]
+    fn detectable_targets_render_no_stranded_warning() {
+        let mut ctx = anodize_ctx(None);
+        let capture = crate::log::LogCapture::new();
+        ctx.with_log_capture(capture.clone());
+        let _ = render_installer_cases(&mut ctx).unwrap();
+        assert_eq!(
+            capture.warn_count(),
+            0,
+            "no warning for detectable targets: {:?}",
+            capture.warn_messages()
         );
     }
 }

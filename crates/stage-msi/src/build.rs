@@ -239,7 +239,11 @@ fn build_msi_target(
     );
     // Seed the amd64 variant so the default (or a custom) name template
     // disambiguates two amd64 builds of one target.
-    anodizer_core::archive_name::seed_amd64_variant_var(ctx.template_vars_mut(), amd64_variant);
+    anodizer_core::archive_name::seed_amd64_variant_var(
+        ctx.template_vars_mut(),
+        &arch,
+        amd64_variant,
+    );
 
     let wix_version = resolve_wix_version(msi_cfg, wxs_path, log);
 

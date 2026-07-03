@@ -262,8 +262,13 @@ fn process_nfpm_format(
     // this group's micro-arch variant. The conventional default filename
     // deliberately omits the variant (deb/rpm/apk require a bare `amd64` arch
     // field); the guard below is what stops two variants from colliding under
-    // that default. `None`/`v1` seed empty, preserving single-variant names.
-    anodizer_core::archive_name::seed_amd64_variant_var(ctx.template_vars_mut(), amd64_variant);
+    // that default. `None` on an amd64 binary seeds the unified `v1` baseline
+    // (same value every seeding policy gives an untagged x86_64 binary).
+    anodizer_core::archive_name::seed_amd64_variant_var(
+        ctx.template_vars_mut(),
+        base_arch,
+        amd64_variant,
+    );
 
     let yaml_content = render_and_generate_nfpm_yaml(
         ctx,
@@ -1681,7 +1686,11 @@ fn render_offline_nfpm_yaml(
             .map(anodizer_core::target::libc_from_target)
             .unwrap_or(""),
     );
-    anodizer_core::archive_name::seed_amd64_variant_var(&mut vars, amd64_variant);
+    anodizer_core::archive_name::seed_amd64_variant_var(
+        &mut vars,
+        render_target.arch,
+        amd64_variant,
+    );
 
     let mut rendered_cfg = render_nfpm_config_fields(nfpm_cfg, &ctx.config, &vars, crate_name)?;
     default_nfpm_mtime_to_sde(&mut rendered_cfg, ctx.env_source());

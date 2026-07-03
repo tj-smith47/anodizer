@@ -88,23 +88,22 @@ pub const INSTALLER_AMD64_VARIANT_SUFFIX: &str =
 /// `linux_armv7`, not `linux_armv7v7`).
 ///
 /// For every other architecture the default template's `{% if Arm %}` /
-/// `{% if Mips %}` / `{% if Amd64 … %}` guards must emit NOTHING (the go-arch
-/// `Arch` token alone is the asset suffix), so `Arm64` / `Amd64` / `Mips` /
-/// `I386` are left empty. The result is byte-identical to the asset names the
-/// archive stage has always produced, which is the contract every consumer of a
-/// derived name (binstall, nix, …) depends on.
+/// `{% if Mips %}` guards must emit NOTHING (the go-arch `Arch` token alone is
+/// the asset suffix), so `Arm64` / `Mips` / `I386` are left empty. `Amd64` is
+/// the exception: an x86-64 target seeds the `"v1"` baseline — the value every
+/// seeding policy gives an untagged x86-64 binary — so `{{ Amd64 }}` renders
+/// identically in an archive name and in a build/installer name for the same
+/// binary. The default templates guard the clause with `Amd64 != "v1"`, so the
+/// rendered asset names stay byte-identical to what the archive stage has
+/// always produced — the contract every consumer of a derived name
+/// (binstall, nix, …) depends on.
 pub fn seed_target_vars(ctx: &mut Context, target: &str) {
     let (os, arch) = map_target(target);
     let vars = ctx.template_vars_mut();
     vars.set("Os", &os);
     vars.set("Target", target);
 
-    // Reset every variant var so a prior target's value cannot leak.
-    vars.set("Arm", "");
-    vars.set("Arm64", "");
-    vars.set("Amd64", "");
-    vars.set("Mips", "");
-    vars.set("I386", "");
+    reset_variant_vars(vars);
 
     // ARM is the only architecture whose default-template suffix lives in a
     // variant var: split `armv7`/`armv6` into `Arch="arm"` + `Arm="7"/"6"` so
@@ -114,28 +113,49 @@ pub fn seed_target_vars(ctx: &mut Context, target: &str) {
         vars.set("Arch", "arm");
         vars.set("Arm", version);
     } else {
+        if arch == "amd64" {
+            vars.set("Amd64", "v1");
+        }
         vars.set("Arch", &arch);
     }
+}
+
+/// Reset every micro-architecture variant template var (`Arm`, `Arm64`,
+/// `Amd64`, `Mips`, `I386`) to the empty string.
+///
+/// The single reset behind [`seed_target_vars`] and [`seed_variant_vars`],
+/// also called directly by stages whose host-build (no-triple) paths must
+/// clear the variant vars a previous target seeded — resetting a subset is
+/// how a stale `Arm64="v8"` leaks into the next render.
+pub fn reset_variant_vars(vars: &mut crate::template::TemplateVars) {
+    vars.set("Arm", "");
+    vars.set("Arm64", "");
+    vars.set("Amd64", "");
+    vars.set("Mips", "");
+    vars.set("I386", "");
 }
 
 /// Seed the micro-architecture variant template vars (`Arm`, `Arm64`, `Amd64`,
 /// `Mips`, `I386`) from a target triple's first component — the build/installer
 /// naming policy, distinct from [`seed_target_vars`]'s archive-asset policy.
 ///
-/// Where [`seed_target_vars`] leaves every variant var empty (archive asset
-/// names carry the whole go-arch in `Arch`), this policy seeds each family's
-/// GoReleaser-default micro-architecture level so a user template referencing
-/// `{{ .Amd64 }}` / `{{ .Arm64 }}` / `{{ .I386 }}` renders the same value in a
-/// build binary name and in a makeself/AppImage filename for the same binary:
-/// `aarch64` → `Arm64="v8"`, `armv7` → `Arm="7"`, `armv6`/`arm` → `Arm="6"`,
-/// `x86_64` → `Amd64=<variant>` (the binary's `amd64_variant` metadata,
-/// defaulting to the `"v1"` baseline when untagged), `i686` → `I386="sse2"`.
+/// Where [`seed_target_vars`] arm-splits `Arch` for archive-asset names, this
+/// policy never touches `Arch`; it seeds each family's GoReleaser-default
+/// micro-architecture level so a user template referencing `{{ .Amd64 }}` /
+/// `{{ .Arm64 }}` / `{{ .I386 }}` renders the same value in a build binary
+/// name and in a makeself/AppImage filename for the same binary:
+/// `aarch64` → `Arm64="v8"`, `x86_64` → `Amd64=<variant>` (the binary's
+/// `amd64_variant` metadata, defaulting to the `"v1"` baseline when untagged),
+/// `i686` → `I386="sse2"`.
 ///
-/// `Mips` is NEVER seeded: `map_target` already carries the full mips token
-/// (`mips64el`, …) in `Arch`, so any non-empty `Mips` doubles every default
-/// filename that appends [`MICRO_ARCH_VARIANT_SUFFIX`]'s
-/// `{% if Mips %}_{{ Mips }}` clause (`…_mips64el_mips64el`) — the same
-/// contract [`seed_target_vars`] pins for archive names.
+/// `Arm` and `Mips` are NEVER seeded: every consumer of this policy carries
+/// the whole `map_target` arch token (`armv7`, `mips64el`, …) in `Arch`, so a
+/// non-empty `Arm`/`Mips` doubles every default filename that appends
+/// [`MICRO_ARCH_VARIANT_SUFFIX`]'s `{% if Arm %}v{{ Arm }}` /
+/// `{% if Mips %}_{{ Mips }}` clauses (`…_armv7v7.run`,
+/// `…_mips64el_mips64el`) — the same contract [`seed_target_vars`] pins for
+/// archive names, where the composite token instead splits into
+/// `Arch="arm"` + `Arm="7"`.
 ///
 /// All five vars are reset every call so a prior target's value cannot leak.
 pub fn seed_variant_vars(
@@ -143,15 +163,9 @@ pub fn seed_variant_vars(
     target: &str,
     amd64_variant: Option<&str>,
 ) {
-    vars.set("Arm", "");
-    vars.set("Arm64", "");
-    vars.set("Amd64", "");
-    vars.set("Mips", "");
-    vars.set("I386", "");
+    reset_variant_vars(vars);
     match target.split('-').next().unwrap_or("") {
         "aarch64" => vars.set("Arm64", "v8"),
-        "armv7" | "armv7l" => vars.set("Arm", "7"),
-        "armv6" | "armv6l" | "arm" => vars.set("Arm", "6"),
         "x86_64" => vars.set("Amd64", amd64_variant.unwrap_or("v1")),
         "i686" | "i386" | "i586" => vars.set("I386", "sse2"),
         _ => {}
@@ -164,8 +178,16 @@ pub fn seed_variant_vars(
 /// Installer stages call this per `(target, variant)` so a `name` template —
 /// the stage default (which appends [`INSTALLER_AMD64_VARIANT_SUFFIX`]) or a
 /// user override referencing `{{ Amd64 }}` — can disambiguate two amd64 builds
-/// of the same target. `None` (an untagged binary) or the `v1` baseline leaves
-/// the suffix empty, preserving the single-variant historical name.
+/// of the same target.
+///
+/// `arch` is the binary's [`map_target`]-mapped arch token: an amd64 binary
+/// with no `amd64_variant` metadata seeds the `"v1"` baseline — the same
+/// value [`seed_variant_vars`] and [`seed_target_vars`] give an untagged
+/// x86-64 binary, so `{{ Amd64 }}` renders one value everywhere for the same
+/// binary — while a non-amd64 binary seeds the empty string (the level is an
+/// x86-64 dimension; every policy leaves it empty for other arches). The
+/// default templates' `Amd64 != "v1"` guard keeps the baseline suffix-free,
+/// preserving the single-variant historical name.
 ///
 /// Takes the [`TemplateVars`](crate::template::TemplateVars) directly rather
 /// than a [`Context`] so both the ctx-render installer stages
@@ -174,9 +196,15 @@ pub fn seed_variant_vars(
 /// one helper.
 pub fn seed_amd64_variant_var(
     vars: &mut crate::template::TemplateVars,
+    arch: &str,
     amd64_variant: Option<&str>,
 ) {
-    vars.set("Amd64", amd64_variant.unwrap_or(""));
+    let value = match amd64_variant {
+        Some(v) => v,
+        None if arch == "amd64" => "v1",
+        None => "",
+    };
+    vars.set("Amd64", value);
 }
 
 /// Render an archive's *stem* (filename without the format extension) for a
@@ -254,9 +282,10 @@ mod tests {
             c.template_vars().get("Target").unwrap(),
             "x86_64-unknown-linux-gnu"
         );
-        // amd64 has no default-template suffix — every variant var is empty so
-        // the `{% if Amd64 … %}` guard emits nothing.
-        assert_eq!(c.template_vars().get("Amd64").unwrap(), "");
+        // amd64 seeds the unified "v1" baseline; the default template's
+        // `Amd64 != "v1"` guard still emits nothing, so the asset name is
+        // unchanged while `{{ Amd64 }}` matches the build/installer policies.
+        assert_eq!(c.template_vars().get("Amd64").unwrap(), "v1");
         assert_eq!(c.template_vars().get("Arm").unwrap(), "");
     }
 
@@ -470,12 +499,68 @@ mod tests {
         let mut v = TemplateVars::new();
         seed_variant_vars(&mut v, "aarch64-unknown-linux-gnu", None);
         assert_eq!(v.get("Arm64").map(String::as_str), Some("v8"));
-        seed_variant_vars(&mut v, "armv7-unknown-linux-gnueabihf", None);
-        assert_eq!(v.get("Arm").map(String::as_str), Some("7"));
-        assert_eq!(v.get("Arm64").map(String::as_str), Some(""));
         seed_variant_vars(&mut v, "i686-unknown-linux-gnu", None);
         assert_eq!(v.get("I386").map(String::as_str), Some("sse2"));
-        assert_eq!(v.get("Arm").map(String::as_str), Some(""));
+        assert_eq!(v.get("Arm64").map(String::as_str), Some(""));
+    }
+
+    #[test]
+    fn variant_vars_arm_stays_empty_for_every_arm_token() {
+        // Consumers of this policy carry the composite armv7/armv6 token in
+        // `Arch`, so a seeded Arm would render the doubled `…_armv7v7.run`
+        // default filename — the same doubling class the Mips guard pins.
+        use crate::template::TemplateVars;
+        for target in [
+            "armv7-unknown-linux-gnueabihf",
+            "armv7l-unknown-linux-gnueabihf",
+            "armv6-unknown-linux-gnueabihf",
+            "arm-unknown-linux-gnueabi",
+        ] {
+            let mut v = TemplateVars::new();
+            seed_variant_vars(&mut v, target, None);
+            assert_eq!(
+                v.get("Arm").map(String::as_str),
+                Some(""),
+                "Arm must stay empty for {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn untagged_x86_64_renders_amd64_baseline_identically_across_policies() {
+        // The unified baseline: the same untagged x86_64 binary renders
+        // `{{ Amd64 }}` as "v1" through every seeding path — the archive
+        // policy (seed_target_vars), the build/makeself/appimage policy
+        // (seed_variant_vars), and the installer-stage policy
+        // (seed_amd64_variant_var, used by msi/dmg/pkg/nsis/flatpak/nfpm/snap).
+        use crate::template::TemplateVars;
+        let target = "x86_64-unknown-linux-gnu";
+
+        let mut archive = ctx();
+        seed_target_vars(&mut archive, target);
+        let archive_val = archive.template_vars().get("Amd64").cloned().unwrap();
+
+        let mut build_vars = TemplateVars::new();
+        seed_variant_vars(&mut build_vars, target, None);
+        let build_val = build_vars.get("Amd64").cloned().unwrap();
+
+        let mut installer_vars = TemplateVars::new();
+        seed_amd64_variant_var(&mut installer_vars, "amd64", None);
+        let installer_val = installer_vars.get("Amd64").cloned().unwrap();
+
+        assert_eq!(archive_val, "v1");
+        assert_eq!(build_val, archive_val);
+        assert_eq!(installer_val, archive_val);
+    }
+
+    #[test]
+    fn untagged_x86_64_default_archive_name_stays_suffix_free() {
+        // The "v1" baseline must never surface in a default asset name — the
+        // `Amd64 != "v1"` guard suppresses it, so the historical name holds.
+        let mut c = ctx();
+        let stem =
+            render_archive_stem(&mut c, DEFAULT_NAME_TEMPLATE, "x86_64-unknown-linux-gnu").unwrap();
+        assert_eq!(stem, "anodizer_1.2.3_linux_amd64");
     }
 
     #[test]

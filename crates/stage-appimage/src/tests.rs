@@ -146,7 +146,11 @@ fn filename_default_appends_amd64_variant_suffix() {
     let mut ctx = ctx_v("1.2.3");
 
     // Baseline (v1) and None both render the unsuffixed historical name.
-    anodizer_core::archive_name::seed_amd64_variant_var(ctx.template_vars_mut(), Some("v1"));
+    anodizer_core::archive_name::seed_amd64_variant_var(
+        ctx.template_vars_mut(),
+        "amd64",
+        Some("v1"),
+    );
     assert_eq!(
         resolve_appimage_filename(&ctx, None, "myapp", "1.2.3", "x86_64")
             .unwrap()
@@ -155,13 +159,39 @@ fn filename_default_appends_amd64_variant_suffix() {
     );
 
     // A v3 build appends the variant before the extension.
-    anodizer_core::archive_name::seed_amd64_variant_var(ctx.template_vars_mut(), Some("v3"));
+    anodizer_core::archive_name::seed_amd64_variant_var(
+        ctx.template_vars_mut(),
+        "amd64",
+        Some("v3"),
+    );
     let (name, resolved_template) =
         resolve_appimage_filename(&ctx, None, "myapp", "1.2.3", "x86_64").unwrap();
     assert_eq!(name, "myapp-1.2.3-x86_64v3.AppImage");
     // The composed default carries the v3 suffix, so the guard cites the
     // suffixed template — not an empty string.
     assert_eq!(resolved_template, "myapp-1.2.3-x86_64v3.AppImage");
+}
+
+/// A user `filename:` carrying the standard `{{ Arch }}{% if Arm %}v{{ Arm }}`
+/// idiom must render the single composite `armv7` token — the seeded vars
+/// carry the whole arch in `Arch` with `Arm` empty, so the clause can never
+/// double to `armv7v7` (the same contract the makeself default pins).
+#[test]
+fn filename_user_template_armv7_renders_single_token() {
+    let mut ctx = ctx_v("1.2.3");
+    let target = "armv7-unknown-linux-gnueabihf";
+    let (os, arch) = anodizer_core::target::map_target(target);
+    set_per_target_template_vars(&mut ctx, Some(target), &os, &arch, None);
+
+    let (name, _) = resolve_appimage_filename(
+        &ctx,
+        Some("{{ ProjectName }}-{{ Version }}-{{ Arch }}{% if Arm %}v{{ Arm }}{% endif %}"),
+        "myapp",
+        "1.2.3",
+        "armhf",
+    )
+    .unwrap();
+    assert_eq!(name, "myapp-1.2.3-armv7.AppImage");
 }
 
 #[test]

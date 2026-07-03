@@ -5357,9 +5357,9 @@ fn nfpm_amd64_variant_test_ctx(
     use std::path::PathBuf;
     // The baseline amd64 binary carries NO `amd64_variant` metadata (an untagged
     // build), exactly as the build stage leaves a default `x86-64-v1` binary —
-    // `seed_amd64_variant_var(None)` renders no suffix, so its conventional name
-    // stays `myapp_1.0.0_amd64.deb`. Only the explicitly tuned `v2`/`v3` builds
-    // carry the metadata that pushes a `{{ .Amd64 }}` suffix into the filename.
+    // it renders the unified `v1` baseline in the unguarded `{{ .Amd64 }}`
+    // user template below (`myapp_1.0.0_amd64v1.deb`), the same value every
+    // other seeding policy gives the untagged binary.
     ctx.artifacts.add(Artifact {
         kind: ArtifactKind::Binary,
         name: String::new(),
@@ -5415,12 +5415,13 @@ fn test_nfpm_amd64_variant_unset_passes_all_amd64_variants() {
                 .map(str::to_string)
         })
         .collect();
-    // The untagged baseline renders the CONVENTIONAL amd64 name (no `v1`
-    // suffix) — `seed_amd64_variant_var(None)` suppresses the variant clause;
-    // only `v2`/`v3` carry the discriminator the template appends.
+    // The untagged baseline renders the unified `v1` baseline through the
+    // unguarded `{{ .Amd64 }}` user template (a guarded template or the
+    // conventional default stays suffix-free); `v2`/`v3` carry their own
+    // discriminator.
     assert!(
-        names.iter().any(|n| n == "myapp_1.0.0_amd64.deb"),
-        "baseline amd64 must use the conventional name, got {names:?}"
+        names.iter().any(|n| n == "myapp_1.0.0_amd64v1.deb"),
+        "baseline amd64 must render the unified v1 baseline, got {names:?}"
     );
     assert!(
         names.iter().any(|n| n == "myapp_1.0.0_amd64v2.deb"),
@@ -5783,7 +5784,11 @@ fn test_nfpm_offline_yaml_seeds_amd64_field_like_live_build() {
     // Live path: seed `Amd64` exactly as the stage loop does before rendering.
     let mut live_ctx = Context::new(Config::default(), ContextOptions::default());
     live_ctx.template_vars_mut().set("Version", "1.0.0");
-    anodizer_core::archive_name::seed_amd64_variant_var(live_ctx.template_vars_mut(), Some("v3"));
+    anodizer_core::archive_name::seed_amd64_variant_var(
+        live_ctx.template_vars_mut(),
+        "amd64",
+        Some("v3"),
+    );
     let live_yaml = render_and_generate_nfpm_yaml(
         &mut live_ctx,
         &nfpm_cfg,
@@ -7391,6 +7396,49 @@ mod amd64_variant {
     }
 
     #[test]
+    fn untagged_x86_64_conventional_default_name_unchanged() {
+        // The unified `v1` baseline must never surface in a DEFAULT filename:
+        // an untagged x86_64 binary with no `file_name_template` keeps the
+        // exact historical default name (no `v1` suffix anywhere).
+        let tmp = TempDir::new().unwrap();
+        let nfpm_cfg = NfpmConfig {
+            package_name: Some("myapp".to_string()),
+            formats: vec!["deb".to_string()],
+            maintainer: Some("Jane Doe <jane@example.com>".to_string()),
+            ..Default::default()
+        };
+        let crate_cfg = CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpms: Some(vec![nfpm_cfg]),
+            ..Default::default()
+        };
+        let mut config = Config::default();
+        config.project_name = "myapp".to_string();
+        config.dist = tmp.path().join("dist");
+        config.crates = vec![crate_cfg];
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.artifacts.add(amd64_bin(tmp.path(), "myapp", None));
+
+        NfpmStage.run(&mut ctx).unwrap();
+        let pkgs = ctx.artifacts.by_kind(ArtifactKind::LinuxPackage);
+        assert_eq!(pkgs.len(), 1);
+        assert_eq!(
+            pkgs[0].path.file_name().unwrap().to_string_lossy(),
+            "myapp_1.0.0_linux_amd64.deb",
+            "untagged baseline keeps the historical default name"
+        );
+    }
+
+    #[test]
     fn two_variants_with_amd64_template_produce_distinct_names() {
         // A `file_name_template` that references `{{ .Amd64 }}` discriminates the
         // two variants, so both packages register with distinct paths.
@@ -7407,8 +7455,8 @@ mod amd64_variant {
             .collect();
         assert_eq!(names.len(), 2, "distinct filenames: {names:?}");
         assert!(
-            names.contains("myapp_1.0.0_amd64.deb"),
-            "baseline keeps conventional arch: {names:?}"
+            names.contains("myapp_1.0.0_amd64v1.deb"),
+            "an unguarded user template renders the unified v1 baseline: {names:?}"
         );
         assert!(
             names.contains("myapp_1.0.0_amd64v3.deb"),
