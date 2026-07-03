@@ -383,9 +383,7 @@ where
     for crate_name in crates_with_publisher(ctx, selected, |p| selector(p).is_some()) {
         let cfg_opt = ctx
             .config
-            .crate_universe()
-            .into_iter()
-            .find(|c| c.name == crate_name)
+            .find_crate(&crate_name)
             .and_then(|c| c.publish.as_ref())
             .and_then(&selector);
         let Some(cfg) = cfg_opt else {

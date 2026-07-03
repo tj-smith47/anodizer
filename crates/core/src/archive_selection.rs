@@ -9,7 +9,7 @@
 //! from the stage's real work list (the "binstall 404" class).
 
 use crate::artifact::{ArtifactKind, ArtifactRegistry};
-use crate::config::{ArchivesConfig, Config, CrateConfig};
+use crate::config::{ArchiveConfig, ArchivesConfig, Config, CrateConfig};
 
 /// Artifact kinds eligible for archiving: binaries, universal binaries,
 /// C headers, C static archives, and C shared libraries.
@@ -54,6 +54,20 @@ pub fn archive_producing_crates<'a>(
             }
         })
         .collect()
+}
+
+/// The effective archive-config list for a crate: its configured list, or one
+/// default config when the list is empty. Lives beside
+/// [`archive_producing_crates`] so the stage's per-crate work shaping shares
+/// this module's `Disabled` policy instead of re-encoding it — `Disabled`
+/// yields no configs, which keeps a consumer's work list aligned with the
+/// selection even if the selection predicate ever changes.
+pub fn effective_archive_configs(krate: &CrateConfig) -> Vec<ArchiveConfig> {
+    match &krate.archives {
+        ArchivesConfig::Disabled => Vec::new(),
+        ArchivesConfig::Configs(cfgs) if cfgs.is_empty() => vec![ArchiveConfig::default()],
+        ArchivesConfig::Configs(cfgs) => cfgs.clone(),
+    }
 }
 
 #[cfg(test)]
@@ -115,6 +129,25 @@ mod tests {
         let producing = archive_producing_crates(&config, &artifacts, &[]);
         let names: Vec<&str> = producing.iter().map(|c| c.name.as_str()).collect();
         assert_eq!(names, vec!["bin"]);
+    }
+
+    #[test]
+    fn effective_archive_configs_shapes_per_policy() {
+        use crate::config::ArchiveConfig;
+        // Empty list → one default config; explicit list → as-is; Disabled →
+        // nothing (the selection already excluded it, but the policy must
+        // hold here too so the two can never diverge).
+        let empty = crate_with_build("a");
+        assert_eq!(effective_archive_configs(&empty).len(), 1);
+
+        let mut explicit = crate_with_build("b");
+        explicit.archives =
+            ArchivesConfig::Configs(vec![ArchiveConfig::default(), ArchiveConfig::default()]);
+        assert_eq!(effective_archive_configs(&explicit).len(), 2);
+
+        let mut disabled = crate_with_build("c");
+        disabled.archives = ArchivesConfig::Disabled;
+        assert!(effective_archive_configs(&disabled).is_empty());
     }
 
     #[test]

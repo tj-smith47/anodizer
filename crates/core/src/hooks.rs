@@ -482,9 +482,10 @@ impl crate::stage::Stage for AfterCrateStage {
 ///
 /// Crate selection mirrors [`run_per_crate_before_publish_with_resolver`]:
 /// a non-empty `ctx.options.selected_crates` (explicit `--crate` subset)
-/// restricts the set; an empty selection iterates every configured crate. A
-/// crate with no matching hook block contributes nothing. Single-crate /
-/// lockstep configs with no per-crate block are a no-op.
+/// restricts the set; an empty selection iterates the whole crate universe
+/// (top-level `crates:` plus every `workspaces[].crates` entry). A crate
+/// with no matching hook block contributes nothing. Single-crate / lockstep
+/// configs with no per-crate block are a no-op.
 fn run_per_crate_lifecycle(
     ctx: &mut crate::context::Context,
     kind: CrateLifecycleKind,
@@ -517,8 +518,8 @@ fn run_per_crate_lifecycle_with_resolver(
     let selected = &ctx.options.selected_crates;
     let pending: Vec<(crate::config::CrateConfig, Vec<HookEntry>)> = ctx
         .config
-        .crates
-        .iter()
+        .crate_universe()
+        .into_iter()
         .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
         .filter_map(|c| {
             kind.block(c)
@@ -547,8 +548,9 @@ fn run_per_crate_lifecycle_with_resolver(
 ///
 /// Crate selection: when `ctx.options.selected_crates` is non-empty (an
 /// explicit `--crate` subset, or the publish-only per-crate loop's single
-/// entry) only those crates are considered; otherwise every configured crate
-/// is. A crate with no per-crate `before_publish` block contributes nothing.
+/// entry) only those crates are considered; otherwise the whole crate
+/// universe is (top-level `crates:` plus every `workspaces[].crates` entry).
+/// A crate with no per-crate `before_publish` block contributes nothing.
 ///
 /// Takes an injectable tag resolver so tests can exercise the per-crate
 /// scoping without a git fixture (production passes
@@ -566,8 +568,8 @@ fn run_per_crate_before_publish_with_resolver(
     let selected = &ctx.options.selected_crates;
     let pending: Vec<(crate::config::CrateConfig, Vec<HookEntry>)> = ctx
         .config
-        .crates
-        .iter()
+        .crate_universe()
+        .into_iter()
         .filter(|c| selected.is_empty() || selected.iter().any(|s| s == &c.name))
         .filter_map(|c| {
             c.before_publish
@@ -1684,6 +1686,81 @@ mod tests {
         assert!(
             contents.contains("before:bar:9.9.9"),
             "bar's before must render under bar's version; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// A WORKSPACE-only crate's `crates[].before` fires on the plain-release
+    /// path (empty selection): the walk is the crate universe, not the
+    /// top-level `crates:` list, so a pure-`workspaces:` config gets the same
+    /// hook surface `--publish-only`'s per-crate loop already honors.
+    #[test]
+    fn per_crate_lifecycle_fires_for_workspace_only_crates() {
+        let dir = std::env::temp_dir().join(format!("anodizer-pcb-ws-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("ws-before.txt");
+        let _ = std::fs::remove_file(&out);
+        let out_s = out.display().to_string().replace('\\', "/");
+
+        let config = Config {
+            crates: vec![],
+            workspaces: Some(vec![crate::config::WorkspaceConfig {
+                name: "grp".to_string(),
+                crates: vec![crate_with_lifecycle("foo", &out_s, true)],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        let log = ctx.logger("before");
+        run_per_crate_lifecycle_with_resolver(
+            &mut ctx,
+            CrateLifecycleKind::Before,
+            false,
+            &log,
+            &fixed_tag,
+        )
+        .expect("workspace crate's per-crate before must run");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            contents.contains("before:foo:1.2.3"),
+            "workspace-only crate's before hook must fire on the plain-release path; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// A WORKSPACE-only crate's `crates[].before_publish` fires on the
+    /// plain-release path (empty selection) — same universe conversion as the
+    /// lifecycle hooks, on the publish-head surface.
+    #[test]
+    fn per_crate_before_publish_fires_for_workspace_only_crates() {
+        let dir = std::env::temp_dir().join(format!("anodizer-pcbp-ws-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("ws-before-publish.txt");
+        let _ = std::fs::remove_file(&out);
+        let out_s = out.display().to_string().replace('\\', "/");
+
+        let config = Config {
+            crates: vec![],
+            workspaces: Some(vec![crate::config::WorkspaceConfig {
+                name: "grp".to_string(),
+                crates: vec![crate_with_before_publish("foo", &out_s)],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.artifacts.add(pkg_artifact("foo", "foo_1.2.3.deb"));
+
+        let log = ctx.logger("before-publish");
+        run_per_crate_before_publish_with_resolver(&mut ctx, false, &log, &fixed_tag)
+            .expect("workspace crate's before_publish must run");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            contents.contains("foo:1.2.3:foo_1.2.3.deb"),
+            "workspace-only crate's before_publish hook must fire on the plain-release path; got: {contents:?}"
         );
         let _ = std::fs::remove_file(&out);
     }

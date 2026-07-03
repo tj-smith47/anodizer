@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anodizer_core::artifact::{Artifact, ArtifactKind, matches_id_filter};
-use anodizer_core::config::{ArchiveConfig, ArchiveFileSpec, ArchivesConfig, FormatOverride};
+use anodizer_core::config::{ArchiveConfig, ArchiveFileSpec, FormatOverride};
 use anodizer_core::context::Context;
 use anodizer_core::hooks::{HookRunContext, run_hooks};
 use anodizer_core::stage::Stage;
@@ -227,25 +227,22 @@ fn collect_archivable_crates(
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."));
 
-    // Selection is delegated to the shared SSOT so the name-deriving
-    // consumers (binstall `pkg_url`, remote installer) count the exact same
-    // work list this stage processes.
+    // Selection AND per-crate config shaping are delegated to the shared
+    // SSOT so the name-deriving consumers (binstall `pkg_url`, remote
+    // installer) count the exact same work list this stage processes, and so
+    // this stage never re-encodes the SSOT's `Disabled` exclusion.
     Ok(anodizer_core::archive_selection::archive_producing_crates(
         &ctx.config,
         &ctx.artifacts,
         selected,
     )
     .into_iter()
-    .filter_map(|c| {
-        let ArchivesConfig::Configs(cfgs) = &c.archives else {
-            return None;
-        };
-        let archive_cfgs = if cfgs.is_empty() {
-            vec![ArchiveConfig::default()]
-        } else {
-            cfgs.clone()
-        };
-        Some((c.name.clone(), project_root.join(&c.path), archive_cfgs))
+    .map(|c| {
+        (
+            c.name.clone(),
+            project_root.join(&c.path),
+            anodizer_core::archive_selection::effective_archive_configs(c),
+        )
     })
     .collect())
 }

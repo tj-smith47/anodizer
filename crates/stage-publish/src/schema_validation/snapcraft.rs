@@ -40,9 +40,7 @@ pub(crate) struct SnapcraftSchemaValidator;
 /// where an empty list yields no snaps).
 fn is_snapcraft_per_crate_configured(ctx: &Context, crate_name: &str) -> bool {
     ctx.config
-        .crate_universe()
-        .into_iter()
-        .find(|c| c.name == crate_name)
+        .find_crate(crate_name)
         .and_then(|c| c.snapcrafts.as_ref())
         .is_some_and(|cfgs| !cfgs.is_empty())
 }

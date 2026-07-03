@@ -1371,16 +1371,20 @@ impl Context {
     /// Populate the `ReleaseNotes` template variable from stored changelogs.
     ///
     /// Should be called after the changelog stage has run and populated
-    /// `self.stage_outputs.changelogs`. Uses the first crate (by config
-    /// order) whose changelog is present, or an empty string if no
-    /// changelogs exist. Config order is deterministic, unlike HashMap
+    /// `self.stage_outputs.changelogs`. Uses the first crate (by crate
+    /// universe order — top-level `crates:` then every `workspaces[].crates`
+    /// entry) whose changelog is present, or an empty string if no
+    /// changelogs exist. Universe order is deterministic, unlike HashMap
     /// iteration order.
     pub fn populate_release_notes_var(&mut self) {
-        // Look up changelogs in config-defined crate order for determinism.
+        // Look up changelogs in universe order for determinism. The universe
+        // walk (not `config.crates`) is what lets a pure-`workspaces:` config
+        // resolve a non-empty `ReleaseNotes` — its crates carry the
+        // changelogs but never appear in the top-level list.
         let notes = self
             .config
-            .crates
-            .iter()
+            .crate_universe()
+            .into_iter()
             .find_map(|c| self.stage_outputs.changelogs.get(&c.name))
             .cloned()
             .unwrap_or_default();
@@ -2481,6 +2485,35 @@ mod tests {
         assert_eq!(
             ctx.template_vars().get("ReleaseNotes"),
             Some(&"notes-a".to_string())
+        );
+    }
+
+    #[test]
+    fn test_populate_release_notes_var_sees_workspace_only_crates() {
+        // Pure-`workspaces:` config: the crates carrying the changelogs never
+        // appear in the top-level `crates:` list, so the lookup must walk the
+        // crate universe or `ReleaseNotes` renders empty.
+        let config = Config {
+            workspaces: Some(vec![crate::config::WorkspaceConfig {
+                name: "grp".to_string(),
+                crates: vec![crate::config::CrateConfig {
+                    name: "member".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config, ContextOptions::default());
+        ctx.stage_outputs
+            .changelogs
+            .insert("member".to_string(), "## member notes".to_string());
+        ctx.populate_release_notes_var();
+
+        assert_eq!(
+            ctx.template_vars().get("ReleaseNotes"),
+            Some(&"## member notes".to_string()),
+            "a workspace-only crate's changelog must populate ReleaseNotes"
         );
     }
 
