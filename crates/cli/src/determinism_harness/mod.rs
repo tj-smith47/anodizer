@@ -3097,7 +3097,7 @@ mod tests {
         use anodizer_core::determinism_runner::SIDE_EFFECT_STAGES;
         let stages = vec![StageId::Build];
         let extra = compute_extra_skip(&stages);
-        for &name in SIDE_EFFECT_STAGES {
+        for &name in SIDE_EFFECT_STAGES.iter() {
             assert!(
                 !extra.iter().any(|s| s == name),
                 "compute_extra_skip double-listed side-effect stage `{name}`: {extra:?}"

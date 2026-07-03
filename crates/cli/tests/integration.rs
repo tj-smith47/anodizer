@@ -1033,7 +1033,9 @@ fn test_e2e_archive_records_bundled_license_readme_in_metadata() {
 }
 
 /// E2E: `anodizer release --prepare` produces the same skip-stage behaviour
-/// as an explicit `--skip=release,publish,announce`.
+/// as an explicit `--skip=<UPSTREAM_STAGES>` — the shared upstream-touching
+/// classification, not a hand list, so this test cannot drift from what
+/// `--prepare` actually derives its skip set from.
 ///
 /// Locks in the `--prepare` contract end-to-end. The unit
 /// tests for `apply_prepare_mode_to_skip()` cover the helper's input/output;
@@ -1113,7 +1115,7 @@ fn test_release_prepare_matches_explicit_skip() {
     }
 
     // Run 1: --prepare (relies on apply_prepare_mode_to_skip injecting
-    // release,publish,announce into the skip list).
+    // every UPSTREAM_STAGES entry into the skip list).
     let tmp_prepare = TempDir::new().unwrap();
     setup_fixture(tmp_prepare.path(), &host);
     let out_prepare = run_release(tmp_prepare.path(), &["--prepare"]);
@@ -1125,10 +1127,15 @@ fn test_release_prepare_matches_explicit_skip() {
     let stderr_prepare = String::from_utf8_lossy(&out_prepare.stderr).into_owned();
     let skipped_prepare = extract_skipped_stages(&stderr_prepare);
 
-    // Run 2: explicit --skip=release,publish,announce (additive).
+    // Run 2: explicit --skip=<UPSTREAM_STAGES> (additive) — the same
+    // classification --prepare derives from.
+    let explicit_skip = format!(
+        "--skip={}",
+        anodizer_core::stages::UPSTREAM_STAGES.join(",")
+    );
     let tmp_explicit = TempDir::new().unwrap();
     setup_fixture(tmp_explicit.path(), &host);
-    let out_explicit = run_release(tmp_explicit.path(), &["--skip=release,publish,announce"]);
+    let out_explicit = run_release(tmp_explicit.path(), &[explicit_skip.as_str()]);
     assert!(
         out_explicit.status.success(),
         "release --skip=release,publish,announce should succeed.\nstderr:\n{}",
@@ -1156,13 +1163,13 @@ fn test_release_prepare_matches_explicit_skip() {
     }
 
     // Contract: the two invocations must produce the same set of skipped
-    // stages. If --prepare ever drifts from --skip=release,publish,announce
-    // — by adding extra stages, missing one, or reordering the helper —
-    // this assertion catches it.
+    // stages. If --prepare ever drifts from the shared upstream-touching
+    // classification — by adding extra stages, missing one, or reordering
+    // the helper — this assertion catches it.
     assert_eq!(
         skipped_prepare, skipped_explicit,
         "release --prepare must yield the same skip-stage set as \
-         --skip=release,publish,announce\n\
+         --skip=<UPSTREAM_STAGES>\n\
          --prepare skipped: {:?}\n--skip skipped: {:?}",
         skipped_prepare, skipped_explicit
     );

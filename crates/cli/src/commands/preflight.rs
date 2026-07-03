@@ -35,9 +35,11 @@ use anyhow::Result;
 pub enum PreflightScope {
     /// Full `anodizer release` pipeline: every configured stage.
     Full,
-    /// `anodizer release --publish-only`: sign/checksum/release/docker/
-    /// blob/publish/snapcraft-publish/announce/verify-release only
-    /// (mirrors `build_publish_only_pipeline`).
+    /// `anodizer release --publish-only`: exactly the stage set of
+    /// `build_publish_only_pipeline`. Membership is DERIVED from that
+    /// builder (see [`PreflightScope::included_stage_set`]) so a stage
+    /// added to the publish-only pipeline is preflighted here
+    /// automatically instead of passing green and aborting at runtime.
     PublishOnly,
     /// `anodizer release --announce-only`: re-fires announcers against a
     /// prior run's report — announce is the only stage that runs, so only
@@ -59,27 +61,26 @@ pub enum PreflightScope {
 }
 
 impl PreflightScope {
-    /// Whether `stage` participates in a pipeline of this scope.
-    fn includes(self, stage: &str) -> bool {
-        match self {
-            // `SecretsOnly` walks the full stage surface (the credential
-            // retention happens in the post-collection `retains` filter);
-            // only the env/key-env requirements survive that filter.
-            PreflightScope::Full | PreflightScope::SecretsOnly => true,
-            PreflightScope::PublishOnly => matches!(
-                stage,
-                "sign"
-                    | "docker"
-                    | "docker-sign"
-                    | "release"
-                    | "publish"
-                    | "blob"
-                    | "snapcraft-publish"
-                    | "announce"
-                    | "verify-release"
-            ),
-            PreflightScope::AnnounceOnly => stage == "announce",
-        }
+    /// The stage-name membership for scopes that guard a REDUCED pipeline,
+    /// derived from the very builder that assembles the pipeline the scope
+    /// guards — never a hand-maintained mirror list (the mirror drifted:
+    /// stages added to the publish-only pipeline were absent from it).
+    /// `None` means every stage participates (`Full` / `SecretsOnly`, whose
+    /// narrowing happens in the post-collection [`PreflightScope::retains`]
+    /// filter instead).
+    fn included_stage_set(self) -> Option<std::collections::BTreeSet<String>> {
+        let pipeline = match self {
+            PreflightScope::Full | PreflightScope::SecretsOnly => return None,
+            PreflightScope::PublishOnly => crate::pipeline::build_publish_only_pipeline(),
+            PreflightScope::AnnounceOnly => crate::pipeline::build_announce_pipeline(),
+        };
+        Some(
+            pipeline
+                .stage_names()
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        )
     }
 
     /// Whether `req` survives this scope's post-collection filter.
@@ -111,7 +112,12 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
     let mut add = |source: &str, reqs: Vec<anodizer_core::EnvRequirement>| {
         out.extend(reqs.into_iter().map(|r| SourcedRequirement::new(source, r)));
     };
-    let runs = |stage: &str| -> bool { scope.includes(stage) && !ctx.should_skip(stage) };
+    // Computed once per collection pass: the reduced-scope stage membership
+    // derives from the pipeline builders (see `included_stage_set`).
+    let included = scope.included_stage_set();
+    let in_scope =
+        |stage: &str| -> bool { included.as_ref().is_none_or(|set| set.contains(stage)) };
+    let runs = |stage: &str| -> bool { in_scope(stage) && !ctx.should_skip(stage) };
     // Stages that self-skip at runtime when a `--publishers` allowlist (or
     // `--skip`) deselects them (docker/docker-sign/blob/snapcraft-publish/
     // announce) must gate their preflight requirements on the SAME predicate
@@ -119,7 +125,7 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
     // blocked by cosign/minio/snapcraft tooling those stages will never reach.
     // Mirrors the publish-loop's `publisher_deselected` lockstep below.
     let runs_selected =
-        |stage: &str| -> bool { scope.includes(stage) && !ctx.publisher_deselected(stage) };
+        |stage: &str| -> bool { in_scope(stage) && !ctx.publisher_deselected(stage) };
     // The build stage's preflight is split across two sites — the HARD `cargo`
     // probe here and the ADVISORY cross-toolchain append after the `add`
     // closure's last use (a borrow-checker constraint). Decide once so the two
@@ -1652,5 +1658,93 @@ builds:
                 .any(|(lvl, m)| *lvl == LogLevel::Error && m.contains("failed to load")),
             "a bad key must emit an Error: {msgs:?}"
         );
+    }
+
+    /// Reduced-scope membership is IN LOCKSTEP with the pipeline builders:
+    /// the publish-only scope admits exactly the stages
+    /// `build_publish_only_pipeline` assembles (so a stage added to that
+    /// pipeline is preflighted automatically) and never the from-scratch
+    /// artifact producers; announce-only mirrors `build_announce_pipeline`.
+    #[test]
+    fn reduced_scope_membership_matches_pipeline_builders() {
+        let to_set = |p: crate::pipeline::Pipeline| -> std::collections::BTreeSet<String> {
+            p.stage_names().iter().map(|s| s.to_string()).collect()
+        };
+
+        let publish_only = PreflightScope::PublishOnly
+            .included_stage_set()
+            .expect("publish-only is a reduced scope");
+        assert_eq!(
+            publish_only,
+            to_set(crate::pipeline::build_publish_only_pipeline()),
+            "publish-only scope drifted from build_publish_only_pipeline"
+        );
+        for producer in [
+            "build", "nfpm", "srpm", "sbom", "makeself", "upx", "appimage",
+        ] {
+            assert!(
+                !publish_only.contains(producer),
+                "publish-only scope must not preflight the from-scratch producer '{producer}'"
+            );
+        }
+
+        let announce_only = PreflightScope::AnnounceOnly
+            .included_stage_set()
+            .expect("announce-only is a reduced scope");
+        assert_eq!(
+            announce_only,
+            to_set(crate::pipeline::build_announce_pipeline()),
+            "announce-only scope drifted from build_announce_pipeline"
+        );
+
+        assert!(
+            PreflightScope::Full.included_stage_set().is_none(),
+            "full scope must admit every stage"
+        );
+        assert!(
+            PreflightScope::SecretsOnly.included_stage_set().is_none(),
+            "secrets-only narrows by requirement kind, not stage membership"
+        );
+    }
+
+    /// Every stage name `collect_requirements` gates on must be a real stage
+    /// registered in the full release pipeline — a typo'd or renamed stage
+    /// name would silently drop that stage's requirements from every scope.
+    #[test]
+    fn requirement_gated_stage_names_exist_in_release_pipeline() {
+        const GATED_STAGES: &[&str] = &[
+            "build",
+            "nfpm",
+            "srpm",
+            "snapcraft",
+            "snapcraft-publish",
+            "sign",
+            "docker-sign",
+            "sbom",
+            "makeself",
+            "upx",
+            "appimage",
+            "docker",
+            "blob",
+            "verify-release",
+            "msi",
+            "nsis",
+            "pkg",
+            "dmg",
+            "appbundle",
+            "flatpak",
+            "notarize",
+            "announce",
+            "release",
+            "publish",
+        ];
+        let release = crate::pipeline::build_release_pipeline();
+        let names = release.stage_names();
+        for stage in GATED_STAGES {
+            assert!(
+                names.contains(stage),
+                "collect_requirements gates on '{stage}' but the release pipeline has no such stage: {names:?}"
+            );
+        }
     }
 }

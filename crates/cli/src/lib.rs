@@ -276,7 +276,7 @@ pub enum Commands {
             long,
             alias = "prepare-only",
             conflicts_with_all = ["publish_only", "announce_only", "rollback_only"],
-            help = "Run local build + archive + sign + checksum + sbom stages but skip release / publish / announce (GoReleaser Pro parity). Artifacts stay in dist/ for inspection. `--prepare-only` is accepted as an alias for GR-imported scripts."
+            help = "Run local build + archive + sign + checksum + sbom stages but skip every upstream-reaching stage: release, docker build/push + signature push, blob, publish, snapcraft upload, announce, post-publish verification (GoReleaser Pro parity). Artifacts stay in dist/ for inspection. `--prepare-only` is accepted as an alias for GR-imported scripts."
         )]
         prepare: bool,
         #[arg(

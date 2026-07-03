@@ -66,11 +66,11 @@ impl Pipeline {
         self.expects_binaries = true;
     }
 
-    /// Returns the registered stage names in pipeline order. Used by the
-    /// pipeline-construction tests to assert stage ordering invariants
-    /// (e.g. blob runs before publish so the submitter gate sees a
-    /// required-blob failure via `ctx.publish_report`).
-    #[cfg(test)]
+    /// Returns the registered stage names in pipeline order. Preflight
+    /// derives its reduced-scope stage membership from this (so scope and
+    /// pipeline cannot drift), and the pipeline-construction tests use it to
+    /// assert stage ordering invariants (e.g. blob runs before publish so the
+    /// submitter gate sees a required-blob failure via `ctx.publish_report`).
     pub fn stage_names(&self) -> Vec<&str> {
         self.stages.iter().map(|s| s.name()).collect()
     }

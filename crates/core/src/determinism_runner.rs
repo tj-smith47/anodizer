@@ -20,42 +20,26 @@ use std::time::Duration;
 /// Stage names the determinism harness must NOT run.
 ///
 /// Single source of truth for the `--skip=...` list passed to the child
-/// `anodize release --snapshot` invocation. Every entry here is a stage
-/// in `crates/cli/src/pipeline/builders.rs::build_release_pipeline` that either:
-///
-/// - touches upstream (uploads, API calls, push, announce), OR
-/// - mutates host state outside `<worktree>/dist` (docker daemon, kms),
-///
-/// i.e. a "side-effect" stage that has no place in a hermetic regression
-/// rebuild. Adding a future side-effect stage to the release pipeline
-/// MUST add its stage name here too — otherwise the harness will fire it
-/// from inside the supposedly-hermetic build.
-///
-/// Order mirrors the position in `build_release_pipeline` so reviewers
-/// scanning both files can pattern-match. Listed exhaustively (no
-/// `starts_with` / glob matching) so a new stage with a similar name
-/// (e.g. `docker-extra`) doesn't accidentally inherit the skip.
-pub const SIDE_EFFECT_STAGES: &[&str] = &[
-    // Build phase — network + credential side effect. notarization is an
-    // Apple-server round-trip (`notarytool` submit + an Apple-issued ticket
-    // stapled to the artifact): the ticket is server-generated so the output
-    // can never be byte-reproduced in a hermetic rebuild, and the submit is
-    // credential-gated (App Store Connect API key). Listed here (matching its
-    // build-phase position in `build_release_pipeline`, before the publish
-    // group) so the harness never fires it from inside the sealed build.
-    "notarize",
-    // Publish phase — upstream side effects.
-    "release",
-    "docker",
-    "docker-sign",
-    "publish",
-    "blob",
-    "snapcraft-publish",
-    "announce",
-    // Post-publish verification — issues live GitHub API calls and (when
-    // configured) docker spawns; never run inside a hermetic regression rebuild.
-    "verify-release",
-];
+/// `anodize release --snapshot` invocation: every stage in
+/// [`crate::stages::UPSTREAM_STAGES`] (uploads, API calls, push, announce)
+/// plus the harness-only extras below — stages that don't reach upstream
+/// but still have no place in a hermetic byte-reproducibility rebuild.
+/// Deriving from the shared classification means a future upstream stage
+/// added there is skipped here automatically, instead of the two lists
+/// drifting apart by hand.
+pub static SIDE_EFFECT_STAGES: std::sync::LazyLock<Vec<&'static str>> =
+    std::sync::LazyLock::new(|| {
+        // Harness-only extras: notarization is an Apple-server round-trip
+        // (`notarytool` submit + an Apple-issued ticket stapled to the
+        // artifact) — the ticket is server-generated so the output can never
+        // be byte-reproduced in a hermetic rebuild, and the submit is
+        // credential-gated (App Store Connect API key). `--prepare`
+        // legitimately produces notarized artifacts, so it lives here rather
+        // than in the shared upstream classification.
+        let mut stages = vec!["notarize"];
+        stages.extend_from_slice(crate::stages::UPSTREAM_STAGES);
+        stages
+    });
 
 /// Comma-join [`SIDE_EFFECT_STAGES`] plus an `extra` list for use as
 /// the `--skip=<list>` CLI argument value. Order-preserving and
@@ -74,7 +58,7 @@ pub const SIDE_EFFECT_STAGES: &[&str] = &[
 /// nsis / dmg / etc. on shards that have no business running them.
 pub fn compute_skip_arg(extra: &[&str]) -> String {
     let mut merged: Vec<&str> = Vec::with_capacity(SIDE_EFFECT_STAGES.len() + extra.len());
-    for &name in SIDE_EFFECT_STAGES {
+    for &name in SIDE_EFFECT_STAGES.iter() {
         if !merged.contains(&name) {
             merged.push(name);
         }
@@ -938,6 +922,26 @@ mod tests {
         }
     }
 
+    /// The harness's skip set must be a SUPERSET of the upstream-touching
+    /// classification `release --prepare` skips: everything that reaches
+    /// upstream is also a hermetic-rebuild side effect (the harness merely
+    /// adds host-state extras like notarize on top). Holds by construction
+    /// since the derivation, but pins the relation against a future rewrite
+    /// of either set.
+    #[test]
+    fn side_effect_stages_superset_of_upstream_stages() {
+        for &name in crate::stages::UPSTREAM_STAGES {
+            assert!(
+                SIDE_EFFECT_STAGES.contains(&name),
+                "SIDE_EFFECT_STAGES must contain every UPSTREAM_STAGES entry; missing `{name}`"
+            );
+        }
+        assert!(
+            SIDE_EFFECT_STAGES.contains(&"notarize"),
+            "notarize is a harness-only extra and must stay in the skip set"
+        );
+    }
+
     #[test]
     fn compute_skip_arg_starts_with_skip_flag() {
         // I8 fix shape: harness still uses --skip=<list> (the conservative
@@ -977,7 +981,7 @@ mod tests {
         let extra_refs: Vec<&str> = extra.iter().map(String::as_str).collect();
         let arg = compute_skip_arg(&extra_refs);
         let list: Vec<&str> = arg.trim_start_matches("--skip=").split(',').collect();
-        for &name in SIDE_EFFECT_STAGES {
+        for &name in SIDE_EFFECT_STAGES.iter() {
             assert!(
                 list.contains(&name),
                 "merged skip list missing side-effect stage `{name}`: {list:?}"
@@ -1027,7 +1031,7 @@ mod tests {
     #[test]
     fn side_effect_stages_are_all_valid_release_skip_values() {
         use crate::context::VALID_RELEASE_SKIPS;
-        for &name in SIDE_EFFECT_STAGES {
+        for &name in SIDE_EFFECT_STAGES.iter() {
             assert!(
                 VALID_RELEASE_SKIPS.contains(&name),
                 "SIDE_EFFECT_STAGES contains `{name}` but VALID_RELEASE_SKIPS does not — \

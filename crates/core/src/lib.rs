@@ -53,6 +53,7 @@ pub mod scm;
 pub mod sde;
 pub mod signing;
 pub mod stage;
+pub mod stages;
 pub mod target;
 pub mod template;
 pub mod template_file_render;

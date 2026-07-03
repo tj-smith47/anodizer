@@ -215,8 +215,12 @@ pub(crate) fn should_run_preflight_auto(
     !no_preflight && !snapshot && !dry_run && !split && !publish_only && !publish_skipped
 }
 
-/// `--prepare`: runs local build/archive/sign/checksum/sbom stages
-/// but skips anything that reaches upstream (release + publish + announce).
+/// `--prepare`: runs local build/archive/sign/checksum/sbom stages but skips
+/// everything that reaches upstream — the shared
+/// [`anodizer_core::stages::UPSTREAM_STAGES`] classification (release,
+/// docker build/push + signature push, blob, publish, snapcraft upload,
+/// announce, post-publish verification), so the publish-nothing contract
+/// cannot drift from the set the determinism harness also derives from.
 /// Idempotent — won't duplicate stages already present in `skip`.
 ///
 /// Composition with `--snapshot`: well-defined — `--prepare --snapshot` emits
@@ -225,13 +229,7 @@ pub(crate) fn should_run_preflight_auto(
 /// Useful for generating pre-release archives in PR CI without needing a real
 /// tag or release. `--prepare` without `--snapshot` requires a real tag.
 pub(crate) fn apply_prepare_mode_to_skip(skip: &mut Vec<String>) {
-    for stage in [
-        "release",
-        "publish",
-        "blob",
-        "snapcraft-publish",
-        "announce",
-    ] {
+    for &stage in anodizer_core::stages::UPSTREAM_STAGES {
         if !skip.iter().any(|s| s == stage) {
             skip.push(stage.to_string());
         }
@@ -2631,32 +2629,34 @@ mod tests {
         apply_prepare_mode_to_skip(&mut skip);
         assert_eq!(
             skip,
-            vec![
-                "release".to_string(),
-                "publish".to_string(),
-                "blob".to_string(),
-                "snapcraft-publish".to_string(),
-                "announce".to_string(),
-            ],
-            "--prepare on empty skip should add all network-touching upstream stages"
+            anodizer_core::stages::UPSTREAM_STAGES
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>(),
+            "--prepare on empty skip should add the full upstream-touching classification"
         );
+        // Pin the members that historically leaked upstream from --prepare
+        // (docker pushed images, docker-sign pushed signatures, and
+        // verify-release fired live API calls against a release --prepare
+        // never created) so the shared classification can't silently lose
+        // them.
+        for stage in ["docker", "docker-sign", "verify-release"] {
+            assert!(
+                skip.contains(&stage.to_string()),
+                "--prepare must skip {stage}"
+            );
+        }
     }
 
     #[test]
     fn test_apply_prepare_mode_to_skip_preserves_user_skip() {
-        let mut skip = vec!["docker".to_string(), "sign".to_string()];
+        let mut skip = vec!["nfpm".to_string(), "sign".to_string()];
         apply_prepare_mode_to_skip(&mut skip);
         assert!(
-            skip.contains(&"docker".to_string()) && skip.contains(&"sign".to_string()),
+            skip.contains(&"nfpm".to_string()) && skip.contains(&"sign".to_string()),
             "existing user skips must be preserved"
         );
-        for stage in [
-            "release",
-            "publish",
-            "blob",
-            "snapcraft-publish",
-            "announce",
-        ] {
+        for &stage in anodizer_core::stages::UPSTREAM_STAGES {
             assert!(
                 skip.contains(&stage.to_string()),
                 "--prepare must add {stage} alongside user skips"
@@ -2672,13 +2672,7 @@ mod tests {
         // snapshot semantics remain owned by the snapshot flag.
         let mut skip = vec!["sign".to_string()];
         apply_prepare_mode_to_skip(&mut skip);
-        for stage in [
-            "release",
-            "publish",
-            "blob",
-            "snapcraft-publish",
-            "announce",
-        ] {
+        for &stage in anodizer_core::stages::UPSTREAM_STAGES {
             assert!(
                 skip.iter().any(|s| s == stage),
                 "--prepare must add {stage} regardless of snapshot composition"

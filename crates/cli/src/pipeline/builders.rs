@@ -69,13 +69,23 @@ fn push_publish_tail(p: &mut Pipeline) {
     p.add(Box::new(VerifyReleaseStage));
 }
 
-/// Build the full release pipeline with all stages in order
-pub fn build_release_pipeline() -> Pipeline {
+/// Push the artifact-producing run shared verbatim by the two from-scratch
+/// builders (full release, merge): platform installers → changelog →
+/// packaging → integrity (checksum → attest → sign) → snapshot emission
+/// validation.
+///
+/// Centralizing it keeps the from-scratch stage order — installers before
+/// Notarize, Checksum before Attest so subject digests reuse the computed
+/// sha256, Attest before Sign so the emit-mode in-toto statement gets signed,
+/// EmissionValidate after Checksum so archive cross-checks see every asset —
+/// in ONE place, so the release and merge pipelines cannot drift.
+/// Publish-only does NOT reuse this run: it consumes a preserved dist and has
+/// its own divergent integrity prefix (see [`build_publish_only_pipeline`]).
+fn push_artifact_stages(p: &mut Pipeline) {
     use anodizer_stage_appbundle::AppBundleStage;
     use anodizer_stage_appimage::AppImageStage;
     use anodizer_stage_archive::ArchiveStage;
     use anodizer_stage_attest::AttestStage;
-    use anodizer_stage_build::BuildStage;
     use anodizer_stage_changelog::ChangelogStage;
     use anodizer_stage_checksum::ChecksumStage;
     use anodizer_stage_dmg::DmgStage;
@@ -93,29 +103,7 @@ pub fn build_release_pipeline() -> Pipeline {
     use anodizer_stage_source::SourceStage;
     use anodizer_stage_srpm::SrpmStage;
     use anodizer_stage_templatefiles::TemplateFilesStage;
-    use anodizer_stage_upx::UpxStage;
 
-    // Canonical stage order.
-    // Anodizer-specific stages (appbundle, dmg, msi, pkg, nsis, templatefiles,
-    // release, snapcraft-publish, blob) are interleaved at logical positions.
-    let mut p = Pipeline::new();
-    p.expect_binaries();
-
-    // ── Per-crate lifecycle: before ────────────────────────────────────────
-    // BeforeCrateStage runs each selected crate's `crates[].before` hooks at
-    // the pipeline HEAD, after version/tag anchoring (done in the dispatcher
-    // before `p.run`) and before the build. A full release runs as ONE
-    // pipeline pass with no Rust-level per-crate loop, so without this stage
-    // `crates[].before` would silently no-op on a workspace-per-crate /
-    // lockstep-multi-crate config — even though `before_publish` and the
-    // publishers DO iterate per crate. Publish-only fires before/after via its
-    // own per-crate loop (`run_per_crate_lifecycle_hooks`) and deliberately
-    // does NOT get these stages, so neither path double-fires.
-    p.add(Box::new(anodizer_core::hooks::BeforeCrateStage));
-
-    // ── Build ────────────────────────────────────────────────────────────
-    p.add(Box::new(BuildStage));
-    p.add(Box::new(UpxStage));
     // AppBundle → DMG → PKG must run before Notarize (macOS signing).
     // MSI and NSIS are Windows equivalents at the same pipeline phase.
     p.add(Box::new(AppBundleStage));
@@ -149,14 +137,46 @@ pub fn build_release_pipeline() -> Pipeline {
     p.add(Box::new(AttestStage));
     p.add(Box::new(SignStage));
 
-    // ── Publish ──────────────────────────────────────────────────────────
     // EmissionValidateStage is a no-op in a real release; in snapshot/dry-run
     // it validates the binstall/nix/version-sync emissions (which the real
     // stages mutate/push but snapshot skips) against the produced asset set.
     // Runs after ChecksumStage so the archive cross-checks see every asset.
-    // Not part of the shared tail: only the from-scratch builders re-validate
-    // emissions; publish-only consumes the preserved dist as-is.
+    // Not part of the shared publish tail: only the from-scratch builders
+    // re-validate emissions; publish-only consumes the preserved dist as-is.
     p.add(Box::new(EmissionValidateStage));
+}
+
+/// Build the full release pipeline with all stages in order
+pub fn build_release_pipeline() -> Pipeline {
+    use anodizer_stage_build::BuildStage;
+    use anodizer_stage_upx::UpxStage;
+
+    // Canonical stage order.
+    // Anodizer-specific stages (appbundle, dmg, msi, pkg, nsis, templatefiles,
+    // release, snapcraft-publish, blob) are interleaved at logical positions.
+    let mut p = Pipeline::new();
+    p.expect_binaries();
+
+    // ── Per-crate lifecycle: before ────────────────────────────────────────
+    // BeforeCrateStage runs each selected crate's `crates[].before` hooks at
+    // the pipeline HEAD, after version/tag anchoring (done in the dispatcher
+    // before `p.run`) and before the build. A full release runs as ONE
+    // pipeline pass with no Rust-level per-crate loop, so without this stage
+    // `crates[].before` would silently no-op on a workspace-per-crate /
+    // lockstep-multi-crate config — even though `before_publish` and the
+    // publishers DO iterate per crate. Publish-only fires before/after via its
+    // own per-crate loop (`run_per_crate_lifecycle_hooks`) and deliberately
+    // does NOT get these stages, so neither path double-fires.
+    p.add(Box::new(anodizer_core::hooks::BeforeCrateStage));
+
+    // ── Build ────────────────────────────────────────────────────────────
+    p.add(Box::new(BuildStage));
+    p.add(Box::new(UpxStage));
+
+    // ── Artifacts + integrity (shared with merge) ────────────────────────
+    push_artifact_stages(&mut p);
+
+    // ── Publish ──────────────────────────────────────────────────────────
     push_publish_tail(&mut p);
 
     // ── Per-crate lifecycle: after ──────────────────────────────────────────
@@ -302,55 +322,12 @@ pub fn build_announce_pipeline() -> Pipeline {
 
 /// Build a pipeline for --merge mode: all post-build stages.
 pub fn build_merge_pipeline() -> Pipeline {
-    use anodizer_stage_appbundle::AppBundleStage;
-    use anodizer_stage_appimage::AppImageStage;
-    use anodizer_stage_archive::ArchiveStage;
-    use anodizer_stage_attest::AttestStage;
-    use anodizer_stage_changelog::ChangelogStage;
-    use anodizer_stage_checksum::ChecksumStage;
-    use anodizer_stage_dmg::DmgStage;
-    use anodizer_stage_flatpak::FlatpakStage;
-    use anodizer_stage_makeself::MakeselfStage;
-    use anodizer_stage_msi::MsiStage;
-    use anodizer_stage_nfpm::NfpmStage;
-    use anodizer_stage_notarize::NotarizeStage;
-    use anodizer_stage_nsis::NsisStage;
-    use anodizer_stage_pkg::PkgStage;
-    use anodizer_stage_publish::EmissionValidateStage;
-    use anodizer_stage_sbom::SbomStage;
-    use anodizer_stage_sign::SignStage;
-    use anodizer_stage_snapcraft::SnapcraftStage;
-    use anodizer_stage_source::SourceStage;
-    use anodizer_stage_srpm::SrpmStage;
-    use anodizer_stage_templatefiles::TemplateFilesStage;
-
-    // Merge pipeline: same order as build_release_pipeline minus Build/UPX.
+    // Merge pipeline: same order as build_release_pipeline minus the per-crate
+    // lifecycle hooks and Build/UPX (the merged dists already carry the built
+    // binaries); the artifact run and publish tail are shared verbatim.
     let mut p = Pipeline::new();
     p.expect_binaries();
-    p.add(Box::new(AppBundleStage));
-    p.add(Box::new(DmgStage));
-    p.add(Box::new(MsiStage));
-    p.add(Box::new(PkgStage));
-    p.add(Box::new(NsisStage));
-    p.add(Box::new(NotarizeStage));
-    p.add(Box::new(ChangelogStage));
-    p.add(Box::new(ArchiveStage));
-    p.add(Box::new(SourceStage));
-    p.add(Box::new(NfpmStage));
-    p.add(Box::new(SrpmStage));
-    p.add(Box::new(MakeselfStage));
-    p.add(Box::new(AppImageStage));
-    p.add(Box::new(SnapcraftStage));
-    p.add(Box::new(FlatpakStage));
-    p.add(Box::new(SbomStage));
-    p.add(Box::new(TemplateFilesStage));
-    p.add(Box::new(ChecksumStage));
-    p.add(Box::new(AttestStage));
-    p.add(Box::new(SignStage));
-    // Snapshot/dry-run emission validation; no-op in a real release. Like
-    // build_release_pipeline, merge carries it in its prefix (publish-only does
-    // not); the identical publish-side tail is shared via `push_publish_tail`.
-    p.add(Box::new(EmissionValidateStage));
+    push_artifact_stages(&mut p);
     push_publish_tail(&mut p);
     p
 }
@@ -484,6 +461,28 @@ mod tests {
             release_tail,
             publish_tail(&merge_names),
             "release vs merge publish tail drifted: {release_names:?} vs {merge_names:?}"
+        );
+    }
+
+    /// The merge pipeline is exactly the release pipeline minus the
+    /// release-only head/tail stages (per-crate lifecycle hooks, build, upx).
+    /// Both delegate the artifact run to `push_artifact_stages` and the
+    /// publish side to `push_publish_tail`; this pins the whole-sequence
+    /// relationship so a stage added to one builder but not the other goes red.
+    #[test]
+    fn merge_pipeline_is_release_pipeline_minus_build_stages() {
+        const RELEASE_ONLY: &[&str] = &["before", "build", "upx", "after"];
+        let release = build_release_pipeline();
+        let release_names: Vec<&str> = release
+            .stage_names()
+            .into_iter()
+            .filter(|n| !RELEASE_ONLY.contains(n))
+            .collect();
+        let merge = build_merge_pipeline();
+        let merge_names = merge.stage_names();
+        assert_eq!(
+            release_names, merge_names,
+            "merge pipeline drifted from release pipeline (minus {RELEASE_ONLY:?})"
         );
     }
 
