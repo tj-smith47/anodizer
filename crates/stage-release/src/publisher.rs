@@ -304,11 +304,6 @@ fn capture_release_ids(
 // Pre-tag probe — github-release write-access gate
 // ---------------------------------------------------------------------------
 
-/// Per-probe HTTP timeout. Long enough for a cold TLS handshake to
-/// api.github.com, short enough that a wedged endpoint cannot stall the
-/// pre-tag gate.
-const PREFLIGHT_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
-
 /// Keep the most severe of two outcomes: `Blocker` > `Warning` > `Pass`. The
 /// first-seen message wins within a severity so the operator sees a stable line.
 fn preflight_merge(
@@ -418,49 +413,25 @@ fn repo_push_check_at(
     policy: &anodizer_core::retry::RetryPolicy,
 ) -> anodizer_core::PreflightCheck {
     use anodizer_core::PreflightCheck;
-    use anodizer_core::git::{RepoProbe, github_repo_probe};
-    let client = match anodizer_core::http::blocking_client(PREFLIGHT_PROBE_TIMEOUT) {
-        Ok(c) => c,
-        Err(e) => {
-            return PreflightCheck::Warning(format!(
-                "could not probe {owner}/{repo} write access ({e}); verify the repo and token manually"
-            ));
-        }
-    };
-    match github_repo_probe(&client, url, Some(token), policy) {
-        RepoProbe::Body(body) => match serde_json::from_str::<serde_json::Value>(&body) {
-            Ok(v) => match v.pointer("/permissions/push").and_then(|p| p.as_bool()) {
-                Some(true) => PreflightCheck::Pass,
-                Some(false) => PreflightCheck::Blocker(format!(
-                    "GitHub token cannot push to {owner}/{repo} (needs contents:write); \
-                     the release create / asset upload will fail"
-                )),
-                None => PreflightCheck::Warning(format!(
-                    "could not determine push access to {owner}/{repo} (no permissions in API \
-                     response); verify the token scope manually"
-                )),
-            },
-            Err(_) => PreflightCheck::Warning(format!(
-                "could not parse {owner}/{repo} API response; verify the repo and token manually"
+    anodizer_core::git::github_repo_push_check(
+        url,
+        owner,
+        repo,
+        Some(token),
+        policy,
+        anodizer_core::git::RepoAccessOutcomes {
+            push_denied: PreflightCheck::Blocker(format!(
+                "GitHub token cannot push to {owner}/{repo} (needs contents:write); \
+                 the release create / asset upload will fail"
+            )),
+            // A missing repo or a token that cannot access it is a hard
+            // prerequisite the release-create path cannot satisfy — block.
+            missing_or_denied: PreflightCheck::Blocker(format!(
+                "release repo {owner}/{repo} not found or the GitHub token lacks access; \
+                 cannot create the release"
             )),
         },
-        // A missing repo or a token that cannot access it is a hard
-        // prerequisite the release-create path cannot satisfy — block.
-        RepoProbe::Missing | RepoProbe::AuthDenied => PreflightCheck::Blocker(format!(
-            "release repo {owner}/{repo} not found or the GitHub token lacks access; \
-             cannot create the release"
-        )),
-        // A secondary-rate-limit 403 is indistinguishable from auth denial by
-        // status alone; the headers prove it transient, so warn rather than
-        // abort a release whose token is actually fine.
-        RepoProbe::RateLimited => PreflightCheck::Warning(format!(
-            "GitHub API rate-limited while probing {owner}/{repo}; could not verify write access \
-             — verify the repo and token manually"
-        )),
-        RepoProbe::Inconclusive(reason) => PreflightCheck::Warning(format!(
-            "could not probe {owner}/{repo} write access ({reason}); verify the repo and token manually"
-        )),
-    }
+    )
 }
 
 impl anodizer_core::Publisher for GithubReleasePublisher {

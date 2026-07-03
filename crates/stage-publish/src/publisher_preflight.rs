@@ -24,7 +24,6 @@ use std::time::Duration;
 
 use anodizer_core::PreflightCheck;
 use anodizer_core::context::Context;
-use anodizer_core::git::{RepoProbe, github_repo_probe};
 use anodizer_core::http::blocking_client;
 use anodizer_core::redact::redact_bearer_tokens;
 
@@ -367,47 +366,23 @@ pub(crate) fn github_repo_check_at(
     token: Option<&str>,
     policy: &RetryPolicy,
 ) -> PreflightCheck {
-    let client = match blocking_client(PROBE_TIMEOUT) {
-        Ok(c) => c,
-        Err(e) => {
-            return PreflightCheck::Warning(format!(
-                "could not probe {owner}/{repo} write access ({e}); verify the repo and token manually"
-            ));
-        }
-    };
-
-    match github_repo_probe(&client, url, token, policy) {
-        RepoProbe::Body(body) => match serde_json::from_str::<serde_json::Value>(&body) {
-            Ok(v) => match v.pointer("/permissions/push").and_then(|p| p.as_bool()) {
-                Some(true) => PreflightCheck::Pass,
-                Some(false) => PreflightCheck::Warning(format!(
-                    "token cannot push to {owner}/{repo}; the publish PR/commit will fail"
-                )),
-                None => PreflightCheck::Warning(format!(
-                    "could not determine push access to {owner}/{repo} (no permissions in API response); \
-                     verify the token scope manually"
-                )),
-            },
-            Err(_) => PreflightCheck::Warning(format!(
-                "could not parse {owner}/{repo} API response; verify the repo and token manually"
+    anodizer_core::git::github_repo_push_check(
+        url,
+        owner,
+        repo,
+        token,
+        policy,
+        anodizer_core::git::RepoAccessOutcomes {
+            // A tap/index the token cannot push to only degrades this one
+            // publisher, so warn rather than block the whole release.
+            push_denied: PreflightCheck::Warning(format!(
+                "token cannot push to {owner}/{repo}; the publish PR/commit will fail"
+            )),
+            missing_or_denied: PreflightCheck::Blocker(format!(
+                "index/fork repo {owner}/{repo} not found or token lacks read access"
             )),
         },
-        // A missing repo or a token that cannot read it is a hard prerequisite
-        // the publish path cannot satisfy — block.
-        RepoProbe::Missing | RepoProbe::AuthDenied => PreflightCheck::Blocker(format!(
-            "index/fork repo {owner}/{repo} not found or token lacks read access"
-        )),
-        // A secondary-rate-limit 403 is indistinguishable from auth denial by
-        // status alone; the headers prove it transient, so warn rather than
-        // abort a release whose token is actually fine.
-        RepoProbe::RateLimited => PreflightCheck::Warning(format!(
-            "GitHub API rate-limited while probing {owner}/{repo}; could not verify write access \
-             — verify the repo and token manually"
-        )),
-        RepoProbe::Inconclusive(reason) => PreflightCheck::Warning(format!(
-            "could not probe {owner}/{repo} write access ({reason}); verify the repo and token manually"
-        )),
-    }
+    )
 }
 
 /// Resolve a publisher's repository config to owner/name + token and run

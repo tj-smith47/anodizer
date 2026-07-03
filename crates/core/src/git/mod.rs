@@ -47,7 +47,10 @@ pub use github_api::{
     gh_api_get_paginated_with_binary, gh_api_get_with_binary, github_token_env_hint,
     github_token_hint, resolve_github_token, resolve_github_token_with_env,
 };
-pub use github_probe::{RepoProbe, github_repo_probe, response_is_rate_limited};
+pub use github_probe::{
+    RepoAccessOutcomes, RepoProbe, github_repo_probe, github_repo_push_check, probe_to_push_check,
+    response_is_rate_limited,
+};
 pub use mailmap::canonical_author_email_in;
 // The owner/repo detectors are intentionally NOT re-exported publicly: the
 // only public path to a repository identity is a `slug::resolve_*` function,
