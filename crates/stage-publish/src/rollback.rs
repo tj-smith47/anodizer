@@ -57,41 +57,14 @@ pub fn run(
             .iter()
             .chain(aux.iter())
             .find(|p| p.name() == name)
+            .map(|b| b.as_ref())
     };
 
     let log = ctx.logger("publish");
 
     // Iterate indices so we can mutate result.outcome in place while
     // borrowing publishers immutably.
-    let target_indices: Vec<usize> = report
-        .results
-        .iter()
-        .enumerate()
-        .filter_map(|(i, r)| {
-            // No evidence -> nothing to roll back, for every branch below.
-            let evidence = r.evidence.as_ref()?;
-            // Standard path: a succeeded Assets/Manager publisher is
-            // reverted via its API delete / PR close.
-            let asset_or_manager_succeeded =
-                matches!(r.group, PublisherGroup::Assets | PublisherGroup::Manager)
-                    && matches!(r.outcome, PublisherOutcome::Succeeded);
-            // Cargo path: a *failed* required Submitter that already pushed
-            // crates to crates.io still has a real programmatic yank to run
-            // (see Publisher::programmatic_rollback_on_failure). Submitter
-            // rollback is informational-only for every other publisher, so
-            // this branch fires only when the publisher opts in for the
-            // recorded evidence.
-            let failed_submitter_with_rollback = matches!(r.outcome, PublisherOutcome::Failed(_))
-                && r.group == PublisherGroup::Submitter
-                && find_publisher(&r.name)
-                    .is_some_and(|p| p.programmatic_rollback_on_failure(evidence));
-            if asset_or_manager_succeeded || failed_submitter_with_rollback {
-                Some(i)
-            } else {
-                None
-            }
-        })
-        .collect();
+    let target_indices = rollback_candidates(report, CandidateMode::Live, find_publisher);
 
     if target_indices.is_empty() {
         log.status("no rollback targets recorded");
@@ -140,6 +113,119 @@ pub fn run(
         "rollback complete — {} rolled back, {} failed, {} skipped-no-scope",
         rolled_back, failed, skipped_no_scope,
     ));
+}
+
+/// Which rollback pass is selecting candidates — the live pass that runs
+/// inside `PublishStage::run` when a trigger fires, or the
+/// `--rollback-only --from-run=<id>` replay over a persisted report.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CandidateMode {
+    /// In-run rollback over the report `dispatch()` just produced.
+    Live,
+    /// Replay over `report.json` / `rollback.json`: additionally re-attempts
+    /// outcomes only a prior rollback pass can have written.
+    Replay,
+}
+
+/// The single (group × outcome) rollback-candidacy predicate shared by the
+/// live pass ([`run`]) and the `--rollback-only` replay
+/// ([`crate::rollback_only`]), returning the report indices to roll back.
+///
+/// The per-target execution was centralized into [`execute_rollback_step`]
+/// after the replay copy drifted once (`retain_on_rollback`); this owns the
+/// WHICH-ROWS half so candidacy cannot drift the same way. The matches are
+/// exhaustive over [`PublisherOutcome`], so adding a variant forces a
+/// conscious classification here instead of silently falling out of both
+/// filters. The Live/Replay deltas, each an explicit arm:
+///
+/// - `RollbackFailed`: replay-only — retry a rollback that failed (the
+///   variant cannot exist pre-rollback in a live pass anyway).
+/// - `RollbackSkippedNoScope`: replay-only — the live pass told the
+///   operator to export the scope env var and re-run, so the replay must
+///   re-attempt the row once the scope is available (previously these rows
+///   matched neither filter and were stranded until the operator deleted
+///   `rollback.json` by hand — which double-reverts git-revert publishers).
+/// - `Succeeded` without evidence: live skips it silently (nothing was
+///   recorded to act on; the row honestly stays `Succeeded`), while the
+///   replay includes it so its loop can surface the missing-evidence row
+///   as `RollbackFailed("no evidence in prior report")`.
+///
+/// Submitter rows additionally require the publisher's
+/// [`Publisher::programmatic_rollback_on_failure`] opt-in for the recorded
+/// evidence (cargo's yank); Submitter rollback is informational-only for
+/// every other publisher.
+pub(crate) fn rollback_candidates<'p>(
+    report: &PublishReport,
+    mode: CandidateMode,
+    find_publisher: impl Fn(&str) -> Option<&'p (dyn Publisher + 'p)>,
+) -> Vec<usize> {
+    report
+        .results
+        .iter()
+        .enumerate()
+        .filter_map(|(i, r)| {
+            let candidate = match r.group {
+                PublisherGroup::Assets | PublisherGroup::Manager => {
+                    match (&r.outcome, mode) {
+                        // Revert a recorded success via API delete / PR close.
+                        (PublisherOutcome::Succeeded, CandidateMode::Live) => r.evidence.is_some(),
+                        (PublisherOutcome::Succeeded, CandidateMode::Replay) => true,
+                        (
+                            PublisherOutcome::RollbackFailed(_)
+                            | PublisherOutcome::RollbackSkippedNoScope,
+                            CandidateMode::Replay,
+                        ) => true,
+                        (
+                            PublisherOutcome::RollbackFailed(_)
+                            | PublisherOutcome::RollbackSkippedNoScope,
+                            CandidateMode::Live,
+                        ) => false,
+                        (
+                            PublisherOutcome::Failed(_)
+                            | PublisherOutcome::Skipped(_)
+                            | PublisherOutcome::RolledBack
+                            | PublisherOutcome::PendingModeration
+                            | PublisherOutcome::PendingValidation
+                            | PublisherOutcome::PublishedNoRollback,
+                            _,
+                        ) => false,
+                    }
+                }
+                PublisherGroup::Submitter => {
+                    let outcome_eligible = match (&r.outcome, mode) {
+                        // A *failed* Submitter that already pushed remote
+                        // state (cargo) still has a real yank to run.
+                        (PublisherOutcome::Failed(_), _) => true,
+                        (
+                            PublisherOutcome::RollbackFailed(_)
+                            | PublisherOutcome::RollbackSkippedNoScope,
+                            CandidateMode::Replay,
+                        ) => true,
+                        (
+                            PublisherOutcome::RollbackFailed(_)
+                            | PublisherOutcome::RollbackSkippedNoScope,
+                            CandidateMode::Live,
+                        ) => false,
+                        (
+                            PublisherOutcome::Succeeded
+                            | PublisherOutcome::Skipped(_)
+                            | PublisherOutcome::RolledBack
+                            | PublisherOutcome::PendingModeration
+                            | PublisherOutcome::PendingValidation
+                            | PublisherOutcome::PublishedNoRollback,
+                            _,
+                        ) => false,
+                    };
+                    outcome_eligible
+                        && r.evidence.as_ref().is_some_and(|ev| {
+                            find_publisher(&r.name)
+                                .is_some_and(|p| p.programmatic_rollback_on_failure(ev))
+                        })
+                }
+            };
+            candidate.then_some(i)
+        })
+        .collect()
 }
 
 /// How a single target resolved, so each caller can keep its own summary

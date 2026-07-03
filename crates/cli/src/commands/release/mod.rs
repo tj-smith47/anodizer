@@ -1537,46 +1537,20 @@ fn run_publisher_preflight(
     if opts.preflight { Ok(true) } else { Ok(false) }
 }
 
-/// End-of-pipeline gate: bail when any *required* publisher finished in a
-/// failure state, so the CLI exits non-zero even though the pipeline body
-/// returned Ok.
-///
-/// "Failure state" here counts both `Failed(_)` (publish itself failed)
-/// and `RollbackFailed(_)` (publish ran, rollback was attempted, and the
-/// rollback also failed — leaving the operator with a half-published
-/// surface that needs manual intervention). Either way, a downstream
-/// shell / CI caller MUST see a non-zero exit.
-///
-/// **Snapshot / dry-run skip**: publishers don't actually run in either
-/// mode, so `required_failures` should already be 0; the explicit skip
-/// is defense-in-depth in case a future stage starts recording
-/// publisher results in those modes (e.g. for `--snapshot` evidence
-/// preview).
+/// The end-of-pipeline layer of the shared required-failure exit gate
+/// ([`anodizer_core::publish_report::gate_required_failures`]): the skip
+/// set, the failure filter, the name list, and the recovery hint all live
+/// in core, so this gate and the publish stage's in-stage bail cannot
+/// drift. Only the what-completed-before-this-error sentence is
+/// CLI-specific; every release-flow exit (full pipeline, publish-only,
+/// split per-crate) routes through this one wrapper.
 pub(crate) fn gate_required_failures(ctx: &Context) -> Result<()> {
-    if ctx.is_snapshot() || ctx.is_dry_run() {
-        return Ok(());
-    }
-    let Some(report) = ctx.publish_report.as_ref() else {
-        return Ok(());
-    };
-    let failed: Vec<&str> = report
-        .results
-        .iter()
-        .filter(|r| r.required && r.outcome.is_required_release_failure())
-        .map(|r| r.name.as_str())
-        .collect();
-    if failed.is_empty() {
-        return Ok(());
-    }
-    anyhow::bail!(
-        "release pipeline finished but {} required publisher(s) failed: {}. \
-         The pipeline ran to completion so rollback / announce-gating / \
-         summary all observed final state; this non-zero exit ensures CI \
-         and shell callers see the failure. Inspect dist/run-<id>/report.json \
-         for details and use --rollback-only --from-run=<id> to retry rollback.",
-        failed.len(),
-        failed.join(", ")
-    );
+    anodizer_core::publish_report::gate_required_failures(
+        ctx,
+        "The release pipeline ran to completion, so rollback / \
+         announce-gating / summary all observed final state; this non-zero \
+         exit ensures CI and shell callers see the failure.",
+    )
 }
 
 /// Filter `config.publishers` down to the entries the operator-selection

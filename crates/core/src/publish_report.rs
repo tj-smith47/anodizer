@@ -167,10 +167,20 @@ pub struct PublishReport {
 
 impl PublishReport {
     pub fn required_failures(&self) -> usize {
+        self.required_failure_names().len()
+    }
+
+    /// Names of every *required* publisher that finished in a terminal
+    /// failure state ([`PublisherOutcome::is_required_release_failure`]).
+    /// The one filter behind [`Self::required_failures`] and the
+    /// required-failure exit gate ([`gate_required_failures`]), so the
+    /// count, the gate, and the operator-facing name list cannot diverge.
+    pub fn required_failure_names(&self) -> Vec<&str> {
         self.results
             .iter()
             .filter(|r| r.required && r.outcome.is_required_release_failure())
-            .count()
+            .map(|r| r.name.as_str())
+            .collect()
     }
 
     /// Returns true if any publisher in `group` failed.
@@ -211,6 +221,45 @@ impl PublishReport {
     }
 }
 
+/// Required-failure exit gate: bail when any *required* publisher finished
+/// in a terminal failure state, so the caller exits non-zero even though
+/// the pipeline body ran to completion.
+///
+/// One definition serves both layers of the defense — the publish stage's
+/// in-stage bail (so any embedding of the stage cannot report green over a
+/// failed required publisher) and the CLI's end-of-pipeline gate (so shell
+/// / CI callers see a non-zero exit). `ran_context` is the caller-specific
+/// sentence describing what completed before this error; everything else —
+/// the snapshot / dry-run skip, the failure filter, the name list, the
+/// recovery hint — is shared so the two layers cannot drift.
+///
+/// **Snapshot / dry-run skip**: publishers don't actually publish in those
+/// modes, so a recorded failure there must not abort the preview pipeline;
+/// the explicit skip is defense-in-depth in case a future stage starts
+/// recording publisher results in those modes.
+pub fn gate_required_failures(
+    ctx: &crate::context::Context,
+    ran_context: &str,
+) -> anyhow::Result<()> {
+    if ctx.is_snapshot() || ctx.is_dry_run() {
+        return Ok(());
+    }
+    let Some(report) = ctx.publish_report() else {
+        return Ok(());
+    };
+    let failed = report.required_failure_names();
+    if failed.is_empty() {
+        return Ok(());
+    }
+    anyhow::bail!(
+        "{} required publisher(s) failed: {}. {} Inspect dist/run-<id>/report.json \
+         for details and use --rollback-only --from-run=<id> to retry rollback.",
+        failed.len(),
+        failed.join(", "),
+        ran_context
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +290,40 @@ mod tests {
             evidence: None,
         });
         assert_eq!(r.required_failures(), 1);
+    }
+
+    /// The name list feeding the operator-facing gate message applies the
+    /// SAME filter as the count — a required Failed/RollbackFailed row is
+    /// named, a non-required or non-terminal row is not.
+    #[test]
+    fn required_failure_names_matches_count_filter() {
+        let mut r = PublishReport::default();
+        r.results.push(PublisherResult {
+            name: "optional-pub".to_string(),
+            group: PublisherGroup::Manager,
+            required: false,
+            outcome: PublisherOutcome::Failed("boom".to_string()),
+            evidence: None,
+        });
+        r.results.push(PublisherResult {
+            name: "required-pub".to_string(),
+            group: PublisherGroup::Submitter,
+            required: true,
+            outcome: PublisherOutcome::Failed("boom".to_string()),
+            evidence: None,
+        });
+        r.results.push(PublisherResult {
+            name: "required-rollback-failed".to_string(),
+            group: PublisherGroup::Manager,
+            required: true,
+            outcome: PublisherOutcome::RollbackFailed("cleanup".to_string()),
+            evidence: None,
+        });
+        assert_eq!(
+            r.required_failure_names(),
+            vec!["required-pub", "required-rollback-failed"]
+        );
+        assert_eq!(r.required_failures(), 2);
     }
 
     #[test]

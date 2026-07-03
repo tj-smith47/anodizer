@@ -1031,36 +1031,17 @@ impl PublishStage {
     }
 }
 
-/// Bail when any *required* publisher finished in a failure state —
-/// `Failed(_)` (publish itself failed) or `RollbackFailed(_)` (publish ran,
-/// rollback was attempted, and the rollback also failed). Mirrors the CLI's
-/// `gate_required_failures` semantics, including the snapshot / dry-run
-/// skip: publishers don't actually publish in those modes, so a recorded
-/// failure there must not abort the preview pipeline.
+/// The in-stage layer of the shared required-failure exit gate
+/// ([`anodizer_core::publish_report::gate_required_failures`]): the skip
+/// set, the failure filter, the name list, and the recovery hint all live
+/// in core, so this bail and the CLI's end-of-pipeline gate cannot drift.
+/// Only the what-completed-before-this-error sentence is stage-specific.
 fn bail_on_required_failures(ctx: &Context) -> Result<()> {
-    if ctx.is_snapshot() || ctx.is_dry_run() {
-        return Ok(());
-    }
-    let Some(report) = ctx.publish_report() else {
-        return Ok(());
-    };
-    let failed: Vec<&str> = report
-        .results
-        .iter()
-        .filter(|r| r.required && r.outcome.is_required_release_failure())
-        .map(|r| r.name.as_str())
-        .collect();
-    if failed.is_empty() {
-        return Ok(());
-    }
-    anyhow::bail!(
-        "publish: {} required publisher(s) failed: {}. All publishers were \
-         dispatched and rollback / report / summary bookkeeping completed \
-         before this error; inspect dist/run-<id>/report.json for details \
-         and use --rollback-only --from-run=<id> to retry rollback.",
-        failed.len(),
-        failed.join(", ")
-    );
+    anodizer_core::publish_report::gate_required_failures(
+        ctx,
+        "All publishers were dispatched and rollback / report / summary \
+         bookkeeping completed before this error.",
+    )
 }
 
 impl Stage for PublishStage {

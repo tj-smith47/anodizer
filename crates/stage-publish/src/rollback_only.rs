@@ -34,7 +34,7 @@
 //! replay-state file, overwritten on every replay.
 
 use anodizer_core::context::Context;
-use anodizer_core::{PublishReport, Publisher, PublisherGroup, PublisherOutcome};
+use anodizer_core::{PublishReport, Publisher, PublisherOutcome};
 use anyhow::{Context as _, Result, anyhow};
 use std::fs;
 use std::path::PathBuf;
@@ -209,42 +209,18 @@ pub(crate) fn run_with_publishers(
             .iter()
             .chain(aux.iter())
             .find(|p| p.name() == name)
+            .map(|b| b.as_ref())
     };
 
-    // Re-attempt rollback for every Succeeded or RollbackFailed entry in
-    // the Assets / Manager groups, mirroring the live `rollback::run`
-    // policy. ALSO replay a *failed* required Submitter (cargo) that
-    // pushed crates to crates.io and opts in via
-    // `Publisher::programmatic_rollback_on_failure` — its yank may never
-    // have run live (e.g. the original run used `--rollback=none`), and it
-    // is idempotent, so re-issuing it is safe. Every other Submitter has
-    // no programmatic rollback (warn-only) and is skipped.
-    let target_indices: Vec<usize> = report
-        .results
-        .iter()
-        .enumerate()
-        .filter_map(|(i, r)| {
-            let asset_or_manager =
-                matches!(r.group, PublisherGroup::Assets | PublisherGroup::Manager)
-                    && matches!(
-                        r.outcome,
-                        PublisherOutcome::Succeeded | PublisherOutcome::RollbackFailed(_)
-                    );
-            let failed_submitter_with_rollback = r.group == PublisherGroup::Submitter
-                && matches!(
-                    r.outcome,
-                    PublisherOutcome::Failed(_) | PublisherOutcome::RollbackFailed(_)
-                )
-                && r.evidence.as_ref().is_some_and(|ev| {
-                    find_publisher(&r.name).is_some_and(|p| p.programmatic_rollback_on_failure(ev))
-                });
-            if asset_or_manager || failed_submitter_with_rollback {
-                Some(i)
-            } else {
-                None
-            }
-        })
-        .collect();
+    // The candidacy policy — which (group × outcome) rows are re-attempted,
+    // including the replay-only RollbackFailed retry and
+    // RollbackSkippedNoScope re-attempt — is shared with the live pass via
+    // `rollback::rollback_candidates` so the two filters cannot drift.
+    let target_indices = crate::rollback::rollback_candidates(
+        &report,
+        crate::rollback::CandidateMode::Replay,
+        find_publisher,
+    );
 
     if target_indices.is_empty() {
         log.warn("no rollback-eligible entries in prior report; nothing to do");
@@ -1029,5 +1005,44 @@ mod tests {
             // env-ok: #[serial(scope_env)]; unique per-test ROLLBACK_ONLY_* token
             std::env::remove_var("ROLLBACK_ONLY_SCOPE_PRESENT_TOKEN");
         }
+    }
+
+    /// A row PERSISTED as `RollbackSkippedNoScope` (the live pass ran
+    /// without the scope env var and told the operator to export it and
+    /// re-run) must be a replay candidate: once the scope is available the
+    /// replay re-attempts the rollback and the row flips to `RolledBack`.
+    /// Before candidacy was shared with the live pass these rows matched
+    /// neither replay arm and were stranded until the operator deleted
+    /// `rollback.json` by hand.
+    #[test]
+    #[serial_test::serial(scope_env)]
+    fn rollback_only_reattempts_rows_persisted_as_skipped_no_scope() {
+        // SAFETY: env mutation is single-threaded within a serial group.
+        unsafe {
+            // env-ok: #[serial(scope_env)]; unique per-test ROLLBACK_ONLY_* token
+            std::env::set_var("ROLLBACK_ONLY_SCOPE_REATTEMPT_TOKEN", "now-present");
+        }
+        let (mut ctx, _tmp) = ctx_with_dist();
+        let mut report = PublishReport::default();
+        let mut row = succeeded_entry("scoped", PublisherGroup::Manager, true);
+        row.outcome = PublisherOutcome::RollbackSkippedNoScope;
+        report.results.push(row);
+        write_fixture_report(&ctx, "fixt", &report);
+
+        let publishers: Vec<Box<dyn Publisher>> = vec![fake_with_scope(
+            "scoped",
+            PublisherGroup::Manager,
+            true,
+            FakeOutcome::Succeed,
+            "ROLLBACK_ONLY_SCOPE_REATTEMPT_TOKEN write",
+        )];
+
+        let updated = run_with_publishers(&mut ctx, "fixt", &publishers).expect("replay");
+        assert!(
+            matches!(updated.results[0].outcome, PublisherOutcome::RolledBack),
+            "a persisted RollbackSkippedNoScope row must be re-attempted once \
+             the scope is available; got {:?}",
+            updated.results[0].outcome,
+        );
     }
 }
