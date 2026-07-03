@@ -6289,3 +6289,224 @@ fn test_release_allow_rerun_conflicts_with_rollback_only() {
         stderr,
     );
 }
+
+// ============================================================================
+// --workspace scoping: the overlay must scope the crate universe
+// ============================================================================
+
+/// Two-workspace fixture: each workspace holds one tiny binary crate, so a
+/// scoped run's stage output names exactly one of them.
+fn create_two_workspace_project(dir: &Path, host: &str) {
+    fs::write(
+        dir.join("Cargo.toml"),
+        r#"[workspace]
+resolver = "2"
+members = ["crates/wa-app", "crates/wb-app"]
+"#,
+    )
+    .unwrap();
+    for name in ["wa-app", "wb-app"] {
+        let d = dir.join(format!("crates/{name}"));
+        fs::create_dir_all(d.join("src")).unwrap();
+        fs::write(
+            d.join("Cargo.toml"),
+            format!(
+                "[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[[bin]]\nname = \"{name}\"\npath = \"src/main.rs\"\n"
+            ),
+        )
+        .unwrap();
+        fs::write(d.join("src/main.rs"), "fn main() {}\n").unwrap();
+    }
+    let config = format!(
+        r#"project_name: two-ws
+workspaces:
+  - name: ws-a
+    crates:
+      - name: wa-app
+        path: "crates/wa-app"
+        tag_template: "wa-app-v{{{{ .Version }}}}"
+        builds:
+          - binary: wa-app
+            targets:
+              - {host}
+  - name: ws-b
+    crates:
+      - name: wb-app
+        path: "crates/wb-app"
+        tag_template: "wb-app-v{{{{ .Version }}}}"
+        builds:
+          - binary: wb-app
+            targets:
+              - {host}
+"#
+    );
+    create_config(dir, &config);
+}
+
+/// `release --workspace ws-a --dry-run` plans ONLY ws-a's crates. Before the
+/// overlay cleared `config.workspaces`, dry-run's "empty selection = all"
+/// walked the whole universe and planned the SIBLING workspace's builds and
+/// archives under ws-a's overlay.
+#[test]
+fn test_release_workspace_dry_run_scopes_to_workspace() {
+    let tmp = TempDir::new().unwrap();
+    let host = detect_host_target();
+    create_two_workspace_project(tmp.path(), &host);
+    init_git_repo(tmp.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--workspace",
+            "ws-a",
+            "--dry-run",
+            "--show-skipped",
+            "--skip=release,publish,docker,sign,announce,changelog,nfpm",
+            "--timeout",
+            "5m",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "workspace-scoped dry-run should succeed.\nstderr:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("wa-app"),
+        "stderr should mention ws-a's crate, got:\n{}",
+        stderr
+    );
+    assert!(
+        !stderr.contains("wb-app"),
+        "a ws-a-scoped dry-run must NOT plan the sibling workspace's crate, got:\n{}",
+        stderr
+    );
+}
+
+/// `release --workspace ws-a --snapshot` builds ONLY ws-a's crates — a real
+/// (non-dry-run) mode, proving the sibling's artifacts are never produced.
+#[test]
+fn test_release_workspace_snapshot_scopes_to_workspace() {
+    let tmp = TempDir::new().unwrap();
+    let host = detect_host_target();
+    create_two_workspace_project(tmp.path(), &host);
+    init_git_repo(tmp.path());
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args([
+            "release",
+            "--workspace",
+            "ws-a",
+            "--snapshot",
+            "--skip=release,publish,docker,sign,announce,changelog,nfpm",
+            "--timeout",
+            "5m",
+        ])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "workspace-scoped snapshot should succeed.\nstderr:\n{}",
+        stderr
+    );
+    assert!(
+        !stderr.contains("wb-app"),
+        "a ws-a-scoped snapshot must NOT touch the sibling workspace's crate, got:\n{}",
+        stderr
+    );
+    assert!(
+        stderr.contains("wa-app"),
+        "the scoped snapshot should build ws-a's crate, got:\n{}",
+        stderr
+    );
+    // dist/ must hold exactly ONE archive (the scoped run counts a single
+    // crate, so the single-crate ProjectName naming applies) and none of the
+    // sibling's artifacts.
+    let dist = tmp.path().join("dist");
+    assert!(dist.exists(), "dist/ should exist after snapshot");
+    let mut names: Vec<String> = Vec::new();
+    let mut stack = vec![dist];
+    while let Some(d) = stack.pop() {
+        for entry in fs::read_dir(&d).unwrap() {
+            let entry = entry.unwrap();
+            if entry.path().is_dir() {
+                stack.push(entry.path());
+            }
+            names.push(entry.file_name().to_string_lossy().into_owned());
+        }
+    }
+    let archives: Vec<&String> = names.iter().filter(|n| n.ends_with(".tar.gz")).collect();
+    assert_eq!(
+        archives.len(),
+        1,
+        "a ws-a-scoped snapshot must produce exactly one archive, found: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n.contains("wb-app")),
+        "dist/ must NOT contain the sibling workspace's artifacts, found: {names:?}"
+    );
+}
+
+/// A `--crate` selection spanning a workspace and a top-level crate is a hard
+/// error in BOTH orderings — the overlay decision reads the whole selection
+/// set, and the loser of the old first()-based inference would otherwise be
+/// silently dropped (or released under the wrong workspace's settings).
+#[test]
+fn test_release_mixed_scope_crate_selection_errors_both_orderings() {
+    let tmp = TempDir::new().unwrap();
+    let host = detect_host_target();
+    create_two_workspace_project(tmp.path(), &host);
+    // Add a top-level crate next to the two workspaces.
+    let config = format!(
+        r#"project_name: two-ws
+crates:
+  - name: top-app
+    path: "crates/wb-app"
+    tag_template: "top-app-v{{{{ .Version }}}}"
+workspaces:
+  - name: ws-a
+    crates:
+      - name: wa-app
+        path: "crates/wa-app"
+        tag_template: "wa-app-v{{{{ .Version }}}}"
+        builds:
+          - binary: wa-app
+            targets:
+              - {host}
+"#
+    );
+    create_config(tmp.path(), &config);
+    init_git_repo(tmp.path());
+
+    for order in [["wa-app", "top-app"], ["top-app", "wa-app"]] {
+        let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+            .args([
+                "release",
+                "--dry-run",
+                "--crate",
+                order[0],
+                "--crate",
+                order[1],
+            ])
+            .current_dir(tmp.path())
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "mixed-scope selection ({order:?}) must fail"
+        );
+        assert!(
+            stderr.contains("wa-app") && stderr.contains("top-app"),
+            "error must name both crates for ordering {order:?}, got:\n{}",
+            stderr
+        );
+    }
+}

@@ -153,6 +153,23 @@ Loop `anodizer tag --crate <name>` for each crate so each workspace gets its own
 
 See [Auto-Tagging](@/docs/advanced/auto-tagging.md) and [GitHub Actions](@/docs/ci/github-actions.md) for full examples.
 
+### Mixed configs: top-level `crates:` alongside `workspaces:`
+
+Top-level crates that live next to `workspaces:` groups are their own release
+tracks. A bare `anodizer tag` treats them like the flat-`crates:` shapes:
+those sharing one `tag_template` prefix bump as **one aggregate group under
+one shared tag** (and must agree on `[package].version` — a divergence errors
+before tagging); those with distinct prefixes stay independent singleton
+tracks. See
+[Mixed configs](@/docs/advanced/auto-tagging.md#mixed-configs-crates-alongside-workspaces)
+for the grouping rules.
+
+**Upgrading an existing repo to a mixed config:** every track without a tag
+matching its `tag_template` counts as changed, so the first release-worthy
+push after the upgrade cuts a first-ever tag per new track — one release
+workflow can fan out per track. Pre-create tags at the current versions for
+tracks that should not release immediately.
+
 ## Resolving a tag to a crate
 
 Tag-triggered release workflows need to know which crate a given tag belongs to. `anodizer resolve-tag` does that lookup:

@@ -351,7 +351,7 @@ What runs:
 - A `Failed` Submitter entry re-runs only a declared programmatic rollback
   (cargo's idempotent yank).
 - For everything else (`Skipped`, already-`RolledBack`, `PendingModeration`,
-  `PublishedNoRollback`), no action.
+  `PendingValidation`, `PublishedNoRollback`), no action.
 
 The replay path uses the same code that drives the rollback step inside
 `PublishStage`, so a green replay means every reversible publisher was

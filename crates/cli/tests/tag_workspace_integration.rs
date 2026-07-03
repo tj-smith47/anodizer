@@ -812,3 +812,130 @@ fn version_override_with_crate_in_per_crate_mode() {
     assert!(!git_tag_exists(root, "cli-v5.0.0"));
     assert_eq!(read_member_version(root, "crates/cli"), "0.2.0");
 }
+
+// ---------------------------------------------------------------------------
+// Mixed configs: top-level `crates:` alongside `workspaces:`
+// ---------------------------------------------------------------------------
+
+/// Mixed shape, shared-prefix top-levels: `alpha` + `beta` (both
+/// `v{{ Version }}`) next to a workspace crate. A feat on alpha and a fix on
+/// beta must cut ONE shared v0.2.0 — never divergent v0.2.0 AND v0.1.1 tags
+/// into the same `v*` namespace (which would cross-contaminate every member's
+/// next change detection).
+#[test]
+fn mixed_shared_prefix_top_levels_cut_one_shared_tag() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/alpha\", \"crates/beta\", \"tools/gamma\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for (name, dir) in [
+        ("alpha", "crates/alpha"),
+        ("beta", "crates/beta"),
+        ("gamma", "tools/gamma"),
+    ] {
+        fs::create_dir_all(root.join(dir).join("src")).unwrap();
+        fs::write(
+            root.join(dir).join("Cargo.toml"),
+            format!("[package]\nname = \"{name}\"\nversion = \"0.1.0\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(dir).join("src/lib.rs"), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        r#"project_name: mixed
+crates:
+  - name: alpha
+    path: crates/alpha
+    tag_template: "v{{ .Version }}"
+  - name: beta
+    path: crates/beta
+    tag_template: "v{{ .Version }}"
+workspaces:
+  - name: tools
+    crates:
+      - name: gamma
+        path: tools/gamma
+        tag_template: "gamma-v{{ .Version }}"
+"#,
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "chore: initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    run_git(root, &["tag", "gamma-v0.1.0"]);
+
+    fs::write(root.join("crates/alpha/src/lib.rs"), "// feature\n").unwrap();
+    git_add_commit(root, "feat: alpha grows a feature");
+    fs::write(root.join("crates/beta/src/lib.rs"), "// fix\n").unwrap();
+    git_add_commit(root, "fix: beta stops crashing");
+
+    let config = root.join(".anodizer.yaml");
+    let res = tag_dry_run_from(root, &config);
+    assert!(res.success, "mixed tag --dry-run failed: {}", res.stdout);
+    // One aggregate group: both members land on the SAME 0.2.0 (feat wins).
+    assert!(
+        res.stdout.contains("\"alpha\":\"0.2.0\"") && res.stdout.contains("\"beta\":\"0.2.0\""),
+        "alpha and beta must share one 0.2.0 version, got:\n{}",
+        res.stdout
+    );
+    assert!(
+        !res.stdout.contains("0.1.1"),
+        "no divergent patch tag may be cut into the shared v* namespace, got:\n{}",
+        res.stdout
+    );
+    // The untouched workspace crate stays quiet.
+    assert!(
+        !res.stdout.contains("\"gamma\""),
+        "gamma had no changes and must not be tagged, got:\n{}",
+        res.stdout
+    );
+}
+
+/// A per-crate track's FIRST tag starts from the crate's own
+/// `[package].version` (the Cargo-ahead guard, mirroring lockstep), not from
+/// the `initial_version` 0.0.0 sentinel.
+#[test]
+fn per_crate_first_tag_starts_from_cargo_version() {
+    let tmp = TempDir::new().unwrap();
+    let root = tmp.path();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/core\", \"crates/cli\"]\nresolver = \"2\"\n",
+    )
+    .unwrap();
+    for (name, ver) in [("core", "0.1.0"), ("cli", "0.3.0")] {
+        fs::create_dir_all(root.join(format!("crates/{name}/src"))).unwrap();
+        fs::write(
+            root.join(format!("crates/{name}/Cargo.toml")),
+            format!("[package]\nname = \"{name}\"\nversion = \"{ver}\"\nedition = \"2024\"\n"),
+        )
+        .unwrap();
+        fs::write(root.join(format!("crates/{name}/src/lib.rs")), "").unwrap();
+    }
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "project_name: percrate\ncrates:\n  - name: core\n    path: crates/core\n    tag_template: \"core-v{{ .Version }}\"\n  - name: cli\n    path: crates/cli\n    tag_template: \"cli-v{{ .Version }}\"\n",
+    )
+    .unwrap();
+    git_init(root);
+    git_add_commit(root, "feat: initial release");
+
+    let config = root.join(".anodizer.yaml");
+    let res = tag_dry_run_from(root, &config);
+    assert!(res.success, "first-tag dry-run failed: {}", res.stdout);
+    assert!(
+        res.stdout.contains("\"core\":\"0.1.0\"") && res.stdout.contains("\"cli\":\"0.3.0\""),
+        "each first tag must start from that crate's [package].version, got:\n{}",
+        res.stdout
+    );
+    assert!(
+        !res.stdout.contains("0.0.0"),
+        "the initial_version sentinel must not leak into a first tag when the manifest \
+         carries a real version, got:\n{}",
+        res.stdout
+    );
+}

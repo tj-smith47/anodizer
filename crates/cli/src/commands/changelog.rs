@@ -521,24 +521,13 @@ fn run_release_notes(
     // top-level crate — covering both pure-`workspaces:` and mixed
     // top-level-plus-`workspaces:` configs.
     if let Some(ref target) = effective_filter
-        && !config.crates.iter().any(|c| &c.name == target)
+        && let Some(ws) = helpers::workspace_containing_crate(&config, target).cloned()
     {
-        let ws_for_target = config
-            .workspaces
-            .as_ref()
-            .and_then(|ws_list| {
-                ws_list
-                    .iter()
-                    .find(|ws| ws.crates.iter().any(|c| &c.name == target))
-            })
-            .cloned();
-        if let Some(ws) = ws_for_target {
-            log.verbose(&format!(
-                "--crate {} lives in workspace '{}'; applying workspace overlay",
-                target, ws.name
-            ));
-            helpers::apply_workspace_overlay(&mut config, &ws);
-        }
+        log.verbose(&format!(
+            "--crate {} lives in workspace '{}'; applying workspace overlay",
+            target, ws.name
+        ));
+        helpers::apply_workspace_overlay(&mut config, &ws);
     }
 
     // Map the resolved start onto the stage's two signals so release-notes

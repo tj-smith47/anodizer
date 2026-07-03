@@ -1008,6 +1008,44 @@ mod tests {
         StageLogger::new("check", Verbosity::Quiet)
     }
 
+    /// `check config --workspace X` validates X's resolved config only: a
+    /// SIBLING workspace's error (here a `depends_on` cycle confined to ws-b)
+    /// must not fail ws-a's scoped validation. The overlay clears
+    /// `workspaces`, so the resolved universe is exactly ws-a's crates.
+    #[test]
+    fn workspace_scoped_checks_ignore_sibling_errors() {
+        let config = Config {
+            project_name: "test".to_string(),
+            workspaces: Some(vec![
+                WorkspaceConfig {
+                    name: "ws-a".to_string(),
+                    crates: vec![make_crate("a-one", "a-one-v{{ .Version }}", None)],
+                    ..Default::default()
+                },
+                WorkspaceConfig {
+                    name: "ws-b".to_string(),
+                    crates: vec![
+                        make_crate("b-one", "b-one-v{{ .Version }}", Some(vec!["b-two"])),
+                        make_crate("b-two", "b-two-v{{ .Version }}", Some(vec!["b-one"])),
+                    ],
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        // The raw (un-overlaid) config fails on ws-b's cycle.
+        assert!(
+            run_checks(&config, false, &test_logger()).is_err(),
+            "raw config must fail on the sibling's cycle"
+        );
+        // The ws-a-resolved config must pass — the sibling is out of scope.
+        let ws = config.workspaces.as_ref().unwrap()[0].clone();
+        let mut resolved = config.clone();
+        helpers::apply_workspace_overlay(&mut resolved, &ws);
+        run_checks(&resolved, false, &test_logger())
+            .expect("workspace-scoped validation must ignore sibling workspace errors");
+    }
+
     // ---- Cycle detection tests ----
 
     #[test]

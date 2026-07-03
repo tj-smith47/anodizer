@@ -647,17 +647,13 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // next version. Honor it even when no per-commit bump signal fired and
     // even when the crate path had no changes. This prevents autotag from
     // stalling at the old tag after a manual `cargo set-version` bump.
-    let cargo_ahead = match (
-        cargo_current_ver
-            .as_deref()
-            .and_then(|v| git::parse_semver(v).ok()),
+    let cargo_ahead = manifest_version_ahead(
+        cargo_current_ver.as_deref(),
         prev_tag
             .as_deref()
-            .and_then(|t| git::parse_semver_tag(t).ok()),
-    ) {
-        (Some(c), Some(p)) => (c.major, c.minor, c.patch) > (p.major, p.minor, p.patch),
-        _ => false,
-    };
+            .and_then(|t| git::parse_semver_tag(t).ok())
+            .map(|p| (p.major, p.minor, p.patch)),
+    );
 
     // If #none token detected (and Cargo.toml isn't explicitly ahead), skip.
     // An explicit `--version` is itself the release signal, so it tags
@@ -703,19 +699,15 @@ pub fn run(opts: TagOpts) -> Result<()> {
     // yields the version autotag *would* have produced, so the override warning
     // can name the true derived value the operator is overriding.
     if let Some(cargo_ver) = cargo_current_ver
-        && let Ok(cargo_sv) = git::parse_semver(&cargo_ver)
+        && manifest_version_ahead(Some(&cargo_ver), Some((new_major, new_minor, new_patch)))
     {
-        let tag_tuple = (new_major, new_minor, new_patch);
-        let cargo_tuple = (cargo_sv.major, cargo_sv.minor, cargo_sv.patch);
-        if cargo_tuple > tag_tuple {
-            if version_override.is_none() {
-                log.status(&format!(
-                    "Cargo.toml version {} > tag-derived {}, using Cargo.toml version",
-                    cargo_ver, new_version
-                ));
-            }
-            new_version = cargo_ver;
+        if version_override.is_none() {
+            log.status(&format!(
+                "Cargo.toml version {} > tag-derived {}, using Cargo.toml version",
+                cargo_ver, new_version
+            ));
         }
+        new_version = cargo_ver;
     }
 
     if let Some(pinned) = version_override {
@@ -1364,15 +1356,23 @@ pub(crate) fn detect_repo_shape(
     {
         let mut groups: Vec<Vec<CrateConfig>> =
             ws_list.iter().map(|ws| ws.crates.clone()).collect();
-        // A top-level crate alongside `workspaces:` is its own independent
-        // track (a singleton group, exactly like the flat PerCrate arm
-        // below) — dropping it would leave it untagged forever. One that
+        // Top-level crates alongside `workspaces:` are their own independent
+        // tracks — dropping them would leave them untagged forever. One that
         // also appears in a workspace group stays with its group: the group
         // defines its lockstep cadence, and the top-level duplicate is the
         // same crate (the universe's first-seen dedup), not a second track.
-        for c in &config.crates {
-            if !groups.iter().flatten().any(|g| g.name == c.name) {
-                groups.push(vec![c.clone()]);
+        // Leftovers that ALL share one extractable tag prefix live in one tag
+        // namespace and join as ONE aggregate group (mirroring the flat
+        // `crates:` arm below — separate singleton groups would cut divergent
+        // tags, e.g. v0.2.0 AND v0.1.1, into the same `v*` namespace and
+        // cross-contaminate every member's next change detection); otherwise
+        // each leftover is a singleton group, exactly like the flat arm.
+        let leftovers = leftover_top_level_crates(config);
+        if leftovers.len() > 1 && shared_tag_prefix(&leftovers).is_some() {
+            groups.push(leftovers);
+        } else {
+            for c in leftovers {
+                groups.push(vec![c]);
             }
         }
         return RepoShape::PerCrate(groups);
@@ -1440,35 +1440,122 @@ fn shared_tag_prefix(crates: &[CrateConfig]) -> Option<String> {
     Some(first)
 }
 
-/// Reject an incoherent flat-aggregate config before any tag/changelog work.
+/// The Cargo-ahead comparison shared by the lockstep and per-crate tagging
+/// paths: `candidate` (a bare manifest version) is strictly ahead of the
+/// `baseline` `(major, minor, patch)` tuple. Prerelease/build metadata are
+/// ignored — the guard compares release lines, matching how a manual
+/// `cargo set-version` bump signals the next release. `false` when either
+/// side is absent or unparseable (nothing to compare).
+fn manifest_version_ahead(candidate: Option<&str>, baseline: Option<(u64, u64, u64)>) -> bool {
+    match (candidate.and_then(|v| git::parse_semver(v).ok()), baseline) {
+        (Some(c), Some(b)) => (c.major, c.minor, c.patch) > b,
+        _ => false,
+    }
+}
+
+/// The highest readable literal `[package].version` across a per-crate
+/// group's members, or `None` when no member has one. A group releases as one
+/// lockstep unit (one version for every member), so the guard must compare
+/// against the furthest-ahead member — anything lower would downgrade that
+/// member's manual bump. Members without a readable literal version (virtual
+/// or `version.workspace = true` manifests) contribute nothing, mirroring the
+/// coherence guard's skip semantics.
+fn group_manifest_version(group: &[CrateConfig], workspace_root: &Path) -> Option<String> {
+    group
+        .iter()
+        .filter_map(|c| {
+            let crate_dir = workspace_root.join(&c.path);
+            anodizer_stage_build::version_sync::read_cargo_version_opt(&crate_dir.to_string_lossy())
+                .ok()
+                .flatten()
+        })
+        .filter_map(|v| git::parse_semver(&v).ok().map(|sv| (v, sv)))
+        .max_by_key(|(_, sv)| (sv.major, sv.minor, sv.patch))
+        .map(|(raw, _)| raw)
+}
+
+/// Top-level `crates:` entries that belong to no `workspaces[].crates` group,
+/// deduplicated by name. The one leftover computation both
+/// [`detect_repo_shape`]'s group building and
+/// [`guard_flat_aggregate_coherence`]'s mixed-shape arm resolve through, so
+/// the aggregation decision and its coherence check can never diverge on
+/// which crates they consider.
+fn leftover_top_level_crates(config: &anodizer_core::config::Config) -> Vec<CrateConfig> {
+    let mut out: Vec<CrateConfig> = Vec::new();
+    for c in &config.crates {
+        let in_workspace = config
+            .workspaces
+            .iter()
+            .flatten()
+            .any(|ws| ws.crates.iter().any(|w| w.name == c.name));
+        if !in_workspace && !out.iter().any(|o| o.name == c.name) {
+            out.push(c.clone());
+        }
+    }
+    out
+}
+
+/// Reject an incoherent shared-prefix aggregate config before any
+/// tag/changelog work.
 ///
-/// A flat `crates:` list whose members share one tag prefix releases under ONE
-/// shared tag (e.g. `v0.2.0`). If those members carry DIFFERENT
-/// `[package].version` values, that single tag cannot carry two versions — the
-/// config is impossible. Read each member's on-disk `[package].version` and
-/// bail (listing every member's `crate → version` and the shared prefix, so an
+/// A crate set whose members share one tag prefix releases under ONE shared
+/// tag (e.g. `v0.2.0`). If those members carry DIFFERENT `[package].version`
+/// values, that single tag cannot carry two versions — the config is
+/// impossible. Read each member's on-disk `[package].version` and bail
+/// (listing every member's `crate → version` and the shared prefix, so an
 /// N-way divergence is fully visible) when any two disagree; steer the user
 /// toward lockstep (`[workspace.package].version`) or independent prefixes.
 ///
-/// Only `RepoShape::FlatAggregate` can be incoherent this way, so any other
-/// shape is a no-op. A member without a readable literal `[package].version`
-/// (absent manifest, or a virtual / `version.workspace = true` manifest) is
-/// skipped: the guard fires only on genuine version strings it can compare, so
-/// a versionless member never trips the check nor masks a real divergence.
+/// Two shapes can be incoherent this way and get the identical check: a
+/// `RepoShape::FlatAggregate`, and the mixed shape's leftover aggregate (a
+/// shared-prefix set of top-level crates alongside `workspaces:`, which
+/// [`detect_repo_shape`] joins as one `PerCrate` group). Any other shape is a
+/// no-op. A member without a readable literal `[package].version` (absent
+/// manifest, or a virtual / `version.workspace = true` manifest) is skipped:
+/// the guard fires only on genuine version strings it can compare, so a
+/// versionless member never trips the check nor masks a real divergence.
 pub(crate) fn guard_flat_aggregate_coherence(
     config: Option<&anodizer_core::config::Config>,
     workspace: Option<&WorkspaceInfo>,
     workspace_root: &Path,
 ) -> Result<()> {
-    let RepoShape::FlatAggregate(crates) = detect_repo_shape(workspace_root, config, workspace)
-    else {
-        return Ok(());
-    };
-    let prefix = shared_tag_prefix(&crates).unwrap_or_else(|| "v".to_string());
+    match detect_repo_shape(workspace_root, config, workspace) {
+        RepoShape::FlatAggregate(crates) => {
+            check_shared_prefix_version_coherence(&crates, workspace_root)
+        }
+        RepoShape::PerCrate(_) => {
+            let Some(config) = config else {
+                return Ok(());
+            };
+            // The mixed shape's leftover aggregate exists only when
+            // `workspaces:` is declared (a flat multi-crate `PerCrate` has
+            // only singleton groups, which cannot diverge).
+            if config.workspaces.as_ref().is_none_or(|w| w.is_empty()) {
+                return Ok(());
+            }
+            let leftovers = leftover_top_level_crates(config);
+            if leftovers.len() > 1 && shared_tag_prefix(&leftovers).is_some() {
+                check_shared_prefix_version_coherence(&leftovers, workspace_root)
+            } else {
+                Ok(())
+            }
+        }
+        RepoShape::Single | RepoShape::Lockstep => Ok(()),
+    }
+}
+
+/// The comparison body shared by [`guard_flat_aggregate_coherence`]'s two
+/// aggregate arms: every member with a readable literal `[package].version`
+/// must agree, or the shared tag namespace cannot carry the release.
+fn check_shared_prefix_version_coherence(
+    crates: &[CrateConfig],
+    workspace_root: &Path,
+) -> Result<()> {
+    let prefix = shared_tag_prefix(crates).unwrap_or_else(|| "v".to_string());
     // Read each member's literal `[package].version`, keyed by crate name. Skip
     // members with no readable literal version (no value to compare).
     let mut versions: Vec<(String, String)> = Vec::new();
-    for c in &crates {
+    for c in crates {
         let crate_dir = workspace_root.join(&c.path);
         if let Ok(Some(ver)) =
             anodizer_stage_build::version_sync::read_cargo_version_opt(&crate_dir.to_string_lossy())
@@ -1605,9 +1692,23 @@ fn compute_per_crate_tags(
         }
         let bump = detect_bump_demoted(&all_messages, &group_cfg, prev_tag.as_deref());
 
-        if bump == BumpKind::None {
+        // The group's own manifest version drives the same Cargo-ahead model
+        // the lockstep path applies: a manifest strictly ahead of the previous
+        // tag is a release signal, and one ahead of the tag-derived version
+        // wins the derivation (so a first tag starts from the crate's real
+        // `[package].version`, not the `initial_version` sentinel).
+        let group_cargo_ver = group_manifest_version(group, workspace_root);
+        let cargo_ahead = manifest_version_ahead(
+            group_cargo_ver.as_deref(),
+            prev_tag
+                .as_deref()
+                .and_then(|t| git::parse_semver_tag(t).ok())
+                .map(|p| (p.major, p.minor, p.patch)),
+        );
+
+        if bump == BumpKind::None && !cargo_ahead {
             log.verbose(&format!(
-                "skipped group {:?} — no bump signal",
+                "skipped group {:?} — no bump signal and Cargo.toml not ahead",
                 group.iter().map(|c| c.name.as_str()).collect::<Vec<_>>()
             ));
             continue;
@@ -1632,6 +1733,19 @@ fn compute_per_crate_tags(
         let mut new_version = format!("{}.{}.{}", new_major, new_minor, new_patch);
         if cfg.prerelease {
             new_version = format!("{}-{}", new_version, cfg.prerelease_suffix);
+        }
+
+        // Cargo.toml-ahead guard, mirroring the lockstep path exactly: a
+        // manifest version strictly ahead of the tag-derived one wins, so
+        // autotag never downgrades a manual bump.
+        if let Some(cargo_ver) = group_cargo_ver
+            && manifest_version_ahead(Some(&cargo_ver), Some((new_major, new_minor, new_patch)))
+        {
+            log.status(&format!(
+                "Cargo.toml version {} > tag-derived {}, using Cargo.toml version",
+                cargo_ver, new_version
+            ));
+            new_version = cargo_ver;
         }
 
         log.verbose(&format!(
@@ -3807,6 +3921,112 @@ tag_post_hooks:
             err.contains("distinct tag_template prefix"),
             "steers toward independent prefixes: {err}"
         );
+    }
+
+    /// Mixed shape: top-level crates sharing one extractable prefix alongside
+    /// `workspaces:` join as ONE aggregate group — separate singleton groups
+    /// would cut divergent tags (v0.2.0 AND v0.1.1) into one `v*` namespace.
+    #[test]
+    fn detect_repo_shape_mixed_shared_prefix_leftovers_join_one_group() {
+        let config = anodizer_core::config::Config {
+            project_name: "mixed".to_string(),
+            crates: vec![
+                crate_cfg("alpha", "crates/alpha", "v{{ .Version }}"),
+                crate_cfg("beta", "crates/beta", "v{{ .Version }}"),
+            ],
+            workspaces: Some(vec![anodizer_core::config::WorkspaceConfig {
+                name: "grp".to_string(),
+                crates: vec![crate_cfg("gamma", "tools/gamma", "gamma-v{{ .Version }}")],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let root = empty_root();
+        let shape = detect_repo_shape(root.path(), Some(&config), None);
+        match shape {
+            RepoShape::PerCrate(groups) => {
+                let names: Vec<Vec<&str>> = groups
+                    .iter()
+                    .map(|g| g.iter().map(|c| c.name.as_str()).collect())
+                    .collect();
+                assert_eq!(
+                    names,
+                    vec![vec!["gamma"], vec!["alpha", "beta"]],
+                    "shared-prefix leftovers must join as one aggregate group"
+                );
+            }
+            other => panic!(
+                "expected PerCrate, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    /// Mixed shape: leftovers with DISTINCT prefixes stay independent
+    /// singleton groups — no shared namespace, no aggregation.
+    #[test]
+    fn detect_repo_shape_mixed_distinct_prefix_leftovers_stay_singletons() {
+        let config = anodizer_core::config::Config {
+            project_name: "mixed".to_string(),
+            crates: vec![
+                crate_cfg("alpha", "crates/alpha", "alpha-v{{ .Version }}"),
+                crate_cfg("beta", "crates/beta", "beta-v{{ .Version }}"),
+            ],
+            workspaces: Some(vec![anodizer_core::config::WorkspaceConfig {
+                name: "grp".to_string(),
+                crates: vec![crate_cfg("gamma", "tools/gamma", "gamma-v{{ .Version }}")],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        let root = empty_root();
+        let shape = detect_repo_shape(root.path(), Some(&config), None);
+        match shape {
+            RepoShape::PerCrate(groups) => {
+                let names: Vec<Vec<&str>> = groups
+                    .iter()
+                    .map(|g| g.iter().map(|c| c.name.as_str()).collect())
+                    .collect();
+                assert_eq!(names, vec![vec!["gamma"], vec!["alpha"], vec!["beta"]]);
+            }
+            other => panic!(
+                "expected PerCrate, got {:?}",
+                std::mem::discriminant(&other)
+            ),
+        }
+    }
+
+    /// The mixed shape's leftover aggregate gets the SAME coherence check as
+    /// a flat aggregate: divergent `[package].version` under one shared
+    /// prefix is an impossible config and must error before tagging.
+    #[test]
+    fn coherence_guard_rejects_divergent_mixed_leftovers() {
+        let (tmp, mut config) = flat_aggregate_versions_fixture("0.5.0", "0.1.0");
+        config.workspaces = Some(vec![anodizer_core::config::WorkspaceConfig {
+            name: "grp".to_string(),
+            crates: vec![crate_cfg("gamma", "tools/gamma", "gamma-v{{ .Version }}")],
+            ..Default::default()
+        }]);
+        let err =
+            guard_flat_aggregate_coherence(Some(&config), Some(&ws_no_lockstep()), tmp.path())
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("core") && err.contains("cli"), "{err}");
+        assert!(err.contains("0.5.0") && err.contains("0.1.0"), "{err}");
+    }
+
+    /// Agreeing mixed leftovers pass the guard.
+    #[test]
+    fn coherence_guard_passes_agreeing_mixed_leftovers() {
+        let (tmp, mut config) = flat_aggregate_versions_fixture("0.2.0", "0.2.0");
+        config.workspaces = Some(vec![anodizer_core::config::WorkspaceConfig {
+            name: "grp".to_string(),
+            crates: vec![crate_cfg("gamma", "tools/gamma", "gamma-v{{ .Version }}")],
+            ..Default::default()
+        }]);
+        let res =
+            guard_flat_aggregate_coherence(Some(&config), Some(&ws_no_lockstep()), tmp.path());
+        assert!(res.is_ok(), "agreeing mixed leftovers must pass: {res:?}");
     }
 
     /// A missing member manifest is skipped, not errored: the guard fires only

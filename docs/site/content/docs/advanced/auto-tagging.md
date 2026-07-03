@@ -286,6 +286,52 @@ updates that crate's `Cargo.toml` version (and any intra-workspace `path +
 version` dependency specs that reference it), commits the change, and tags
 that commit so `cargo publish` reads the right version.
 
+### Mixed configs (`crates:` alongside `workspaces:`)
+
+A config can declare both top-level `crates:` entries and `workspaces:`
+groups:
+
+```yaml
+crates:
+  - name: alpha
+    path: crates/alpha
+    tag_template: "v{{ Version }}"
+  - name: beta
+    path: crates/beta
+    tag_template: "v{{ Version }}"
+workspaces:
+  - name: tools
+    crates:
+      - name: gamma
+        path: tools/gamma
+        tag_template: "gamma-v{{ Version }}"
+```
+
+A bare `anodizer tag` groups this shape as follows:
+
+- Each `workspaces:` entry is one lockstep group (its crates bump and tag as
+  a unit).
+- Top-level crates that ALL share one extractable `tag_template` prefix
+  (`alpha` + `beta` above, both `v*`) join as **one aggregate group** — one
+  shared tag per release, exactly like the
+  [flat-aggregate shape](#workspace-aware-tagging). They must agree on
+  `[package].version`; a divergence errors before any tag is created.
+- Top-level crates without a shared prefix stay independent singleton tracks.
+
+```bash
+$ anodizer tag --dry-run   # feat on alpha + fix on beta, prev tag v0.1.0
+• running auto-tag (per-crate) (dry-run)
+new_tag=v0.2.0             # ONE shared tag — never v0.2.0 AND v0.1.1
+```
+
+**First-ever tags.** Change detection includes every crate that has no tag
+matching its `tag_template` yet. In a repo that adds a mixed config (or adds
+new top-level crates to one), the next release-worthy push therefore cuts a
+FIRST tag for each not-yet-tagged track — expect one release per new track on
+the first run after the upgrade. A track's first tag starts from the crate's
+own `[package].version` (the Cargo-ahead guard, same as lockstep), falling
+back to `tag.initial_version` when the manifest carries no literal version.
+
 **Push behavior differs by mode.** The per-crate auto-dispatch path (a
 multi-crate config with no `--crate`) pushes the single bump commit **and**
 every per-crate tag atomically by default — `--no-push` opts out of pushing

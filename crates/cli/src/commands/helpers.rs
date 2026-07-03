@@ -217,11 +217,17 @@ pub fn collect_build_targets(config: &Config, selected_crates: &[String]) -> Vec
 
 /// Apply a workspace's configuration overlay onto the top-level config.
 ///
-/// - `crates` is always replaced.
+/// - `crates` is always replaced; `workspaces` is always cleared.
 /// - `changelog`, `signs`, `before`, and `after` replace when present.
 /// - `env` is merged additively (workspace values override same-key top-level values).
 pub fn apply_workspace_overlay(config: &mut Config, ws: &WorkspaceConfig) {
     config.crates = ws.crates.clone();
+    // The overlaid run IS this workspace: its crates are now the top-level
+    // list, so the sibling workspaces must not stay visible. Leaving them in
+    // place would put every sibling crate back into `crate_universe()`, and
+    // the stages' "empty selection = all" walks would build/publish sibling
+    // crates under THIS workspace's env/signs/skip.
+    config.workspaces = None;
     if ws.changelog.is_some() {
         config.changelog = ws.changelog.clone();
     }
@@ -241,6 +247,27 @@ pub fn apply_workspace_overlay(config: &mut Config, ws: &WorkspaceConfig) {
         let merged = config.env.get_or_insert_with(Vec::new);
         merged.extend(env_list.iter().cloned());
     }
+}
+
+/// The workspace whose `crates:` list declares `name`, or `None` when the
+/// name is a top-level crate (the universe's first-seen shadowing — a
+/// top-level entry wins over a same-named workspace entry) or is unknown.
+///
+/// The one lookup every workspace-overlay inference resolves through
+/// (release's `--crate` selection, changelog's `--crate` filter), so the
+/// shadowing rule cannot drift between commands.
+pub fn workspace_containing_crate<'a>(
+    config: &'a Config,
+    name: &str,
+) -> Option<&'a WorkspaceConfig> {
+    if config.crates.iter().any(|c| c.name == name) {
+        return None;
+    }
+    config
+        .workspaces
+        .iter()
+        .flatten()
+        .find(|ws| ws.crates.iter().any(|c| c.name == name))
 }
 
 /// Resolve the current-tag override from the env-var precedence chain.
@@ -1550,6 +1577,77 @@ list:
         apply_workspace_overlay(&mut config, &ws);
         assert_eq!(config.crates.len(), 1);
         assert_eq!(config.crates[0].name, "ws-crate");
+    }
+
+    #[test]
+    fn test_apply_workspace_overlay_clears_workspaces() {
+        // The overlaid run IS the chosen workspace: sibling workspaces must
+        // drop out of the universe, or every stage's "empty selection = all"
+        // walk (and `check config --workspace X`) would still see sibling
+        // crates under X's overlay.
+        let ws_a = WorkspaceConfig {
+            name: "ws-a".to_string(),
+            crates: vec![make_crate("a-crate")],
+            ..Default::default()
+        };
+        let ws_b = WorkspaceConfig {
+            name: "ws-b".to_string(),
+            crates: vec![make_crate("b-crate")],
+            ..Default::default()
+        };
+        let mut config = Config {
+            project_name: "test".to_string(),
+            workspaces: Some(vec![ws_a.clone(), ws_b]),
+            ..Default::default()
+        };
+
+        apply_workspace_overlay(&mut config, &ws_a);
+        assert!(
+            config.workspaces.is_none(),
+            "overlay must clear config.workspaces"
+        );
+        let universe: Vec<&str> = config
+            .crate_universe()
+            .into_iter()
+            .map(|c| c.name.as_str())
+            .collect();
+        assert_eq!(
+            universe,
+            vec!["a-crate"],
+            "post-overlay universe must contain ONLY the chosen workspace's crates"
+        );
+    }
+
+    #[test]
+    fn test_workspace_containing_crate_resolves_and_shadows() {
+        let config = Config {
+            project_name: "test".to_string(),
+            crates: vec![make_crate("top"), make_crate("shadowed")],
+            workspaces: Some(vec![WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![make_crate("member"), make_crate("shadowed")],
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            workspace_containing_crate(&config, "member").map(|w| w.name.as_str()),
+            Some("ws"),
+            "workspace-only crate must resolve to its workspace"
+        );
+        assert!(
+            workspace_containing_crate(&config, "top").is_none(),
+            "top-level crate has no containing workspace"
+        );
+        assert!(
+            workspace_containing_crate(&config, "shadowed").is_none(),
+            "a top-level entry shadows a same-named workspace entry"
+        );
+        assert!(
+            workspace_containing_crate(&config, "missing").is_none(),
+            "unknown names resolve to no workspace"
+        );
     }
 
     #[test]
@@ -3520,6 +3618,68 @@ list:
             assert!(
                 config.crates[0].release.as_ref().unwrap().github.is_none(),
                 "with no detectable remote, the missing github block must stay None"
+            );
+        });
+    }
+
+    /// The auto-detected slug fills a WORKSPACE crate's missing `github`
+    /// block, not just top-level entries — a workspace-only crate's release
+    /// stage reads the same per-crate override.
+    #[test]
+    fn auto_detect_github_fills_workspace_crates_from_remote() {
+        with_empty_git_repo_cwd(|| {
+            assert!(
+                std::process::Command::new("git")
+                    .args([
+                        "remote",
+                        "add",
+                        "origin",
+                        "https://github.com/acme/widget.git"
+                    ])
+                    .status()
+                    .unwrap()
+                    .success(),
+                "git remote add must succeed"
+            );
+            let mut config = Config {
+                project_name: "x".to_string(),
+                crates: vec![CrateConfig {
+                    name: "top".to_string(),
+                    release: Some(anodizer_core::config::ReleaseConfig::default()),
+                    ..Default::default()
+                }],
+                workspaces: Some(vec![WorkspaceConfig {
+                    name: "ws".to_string(),
+                    crates: vec![CrateConfig {
+                        name: "member".to_string(),
+                        release: Some(anodizer_core::config::ReleaseConfig::default()),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            };
+            auto_detect_github(&mut config, &quiet_log());
+            let top = config.crates[0].release.as_ref().unwrap();
+            let top_gh = top
+                .github
+                .as_ref()
+                .expect("top-level crate's github block must be filled");
+            assert_eq!(
+                (top_gh.owner.as_str(), top_gh.name.as_str()),
+                ("acme", "widget")
+            );
+            let member = config.workspaces.as_ref().unwrap()[0].crates[0]
+                .release
+                .as_ref()
+                .unwrap();
+            let member_gh = member
+                .github
+                .as_ref()
+                .expect("workspace crate's github block must be filled");
+            assert_eq!(
+                (member_gh.owner.as_str(), member_gh.name.as_str()),
+                ("acme", "widget")
             );
         });
     }

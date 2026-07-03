@@ -247,7 +247,7 @@ pub(super) fn run_per_crate(
         ));
         // Rewind the config fields `apply_workspace_overlay` mutates
         // (changelog / signs / binary_signs / before / after / env /
-        // crates) to the pre-loop baseline before re-applying this
+        // crates / workspaces) to the pre-loop baseline before re-applying this
         // iteration's overlay. Without it a value set by a prior
         // workspace would leak into one that leaves it unset, and `env`
         // (appended, not replaced, by the overlay) would accumulate
@@ -448,6 +448,7 @@ const VERSION_TEMPLATE_VARS: &[&str] = &[
 #[derive(Clone)]
 struct OverlayFields {
     crates: Vec<anodizer_core::config::CrateConfig>,
+    workspaces: Option<Vec<anodizer_core::config::WorkspaceConfig>>,
     changelog: Option<anodizer_core::config::ChangelogConfig>,
     signs: Vec<anodizer_core::config::SignConfig>,
     binary_signs: Vec<anodizer_core::config::SignConfig>,
@@ -460,6 +461,7 @@ impl OverlayFields {
     fn capture(config: &Config) -> Self {
         Self {
             crates: config.crates.clone(),
+            workspaces: config.workspaces.clone(),
             changelog: config.changelog.clone(),
             signs: config.signs.clone(),
             binary_signs: config.binary_signs.clone(),
@@ -471,6 +473,7 @@ impl OverlayFields {
 
     fn restore_into(&self, config: &mut Config) {
         config.crates = self.crates.clone();
+        config.workspaces = self.workspaces.clone();
         config.changelog = self.changelog.clone();
         config.signs = self.signs.clone();
         config.binary_signs = self.binary_signs.clone();
