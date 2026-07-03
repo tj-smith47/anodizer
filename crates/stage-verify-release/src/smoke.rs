@@ -283,23 +283,30 @@ pub fn docker_platform(target_triple: &str) -> Option<String> {
 /// The host's Docker platform spec (`linux/<arch>`), or `None` when the host
 /// CPU has no known Docker platform name.
 fn host_docker_platform() -> Option<String> {
-    host_docker_platform_for(std::env::consts::ARCH)
+    host_docker_platform_for(std::env::consts::ARCH, cfg!(target_endian = "little"))
 }
 
 /// Pure mapping seam for [`host_docker_platform`]: Rust `target_arch` name →
 /// Docker platform spec.
-fn host_docker_platform_for(rust_arch: &str) -> Option<String> {
-    let docker_arch = match rust_arch {
-        "x86_64" => "amd64",
-        "aarch64" => "arm64",
-        "x86" => "386",
-        "s390x" => "s390x",
-        "powerpc64" => "ppc64le",
-        "riscv64" => "riscv64",
-        "loongarch64" => "loong64",
-        _ => return None,
-    };
-    Some(format!("linux/{docker_arch}"))
+///
+/// Docker platform arch names ARE GOARCH names, so the arch token comes from
+/// the shared [`anodizer_core::target::rust_arch_to_goarch`] table (the same
+/// one `platform_is_native`'s comparison targets derive from via `map_target`
+/// — a private copy here mis-answers the native check the moment it drifts).
+/// `little_endian` disambiguates the endian-ambiguous `ARCH` values
+/// (`powerpc64` is both ppc64 and ppc64le hosts). On top of the table sits the
+/// one Docker-specific delta: goarches without a practical Docker platform
+/// (the mips family, sparc64, big-endian ppc64) return `None`, which
+/// `platform_is_native` treats as "unknown host — let the emulation probe
+/// decide".
+fn host_docker_platform_for(rust_arch: &str, little_endian: bool) -> Option<String> {
+    let goarch = anodizer_core::target::rust_arch_to_goarch(rust_arch, little_endian)?;
+    match goarch {
+        "amd64" | "arm64" | "386" | "s390x" | "ppc64le" | "riscv64" | "loong64" => {
+            Some(format!("linux/{goarch}"))
+        }
+        _ => None,
+    }
 }
 
 /// Whether `platform` matches the host's native Docker platform. `false`
@@ -977,14 +984,66 @@ mod tests {
     #[test]
     fn host_docker_platform_mapping() {
         assert_eq!(
-            host_docker_platform_for("x86_64").as_deref(),
+            host_docker_platform_for("x86_64", true).as_deref(),
             Some("linux/amd64")
         );
         assert_eq!(
-            host_docker_platform_for("aarch64").as_deref(),
+            host_docker_platform_for("aarch64", true).as_deref(),
             Some("linux/arm64")
         );
-        assert_eq!(host_docker_platform_for("sparc64"), None);
+        assert_eq!(host_docker_platform_for("sparc64", false), None);
+        // The endian-ambiguous POWER host: LE resolves to ppc64le; BE has no
+        // practical Docker platform → None → emulation probe decides.
+        assert_eq!(
+            host_docker_platform_for("powerpc64", true).as_deref(),
+            Some("linux/ppc64le")
+        );
+        assert_eq!(host_docker_platform_for("powerpc64", false), None);
+        assert_eq!(
+            host_docker_platform_for("loongarch64", true).as_deref(),
+            Some("linux/loong64")
+        );
+    }
+
+    /// The host platform table is the shared goarch table plus ONLY the
+    /// Docker-supported subset filter: every `Some` it returns must equal
+    /// `linux/<shared-table goarch>` (so `platform_is_native`'s comparison
+    /// against `map_target`-derived platforms can never mis-answer), and the
+    /// `None` delta is pinned to the goarches without a Docker platform.
+    #[test]
+    fn host_docker_platform_is_shared_table_plus_docker_subset() {
+        let tokens = [
+            "x86_64",
+            "aarch64",
+            "x86",
+            "s390x",
+            "powerpc64",
+            "riscv64",
+            "loongarch64",
+            "mips",
+            "mips64",
+            "sparc64",
+        ];
+        for le in [true, false] {
+            for token in tokens {
+                let goarch = anodizer_core::target::rust_arch_to_goarch(token, le).unwrap();
+                match host_docker_platform_for(token, le) {
+                    Some(platform) => assert_eq!(
+                        platform,
+                        format!("linux/{goarch}"),
+                        "docker platform must be the shared-table goarch for '{token}'"
+                    ),
+                    None => assert!(
+                        matches!(
+                            goarch,
+                            "mips" | "mipsel" | "mips64" | "mips64el" | "sparc64" | "ppc64"
+                        ),
+                        "'{token}' (goarch {goarch}) must only be dropped for the pinned \
+                         docker-unsupported set"
+                    ),
+                }
+            }
+        }
     }
 
     #[test]

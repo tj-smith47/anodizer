@@ -258,11 +258,14 @@ fn group_by_platform<'a>(
 /// Seed Os / Arch / Target plus the per-target variant template vars so the
 /// default filename template renders correctly.
 ///
-/// `amd64_variant` is the built binary's `amd64_variant` metadata: it overrides
-/// the triple-derived `Amd64` so two amd64 builds of one triple (a baseline and
-/// a `-Ctarget-cpu=x86-64-v3` tune) render distinct `.AppImage` names. `None` /
-/// `Some("v1")` leave the suffix empty, preserving the single-variant name; the
-/// Arm/Mips triple derivation is untouched.
+/// The variant vars come from the shared
+/// [`seed_variant_vars`](anodizer_core::archive_name::seed_variant_vars)
+/// policy — the same seeding the build stage applies to binary-name templates,
+/// so a user template's `{{ .Amd64 }}` renders identically in both places.
+/// `amd64_variant` is the built binary's `amd64_variant` metadata: it replaces
+/// the `"v1"` baseline so two amd64 builds of one triple (a baseline and a
+/// `-Ctarget-cpu=x86-64-v3` tune) render distinct `.AppImage` names; the
+/// default suffix's `!= "v1"` guard keeps the baseline suffix-free.
 fn set_per_target_template_vars(
     ctx: &mut Context,
     target: Option<&str>,
@@ -273,28 +276,11 @@ fn set_per_target_template_vars(
     ctx.template_vars_mut().set("Os", os);
     ctx.template_vars_mut().set("Arch", arch);
     ctx.template_vars_mut().set("Target", target.unwrap_or(""));
-
-    let first = target.and_then(|t| t.split('-').next()).unwrap_or("");
-    ctx.template_vars_mut().set("Arm", "");
-    ctx.template_vars_mut().set("Arm64", "");
-    ctx.template_vars_mut().set("Amd64", "");
-    ctx.template_vars_mut().set("Mips", "");
-    ctx.template_vars_mut().set("I386", "");
-    match first {
-        "aarch64" => ctx.template_vars_mut().set("Arm64", "v8"),
-        "armv7" | "armv7l" => ctx.template_vars_mut().set("Arm", "7"),
-        "armv6" | "armv6l" | "arm" => ctx.template_vars_mut().set("Arm", "6"),
-        "i686" | "i386" | "i586" => ctx.template_vars_mut().set("I386", "sse2"),
-        c if c.starts_with("mips") => {
-            ctx.template_vars_mut().set("Mips", c);
-        }
-        _ => {}
-    }
-
-    // Set `Amd64` from the binary's actual variant metadata (not a hardcoded
-    // `v1`) so v1/v2/v3 builds of the same x86_64 triple render distinctly;
-    // None / "v1" leave the suffix empty.
-    anodizer_core::archive_name::seed_amd64_variant_var(ctx.template_vars_mut(), amd64_variant);
+    anodizer_core::archive_name::seed_variant_vars(
+        ctx.template_vars_mut(),
+        target.unwrap_or(""),
+        amd64_variant,
+    );
 }
 
 /// The amd64 micro-architecture variant suffix the default AppImage filename

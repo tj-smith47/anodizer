@@ -17,6 +17,67 @@ pub const DEFAULT_TARGETS: &[&str] = &[
     "aarch64-unknown-linux-gnu",
 ];
 
+/// The one Rust-arch-token → Go/OCI arch-name table.
+///
+/// Accepts both vocabularies that carry a Rust architecture token: target
+/// triple first components (`powerpc64le`, `mips64el`, `riscv64gc`, …), which
+/// spell endianness explicitly, and `std::env::consts::ARCH` values
+/// (`powerpc64`, `mips64`, …), which do NOT — Rust's `target_arch` is the same
+/// string for both endiannesses. `little_endian` disambiguates those
+/// endian-ambiguous tokens: pass `cfg!(target_endian = "little")` when mapping
+/// the host's own `ARCH`, and `false` when mapping a triple component (a
+/// little-endian triple always spells it in the token itself).
+///
+/// Docker/OCI `platform.architecture` values are GOARCH values, so this single
+/// table serves template `Goarch` vars, triple-derived asset naming, and
+/// container platform pinning — the three consumers whose former private
+/// copies disagreed on `powerpc64` and `loongarch64`.
+///
+/// 32-bit ARM tokens (`arm`, `armv6`, `armv7`, …) are deliberately absent:
+/// GOARCH for all of them is plain `"arm"`, while [`map_target`] needs the
+/// composite `armv6`/`armv7` archive-naming tokens — the one place the two
+/// vocabularies genuinely differ, so each caller keeps its own ARM handling.
+///
+/// Returns `None` for tokens with no known Go arch name (`wasm32`, a typo, a
+/// user-supplied prebuilt token) so callers choose their own fallthrough.
+pub fn rust_arch_to_goarch(token: &str, little_endian: bool) -> Option<&'static str> {
+    let mapped = match token {
+        "x86_64" | "amd64" => "amd64",
+        "aarch64" | "arm64" => "arm64",
+        "x86" | "i686" | "i386" | "i586" => "386",
+        "s390x" => "s390x",
+        "riscv64" | "riscv64gc" => "riscv64",
+        "loongarch64" | "loong64" => "loong64",
+        "sparcv9" | "sparc64" => "sparc64",
+        "powerpc64le" | "ppc64le" => "ppc64le",
+        "powerpc64" | "ppc64" => {
+            if little_endian {
+                "ppc64le"
+            } else {
+                "ppc64"
+            }
+        }
+        "mipsel" => "mipsel",
+        "mips64el" => "mips64el",
+        "mips" => {
+            if little_endian {
+                "mipsel"
+            } else {
+                "mips"
+            }
+        }
+        "mips64" => {
+            if little_endian {
+                "mips64el"
+            } else {
+                "mips64"
+            }
+        }
+        _ => return None,
+    };
+    Some(mapped)
+}
+
 pub fn map_target(triple: &str) -> (String, String) {
     // ---- OS (substring match) ----
     // Note: android triples contain "linux" (e.g. aarch64-linux-android),
@@ -65,18 +126,14 @@ pub fn map_target(triple: &str) -> (String, String) {
     } else {
         let first = triple.split('-').next().unwrap_or("unknown");
         match first {
-            "i686" | "i386" | "i586" => "386",
+            // Archive naming carries the composite armv6/armv7 token (GOARCH
+            // would be plain "arm"), so 32-bit ARM stays outside the shared
+            // goarch table.
             "armv7" | "armv7l" => "armv7",
             "armv6" | "armv6l" | "arm" => "armv6",
-            "s390x" => "s390x",
-            "ppc64le" | "powerpc64le" => "ppc64le",
-            "ppc64" | "powerpc64" => "ppc64",
-            "riscv64gc" | "riscv64" => "riscv64",
-            "mips64" | "mips64el" => first,
-            "mips" | "mipsel" => first,
-            "loongarch64" => "loong64",
-            "sparcv9" | "sparc64" => "sparc64",
-            other => other,
+            // Triple components spell endianness explicitly (mips64el,
+            // powerpc64le), so the endian-ambiguous-host disambiguation is off.
+            other => rust_arch_to_goarch(other, false).unwrap_or(other),
         }
     };
 
@@ -374,6 +431,72 @@ mod tests {
         let (os, arch) = map_target("x86_64-unknown-illumos");
         assert_eq!(os, "illumos");
         assert_eq!(arch, "amd64");
+    }
+
+    /// Every non-ARM token the shared goarch table covers must agree with
+    /// `map_target`'s triple-derived arch — the agreement that formerly held
+    /// only by parallel-maintained match tables (and had already broken on
+    /// powerpc64 / loongarch64 between the private copies).
+    #[test]
+    fn test_goarch_table_agrees_with_map_target_on_every_token() {
+        let tokens = [
+            "x86_64",
+            "amd64",
+            "aarch64",
+            "arm64",
+            "i686",
+            "i386",
+            "i586",
+            "s390x",
+            "riscv64",
+            "riscv64gc",
+            "loongarch64",
+            "loong64",
+            "sparcv9",
+            "sparc64",
+            "powerpc64",
+            "ppc64",
+            "powerpc64le",
+            "ppc64le",
+            "mips",
+            "mipsel",
+            "mips64",
+            "mips64el",
+        ];
+        for token in tokens {
+            let expected = rust_arch_to_goarch(token, false)
+                .unwrap_or_else(|| panic!("table must cover {token}"));
+            let (_, arch) = map_target(&format!("{token}-unknown-linux-gnu"));
+            assert_eq!(
+                arch, expected,
+                "map_target and rust_arch_to_goarch must agree on '{token}'"
+            );
+        }
+    }
+
+    #[test]
+    fn test_goarch_endian_disambiguation() {
+        // Rust's env ARCH is "powerpc64" / "mips64" for BOTH endiannesses;
+        // only the endian flag tells them apart. Go's runtime GOARCH on a
+        // little-endian POWER host is ppc64le, never ppc64.
+        assert_eq!(rust_arch_to_goarch("powerpc64", true), Some("ppc64le"));
+        assert_eq!(rust_arch_to_goarch("powerpc64", false), Some("ppc64"));
+        assert_eq!(rust_arch_to_goarch("mips64", true), Some("mips64el"));
+        assert_eq!(rust_arch_to_goarch("mips64", false), Some("mips64"));
+        assert_eq!(rust_arch_to_goarch("mips", true), Some("mipsel"));
+        // Explicitly-little tokens are little regardless of the flag.
+        assert_eq!(rust_arch_to_goarch("powerpc64le", false), Some("ppc64le"));
+        assert_eq!(rust_arch_to_goarch("mips64el", false), Some("mips64el"));
+    }
+
+    #[test]
+    fn test_goarch_table_excludes_arm_and_unknowns() {
+        // 32-bit ARM is the deliberate vocabulary split: GOARCH is "arm" while
+        // map_target needs armv6/armv7 — each caller keeps its own handling.
+        assert_eq!(rust_arch_to_goarch("arm", true), None);
+        assert_eq!(rust_arch_to_goarch("armv7", false), None);
+        assert_eq!(rust_arch_to_goarch("wasm32", false), None);
+        assert_eq!(rust_arch_to_goarch("frob", false), None);
     }
 
     #[test]

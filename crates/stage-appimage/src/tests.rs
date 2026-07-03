@@ -194,6 +194,47 @@ fn filename_template_keeps_existing_extension() {
     assert_eq!(name, "custom-1.2.3.AppImage");
 }
 
+fn seeded_ctx(target: &str, amd64_variant: Option<&str>) -> Context {
+    let mut ctx = ctx_v("1.2.3");
+    let (os, arch) = anodizer_core::target::map_target(target);
+    set_per_target_template_vars(&mut ctx, Some(target), &os, &arch, amd64_variant);
+    ctx
+}
+
+#[test]
+fn filename_mips64el_single_arch_token() {
+    // Arch/arch_token already carry the whole mips token; the seeded `Mips`
+    // var must stay empty so a template's `{% if Mips %}` clause adds nothing
+    // — never the doubled `myapp-1.2.3-mips64el_mips64el.AppImage`.
+    let ctx = seeded_ctx("mips64el-unknown-linux-gnuabi64", None);
+    let (default_name, _) =
+        resolve_appimage_filename(&ctx, None, "myapp", "1.2.3", "mips64el").unwrap();
+    assert_eq!(default_name, "myapp-1.2.3-mips64el.AppImage");
+
+    let (templated, _) = resolve_appimage_filename(
+        &ctx,
+        Some("{{ ProjectName }}-{{ Version }}-{{ Arch }}{% if Mips %}_{{ Mips }}{% endif %}"),
+        "myapp",
+        "1.2.3",
+        "mips64el",
+    )
+    .unwrap();
+    assert_eq!(templated, "myapp-1.2.3-mips64el.AppImage");
+}
+
+#[test]
+fn untagged_x86_64_amd64_matches_build_baseline() {
+    // Same value the build stage seeds for an untagged x86_64 binary name
+    // ("v1"), and the default filename stays suffix-free (v1 baseline).
+    let ctx = seeded_ctx("x86_64-unknown-linux-gnu", None);
+    assert_eq!(
+        ctx.template_vars().get("Amd64").map(String::as_str),
+        Some("v1")
+    );
+    let (name, _) = resolve_appimage_filename(&ctx, None, "myapp", "1.2.3", "x86_64").unwrap();
+    assert_eq!(name, "myapp-1.2.3-x86_64.AppImage");
+}
+
 // ---------------------------------------------------------------------------
 // AppDir assembly
 // ---------------------------------------------------------------------------

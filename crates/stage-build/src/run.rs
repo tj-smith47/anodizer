@@ -36,7 +36,7 @@ use crate::run_helpers::{
 /// Per-target template variables set before rendering a target's binary name
 /// / paths and cleared afterwards so they don't leak into later targets.
 /// `ArtifactExt`, `ArtifactID`, and the arch-family vars (`Arm64`/`Arm`/
-/// `Amd64`/`I386`) are part of the set, so they all belong in the clear.
+/// `Amd64`/`Mips`/`I386`) are part of the set, so they all belong in the clear.
 const PER_TARGET_VARS: &[&str] = &[
     "Target",
     "Os",
@@ -44,18 +44,21 @@ const PER_TARGET_VARS: &[&str] = &[
     "Arm64",
     "Arm",
     "Amd64",
+    "Mips",
     "I386",
     "ArtifactExt",
     "ArtifactID",
 ];
 
 /// Set the per-target template vars (`Target`/`Os`/`Arch`, the arch-family
-/// var for the target's first component, `ArtifactExt`, `ArtifactID`) before
-/// rendering a target's binary name and paths.
+/// variant vars, `ArtifactExt`, `ArtifactID`) before rendering a target's
+/// binary name and paths.
 ///
 /// `os` is the already-mapped OS (`map_target(target).0`) so callers that
-/// need it for other decisions don't re-map. The arch-family var is one of
-/// `Arm64`/`Arm`/`Amd64`/`I386`, selected from the target's arch.
+/// need it for other decisions don't re-map. The variant vars come from the
+/// shared `seed_variant_vars` policy; binary names render before the amd64
+/// variant is detected from the resolved env, so `Amd64` carries the `"v1"`
+/// baseline here.
 fn set_per_target_vars(
     vars: &mut anodizer_core::template::TemplateVars,
     target: &str,
@@ -65,14 +68,7 @@ fn set_per_target_vars(
     vars.set("Target", target);
     vars.set("Os", os);
     vars.set("Arch", &map_target(target).1);
-    match target.split('-').next().unwrap_or("") {
-        "aarch64" => vars.set("Arm64", "v8"),
-        "armv7" | "armv7l" => vars.set("Arm", "7"),
-        "armv6" | "armv6l" | "arm" => vars.set("Arm", "6"),
-        "x86_64" => vars.set("Amd64", "v1"),
-        "i686" | "i386" | "i586" => vars.set("I386", "sse2"),
-        _ => {}
-    }
+    anodizer_core::archive_name::seed_variant_vars(vars, target, None);
     vars.set("ArtifactExt", if os == "windows" { ".exe" } else { "" });
     vars.set("ArtifactID", build_id);
 }
@@ -1260,6 +1256,24 @@ mod per_target_var_tests {
                 .map(String::as_str),
             Some("sse2")
         );
+    }
+
+    #[test]
+    fn untagged_x86_64_seeds_amd64_baseline_v1() {
+        // The value a binary-name template's `{{ .Amd64 }}` renders must match
+        // what the installer stages seed for the same untagged binary — the
+        // shared "v1" baseline, not an empty string on one side.
+        let v = vars_for("x86_64-unknown-linux-gnu", "linux", "");
+        assert_eq!(v.get("Amd64").map(String::as_str), Some("v1"));
+    }
+
+    #[test]
+    fn mips_targets_seed_no_mips_variant() {
+        // Arch carries the whole mips token; Mips must stay empty so name
+        // templates appending `{% if Mips %}_{{ Mips }}` never double it.
+        let v = vars_for("mips64el-unknown-linux-gnuabi64", "linux", "");
+        assert_eq!(v.get("Arch").map(String::as_str), Some("mips64el"));
+        assert_eq!(v.get("Mips").map(String::as_str), Some(""));
     }
 
     #[test]

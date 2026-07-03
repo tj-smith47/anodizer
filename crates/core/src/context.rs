@@ -1576,18 +1576,15 @@ pub fn map_os_to_goos(os: &str) -> &str {
 
 /// Map Rust's `std::env::consts::ARCH` to Go-compatible GOARCH naming.
 /// Templates expect Go runtime names (e.g. "amd64" not "x86_64").
+///
+/// Delegates to the shared [`crate::target::rust_arch_to_goarch`] table so a
+/// host-derived `{{ .Runtime.Goarch }}` can never disagree with the
+/// triple-derived arch tokens in asset names. `ARCH` doesn't encode
+/// endianness, so the host's own compile-time endianness disambiguates
+/// `powerpc64`/`mips64`. Tokens outside the table (`arm` — GOARCH really is
+/// "arm" — plus exotics) pass through unchanged.
 pub fn map_arch_to_goarch(arch: &str) -> &str {
-    match arch {
-        "x86_64" => "amd64",
-        "x86" => "386",
-        "aarch64" => "arm64",
-        "powerpc64" => "ppc64",
-        "s390x" => "s390x",
-        "mips" => "mips",
-        "mips64" => "mips64",
-        "riscv64" => "riscv64",
-        other => other,
-    }
+    crate::target::rust_arch_to_goarch(arch, cfg!(target_endian = "little")).unwrap_or(arch)
 }
 
 #[cfg(test)]
@@ -2407,6 +2404,26 @@ mod tests {
         );
         // RuntimeGoarch uses Go naming (e.g. "amd64" not "x86_64")
         assert_eq!(goarch, map_arch_to_goarch(std::env::consts::ARCH));
+    }
+
+    #[test]
+    fn test_map_arch_to_goarch_matches_shared_table() {
+        // Host template vars and triple-derived asset tokens share one table:
+        // loongarch64 must reach "loong64" (the former private copy passed it
+        // through verbatim, so host renders never matched asset names) and the
+        // endian-ambiguous hosts resolve by this build's endianness.
+        assert_eq!(map_arch_to_goarch("x86_64"), "amd64");
+        assert_eq!(map_arch_to_goarch("aarch64"), "arm64");
+        assert_eq!(map_arch_to_goarch("x86"), "386");
+        assert_eq!(map_arch_to_goarch("loongarch64"), "loong64");
+        assert_eq!(map_arch_to_goarch("sparc64"), "sparc64");
+        assert_eq!(
+            map_arch_to_goarch("powerpc64"),
+            crate::target::rust_arch_to_goarch("powerpc64", cfg!(target_endian = "little"))
+                .unwrap()
+        );
+        // GOARCH for 32-bit ARM really is "arm" — passthrough, not a mapping gap.
+        assert_eq!(map_arch_to_goarch("arm"), "arm");
     }
 
     #[test]

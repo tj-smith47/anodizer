@@ -740,37 +740,34 @@ fn compute_snap_filename(
     arch: &str,
     amd64_variant: Option<&str>,
 ) -> Result<String> {
-    // Default snap name template:
-    //   {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}{{ with .Mips }}_{{ . }}{{ end }}{{ if not (eq .Amd64 "v1") }}{{ .Amd64 }}{{ end }}
     let saved_project_name = ctx
         .template_vars()
         .get("ProjectName")
         .cloned()
         .unwrap_or_default();
     ctx.template_vars_mut().set("ProjectName", snap_name);
-    ctx.template_vars_mut().set("Os", os);
-    // For ARM targets, split Arch="arm" and Arm="6"/"7" so the default
-    // template (concatenating `{{ .Arch }}v{{ .Arm }}`) produces "armv6"
-    // rather than "armv6v6".
-    if let Some(version) = arch.strip_prefix("armv") {
-        ctx.template_vars_mut().set("Arch", "arm");
-        ctx.template_vars_mut().set("Arm", version);
-    } else {
-        ctx.template_vars_mut().set("Arch", arch);
-        ctx.template_vars_mut().set("Arm", "");
+    match target {
+        // The archive-name seeding policy verbatim (arm split, variant vars
+        // empty) — the snap default IS core's default asset-name template, so
+        // the vars it reads must be seeded identically.
+        Some(t) => anodizer_core::archive_name::seed_target_vars(ctx, t),
+        // Host-target build (no triple): seed the caller-derived Os/Arch and
+        // clear the variant vars the default template reads. An empty
+        // `{{ .Target }}` renders as the empty string in user templates.
+        None => {
+            ctx.template_vars_mut().set("Os", os);
+            ctx.template_vars_mut().set("Arch", arch);
+            ctx.template_vars_mut().set("Arm", "");
+            ctx.template_vars_mut().set("Mips", "");
+            ctx.template_vars_mut().set("Target", "");
+        }
     }
     // The amd64 micro-architecture variant comes from the built binary's
-    // metadata, not the go-arch. The default template's `{% if not (eq .Amd64
-    // "v1") %}` clause suppresses the baseline so `None`/`"v1"` preserve
-    // historical single-variant snap names, while a non-`v1` variant (e.g.
-    // `"v3"`) appends the suffix.
-    ctx.template_vars_mut()
-        .set("Amd64", amd64_variant.unwrap_or(""));
-    ctx.template_vars_mut().set("Mips", "");
-    // `{{ .Target }}` is optional and consumed only by user-provided
-    // `name_template:` values; empty signals a host-target build (no
-    // triple) and Tera renders the interpolation as the empty string.
-    ctx.template_vars_mut().set("Target", target.unwrap_or(""));
+    // metadata, not the go-arch. The default template's Amd64 clause
+    // suppresses the `v1` baseline so `None`/`"v1"` preserve historical
+    // single-variant snap names, while a non-`v1` variant (e.g. `"v3"`)
+    // appends the suffix.
+    anodizer_core::archive_name::seed_amd64_variant_var(ctx.template_vars_mut(), amd64_variant);
     let tmpl = snap_cfg
         .name_template
         .as_deref()
@@ -1471,6 +1468,64 @@ mod id_binding_tests {
             "x86_64-unknown-linux-gnu".to_string(),
             Some("v3".to_string())
         )));
+    }
+
+    /// The default snap name must equal core's default asset-name stem plus
+    /// `.snap` for every target shape (arm split, mips whole-token, amd64
+    /// baseline) — snaps carry the same name every sibling artifact derives
+    /// for the target, never a privately-translated scheme.
+    #[test]
+    fn default_snap_name_equals_core_default_stem() {
+        use anodizer_core::test_helpers::TestContextBuilder;
+        let cases: &[(&str, &str)] = &[
+            ("x86_64-unknown-linux-gnu", "mysnap_1.2.3_linux_amd64.snap"),
+            ("aarch64-unknown-linux-gnu", "mysnap_1.2.3_linux_arm64.snap"),
+            (
+                "armv7-unknown-linux-gnueabihf",
+                "mysnap_1.2.3_linux_armv7.snap",
+            ),
+            (
+                "mips64el-unknown-linux-gnuabi64",
+                "mysnap_1.2.3_linux_mips64el.snap",
+            ),
+        ];
+        for (target, expected) in cases {
+            let mut ctx = TestContextBuilder::new()
+                .project_name("myapp")
+                .tag("v1.2.3")
+                .build();
+            let (os, arch) = anodizer_core::target::map_target(target);
+            let name = compute_snap_filename(
+                &mut ctx,
+                &SnapcraftConfig::default(),
+                "myapp",
+                "mysnap",
+                Some(target),
+                &os,
+                &arch,
+                None,
+            )
+            .expect("render snap filename");
+            assert_eq!(&name, expected, "snap name for {target}");
+
+            // Cross-check against core's own render of the same default.
+            let mut core_ctx = TestContextBuilder::new()
+                .project_name("myapp")
+                .tag("v1.2.3")
+                .build();
+            core_ctx.template_vars_mut().set("ProjectName", "mysnap");
+            let stem = anodizer_core::archive_name::render_archive_stem(
+                &mut core_ctx,
+                anodizer_core::archive_name::DEFAULT_NAME_TEMPLATE,
+                target,
+            )
+            .unwrap();
+            assert_eq!(
+                name,
+                format!("{stem}.snap"),
+                "core stem parity for {target}"
+            );
+        }
     }
 
     #[test]

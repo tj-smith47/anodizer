@@ -2,10 +2,12 @@ use std::collections::BTreeMap;
 
 use serde::Serialize;
 
-// The default snap name template
-// — preserves Os, Arm/Mips/Amd64 variant suffixes so multi-arch builds don't
-// collapse to the same filename.
-pub(super) const DEFAULT_SNAP_NAME_TEMPLATE: &str = "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ with .Arm }}v{{ . }}{{ end }}{{ with .Mips }}_{{ . }}{{ end }}{{ if not (eq .Amd64 \"v1\") }}{{ .Amd64 }}{{ end }}";
+// The default snap name template — core's default asset-name template
+// verbatim (`ProjectName` is rebound to the snap name before rendering), so
+// the Os/Arch stem and the Arm/Mips/Amd64 variant suffixes cannot drift from
+// the names every sibling artifact carries for the same target.
+pub(super) const DEFAULT_SNAP_NAME_TEMPLATE: &str =
+    anodizer_core::archive_name::DEFAULT_NAME_TEMPLATE;
 
 // ---------------------------------------------------------------------------
 // Serde-serializable snapcraft YAML model

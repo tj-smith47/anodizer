@@ -118,6 +118,46 @@ pub fn seed_target_vars(ctx: &mut Context, target: &str) {
     }
 }
 
+/// Seed the micro-architecture variant template vars (`Arm`, `Arm64`, `Amd64`,
+/// `Mips`, `I386`) from a target triple's first component — the build/installer
+/// naming policy, distinct from [`seed_target_vars`]'s archive-asset policy.
+///
+/// Where [`seed_target_vars`] leaves every variant var empty (archive asset
+/// names carry the whole go-arch in `Arch`), this policy seeds each family's
+/// GoReleaser-default micro-architecture level so a user template referencing
+/// `{{ .Amd64 }}` / `{{ .Arm64 }}` / `{{ .I386 }}` renders the same value in a
+/// build binary name and in a makeself/AppImage filename for the same binary:
+/// `aarch64` → `Arm64="v8"`, `armv7` → `Arm="7"`, `armv6`/`arm` → `Arm="6"`,
+/// `x86_64` → `Amd64=<variant>` (the binary's `amd64_variant` metadata,
+/// defaulting to the `"v1"` baseline when untagged), `i686` → `I386="sse2"`.
+///
+/// `Mips` is NEVER seeded: `map_target` already carries the full mips token
+/// (`mips64el`, …) in `Arch`, so any non-empty `Mips` doubles every default
+/// filename that appends [`MICRO_ARCH_VARIANT_SUFFIX`]'s
+/// `{% if Mips %}_{{ Mips }}` clause (`…_mips64el_mips64el`) — the same
+/// contract [`seed_target_vars`] pins for archive names.
+///
+/// All five vars are reset every call so a prior target's value cannot leak.
+pub fn seed_variant_vars(
+    vars: &mut crate::template::TemplateVars,
+    target: &str,
+    amd64_variant: Option<&str>,
+) {
+    vars.set("Arm", "");
+    vars.set("Arm64", "");
+    vars.set("Amd64", "");
+    vars.set("Mips", "");
+    vars.set("I386", "");
+    match target.split('-').next().unwrap_or("") {
+        "aarch64" => vars.set("Arm64", "v8"),
+        "armv7" | "armv7l" => vars.set("Arm", "7"),
+        "armv6" | "armv6l" | "arm" => vars.set("Arm", "6"),
+        "x86_64" => vars.set("Amd64", amd64_variant.unwrap_or("v1")),
+        "i686" | "i386" | "i586" => vars.set("I386", "sse2"),
+        _ => {}
+    }
+}
+
 /// Seed the `Amd64` micro-architecture variant template var from a built
 /// binary's `amd64_variant` metadata.
 ///
@@ -390,6 +430,52 @@ mod tests {
         // must remain a true subset of the full suffix so the two families
         // disambiguate amd64 identically.
         assert!(MICRO_ARCH_VARIANT_SUFFIX.ends_with(INSTALLER_AMD64_VARIANT_SUFFIX));
+    }
+
+    #[test]
+    fn variant_vars_mips_stays_empty_for_every_mips_goarch() {
+        // Arch already carries the whole mips token, so a seeded Mips would
+        // render the doubled `…_mips64el_mips64el` default filename.
+        use crate::template::TemplateVars;
+        for target in [
+            "mips-unknown-linux-gnu",
+            "mipsel-unknown-linux-gnu",
+            "mips64-unknown-linux-gnuabi64",
+            "mips64el-unknown-linux-gnuabi64",
+        ] {
+            let mut v = TemplateVars::new();
+            seed_variant_vars(&mut v, target, None);
+            assert_eq!(
+                v.get("Mips").map(String::as_str),
+                Some(""),
+                "Mips must stay empty for {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn variant_vars_untagged_x86_64_seeds_amd64_baseline() {
+        use crate::template::TemplateVars;
+        let mut v = TemplateVars::new();
+        seed_variant_vars(&mut v, "x86_64-unknown-linux-gnu", None);
+        assert_eq!(v.get("Amd64").map(String::as_str), Some("v1"));
+        // A tagged variant overrides the baseline.
+        seed_variant_vars(&mut v, "x86_64-unknown-linux-gnu", Some("v3"));
+        assert_eq!(v.get("Amd64").map(String::as_str), Some("v3"));
+    }
+
+    #[test]
+    fn variant_vars_family_levels_and_reset() {
+        use crate::template::TemplateVars;
+        let mut v = TemplateVars::new();
+        seed_variant_vars(&mut v, "aarch64-unknown-linux-gnu", None);
+        assert_eq!(v.get("Arm64").map(String::as_str), Some("v8"));
+        seed_variant_vars(&mut v, "armv7-unknown-linux-gnueabihf", None);
+        assert_eq!(v.get("Arm").map(String::as_str), Some("7"));
+        assert_eq!(v.get("Arm64").map(String::as_str), Some(""));
+        seed_variant_vars(&mut v, "i686-unknown-linux-gnu", None);
+        assert_eq!(v.get("I386").map(String::as_str), Some("sse2"));
+        assert_eq!(v.get("Arm").map(String::as_str), Some(""));
     }
 
     #[test]

@@ -9,19 +9,20 @@ PROJECT="{{ ProjectName }}"
 PREFIX="${PREFIX:-/usr/local}"
 BINDIR="${BINDIR:-${PREFIX}/bin}"
 
+# The detection case arms are emitted by anodizer from the same os/arch
+# vocabulary that keys the asset table below, restricted to this release's
+# targets — no hand-written uname mapping that silently strands a released
+# target behind the unsupported-platform error.
 detect_os() {
     case "$(uname -s)" in
-        Linux*)  echo "linux" ;;
-        Darwin*) echo "darwin" ;;
-        MINGW*|MSYS*|CYGWIN*) echo "windows" ;;
+{{ InstallerDetectOsCases }}
         *) echo "unsupported" ;;
     esac
 }
 
 detect_arch() {
     case "$(uname -m)" in
-        x86_64|amd64)  echo "amd64" ;;
-        aarch64|arm64) echo "arm64" ;;
+{{ InstallerDetectArchCases }}
         *) echo "unsupported" ;;
     esac
 }

@@ -33,13 +33,20 @@ impl Stage for TemplateFilesStage {
             )
         })?;
 
-        // Engine-derived `os-arch -> asset` case table for a `curl | sh`
-        // installer, so its download URLs track the archive stage's real asset
-        // names instead of a hand-rolled shell derivation that silently 404s.
-        let installer_cases = anodizer_core::installer::render_asset_case_table(ctx)
-            .context("templatefiles: derive installer asset case table")?;
+        // Engine-derived case tables for a `curl | sh` installer: the
+        // `os-arch -> asset` arms plus the uname detection arms, so both the
+        // download URLs and the case KEYS track the engine's own os/arch
+        // vocabulary instead of a hand-rolled shell copy that silently drifts.
+        let installer_cases = anodizer_core::installer::render_installer_cases(ctx)
+            .context("templatefiles: derive installer case tables")?;
         ctx.template_vars_mut()
-            .set("InstallerAssetCases", &installer_cases);
+            .set("InstallerAssetCases", &installer_cases.asset_cases);
+        ctx.template_vars_mut()
+            .set("InstallerDetectOsCases", &installer_cases.detect_os_cases);
+        ctx.template_vars_mut().set(
+            "InstallerDetectArchCases",
+            &installer_cases.detect_arch_cases,
+        );
 
         for entry in &entries {
             let id = entry.id.as_deref().unwrap_or("default");
@@ -665,6 +672,38 @@ mod tests {
             rendered.contains("no prebuilt ${PROJECT} binary"),
             "fallback error arm must be present"
         );
+
+        // The uname detection arms are generated from the same released
+        // targets, so every asset arm above is reachable at runtime.
+        for arm in [
+            "Linux*) echo \"linux\" ;;",
+            "Darwin*) echo \"darwin\" ;;",
+            "MINGW*|MSYS*|CYGWIN*) echo \"windows\" ;;",
+            "x86_64|amd64) echo \"amd64\" ;;",
+            "aarch64|arm64) echo \"arm64\" ;;",
+        ] {
+            assert!(rendered.contains(arm), "missing detection arm: {arm}");
+        }
+        // Fully rendered — no template syntax may survive into the script.
+        assert!(
+            !rendered.contains("{{") && !rendered.contains("{%"),
+            "unrendered template syntax left in install.sh"
+        );
+
+        // The rendered installer must be valid POSIX shell.
+        #[cfg(unix)]
+        {
+            let out = std::process::Command::new("sh")
+                .arg("-n")
+                .arg(ctx.config.dist.join("install.sh"))
+                .output()
+                .expect("run sh -n");
+            assert!(
+                out.status.success(),
+                "sh -n rejected the rendered installer: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
     }
 
     #[test]
