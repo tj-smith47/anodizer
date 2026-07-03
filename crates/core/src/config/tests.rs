@@ -9691,6 +9691,32 @@ crates:
 }
 
 #[test]
+fn validate_builds_gates_amd64_variant_to_known_levels() {
+    let yaml = r#"
+project_name: test
+crates:
+  - name: app
+    path: "."
+    tag_template: "v{{ .Version }}"
+    builds:
+      - binary: app
+        targets: ["x86_64-unknown-linux-gnu"]
+        amd64_variant: "v3"
+"#;
+    let cfg: Config = serde_yaml_ng::from_str(yaml).unwrap();
+    validate_builds(&cfg).expect("a declared v3 level must validate cleanly");
+
+    let bad = yaml.replace("\"v3\"", "\"x86-64-v3\"");
+    let cfg: Config = serde_yaml_ng::from_str(&bad).unwrap();
+    let err = validate_builds(&cfg).expect_err("a non-level value must be rejected");
+    assert!(err.contains("amd64_variant"), "names the field: {err}");
+    assert!(
+        err.contains("\"v1\", \"v2\", \"v3\", \"v4\""),
+        "lists the levels: {err}"
+    );
+}
+
+#[test]
 fn validate_builds_accepts_default_cargo() {
     let yaml = r#"
 project_name: test

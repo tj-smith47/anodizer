@@ -373,6 +373,18 @@ pub struct BuildConfig {
     /// instead of dist/{target}/. Overrides the crate-level setting.
     #[serde(default, deserialize_with = "deserialize_string_or_bool_opt")]
     pub no_unique_dist_dir: Option<StringOrBool>,
+    /// Declared x86-64 micro-architecture level for this build's artifacts:
+    /// `"v2"`, `"v3"`, `"v4"`, or the `"v1"` baseline. When set, it overrides
+    /// the level anodizer detects from the resolved build env (`RUSTFLAGS` /
+    /// `CARGO_TARGET_<TRIPLE>_RUSTFLAGS` carrying `-Ctarget-cpu=x86-64-v<N>`)
+    /// for BOTH the artifact's `amd64_variant` metadata — which names a
+    /// v2/v3-tuned group's archives (`…_amd64v3.tar.gz`) — and the config-time
+    /// asset-name derivation feeding cargo-binstall `pkg_url` and the
+    /// `curl | sh` installer's case table. Declare it when the tuning value is
+    /// only resolvable at build time (e.g. `RUSTFLAGS: "{{ .Env.CI_FLAGS }}"`)
+    /// or when importing a tuned binary via `builder: prebuilt`. Ignored for
+    /// non-x86_64 targets.
+    pub amd64_variant: Option<String>,
     /// Builder to use for this entry. `cargo` (the default when omitted)
     /// runs `cargo build`. `prebuilt` skips compilation and imports a
     /// binary the operator already produced via the `prebuilt:` block.

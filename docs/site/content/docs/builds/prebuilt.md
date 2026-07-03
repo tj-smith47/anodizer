@@ -70,7 +70,7 @@ globals like `{{ Version }}` and `{{ ProjectName }}`):
 | `{{ Target }}` | `x86_64-unknown-linux-gnu` | Full Rust target triple. |
 | `{{ Os }}` | `linux` | GoReleaser-style OS slug (`linux`, `darwin`, `windows`, …). |
 | `{{ Arch }}` | `amd64` | GoReleaser-style arch slug (`amd64`, `arm64`, `armv7`, …). |
-| `{{ Amd64 }}` | `v1` | AMD64 micro-arch variant; set for `x86_64-*` triples. |
+| `{{ Amd64 }}` | `v1` | AMD64 micro-arch variant; set for `x86_64-*` triples. Imports default to the `v1` baseline; declare `amd64_variant: "v3"` on the build entry when importing a tuned binary so its metadata and asset names carry the real level. |
 | `{{ Arm64 }}` | `v8` | ARM64 micro-arch variant; set for `aarch64-*` triples. |
 | `{{ Arm }}` | `7` | ARM micro-arch variant; set for `armv6*` / `armv7*` triples. |
 | `{{ I386 }}` | `sse2` | i386 micro-arch variant; set for `i686-*` / `i386-*` / `i586-*` triples. |

@@ -1579,6 +1579,43 @@ binstall = { pkg-url = "https://example/x", custom = "keep" }
         );
     }
 
+    /// A per-target RUSTFLAGS templated on the planner-seeded `Os` var must
+    /// derive the right level for EVERY target of the loop. The regression
+    /// shape: without per-target seeding inside the projection, target 1
+    /// (linux) rendered with no `Os` at all (raw fallback → baseline) and
+    /// target 2 (darwin) rendered with target 1's STALE `Os` (silently the
+    /// wrong target's level).
+    #[test]
+    fn os_templated_tuning_env_derives_per_target_levels_across_the_loop() {
+        let mut env = HashMap::new();
+        env.insert(
+            "x86_64-*".to_string(),
+            HashMap::from([(
+                "RUSTFLAGS".to_string(),
+                "{% if Os == \"darwin\" %}-Ctarget-cpu=x86-64-v2\
+                 {% else %}-Ctarget-cpu=x86-64-v3{% endif %}"
+                    .to_string(),
+            )]),
+        );
+        let crate_cfg = tuned_crate(env);
+        let mut ctx = make_ctx();
+        let assets = crate_archive_asset_names(&crate_cfg, &[], &mut ctx)
+            .unwrap()
+            .expect("binstallable archive with targets derives names");
+        assert_eq!(
+            assets["x86_64-unknown-linux-gnu"].asset_name, "myapp_1.0.0_linux_amd64v3.tar.gz",
+            "first target must render the env with ITS OWN Os seeded"
+        );
+        assert_eq!(
+            assets["x86_64-apple-darwin"].asset_name, "myapp_1.0.0_darwin_amd64v2.tar.gz",
+            "second target must not render with the first target's stale Os"
+        );
+        assert_eq!(
+            assets["aarch64-unknown-linux-gnu"].asset_name,
+            "myapp_1.0.0_linux_arm64.tar.gz"
+        );
+    }
+
     /// A build env whose RUSTFLAGS cannot be rendered at config time (an
     /// undefined build-time-only variable) must NOT invent a variant: the
     /// derivation falls back to the baseline name and the snapshot

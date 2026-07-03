@@ -29,57 +29,12 @@ use crate::run_helpers::{
     run_parallel, run_sequential, seed_determinism_state,
 };
 
-// ---------------------------------------------------------------------------
-// Per-target template variables
-// ---------------------------------------------------------------------------
-
-/// Per-target template variables set before rendering a target's binary name
-/// / paths and cleared afterwards so they don't leak into later targets.
-/// `ArtifactExt`, `ArtifactID`, and the arch-family vars (`Arm64`/`Arm`/
-/// `Amd64`/`Mips`/`I386`) are part of the set, so they all belong in the clear.
-const PER_TARGET_VARS: &[&str] = &[
-    "Target",
-    "Os",
-    "Arch",
-    "Arm64",
-    "Arm",
-    "Amd64",
-    "Mips",
-    "I386",
-    "ArtifactExt",
-    "ArtifactID",
-];
-
-/// Set the per-target template vars (`Target`/`Os`/`Arch`, the arch-family
-/// variant vars, `ArtifactExt`, `ArtifactID`) before rendering a target's
-/// binary name and paths.
-///
-/// `os` is the already-mapped OS (`map_target(target).0`) so callers that
-/// need it for other decisions don't re-map. The variant vars come from the
-/// shared `seed_variant_vars` policy; binary names render before the amd64
-/// variant is detected from the resolved env, so `Amd64` carries the `"v1"`
-/// baseline here.
-fn set_per_target_vars(
-    vars: &mut anodizer_core::template::TemplateVars,
-    target: &str,
-    os: &str,
-    build_id: &str,
-) {
-    vars.set("Target", target);
-    vars.set("Os", os);
-    vars.set("Arch", &map_target(target).1);
-    anodizer_core::archive_name::seed_variant_vars(vars, target, None);
-    vars.set("ArtifactExt", if os == "windows" { ".exe" } else { "" });
-    vars.set("ArtifactID", build_id);
-}
-
-/// Clear the per-target template vars set by [`set_per_target_vars`] so they
-/// don't leak into the next target's rendering.
-fn clear_per_target_vars(vars: &mut anodizer_core::template::TemplateVars) {
-    for k in PER_TARGET_VARS {
-        vars.set(k, "");
-    }
-}
+// Per-target template variable seeding lives in core
+// (`anodizer_core::build_env::seed_build_target_vars`) so the config-time
+// env projection seeds the exact set this planner renders with.
+use anodizer_core::build_env::{
+    build_amd64_variant, clear_build_target_vars, prebuilt_amd64_variant, seed_build_target_vars,
+};
 
 // ---------------------------------------------------------------------------
 // BuildStage
@@ -624,7 +579,7 @@ fn plan_build_jobs(
                 let (os, _arch) = map_target(target);
 
                 // Set per-target template vars BEFORE rendering binary name
-                set_per_target_vars(
+                seed_build_target_vars(
                     ctx.template_vars_mut(),
                     target,
                     &os,
@@ -695,11 +650,18 @@ fn plan_build_jobs(
                             .join(&src_name);
 
                     // Clear per-target template vars before continuing
-                    clear_per_target_vars(ctx.template_vars_mut());
+                    clear_build_target_vars(ctx.template_vars_mut());
 
-                    let copy_variant = raw_target_env
-                        .as_ref()
-                        .and_then(|e| detect_amd64_variant(target, e));
+                    // Declared `build.amd64_variant` overrides detection —
+                    // same precedence as the compile path's shared decision.
+                    let copy_variant = anodizer_core::build_env::declared_amd64_variant(
+                        build, target,
+                    )
+                    .or_else(|| {
+                        raw_target_env
+                            .as_ref()
+                            .and_then(|e| detect_amd64_variant(target, e))
+                    });
                     copy_jobs.push(BuildJob {
                         cmd: None,
                         copy_from: Some((src_path, bin_path.clone())),
@@ -741,6 +703,11 @@ fn plan_build_jobs(
                 // user-insertion-order cascade requires changing the YAML
                 // schema to an ordered list — tracked upstream.
                 let mut rendered_env: HashMap<String, String> = HashMap::new();
+                // (key, value before the cascade): env blocks are per-target
+                // config, so the injections are undone after the override
+                // merge — a later target's `{{ .Env.KEY }}` seeing an earlier
+                // target's value is order-dependent nondeterminism.
+                let mut cascade_touched: Vec<(String, Option<String>)> = Vec::new();
                 let mut keys: Vec<&String> = target_env.keys().collect();
                 keys.sort();
                 for k in keys {
@@ -755,28 +722,43 @@ fn plan_build_jobs(
                     let expanded = expand_env_vars(&rendered_val);
                     // Inject into ctx env so later entries (and templated
                     // fields) see this KEY via `{{ .Env.KEY }}`.
+                    cascade_touched
+                        .push((k.clone(), ctx.template_vars().all_env().get(k).cloned()));
                     ctx.template_vars_mut().set_env(k, &expanded);
                     rendered_env.insert(k.clone(), expanded);
                 }
                 target_env = rendered_env;
 
-                // Merge override env if matched
-                if let Some(ov) = matched_override
-                    && let Some(ref ov_env) = ov.env
-                {
-                    let parsed = anodizer_core::config::parse_env_entries(ov_env)
-                        .with_context(|| "build override: parse env entries")?;
-                    for (k, v) in &parsed {
-                        let rendered_val = ctx.render_template(v).unwrap_or_else(|e| {
-                            log.warn(&format!(
-                                "failed to render override env value for '{}': {}, using raw value",
-                                k, e
-                            ));
-                            v.clone()
-                        });
-                        target_env.insert(k.clone(), expand_env_vars(&rendered_val));
+                // Merge override env if matched (may reference the cascade,
+                // so it renders before the injections are undone).
+                let override_merge = (|| -> Result<()> {
+                    if let Some(ov) = matched_override
+                        && let Some(ref ov_env) = ov.env
+                    {
+                        let parsed = anodizer_core::config::parse_env_entries(ov_env)
+                            .with_context(|| "build override: parse env entries")?;
+                        for (k, v) in &parsed {
+                            let rendered_val = ctx.render_template(v).unwrap_or_else(|e| {
+                                log.warn(&format!(
+                                    "failed to render override env value for '{}': {}, using raw value",
+                                    k, e
+                                ));
+                                v.clone()
+                            });
+                            target_env.insert(k.clone(), expand_env_vars(&rendered_val));
+                        }
+                    }
+                    Ok(())
+                })();
+                for (k, prior) in cascade_touched {
+                    match prior {
+                        Some(p) => ctx.template_vars_mut().set_env(&k, &p),
+                        None => {
+                            ctx.template_vars_mut().unset_env(&k);
+                        }
                     }
                 }
+                override_merge?;
 
                 // Set per-target hook context: Name, Path, Ext
                 ctx.template_vars_mut().set("Name", &binary_name);
@@ -786,7 +768,7 @@ fn plan_build_jobs(
                     .set("Ext", if os == "windows" { ".exe" } else { "" });
 
                 // Remove per-target template variables to avoid leaking
-                clear_per_target_vars(ctx.template_vars_mut());
+                clear_build_target_vars(ctx.template_vars_mut());
                 // Name/Path/Ext are set just above for the hook context only
                 // on the compile path, so they're cleared here (not part of
                 // the shared per-target set).
@@ -872,7 +854,7 @@ fn plan_build_jobs(
                     no_unique_dist_dir: no_unique_dist_dir_val,
                     crate_path: crate_cfg.path.clone(),
                     mod_timestamp: build.mod_timestamp.clone(),
-                    amd64_variant: detect_amd64_variant(target, &target_env),
+                    amd64_variant: build_amd64_variant(build, target, &target_env),
                     // Fully-rendered per-target build env (overrides + the
                     // reproducible RUSTFLAGS/SOURCE_DATE_EPOCH merges already
                     // folded in) flows into this job's build hooks beneath the
@@ -997,14 +979,12 @@ fn plan_prebuilt_build(
 
         let (os, _arch) = map_target(target);
 
-        set_per_target_vars(
+        seed_build_target_vars(
             ctx.template_vars_mut(),
             target,
             &os,
             build.id.as_deref().unwrap_or(""),
         );
-        let first_component = target.split('-').next().unwrap_or("");
-
         let binary_name = ctx.render_template(&binary_field).unwrap_or_else(|e| {
             log.warn(&format!(
                 "failed to render binary template '{}': {}, using raw value",
@@ -1020,7 +1000,7 @@ fn plan_prebuilt_build(
             )
         })?;
 
-        clear_per_target_vars(ctx.template_vars_mut());
+        clear_build_target_vars(ctx.template_vars_mut());
 
         let staged_path = std::path::PathBuf::from(&rendered_path);
         let dry_run = ctx.options.dry_run;
@@ -1035,11 +1015,7 @@ fn plan_prebuilt_build(
             })?;
         }
 
-        let amd64_variant = if first_component == "x86_64" {
-            Some("v1".to_string())
-        } else {
-            None
-        };
+        let amd64_variant = prebuilt_amd64_variant(build, target);
 
         let dist_dir = ctx.config.dist.clone();
         crate::run_helpers::add_artifact(
@@ -1212,12 +1188,14 @@ mod reproducible_rustflags_tests {
 
 #[cfg(test)]
 mod per_target_var_tests {
-    use super::{PER_TARGET_VARS, clear_per_target_vars, set_per_target_vars};
+    use anodizer_core::build_env::{
+        BUILD_TARGET_VARS, clear_build_target_vars, seed_build_target_vars,
+    };
     use anodizer_core::template::TemplateVars;
 
     fn vars_for(target: &str, os: &str, id: &str) -> TemplateVars {
         let mut v = TemplateVars::new();
-        set_per_target_vars(&mut v, target, os, id);
+        seed_build_target_vars(&mut v, target, os, id);
         v
     }
 
@@ -1279,13 +1257,138 @@ mod per_target_var_tests {
     #[test]
     fn clear_empties_every_set_var() {
         let mut v = vars_for("x86_64-pc-windows-msvc", "windows", "cli");
-        clear_per_target_vars(&mut v);
-        for k in PER_TARGET_VARS {
+        clear_build_target_vars(&mut v);
+        for k in BUILD_TARGET_VARS {
             assert_eq!(
                 v.get(k).map(String::as_str),
                 Some(""),
                 "{k} must be cleared"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod env_scope_tests {
+    use super::*;
+    use anodizer_core::config::CrateConfig;
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    const LINUX: &str = "x86_64-unknown-linux-gnu";
+    const WINDOWS: &str = "x86_64-pc-windows-msvc";
+
+    /// Target A's env block defines `LEVEL`; target B's `RUSTFLAGS`
+    /// references `{{ .Env.LEVEL }}` without defining it — the shape that
+    /// leaked A's injection into B's render when the cascade was never
+    /// undone.
+    fn leaky_crate() -> CrateConfig {
+        let mut env = HashMap::new();
+        env.insert(
+            LINUX.to_string(),
+            HashMap::from([
+                ("LEVEL".to_string(), "x86-64-v3".to_string()),
+                (
+                    "RUSTFLAGS".to_string(),
+                    "-Ctarget-cpu={{ .Env.LEVEL }}".to_string(),
+                ),
+            ]),
+        );
+        env.insert(
+            WINDOWS.to_string(),
+            HashMap::from([(
+                "RUSTFLAGS".to_string(),
+                "-Ctarget-cpu={{ .Env.LEVEL }}".to_string(),
+            )]),
+        );
+        CrateConfig {
+            name: "myapp".to_string(),
+            path: "no-such-dir".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("myapp".to_string()),
+                targets: Some(vec![LINUX.to_string(), WINDOWS.to_string()]),
+                env: Some(env),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }
+    }
+
+    fn plan(krate: &CrateConfig, ctx: &mut Context) -> (Vec<BuildJob>, Vec<BuildJob>) {
+        let log = ctx.logger("build");
+        let strategy = ctx.config.default_cross_strategy();
+        let inputs = PlanInputs {
+            crates: std::slice::from_ref(krate),
+            default_targets: &[],
+            default_strategy: &strategy,
+            default_flags: &None,
+            default_ignores: &[],
+            default_overrides: &[],
+            commit_timestamp: "0",
+        };
+        plan_build_jobs(ctx, &log, &inputs).expect("planning succeeds")
+    }
+
+    /// Env blocks are per-target config: a later target's `Env.LEVEL` must
+    /// not resolve to an earlier target's cascade injection, and no cascade
+    /// key may survive planning. The projection SSOT must agree with the
+    /// planner's stamps on both targets.
+    #[test]
+    fn cascade_env_injections_are_scoped_per_target() {
+        let krate = leaky_crate();
+        let mut ctx = TestContextBuilder::new().project_name("myapp").build();
+        let (jobs, copy_jobs) = plan(&krate, &mut ctx);
+        assert!(copy_jobs.is_empty());
+        assert_eq!(jobs.len(), 2);
+        let linux = jobs.iter().find(|j| j.target == LINUX).unwrap();
+        let windows = jobs.iter().find(|j| j.target == WINDOWS).unwrap();
+        assert_eq!(
+            linux.amd64_variant.as_deref(),
+            Some("v3"),
+            "the same-block cascade must still resolve"
+        );
+        assert_eq!(
+            windows.amd64_variant, None,
+            "the second target's Env.LEVEL must not see the first target's injection"
+        );
+        assert!(
+            !ctx.template_vars().all_env().contains_key("LEVEL"),
+            "cascade keys must not survive planning"
+        );
+
+        // Planner and config-time projection agree on both targets.
+        assert_eq!(
+            anodizer_core::build_env::config_time_amd64_variant(&krate, LINUX, &[], &mut ctx)
+                .unwrap()
+                .as_deref(),
+            Some("v3")
+        );
+        assert_eq!(
+            anodizer_core::build_env::config_time_amd64_variant(&krate, WINDOWS, &[], &mut ctx)
+                .unwrap(),
+            None
+        );
+    }
+
+    /// A declared `amd64_variant:` overrides env detection on the planner
+    /// side, and the projection derives the identical stamp.
+    #[test]
+    fn declared_amd64_variant_overrides_planner_detection() {
+        let mut krate = leaky_crate();
+        krate.builds.as_mut().unwrap()[0].amd64_variant = Some("v2".to_string());
+        let mut ctx = TestContextBuilder::new().project_name("myapp").build();
+        let (jobs, _) = plan(&krate, &mut ctx);
+        let linux = jobs.iter().find(|j| j.target == LINUX).unwrap();
+        assert_eq!(
+            linux.amd64_variant.as_deref(),
+            Some("v2"),
+            "declared level must beat the detected v3"
+        );
+        assert_eq!(
+            anodizer_core::build_env::config_time_amd64_variant(&krate, LINUX, &[], &mut ctx)
+                .unwrap()
+                .as_deref(),
+            Some("v2"),
+            "projection must agree with the planner's declared stamp"
+        );
     }
 }

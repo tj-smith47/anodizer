@@ -70,6 +70,16 @@ const SEEDED_VARS: &[&str] = &[
     "Os", "Arch", "Target", "Arm", "Arm64", "Amd64", "Mips", "I386",
 ];
 
+/// The template-var keys the templatefiles stage binds [`InstallerCases`] to
+/// ([`InstallerCases::bind`]) — the full surface through which a
+/// `template_files:` entry can consume the engine-derived installer tables.
+pub const INSTALLER_TEMPLATE_VARS: &[&str] = &[
+    "InstallerAssetCases",
+    "InstallerDetectOsCases",
+    "InstallerDetectArchCases",
+    "InstallerSupportedPlatforms",
+];
+
 /// The engine-generated `case` arm snippets a `curl | sh` installer template
 /// consumes — asset names AND the `uname`→token detection vocabulary, all
 /// derived from the release's own targets so neither half can drift from the
@@ -90,6 +100,80 @@ pub struct InstallerCases {
     /// prebuilt binaries that DO exist instead of a bare "unsupported
     /// platform".
     pub supported_platforms: String,
+}
+
+impl InstallerCases {
+    /// Bind the four case tables to their template vars — the keys listed in
+    /// [`INSTALLER_TEMPLATE_VARS`] — so the templatefiles stage and any
+    /// consumption probe share one binding surface.
+    pub fn bind(&self, vars: &mut crate::template::TemplateVars) {
+        vars.set("InstallerAssetCases", &self.asset_cases);
+        vars.set("InstallerDetectOsCases", &self.detect_os_cases);
+        vars.set("InstallerDetectArchCases", &self.detect_arch_cases);
+        vars.set("InstallerSupportedPlatforms", &self.supported_platforms);
+    }
+}
+
+/// Whether any `template_files:` entry actually READS one of the installer
+/// case vars ([`INSTALLER_TEMPLATE_VARS`]).
+///
+/// Each entry is rendered twice through the real entry renderer
+/// ([`crate::template_file_render::render_templated_file_entry`], so skip
+/// semantics and template-dialect translation match the templatefiles stage
+/// exactly) — once with the installer vars bound empty, once bound to a
+/// sentinel. Differing output means the entry consumes at least one of the
+/// vars; probing through the render replaces any regex over template syntax.
+/// An entry that fails to render (missing src, template error) counts as
+/// consuming: non-consumption cannot be proven, and staying loud is the
+/// fail-safe for a gate that silences a 404-class validation.
+///
+/// All touched vars are restored, so the caller's template scope is
+/// unchanged.
+pub fn template_files_consume_installer_vars(ctx: &mut Context) -> bool {
+    let Some(entries) = ctx.config.template_files.clone() else {
+        return false;
+    };
+    entries
+        .iter()
+        .any(|entry| entry_reads_installer_vars(ctx, entry))
+}
+
+fn entry_reads_installer_vars(
+    ctx: &mut Context,
+    entry: &crate::config::TemplateFileConfig,
+) -> bool {
+    const PROBE: &str = "\u{1}anodizer-installer-consumption-probe\u{1}";
+    let prior: Vec<(&str, Option<String>)> = INSTALLER_TEMPLATE_VARS
+        .iter()
+        .map(|k| (*k, ctx.template_vars().get(k).cloned()))
+        .collect();
+    let render_with = |ctx: &mut Context, value: &str| {
+        for k in INSTALLER_TEMPLATE_VARS {
+            ctx.template_vars_mut().set(k, value);
+        }
+        crate::template_file_render::render_templated_file_entry(
+            ctx,
+            entry,
+            "installer consumption probe",
+        )
+    };
+    let base = render_with(ctx, "");
+    let probe = render_with(ctx, PROBE);
+    for (k, value) in prior {
+        match value {
+            Some(v) => ctx.template_vars_mut().set(k, &v),
+            None => {
+                ctx.template_vars_mut().unset(k);
+            }
+        }
+    }
+    match (base, probe) {
+        (Ok(Some(a)), Ok(Some(b))) => {
+            a.rendered_contents != b.rendered_contents || a.rendered_dst != b.rendered_dst
+        }
+        (Ok(a), Ok(b)) => a.is_some() != b.is_some(),
+        _ => true,
+    }
 }
 
 /// Render the installer's POSIX-`sh` case-arm snippets: the `os-arch` →
@@ -346,6 +430,82 @@ mod tests {
         ctx.template_vars_mut().set("ProjectName", "anodizer");
         ctx.template_vars_mut().set("Version", "0.13.0");
         ctx
+    }
+
+    /// [`InstallerCases::bind`] must write exactly the keys listed in
+    /// [`INSTALLER_TEMPLATE_VARS`] — the const is the consumption probe's
+    /// view of the binding surface, so drift between the two silently blinds
+    /// the probe.
+    #[test]
+    fn bind_writes_exactly_the_installer_template_vars() {
+        let cases = InstallerCases {
+            asset_cases: "a".to_string(),
+            detect_os_cases: "b".to_string(),
+            detect_arch_cases: "c".to_string(),
+            supported_platforms: "d".to_string(),
+        };
+        let mut vars = crate::template::TemplateVars::new();
+        cases.bind(&mut vars);
+        for k in INSTALLER_TEMPLATE_VARS {
+            assert!(
+                vars.get(k).is_some_and(|v| !v.is_empty()),
+                "{k} must be bound"
+            );
+        }
+        assert_eq!(
+            vars.all().len(),
+            INSTALLER_TEMPLATE_VARS.len(),
+            "bind must write no keys beyond INSTALLER_TEMPLATE_VARS"
+        );
+    }
+
+    /// The consumption probe: an entry that interpolates an installer var
+    /// consumes; one that renders none of them does not; a missing src file
+    /// stays conservatively "consuming" (fail-loud). The caller's template
+    /// scope survives the probe.
+    #[test]
+    fn template_files_consumption_probe_detects_real_bindings() {
+        use crate::config::TemplateFileConfig;
+        let tmp = tempfile::tempdir().unwrap();
+        let installer = tmp.path().join("install.sh.tera");
+        std::fs::write(&installer, "{{ InstallerAssetCases }}\n").unwrap();
+        let plain = tmp.path().join("notes.md.tera");
+        std::fs::write(&plain, "release {{ Version }} of {{ ProjectName }}\n").unwrap();
+
+        let entry = |src: &std::path::Path| TemplateFileConfig {
+            src: src.to_string_lossy().into_owned(),
+            dst: "out.txt".to_string(),
+            ..Default::default()
+        };
+
+        let mut ctx = anodize_ctx(None);
+        ctx.template_vars_mut()
+            .set("InstallerAssetCases", "stale-from-stage");
+        ctx.config.template_files = Some(vec![entry(&plain)]);
+        assert!(
+            !template_files_consume_installer_vars(&mut ctx),
+            "a template binding no Installer* var must not count as a consumer"
+        );
+
+        ctx.config.template_files = Some(vec![entry(&plain), entry(&installer)]);
+        assert!(
+            template_files_consume_installer_vars(&mut ctx),
+            "a template interpolating an installer var is a consumer"
+        );
+
+        ctx.config.template_files = Some(vec![entry(&tmp.path().join("missing.tera"))]);
+        assert!(
+            template_files_consume_installer_vars(&mut ctx),
+            "an unreadable entry cannot prove non-consumption — stay loud"
+        );
+
+        assert_eq!(
+            ctx.template_vars()
+                .get("InstallerAssetCases")
+                .map(String::as_str),
+            Some("stale-from-stage"),
+            "the probe must restore the caller's bindings"
+        );
     }
 
     /// Parse the rendered `case` arms back into `os-arch -> ARCHIVE` so a test

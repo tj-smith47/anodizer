@@ -21,12 +21,56 @@ use std::collections::HashMap;
 
 use anyhow::{Context as _, Result};
 
-use crate::config::{BuildConfig, BuildIgnore, BuildOverride, CrateConfig};
+use crate::config::{BuildConfig, BuildIgnore, BuildOverride, BuilderKind, CrateConfig};
 use crate::context::Context;
 use crate::env::parse_env_entries;
 use crate::env_expand::expand_env;
 use crate::log::StageLogger;
 use crate::target::map_target;
+use crate::template::TemplateVars;
+
+/// The per-target template vars the build planner seeds before rendering a
+/// target's binary name, paths, and env values (`Target`/`Os`/`Arch`, the
+/// arch-family variant vars, `ArtifactExt`, `ArtifactID`) — and that the
+/// config-time env projection must therefore seed too, so a `build.env` value
+/// templated on them renders identically in both passes.
+pub const BUILD_TARGET_VARS: &[&str] = &[
+    "Target",
+    "Os",
+    "Arch",
+    "Arm64",
+    "Arm",
+    "Amd64",
+    "Mips",
+    "I386",
+    "ArtifactExt",
+    "ArtifactID",
+];
+
+/// Seed the build stage's per-target template vars ([`BUILD_TARGET_VARS`])
+/// before rendering a target's binary name, paths, and env values.
+///
+/// `os` is the already-mapped OS (`map_target(target).0`) so callers that
+/// need it for other decisions don't re-map. The variant vars come from the
+/// shared [`crate::archive_name::seed_variant_vars`] policy; binary names
+/// render before the amd64 variant is detected from the resolved env, so
+/// `Amd64` carries the `"v1"` baseline here.
+pub fn seed_build_target_vars(vars: &mut TemplateVars, target: &str, os: &str, build_id: &str) {
+    vars.set("Target", target);
+    vars.set("Os", os);
+    vars.set("Arch", &map_target(target).1);
+    crate::archive_name::seed_variant_vars(vars, target, None);
+    vars.set("ArtifactExt", if os == "windows" { ".exe" } else { "" });
+    vars.set("ArtifactID", build_id);
+}
+
+/// Clear the per-target template vars set by [`seed_build_target_vars`] so
+/// they don't leak into the next target's rendering.
+pub fn clear_build_target_vars(vars: &mut TemplateVars) {
+    for k in BUILD_TARGET_VARS {
+        vars.set(k, "");
+    }
+}
 
 /// Check if a target triple matches any entry in the ignore list.
 /// Matching is done by comparing the os and arch components of the target
@@ -147,17 +191,23 @@ pub fn find_matching_override<'a>(
 }
 
 /// Extract the x86-64 micro-architecture level from a RUSTFLAGS string:
-/// `-Ctarget-cpu=x86-64-v3` / `-C target-cpu=x86-64-v2` → `Some("v2"/"v3")`.
-/// `None` for any other CPU (`native`, a concrete model, …) or when no
-/// `target-cpu` flag is present — only the generic `x86-64-v{N}` levels name
-/// release assets.
+/// `-Ctarget-cpu=x86-64-v3`, `-C target-cpu=x86-64-v2`, and rustc's long
+/// spellings `--codegen target-cpu=…` / `--codegen=target-cpu=…` →
+/// `Some("v2"/"v3"/…)`. `None` for any other CPU (`native`, a concrete
+/// model, …) or when no `target-cpu` flag is present — only the generic
+/// `x86-64-v{N}` levels name release assets.
 pub fn amd64_variant_from_rustflags(rustflags: &str) -> Option<String> {
     let tokens: Vec<&str> = rustflags.split_whitespace().collect();
     let mut i = 0;
     while i < tokens.len() {
         let cpu = if let Some(val) = tokens[i].strip_prefix("-Ctarget-cpu=") {
             Some(val)
-        } else if tokens[i] == "-C"
+        } else if let Some(val) = tokens[i]
+            .strip_prefix("--codegen=")
+            .and_then(|opt| opt.strip_prefix("target-cpu="))
+        {
+            Some(val)
+        } else if (tokens[i] == "-C" || tokens[i] == "--codegen")
             && i + 1 < tokens.len()
             && let Some(val) = tokens[i + 1].strip_prefix("target-cpu=")
         {
@@ -176,20 +226,88 @@ pub fn amd64_variant_from_rustflags(rustflags: &str) -> Option<String> {
     None
 }
 
+/// The `CARGO_TARGET_<TRIPLE>_RUSTFLAGS` env key for `target`: uppercased
+/// with `-`/`.` mapped to `_`. A glibc-suffixed triple (`…-gnu.2.17`) keys by
+/// its base triple — the `--target` cargo is actually invoked with.
+pub fn cargo_target_rustflags_key(target: &str) -> String {
+    let base = target.split('.').next().unwrap_or(target);
+    format!(
+        "CARGO_TARGET_{}_RUSTFLAGS",
+        base.to_uppercase().replace('-', "_")
+    )
+}
+
+/// The extra-rustc-flags string cargo would apply to a build of `target`
+/// given `env`, following cargo's documented source order — the sources are
+/// MUTUALLY EXCLUSIVE, first present wins: `CARGO_ENCODED_RUSTFLAGS`, then
+/// `RUSTFLAGS`, then `CARGO_TARGET_<TRIPLE>_RUSTFLAGS`. A set-but-empty
+/// earlier source still shadows the later ones (verified against cargo
+/// 1.96.0: `RUSTFLAGS=""` suppresses a level-carrying
+/// `CARGO_TARGET_*_RUSTFLAGS` entirely).
+fn effective_rustflags(target: &str, env: &HashMap<String, String>) -> Option<String> {
+    if let Some(encoded) = env.get("CARGO_ENCODED_RUSTFLAGS") {
+        // Encoded form separates argv tokens with 0x1F; target-cpu tokens
+        // never contain spaces, so a space join feeds the same tokens to the
+        // whitespace-splitting parser.
+        return Some(encoded.replace('\u{1f}', " "));
+    }
+    if let Some(flags) = env.get("RUSTFLAGS") {
+        return Some(flags.clone());
+    }
+    env.get(&cargo_target_rustflags_key(target)).cloned()
+}
+
 /// Detect the amd64 micro-architecture variant for a build of `target` from
 /// its resolved env map — the value the build stage stamps into the
-/// artifact's `amd64_variant` metadata. `None` for non-x86_64 targets and for
-/// env with no level-carrying `RUSTFLAGS` (the untuned baseline).
+/// artifact's `amd64_variant` metadata. The flags string is picked by
+/// cargo's own source precedence ([`effective_rustflags`]). `None` for
+/// non-x86_64 targets and for env whose effective flags carry no level (the
+/// untuned baseline).
 pub fn amd64_variant_from_env(target: &str, env: &HashMap<String, String>) -> Option<String> {
     if !target.starts_with("x86_64") {
         return None;
     }
-    if let Some(flags) = env.get("RUSTFLAGS")
-        && let Some(v) = amd64_variant_from_rustflags(flags)
-    {
-        return Some(v);
+    effective_rustflags(target, env).and_then(|flags| amd64_variant_from_rustflags(&flags))
+}
+
+/// The user-declared micro-architecture level for a build of `target`
+/// (`build.amd64_variant`), arch-gated the same way detection is: the level
+/// is an x86-64 dimension, so a declaration on a build whose matrix also
+/// covers other arches must not stamp them.
+pub fn declared_amd64_variant(build: &BuildConfig, target: &str) -> Option<String> {
+    if !target.starts_with("x86_64") {
+        return None;
     }
-    None
+    build.amd64_variant.clone()
+}
+
+/// The amd64 variant the build planner stamps on a compiled (or copied)
+/// binary of `target`: the declared `build.amd64_variant` when set, else
+/// detection from the resolved env map. The single decision shared by the
+/// planner and the config-time projection.
+pub fn build_amd64_variant(
+    build: &BuildConfig,
+    target: &str,
+    env: &HashMap<String, String>,
+) -> Option<String> {
+    declared_amd64_variant(build, target).or_else(|| amd64_variant_from_env(target, env))
+}
+
+/// The amd64 variant the planner stamps on a `builder: prebuilt` import of
+/// `target`: the declared `build.amd64_variant` when set, else the `"v1"`
+/// baseline for x86-64 triples — an imported binary's env is never resolved,
+/// so nothing can be detected. `None` for other arches.
+pub fn prebuilt_amd64_variant(build: &BuildConfig, target: &str) -> Option<String> {
+    if target.split('-').next() == Some("x86_64") {
+        Some(
+            build
+                .amd64_variant
+                .clone()
+                .unwrap_or_else(|| "v1".to_string()),
+        )
+    } else {
+        None
+    }
 }
 
 /// Derive, from config alone, the amd64 micro-architecture variant the build
@@ -197,23 +315,30 @@ pub fn amd64_variant_from_env(target: &str, env: &HashMap<String, String>) -> Op
 /// twin of the artifact `amd64_variant` metadata that names a v2/v3-tuned
 /// group's release assets.
 ///
-/// Walks the crate's planned builds in config order and projects the first
-/// producing, non-skipped, non-ignored build that covers `target` — the same
-/// build whose binary the archive stage names the target's group by. The
-/// projection mirrors the build planner: glob-merged `build.env`
+/// Walks the crate's planned builds in the planner's artifact-registration
+/// order and projects the first producing, non-skipped, non-ignored build
+/// that covers `target` — the same build whose binary the archive stage
+/// names the target's group by. `builder: prebuilt` builds mirror the
+/// planner's stamp (declared level, else the `"v1"` baseline — no env is
+/// ever resolved for an import); compile builds mirror the planner's env
+/// resolution: the per-target vars seeded before rendering
+/// ([`seed_build_target_vars`]), glob-merged `build.env`
 /// ([`resolve_target_env`]), template-rendered values with the same-block
 /// `{{ .Env.KEY }}` cascade (falling back to the raw string when a value
 /// fails to render, exactly as the planner does), matching `build.overrides`
 /// env merged on top, and — for `reproducible: true` builds with no config
 /// `RUSTFLAGS` — the inherited process `RUSTFLAGS` the reproducibility merge
-/// would adopt as its base.
+/// would adopt as its base. A declared `build.amd64_variant` short-circuits
+/// the projection on every path, exactly as it overrides the planner's
+/// detection.
 ///
-/// Every env-cascade injection is restored before returning, so the caller's
-/// template env is untouched. Returns `Ok(None)` for non-x86_64 targets, for
-/// untuned builds, and when the tuning value is only resolvable at build time
-/// (an unrenderable template with no literal `target-cpu` token) — in that
-/// residual case the derived asset name falls back to the baseline and the
-/// snapshot emission cross-check stays the loud backstop.
+/// Every seeded per-target var and env-cascade injection is restored before
+/// returning, so the caller's template scope is untouched. Returns
+/// `Ok(None)` for non-x86_64 targets, for untuned builds, and when the
+/// tuning value is only resolvable at build time (an unrenderable template
+/// with no literal `target-cpu` token) — in that residual case the derived
+/// asset name falls back to the baseline and the snapshot emission
+/// cross-check stays the loud backstop.
 pub fn config_time_amd64_variant(
     crate_cfg: &CrateConfig,
     target: &str,
@@ -235,24 +360,50 @@ pub fn config_time_amd64_variant(
         .unwrap_or_default();
     let log = ctx.logger("build");
 
-    for build in &builds {
-        if !crate::build_plan::build_produces(crate_cfg, build) {
-            continue;
+    // The archive stage names a target's group by its FIRST binary in
+    // artifact-registration order, which is not raw config order: prebuilt
+    // imports register during planning, compile jobs are registered in
+    // planned order after them, and copy_from jobs drain last. Walk the
+    // builds in the same three passes so the projected variant belongs to
+    // the same build whose metadata names the group.
+    let pass_matches = |pass: usize, b: &BuildConfig| -> bool {
+        let prebuilt = matches!(b.builder, Some(BuilderKind::Prebuilt));
+        match pass {
+            0 => prebuilt,
+            1 => !prebuilt && b.copy_from.is_none(),
+            _ => !prebuilt && b.copy_from.is_some(),
         }
-        if build_skipped(build, ctx)? {
-            continue;
+    };
+    for pass in 0..3 {
+        for build in &builds {
+            if !pass_matches(pass, build) {
+                continue;
+            }
+            if !crate::build_plan::build_produces(crate_cfg, build) {
+                continue;
+            }
+            if build_skipped(build, ctx)? {
+                continue;
+            }
+            // Prebuilt builds have no defaults.targets fallback (explicit
+            // `targets:` is validator-enforced), matching the planner.
+            let targets: &[String] = if pass == 0 {
+                build.targets.as_deref().unwrap_or(&[])
+            } else {
+                build.targets.as_deref().unwrap_or(default_targets)
+            };
+            if !targets.iter().any(|t| t == target) {
+                continue;
+            }
+            let ignores = build.ignore.as_deref().unwrap_or(&default_ignores);
+            if is_target_ignored(target, ignores) {
+                continue;
+            }
+            if pass == 0 {
+                return Ok(prebuilt_amd64_variant(build, target));
+            }
+            return build_env_amd64_variant(build, target, &default_overrides, &log, ctx);
         }
-        let targets: &[String] = build.targets.as_deref().unwrap_or(default_targets);
-        if !targets.iter().any(|t| t == target) {
-            continue;
-        }
-        let ignores = build.ignore.as_deref().unwrap_or(&default_ignores);
-        if is_target_ignored(target, ignores) {
-            continue;
-        }
-        // First producing build for the target = the group's first binary —
-        // the binary whose metadata the archive stage names the group by.
-        return build_env_amd64_variant(build, target, &default_overrides, &log, ctx);
     }
     Ok(None)
 }
@@ -283,6 +434,9 @@ fn build_env_amd64_variant(
     log: &StageLogger,
     ctx: &mut Context,
 ) -> Result<Option<String>> {
+    if let Some(declared) = declared_amd64_variant(build, target) {
+        return Ok(Some(declared));
+    }
     let strict = ctx.is_strict();
     let raw = resolve_target_env(build.env.as_ref(), target, log, strict)?;
 
@@ -292,60 +446,99 @@ fn build_env_amd64_variant(
         return Ok(raw.as_ref().and_then(|e| amd64_variant_from_env(target, e)));
     }
 
-    let mut rendered: HashMap<String, String> = HashMap::new();
-    // (key, value before the cascade) so the injections can be undone — this
-    // is a config-time projection; the caller's template env must survive it.
-    let mut touched: Vec<(String, Option<String>)> = Vec::new();
-    if let Some(raw) = &raw {
-        let mut keys: Vec<&String> = raw.keys().collect();
-        keys.sort();
-        for k in keys {
-            let v = &raw[k];
-            // A value that fails to render falls back to the RAW string (the
-            // planner warns and proceeds with it), so detection sees the same
-            // bytes in both passes.
-            let val = ctx.render_template(v).unwrap_or_else(|_| v.clone());
-            let expanded = expand_env(&val);
-            touched.push((k.clone(), ctx.template_vars().all_env().get(k).cloned()));
-            ctx.template_vars_mut().set_env(k, &expanded);
-            rendered.insert(k.clone(), expanded);
-        }
-    }
+    // The planner seeds the per-target vars before rendering env values, so
+    // a value templated on `Os`/`Target`/… is a supported contract — seed
+    // the SAME set for the CURRENT target, saving the caller's values so
+    // this config-time projection leaves its template scope untouched
+    // (stale values from a caller's own per-target loop must not decide a
+    // different target's render).
+    let saved_vars: Vec<(&str, Option<String>)> = BUILD_TARGET_VARS
+        .iter()
+        .map(|k| (*k, ctx.template_vars().get(k).cloned()))
+        .collect();
+    let (os, _) = map_target(target);
+    seed_build_target_vars(
+        ctx.template_vars_mut(),
+        target,
+        &os,
+        build.id.as_deref().unwrap_or(""),
+    );
 
-    let overrides = build.overrides.as_deref().unwrap_or(default_overrides);
-    let override_merge = (|| -> Result<()> {
-        if let Some(ov) = find_matching_override(target, overrides, log, strict)?
-            && let Some(ov_env) = &ov.env
-        {
-            for (k, v) in parse_env_entries(ov_env)? {
-                let val = ctx.render_template(&v).unwrap_or_else(|_| v.clone());
-                rendered.insert(k, expand_env(&val));
+    let projected = (|| -> Result<HashMap<String, String>> {
+        let mut rendered: HashMap<String, String> = HashMap::new();
+        // (key, value before the cascade) so the injections can be undone —
+        // the caller's template env must survive this projection too.
+        let mut touched: Vec<(String, Option<String>)> = Vec::new();
+        if let Some(raw) = &raw {
+            let mut keys: Vec<&String> = raw.keys().collect();
+            keys.sort();
+            for k in keys {
+                let v = &raw[k];
+                // A value that fails to render falls back to the RAW string
+                // (the planner warns and proceeds with it), so detection sees
+                // the same bytes in both passes.
+                let val = ctx.render_template(v).unwrap_or_else(|_| v.clone());
+                let expanded = expand_env(&val);
+                touched.push((k.clone(), ctx.template_vars().all_env().get(k).cloned()));
+                ctx.template_vars_mut().set_env(k, &expanded);
+                rendered.insert(k.clone(), expanded);
             }
         }
-        Ok(())
+
+        let overrides = build.overrides.as_deref().unwrap_or(default_overrides);
+        let override_merge = (|| -> Result<()> {
+            if let Some(ov) = find_matching_override(target, overrides, log, strict)?
+                && let Some(ov_env) = &ov.env
+            {
+                for (k, v) in parse_env_entries(ov_env)? {
+                    let val = ctx.render_template(&v).unwrap_or_else(|_| v.clone());
+                    rendered.insert(k, expand_env(&val));
+                }
+            }
+            Ok(())
+        })();
+
+        for (k, prior) in touched {
+            match prior {
+                Some(p) => ctx.template_vars_mut().set_env(&k, &p),
+                None => {
+                    ctx.template_vars_mut().unset_env(&k);
+                }
+            }
+        }
+        override_merge?;
+        Ok(rendered)
     })();
 
-    for (k, prior) in touched {
+    for (k, prior) in saved_vars {
         match prior {
-            Some(p) => ctx.template_vars_mut().set_env(&k, &p),
+            Some(p) => ctx.template_vars_mut().set(k, &p),
             None => {
-                ctx.template_vars_mut().unset_env(&k);
+                ctx.template_vars_mut().unset(k);
             }
         }
     }
-    override_merge?;
+    let mut rendered = projected?;
 
-    // A reproducible build with no config RUSTFLAGS adopts the inherited
-    // process value as its base (the reproducibility merge's precedence); the
-    // remap / MSVC flags that merge appends can never carry a `-Ctarget-cpu=`
-    // token, so the base alone decides the variant.
-    let mut flags = rendered.get("RUSTFLAGS").cloned();
+    // A reproducible build ALWAYS carries a merged `RUSTFLAGS` into cargo's
+    // env (remap rules at minimum), which shadows any
+    // `CARGO_TARGET_*_RUSTFLAGS` under cargo's mutually-exclusive source
+    // order — mirror that by materializing the merge's base: the config
+    // value when non-blank, else the inherited process value. The remap /
+    // MSVC flags the merge appends can never carry a `-Ctarget-cpu=` token,
+    // so the base alone decides the variant.
     if build.reproducible.unwrap_or(false)
-        && flags.as_deref().map(str::trim).unwrap_or("").is_empty()
+        && rendered
+            .get("RUSTFLAGS")
+            .map(|s| s.trim().is_empty())
+            .unwrap_or(true)
     {
-        flags = ctx.env_source().var("RUSTFLAGS");
+        rendered.insert(
+            "RUSTFLAGS".to_string(),
+            ctx.env_source().var("RUSTFLAGS").unwrap_or_default(),
+        );
     }
-    Ok(flags.and_then(|f| amd64_variant_from_rustflags(&f)))
+    Ok(amd64_variant_from_env(target, &rendered))
 }
 
 #[cfg(test)]
@@ -601,6 +794,286 @@ mod tests {
         assert_eq!(
             config_time_amd64_variant(&krate, LINUX_AMD64, &[], &mut c).unwrap(),
             None
+        );
+    }
+
+    #[test]
+    fn detects_long_form_codegen_flags() {
+        // rustc's long spellings of -C, both the two-token and `=` forms.
+        assert_eq!(
+            amd64_variant_from_rustflags("--codegen target-cpu=x86-64-v3").as_deref(),
+            Some("v3")
+        );
+        assert_eq!(
+            amd64_variant_from_rustflags("--codegen=target-cpu=x86-64-v2").as_deref(),
+            Some("v2")
+        );
+        assert_eq!(
+            amd64_variant_from_rustflags("--codegen opt-level=3").as_deref(),
+            None
+        );
+    }
+
+    #[test]
+    fn detects_cargo_target_rustflags_env_var() {
+        let env = HashMap::from([(
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS".to_string(),
+            "-Ctarget-cpu=x86-64-v3".to_string(),
+        )]);
+        assert_eq!(
+            amd64_variant_from_env(LINUX_AMD64, &env).as_deref(),
+            Some("v3")
+        );
+        // The env key belongs to a different triple: not cargo's source for
+        // this build.
+        assert_eq!(amd64_variant_from_env("x86_64-apple-darwin", &env), None);
+        // A glibc-suffixed triple keys by its base triple — the `--target`
+        // cargo is invoked with.
+        assert_eq!(
+            amd64_variant_from_env("x86_64-unknown-linux-gnu.2.17", &env).as_deref(),
+            Some("v3")
+        );
+    }
+
+    #[test]
+    fn rustflags_shadows_cargo_target_rustflags() {
+        // Cargo's extra-flags sources are mutually exclusive, first present
+        // wins (empirically pinned against cargo 1.96.0: with both set, only
+        // RUSTFLAGS reaches rustc; RUSTFLAGS="" still suppresses the
+        // target-specific var).
+        let both = HashMap::from([
+            (
+                "RUSTFLAGS".to_string(),
+                "-Ctarget-cpu=x86-64-v2".to_string(),
+            ),
+            (
+                "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS".to_string(),
+                "-Ctarget-cpu=x86-64-v3".to_string(),
+            ),
+        ]);
+        assert_eq!(
+            amd64_variant_from_env(LINUX_AMD64, &both).as_deref(),
+            Some("v2"),
+            "RUSTFLAGS must win when both are present"
+        );
+
+        let empty_shadows = HashMap::from([
+            ("RUSTFLAGS".to_string(), "".to_string()),
+            (
+                "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS".to_string(),
+                "-Ctarget-cpu=x86-64-v3".to_string(),
+            ),
+        ]);
+        assert_eq!(
+            amd64_variant_from_env(LINUX_AMD64, &empty_shadows),
+            None,
+            "a set-but-empty RUSTFLAGS still shadows the target-specific var"
+        );
+
+        let encoded_wins = HashMap::from([
+            (
+                "CARGO_ENCODED_RUSTFLAGS".to_string(),
+                "-C\u{1f}target-cpu=x86-64-v4".to_string(),
+            ),
+            (
+                "RUSTFLAGS".to_string(),
+                "-Ctarget-cpu=x86-64-v2".to_string(),
+            ),
+        ]);
+        assert_eq!(
+            amd64_variant_from_env(LINUX_AMD64, &encoded_wins).as_deref(),
+            Some("v4"),
+            "CARGO_ENCODED_RUSTFLAGS outranks RUSTFLAGS"
+        );
+    }
+
+    #[test]
+    fn cargo_target_env_var_flows_through_the_projection() {
+        // The SSOT improvement reaches both passes at once: a build tuned
+        // ONLY via CARGO_TARGET_<T>_RUSTFLAGS derives its level at config
+        // time too.
+        let krate = crate_with_build(tuned_build_key(
+            LINUX_AMD64,
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
+            "-Ctarget-cpu=x86-64-v2",
+        ));
+        let mut c = ctx();
+        assert_eq!(
+            config_time_amd64_variant(&krate, LINUX_AMD64, &[], &mut c)
+                .unwrap()
+                .as_deref(),
+            Some("v2")
+        );
+    }
+
+    fn tuned_build_key(target_key: &str, env_key: &str, value: &str) -> BuildConfig {
+        let mut env = HashMap::new();
+        env.insert(
+            target_key.to_string(),
+            HashMap::from([(env_key.to_string(), value.to_string())]),
+        );
+        BuildConfig {
+            binary: Some("myapp".to_string()),
+            targets: Some(vec![LINUX_AMD64.to_string()]),
+            env: Some(env),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn projection_restores_caller_per_target_vars() {
+        // The projection seeds the planner's per-target vars around its env
+        // render; the caller's own values (e.g. from ITS per-target loop)
+        // must survive untouched, and vars the caller never set must end
+        // unset.
+        let krate = crate_with_build(tuned_build(LINUX_AMD64, "-Ctarget-cpu=x86-64-v3"));
+        let mut c = ctx();
+        c.template_vars_mut().set("Os", "sentinel-os");
+        assert!(c.template_vars().get("ArtifactID").is_none());
+        let got = config_time_amd64_variant(&krate, LINUX_AMD64, &[], &mut c).unwrap();
+        assert_eq!(got.as_deref(), Some("v3"));
+        assert_eq!(
+            c.template_vars().get("Os").map(String::as_str),
+            Some("sentinel-os"),
+            "caller's Os must be restored"
+        );
+        assert!(
+            c.template_vars().get("ArtifactID").is_none(),
+            "vars unset before the projection must end unset"
+        );
+        assert!(c.template_vars().get("Target").is_none());
+    }
+
+    #[test]
+    fn prebuilt_builds_mirror_the_planner_stamp() {
+        use crate::config::{BuilderKind, PrebuiltConfig};
+        // The planner never resolves env for an import: it stamps the "v1"
+        // baseline for x86-64 (declared level when set) — a tuning env on
+        // the entry must not decide anything.
+        let mut build = tuned_build(LINUX_AMD64, "-Ctarget-cpu=x86-64-v3");
+        build.builder = Some(BuilderKind::Prebuilt);
+        build.prebuilt = Some(PrebuiltConfig {
+            path: "out/myapp_{{ Target }}".to_string(),
+        });
+        let krate = crate_with_build(build.clone());
+        let mut c = ctx();
+        assert_eq!(
+            config_time_amd64_variant(&krate, LINUX_AMD64, &[], &mut c)
+                .unwrap()
+                .as_deref(),
+            Some("v1"),
+            "prebuilt x86-64 import carries the planner's v1 stamp, not its env"
+        );
+
+        build.amd64_variant = Some("v3".to_string());
+        let krate = crate_with_build(build.clone());
+        let mut c = ctx();
+        assert_eq!(
+            config_time_amd64_variant(&krate, LINUX_AMD64, &[], &mut c)
+                .unwrap()
+                .as_deref(),
+            Some("v3"),
+            "declared level overrides the prebuilt baseline"
+        );
+
+        build.amd64_variant = None;
+        build.targets = Some(vec!["aarch64-unknown-linux-gnu".to_string()]);
+        let krate = crate_with_build(build);
+        let mut c = ctx();
+        assert_eq!(
+            config_time_amd64_variant(&krate, "aarch64-unknown-linux-gnu", &[], &mut c).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn declared_variant_overrides_detection_and_unrenderable_env() {
+        // The escape hatch for tuning env only resolvable at build time:
+        // `amd64_variant:` decides without projecting the env at all.
+        let mut build = tuned_build(LINUX_AMD64, "{{ BuildTimeOnlyVar }}");
+        build.amd64_variant = Some("v3".to_string());
+        let krate = crate_with_build(build.clone());
+        let mut c = ctx();
+        assert_eq!(
+            config_time_amd64_variant(&krate, LINUX_AMD64, &[], &mut c)
+                .unwrap()
+                .as_deref(),
+            Some("v3")
+        );
+
+        // Declared beats a CONFLICTING detected level (same precedence as
+        // the planner's stamp).
+        let mut build = tuned_build(LINUX_AMD64, "-Ctarget-cpu=x86-64-v3");
+        build.amd64_variant = Some("v2".to_string());
+        let krate = crate_with_build(build.clone());
+        let mut c = ctx();
+        assert_eq!(
+            config_time_amd64_variant(&krate, LINUX_AMD64, &[], &mut c)
+                .unwrap()
+                .as_deref(),
+            Some("v2")
+        );
+
+        // Arch-gated: the declaration never stamps a non-x86_64 target.
+        let mut build = tuned_build(LINUX_AMD64, "-Ctarget-cpu=x86-64-v3");
+        build.amd64_variant = Some("v3".to_string());
+        build.targets = Some(vec!["aarch64-unknown-linux-gnu".to_string()]);
+        let krate = crate_with_build(build);
+        let mut c = ctx();
+        assert_eq!(
+            config_time_amd64_variant(&krate, "aarch64-unknown-linux-gnu", &[], &mut c).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn projection_follows_artifact_registration_order_not_config_order() {
+        use crate::config::{BuilderKind, PrebuiltConfig};
+        // The archive group's "first binary" is decided by artifact
+        // registration order (prebuilt at plan time, compile jobs next,
+        // copy_from jobs last), NOT raw config order. A copy_from entry
+        // listed first must not out-vote the compile build that actually
+        // registers first.
+        let mut copy = tuned_build(LINUX_AMD64, "-Ctarget-cpu=x86-64-v3");
+        copy.copy_from = Some("other".to_string());
+        let live = tuned_build(LINUX_AMD64, "-Ctarget-cpu=x86-64-v2");
+        let krate = CrateConfig {
+            name: "myapp".to_string(),
+            builds: Some(vec![copy, live.clone()]),
+            ..Default::default()
+        };
+        let mut c = ctx();
+        assert_eq!(
+            config_time_amd64_variant(&krate, LINUX_AMD64, &[], &mut c)
+                .unwrap()
+                .as_deref(),
+            Some("v2"),
+            "the compile build registers its artifact before the copy_from job"
+        );
+
+        // A prebuilt entry listed LAST still registers first (imports are
+        // registered during planning, before any job runs).
+        let mut prebuilt = BuildConfig {
+            binary: Some("myapp".to_string()),
+            targets: Some(vec![LINUX_AMD64.to_string()]),
+            ..Default::default()
+        };
+        prebuilt.builder = Some(BuilderKind::Prebuilt);
+        prebuilt.prebuilt = Some(PrebuiltConfig {
+            path: "out/myapp".to_string(),
+        });
+        let krate = CrateConfig {
+            name: "myapp".to_string(),
+            builds: Some(vec![live, prebuilt]),
+            ..Default::default()
+        };
+        let mut c = ctx();
+        assert_eq!(
+            config_time_amd64_variant(&krate, LINUX_AMD64, &[], &mut c)
+                .unwrap()
+                .as_deref(),
+            Some("v1"),
+            "the prebuilt import's artifact is registered before compile jobs"
         );
     }
 

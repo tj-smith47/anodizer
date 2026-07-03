@@ -2722,6 +2722,14 @@
     "BuildConfig": {
       "type": "object",
       "properties": {
+        "amd64_variant": {
+          "description": "Declared x86-64 micro-architecture level for this build's artifacts: `\"v2\"`, `\"v3\"`, `\"v4\"`, or the `\"v1\"` baseline. When set, it overrides the level anodizer detects from the resolved build env (`RUSTFLAGS` / `CARGO_TARGET_<TRIPLE>_RUSTFLAGS` carrying `-Ctarget-cpu=x86-64-v<N>`) for BOTH the artifact's `amd64_variant` metadata — which names a v2/v3-tuned group's archives (`…_amd64v3.tar.gz`) — and the config-time asset-name derivation feeding cargo-binstall `pkg_url` and the `curl | sh` installer's case table. Declare it when the tuning value is only resolvable at build time (e.g. `RUSTFLAGS: \"{{ .Env.CI_FLAGS }}\"`) or when importing a tuned binary via `builder: prebuilt`. Ignored for non-x86_64 targets.",
+          "default": null,
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "binary": {
           "description": "Binary name to build (must match a Cargo binary target in the crate).\n\nOptional so that `defaults.builds` (a path-mirrored template that applies to every crate) can omit `binary` — the per-crate `builds[]` entry supplies it. When the binary is absent at the per-crate level it falls back to the crate's `name` field.",
           "default": null,

@@ -405,7 +405,7 @@ fn validate_binstall(
 /// case table ([`installer_consumes_derived`]). The derived-name cross-check
 /// keys off this, not any single publisher's enabled flag — the check belongs
 /// to the derivation.
-fn derived_names_consumed(ctx: &Context, crate_cfg: &CrateConfig) -> bool {
+fn derived_names_consumed(ctx: &mut Context, crate_cfg: &CrateConfig) -> bool {
     let binstall_auto = crate_cfg.binstall.as_ref().is_some_and(|b| {
         b.enabled.unwrap_or(false)
             && b.pkg_url.is_none()
@@ -415,16 +415,14 @@ fn derived_names_consumed(ctx: &Context, crate_cfg: &CrateConfig) -> bool {
 }
 
 /// Whether the `curl | sh` installer's case table consumes `crate_cfg`'s
-/// derived asset names: the config has `template_files:` (the only surface
-/// that renders the installer case vars) and this crate is the one whose
-/// archive the installer downloads.
-fn installer_consumes_derived(ctx: &Context, crate_cfg: &CrateConfig) -> bool {
-    ctx.config
-        .template_files
-        .as_ref()
-        .is_some_and(|t| !t.is_empty())
-        && anodizer_core::installer::installer_crate(&ctx.config)
-            .is_some_and(|c| c.name == crate_cfg.name)
+/// derived asset names: this crate is the one whose archive the installer
+/// downloads AND at least one `template_files:` entry actually reads an
+/// installer case var (probed through the real entry render — a config whose
+/// template files bind none of the `Installer*` vars ships no derived name
+/// through this surface, so it must not trip the cross-check).
+fn installer_consumes_derived(ctx: &mut Context, crate_cfg: &CrateConfig) -> bool {
+    anodizer_core::installer::installer_crate(&ctx.config).is_some_and(|c| c.name == crate_cfg.name)
+        && anodizer_core::installer::template_files_consume_installer_vars(ctx)
 }
 
 /// Cross-check the auto-derived per-target asset names (what
@@ -503,12 +501,13 @@ fn validate_derived_asset_names(
                  '{}', but the archives produced for that target are: {}. Every \
                  consumer of the derived name (cargo-binstall pkg_url, the \
                  curl|sh installer's asset table) would request a URL the \
-                 release never uploaded (404). The config-time derivation could \
-                 not reproduce a naming input of the produced asset (e.g. an \
-                 amd64 micro-arch level from a RUSTFLAGS value renderable only \
-                 at build time); make the tuning env renderable from config, or \
-                 set an explicit binstall.overrides.'{}'.pkg_url naming the \
-                 produced asset.",
+                 release never uploaded (404). The tuning env was not renderable \
+                 at config time, so the derivation could not reproduce a naming \
+                 input of the produced asset (e.g. its amd64 micro-arch level); \
+                 make the tuning env target-static (renderable from config), or \
+                 declare the level on the tuned build — `amd64_variant: \"v3\"` \
+                 in its builds[] entry — which overrides detection for both the \
+                 artifact metadata and every derived-name consumer.",
                 crate_cfg.name,
                 triple,
                 asset.asset_name,
@@ -517,7 +516,6 @@ fn validate_derived_asset_names(
                     .map(|p| p.name.as_str())
                     .collect::<Vec<_>>()
                     .join(", "),
-                triple,
             );
         }
     }
@@ -1010,9 +1008,37 @@ mod tests {
         assert!(msg.contains("auto-derived"), "names the path: {msg}");
         assert!(msg.contains("404"), "explains the failure class: {msg}");
         assert!(
-            msg.contains("binstall.overrides"),
-            "offers the override escape hatch: {msg}"
+            msg.contains("not renderable"),
+            "explains the config-time render gap: {msg}"
         );
+        assert!(
+            msg.contains("amd64_variant"),
+            "offers the declared-level escape hatch: {msg}"
+        );
+    }
+
+    /// The full remedy loop: the bail names `amd64_variant:` as the fix, and
+    /// applying it VERBATIM to the tuned build makes the same validation
+    /// pass — a remedy that doesn't work when followed is worse than none.
+    #[test]
+    fn unrenderable_env_bail_remedy_applied_verbatim_passes() {
+        let (mut cfg, _bs, mut ctx) = auto_derived_fixture(Some("{{ BuildTimeOnlyFlags }}"));
+        add_archive(
+            &mut ctx,
+            "cfgd",
+            "x86_64-unknown-linux-gnu",
+            "cfgd_1.0.0_linux_amd64v3.tar.gz",
+        );
+        let err = validate_derived_asset_names(&mut ctx, &cfg, &log())
+            .expect_err("unreproducible naming input fails first");
+        assert!(
+            format!("{err}").contains("`amd64_variant: \"v3\"`"),
+            "the remedy must be quoted ready to paste: {err}"
+        );
+
+        cfg.builds.as_mut().unwrap()[0].amd64_variant = Some("v3".to_string());
+        validate_derived_asset_names(&mut ctx, &cfg, &log())
+            .expect("the bail's own remedy must satisfy the cross-check");
     }
 
     /// Auto-derived binstall fixture: binstall enabled with NEITHER `pkg_url`
@@ -1056,7 +1082,7 @@ mod tests {
     /// fail with the same actionable message.
     #[test]
     fn installer_only_crate_derived_name_mismatch_fails() {
-        let (cfg, mut ctx) = installer_only_fixture();
+        let (cfg, mut ctx, _tmp) = installer_only_fixture();
         add_archive(
             &mut ctx,
             "cfgd",
@@ -1064,7 +1090,7 @@ mod tests {
             "cfgd_1.0.0_linux_amd64v3.tar.gz",
         );
         assert!(
-            derived_names_consumed(&ctx, &cfg),
+            derived_names_consumed(&mut ctx, &cfg),
             "installer-only crate must be a derived-name consumer"
         );
         let err = validate_derived_asset_names(&mut ctx, &cfg, &log())
@@ -1079,7 +1105,7 @@ mod tests {
     /// matches the derived name.
     #[test]
     fn installer_only_crate_derived_name_match_passes() {
-        let (cfg, mut ctx) = installer_only_fixture();
+        let (cfg, mut ctx, _tmp) = installer_only_fixture();
         add_archive(
             &mut ctx,
             "cfgd",
@@ -1096,8 +1122,8 @@ mod tests {
     #[test]
     fn derived_names_consumed_follows_consumers() {
         // binstall auto path (no pkg_url / overrides) → consumed.
-        let (cfg, _bs, ctx) = auto_derived_fixture(None);
-        assert!(derived_names_consumed(&ctx, &cfg));
+        let (cfg, _bs, mut ctx) = auto_derived_fixture(None);
+        assert!(derived_names_consumed(&mut ctx, &cfg));
 
         // manual pkg_url → the derivation is unused.
         let mut manual = cfg.clone();
@@ -1106,20 +1132,60 @@ mod tests {
             pkg_url: Some("https://example.com/x.tar.gz".to_string()),
             ..Default::default()
         });
-        let ctx = scoped_ctx(manual.clone());
-        assert!(!derived_names_consumed(&ctx, &manual));
+        let mut ctx = scoped_ctx(manual.clone());
+        assert!(!derived_names_consumed(&mut ctx, &manual));
 
         // installer-only crate without template_files → no consumer.
-        let (installer_cfg, mut ctx) = installer_only_fixture();
+        let (installer_cfg, mut ctx, _tmp) = installer_only_fixture();
         ctx.config.template_files = None;
-        assert!(!derived_names_consumed(&ctx, &installer_cfg));
+        assert!(!derived_names_consumed(&mut ctx, &installer_cfg));
+    }
+
+    /// `template_files:` alone is not consumption: a template binding zero
+    /// `Installer*` vars ships no derived name, so even a tuning env the
+    /// config-time derivation cannot render (the loudest mismatch shape)
+    /// must NOT trip the installer gate — there is no consumer to 404.
+    #[test]
+    fn non_installer_template_files_do_not_gate_derived_names() {
+        let (mut cfg, mut ctx, _tmp) =
+            installer_fixture_with_template("plain notes for {{ ProjectName }} {{ Version }}\n");
+        cfg.builds.as_mut().unwrap()[0].env = Some(HashMap::from([(
+            "x86_64-unknown-linux-gnu".to_string(),
+            HashMap::from([(
+                "RUSTFLAGS".to_string(),
+                "{{ BuildTimeOnlyFlags }}".to_string(),
+            )]),
+        )]));
+        ctx.config.crates = vec![cfg.clone()];
+        add_archive(
+            &mut ctx,
+            "cfgd",
+            "x86_64-unknown-linux-gnu",
+            "cfgd_1.0.0_linux_amd64v3.tar.gz",
+        );
+        assert!(
+            !derived_names_consumed(&mut ctx, &cfg),
+            "a template binding no Installer* var is not a derived-name consumer"
+        );
     }
 
     /// Installer-only fixture: the crate builds the project binary and has a
     /// binstallable archive (so it IS the installer crate) but carries no
-    /// binstall block; `template_files:` is configured so the installer case
-    /// table is actually rendered.
-    fn installer_only_fixture() -> (CrateConfig, Context) {
+    /// binstall block; `template_files:` points at a REAL installer template
+    /// (written into the returned tempdir, which the caller must keep alive)
+    /// that reads `{{ InstallerAssetCases }}`, so the consumption probe sees
+    /// the case table actually bound.
+    fn installer_only_fixture() -> (CrateConfig, Context, tempfile::TempDir) {
+        installer_fixture_with_template(
+            "case \"${OS}-${ARCH}\" in\n{{ InstallerAssetCases }}\nesac\n",
+        )
+    }
+
+    /// [`installer_only_fixture`] with caller-supplied template contents, so
+    /// consumption gating can be probed with and without `Installer*` vars.
+    fn installer_fixture_with_template(
+        template: &str,
+    ) -> (CrateConfig, Context, tempfile::TempDir) {
         use anodizer_core::config::{ArchiveConfig, ArchivesConfig, TemplateFileConfig};
         let cfg = CrateConfig {
             name: "cfgd".to_string(),
@@ -1136,14 +1202,17 @@ mod tests {
             }]),
             ..Default::default()
         };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let src = tmp.path().join("install.sh.tera");
+        std::fs::write(&src, template).expect("write installer template");
         let mut ctx = scoped_ctx(cfg.clone());
         ctx.config.project_name = "cfgd".to_string();
         ctx.config.template_files = Some(vec![TemplateFileConfig {
-            src: "install.sh.tera".to_string(),
+            src: src.to_string_lossy().into_owned(),
             dst: "install.sh".to_string(),
             ..Default::default()
         }]);
-        (cfg, ctx)
+        (cfg, ctx, tmp)
     }
 
     /// `snapshot_version_fallback` yields the global snapshot version ONLY in
