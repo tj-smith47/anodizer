@@ -107,11 +107,15 @@ pub(crate) enum FindPrError {
     /// unauthenticated. The operator should verify the env-var is set
     /// in the current shell.
     Auth401 { url: String, env_hint: String },
-    /// HTTP 403 — the supplied token authenticated but lacks the
-    /// `pull_request:read` scope (or hit a rate-limit on a token that
-    /// otherwise works). Operator should verify scopes / fine-grained
-    /// permissions.
+    /// HTTP 403 with no rate-limit signal — the supplied token
+    /// authenticated but lacks the `pull_request:read` scope. Operator
+    /// should verify scopes / fine-grained permissions.
     Auth403 { url: String, env_hint: String },
+    /// HTTP 429, or 401 / 403 carrying a rate-limit header
+    /// (`Retry-After` / `X-RateLimit-Remaining: 0`) — GitHub throttled
+    /// the query. Transient: the token may be fine, so the operator
+    /// remediation is "wait and retry", never "fix the token scope".
+    RateLimited { url: String },
     /// HTTP 404 — the upstream `{owner}/{repo}` doesn't exist (or the
     /// token can't see it). Operator may have renamed/deleted the repo
     /// between publish and rollback.
@@ -140,8 +144,14 @@ impl std::fmt::Display for FindPrError {
             Self::Auth403 { url, env_hint } => write!(
                 f,
                 "github_pr: 403 Forbidden querying {}; verify ${} \
-                 has pull_request:read scope (or that you're not rate-limited)",
+                 has pull_request:read scope",
                 url, env_hint
+            ),
+            Self::RateLimited { url } => write!(
+                f,
+                "github_pr: GitHub API rate-limited querying {}; \
+                 wait for the limit to reset and retry",
+                url
             ),
             Self::RepoNotFound { url } => write!(
                 f,
@@ -175,14 +185,31 @@ impl std::error::Error for FindPrError {
 /// HTTP request — production callers go through
 /// [`find_open_pr_numbers_for_head`].
 ///
+/// `rate_limited` is the response's header verdict from the shared
+/// [`anodizer_core::git::response_is_rate_limited`] check: GitHub returns
+/// 403 for both rate limiting and auth denial, and only the headers
+/// separate them, so a 401 / 403 with the signal (and any 429) classifies
+/// as [`FindPrError::RateLimited`] rather than an auth failure — matching
+/// the probe policy in `core::git::github_repo_probe`.
+///
 /// `url`, `env_hint`, and `body` are only consulted for the error
 /// variants' carrier-strings.
 pub(crate) fn classify_find_pr_status(
     status: reqwest::StatusCode,
+    rate_limited: bool,
     url: &str,
     env_hint: &str,
     body_supplier: impl FnOnce() -> String,
 ) -> Result<(), FindPrError> {
+    if status == reqwest::StatusCode::TOO_MANY_REQUESTS
+        || ((status == reqwest::StatusCode::UNAUTHORIZED
+            || status == reqwest::StatusCode::FORBIDDEN)
+            && rate_limited)
+    {
+        return Err(FindPrError::RateLimited {
+            url: url.to_string(),
+        });
+    }
     if status == reqwest::StatusCode::UNAUTHORIZED {
         return Err(FindPrError::Auth401 {
             url: url.to_string(),
@@ -302,7 +329,9 @@ pub(crate) fn find_open_pr_numbers_for_head_with_env<E: EnvSource + ?Sized>(
             source: anyhow::Error::new(e),
         })?;
         let status = resp.status();
-        // Capture Link header BEFORE consuming the response body.
+        // Capture the Link header and the rate-limit header verdict BEFORE
+        // consuming the response body.
+        let rate_limited = anodizer_core::git::response_is_rate_limited(resp.headers());
         let link_header = resp
             .headers()
             .get(reqwest::header::LINK)
@@ -316,7 +345,8 @@ pub(crate) fn find_open_pr_numbers_for_head_with_env<E: EnvSource + ?Sized>(
         if !status.is_success() {
             let body = anodizer_core::http::body_of_blocking(resp);
             return Err(
-                classify_find_pr_status(status, &url, env_hint, || body.clone()).unwrap_err(),
+                classify_find_pr_status(status, rate_limited, &url, env_hint, || body.clone())
+                    .unwrap_err(),
             );
         }
         let body: serde_json::Value = resp.json().map_err(|e| FindPrError::Network {
@@ -565,6 +595,7 @@ mod tests {
     fn find_open_pr_numbers_returns_auth401_on_401_response() {
         let result = classify_find_pr_status(
             reqwest::StatusCode::UNAUTHORIZED,
+            false,
             "https://api.github.com/repos/o/r/pulls",
             "KREW_INDEX_TOKEN",
             || "{\"message\":\"Bad credentials\"}".to_string(),
@@ -581,6 +612,7 @@ mod tests {
     fn find_open_pr_numbers_returns_auth403_on_403_response() {
         let result = classify_find_pr_status(
             reqwest::StatusCode::FORBIDDEN,
+            false,
             "https://api.github.com/repos/o/r/pulls",
             "KREW_INDEX_TOKEN",
             || "{\"message\":\"Forbidden\"}".to_string(),
@@ -597,6 +629,7 @@ mod tests {
     fn find_open_pr_numbers_returns_repo_not_found_on_404_response() {
         let result = classify_find_pr_status(
             reqwest::StatusCode::NOT_FOUND,
+            false,
             "https://api.github.com/repos/o/r/pulls",
             "KREW_INDEX_TOKEN",
             || "{}".to_string(),
@@ -608,6 +641,7 @@ mod tests {
     fn find_open_pr_numbers_returns_other_on_5xx_response() {
         let result = classify_find_pr_status(
             reqwest::StatusCode::INTERNAL_SERVER_ERROR,
+            false,
             "https://api.github.com/repos/o/r/pulls",
             "KREW_INDEX_TOKEN",
             || "upstream broken".to_string(),
@@ -625,11 +659,58 @@ mod tests {
     fn find_open_pr_numbers_returns_ok_on_2xx_response() {
         for code in [200u16, 201, 204] {
             let status = reqwest::StatusCode::from_u16(code).unwrap();
-            let result = classify_find_pr_status(status, "https://...", "KREW_INDEX_TOKEN", || {
-                panic!("body supplier must not be invoked on 2xx")
-            });
+            let result =
+                classify_find_pr_status(status, false, "https://...", "KREW_INDEX_TOKEN", || {
+                    panic!("body supplier must not be invoked on 2xx")
+                });
             assert!(result.is_ok(), "code {} should classify as Ok", code);
         }
+    }
+
+    /// A rate-limited 403 must NOT surface the "fix your token scope"
+    /// remediation — the token may be fine. The header verdict (computed
+    /// by the shared core check at the call site) routes it to the
+    /// transient RateLimited variant instead.
+    #[test]
+    fn find_open_pr_numbers_returns_rate_limited_on_403_with_header_signal() {
+        for status in [
+            reqwest::StatusCode::FORBIDDEN,
+            reqwest::StatusCode::UNAUTHORIZED,
+        ] {
+            let result = classify_find_pr_status(
+                status,
+                true,
+                "https://api.github.com/repos/o/r/pulls",
+                "KREW_INDEX_TOKEN",
+                || "{}".to_string(),
+            );
+            assert!(
+                matches!(result, Err(FindPrError::RateLimited { .. })),
+                "{status} with rate-limit headers must classify as RateLimited"
+            );
+        }
+    }
+
+    #[test]
+    fn find_open_pr_numbers_returns_rate_limited_on_429_without_headers() {
+        let result = classify_find_pr_status(
+            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            false,
+            "https://api.github.com/repos/o/r/pulls",
+            "KREW_INDEX_TOKEN",
+            || "{}".to_string(),
+        );
+        assert!(matches!(result, Err(FindPrError::RateLimited { .. })));
+    }
+
+    #[test]
+    fn rate_limited_display_names_retry_not_token_scope() {
+        let err = FindPrError::RateLimited {
+            url: "https://api.github.com/repos/o/r/pulls".to_string(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("rate-limited"), "{msg}");
+        assert!(!msg.contains("scope"), "{msg}");
     }
 
     // -----------------------------------------------------------------

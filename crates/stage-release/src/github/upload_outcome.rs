@@ -41,9 +41,13 @@ pub(crate) enum UploadAttemptOutcome {
     /// The loop honours `Retry-After` (clamped) and sleeps before
     /// retrying, NOT the normal exponential backoff.
     SecondaryRateLimited,
-    /// GitHub returned a 403/429 that does NOT match the secondary
-    /// rate-limit signature. Treated as primary quota exhaustion: the
-    /// loop probes `/rate_limit` and sleeps until the quota resets.
+    /// GitHub returned a 429, or a 403 whose body carries a rate-limit
+    /// signal (see [`anodizer_core::git::is_rate_limit_signature`]) that
+    /// does NOT match the secondary signature. Treated as primary quota
+    /// exhaustion: the loop probes `/rate_limit` and sleeps until the
+    /// quota resets. A 403 with no rate-limit signal is auth denial and
+    /// classifies as [`UploadAttemptOutcome::Fatal`] — sleeping through
+    /// quota backoff cannot fix a token that lacks access.
     PrimaryRateLimited,
     /// GitHub returned `404 Not Found`. Immediately after a release is
     /// created this is the post-create read-after-write replication lag:
@@ -76,9 +80,9 @@ pub(crate) enum UploadAttemptOutcome {
     /// those as fatal would surface bogus parse errors on otherwise
     /// transient failures.
     TransientRetry,
-    /// Any other error — validation 4xx other than 422
-    /// already-exists, or an unrecognised variant. The loop surfaces
-    /// the error immediately.
+    /// Any other error — validation 4xx other than 422 already-exists,
+    /// a 403 auth denial with no rate-limit signal, or an unrecognised
+    /// variant. The loop surfaces the error immediately.
     Fatal,
 }
 
@@ -96,7 +100,7 @@ pub(crate) enum UploadAttemptOutcome {
 ///   3. GitHub 404 → [`UploadAttemptOutcome::NotFound`]
 ///   4. Secondary rate-limit signature on a 403/429 →
 ///      [`UploadAttemptOutcome::SecondaryRateLimited`]
-///   5. Plain 403 or 429 →
+///   5. 429, or 403 with a rate-limit body signal →
 ///      [`UploadAttemptOutcome::PrimaryRateLimited`]
 ///   6. 5xx, 401, or `Hyper` / `Http` / `Service` / `Other` / `Serde` /
 ///      `Json` variants → [`UploadAttemptOutcome::TransientRetry`]
@@ -146,11 +150,19 @@ pub(crate) fn classify_upload_attempt<T>(
         return UploadAttemptOutcome::SecondaryRateLimited;
     }
 
+    // 429 is always a rate limit, but a 403 counts only when the body
+    // carries a rate-limit signal (shared signature check in core). A 403
+    // with no signal is auth denial: routing it to PrimaryRateLimited would
+    // sleep through `/rate_limit` backoff on a token that can never succeed,
+    // so it falls through to Fatal below instead.
     let is_primary_rate_limited = matches!(
         err,
         octocrab::Error::GitHub { source, .. }
-            if source.status_code.as_u16() == 403
-                || source.status_code.as_u16() == 429
+            if anodizer_core::git::is_rate_limit_signature(
+                source.status_code.as_u16(),
+                &source.message,
+                source.documentation_url.as_deref(),
+            )
     );
     if is_primary_rate_limited {
         return UploadAttemptOutcome::PrimaryRateLimited;
@@ -300,14 +312,39 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn github_403_without_secondary_rl_body_classifies_as_primary() {
-        let body =
-            r#"{"message":"Bad credentials","documentation_url":"https://docs.github.com/rest"}"#;
+    async fn github_403_with_primary_rl_body_classifies_as_primary() {
+        let body = r#"{"message":"API rate limit exceeded for user ID 1.","documentation_url":"https://docs.github.com/rest/overview/rate-limits-for-the-rest-api"}"#;
         let err = synth_github_error(403, body).await;
         let result: Result<serde_json::Value, octocrab::Error> = Err(err);
         assert_eq!(
             classify_upload_attempt(&result),
             UploadAttemptOutcome::PrimaryRateLimited,
+        );
+    }
+
+    #[tokio::test]
+    async fn github_429_classifies_as_primary() {
+        // 429 is definitionally rate-limited even with no body signal.
+        let body = r#"{"message":"Too Many Requests"}"#;
+        let err = synth_github_error(429, body).await;
+        let result: Result<serde_json::Value, octocrab::Error> = Err(err);
+        assert_eq!(
+            classify_upload_attempt(&result),
+            UploadAttemptOutcome::PrimaryRateLimited,
+        );
+    }
+
+    #[tokio::test]
+    async fn github_403_auth_denied_classifies_as_fatal() {
+        // A 403 with no rate-limit signal is auth denial. Sleeping through
+        // `/rate_limit` backoff on it would stall the release on a token
+        // that can never succeed — it must fast-fail instead.
+        let body = r#"{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com/rest"}"#;
+        let err = synth_github_error(403, body).await;
+        let result: Result<serde_json::Value, octocrab::Error> = Err(err);
+        assert_eq!(
+            classify_upload_attempt(&result),
+            UploadAttemptOutcome::Fatal,
         );
     }
 

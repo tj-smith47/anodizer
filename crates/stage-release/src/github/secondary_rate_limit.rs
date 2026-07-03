@@ -149,33 +149,21 @@ where
 
 /// Returns `true` when `err` looks like a GitHub secondary rate-limit response.
 ///
-/// Detection criteria (any one is sufficient):
-/// 1. HTTP status is 403 or 429 AND the `GitHubError.message` field contains
-///    `"secondary rate limit"` (case-insensitive).
-/// 2. HTTP status is 403 or 429 AND the `GitHubError.documentation_url` field
-///    contains `"secondary-rate-limits"` (GitHub includes this in rate-limit
-///    error bodies).
-///
-/// A plain 403 (auth failure) or 429 (primary rate-limit) without these
-/// indicators returns `false`.
+/// octocrab adapter over the shared signature check
+/// ([`anodizer_core::git::is_secondary_rate_limit_signature`]): octocrab's
+/// `GitHubError` carries no response headers, so the body message /
+/// documentation_url is the only available signal here. A plain 403 (auth
+/// failure) or 429 (primary rate-limit) without the secondary signature
+/// returns `false`.
 pub(crate) fn is_secondary_rate_limit(err: &octocrab::Error) -> bool {
     let octocrab::Error::GitHub { source, .. } = err else {
         return false;
     };
-    let status = source.status_code.as_u16();
-    if status != 403 && status != 429 {
-        return false;
-    }
-    let msg = source.message.to_lowercase();
-    if msg.contains("secondary rate limit") {
-        return true;
-    }
-    if let Some(doc_url) = &source.documentation_url
-        && doc_url.contains("secondary-rate-limits")
-    {
-        return true;
-    }
-    false
+    anodizer_core::git::is_secondary_rate_limit_signature(
+        source.status_code.as_u16(),
+        &source.message,
+        source.documentation_url.as_deref(),
+    )
 }
 
 /// Read and parse the `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS` env

@@ -52,6 +52,53 @@ pub fn response_is_rate_limited(headers: &reqwest::header::HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
+/// Whether an error body matches GitHub's *secondary* rate-limit signature:
+/// a 403 / 429 whose `message` mentions "secondary rate limit"
+/// (case-insensitive) or whose `documentation_url` points at
+/// `secondary-rate-limits`.
+///
+/// Body-signature detection exists for callers whose HTTP layer does not
+/// surface response headers (octocrab's `GitHubError` carries only
+/// message / documentation_url / status). Callers that do hold the headers
+/// should prefer [`response_is_rate_limited`]. Keeping the signature strings
+/// here — next to the header detector — means a GitHub body rewording is a
+/// one-place fix for every surface that discriminates 403s.
+pub fn is_secondary_rate_limit_signature(
+    status: u16,
+    message: &str,
+    documentation_url: Option<&str>,
+) -> bool {
+    if status != 403 && status != 429 {
+        return false;
+    }
+    if message.to_lowercase().contains("secondary rate limit") {
+        return true;
+    }
+    documentation_url.is_some_and(|u| u.contains("secondary-rate-limits"))
+}
+
+/// Whether an error body marks the response as rate-limited at all
+/// (primary quota exhaustion or a secondary limit): any 429, or a 403 whose
+/// `message` / `documentation_url` carries a rate-limit signal.
+///
+/// A 403 with NO rate-limit signal is auth denial — the same default
+/// [`github_repo_probe`] applies to header-carrying probes — so callers must
+/// fast-fail those instead of sleeping through a rate-limit backoff.
+pub fn is_rate_limit_signature(
+    status: u16,
+    message: &str,
+    documentation_url: Option<&str>,
+) -> bool {
+    if status == 429 {
+        return true;
+    }
+    if status != 403 {
+        return false;
+    }
+    message.to_lowercase().contains("rate limit")
+        || documentation_url.is_some_and(|u| u.contains("rate-limit"))
+}
+
 /// The two outcomes whose severity + wording genuinely differ between the
 /// preflight callers of [`github_repo_push_check`]: an unwritable repo blocks
 /// the required github-release target but only warns for a tap/index repo,
@@ -284,5 +331,67 @@ mod push_check_tests {
             PreflightCheck::Warning(msg) => assert!(msg.contains("HTTP 500"), "{msg}"),
             other => panic!("expected Warning, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod rate_limit_signature_tests {
+    use super::*;
+
+    #[test]
+    fn secondary_matches_message_or_doc_url_on_403_and_429() {
+        for status in [403u16, 429] {
+            assert!(is_secondary_rate_limit_signature(
+                status,
+                "You have exceeded a secondary rate limit",
+                None
+            ));
+            assert!(is_secondary_rate_limit_signature(
+                status,
+                "blocked",
+                Some("https://docs.github.com/rest/overview#secondary-rate-limits")
+            ));
+        }
+    }
+
+    #[test]
+    fn secondary_rejects_other_statuses_and_plain_403() {
+        assert!(!is_secondary_rate_limit_signature(
+            500,
+            "secondary rate limit",
+            None
+        ));
+        assert!(!is_secondary_rate_limit_signature(
+            403,
+            "Bad credentials",
+            Some("https://docs.github.com/rest")
+        ));
+    }
+
+    #[test]
+    fn rate_limit_signature_accepts_any_429() {
+        assert!(is_rate_limit_signature(429, "", None));
+    }
+
+    #[test]
+    fn rate_limit_signature_needs_body_signal_on_403() {
+        assert!(is_rate_limit_signature(
+            403,
+            "API rate limit exceeded for user ID 1",
+            None
+        ));
+        assert!(is_rate_limit_signature(
+            403,
+            "forbidden",
+            Some("https://docs.github.com/rest/overview/rate-limits-for-the-rest-api")
+        ));
+        // The 403-without-signal case IS auth denial: sleeping through a
+        // rate-limit backoff on it hides a hard token failure.
+        assert!(!is_rate_limit_signature(
+            403,
+            "Resource not accessible by integration",
+            Some("https://docs.github.com/rest")
+        ));
+        assert!(!is_rate_limit_signature(401, "rate limit", None));
     }
 }

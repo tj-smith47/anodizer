@@ -48,7 +48,8 @@ pub use github_api::{
     github_token_hint, resolve_github_token, resolve_github_token_with_env,
 };
 pub use github_probe::{
-    RepoAccessOutcomes, RepoProbe, github_repo_probe, github_repo_push_check, probe_to_push_check,
+    RepoAccessOutcomes, RepoProbe, github_repo_probe, github_repo_push_check,
+    is_rate_limit_signature, is_secondary_rate_limit_signature, probe_to_push_check,
     response_is_rate_limited,
 };
 pub use mailmap::canonical_author_email_in;
