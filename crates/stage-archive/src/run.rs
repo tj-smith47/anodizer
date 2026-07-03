@@ -532,6 +532,24 @@ fn archive_one_config(
             // reads. Shared with binstall/nix asset-name derivation so a
             // derived `pkg_url` cannot drift from the archive this stage writes.
             anodizer_core::archive_name::seed_target_vars(ctx, target);
+            // Overlay the group's amd64 micro-arch level on top of the
+            // target-derived baseline: a v3-tuned group (RUSTFLAGS
+            // `-Ctarget-cpu=x86-64-v3`) must render the same `Amd64` suffix
+            // its binaries were named with (`…_amd64v3.tar.gz`, matching
+            // GoReleaser's default), and a user template's `{{ Amd64 }}`
+            // must render the real level — the plain `seed_target_vars`
+            // baseline would emit a FALSE "v1" for tuned groups. Same idiom
+            // as the installer stages; the group carries one variant (the
+            // first binary's, matching the metadata propagation below).
+            let (_, group_arch) = map_target(target);
+            anodizer_core::archive_name::seed_amd64_variant_var(
+                ctx.template_vars_mut(),
+                &group_arch,
+                selected_bins
+                    .first()
+                    .and_then(|b| b.metadata.get("amd64_variant"))
+                    .map(String::as_str),
+            );
             let tvars = ctx.template_vars_mut();
             // CrateName is set per-crate so the multi-crate default
             // template (and any user template that references

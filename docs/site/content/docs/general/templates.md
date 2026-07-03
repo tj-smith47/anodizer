@@ -162,11 +162,11 @@ If you hit a construct not covered here, open an issue with the failing template
 |----------|-------------|---------|
 | `Os` | Mapped OS name | `linux`, `darwin`, `windows` |
 | `Arch` | Mapped architecture | `amd64`, `arm64` |
-| `Arm` | 32-bit ARM version, set only where `Arch` is the bare `arm` (archive asset names split `armv7` into `Arch="arm"` + `Arm="7"`); empty everywhere `Arch` carries the composite `armv7`/`armv6` token (build, makeself, AppImage) | `7` |
-| `Arm64` | 64-bit ARM feature level (build/installer contexts) | `v8` |
+| `Arm` | 32-bit ARM version, set only where `Arch` is the bare `arm` (archive asset names split `armv7` into `Arch="arm"` + `Arm="7"`); empty everywhere `Arch` carries the composite `armv7`/`armv6` token (build, makeself, AppImage, sign) | `7` |
+| `Arm64` | 64-bit ARM feature level (build, makeself, AppImage, sign) | `v8` |
 | `Amd64` | x86-64 micro-architecture level from the binary's build metadata; untagged binaries carry the `v1` baseline in every context. Default name templates suppress `v1` (`{% if Amd64 and Amd64 != "v1" %}`), so only tuned `v2`/`v3` builds get a suffix | `v1`, `v3` |
 | `Mips` | Always empty — `Arch` carries the full mips token (`mips64el`), so a suffix would double it | (empty) |
-| `I386` | 32-bit x86 instruction floor (build/installer contexts) | `sse2` |
+| `I386` | 32-bit x86 instruction floor (build, makeself, AppImage, sign) | `sse2` |
 | `Target` | Full target triple | `x86_64-unknown-linux-gnu` |
 | `Binary` | Current binary name | `myapp` |
 | `ArtifactName` | Current artifact name | `myapp-1.0.0-linux-amd64.tar.gz` |

@@ -3167,8 +3167,10 @@ fn test_binary_signs_sets_os_arch_from_target_triple() {
     );
 }
 
+/// An armv7 binary under the DEFAULT signature template gets a plain `.sig`
+/// name with no platform suffix at all (flat layout appends nothing).
 #[test]
-fn test_binary_signs_arm_target_splits_arch_correctly() {
+fn test_binary_signs_armv7_default_template_appends_only_sig_ext() {
     use anodizer_core::artifact::Artifact;
 
     let binary_sign_cfg = SignConfig {
@@ -3224,6 +3226,81 @@ fn test_binary_signs_arm_target_splits_arch_correctly() {
         !sigs[0].name.contains("armv7v7"),
         "signature name must NOT contain armv7v7 double-suffix: got '{}'",
         sigs[0].name
+    );
+}
+
+/// Sign seeds the COMPOSITE build/installer policy on an armv7 binary:
+/// `Arch="armv7"` with `Arm` empty — never the archive-policy split
+/// (`Arch="arm"` + `Arm="7"`). Two probes pin both halves:
+/// - the certificate template's bare `{{ Arch }}` renders `armv7`
+///   (the split policy would render `arm`),
+/// - the signature template's Arm-suffix idiom appends NOTHING
+///   (a seeded `Arm` would render the doubled `armv7v7`).
+#[test]
+fn test_binary_signs_armv7_templates_render_composite_arch_and_empty_arm() {
+    use anodizer_core::artifact::Artifact;
+
+    let binary_sign_cfg = SignConfig {
+        id: None,
+        artifacts: Some("binary".to_string()),
+        cmd: Some("true".to_string()),
+        args: Some(vec![]),
+        signature: Some(
+            "{{ .Artifact }}.{{ Arch }}{% if Arm %}v{{ Arm }}{% endif %}.sig".to_string(),
+        ),
+        stdin: None,
+        stdin_file: None,
+        ids: None,
+        env: None,
+        certificate: Some("{{ .Artifact }}.{{ Arch }}.pem".to_string()),
+        output: None,
+        authenticode: None,
+        if_condition: None,
+    };
+    let mut ctx = TestContextBuilder::new()
+        .binary_signs(vec![binary_sign_cfg])
+        .dry_run(true)
+        .build();
+
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: "myapp".to_string(),
+        path: std::path::PathBuf::from("/dist/myapp"),
+        target: Some("armv7-unknown-linux-gnueabihf".to_string()),
+        crate_name: "test".to_string(),
+        metadata: Default::default(),
+        size: None,
+    });
+
+    let log = ctx.logger("binary-sign");
+    let binary_sign_configs = ctx.config.binary_signs.clone();
+    process_sign_configs(
+        &binary_sign_configs,
+        &mut ctx,
+        &log,
+        ArtifactFilter::BinaryOnly,
+        "binary-sign",
+    )
+    .unwrap();
+
+    // Registered names may be target-qualified, so pin the rendered stem
+    // rather than the full basename (mirrors the amd64-variant test above).
+    let sigs: Vec<_> = ctx.artifacts.by_kind(ArtifactKind::Signature);
+    assert_eq!(sigs.len(), 1);
+    assert!(
+        sigs[0].name.starts_with("myapp.armv7") && !sigs[0].name.contains("armv7v7"),
+        "signature Arm-suffix idiom must append nothing on the composite \
+         policy (expected stem 'myapp.armv7'): got '{}'",
+        sigs[0].name
+    );
+
+    let certs: Vec<_> = ctx.artifacts.by_kind(ArtifactKind::Certificate);
+    assert_eq!(certs.len(), 1);
+    assert!(
+        certs[0].name.starts_with("myapp.armv7"),
+        "certificate `{{{{ Arch }}}}` must render the composite 'armv7', not \
+         the archive-split 'arm': got '{}'",
+        certs[0].name
     );
 }
 

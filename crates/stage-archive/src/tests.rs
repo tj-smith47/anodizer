@@ -4485,6 +4485,121 @@ fn test_archive_amd64_variant_propagated_from_first_binary() {
     );
 }
 
+/// The default name template's `Amd64 != "v1"` clause must see the GROUP's
+/// real micro-arch level, not the bare target-derived baseline: a v3-tuned
+/// group names its archive `…_amd64v3.tar.gz` (the suffix its binaries were
+/// built with), while an untagged group keeps the historical suffix-free
+/// `…_amd64.tar.gz`.
+#[test]
+fn test_archive_default_name_renders_group_amd64_variant_suffix() {
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    for (variant, expected) in [
+        (Some("v3"), "myapp_1.0.0_linux_amd64v3.tar.gz"),
+        (None, "myapp_1.0.0_linux_amd64.tar.gz"),
+    ] {
+        let tmp = TempDir::new().unwrap();
+        let dist = tmp.path().join("dist");
+        let bin_path = tmp.path().join("myapp");
+        fs::write(&bin_path, b"binary").unwrap();
+
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .tag("v1.0.0")
+            .dist(dist)
+            .crates(vec![CrateConfig {
+                name: "myapp".to_string(),
+                path: ".".to_string(),
+                tag_template: "v{{ .Version }}".to_string(),
+                archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                    formats: Some(vec!["tar.gz".to_string()]),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }])
+            .build();
+
+        let mut meta = HashMap::new();
+        meta.insert("binary".to_string(), "myapp".to_string());
+        if let Some(v) = variant {
+            meta.insert("amd64_variant".to_string(), v.to_string());
+        }
+
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Binary,
+            name: String::new(),
+            path: bin_path,
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "myapp".to_string(),
+            metadata: meta,
+            size: None,
+        });
+
+        ArchiveStage.run(&mut ctx).unwrap();
+
+        let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+        assert_eq!(archives.len(), 1);
+        assert_eq!(
+            archives[0].name, expected,
+            "default archive name for amd64_variant={variant:?}"
+        );
+    }
+}
+
+/// A user `name_template` referencing `{{ Amd64 }}` on a v3-tuned group must
+/// render the group's real level — not the target-derived "v1" baseline.
+#[test]
+fn test_archive_user_template_amd64_var_renders_group_variant() {
+    use anodizer_core::config::{ArchiveConfig, ArchivesConfig, CrateConfig};
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    let tmp = TempDir::new().unwrap();
+    let dist = tmp.path().join("dist");
+    let bin_path = tmp.path().join("myapp");
+    fs::write(&bin_path, b"binary").unwrap();
+
+    let mut ctx = TestContextBuilder::new()
+        .project_name("myapp")
+        .tag("v1.0.0")
+        .dist(dist)
+        .crates(vec![CrateConfig {
+            name: "myapp".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            archives: ArchivesConfig::Configs(vec![ArchiveConfig {
+                formats: Some(vec!["tar.gz".to_string()]),
+                name_template: Some("{{ .ProjectName }}_{{ Amd64 }}".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }])
+        .build();
+
+    let mut meta = HashMap::new();
+    meta.insert("binary".to_string(), "myapp".to_string());
+    meta.insert("amd64_variant".to_string(), "v3".to_string());
+
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: bin_path,
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "myapp".to_string(),
+        metadata: meta,
+        size: None,
+    });
+
+    ArchiveStage.run(&mut ctx).unwrap();
+
+    let archives = ctx.artifacts.by_kind(ArtifactKind::Archive);
+    assert_eq!(archives.len(), 1);
+    assert_eq!(
+        archives[0].name, "myapp_v3.tar.gz",
+        "user template `{{{{ Amd64 }}}}` must render the group's variant, not the v1 baseline"
+    );
+}
+
 /// Q-arch1 — Multi-crate archives must render `{{ .ProjectName }}` to the
 /// per-crate name (with `{{ .CrateName }}` still available separately) so
 /// configs whose name templates reference `ProjectName`

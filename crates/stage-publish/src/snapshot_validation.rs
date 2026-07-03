@@ -257,7 +257,7 @@ fn validate_version_sync(ctx: &Context, crate_cfg: &CrateConfig) -> Result<()> {
 /// asset filename matches no produced archive is the exact 404 class —
 /// `cargo binstall` would request a URL the release never uploaded.
 fn validate_binstall(
-    ctx: &Context,
+    ctx: &mut Context,
     crate_cfg: &CrateConfig,
     bs: &BinstallConfig,
     log: &StageLogger,
@@ -384,6 +384,94 @@ fn validate_binstall(
                     triple,
                 );
             }
+        }
+    }
+
+    // Auto-derived path (neither pkg_url nor overrides supplied): the release
+    // writes per-target pkg_urls rendered from CONFIG alone, so naming inputs
+    // that only exist on built artifacts — the amd64 micro-arch level a
+    // v3-tuned group's archive name carries — are invisible to the
+    // derivation. Cross-check each derived asset name against the archives
+    // actually produced for its triple so such drift fails the snapshot loud
+    // instead of shipping a 404 pkg_url.
+    if bs.pkg_url.is_none()
+        && bs.overrides.as_ref().is_none_or(|o| o.is_empty())
+        && !produced.is_empty()
+    {
+        validate_derived_binstall(ctx, crate_cfg, &produced)?;
+    }
+    Ok(())
+}
+
+/// Cross-check the AUTO-derived binstall asset names (what
+/// [`anodizer_core::binstall::generate_binstall_metadata`] would emit) against
+/// the produced archive set, per triple. Triples not built in this run (a
+/// sharded snapshot) have nothing to compare and are skipped, as are formats
+/// cargo-binstall cannot install (no override is emitted for them).
+fn validate_derived_binstall(
+    ctx: &mut Context,
+    crate_cfg: &CrateConfig,
+    produced: &[ProducedAsset],
+) -> Result<()> {
+    // The derivation render seeds the per-target vars; snapshot and restore
+    // them so later emission checks in this pass see their own values.
+    const SEEDED: &[&str] = &[
+        "Os", "Arch", "Target", "Arm", "Arm64", "Amd64", "Mips", "I386",
+    ];
+    let prior: Vec<(&str, Option<String>)> = SEEDED
+        .iter()
+        .map(|k| (*k, ctx.template_vars().get(k).cloned()))
+        .collect();
+    let defaults = ctx.config.effective_default_targets();
+    let derived = anodizer_core::binstall::crate_archive_asset_names(crate_cfg, &defaults, ctx);
+    for (key, value) in prior {
+        match value {
+            Some(v) => ctx.template_vars_mut().set(key, &v),
+            None => {
+                ctx.template_vars_mut().unset(key);
+            }
+        }
+    }
+    let Some(derived) = derived.with_context(|| {
+        format!(
+            "binstall: derive per-target asset names for crate '{}'",
+            crate_cfg.name
+        )
+    })?
+    else {
+        return Ok(());
+    };
+
+    for (triple, asset) in &derived {
+        if anodizer_core::archive_name::binstall_pkg_fmt(&asset.format).is_none() {
+            continue;
+        }
+        let for_triple: Vec<&ProducedAsset> = produced
+            .iter()
+            .filter(|p| p.target.as_deref() == Some(triple.as_str()))
+            .collect();
+        if for_triple.is_empty() {
+            continue;
+        }
+        if !for_triple.iter().any(|p| p.name == asset.asset_name) {
+            bail!(
+                "binstall: crate '{}' auto-derived pkg_url for target '{}' resolves to \
+                 asset '{}', but the archives produced for that target are: {}. \
+                 cargo binstall would request a URL the release never uploaded (404). \
+                 The derivation renders names from config alone and cannot see \
+                 build-derived naming inputs (e.g. an amd64 micro-arch level from \
+                 RUSTFLAGS -Ctarget-cpu=x86-64-v2/v3); set an explicit \
+                 binstall.overrides.'{}'.pkg_url naming the produced asset.",
+                crate_cfg.name,
+                triple,
+                asset.asset_name,
+                for_triple
+                    .iter()
+                    .map(|p| p.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                triple,
+            );
         }
     }
     Ok(())
@@ -763,7 +851,7 @@ mod tests {
             "cfgd-1.0.0-x86_64-unknown-linux-gnu.tar.gz",
         );
         let bs = cfg.binstall.clone().unwrap();
-        let err = validate_binstall(&ctx, &cfg, &bs, &log()).expect_err("must catch the 404");
+        let err = validate_binstall(&mut ctx, &cfg, &bs, &log()).expect_err("must catch the 404");
         let msg = format!("{err}");
         assert!(msg.contains("cfgd"), "names the crate: {msg}");
         assert!(
@@ -794,7 +882,77 @@ mod tests {
             "cfgd-1.0.0-x86_64-unknown-linux-gnu.tar.gz",
         );
         let bs = cfg.binstall.clone().unwrap();
-        validate_binstall(&ctx, &cfg, &bs, &log()).expect("correct pkg_url passes");
+        validate_binstall(&mut ctx, &cfg, &bs, &log()).expect("correct pkg_url passes");
+    }
+
+    /// A crate on the AUTO-derived binstall path whose build is tuned to an
+    /// amd64 micro-arch level: the archive stage names the asset with the
+    /// group's `amd64v3` suffix (from artifact metadata), but the config-only
+    /// derivation renders the baseline `_amd64` name — the exact 404 the
+    /// derived cross-check must fail loud on.
+    #[test]
+    fn binstall_auto_derived_name_missing_variant_suffix_fails() {
+        let (cfg, bs, mut ctx) = auto_derived_fixture();
+        add_archive(
+            &mut ctx,
+            "cfgd",
+            "x86_64-unknown-linux-gnu",
+            "cfgd_1.0.0_linux_amd64v3.tar.gz",
+        );
+        let err = validate_binstall(&mut ctx, &cfg, &bs, &log())
+            .expect_err("derived name must be cross-checked against produced assets");
+        let msg = format!("{err}");
+        assert!(msg.contains("auto-derived"), "names the path: {msg}");
+        assert!(
+            msg.contains("cfgd_1.0.0_linux_amd64.tar.gz"),
+            "names the derived asset: {msg}"
+        );
+        assert!(
+            msg.contains("cfgd_1.0.0_linux_amd64v3.tar.gz"),
+            "names the produced asset: {msg}"
+        );
+        assert!(msg.contains("404"), "explains the failure class: {msg}");
+    }
+
+    /// The auto-derived cross-check passes when the produced asset carries the
+    /// exact derived name (the untuned baseline case), and skips triples not
+    /// built in this run.
+    #[test]
+    fn binstall_auto_derived_name_matching_produced_asset_passes() {
+        let (cfg, bs, mut ctx) = auto_derived_fixture();
+        add_archive(
+            &mut ctx,
+            "cfgd",
+            "x86_64-unknown-linux-gnu",
+            "cfgd_1.0.0_linux_amd64.tar.gz",
+        );
+        validate_binstall(&mut ctx, &cfg, &bs, &log()).expect("derived name matches");
+    }
+
+    /// Auto-derived binstall fixture: binstall enabled with NEITHER `pkg_url`
+    /// nor `overrides`, an explicit binstallable archive config, and one
+    /// x86_64 build target — the shape `generate_binstall_metadata` derives
+    /// per-target pkg_urls for.
+    fn auto_derived_fixture() -> (CrateConfig, BinstallConfig, Context) {
+        use anodizer_core::config::{ArchiveConfig, ArchivesConfig};
+        let mut cfg = binstall_crate(BinstallConfig {
+            enabled: Some(true),
+            ..Default::default()
+        });
+        cfg.archives = ArchivesConfig::Configs(vec![ArchiveConfig {
+            formats: Some(vec!["tar.gz".to_string()]),
+            ..Default::default()
+        }]);
+        // `binary:` makes the build a producing one without a filesystem
+        // probe for a real [[bin]] target.
+        cfg.builds = Some(vec![BuildConfig {
+            binary: Some("cfgd".to_string()),
+            targets: Some(vec!["x86_64-unknown-linux-gnu".to_string()]),
+            ..Default::default()
+        }]);
+        let ctx = scoped_ctx(cfg.clone());
+        let bs = cfg.binstall.clone().unwrap();
+        (cfg, bs, ctx)
     }
 
     /// `snapshot_version_fallback` yields the global snapshot version ONLY in
@@ -888,7 +1046,7 @@ mod tests {
             "cfgd-1.0.0-darwin-arm64.tar.gz",
         );
         let bs = cfg.binstall.clone().unwrap();
-        let err = validate_binstall(&ctx, &cfg, &bs, &log()).expect_err(
+        let err = validate_binstall(&mut ctx, &cfg, &bs, &log()).expect_err(
             "untokened single-platform pkg_url must fail against a multi-target release",
         );
         assert!(format!("{err}").contains("404"), "{err}");
@@ -914,7 +1072,7 @@ mod tests {
             "cfgd-1.0.0-linux-amd64.tar.gz",
         );
         let bs = cfg.binstall.clone().unwrap();
-        validate_binstall(&ctx, &cfg, &bs, &log())
+        validate_binstall(&mut ctx, &cfg, &bs, &log())
             .expect("untokened url matching the only produced asset passes");
     }
 
@@ -1078,7 +1236,7 @@ mod tests {
             "cfgd-0.4.0-SNAPSHOT-3d07f6c-x86_64-unknown-linux-gnu.tar.gz",
         );
         let bs = cfg.binstall.clone().unwrap();
-        validate_binstall(&ctx, &cfg, &bs, &log())
+        validate_binstall(&mut ctx, &cfg, &bs, &log())
             .expect("a multi-dash snapshot version stem must still match its produced asset");
     }
 
@@ -1110,7 +1268,7 @@ mod tests {
             "cfgd-1.0.0-aarch64-apple-darwin.tar.gz",
         );
         let bs = cfg.binstall.clone().unwrap();
-        let err = validate_binstall(&ctx, &cfg, &bs, &log())
+        let err = validate_binstall(&mut ctx, &cfg, &bs, &log())
             .expect_err("override pointing at missing asset must fail");
         let msg = format!("{err}");
         assert!(
@@ -1163,7 +1321,7 @@ mod tests {
             "cfgd-1.0.0-linux-amd64.tar.gz",
         );
         let bs = cfg.binstall.clone().unwrap();
-        validate_binstall(&ctx, &cfg, &bs, &log())
+        validate_binstall(&mut ctx, &cfg, &bs, &log())
             .expect("a configured-but-unbuilt triple must be skipped, not flagged");
     }
 
@@ -1201,7 +1359,7 @@ mod tests {
             "cfgd-1.0.0-linux-amd64.tar.gz",
         );
         let bs = cfg.binstall.clone().unwrap();
-        let err = validate_binstall(&ctx, &cfg, &bs, &log())
+        let err = validate_binstall(&mut ctx, &cfg, &bs, &log())
             .expect_err("override for an unconfigured triple must fail");
         assert!(
             format!("{err}").contains("never builds"),
@@ -1500,7 +1658,7 @@ mod tests {
         // Simulate the pre-fix scope: Version = the tag-derived numeric base.
         ctx.template_vars_mut().set("Version", "0.5.0");
         let bs = cfg.binstall.clone().unwrap();
-        let err = validate_binstall(&ctx, &cfg, &bs, &log()).expect_err(
+        let err = validate_binstall(&mut ctx, &cfg, &bs, &log()).expect_err(
             "pre-fix: tag version vs snapshot-named asset must (wrongly) fail — \
              proving the version dimension was the false-positive source",
         );

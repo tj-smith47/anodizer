@@ -324,6 +324,30 @@ mod tests {
     }
 
     #[test]
+    fn amd64_variant_var_is_arch_gated() {
+        // The untagged fallback is ARCH-GATED, not unconditional: only an
+        // amd64 binary falls back to the "v1" baseline; a non-amd64 binary
+        // must seed the empty string (the level is an x86-64 dimension), or
+        // a template's `{% if Amd64 %}` clause would fire on ARM assets. A
+        // "simplified" unconditional `unwrap_or("v1")` fails the arm cases.
+        let cases: [(&str, Option<&str>, &str); 4] = [
+            ("arm64", None, ""),
+            ("armv7", None, ""),
+            ("amd64", None, "v1"),
+            ("amd64", Some("v3"), "v3"),
+        ];
+        let mut c = ctx();
+        for (arch, variant, expected) in cases {
+            seed_amd64_variant_var(c.template_vars_mut(), arch, variant);
+            assert_eq!(
+                c.template_vars().get("Amd64").unwrap(),
+                expected,
+                "Amd64 for arch={arch} variant={variant:?}"
+            );
+        }
+    }
+
+    #[test]
     fn default_template_renders_goreleaser_stem() {
         let mut c = ctx();
         let stem =
