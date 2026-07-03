@@ -22,6 +22,40 @@ use crate::{
     formats_for_target, resolve_file_specs,
 };
 
+#[test]
+fn archive_mtime_pins_commit_timestamp_for_workspace_only_reproducible_build() {
+    // A crate declared only under `workspaces[].crates` with
+    // `builds[].reproducible: true` must pin the archive mtime to the
+    // commit timestamp: the reproducibility scan resolves through the
+    // crate universe. The decoy SOURCE_DATE_EPOCH proves the reproducible
+    // branch was taken (the non-reproducible fallback would prefer it).
+    let mut ctx = anodizer_core::test_helpers::TestContextBuilder::new()
+        .workspaces(vec![anodizer_core::config::WorkspaceConfig {
+            name: "ws".to_string(),
+            crates: vec![anodizer_core::config::CrateConfig {
+                name: "ws-only".to_string(),
+                path: ".".to_string(),
+                builds: Some(vec![anodizer_core::config::BuildConfig {
+                    reproducible: Some(true),
+                    ..Default::default()
+                }]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }])
+        .env("SOURCE_DATE_EPOCH", "1111111111")
+        .build();
+    assert!(
+        ctx.config.crates.is_empty(),
+        "fixture must be a pure-workspace config"
+    );
+    ctx.template_vars_mut().set("CommitTimestamp", "1700000000");
+    assert_eq!(
+        crate::run_helpers::resolve_archive_mtime(&ctx),
+        Some(1_700_000_000)
+    );
+}
+
 /// Forward-slash a host path for embedding into an `sh -c` hook command:
 /// `sh` mangles backslashes as escapes, so a Windows `C:\…` redirect/touch
 /// target must be fed as `C:/…` (msys `sh` opens it fine). No-op on unix.

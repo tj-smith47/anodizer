@@ -48,8 +48,8 @@ pub fn validate_snapcraft_templates(
     let selected = ctx.options.selected_crates.clone();
     let crates: Vec<CrateConfig> = ctx
         .config
-        .crates
-        .iter()
+        .crate_universe()
+        .into_iter()
         .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .filter(|c| c.snapcrafts.is_some())
         .cloned()

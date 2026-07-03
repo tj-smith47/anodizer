@@ -512,10 +512,10 @@ impl Config {
     }
 
     /// Name of the primary crate (first declared `crates:` entry, else the
-    /// first workspace crate). Used as the metadata-derivation source for
-    /// project-level publishers (e.g. top-level `homebrew_casks:`) that are
-    /// not bound to a single crate.
-    fn primary_crate_name(&self) -> Option<&str> {
+    /// first workspace crate). Used as the metadata-derivation source and
+    /// crate-name fallback for project-level publishers (e.g. top-level
+    /// `homebrew_casks:`, `npms:`) that are not bound to a single crate.
+    pub fn primary_crate_name(&self) -> Option<&str> {
         self.crate_universe().first().map(|c| c.name.as_str())
     }
 
@@ -1583,22 +1583,11 @@ pub fn all_builds_prebuilt(config: &Config) -> bool {
     };
 
     let mut saw_any = false;
-    for krate in &config.crates {
+    for krate in config.crate_universe() {
         match crate_all_prebuilt(krate) {
             Some(true) => saw_any = true,
             Some(false) => return false,
             None => {}
-        }
-    }
-    if let Some(ws_list) = config.workspaces.as_ref() {
-        for ws in ws_list {
-            for krate in &ws.crates {
-                match crate_all_prebuilt(krate) {
-                    Some(true) => saw_any = true,
-                    Some(false) => return false,
-                    None => {}
-                }
-            }
         }
     }
     saw_any

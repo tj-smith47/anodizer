@@ -435,6 +435,83 @@ fn harness_skips_env_preflight_and_prints_header_and_config_warnings_once() {
     }
 }
 
+/// The dispatcher must surface a crate-universe name collision (same crate
+/// name at two different paths) as a warning BEFORE the harness runs: the
+/// harness resolves stages/producers through the deduped universe, which
+/// silently drops the shadowed entry — without the warning, an operator's
+/// colliding crate simply isn't checked and nothing says so.
+///
+/// The fixture keeps the run cheap by making every `builds[]` entry
+/// `builder: prebuilt`, which short-circuits the dispatcher right after the
+/// emission point ("no buildable targets") — the warning path is exercised
+/// end-to-end without spawning a single rebuild.
+#[test]
+fn check_determinism_warns_on_crate_universe_name_collision() {
+    assert!(
+        tool_on_path("git"),
+        "check_determinism_warns_on_crate_universe_name_collision requires git on PATH"
+    );
+
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path();
+    bootstrap_minimal_cargo_repo(repo, "det-collide-fixture");
+
+    let host = host_triple();
+    let yaml = format!(
+        r#"crates:
+  - name: det-collide-fixture
+    path: .
+    tag_template: "v{{{{ Version }}}}"
+    builds:
+      - id: det-collide-fixture
+        binary: det-collide-fixture
+        builder: prebuilt
+        prebuilt:
+          path: "out/det-collide-fixture"
+        targets:
+          - {host}
+workspaces:
+  - name: ws
+    crates:
+      - name: det-collide-fixture
+        path: elsewhere
+        tag_template: "v{{{{ Version }}}}"
+"#,
+    );
+    fs::write(repo.join(".anodizer.yaml"), yaml).unwrap();
+    run_git(repo, &["add", "-A"]);
+    run_git(repo, &["commit", "-q", "-m", "collision fixture config"]);
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["check", "determinism", "--runs", "2"])
+        .current_dir(repo)
+        .env("NO_COLOR", "1")
+        .output()
+        .expect("invoking anodize check determinism");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "all-prebuilt short-circuit must exit 0; stdout={} stderr={stderr}",
+        String::from_utf8_lossy(&output.stdout),
+    );
+    // The universe collision warning, emitted by the dispatcher itself.
+    assert!(
+        stderr.contains("name collision with different paths"),
+        "expected the crate-universe collision warning on stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("workspace 'ws' crate 'det-collide-fixture'"),
+        "warning must name the workspace and the colliding crate: {stderr}"
+    );
+    // Guard against a vacuous pass through some earlier exit: the run must
+    // have reached the all-prebuilt short-circuit AFTER the emission point.
+    assert!(
+        stderr.contains("no buildable targets"),
+        "expected the all-prebuilt short-circuit note: {stderr}"
+    );
+}
+
 /// `-q` (the global quiet flag) must silence the harness's own output —
 /// the `Checking determinism` header, the kv summary rows, and the
 /// `run N of M` bullets — and propagate to the child release

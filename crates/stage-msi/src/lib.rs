@@ -54,8 +54,8 @@ impl Stage for MsiStage {
         // Collect crates that have MSI config
         let crates: Vec<_> = ctx
             .config
-            .crates
-            .iter()
+            .crate_universe()
+            .into_iter()
             .filter(|c| selected.is_empty() || selected.contains(&c.name))
             .filter(|c| c.msis.is_some())
             .cloned()

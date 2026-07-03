@@ -227,8 +227,8 @@ fn collect_archivable_crates(
 ) -> Result<Vec<(String, PathBuf, Vec<ArchiveConfig>)>> {
     let crates: Vec<_> = ctx
         .config
-        .crates
-        .iter()
+        .crate_universe()
+        .into_iter()
         .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .cloned()
         .collect();

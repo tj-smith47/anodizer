@@ -431,8 +431,8 @@ impl BlobStage {
         // Collect crates that have blob config
         let crates: Vec<_> = ctx
             .config
-            .crates
-            .iter()
+            .crate_universe()
+            .into_iter()
             .filter(|c| selected.is_empty() || selected.contains(&c.name))
             .filter(|c| c.blobs.is_some())
             .cloned()

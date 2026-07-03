@@ -69,8 +69,8 @@ impl Stage for NfpmStage {
         // Collect crates that have nfpm config
         let crates: Vec<_> = ctx
             .config
-            .crates
-            .iter()
+            .crate_universe()
+            .into_iter()
             .filter(|c| selected.is_empty() || selected.contains(&c.name))
             .filter(|c| c.nfpms.is_some())
             .cloned()
@@ -1554,7 +1554,7 @@ pub fn nfpm_yaml_configs_for_crate(
     crate_name: &str,
 ) -> Result<Vec<NfpmRenderedConfig>> {
     let log = ctx.logger("nfpm");
-    let Some(krate) = ctx.config.crates.iter().find(|c| c.name == crate_name) else {
+    let Some(krate) = ctx.config.find_crate(crate_name) else {
         return Ok(Vec::new());
     };
     let Some(nfpm_configs) = krate.nfpms.as_ref() else {

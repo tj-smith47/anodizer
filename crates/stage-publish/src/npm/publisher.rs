@@ -182,9 +182,8 @@ impl anodizer_core::Publisher for NpmPublisher {
             // the package-name fallback for an unnamed entry.
             let crate_name = ctx
                 .config
-                .crates
-                .first()
-                .map(|c| c.name.clone())
+                .primary_crate_name()
+                .map(str::to_string)
                 .unwrap_or_else(|| ctx.config.project_name.clone());
             // Name the entry by what the operator recognises — the npm
             // package name, its `id`, or the resolved crate name — never the
@@ -350,9 +349,8 @@ impl anodizer_core::Publisher for NpmPublisher {
         let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
         let crate_name = ctx
             .config
-            .crates
-            .first()
-            .map(|c| c.name.clone())
+            .primary_crate_name()
+            .map(str::to_string)
             .unwrap_or_else(|| ctx.config.project_name.clone());
         let version = ctx.version();
 

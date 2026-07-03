@@ -58,8 +58,8 @@ impl Stage for super::ReleaseStage {
         // Collect crates that have a `release` block.
         let crates: Vec<_> = ctx
             .config
-            .crates
-            .iter()
+            .crate_universe()
+            .into_iter()
             .filter(|c| c.release.is_some())
             .filter(|c| selected.is_empty() || selected.contains(&c.name))
             .cloned()

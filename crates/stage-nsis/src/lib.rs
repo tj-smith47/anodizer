@@ -152,8 +152,8 @@ impl Stage for NsisStage {
         // Collect crates that have NSIS config
         let crates: Vec<_> = ctx
             .config
-            .crates
-            .iter()
+            .crate_universe()
+            .into_iter()
             .filter(|c| selected.is_empty() || selected.contains(&c.name))
             .filter(|c| c.nsis.is_some())
             .cloned()

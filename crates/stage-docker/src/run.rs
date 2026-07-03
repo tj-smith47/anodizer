@@ -82,15 +82,7 @@ impl Stage for super::DockerStage {
         let dist = ctx.config.dist.clone();
         let parallelism = ctx.options.parallelism.max(1);
 
-        // Collect crates that have docker, docker_v2, or docker_manifests config
-        let crates: Vec<_> = ctx
-            .config
-            .crates
-            .iter()
-            .filter(|c| selected.is_empty() || selected.contains(&c.name))
-            .filter(|c| c.dockers_v2.is_some() || c.docker_manifests.is_some())
-            .cloned()
-            .collect();
+        let crates = collect_docker_crates(ctx, &selected);
 
         if crates.is_empty() {
             return Ok(());
@@ -1647,6 +1639,22 @@ fn run_manifest_push_with_retry(
 /// Write the combined `DockerDigest` format file. Each line is
 /// `<hex_digest>  <image_name>`, sorted, with `sha256:` stripped from the
 /// digest. The filename is resolved from the first non-empty
+/// Collect crates from the universe (top-level `crates` plus every
+/// `workspaces[].crates` entry) that declare docker output (`dockers_v2`
+/// or `docker_manifests`) and pass the `--crate` selection.
+pub(crate) fn collect_docker_crates(
+    ctx: &Context,
+    selected: &[String],
+) -> Vec<anodizer_core::config::CrateConfig> {
+    ctx.config
+        .crate_universe()
+        .into_iter()
+        .filter(|c| selected.is_empty() || selected.contains(&c.name))
+        .filter(|c| c.dockers_v2.is_some() || c.docker_manifests.is_some())
+        .cloned()
+        .collect()
+}
+
 /// `docker_digest.name_template` across configured crates, falling back to
 /// `digests.txt`.
 pub(crate) fn write_combined_digest_file(
@@ -1678,7 +1686,9 @@ pub(crate) fn write_combined_digest_file(
     digest_lines.sort();
     digest_lines.dedup();
     let mut rendered_name: Option<String> = None;
-    let crates_iter: Vec<_> = ctx.config.crates.clone();
+    // Cloned out of the universe: the render loop below needs `ctx` mutably.
+    let crates_iter: Vec<anodizer_core::config::CrateConfig> =
+        ctx.config.crate_universe().into_iter().cloned().collect();
     for krate in &crates_iter {
         let Some(dc) = krate.docker_digest.as_ref() else {
             continue;

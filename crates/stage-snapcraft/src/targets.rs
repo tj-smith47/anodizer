@@ -23,7 +23,8 @@ use anodizer_core::context::Context;
 /// (`SNAPCRAFT_LOGIN`, token, auth) have no slot to land in.
 pub(crate) type SnapcraftTarget = anodizer_core::publish_evidence::SnapcraftTargetSnapshot;
 
-/// Walk `ctx.config.crates[].snapcrafts[]` and build one
+/// Walk the crate universe's `snapcrafts[]` (top-level `crates` plus every
+/// `workspaces[].crates` entry) and build one
 /// [`SnapcraftTarget`] per opted-in snap config. Mirrors the publish
 /// stage's filters: `selected_crates` gate, `publish: true` opt-in.
 /// Skipped configs (`skip: true`) are excluded here too so the recorded
@@ -31,7 +32,7 @@ pub(crate) type SnapcraftTarget = anodizer_core::publish_evidence::SnapcraftTarg
 pub(crate) fn collect_snapcraft_targets(ctx: &Context) -> Vec<SnapcraftTarget> {
     let selected = &ctx.options.selected_crates;
     let mut out: Vec<SnapcraftTarget> = Vec::new();
-    for krate in &ctx.config.crates {
+    for krate in ctx.config.crate_universe() {
         if !selected.is_empty() && !selected.contains(&krate.name) {
             continue;
         }
@@ -194,6 +195,30 @@ mod tests {
         assert_eq!(targets.len(), 1);
         assert_eq!(targets[0].package_name, "demo");
         assert_eq!(targets[0].channel, None);
+    }
+
+    #[test]
+    fn snapcraft_collect_targets_sees_workspace_only_crate() {
+        // A crate declared only under `workspaces[].crates` must surface
+        // its opted-in snap configs: the walk resolves through the crate
+        // universe, so a pure-workspace config records the same evidence a
+        // top-level `crates:` entry would.
+        let ctx = TestContextBuilder::new()
+            .workspaces(vec![anodizer_core::config::WorkspaceConfig {
+                name: "ws".to_string(),
+                crates: vec![snap_crate("ws-only", Some("ws-snap"), Some("stable"))],
+                ..Default::default()
+            }])
+            .build();
+        assert!(
+            ctx.config.crates.is_empty(),
+            "fixture must be a pure-workspace config"
+        );
+        let targets = collect_snapcraft_targets(&ctx);
+        assert_eq!(targets.len(), 1, "{targets:?}");
+        assert_eq!(targets[0].crate_name, "ws-only");
+        assert_eq!(targets[0].package_name, "ws-snap");
+        assert_eq!(targets[0].channel.as_deref(), Some("stable"));
     }
 
     #[test]

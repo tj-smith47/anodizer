@@ -21,6 +21,50 @@ use crate::command::{
 use crate::generate::generate_snap_yaml;
 use crate::{SnapcraftPublishStage, SnapcraftStage};
 
+#[test]
+fn snap_yamls_for_crate_resolves_workspace_only_crate() {
+    // The per-crate render walker must find a crate declared only under
+    // `workspaces[].crates`: the lookup resolves through the crate
+    // universe, so a pure-workspace `snapcrafts:` config renders (and
+    // therefore builds) instead of silently returning nothing.
+    let mut config = Config::default();
+    config.project_name = "ws-only".to_string();
+    config.workspaces = Some(vec![anodizer_core::config::WorkspaceConfig {
+        name: "ws".to_string(),
+        crates: vec![CrateConfig {
+            name: "ws-only".to_string(),
+            path: ".".to_string(),
+            snapcrafts: Some(vec![SnapcraftConfig {
+                summary: Some("a ws snap".to_string()),
+                description: Some("workspace-only snap".to_string()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }],
+        ..Default::default()
+    }]);
+    let mut ctx = Context::new(config, ContextOptions::default());
+    assert!(
+        ctx.config.crates.is_empty(),
+        "fixture must be a pure-workspace config"
+    );
+    ctx.template_vars_mut().set("Version", "1.0.0");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Binary,
+        name: String::new(),
+        path: PathBuf::from("/tmp/ws-only"),
+        target: Some("x86_64-unknown-linux-gnu".to_string()),
+        crate_name: "ws-only".to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+
+    let yamls = crate::snapcraft_snap_yamls_for_crate(&ctx, "ws-only").expect("render ok");
+    assert_eq!(yamls.len(), 1, "one Linux target -> one snap.yaml");
+    assert!(yamls[0].contains("name: ws-only"), "{}", yamls[0]);
+    assert!(yamls[0].contains("version: 1.0.0"), "{}", yamls[0]);
+}
+
 // -----------------------------------------------------------------------
 // generate_snap_yaml tests
 // -----------------------------------------------------------------------

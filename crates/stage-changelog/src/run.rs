@@ -135,8 +135,8 @@ impl Stage for super::ChangelogStage {
 
         let crates: Vec<_> = ctx
             .config
-            .crates
-            .iter()
+            .crate_universe()
+            .into_iter()
             .filter(|c| selected.is_empty() || selected.contains(&c.name))
             .cloned()
             .collect();
@@ -270,8 +270,8 @@ fn handle_release_notes_override(ctx: &mut Context, log: &StageLogger) -> Result
     let selected = ctx.options.selected_crates.clone();
     let crates: Vec<_> = ctx
         .config
-        .crates
-        .iter()
+        .crate_universe()
+        .into_iter()
         .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .cloned()
         .collect();
@@ -291,6 +291,20 @@ fn handle_release_notes_override(ctx: &mut Context, log: &StageLogger) -> Result
     Ok(true)
 }
 
+/// True when any crate in the universe (top-level `crates` plus every
+/// `workspaces[].crates` entry) carries a complete `release.github`
+/// (non-empty owner and name) — the github-native backend has a repo to
+/// query. Per-crate scope: a config-level default repo does not count;
+/// the notes endpoint is called per crate.
+pub(crate) fn github_native_has_repo(ctx: &Context) -> bool {
+    ctx.config.crate_universe().into_iter().any(|c| {
+        c.release
+            .as_ref()
+            .and_then(|r| r.github.as_ref())
+            .is_some_and(|g| !g.owner.is_empty() && !g.name.is_empty())
+    })
+}
+
 /// Handle `use: github-native`: call GitHub's generate-notes endpoint per
 /// crate, wrap with header/footer, and write `dist/CHANGELOG.md`. Mirrors
 /// the github-native changelog backend.
@@ -306,13 +320,7 @@ fn handle_github_native_changelog(
             anodizer_core::git::github_token_hint()
         );
     }
-    let has_repo = ctx.config.crates.iter().any(|c| {
-        c.release
-            .as_ref()
-            .and_then(|r| r.github.as_ref())
-            .is_some_and(|g| !g.owner.is_empty() && !g.name.is_empty())
-    });
-    if !has_repo {
+    if !github_native_has_repo(ctx) {
         // No crate in the current scope has a GitHub release configured
         // (e.g. a library-only workspace in per-crate publish-only). The
         // stage has nothing to fetch and nothing to write — return Ok
@@ -335,8 +343,8 @@ fn handle_github_native_changelog(
     let selected = ctx.options.selected_crates.clone();
     let crates: Vec<_> = ctx
         .config
-        .crates
-        .iter()
+        .crate_universe()
+        .into_iter()
         .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .cloned()
         .collect();
@@ -746,8 +754,8 @@ fn build_login_enricher(
         })?;
     let configured = ctx
         .config
-        .crates
-        .iter()
+        .crate_universe()
+        .into_iter()
         .filter_map(|c| c.release.as_ref().and_then(|r| r.github.as_ref()))
         .map(|g| (g.owner.clone(), g.name.clone()))
         .find(|(o, n)| !o.is_empty() && !n.is_empty());

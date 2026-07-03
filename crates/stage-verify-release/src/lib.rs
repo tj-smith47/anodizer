@@ -118,8 +118,8 @@ impl Stage for VerifyReleaseStage {
         let selected = ctx.options.selected_crates.clone();
         let crates: Vec<CrateConfig> = ctx
             .config
-            .crates
-            .iter()
+            .crate_universe()
+            .into_iter()
             .filter(|c| c.release.is_some())
             .filter(|c| selected.is_empty() || selected.contains(&c.name))
             .cloned()

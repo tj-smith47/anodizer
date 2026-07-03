@@ -178,8 +178,8 @@ fn collect_flatpak_crates(
     selected: &[String],
 ) -> Vec<anodizer_core::config::CrateConfig> {
     ctx.config
-        .crates
-        .iter()
+        .crate_universe()
+        .into_iter()
         .filter(|c| selected.is_empty() || selected.contains(&c.name))
         .filter(|c| c.flatpaks.is_some())
         .cloned()

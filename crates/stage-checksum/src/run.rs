@@ -106,13 +106,13 @@ impl Stage for ChecksumStage {
             None => return Ok(()),
         };
 
-        validate_all_algorithms(&globals.algorithm, &ctx.config.crates)?;
+        validate_all_algorithms(&globals.algorithm, &ctx.config.crate_universe())?;
 
         // Collect crate configs up-front to avoid borrow conflicts.
         let crates: Vec<_> = ctx
             .config
-            .crates
-            .iter()
+            .crate_universe()
+            .into_iter()
             .filter(|c| selected.is_empty() || selected.contains(&c.name))
             .cloned()
             .collect();
@@ -234,7 +234,7 @@ fn load_global_defaults(
 /// Validate the global algorithm and every per-crate override.
 /// Fails fast so a typo (`algorithm: sha257`) surfaces before build/archive
 /// run, not at the first `hash_file` call.
-fn validate_all_algorithms(global_algorithm: &str, crates: &[CrateConfig]) -> Result<()> {
+fn validate_all_algorithms(global_algorithm: &str, crates: &[&CrateConfig]) -> Result<()> {
     validate_algorithm(global_algorithm)?;
     for crate_cfg in crates {
         if let Some(alg) = crate_cfg

@@ -25,6 +25,40 @@ use anodizer_core::config::{SkipPushConfig, StringOrBool};
 use anodizer_core::stage::Stage;
 
 #[test]
+fn docker_collect_crates_sees_workspace_only_crate() {
+    // A crate declared only under `workspaces[].crates` must enter the
+    // docker run loop: the collect resolves through the crate universe, so
+    // a pure-workspace `dockers_v2:` config builds instead of no-opping.
+    let ctx = anodizer_core::test_helpers::TestContextBuilder::new()
+        .workspaces(vec![anodizer_core::config::WorkspaceConfig {
+            name: "ws".to_string(),
+            crates: vec![anodizer_core::config::CrateConfig {
+                name: "ws-only".to_string(),
+                path: ".".to_string(),
+                dockers_v2: Some(vec![Default::default()]),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }])
+        .build();
+    assert!(
+        ctx.config.crates.is_empty(),
+        "fixture must be a pure-workspace config"
+    );
+    let crates = crate::run::collect_docker_crates(&ctx, &[]);
+    assert_eq!(
+        crates.len(),
+        1,
+        "{:?}",
+        crates.iter().map(|c| &c.name).collect::<Vec<_>>()
+    );
+    assert_eq!(crates[0].name, "ws-only");
+    // The `--crate` selection still gates the universe.
+    let filtered = crate::run::collect_docker_crates(&ctx, &["other".to_string()]);
+    assert!(filtered.is_empty());
+}
+
+#[test]
 fn test_platform_to_arch() {
     assert_eq!(platform_to_arch("linux/amd64"), "amd64");
     assert_eq!(platform_to_arch("linux/arm64"), "arm64");

@@ -116,8 +116,8 @@ impl Stage for SnapcraftPublishStage {
         // Collect crates that have snapcraft config with publish: true
         let crates: Vec<CrateConfig> = ctx
             .config
-            .crates
-            .iter()
+            .crate_universe()
+            .into_iter()
             .filter(|c| selected.is_empty() || selected.contains(&c.name))
             .filter(|c| c.snapcrafts.is_some())
             .cloned()

@@ -408,8 +408,8 @@ impl Stage for AttestStage {
         let selected_crates = ctx.options.selected_crates.clone();
         let crates: Vec<String> = ctx
             .config
-            .crates
-            .iter()
+            .crate_universe()
+            .into_iter()
             .filter(|c| selected_crates.is_empty() || selected_crates.contains(&c.name))
             .map(|c| c.name.clone())
             .filter(|name| crate_has_artifacts(ctx, name))

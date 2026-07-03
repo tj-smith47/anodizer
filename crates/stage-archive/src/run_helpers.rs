@@ -175,7 +175,7 @@ pub(crate) fn write_archive_in_format(
 }
 
 pub(crate) fn resolve_archive_mtime(ctx: &anodizer_core::context::Context) -> Option<u64> {
-    let any_reproducible = ctx.config.crates.iter().any(|c| {
+    let any_reproducible = ctx.config.crate_universe().into_iter().any(|c| {
         c.builds
             .as_ref()
             .is_some_and(|builds| builds.iter().any(|b| b.reproducible.unwrap_or(false)))

@@ -19,6 +19,37 @@ use crate::group::{
     group_commits, parse_commit_message, render_changelog, sort_commits,
 };
 
+#[test]
+fn github_native_has_repo_sees_workspace_only_crate() {
+    // A crate declared only under `workspaces[].crates` with a complete
+    // `release.github` must give the github-native backend a repo to
+    // query: the scan resolves through the crate universe, so a
+    // pure-workspace config fetches notes instead of silently returning Ok.
+    let ctx = TestContextBuilder::new()
+        .workspaces(vec![anodizer_core::config::WorkspaceConfig {
+            name: "ws".to_string(),
+            crates: vec![anodizer_core::config::CrateConfig {
+                name: "ws-only".to_string(),
+                path: ".".to_string(),
+                release: Some(anodizer_core::config::ReleaseConfig {
+                    github: Some(anodizer_core::config::ScmRepoConfig {
+                        owner: "acme".to_string(),
+                        name: "ws-only".to_string(),
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }],
+            ..Default::default()
+        }])
+        .build();
+    assert!(
+        ctx.config.crates.is_empty(),
+        "fixture must be a pure-workspace config"
+    );
+    assert!(crate::run::github_native_has_repo(&ctx));
+}
+
 fn test_logger() -> StageLogger {
     StageLogger::new("changelog", Verbosity::Normal)
 }

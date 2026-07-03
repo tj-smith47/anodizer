@@ -72,9 +72,9 @@ impl PublisherSchemaValidator for NfpmSchemaValidator {
 
         // Walk the nfpm-configured crates (honoring `--crate` selection, else
         // every nfpm-configured crate) so the validated set equals the built
-        // set. Both the build's `run` and the offline renderer resolve a crate
-        // via `ctx.config.crates`, so a crate configured only under
-        // `workspaces[].crates` is built by neither and validated by neither.
+        // set. Both the build's `run` and the offline renderer resolve crates
+        // through the crate universe, so a crate configured only under
+        // `workspaces[].crates` is built AND validated by the same walk.
         // The version that NAMED the produced packages: the global `Version`
         // var the build's nfpm stage stamped into every crate's `version:`
         // field (in snapshot, the `<base>-SNAPSHOT-<sha>` synthesized version).

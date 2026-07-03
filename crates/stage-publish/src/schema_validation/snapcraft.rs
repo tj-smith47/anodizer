@@ -63,10 +63,9 @@ impl PublisherSchemaValidator for SnapcraftSchemaValidator {
         // Walk the snapcraft-configured crates (honoring `--crate` selection,
         // else every snapcraft-configured crate) so the validated set equals
         // the built set. Both the build's `run` and the offline renderer
-        // resolve a crate via `ctx.config.crates`, so a snapcraft block living
-        // only under `workspaces[].crates` is built by neither and validated by
-        // neither — the two sets stay identical precisely because both
-        // intentionally exclude workspace-only crates.
+        // resolve crates through the crate universe, so a snapcraft block
+        // living only under `workspaces[].crates` is built AND validated —
+        // the two sets stay identical because both walk the same universe.
         let selected = crate::publisher_helpers::effective_publish_crates(
             ctx,
             is_snapcraft_per_crate_configured,

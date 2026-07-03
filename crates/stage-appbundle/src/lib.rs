@@ -285,8 +285,8 @@ impl Stage for AppBundleStage {
         // Collect crates that have app_bundles config
         let crates: Vec<_> = ctx
             .config
-            .crates
-            .iter()
+            .crate_universe()
+            .into_iter()
             .filter(|c| selected.is_empty() || selected.contains(&c.name))
             .filter(|c| c.app_bundles.is_some())
             .cloned()

@@ -150,8 +150,8 @@ impl Stage for SnapcraftStage {
         // Collect crates that have snapcraft config
         let crates: Vec<_> = ctx
             .config
-            .crates
-            .iter()
+            .crate_universe()
+            .into_iter()
             .filter(|c| selected.is_empty() || selected.contains(&c.name))
             .filter(|c| c.snapcrafts.is_some())
             .cloned()
@@ -385,7 +385,7 @@ pub(crate) fn render_snap_yaml(
 /// (config, target) pair, each stamped with the run's resolved version.
 pub fn snapcraft_snap_yamls_for_crate(ctx: &Context, crate_name: &str) -> Result<Vec<String>> {
     let log = ctx.logger("snapcraft");
-    let Some(krate) = ctx.config.crates.iter().find(|c| c.name == crate_name) else {
+    let Some(krate) = ctx.config.find_crate(crate_name) else {
         return Ok(Vec::new());
     };
     let Some(snap_configs) = krate.snapcrafts.as_ref() else {

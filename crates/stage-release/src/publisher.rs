@@ -206,7 +206,8 @@ impl Default for GithubReleasePublisher {
     }
 }
 
-/// Walk `ctx.config.crates` and emit one [`GithubReleaseTarget`] per
+/// Walk the crate universe (top-level `crates` plus every
+/// `workspaces[].crates` entry) and emit one [`GithubReleaseTarget`] per
 /// crate that has a `release.github` block (or falls back to the
 /// `release.github` default per [`crate::resolve_release_repo`]).
 /// `release_id` is left `None`; the post-publish lookup fills it in.
@@ -220,7 +221,7 @@ fn collect_release_targets(ctx: &Context) -> anyhow::Result<Vec<GithubReleaseTar
 
     let selected = &ctx.options.selected_crates;
     let mut out: Vec<GithubReleaseTarget> = Vec::new();
-    for c in &ctx.config.crates {
+    for c in ctx.config.crate_universe() {
         if !selected.is_empty() && !selected.contains(&c.name) {
             continue;
         }
@@ -325,7 +326,7 @@ fn release_repo_targets_for_preflight(ctx: &Context) -> Vec<(String, String)> {
     use crate::resolve_release_repo;
     let selected = &ctx.options.selected_crates;
     let mut out = Vec::new();
-    for c in &ctx.config.crates {
+    for c in ctx.config.crate_universe() {
         if !selected.is_empty() && !selected.contains(&c.name) {
             continue;
         }
