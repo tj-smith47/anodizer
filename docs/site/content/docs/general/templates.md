@@ -24,7 +24,7 @@ The docs throughout this site use the Tera-native no-dot form as the canonical i
 
 ## Syntax
 
-Templates use `{{ "{{ }}" }}` for variable interpolation and `{{ "{% %}" }}` for control flow:
+Templates use `{{ }}` for variable interpolation and `{% %}` for control flow:
 
 ```yaml
 name_template: "{{ ProjectName }}-{{ Version }}-{{ Os }}-{{ Arch }}"
@@ -90,11 +90,11 @@ field, so it composes with `or` for a safe default anywhere in a chain.
 
 Anodizer auto-translates Go `text/template` syntax to its Tera equivalent before rendering, so a template copied verbatim from a `.goreleaser.yaml` works without edits. The translation covers:
 
-- **Leading dots** — `{{ "{{ .Field }}" }}` → `{{ "{{ Field }}" }}` (and `{{ "{{ .Env.FOO }}" }}` → `{{ "{{ Env.FOO }}" }}`).
-- **Go statement blocks** — `{{ "{{ if }}" }}` / `{{ "{{ range }}" }}` / `{{ "{{ with }}" }}` / `{{ "{{ end }}" }}` become Tera's `{{ "{% if %}" }}` / `{{ "{% for %}" }}` / `{{ "{% endif %}" }}` / `{{ "{% endfor %}" }}`.
+- **Leading dots** — `{{ .Field }}` → `{{ Field }}` (and `{{ .Env.FOO }}` → `{{ Env.FOO }}`).
+- **Go statement blocks** — `{{ if }}` / `{{ range }}` / `{{ with }}` / `{{ end }}` become Tera's `{% if %}` / `{% for %}` / `{% endif %}` / `{% endfor %}`.
 - **`$` variables** — `$myvar` Go locals are accepted.
 - **Comparison & logic functions** — `eq` `ne` `gt` `lt` `ge` `le` `and` `or` `not` map to Tera operators (`==` `!=` `>` `<` `>=` `<=` `and` `or` `not`).
-- **`len`** — `{{ "{{ len .Tags }}" }}` becomes `{{ "{{ Tags | length }}" }}`.
+- **`len`** — `{{ len .Tags }}` becomes `{{ Tags | length }}`.
 - **Positional function calls** — Go-style positional arguments for `replace` `split` `contains` `in` `reReplaceAll` `map` `slice` `time` `printf` `print` `println` are mapped to Tera's named-argument form.
 - **tera 1.x numeric indexing** — `list.0` / `a.0.b` / `a?.0` rewrite to the native `list[0]` / `a[0].b` / `a?[0]`. Numeric segments index arrays: a map key that is the string `"0"` needs `["0"]`, not `.0`. Write `[N]` in new templates.
 
@@ -238,7 +238,7 @@ Similar to `Var.*` but for pipeline outputs rather than user config values.
 
 ## Functions and filters
 
-Tera provides many [built-in filters](https://keats.github.io/tera/docs/#built-in-filters) (`lower`, `upper`, `title`, `trim`, `length`, `default`, …). On top of those, anodizer registers a full set of release-oriented helpers. Most are available in **both forms** — as a filter (`{{ "{{ X | fn(...) }}" }}`) and as a function (`{{ "{{ fn(s=X, ...) }}" }}`) — so the GoReleaser positional form (`{{ "{{ fn X ... }}" }}`) auto-translates onto them.
+Tera provides many [built-in filters](https://keats.github.io/tera/docs/#built-in-filters) (`lower`, `upper`, `title`, `trim`, `length`, `default`, …). On top of those, anodizer registers a full set of release-oriented helpers. Most are available in **both forms** — as a filter (`{{ X | fn(...) }}`) and as a function (`{{ fn(s=X, ...) }}`) — so the GoReleaser positional form (`{{ fn X ... }}`) auto-translates onto them.
 
 Examples below use the Tera-native no-dot idiom.
 
@@ -246,29 +246,29 @@ Examples below use the Tera-native no-dot idiom.
 
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
-| `lower` / `tolower` | filter | `{{ "{{ Os \| lower }}" }}` | `linux` |
-| `upper` / `toupper` | filter | `{{ "{{ Os \| upper }}" }}` | `LINUX` |
-| `title` | filter / fn | `{{ "{{ \"hello world\" \| title }}" }}` | `Hello World` |
-| `trim` | filter / fn | `{{ "{{ \" x \" \| trim }}" }}` | `x` |
-| `trimprefix` | filter | `{{ "{{ Tag \| trimprefix(prefix=\"v\") }}" }}` | `1.2.3` |
-| `trimsuffix` | filter | `{{ "{{ File \| trimsuffix(suffix=\".tar.gz\") }}" }}` | strips suffix |
-| `replace` | filter / fn | `{{ "{{ Version \| replace(from=\".\", to=\"_\") }}" }}` | `1_2_3` |
-| `split` | filter / fn | `{{ "{{ \"a.b.c\" \| split(sep=\".\") }}" }}` | `["a","b","c"]` |
-| `contains` | filter / fn | `{{ "{{ Tag \| contains(substr=\"rc\") }}" }}` | `true` / `false` |
-| `slice` | filter / fn | `{{ "{{ Tag \| slice(start=1, end=4) }}" }}` | `1.2` (end-exclusive, Go semantics) |
-| `reReplaceAll` | fn | `{{ "{{ reReplaceAll(pattern=\"[^0-9]\", input=Tag, replacement=\"\") }}" }}` | digits only |
-| `urlPathEscape` | fn | `{{ "{{ urlPathEscape(s=Branch) }}" }}` | percent-encoded path segment |
-| `mdv2escape` | filter | `{{ "{{ Body \| mdv2escape }}" }}` | Telegram MarkdownV2-escaped |
-| `ruby_escape` | filter | `{{ "{{ Desc \| ruby_escape }}" }}` | safe in a Ruby `\"…\"` literal |
+| `lower` / `tolower` | filter | `{{ Os \| lower }}` | `linux` |
+| `upper` / `toupper` | filter | `{{ Os \| upper }}` | `LINUX` |
+| `title` | filter / fn | `{{ "hello world" \| title }}` | `Hello World` |
+| `trim` | filter / fn | `{{ " x " \| trim }}` | `x` |
+| `trimprefix` | filter | `{{ Tag \| trimprefix(prefix="v") }}` | `1.2.3` |
+| `trimsuffix` | filter | `{{ File \| trimsuffix(suffix=".tar.gz") }}` | strips suffix |
+| `replace` | filter / fn | `{{ Version \| replace(from=".", to="_") }}` | `1_2_3` |
+| `split` | filter / fn | `{{ "a.b.c" \| split(sep=".") }}` | `["a","b","c"]` |
+| `contains` | filter / fn | `{{ Tag \| contains(substr="rc") }}` | `true` / `false` |
+| `slice` | filter / fn | `{{ Tag \| slice(start=1, end=4) }}` | `1.2` (end-exclusive, Go semantics) |
+| `reReplaceAll` | fn | `{{ reReplaceAll(pattern="[^0-9]", input=Tag, replacement="") }}` | digits only |
+| `urlPathEscape` | fn | `{{ urlPathEscape(s=Branch) }}` | percent-encoded path segment |
+| `mdv2escape` | filter | `{{ Body \| mdv2escape }}` | Telegram MarkdownV2-escaped |
+| `ruby_escape` | filter | `{{ Desc \| ruby_escape }}` | safe in a Ruby `"…"` literal |
 
 ### Formatting
 
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
-| `printf` | fn | `{{ "{{ printf(format=\"%s-%s\", args=[Os, Arch]) }}" }}` | `linux-amd64` |
-| `printf` | fn | `{{ "{{ printf(format=\"%04d\", args=[Patch]) }}" }}` | `0003` |
-| `print` | fn | `{{ "{{ print(args=[Os, Arch]) }}" }}` | `linuxamd64` (Go `Sprint`) |
-| `println` | fn | `{{ "{{ println(args=[Os, Arch]) }}" }}` | `linux amd64\n` (Go `Sprintln`) |
+| `printf` | fn | `{{ printf(format="%s-%s", args=[Os, Arch]) }}` | `linux-amd64` |
+| `printf` | fn | `{{ printf(format="%04d", args=[Patch]) }}` | `0003` |
+| `print` | fn | `{{ print(args=[Os, Arch]) }}` | `linuxamd64` (Go `Sprint`) |
+| `println` | fn | `{{ println(args=[Os, Arch]) }}` | `linux amd64\n` (Go `Sprintln`) |
 
 `printf` implements the Go verb subset `%s %d %v %x %X %o %b %c %q %f %e %E %g %G %t %%` with flags, width, and precision (Go-style exponents). `print` follows Go's `Sprint` spacing rule (a space is inserted between two adjacent operands only when neither is a string).
 
@@ -276,53 +276,59 @@ Examples below use the Tera-native no-dot idiom.
 
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
-| `dir` | filter | `{{ "{{ ArtifactPath \| dir }}" }}` | parent directory |
-| `base` | filter | `{{ "{{ ArtifactPath \| base }}" }}` | final path component |
-| `abs` | filter | `{{ "{{ \"./dist\" \| abs }}" }}` | absolute path |
+| `dir` | filter | `{{ ArtifactPath \| dir }}` | parent directory |
+| `base` | filter | `{{ ArtifactPath \| base }}` | final path component |
+| `abs` | filter | `{{ "./dist" \| abs }}` | absolute path |
 
 ### List and map
 
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
-| `list` | fn | `{{ "{{ list(items=[Os, Arch]) \| join(sep=\"-\") }}" }}` | `linux-amd64` |
-| `map` | fn | `{{ "{% set M = map(pairs=[\"a\", 1]) %}{{ M.a }}" }}` | `1` |
-| `index` | fn | `{{ "{{ index(collection=Parts, key=0) }}" }}` | element at index |
-| `indexOrDefault` | fn | `{{ "{{ indexOrDefault(map=M, key=\"k\", default=\"-\") }}" }}` | value or default |
-| `in` / `contains_any` | filter / fn | `{{ "{{ in(items=[\"rc\", \"beta\"], value=Prerelease) }}" }}` | `true` / `false` |
-| `filter` | fn | `{{ "{{ filter(items=Lines, regexp=\"^v\") }}" }}` | matching lines |
-| `reverseFilter` | fn | `{{ "{{ reverseFilter(items=Lines, regexp=\"^#\") }}" }}` | non-matching lines |
-| `englishJoin` | fn | `{{ "{{ englishJoin(items=Names) }}" }}` | `a, b, and c` |
+| `list` | fn | `{{ list(items=[Os, Arch]) \| join(sep="-") }}` | `linux-amd64` |
+| `map` | fn | `{% set M = map(pairs=["a", 1]) %}{{ M.a }}` | `1` |
+| `index` | fn | `{{ index(collection=Parts, key=0) }}` | element at index |
+| `indexOrDefault` | fn | `{{ indexOrDefault(map=M, key="k", default="-") }}` | value or default |
+| `in` / `contains_any` | filter / fn | `{{ in(items=["rc", "beta"], value=Prerelease) }}` | `true` / `false` |
+| `filter` | fn | `{{ filter(items=Lines, regexp="^v") }}` | matching lines |
+| `reverseFilter` | fn | `{{ reverseFilter(items=Lines, regexp="^#") }}` | non-matching lines |
+| `englishJoin` | fn | `{{ englishJoin(items=Names) }}` | `a, b, and c` |
 
 ### Semver
 
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
-| `incpatch` | filter | `{{ "{{ Version \| incpatch }}" }}` | `1.2.4` |
-| `incminor` | filter | `{{ "{{ Version \| incminor }}" }}` | `1.3.0` |
-| `incmajor` | filter | `{{ "{{ Version \| incmajor }}" }}` | `2.0.0` |
+| `incpatch` | filter | `{{ Version \| incpatch }}` | `1.2.4` |
+| `incminor` | filter | `{{ Version \| incminor }}` | `1.3.0` |
+| `incmajor` | filter | `{{ Version \| incmajor }}` | `2.0.0` |
+
+<!-- The Environment/File/Time examples whose arguments are all string literals
+     are wrapped in zola's comment-escape (open brace pair + /* ... */ + close):
+     zola parses such inline code as a shortcode invocation and fails the build
+     on the unknown name. Calls that reference variables (e.g. s=Branch) do not
+     parse as shortcodes, are left alone by zola, and need no escape. -->
 
 ### Environment
 
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
-| `Env.NAME` | var | `{{ "{{ Env.GITHUB_TOKEN }}" }}` | env var value |
-| `envOrDefault` | fn | `{{ "{{ envOrDefault(name=\"CI\", default=\"local\") }}" }}` | value or default |
-| `isEnvSet` | fn | `{{ "{{ isEnvSet(name=\"CI\") }}" }}` | `true` / `false` |
+| `Env.NAME` | var | `{{ Env.GITHUB_TOKEN }}` | env var value |
+| `envOrDefault` | fn | `{{/* envOrDefault(name="CI", default="local") */}}` | value or default |
+| `isEnvSet` | fn | `{{/* isEnvSet(name="CI") */}}` | `true` / `false` |
 
 ### File
 
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
-| `readFile` | fn | `{{ "{{ readFile(path=\"VERSION\") }}" }}` | file contents (empty on error) |
-| `mustReadFile` | fn | `{{ "{{ mustReadFile(path=\"VERSION\") }}" }}` | file contents (errors if missing) |
+| `readFile` | fn | `{{/* readFile(path="VERSION") */}}` | file contents (empty on error) |
+| `mustReadFile` | fn | `{{/* mustReadFile(path="VERSION") */}}` | file contents (errors if missing) |
 
 ### Time
 
 | Helper | Form | Example | Result |
 |--------|------|---------|--------|
-| `time` | fn | `{{ "{{ time(format=\"2006-01-02\") }}" }}` | current date (Go layout accepted) |
-| `now_format` | filter | `{{ "{{ Now \| now_format(format=\"%Y-%m-%d\") }}" }}` | current date (chrono format) |
-| `date` | filter | `{{ "{{ Now \| date(format=\"%Y%m%d\") }}" }}` | `20260703` |
+| `time` | fn | `{{/* time(format="2006-01-02") */}}` | current date (Go layout accepted) |
+| `now_format` | filter | `{{ Now \| now_format(format="%Y-%m-%d") }}` | current date (chrono format) |
+| `date` | filter | `{{ Now \| date(format="%Y%m%d") }}` | `20260703` |
 
 `date` formats a Unix timestamp (integer), an RFC 3339 datetime string, a naive `%Y-%m-%dT%H:%M:%S` datetime, or a plain `%Y-%m-%d` date. `format` takes chrono strftime specifiers (default `%Y-%m-%d`). `timezone` takes an IANA name (`timezone="America/New_York"`) and converts timestamps and offset-carrying RFC 3339 inputs; naive datetime and plain-date inputs format as UTC and ignore it. `locale` is not supported and errors — output is always POSIX-locale.
 
