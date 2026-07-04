@@ -507,14 +507,27 @@ crates:
         require_license_acceptance: false
         project_url: "https://github.com/tj-smith47/anodizer"
         package_source_url: "https://github.com/tj-smith47/anodizer/tree/{{ .Tag }}/crates/cli"
+        # Dual-licensed (MIT OR Apache-2.0) → no single canonical LICENSE file,
+        # so the tool omits a derived <licenseUrl>. Point at the README's
+        # License section (documents both), pinned to the release tag so the
+        # link is immutable per version.
+        license_url: "https://github.com/tj-smith47/anodizer/blob/{{ .Tag }}/README.md#license"
         docs_url: "https://tj-smith47.github.io/anodizer/docs/reference/configuration/"
         bug_tracker_url: "https://github.com/tj-smith47/anodizer/issues"
         release_notes: "https://github.com/tj-smith47/anodizer/releases/tag/{{ .Tag }}"
-        icon_url: "https://raw.githubusercontent.com/tj-smith47/anodizer/master/assets/logo.png"
+        # jsdelivr CDN (Chocolatey requires a CDN-hosted icon), pinned to the
+        # release tag so each version's icon is immutable — a `master` ref is a
+        # moving target that moderation flags.
+        icon_url: "https://cdn.jsdelivr.net/gh/tj-smith47/anodizer@{{ .Tag }}/assets/logo.png"
         tags:
           - release
           - automation
           - rust
+        # Rust/MSVC binaries dynamically link the VC++ 2015+ runtime; without
+        # this the portable exe dies at invocation with STATUS_DLL_NOT_FOUND
+        # (-1073741515). Mirrors the winget VCRedist dependency below.
+        dependencies:
+          - id: "vcredist140"
         republish_in_moderation: true
       winget:
         required: true
