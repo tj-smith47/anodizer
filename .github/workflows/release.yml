@@ -54,6 +54,12 @@ env:
   # hosted job --publishers=es it — one place keeps the two selectors exact
   # complements (a mismatch double-publishes or silently drops a publisher).
   HOSTED_PUBLISHERS: npm
+  # actions/checkout's internal `git init` prints a defaultBranch hint on GitHub
+  # runners that don't set init.defaultBranch; pin it via git's env-config so the
+  # hint never fires (binds every git invocation regardless of HOME or global config).
+  GIT_CONFIG_COUNT: '1'
+  GIT_CONFIG_KEY_0: init.defaultBranch
+  GIT_CONFIG_VALUE_0: master
 
 jobs:
   # Central pre-tag secret gate. Built FROM THE CHECKOUT (not the published

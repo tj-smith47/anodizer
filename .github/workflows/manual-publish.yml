@@ -64,6 +64,14 @@ concurrency:
   group: manual-publish-${{ inputs.publishers }}-${{ inputs.tag }}
   cancel-in-progress: false
 
+# actions/checkout's internal `git init` prints a defaultBranch hint on GitHub
+# runners that don't set init.defaultBranch; pin it via git's env-config so the
+# hint never fires (binds every git invocation regardless of HOME or global config).
+env:
+  GIT_CONFIG_COUNT: '1'
+  GIT_CONFIG_KEY_0: init.defaultBranch
+  GIT_CONFIG_VALUE_0: master
+
 jobs:
   manual-publish:
     name: Manual publish ${{ inputs.publishers }} @ ${{ inputs.tag }}${{ inputs.dry_run && ' (dry-run)' || '' }}
