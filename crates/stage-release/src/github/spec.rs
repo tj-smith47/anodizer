@@ -229,34 +229,6 @@ pub(crate) fn upload_retry_locals(
     (policy.max_attempts, policy.base_delay, policy.max_delay)
 }
 
-/// Resolve the proactive upload pace — the minimum interval between successive
-/// asset-upload *starts* — applying the env override, then the config value,
-/// then the default.
-///
-/// Precedence (first match wins), mirroring the
-/// `ANODIZER_GITHUB_UPLOAD_CONCURRENCY` -> `release.upload_concurrency` chain:
-/// 1. `ANODIZER_GITHUB_UPLOAD_PACE_MS` — integer milliseconds. `0` disables
-///    pacing (returns `Duration::ZERO`); a non-parsing value is ignored and
-///    falls through to the config / default.
-/// 2. `release.upload_pace` (a humantime string), via
-///    [`anodizer_core::config::ReleaseConfig::resolved_upload_pace`].
-/// 3. [`anodizer_core::config::ReleaseConfig::DEFAULT_UPLOAD_PACE`] (200 ms).
-///
-/// `Duration::ZERO` is the "pacing disabled" sentinel; the caller skips the
-/// pace sleep entirely when it is returned. Pure (the env source is injected)
-/// so the precedence is unit-testable without mutating the process env.
-pub(crate) fn resolve_upload_pace<E: anodizer_core::EnvSource + ?Sized>(
-    release_cfg: &anodizer_core::config::ReleaseConfig,
-    env: &E,
-) -> std::time::Duration {
-    if let Some(raw) = env.var("ANODIZER_GITHUB_UPLOAD_PACE_MS")
-        && let Ok(ms) = raw.trim().parse::<u64>()
-    {
-        return std::time::Duration::from_millis(ms);
-    }
-    release_cfg.resolved_upload_pace()
-}
-
 #[cfg(test)]
 mod already_exists_tests {
     use super::super::assets::RemoteAssetProbe;
@@ -748,64 +720,5 @@ mod spec_struct_surface_tests {
             vec![(2u64, "t2".to_string()), (1u64, "t1".to_string())],
             "must keep the highest-id releases regardless of input order",
         );
-    }
-}
-
-#[cfg(test)]
-mod upload_pace_tests {
-    use super::resolve_upload_pace;
-    use anodizer_core::MapEnvSource;
-    use anodizer_core::config::ReleaseConfig;
-    use std::time::Duration;
-
-    fn cfg_with_pace(s: &str) -> ReleaseConfig {
-        serde_yaml_ng::from_str(&format!("upload_pace: \"{s}\"")).expect("parse release cfg")
-    }
-
-    #[test]
-    fn defaults_to_200ms_when_unset() {
-        let cfg = ReleaseConfig::default();
-        let env = MapEnvSource::new();
-        assert_eq!(
-            resolve_upload_pace(&cfg, &env),
-            ReleaseConfig::DEFAULT_UPLOAD_PACE,
-        );
-        assert_eq!(resolve_upload_pace(&cfg, &env), Duration::from_millis(200));
-    }
-
-    #[test]
-    fn config_value_overrides_default() {
-        let cfg = cfg_with_pace("1s");
-        let env = MapEnvSource::new();
-        assert_eq!(resolve_upload_pace(&cfg, &env), Duration::from_secs(1));
-    }
-
-    #[test]
-    fn config_zero_disables_pacing() {
-        // "0s" must resolve to the ZERO sentinel so the caller skips pacing.
-        let cfg = cfg_with_pace("0s");
-        let env = MapEnvSource::new();
-        assert_eq!(resolve_upload_pace(&cfg, &env), Duration::ZERO);
-    }
-
-    #[test]
-    fn env_override_takes_precedence_over_config() {
-        let cfg = cfg_with_pace("1s");
-        let env = MapEnvSource::new().with("ANODIZER_GITHUB_UPLOAD_PACE_MS", "50");
-        assert_eq!(resolve_upload_pace(&cfg, &env), Duration::from_millis(50));
-    }
-
-    #[test]
-    fn env_zero_disables_pacing_even_with_config_set() {
-        let cfg = cfg_with_pace("1s");
-        let env = MapEnvSource::new().with("ANODIZER_GITHUB_UPLOAD_PACE_MS", "0");
-        assert_eq!(resolve_upload_pace(&cfg, &env), Duration::ZERO);
-    }
-
-    #[test]
-    fn garbage_env_falls_through_to_config() {
-        let cfg = cfg_with_pace("1s");
-        let env = MapEnvSource::new().with("ANODIZER_GITHUB_UPLOAD_PACE_MS", "not-a-number");
-        assert_eq!(resolve_upload_pace(&cfg, &env), Duration::from_secs(1));
     }
 }

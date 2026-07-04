@@ -14,6 +14,7 @@ pub(crate) fn release_log() -> StageLogger {
     StageLogger::new("release", Verbosity::Normal)
 }
 
+mod forge;
 mod gitea;
 mod github;
 pub use github::fetch_published_asset_names;
@@ -41,9 +42,10 @@ mod tests;
 /// shared by every SCM backend: a **byte-identical** remote asset is a no-op,
 /// not an overwrite, so it is skipped REGARDLESS of `replace_existing_artifacts`
 /// — the user's flag guards against replacing *different* bytes, never against
-/// re-uploading the same bytes. Each backend maps these variants onto its own
-/// action type (GitHub's post-422 `AlreadyExistsAction`, Gitea's pre-upload
-/// `GiteaUploadAction`).
+/// re-uploading the same bytes. The shared upload loop
+/// ([`forge::run_upload_loop`]) acts on these variants directly for the
+/// proactive-probe forges (Gitea, GitLab); GitHub applies the same rule
+/// reactively via its post-422 `AlreadyExistsAction` projection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AssetConflict {
     /// Remote asset is present and byte-identical to the local file: skip the

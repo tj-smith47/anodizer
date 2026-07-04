@@ -14,14 +14,11 @@ use std::sync::Arc;
 use anodizer_core::config::{CrateConfig, ReleaseConfig};
 use anyhow::{Context as _, Result};
 
-use super::lookup::{
-    find_draft_by_name, find_release_by_tag, list_releases_by_name, wait_for_release_readable,
-};
+use super::lookup::{find_draft_by_name, find_release_by_tag, list_releases_by_name};
 use super::spec::{
     BackendEnv, GithubReleaseSpec, UploadOpts, check_existing_assets_block_upload,
-    nightly_releases_to_prune, resolve_upload_pace,
+    nightly_releases_to_prune,
 };
-use super::upload::{UploadAssetRequest, upload_release_asset};
 use super::{
     build_octocrab_client, check_github_rate_limit_with_env, is_octocrab_404, retry_octocrab_call,
 };
@@ -477,146 +474,31 @@ pub(crate) fn run_github_backend(
                 log.status("skipped artifact uploads — skip_upload is set");
             }
         } else {
-            // Upload concurrency cap: env > config > default (4).
-            // Separate from ctx.options.parallelism (which governs build
-            // concurrency) so large artifact lists don't trigger GitHub's
-            // secondary rate limit by blasting 100+ uploads simultaneously.
-            let upload_concurrency: usize = ctx
-                .env_var("ANODIZER_GITHUB_UPLOAD_CONCURRENCY")
-                .and_then(|v| v.trim().parse::<u32>().ok())
-                .filter(|&n| n > 0)
-                .or_else(|| {
-                    release_cfg
-                        .upload_concurrency
-                        .filter(|&n| n > 0)
-                })
-                .unwrap_or(4) as usize;
-            let semaphore = Arc::new(tokio::sync::Semaphore::new(upload_concurrency));
-            // Proactive upload pace: the minimum interval between successive
-            // upload STARTS, layered on top of the concurrency cap and the
-            // reactive secondary-rate-limit backoff. The concurrency cap alone
-            // lets the first `upload_concurrency` POSTs fire in the same
-            // instant — the exact burst that trips GitHub's secondary rate
-            // limit; spacing each task's spawn by this interval smooths that
-            // burst. `Duration::ZERO` means pacing is disabled (rely on the
-            // cap + backoff). env `ANODIZER_GITHUB_UPLOAD_PACE_MS` >
-            // `release.upload_pace` > 200 ms default.
-            let upload_pace = resolve_upload_pace(release_cfg, env_source);
-            let gh_owner = github.owner.clone();
-            let gh_name = github.name.clone();
-            let tag_for_upload = tag.to_string();
-
-            // Prepare the list of uploadable entries (error on missing files).
-            let mut missing_files = Vec::new();
-            let prepared_entries: Vec<(std::path::PathBuf, String)> = artifact_entries
-                .iter()
-                .filter_map(|(path, custom_name)| {
-                    if !path.exists() {
-                        missing_files.push(path.display().to_string());
-                        return None;
-                    }
-                    let file_name = if let Some(name) = custom_name {
-                        name.clone()
-                    } else {
-                        path.file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "artifact".to_string())
-                    };
-                    Some((path.clone(), file_name))
-                })
-                .collect();
-
-            if !missing_files.is_empty() {
-                anyhow::bail!(
-                    "the following artifact files are missing:\n  {}",
-                    missing_files.join("\n  ")
-                );
-            }
-
-            // Readiness guard: octocrab's `upload_asset(...).send()` issues a
-            // `GET /releases/{id}` (to read `upload_url`) before each upload
-            // POST. Right after the create POST those reads can hit a GitHub
-            // replica that has not yet observed the new release, returning a
-            // transient 404. Because uploads fan out in parallel, several of
-            // those reads race the propagation window simultaneously. Block
-            // once here until the release is readable so the common case never
-            // enters that race; a persistent miss returns `Ok(false)` and the
-            // loop proceeds (the per-upload bounded-404 retry below is the
-            // backstop).
-            // Only run when there is at least one asset to upload — an empty
-            // upload set issues no `GET`, so the guard would be pure overhead.
-            if !prepared_entries.is_empty() {
-                wait_for_release_readable(&octo, &github.owner, &github.name, release_id_raw, log)
-                    .await?;
-            }
-
-            let mut join_set = tokio::task::JoinSet::new();
-
-            for (idx, (path, file_name)) in prepared_entries.into_iter().enumerate() {
-                // Proactive pace: space each upload START by at least
-                // `upload_pace`, jittered ±20% so concurrent releases don't
-                // synchronise their bursts. Skipped for the first task (no
-                // prior start to space from) and when pacing is disabled
-                // (`Duration::ZERO`). The semaphore still bounds how many run
-                // at once; this only governs how fast new starts are admitted.
-                if idx > 0 && !upload_pace.is_zero() {
-                    tokio::time::sleep(anodizer_core::retry::jitter_duration(upload_pace)).await;
-                }
-                let sem = semaphore.clone();
-                let octo = octo.clone();
-                let gh_owner = gh_owner.clone();
-                let gh_name = gh_name.clone();
-                let tag_c = tag_for_upload.clone();
-                let token_for_rate_limit = token_str.clone();
-                let retry_after_for_upload = retry_after_capture.clone();
-                let env_for_upload = Arc::clone(&env_source_arc);
-                // `policy` is `Copy`; the spawned async move borrows it
-                // implicitly into the future. Bind a fresh copy per
-                // iteration so the for-loop body still owns `policy`
-                // for the next iteration.
-                let policy_for_upload = policy;
-
-                join_set.spawn(async move {
-                    let _permit = sem
-                        .acquire()
-                        .await
-                        .map_err(|e| anyhow::anyhow!("semaphore closed: {}", e))?;
-
-                    upload_release_asset(UploadAssetRequest {
-                        octo: &octo,
-                        owner: &gh_owner,
-                        repo: &gh_name,
-                        release_id: release_id_raw,
-                        tag: &tag_c,
-                        path: &path,
-                        file_name: &file_name,
-                        replace_existing_artifacts,
-                        policy: &policy_for_upload,
-                        retry_after: Some(&retry_after_for_upload),
-                        token: &token_for_rate_limit,
-                        env_source: env_for_upload.as_ref(),
-                    })
-                    .await?;
-
-                    Ok::<String, anyhow::Error>(file_name)
-                });
-            }
-
-            // Collect results from all upload tasks.
-            while let Some(result) = join_set.join_next().await {
-                match result {
-                    Ok(Ok(file_name)) => {
-                        log.verbose(&format!("uploaded artifact {}", file_name));
-                    }
-                    Ok(Err(e)) => return Err(e),
-                    Err(join_err) => {
-                        return Err(anyhow::anyhow!(
-                            "release: upload task panicked: {}",
-                            join_err
-                        ));
-                    }
-                }
-            }
+            // Shared upload loop: concurrency-cap + pace resolution, the
+            // missing-file bail, the bounded-parallel spawn, and the drain
+            // all live in `forge::run_upload_loop`. GitHub's client probes
+            // as `Reactive`, so the request sequence is exactly the
+            // historical one (readiness guard, then upload POSTs with the
+            // 422 `already_exists` recovery inside `upload_release_asset`).
+            let plan = crate::forge::UploadPlan::resolve(
+                release_cfg,
+                env_source,
+                replace_existing_artifacts,
+            );
+            let forge_client = Arc::new(super::upload::GithubAssetClient {
+                octo: octo.clone(),
+                owner: github.owner.clone(),
+                repo: github.name.clone(),
+                release_id: release_id_raw,
+                tag: tag.to_string(),
+                replace_existing_artifacts,
+                policy,
+                retry_after: retry_after_capture.clone(),
+                token: token_str.clone(),
+                env_source: Arc::clone(&env_source_arc),
+                log: log.clone(),
+            });
+            crate::forge::run_upload_loop(forge_client, &plan, artifact_entries, log).await?;
         }
 
         // Draft-then-publish: if the user's config has draft=false,

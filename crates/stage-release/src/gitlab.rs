@@ -461,63 +461,18 @@ pub(crate) async fn gitlab_upload_asset(
     // find and delete the conflicting link, then retry the POST.
     if (status_code == 400 || status_code == 422) && replace_existing {
         let text = anodizer_core::http::body_of(resp).await;
-        // List existing links to find the conflicting one. This GET goes
-        // through retry_http_async so transient 5xx don't lose our chance to
-        // dedup the existing link.
-        let list_resp = retry_http_async(
-            "gitlab: GET existing release links",
-            policy,
-            SuccessClass::Strict,
-            |_| client.get(&links_api).send(),
-            |status, body| {
+        // A failed cleanup (list or delete) surfaces the ORIGINAL create
+        // failure as context — that is the actionable error — with the
+        // cleanup failure chained underneath.
+        if let Err(cleanup_err) = gitlab_delete_asset_link(ctx, tag, file_name).await {
+            return Err(cleanup_err).with_context(|| {
                 format!(
-                    "gitlab: list existing release links failed (HTTP {status}): {}",
-                    redact_bearer_tokens(body)
-                )
-            },
-        )
-        .await;
-
-        match list_resp {
-            Ok(list_resp) => {
-                let links: Vec<serde_json::Value> = list_resp
-                    .json()
-                    .await
-                    .context("gitlab: parse release links JSON")?;
-
-                for link in &links {
-                    if link["name"].as_str() == Some(file_name)
-                        && let Some(link_id) = link["id"].as_u64()
-                    {
-                        let delete_url = format!("{}/{}", links_api, link_id);
-                        retry_http_async(
-                            "gitlab: DELETE existing release link",
-                            policy,
-                            SuccessClass::Strict,
-                            |_| client.delete(&delete_url).send(),
-                            |status, body| {
-                                format!(
-                                    "gitlab: delete existing link '{}' (id={}) failed (HTTP {status}): {}",
-                                    file_name,
-                                    link_id,
-                                    redact_bearer_tokens(body)
-                                )
-                            },
-                        )
-                        .await?;
-                        break;
-                    }
-                }
-            }
-            Err(_) => {
-                // Could not list links — report the original error.
-                bail!(
                     "gitlab: create release link for '{}' failed (HTTP {}): {}",
                     file_name,
                     status_code,
                     redact_bearer_tokens(&text)
-                );
-            }
+                )
+            });
         }
 
         // Retry the POST after deleting the conflicting link.
@@ -546,6 +501,120 @@ pub(crate) async fn gitlab_upload_asset(
     }
 
     Ok(())
+}
+
+/// Compose the release-links API URL for `tag`.
+fn gitlab_links_api(api_url: &str, project_id: &str, tag: &str) -> String {
+    format!(
+        "{}/projects/{}/releases/{}/assets/links",
+        api_url.trim_end_matches('/'),
+        encode_project_id(project_id),
+        encode_tag(tag)
+    )
+}
+
+/// Look up the release link named `file_name` on the release for `tag`.
+///
+/// Returns `(link_id, url)` when a link with that exact name exists. The
+/// list GET goes through `retry_http_async` so a transient 5xx doesn't
+/// mis-report an existing link as absent.
+pub(crate) async fn gitlab_find_asset_link(
+    ctx: &GitlabCtx<'_>,
+    tag: &str,
+    file_name: &str,
+) -> Result<Option<(u64, String)>> {
+    let GitlabCtx {
+        client,
+        api_url,
+        project_id,
+        policy,
+    } = *ctx;
+    let links_api = gitlab_links_api(api_url, project_id, tag);
+    let resp = retry_http_async(
+        "gitlab: GET existing release links",
+        policy,
+        SuccessClass::Strict,
+        |_| client.get(&links_api).send(),
+        |status, body| {
+            format!(
+                "gitlab: list existing release links failed (HTTP {status}): {}",
+                redact_bearer_tokens(body)
+            )
+        },
+    )
+    .await?;
+    let links: Vec<serde_json::Value> = resp
+        .json()
+        .await
+        .context("gitlab: parse release links JSON")?;
+    for link in &links {
+        if link["name"].as_str() == Some(file_name)
+            && let Some(link_id) = link["id"].as_u64()
+        {
+            let url = link["url"].as_str().unwrap_or_default().to_string();
+            return Ok(Some((link_id, url)));
+        }
+    }
+    Ok(None)
+}
+
+/// Delete the release link named `file_name` on the release for `tag`.
+///
+/// Returns `Ok(true)` when a link was found and deleted, `Ok(false)` when no
+/// link with that name exists. Deleting the link does not remove the linked
+/// bytes (package-registry files / project uploads have no per-file delete on
+/// this path); a subsequent upload replaces the link target.
+pub(crate) async fn gitlab_delete_asset_link(
+    ctx: &GitlabCtx<'_>,
+    tag: &str,
+    file_name: &str,
+) -> Result<bool> {
+    let Some((link_id, _url)) = gitlab_find_asset_link(ctx, tag, file_name).await? else {
+        return Ok(false);
+    };
+    let GitlabCtx {
+        client,
+        api_url,
+        project_id,
+        policy,
+    } = *ctx;
+    let delete_url = format!("{}/{}", gitlab_links_api(api_url, project_id, tag), link_id);
+    retry_http_async(
+        "gitlab: DELETE existing release link",
+        policy,
+        SuccessClass::Strict,
+        |_| client.delete(&delete_url).send(),
+        |status, body| {
+            format!(
+                "gitlab: delete existing link '{}' (id={}) failed (HTTP {status}): {}",
+                file_name,
+                link_id,
+                redact_bearer_tokens(body)
+            )
+        },
+    )
+    .await?;
+    Ok(true)
+}
+
+/// Best-effort byte-size read of an already-linked asset: HEAD the link URL
+/// with the authenticated API client and read `Content-Length`.
+///
+/// Returns `None` on any failure (non-2xx, missing/unparsable header,
+/// transport error) — "present but size unknown" is a valid probe verdict,
+/// so a probe miss must degrade gracefully rather than fail the upload.
+pub(crate) async fn gitlab_head_asset_size(client: &Client, url: &str) -> Option<u64> {
+    let resp = client.head(url).send().await.ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    resp.headers()
+        .get(reqwest::header::CONTENT_LENGTH)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
 }
 
 /// Detect whether the GitLab server is pre-v17.
@@ -744,6 +813,111 @@ async fn upload_via_project_uploads(
 }
 
 // ---------------------------------------------------------------------------
+// Forge-client face of the shared upload loop
+// ---------------------------------------------------------------------------
+
+/// The GitLab face of the shared upload loop
+/// ([`crate::forge::run_upload_loop`]).
+///
+/// GitLab models release assets as *links*, so the probe checks the release's
+/// link inventory: a link named like the artifact marks it present, and a
+/// best-effort HEAD on the link URL supplies the byte size
+/// ([`crate::forge::AssetPresence::Present`] with `size: None` when
+/// unreadable). That makes a re-run / `--resume-release` skip byte-identical
+/// uploads instead of re-uploading — the same idempotency the GitHub and
+/// Gitea backends already had. Owns its coordinates so probe/delete/upload
+/// futures are `'static`.
+pub(crate) struct GitlabAssetClient {
+    pub client: Client,
+    pub api_url: String,
+    pub project_id: String,
+    pub policy: RetryPolicy,
+    pub tag: String,
+    pub download_url: String,
+    /// `(project_name, version)` when uploads route through the Generic
+    /// Package Registry; `None` = Project Markdown Uploads.
+    pub pkg: Option<(String, String)>,
+    pub replace_existing_artifacts: bool,
+}
+
+impl GitlabAssetClient {
+    fn api_ctx(&self) -> GitlabCtx<'_> {
+        GitlabCtx {
+            client: &self.client,
+            api_url: &self.api_url,
+            project_id: &self.project_id,
+            policy: &self.policy,
+        }
+    }
+}
+
+impl crate::forge::ForgeAssetClient for GitlabAssetClient {
+    fn forge(&self) -> &'static str {
+        "gitlab"
+    }
+
+    async fn before_uploads(&self, _entry_count: usize) -> Result<()> {
+        Ok(())
+    }
+
+    async fn probe_asset(&self, file_name: &str) -> Result<crate::forge::AssetPresence> {
+        Ok(
+            match gitlab_find_asset_link(&self.api_ctx(), &self.tag, file_name).await? {
+                Some((_link_id, url)) => crate::forge::AssetPresence::Present {
+                    size: gitlab_head_asset_size(&self.client, &url).await,
+                },
+                None => crate::forge::AssetPresence::Absent,
+            },
+        )
+    }
+
+    async fn delete_asset(&self, file_name: &str) -> Result<()> {
+        gitlab_delete_asset_link(&self.api_ctx(), &self.tag, file_name)
+            .await
+            .map(|_| ())
+            .with_context(|| {
+                format!(
+                    "gitlab: delete existing release link '{}' on release '{}'",
+                    file_name, self.tag
+                )
+            })
+    }
+
+    async fn upload_asset(&self, path: &Path, file_name: &str) -> Result<()> {
+        let op_name = format!("gitlab: upload '{}'", file_name);
+        let asset = GitlabAssetSpec {
+            file_path: path,
+            file_name,
+        };
+        let pkg_spec = self
+            .pkg
+            .as_ref()
+            .map(|(project_name, version)| GitlabPackageRegistrySpec {
+                project_name,
+                version,
+            });
+        let api_ctx = self.api_ctx();
+        crate::retry_upload(&op_name, || {
+            gitlab_upload_asset(
+                &api_ctx,
+                &self.tag,
+                &asset,
+                pkg_spec.as_ref(),
+                &self.download_url,
+                self.replace_existing_artifacts,
+            )
+        })
+        .await
+        .with_context(|| {
+            format!(
+                "release: upload artifact '{}' to GitLab release '{}'",
+                file_name, self.tag
+            )
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Backend orchestration
 // ---------------------------------------------------------------------------
 
@@ -902,104 +1076,30 @@ pub(crate) fn run_gitlab_backend(
             release_name, tag, project_id
         ));
 
-        // Upload artifacts with bounded parallelism (matching GitHub path).
+        // Upload artifacts through the shared forge upload loop (probe /
+        // idempotent-skip / delete-then-upload policy lives in
+        // `forge::run_upload_loop`; this backend contributes only the
+        // GitLab API calls).
         if skip_upload {
             log.status("skipped artifact uploads — skip_upload is set");
         } else {
-            let upload_parallelism = std::cmp::max(ctx.options.parallelism, 1);
-            let semaphore = Arc::new(tokio::sync::Semaphore::new(upload_parallelism));
-
-            // Prepare the list of uploadable entries (error on missing files).
-            let mut missing_files = Vec::new();
-            let prepared_entries: Vec<(std::path::PathBuf, String)> = artifact_entries
-                .iter()
-                .filter_map(|(path, custom_name)| {
-                    if !path.exists() {
-                        missing_files.push(path.display().to_string());
-                        return None;
-                    }
-                    let file_name = if let Some(name) = custom_name {
-                        name.clone()
-                    } else {
-                        path.file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "artifact".to_string())
-                    };
-                    Some((path.clone(), file_name))
-                })
-                .collect();
-
-            if !missing_files.is_empty() {
-                anyhow::bail!(
-                    "the following artifact files are missing:\n  {}",
-                    missing_files.join("\n  ")
-                );
-            }
-
-            let client = Arc::new(client);
-            let mut join_set = tokio::task::JoinSet::new();
-
-            for (path, file_name) in prepared_entries {
-                let sem = semaphore.clone();
-                let client = client.clone();
-                let api_url = api_url.clone();
-                let project_id = project_id.clone();
-                let tag_owned = tag.to_string();
-                let project_name_for_pkg = project_name_for_pkg.clone();
-                let version_for_pkg = version_for_pkg.clone();
-                let download_url = download_url.clone();
-                let policy_inner = policy;
-
-                join_set.spawn(async move {
-                    let _permit = sem
-                        .acquire()
-                        .await
-                        .map_err(|e| anyhow::anyhow!("semaphore closed: {}", e))?;
-
-                    let op_name = format!("gitlab: upload '{}'", file_name);
-                    let ctx = GitlabCtx {
-                        client: &client,
-                        api_url: &api_url,
-                        project_id: &project_id,
-                        policy: &policy_inner,
-                    };
-                    let asset = GitlabAssetSpec {
-                        file_path: &path,
-                        file_name: &file_name,
-                    };
-                    let pkg_spec = GitlabPackageRegistrySpec {
-                        project_name: &project_name_for_pkg,
-                        version: &version_for_pkg,
-                    };
-                    let pkg = use_pkg_registry.then_some(&pkg_spec);
-                    crate::retry_upload(&op_name, || {
-                        gitlab_upload_asset(
-                            &ctx,
-                            &tag_owned,
-                            &asset,
-                            pkg,
-                            &download_url,
-                            replace_existing_artifacts,
-                        )
-                    })
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "release: upload artifact '{}' to GitLab release '{}'",
-                            file_name, tag_owned
-                        )
-                    })?;
-
-                    Ok::<String, anyhow::Error>(file_name)
-                });
-            }
-
-            while let Some(result) = join_set.join_next().await {
-                let file_name = result
-                    .context("gitlab: upload task panicked")?
-                    .context("gitlab: upload task failed")?;
-                log.verbose(&format!("uploaded artifact {}", file_name));
-            }
+            let plan = crate::forge::UploadPlan::resolve(
+                release_cfg,
+                ctx.env_source(),
+                replace_existing_artifacts,
+            );
+            let forge_client = Arc::new(GitlabAssetClient {
+                client,
+                api_url: api_url.clone(),
+                project_id: project_id.clone(),
+                policy,
+                tag: tag.to_string(),
+                download_url: download_url.clone(),
+                pkg: use_pkg_registry
+                    .then(|| (project_name_for_pkg.clone(), version_for_pkg.clone())),
+                replace_existing_artifacts,
+            });
+            crate::forge::run_upload_loop(forge_client, &plan, artifact_entries, log).await?;
         }
 
         // GitLab does not support draft releases — publish is a no-op.
@@ -2940,6 +3040,15 @@ mod tests {
                 ),
                 times: None,
             },
+            // The shared upload loop's pre-upload probe lists the release's
+            // links; an empty list classifies the asset Absent so the upload
+            // proceeds.
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+                response: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
+                times: None,
+            },
             ScriptedRoute {
                 method: "PUT",
                 path_pattern: "/projects/o%2Fr/packages/generic/demo/1.0.0/demo.tar.gz",
@@ -3021,6 +3130,255 @@ mod tests {
                 .iter()
                 .any(|e| e.method == "POST" && e.path.ends_with("/assets/links")),
             "the release-link POST was issued"
+        );
+    }
+
+    /// The resume-idempotency pin: a re-run whose artifact is ALREADY linked
+    /// on the release with byte-identical size must NOT re-upload — no
+    /// package-registry PUT, no link POST, no link DELETE. Before the shared
+    /// upload loop, run_gitlab_backend had no pre-upload probe at all, so
+    /// this exact scenario re-uploaded the bytes and then hit the duplicate
+    /// link (this test fails on that code: the PUT/POST routes below get
+    /// exercised).
+    #[test]
+    fn run_backend_rerun_with_identical_remote_asset_skips_upload() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let artifact = dir.path().join("demo.tar.gz");
+        std::fs::write(&artifact, b"PAYLOAD").expect("write artifact");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let links_json = http_json(
+            "200 OK",
+            serde_json::json!([{
+                "name": "demo.tar.gz",
+                "id": 9,
+                "url": format!("http://{addr}/head/demo.tar.gz"),
+            }])
+            .to_string(),
+        );
+        let routes = vec![
+            // Re-run: the release already exists, so the create path GETs it
+            // and PUTs the mode-composed update.
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0",
+                response: http_json(
+                    "200 OK",
+                    serde_json::json!({"description": "old body"}).to_string(),
+                ),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PUT",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0",
+                response: http_json("200 OK", "{}".to_string()),
+                times: None,
+            },
+            // Pre-upload probe: the link inventory already carries the asset.
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+                response: links_json,
+                times: None,
+            },
+            // Size probe: byte-identical to the local artifact (7 bytes).
+            ScriptedRoute {
+                method: "HEAD",
+                path_pattern: "/head/demo.tar.gz",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n",
+                times: None,
+            },
+            // The routes a re-upload WOULD hit: they must stay untouched.
+            ScriptedRoute {
+                method: "PUT",
+                path_pattern: "/projects/o%2Fr/packages/generic/demo/1.0.0/demo.tar.gz",
+                response: http_json("201 Created", "{}".to_string()),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+                response: http_json("201 Created", serde_json::json!({"id": 1}).to_string()),
+                times: None,
+            },
+        ];
+        let (_addr, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let api_base = format!("http://{addr}");
+        let ctx = build_gitlab_ctx(&api_base, true);
+        let crate_cfg = build_gitlab_crate_cfg();
+        let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let log_stage = StageLogger::new("release", Verbosity::Normal);
+        let token = Some("glpat-test".to_string());
+        let env = GitlabBackendEnv {
+            rt: &rt,
+            ctx: &ctx,
+            log: &log_stage,
+            token: &token,
+        };
+        let artifacts = vec![(artifact, Some("demo.tar.gz".to_string()))];
+
+        run_gitlab_backend(
+            &env,
+            &crate_cfg,
+            release_cfg,
+            &default_gitlab_spec(),
+            &artifacts,
+        )
+        .expect("run_gitlab_backend should succeed")
+        .expect("returns Some on success");
+
+        let entries = log.lock().unwrap();
+        assert!(
+            entries.iter().any(|e| e.method == "HEAD"),
+            "the size probe HEAD was issued"
+        );
+        assert!(
+            !entries
+                .iter()
+                .any(|e| e.method == "PUT" && e.path.contains("/packages/generic/")),
+            "byte-identical remote asset must NOT be re-uploaded, got: {:?}",
+            entries
+                .iter()
+                .map(|e| format!("{} {}", e.method, e.path))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !entries
+                .iter()
+                .any(|e| e.method == "POST" && e.path.ends_with("/assets/links")),
+            "no duplicate link POST on an idempotent re-run"
+        );
+        assert!(
+            !entries.iter().any(|e| e.method == "DELETE"),
+            "an idempotent skip must not delete the published link"
+        );
+    }
+
+    /// Size mismatch + `replace_existing_artifacts: true`: the shared loop
+    /// deletes the stale link first, then re-uploads and re-links.
+    #[test]
+    fn run_backend_rerun_with_differing_remote_asset_replaces_when_opted_in() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let artifact = dir.path().join("demo.tar.gz");
+        std::fs::write(&artifact, b"PAYLOAD").expect("write artifact");
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+        let addr = listener.local_addr().expect("addr");
+
+        let links_json = http_json(
+            "200 OK",
+            serde_json::json!([{
+                "name": "demo.tar.gz",
+                "id": 9,
+                "url": format!("http://{addr}/head/demo.tar.gz"),
+            }])
+            .to_string(),
+        );
+        let routes = vec![
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0",
+                response: http_json(
+                    "200 OK",
+                    serde_json::json!({"description": "old body"}).to_string(),
+                ),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PUT",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0",
+                response: http_json("200 OK", "{}".to_string()),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+                response: links_json,
+                times: None,
+            },
+            // Remote size 999 ≠ local 7 → stale bytes, user opted into
+            // replacement.
+            ScriptedRoute {
+                method: "HEAD",
+                path_pattern: "/head/demo.tar.gz",
+                response: "HTTP/1.1 200 OK\r\nContent-Length: 999\r\n\r\n",
+                times: None,
+            },
+            ScriptedRoute {
+                method: "DELETE",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links/9",
+                response: http_json("200 OK", "{}".to_string()),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "PUT",
+                path_pattern: "/projects/o%2Fr/packages/generic/demo/1.0.0/demo.tar.gz",
+                response: http_json("201 Created", "{}".to_string()),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/version",
+                response: http_json(
+                    "200 OK",
+                    serde_json::json!({"version": "17.0.0"}).to_string(),
+                ),
+                times: None,
+            },
+            ScriptedRoute {
+                method: "POST",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+                response: http_json("201 Created", serde_json::json!({"id": 10}).to_string()),
+                times: None,
+            },
+        ];
+        let (_addr, log) = spawn_scripted_responder_on(listener, |_| routes);
+
+        let api_base = format!("http://{addr}");
+        let ctx = build_gitlab_ctx(&api_base, true);
+        let crate_cfg = build_gitlab_crate_cfg();
+        let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
+        let rt = tokio::runtime::Runtime::new().expect("rt");
+        let log_stage = StageLogger::new("release", Verbosity::Normal);
+        let token = Some("glpat-test".to_string());
+        let env = GitlabBackendEnv {
+            rt: &rt,
+            ctx: &ctx,
+            log: &log_stage,
+            token: &token,
+        };
+        let artifacts = vec![(artifact, Some("demo.tar.gz".to_string()))];
+        let mut spec = default_gitlab_spec();
+        spec.replace_existing_artifacts = true;
+
+        run_gitlab_backend(&env, &crate_cfg, release_cfg, &spec, &artifacts)
+            .expect("run_gitlab_backend should succeed")
+            .expect("returns Some on success");
+
+        let entries = log.lock().unwrap();
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "DELETE" && e.path.ends_with("/assets/links/9")),
+            "the stale link must be deleted before re-upload"
+        );
+        let put = entries
+            .iter()
+            .find(|e| e.method == "PUT" && e.path.contains("/packages/generic/"))
+            .expect("the replacement upload PUT was issued");
+        assert!(
+            put.body.contains("PAYLOAD"),
+            "re-upload carries fresh bytes"
+        );
+        assert!(
+            entries
+                .iter()
+                .any(|e| e.method == "POST" && e.path.ends_with("/assets/links")),
+            "the replacement link POST was issued"
         );
     }
 
@@ -3110,6 +3468,15 @@ mod tests {
                     "201 Created",
                     serde_json::json!({"tag_name": "v1.0.0"}).to_string(),
                 ),
+                times: None,
+            },
+            // The shared upload loop's pre-upload probe lists the release's
+            // links; an empty list classifies the asset Absent so the upload
+            // proceeds.
+            ScriptedRoute {
+                method: "GET",
+                path_pattern: "/projects/o%2Fr/releases/v1.0.0/assets/links",
+                response: "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n[]",
                 times: None,
             },
             ScriptedRoute {

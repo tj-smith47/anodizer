@@ -35,7 +35,93 @@ use super::{
     check_github_rate_limit_with_env, delete_release_asset_by_name, find_release_asset_probe,
     format_retry_warn,
 };
+use crate::forge::AssetPresence;
 use crate::release_log;
+
+/// The GitHub face of the shared upload loop
+/// ([`crate::forge::run_upload_loop`]).
+///
+/// GitHub reconciles same-named assets *reactively*: octocrab's upload POST
+/// surfaces a 422 `already_exists`, and [`upload_release_asset`] probes the
+/// size and partial-upload state to skip / bail / delete-and-retry. The probe hook
+/// therefore reports [`AssetPresence::Reactive`] so the driver issues no
+/// pre-upload HTTP of its own, keeping the historical request sequence
+/// byte-for-byte.
+pub(crate) struct GithubAssetClient {
+    pub octo: Arc<octocrab::Octocrab>,
+    pub owner: String,
+    pub repo: String,
+    pub release_id: u64,
+    pub tag: String,
+    pub replace_existing_artifacts: bool,
+    pub policy: RetryPolicy,
+    pub retry_after: RetryAfterCapture,
+    /// Token forwarded to the primary-rate-limit `/rate_limit` probe.
+    pub token: String,
+    pub env_source: Arc<dyn anodizer_core::EnvSource>,
+    pub log: anodizer_core::log::StageLogger,
+}
+
+impl crate::forge::ForgeAssetClient for GithubAssetClient {
+    fn forge(&self) -> &'static str {
+        "github"
+    }
+
+    /// Readiness guard: octocrab's `upload_asset(...).send()` issues a
+    /// `GET /releases/{id}` before each upload POST, and right after the
+    /// create POST those reads can hit a replica that has not yet observed
+    /// the new release. Block once until the release is readable so the
+    /// common case never enters that race; a persistent miss returns
+    /// `Ok(false)` and the loop proceeds (the per-upload bounded-404 retry
+    /// is the backstop).
+    async fn before_uploads(&self, _entry_count: usize) -> Result<()> {
+        super::lookup::wait_for_release_readable(
+            &self.octo,
+            &self.owner,
+            &self.repo,
+            self.release_id,
+            &self.log,
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn probe_asset(&self, _file_name: &str) -> Result<AssetPresence> {
+        Ok(AssetPresence::Reactive)
+    }
+
+    async fn delete_asset(&self, file_name: &str) -> Result<()> {
+        delete_release_asset_by_name(
+            &self.octo,
+            &self.owner,
+            &self.repo,
+            self.release_id,
+            file_name,
+            &self.policy,
+            Some(&self.retry_after),
+        )
+        .await
+        .map(|_| ())
+    }
+
+    async fn upload_asset(&self, path: &std::path::Path, file_name: &str) -> Result<()> {
+        upload_release_asset(UploadAssetRequest {
+            octo: &self.octo,
+            owner: &self.owner,
+            repo: &self.repo,
+            release_id: self.release_id,
+            tag: &self.tag,
+            path,
+            file_name,
+            replace_existing_artifacts: self.replace_existing_artifacts,
+            policy: &self.policy,
+            retry_after: Some(&self.retry_after),
+            token: &self.token,
+            env_source: self.env_source.as_ref(),
+        })
+        .await
+    }
+}
 
 /// Guaranteed minimum number of upload attempts for the transient /
 /// read-after-write-404 classes, even when the resolved [`RetryPolicy`]
