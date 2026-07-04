@@ -600,7 +600,11 @@ impl crate::forge::ForgeAssetClient for GiteaAssetClient {
             })
     }
 
-    async fn upload_asset(&self, path: &Path, file_name: &str) -> Result<()> {
+    async fn upload_asset(
+        &self,
+        path: &Path,
+        file_name: &str,
+    ) -> Result<crate::forge::UploadOutcome> {
         let op_name = format!("gitea: upload '{}'", file_name);
         let asset = GiteaAssetSpec {
             file_path: path,
@@ -616,7 +620,8 @@ impl crate::forge::ForgeAssetClient for GiteaAssetClient {
                 "release: upload artifact '{}' to Gitea release '{}'",
                 file_name, self.tag
             )
-        })
+        })?;
+        Ok(crate::forge::UploadOutcome::Uploaded(file_name.to_string()))
     }
 }
 

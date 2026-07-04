@@ -162,6 +162,39 @@ pub(crate) fn build_gitlab_client(
     skip_tls_verify: bool,
     use_job_token: bool,
 ) -> Result<Client> {
+    gitlab_client_builder(token, skip_tls_verify, use_job_token)?
+        .build()
+        .context("gitlab: build HTTP client")
+}
+
+/// Like [`build_gitlab_client`], but with redirect-following disabled — for
+/// the best-effort HEAD size probe on release-link URLs.
+///
+/// The client's default headers carry the PRIVATE-TOKEN / JOB-TOKEN on every
+/// request, and reqwest strips only `Authorization`/`Cookie` on a cross-host
+/// redirect — a custom auth header follows it. GitLab object storage with
+/// `proxy_download` off answers the link URL with a 302 to a pre-signed
+/// external store, so a redirect-following probe would hand the token to
+/// that host. With redirects off the 302 is a non-success → the probe
+/// degrades to "size unknown", which can never mis-skip an upload.
+pub(crate) fn build_gitlab_probe_client(
+    token: &str,
+    skip_tls_verify: bool,
+    use_job_token: bool,
+) -> Result<Client> {
+    gitlab_client_builder(token, skip_tls_verify, use_job_token)?
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .context("gitlab: build HTTP probe client")
+}
+
+/// Shared builder for [`build_gitlab_client`] / [`build_gitlab_probe_client`]
+/// so the auth-header / TLS / timeout policy cannot drift between the two.
+fn gitlab_client_builder(
+    token: &str,
+    skip_tls_verify: bool,
+    use_job_token: bool,
+) -> Result<reqwest::ClientBuilder> {
     let header_name = auth_header(use_job_token);
     let mut headers = reqwest::header::HeaderMap::new();
     headers.insert(
@@ -171,12 +204,10 @@ pub(crate) fn build_gitlab_client(
             .context("gitlab: invalid token value for header")?,
     );
 
-    let builder = Client::builder()
+    Ok(Client::builder()
         .default_headers(headers)
         .danger_accept_invalid_certs(skip_tls_verify)
-        .timeout(std::time::Duration::from_secs(300));
-
-    builder.build().context("gitlab: build HTTP client")
+        .timeout(std::time::Duration::from_secs(300)))
 }
 
 // ---------------------------------------------------------------------------
@@ -598,12 +629,29 @@ pub(crate) async fn gitlab_delete_asset_link(
 }
 
 /// Best-effort byte-size read of an already-linked asset: HEAD the link URL
-/// with the authenticated API client and read `Content-Length`.
+/// with the authenticated probe client and read `Content-Length`.
 ///
-/// Returns `None` on any failure (non-2xx, missing/unparsable header,
-/// transport error) — "present but size unknown" is a valid probe verdict,
-/// so a probe miss must degrade gracefully rather than fail the upload.
-pub(crate) async fn gitlab_head_asset_size(client: &Client, url: &str) -> Option<u64> {
+/// The HEAD is issued ONLY when the link URL sits on one of the
+/// `allowed_bases` hosts (the configured `api_url` / `download_url`): a
+/// release link's URL is arbitrary attacker-influenceable data — any user
+/// with release-write access can point one anywhere — and the client's
+/// default headers carry the PRIVATE-TOKEN / JOB-TOKEN. An off-host link
+/// returns `None` without any request. Pass a client built by
+/// [`build_gitlab_probe_client`] (redirects off) so an on-host 302 to
+/// external object storage cannot carry the token off-host either.
+///
+/// Returns `None` on any failure (off-host URL, non-2xx, missing/unparsable
+/// header, transport error) — "present but size unknown" is a valid probe
+/// verdict, so a probe miss must degrade gracefully rather than fail the
+/// upload.
+pub(crate) async fn gitlab_head_asset_size(
+    client: &Client,
+    url: &str,
+    allowed_bases: &[&str],
+) -> Option<u64> {
+    if !link_url_on_configured_host(url, allowed_bases) {
+        return None;
+    }
     let resp = client.head(url).send().await.ok()?;
     if !resp.status().is_success() {
         return None;
@@ -615,6 +663,24 @@ pub(crate) async fn gitlab_head_asset_size(client: &Client, url: &str) -> Option
         .trim()
         .parse::<u64>()
         .ok()
+}
+
+/// True when `url`'s host (and effective port) matches the host of at least
+/// one of `allowed_bases`. Unparsable URLs on either side never match —
+/// fail-closed, since a match authorizes sending the token to that host.
+fn link_url_on_configured_host(url: &str, allowed_bases: &[&str]) -> bool {
+    let Ok(link) = reqwest::Url::parse(url) else {
+        return false;
+    };
+    let Some(link_host) = link.host_str() else {
+        return false;
+    };
+    allowed_bases.iter().any(|base| {
+        reqwest::Url::parse(base).is_ok_and(|b| {
+            b.host_str() == Some(link_host)
+                && b.port_or_known_default() == link.port_or_known_default()
+        })
+    })
 }
 
 /// Detect whether the GitLab server is pre-v17.
@@ -829,6 +895,10 @@ async fn upload_via_project_uploads(
 /// futures are `'static`.
 pub(crate) struct GitlabAssetClient {
     pub client: Client,
+    /// Redirect-disabled sibling of `client` (same auth headers), used only
+    /// for the HEAD size probe on link URLs — see
+    /// [`build_gitlab_probe_client`] for why redirects must stay off there.
+    pub probe_client: Client,
     pub api_url: String,
     pub project_id: String,
     pub policy: RetryPolicy,
@@ -864,7 +934,12 @@ impl crate::forge::ForgeAssetClient for GitlabAssetClient {
         Ok(
             match gitlab_find_asset_link(&self.api_ctx(), &self.tag, file_name).await? {
                 Some((_link_id, url)) => crate::forge::AssetPresence::Present {
-                    size: gitlab_head_asset_size(&self.client, &url).await,
+                    size: gitlab_head_asset_size(
+                        &self.probe_client,
+                        &url,
+                        &[self.api_url.as_str(), self.download_url.as_str()],
+                    )
+                    .await,
                 },
                 None => crate::forge::AssetPresence::Absent,
             },
@@ -883,7 +958,11 @@ impl crate::forge::ForgeAssetClient for GitlabAssetClient {
             })
     }
 
-    async fn upload_asset(&self, path: &Path, file_name: &str) -> Result<()> {
+    async fn upload_asset(
+        &self,
+        path: &Path,
+        file_name: &str,
+    ) -> Result<crate::forge::UploadOutcome> {
         let op_name = format!("gitlab: upload '{}'", file_name);
         let asset = GitlabAssetSpec {
             file_path: path,
@@ -913,7 +992,8 @@ impl crate::forge::ForgeAssetClient for GitlabAssetClient {
                 "release: upload artifact '{}' to GitLab release '{}'",
                 file_name, self.tag
             )
-        })
+        })?;
+        Ok(crate::forge::UploadOutcome::Uploaded(file_name.to_string()))
     }
 }
 
@@ -1089,6 +1169,7 @@ pub(crate) fn run_gitlab_backend(
                 replace_existing_artifacts,
             );
             let forge_client = Arc::new(GitlabAssetClient {
+                probe_client: build_gitlab_probe_client(&token_str, skip_tls, use_job_token)?,
                 client,
                 api_url: api_url.clone(),
                 project_id: project_id.clone(),
@@ -1286,6 +1367,111 @@ mod tests {
     fn build_client_with_all_options() {
         let client = build_gitlab_client("job-token", true, true);
         assert!(client.is_ok());
+    }
+
+    // -- gitlab_head_asset_size host guard ------------------------------------
+
+    #[test]
+    fn link_host_guard_matches_api_and_download_hosts_only() {
+        let bases = [
+            "https://gitlab.example.com/api/v4",
+            "https://dl.example.com",
+        ];
+        assert!(link_url_on_configured_host(
+            "https://gitlab.example.com/uploads/x/demo.tar.gz",
+            &bases
+        ));
+        assert!(link_url_on_configured_host(
+            "https://dl.example.com/demo.tar.gz",
+            &bases
+        ));
+        // Off-host, attacker-chosen link targets must never be probed.
+        assert!(!link_url_on_configured_host(
+            "https://evil.example.net/demo.tar.gz",
+            &bases
+        ));
+        // Same host on a different port is a different origin.
+        assert!(!link_url_on_configured_host(
+            "https://gitlab.example.com:8443/demo.tar.gz",
+            &bases
+        ));
+        // Unparsable link URLs fail closed.
+        assert!(!link_url_on_configured_host("not a url", &bases));
+    }
+
+    #[tokio::test]
+    async fn head_probe_skips_off_host_link_without_any_request() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        // A foreign responder standing in for an attacker-chosen link
+        // target: the probe must return None WITHOUT connecting to it (the
+        // client's default headers carry the token).
+        let (foreign_addr, foreign_calls) =
+            spawn_oneshot_http_responder(vec!["HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n"]);
+        let client = build_gitlab_probe_client("glpat-secret", false, false).expect("client");
+        let size = gitlab_head_asset_size(
+            &client,
+            &format!("http://{foreign_addr}/demo.tar.gz"),
+            &["https://gitlab.example.com/api/v4"],
+        )
+        .await;
+        assert_eq!(size, None, "off-host link must degrade to size-unknown");
+        // Give any (buggy) in-flight request time to land before asserting.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(
+            foreign_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "no request may reach the off-host link target"
+        );
+    }
+
+    #[tokio::test]
+    async fn head_probe_reads_size_from_on_host_link() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        let (addr, calls) =
+            spawn_oneshot_http_responder(vec!["HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n"]);
+        let client = build_gitlab_probe_client("glpat-secret", false, false).expect("client");
+        let api_base = format!("http://{addr}/api/v4");
+        let size = gitlab_head_asset_size(
+            &client,
+            &format!("http://{addr}/uploads/x/demo.tar.gz"),
+            &[api_base.as_str()],
+        )
+        .await;
+        assert_eq!(size, Some(7), "on-host link still probes");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn head_probe_does_not_follow_redirects() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder_with;
+        // Object storage with proxy_download off answers the on-host link
+        // with a 302 to an external pre-signed URL. The probe client must
+        // not follow it (reqwest keeps custom default headers — the token —
+        // across cross-host redirects) and must degrade to size-unknown.
+        let (foreign_addr, foreign_calls) =
+            spawn_oneshot_http_responder(vec!["HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n"]);
+        let (addr, calls) = spawn_oneshot_http_responder_with(|_| {
+            vec![format!(
+                "HTTP/1.1 302 Found\r\nLocation: http://{foreign_addr}/presigned/demo.tar.gz\r\nContent-Length: 0\r\n\r\n"
+            )]
+        });
+        let client = build_gitlab_probe_client("glpat-secret", false, false).expect("client");
+        let api_base = format!("http://{addr}/api/v4");
+        let size = gitlab_head_asset_size(
+            &client,
+            &format!("http://{addr}/uploads/x/demo.tar.gz"),
+            &[api_base.as_str()],
+        )
+        .await;
+        assert_eq!(size, None, "a redirect answer must degrade to size-unknown");
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(
+            foreign_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the redirect target must never be contacted"
+        );
     }
 
     // -- auth_header ---------------------------------------------------------
@@ -3211,7 +3397,7 @@ mod tests {
         let crate_cfg = build_gitlab_crate_cfg();
         let release_cfg = crate_cfg.release.as_ref().expect("release cfg");
         let rt = tokio::runtime::Runtime::new().expect("rt");
-        let log_stage = StageLogger::new("release", Verbosity::Normal);
+        let (log_stage, cap) = StageLogger::with_capture("release", Verbosity::Normal);
         let token = Some("glpat-test".to_string());
         let env = GitlabBackendEnv {
             rt: &rt,
@@ -3230,6 +3416,20 @@ mod tests {
         )
         .expect("run_gitlab_backend should succeed")
         .expect("returns Some on success");
+
+        let messages = cap.all_messages();
+        assert!(
+            messages
+                .iter()
+                .any(|(_, m)| m == "skipped byte-identical asset demo.tar.gz — already uploaded"),
+            "the drain must report the idempotent skip: {messages:?}"
+        );
+        assert!(
+            !messages
+                .iter()
+                .any(|(_, m)| m.contains("uploaded artifact")),
+            "an idempotent skip must not claim an upload: {messages:?}"
+        );
 
         let entries = log.lock().unwrap();
         assert!(

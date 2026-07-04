@@ -103,6 +103,8 @@ pub struct ReleaseConfig {
     /// A cross-platform publishing feature provided for free by anodizer.
     pub tag: Option<String>,
     /// Maximum number of asset-upload requests in flight simultaneously.
+    /// Applies to asset uploads on every release forge (GitHub, GitLab,
+    /// Gitea).
     ///
     /// GitHub's secondary rate-limit is triggered by burst traffic. Keeping
     /// this value low avoids tripping the limit even for releases with many
@@ -110,7 +112,8 @@ pub struct ReleaseConfig {
     /// `ANODIZER_GITHUB_UPLOAD_CONCURRENCY`.
     pub upload_concurrency: Option<u32>,
     /// Minimum interval between successive asset-upload *starts* (a humantime
-    /// string, e.g. `"200ms"`, `"1s"`, `"0s"`).
+    /// string, e.g. `"200ms"`, `"1s"`, `"0s"`). Applies to asset uploads on
+    /// every release forge (GitHub, GitLab, Gitea).
     ///
     /// This is a *proactive* pace that smooths the initial burst of upload
     /// requests, layered on top of [`Self::upload_concurrency`] (the

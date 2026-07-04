@@ -30,7 +30,7 @@ When publishing a draft release and a draft with the same NAME already exists in
 
 ### `release.replace_existing_artifacts`
 
-When uploading a release asset and the server returns `422 already_exists`, anodizer compares the existing asset's size to the local file. If they match (likely an outer-retry recovery), the upload is treated as a no-op. If they differ (real conflict), anodizer deletes the existing asset and re-uploads. Applies to GitHub, Gitea, and GitLab. Without this flag, the size-mismatch case bails with a real error.
+Before uploading (Gitea and GitLab probe the release's asset inventory first; GitHub reacts to the server's `422 already_exists`), anodizer compares the existing asset's size to the local file. If they match (likely an outer-retry recovery), the upload is treated as a no-op. If they differ (real conflict), anodizer deletes the existing asset and re-uploads. Applies to GitHub, Gitea, and GitLab. Without this flag, the size-mismatch case bails with a real error.
 
 ### `chocolatey.republish_in_moderation`
 

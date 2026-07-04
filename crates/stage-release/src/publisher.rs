@@ -374,20 +374,36 @@ fn github_release_preflight(ctx: &Context) -> anodizer_core::PreflightCheck {
         if !seen.insert((owner.clone(), repo.clone())) {
             continue;
         }
-        acc = preflight_merge(acc, repo_push_check(&owner, &repo, &token, &policy));
+        acc = preflight_merge(
+            acc,
+            repo_push_check(
+                &owner,
+                &repo,
+                &token,
+                &policy,
+                ctx.config.github_urls.as_ref(),
+                ctx.env_source(),
+            ),
+        );
     }
     acc
 }
 
-/// Probe `GET https://api.github.com/repos/{owner}/{repo}` for push access.
+/// Probe `GET {api_base}/repos/{owner}/{repo}` for push access, resolving
+/// the base through [`anodizer_core::http::github_api_base_with_config`] —
+/// the probe must contact the same host the release backend will
+/// (`github_urls.api` on GHES), not hardcoded github.com.
 /// See [`repo_push_check_at`] for the status/permission mapping.
-fn repo_push_check(
+fn repo_push_check<E: anodizer_core::EnvSource + ?Sized>(
     owner: &str,
     repo: &str,
     token: &str,
     policy: &anodizer_core::retry::RetryPolicy,
+    github_urls: Option<&anodizer_core::config::GitHubUrlsConfig>,
+    env: &E,
 ) -> anodizer_core::PreflightCheck {
-    let url = format!("https://api.github.com/repos/{owner}/{repo}");
+    let base = anodizer_core::http::github_api_base_with_config(github_urls, env);
+    let url = format!("{base}/repos/{owner}/{repo}");
     repo_push_check_at(&url, owner, repo, token, policy)
 }
 
@@ -918,6 +934,57 @@ mod publisher_tests {
             PreflightCheck::Blocker(m) => assert!(m.contains("contents:write"), "{m}"),
             _ => panic!("expected Blocker when permissions.push is false"),
         }
+    }
+
+    #[test]
+    fn repo_push_check_resolves_base_from_env_override() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        // The probe must route through the shared github_api_base resolver:
+        // the env override redirects it to the local responder instead of
+        // the hardcoded public host.
+        let (addr, calls) =
+            spawn_oneshot_http_responder(vec![http("200 OK", r#"{"permissions":{"push":true}}"#)]);
+        let env = anodizer_core::MapEnvSource::new()
+            .with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"));
+        assert!(matches!(
+            repo_push_check("acme", "widget", "tok", &one_attempt_policy(), None, &env),
+            PreflightCheck::Pass
+        ));
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "probe must hit the env-resolved base"
+        );
+    }
+
+    #[test]
+    fn repo_push_check_prefers_configured_ghes_api_base() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        // A GHES `github_urls.api` config must win: the release backend
+        // contacts that host, so the preflight verdict is only meaningful
+        // against the same host.
+        let (addr, calls) =
+            spawn_oneshot_http_responder(vec![http("200 OK", r#"{"permissions":{"push":true}}"#)]);
+        let urls = anodizer_core::config::GitHubUrlsConfig {
+            api: Some(format!("http://{addr}/api/v3")),
+            ..Default::default()
+        };
+        assert!(matches!(
+            repo_push_check(
+                "acme",
+                "widget",
+                "tok",
+                &one_attempt_policy(),
+                Some(&urls),
+                &anodizer_core::MapEnvSource::new(),
+            ),
+            PreflightCheck::Pass
+        ));
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "probe must hit the configured GHES base"
+        );
     }
 
     #[test]

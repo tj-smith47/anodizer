@@ -35,6 +35,9 @@ Both are safe to set permanently; they are no-ops when there is no existing draf
 See [Recovery flags](./recovery-flags.md) for the full mechanism, the equivalent flags on every other
 publisher, and operational guidance.
 
+Independently of both flags, a re-run that would upload byte-identical assets is a no-op on every
+forge (GitHub, GitLab, Gitea) — the flags only govern *differing* bytes and stale drafts.
+
 ## Publisher groups
 
 Every publisher is classified into exactly one group, based on how recoverable

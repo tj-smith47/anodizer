@@ -246,10 +246,12 @@ fn query_winget_pr(
         package, version
     );
     let encoded = percent_encode(&query);
-    let url = format!(
-        "https://api.github.com/search/issues?q={}&per_page=1",
-        encoded
-    );
+    // The [`PreflightChecker`] trait carries no env plumbing, so the base
+    // resolves against the process env directly — the same source every
+    // production caller of this override reads. Tests inject a responder
+    // URL via [`query_winget_pr_at`] instead.
+    let base = anodizer_core::http::github_api_base(&anodizer_core::ProcessEnvSource);
+    let url = format!("{}/search/issues?q={}&per_page=1", base, encoded);
     query_winget_pr_at(&url, token, policy)
 }
 

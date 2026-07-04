@@ -104,7 +104,11 @@ impl crate::forge::ForgeAssetClient for GithubAssetClient {
         .map(|_| ())
     }
 
-    async fn upload_asset(&self, path: &std::path::Path, file_name: &str) -> Result<()> {
+    async fn upload_asset(
+        &self,
+        path: &std::path::Path,
+        file_name: &str,
+    ) -> Result<crate::forge::UploadOutcome> {
         upload_release_asset(UploadAssetRequest {
             octo: &self.octo,
             owner: &self.owner,
@@ -175,7 +179,12 @@ pub(crate) struct UploadAssetRequest<'a> {
 /// and dispatches Skip / Bail / DeleteAndRetry via
 /// [`classify_already_exists`] — that is the only delete site for an
 /// already-published asset.
-pub(crate) async fn upload_release_asset(req: UploadAssetRequest<'_>) -> Result<()> {
+///
+/// Returns the [`crate::forge::UploadOutcome`] so the shared drain can log
+/// an idempotent skip as a skip rather than an upload.
+pub(crate) async fn upload_release_asset(
+    req: UploadAssetRequest<'_>,
+) -> Result<crate::forge::UploadOutcome> {
     let UploadAssetRequest {
         octo,
         owner,
@@ -217,6 +226,9 @@ pub(crate) async fn upload_release_asset(req: UploadAssetRequest<'_>) -> Result<
     // leave a corrupt, non-downloadable asset on the release — so they
     // keep delete-retrying until the attempt budget is exhausted.
     let mut overwrite_attempted = false;
+    // What the successful exit will report to the drain; the skip arms
+    // rewrite it before breaking.
+    let mut disposition = crate::forge::UploadOutcome::Uploaded(file_name.to_string());
     for attempt in 1..=max_upload_attempts {
         let data = std::fs::read(path)
             .with_context(|| format!("release: read artifact {}", path.display()))?;
@@ -273,6 +285,8 @@ pub(crate) async fn upload_release_asset(req: UploadAssetRequest<'_>) -> Result<
                         "skipped re-upload — existing asset '{file_name}' on release '{tag}' \
                          reappeared after delete+retry; stale asset kept"
                     ));
+                    disposition =
+                        crate::forge::UploadOutcome::SkippedStaleKept(file_name.to_string());
                     last_err = None;
                     break;
                 }
@@ -282,6 +296,8 @@ pub(crate) async fn upload_release_asset(req: UploadAssetRequest<'_>) -> Result<
                         // A prior attempt in this same release already
                         // uploaded byte-identical content. Pure no-op,
                         // regardless of `replace_existing_artifacts`.
+                        disposition =
+                            crate::forge::UploadOutcome::SkippedIdentical(file_name.to_string());
                         last_err = None;
                         break;
                     }
@@ -357,6 +373,8 @@ pub(crate) async fn upload_release_asset(req: UploadAssetRequest<'_>) -> Result<
                             "skipped overwrite of existing asset '{file_name}' on release '{tag}' \
                              — size mismatch and delete failed: {del_err}; stale asset kept"
                         ));
+                        disposition =
+                            crate::forge::UploadOutcome::SkippedStaleKept(file_name.to_string());
                         last_err = None;
                         break;
                     }
@@ -463,13 +481,28 @@ pub(crate) async fn upload_release_asset(req: UploadAssetRequest<'_>) -> Result<
                 continue;
             }
             UploadAttemptOutcome::Fatal => {
-                // Non-retryable error: fail immediately.
+                // Non-retryable error: fail immediately. A 403 reaching this
+                // arm carries no rate-limit signal (the classifier routes
+                // rate-limited 403s to the RL arms), so it is an
+                // authorization denial — name the scope the token is missing.
+                let status = match &result {
+                    Err(octocrab::Error::GitHub { source, .. }) => source.status_code.as_u16(),
+                    _ => 0,
+                };
                 let err = result.expect_err("Fatal outcome guarantees Err variant");
                 return Err(anyhow::anyhow!(err)).with_context(|| {
-                    format!(
-                        "release: upload artifact '{}' to release '{}'",
-                        file_name, tag
-                    )
+                    if status == 403 {
+                        format!(
+                            "release: upload artifact '{}' to release '{}' — GitHub denied the \
+                             upload (403); verify the token has contents:write on {}/{}",
+                            file_name, tag, owner, repo
+                        )
+                    } else {
+                        format!(
+                            "release: upload artifact '{}' to release '{}'",
+                            file_name, tag
+                        )
+                    }
                 });
             }
         }
@@ -483,7 +516,7 @@ pub(crate) async fn upload_release_asset(req: UploadAssetRequest<'_>) -> Result<
         });
     }
 
-    Ok(())
+    Ok(disposition)
 }
 
 #[cfg(test)]
@@ -585,7 +618,7 @@ mod tests {
         addr: SocketAddr,
         path: &std::path::Path,
         replace_existing_artifacts: bool,
-    ) -> Result<()> {
+    ) -> Result<crate::forge::UploadOutcome> {
         run_upload_with_env(addr, path, replace_existing_artifacts, &EmptyEnv).await
     }
 
@@ -598,7 +631,7 @@ mod tests {
         path: &std::path::Path,
         replace_existing_artifacts: bool,
         env_source: &dyn anodizer_core::EnvSource,
-    ) -> Result<()> {
+    ) -> Result<crate::forge::UploadOutcome> {
         let octo = build_test_octocrab(addr);
         let policy = test_retry_policy();
         upload_release_asset(UploadAssetRequest {
@@ -635,10 +668,9 @@ mod tests {
 
         let result = run_upload(addr, &path, false).await;
 
-        assert!(
-            result.is_ok(),
-            "401 must retry to success: {:?}",
-            result.err()
+        assert_eq!(
+            result.expect("401 must retry to success"),
+            crate::forge::UploadOutcome::Uploaded("app.tar.gz".to_string()),
         );
         assert_eq!(
             calls.load(Ordering::SeqCst),
@@ -684,15 +716,77 @@ mod tests {
 
         let result = run_upload(addr, &path, false).await;
 
-        assert!(
-            result.is_ok(),
-            "partial-asset 422 must delete + re-upload to success: {:?}",
-            result.err()
+        assert_eq!(
+            result.expect("partial-asset 422 must delete + re-upload to success"),
+            crate::forge::UploadOutcome::Uploaded("app.tar.gz".to_string()),
+            "a real re-upload must report Uploaded"
         );
         assert_eq!(
             calls.load(Ordering::SeqCst),
             9,
             "expected 3 attempts (2 GET+POST pairs + 1 GET+POST) + probe list + delete list + DELETE"
+        );
+    }
+
+    #[tokio::test]
+    async fn identical_published_asset_422_reports_skipped_identical() {
+        // A byte-identical published asset (size matches local) is the
+        // idempotent-skip arm: no delete, no re-upload, and the outcome must
+        // say "skipped", not "uploaded" — the drain logs it verbatim.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_artifact(tmp.path(), "app.tar.gz", b"same-bytes");
+        let (addr, calls) = spawn_oneshot_http_responder_with(|addr| {
+            vec![
+                release_json(addr),
+                http("422 Unprocessable Entity", BODY_422_ALREADY_EXISTS),
+                // probe list: published asset, size == local (10 bytes)
+                http(
+                    "200 OK",
+                    &format!("[{}]", asset_json(addr, "app.tar.gz", 10, "uploaded")),
+                ),
+            ]
+        });
+
+        let result = run_upload(addr, &path, false).await;
+
+        assert_eq!(
+            result.expect("byte-identical 422 must skip idempotently"),
+            crate::forge::UploadOutcome::SkippedIdentical("app.tar.gz".to_string()),
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            3,
+            "skip must not delete or re-upload (1 GET + 1 POST + 1 probe list)"
+        );
+    }
+
+    #[tokio::test]
+    async fn fatal_403_names_contents_write_remediation() {
+        // A 403 with no rate-limit signal is an authorization denial: the
+        // error must tell the operator which scope to check, on which repo.
+        let body_403 = r#"{"message":"Resource not accessible by integration","documentation_url":"https://docs.github.com/rest"}"#;
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = write_artifact(tmp.path(), "app.tar.gz", b"bytes");
+        let (addr, calls) = spawn_oneshot_http_responder_with(|addr| {
+            vec![release_json(addr), http("403 Forbidden", body_403)]
+        });
+
+        let result = run_upload(addr, &path, false).await;
+
+        let err = result.expect_err("signal-less 403 must fail fast");
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains("GitHub denied the upload (403)"),
+            "403 context must name the denial: {rendered}"
+        );
+        assert!(
+            rendered.contains("verify the token has contents:write on o/r"),
+            "403 context must name the missing scope and repo: {rendered}"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "fatal 403 must not retry (1 GET + 1 POST)"
         );
     }
 

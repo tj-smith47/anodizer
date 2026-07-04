@@ -144,7 +144,23 @@ pub(super) fn close_milestones(
         let api_url = resolve_milestone_api_url(milestone_cfg, &ctx.config);
         let close_result = match ctx.token_type {
             ScmTokenType::GitHub => {
-                close_milestone_github(&rt, &token, &owner, &repo_name, &milestone_name, &policy)
+                // Resolve the REST base the release itself targets:
+                // `github_urls.api` on GHES, else the shared resolver — a
+                // hardcoded github.com would close (or 404 on) the wrong
+                // host's milestone.
+                let api_base = anodizer_core::http::github_api_base_with_config(
+                    ctx.config.github_urls.as_ref(),
+                    ctx.env_source(),
+                );
+                close_milestone_github(
+                    &rt,
+                    &token,
+                    &owner,
+                    &repo_name,
+                    &milestone_name,
+                    &policy,
+                    &api_base,
+                )
             }
             ScmTokenType::GitLab => close_milestone_gitlab(
                 &rt,
@@ -254,6 +270,11 @@ fn resolve_milestone_repo(
 }
 
 /// Close a GitHub milestone by name using the REST API.
+///
+/// `api_base` is the resolved GitHub REST base (no trailing slash) — the
+/// caller routes it through
+/// [`anodizer_core::http::github_api_base_with_config`] so GHES releases
+/// close milestones on the configured host.
 fn close_milestone_github(
     rt: &tokio::runtime::Runtime,
     token: &str,
@@ -261,6 +282,7 @@ fn close_milestone_github(
     repo: &str,
     milestone_name: &str,
     policy: &RetryPolicy,
+    api_base: &str,
 ) -> Result<MilestoneCloseOutcome> {
     if token.is_empty() {
         anyhow::bail!("no authentication token available for milestone close");
@@ -277,8 +299,8 @@ fn close_milestone_github(
 
         loop {
             let url = format!(
-                "https://api.github.com/repos/{}/{}/milestones?state=open&per_page=100&page={}",
-                owner, repo, page
+                "{}/repos/{}/{}/milestones?state=open&per_page=100&page={}",
+                api_base, owner, repo, page
             );
             let resp = retry_http_async(
                 "milestone: list milestones",
@@ -328,8 +350,8 @@ fn close_milestone_github(
 
         // Close the milestone
         let close_url = format!(
-            "https://api.github.com/repos/{}/{}/milestones/{}",
-            owner, repo, milestone_number
+            "{}/repos/{}/{}/milestones/{}",
+            api_base, owner, repo, milestone_number
         );
         retry_http_async(
             "milestone: close milestone",
@@ -1291,12 +1313,54 @@ mod tests {
     #[test]
     fn github_close_empty_token_bails_before_http() {
         let rt = dummy_rt();
-        let err = close_milestone_github(&rt, "", "o", "r", "v1.0.0", &default_policy())
-            .expect_err("empty token must bail");
+        let err = close_milestone_github(
+            &rt,
+            "",
+            "o",
+            "r",
+            "v1.0.0",
+            &default_policy(),
+            "https://api.github.com",
+        )
+        .expect_err("empty token must bail");
         assert!(
             err.to_string()
                 .contains("no authentication token available for milestone close"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn github_close_targets_resolved_api_base() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder_with;
+        // The close must hit the resolver-supplied base (env override →
+        // local responder here; `github_urls.api` on GHES), never a
+        // hardcoded public host. List returns the milestone, PATCH closes it.
+        let (addr, calls) = spawn_oneshot_http_responder_with(|_addr| {
+            let list_body = r#"[{"title":"v1.0.0","number":3}]"#;
+            vec![
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                    list_body.len(),
+                    list_body
+                ),
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}"
+                    .to_string(),
+            ]
+        });
+        let env = anodizer_core::MapEnvSource::new()
+            .with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"));
+        let api_base = anodizer_core::http::github_api_base_with_config(None, &env);
+
+        let rt = dummy_rt();
+        let outcome =
+            close_milestone_github(&rt, "tok", "o", "r", "v1.0.0", &default_policy(), &api_base)
+                .expect("close succeeds against the responder");
+        assert!(matches!(outcome, MilestoneCloseOutcome::Closed));
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "list + close must both hit the env-resolved base"
         );
     }
 

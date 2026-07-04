@@ -38,7 +38,7 @@ A non-zero exit code from any hook aborts the release before publish runs. Hooks
 List of `KEY=VALUE` strings: `env: ["MY_VAR=hello", "DEPLOY_ENV=staging"]`. Order is preserved so chained env applications (sign + sbom + notarize) see entries in declared order. Values are rendered through the template engine before being set, so expressions like `{{ Tag }}` or `{{ Date }}` are expanded. |
 | `env_files` | EnvFilesConfig | — | Environment file configuration. Accepts either: - A list of `.env` file paths: `[".env", ".release.env"]` - A struct with token file paths: `{ github_token: "~/.config/goreleaser/github_token" }` |
 | `force_token` | ForceTokenKind | — | Force a specific token type for authentication. When set, overrides automatic token detection from environment variables. |
-| `gemfury` | list of GemFuryConfig | — | GemFury (fury.io) deb/rpm/apk publishing configurations. Mirrors The `gemfury:` block. The legacy spelling `furies:` is accepted via serde alias; a one-time deprecation warning is emitted by [`warn_on_legacy_furies_alias`]. |
+| `gemfury` | list of GemFuryConfig | — | GemFury (fury.io) deb/rpm/apk publishing configurations. Mirrors The `gemfury:` block. The legacy spelling `furies:` is accepted via serde alias; a one-time deprecation warning is emitted by `warn_on_legacy_furies_alias`. |
 | `git` | GitConfig | — | Git-level tag discovery and sorting settings. |
 | `gitea_urls` | GiteaUrlsConfig | — | Custom Gitea API/download URLs for self-hosted Gitea installations. |
 | `github_urls` | GitHubUrlsConfig | — | Custom GitHub API/upload/download URLs for GitHub Enterprise installations. |
@@ -82,7 +82,7 @@ Stored as a `BTreeMap` so rendering iterates in deterministic (sorted) key order
 ## `after`
 Top-level lifecycle hooks for `before` and `after` blocks. Each block carries a list of hook commands that run around the entire pipeline (not individual stages).
 
-The canonical key is `hooks:` for both `before:` and `after:` to the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see [`HooksConfig::merge_hook_aliases`]).
+The canonical key is `hooks:` for both `before:` and `after:` to the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see `HooksConfig::merge_hook_aliases`).
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `hooks` | list of HookEntry | — | Commands to run when the block fires. The wire format accepts either `hooks:` (canonical) or the legacy `post:` spelling; both fold into this field at parse time. |
@@ -95,13 +95,13 @@ Message bodies are secret-redacted before send: known secret env values are mask
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `bluesky` | BlueskyAnnounce | — | Bluesky announcement configuration. |
-| `deadline` | HumanDuration | — | Overall wall-clock deadline for the announce stage (e.g. `"90s"`, `"2m"`). Optional — defaults to [`DEFAULT_ANNOUNCE_DEADLINE`] (90s).
+| `deadline` | HumanDuration | — | Overall wall-clock deadline for the announce stage (e.g. `"90s"`, `"2m"`). Optional — defaults to `DEFAULT_ANNOUNCE_DEADLINE` (90s).
 
 Announcers run concurrently; any still running when this deadline elapses is abandoned with a warning rather than awaited. This bounds the stage so unreachable channels cannot accumulate into a hang that trips the pipeline timeout *after* publishers already crossed one-way doors. Raise it only if a slow-but-reachable channel legitimately needs longer. |
 | `discord` | DiscordAnnounce | — | Discord announcement configuration. |
 | `discourse` | DiscourseAnnounce | — | Discourse announcement configuration. |
 | `email` | EmailAnnounce | — | Email announcement configuration. accepts the historical `smtp:` key as an alias because the field was renamed `smtp:` -> `email:` in v1.21+ and kept the alias for migration. Keeping the alias avoids forcing a re-yaml of legacy configs. |
-| `gate_on` | AnnounceGate | `required_publishers` | Selects when AnnounceStage runs vs. skips based on the `PublishReport` written by PublishStage/BlobStage. Default is `required_publishers` (announce only if every required publisher succeeded). See [`AnnounceGate`] for the other variants. |
+| `gate_on` | AnnounceGate | `required_publishers` | Selects when AnnounceStage runs vs. skips based on the `PublishReport` written by PublishStage/BlobStage. Default is `required_publishers` (announce only if every required publisher succeeded). See `AnnounceGate` for the other variants. |
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the entire announce stage is skipped. Render failure hard-errors. The `announce.if:`. Distinct from `skip:` (always-skip predicate) — both surfaces are documented. |
 | `linkedin` | LinkedInAnnounce | — | LinkedIn announcement configuration. |
 | `mastodon` | MastodonAnnounce | — | Mastodon announcement configuration. |
@@ -181,7 +181,7 @@ SLSA build-provenance / attestation configuration for binaries and archives.
 
 Two modes select how anodizer participates in attestation:
 
-- [`AttestationMode::Subjects`] (the default) emits a **subjects manifest** (`dist/attestation-subjects.json`) that `anodizer-action` feeds to GitHub's `actions/attest-build-provenance`. anodizer does NOT mint a GitHub-trusted attestation itself in this mode — the Action's OIDC identity does. This is the path fd / biome / gping use. - [`AttestationMode::Emit`] generates a self-contained in-toto v1 statement carrying an SLSA provenance v1 predicate over the selected artifacts, writes it as a release asset (`attestation.intoto.jsonl`), and lets the existing `signs:` stage sign it (keyed, not OIDC). This is for users who can't run the Action (the `--with-provenance` toggle).
+- `AttestationMode::Subjects` (the default) emits a **subjects manifest** (`dist/attestation-subjects.json`) that `anodizer-action` feeds to GitHub's `actions/attest-build-provenance`. anodizer does NOT mint a GitHub-trusted attestation itself in this mode — the Action's OIDC identity does. This is the path fd / biome / gping use. - `AttestationMode::Emit` generates a self-contained in-toto v1 statement carrying an SLSA provenance v1 predicate over the selected artifacts, writes it as a release asset (`attestation.intoto.jsonl`), and lets the existing `signs:` stage sign it (keyed, not OIDC). This is for users who can't run the Action (the `--with-provenance` toggle).
 
 YAML: ```yaml attestations: enabled: true mode: subjects          # or: emit ; default = subjects artifacts: [archive, binary, checksum] ```
 | Field | Type | Default | Description |
@@ -234,7 +234,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 ## `before`
 Top-level lifecycle hooks for `before` and `after` blocks. Each block carries a list of hook commands that run around the entire pipeline (not individual stages).
 
-The canonical key is `hooks:` for both `before:` and `after:` to the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see [`HooksConfig::merge_hook_aliases`]).
+The canonical key is `hooks:` for both `before:` and `after:` to the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see `HooksConfig::merge_hook_aliases`).
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `hooks` | list of HookEntry | — | Commands to run when the block fires. The wire format accepts either `hooks:` (canonical) or the legacy `post:` spelling; both fold into this field at parse time. |
@@ -243,7 +243,7 @@ The canonical key is `hooks:` for both `before:` and `after:` to the conventiona
 ## `before_publish`
 Top-level lifecycle hooks for `before` and `after` blocks. Each block carries a list of hook commands that run around the entire pipeline (not individual stages).
 
-The canonical key is `hooks:` for both `before:` and `after:` to the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see [`HooksConfig::merge_hook_aliases`]).
+The canonical key is `hooks:` for both `before:` and `after:` to the conventional spelling. The `post:` spelling is accepted as a serde alias on `hooks` for back-compat with the previous anodizer spelling; users with `after: { post: [...] }` keep working and a deprecation warning is logged when both spellings appear in the same block (see `HooksConfig::merge_hook_aliases`).
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `hooks` | list of HookEntry | — | Commands to run when the block fires. The wire format accepts either `hooks:` (canonical) or the legacy `post:` spelling; both fold into this field at parse time. |
@@ -272,7 +272,7 @@ The canonical key is `hooks:` for both `before:` and `after:` to the conventiona
 | `abbrev` | integer | — | Hash abbreviation length. Default: 0 (no truncation, emit the full SHA). Set to -1 to omit the hash entirely; positive values truncate to N chars. Values below `-1` are clamped to `-1` (a `git log --abbrev=N` would otherwise reject `-2`, `-3`, ...). |
 | `ai` | ChangelogAiConfig | — | AI-powered changelog enhancement configuration. |
 | `divider` | string | — | Divider string inserted between changelog groups (e.g. `"---"`). Supports templates. |
-| `files` | ChangelogFilesConfig | — | Changelog file-layout controls: which `CHANGELOG.md` files a release writes (per-crate vs the aggregate root). Separate from the content-generation keys above (`use`, `format`, `groups`, `filters`, `paths`, `sort`, ...) so file management and content concerns stay orthogonal. See [`ChangelogFilesConfig`]. |
+| `files` | ChangelogFilesConfig | — | Changelog file-layout controls: which `CHANGELOG.md` files a release writes (per-crate vs the aggregate root). Separate from the content-generation keys above (`use`, `format`, `groups`, `filters`, `paths`, `sort`, ...) so file management and content concerns stay orthogonal. See `ChangelogFilesConfig`. |
 | `filters` | ChangelogFilters | — | Commit message filters to include or exclude from the changelog. |
 | `footer` | ContentSource | — | Text appended to the changelog. Same shape as `header`. |
 | `format` | string | — | Template for each changelog commit line. Available variables: SHA (full hash), ShortSHA (abbreviated), Message (commit subject), AuthorName, AuthorEmail, Login (per-commit GitHub username), Logins (per-entry comma-separated list of GitHub usernames for that commit), AllLogins (comma-separated list of all GitHub usernames across the entire release), AuthorUsername (renders `@login` when the login is known, the plain author name otherwise).<br><br>Logins come from the SCM API backends (`use: github`/`gitea`) and — when the release targets GitHub and a token is available — from GitHub-API enrichment of the default `git` backend, so `use: git` changelogs render `@login` mentions too. Release bodies carry bare `@login` (GitHub autolinks them); on-disk `CHANGELOG.md` files get explicit `[@login](https://github.com/login)` links. Without a token (or offline, or with a non-GitHub remote) rendering keeps the plain author name.<br><br>Default depends on backend (the full SHA is used):<br>&bull; `git` backend (default): `"{{ SHA }} {{ Message }}"`<br>&bull; `github`/`gitlab`/`gitea` backend: `"{{ SHA }}: {{ Message }} (@Login or AuthorName <AuthorEmail>)"` — falls back to `AuthorName <AuthorEmail>` when `Login` is empty.<br><br>When `abbrev < 0`, the default reduces to `"{{ Message }}"` (no hash prefix). |
@@ -503,7 +503,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `binaries` | list of HomebrewCaskBinary | — | Binary stubs to create in /usr/local/bin.
 
 Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a structured `{ name, target }` object (`{ name: "my-cli", target: "mycli" }` → emits `binary "my-cli", target: "mycli"`). The `target:` form mirrors the Homebrew Ruby cask DSL for binary renames — without it, a wrapped binary installs at the wrong path. Cask binary entry. |
-| `binary` | string | — | Deprecated singular spelling of [`Self::binaries`]. The upstream replaced `binary: foo` with `binaries: [foo]`; this field captures the legacy spelling so imported configs keep parsing. [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars) folds the value into [`Self::binaries`] at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
+| `binary` | string | — | Deprecated singular spelling of `binaries`. The upstream replaced `binary: foo` with `binaries: [foo]`; this field captures the legacy spelling so imported configs keep parsing. `apply_homebrew_cask_legacy_singulars` folds the value into `binaries` at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
 | `caveats` | string | — | Custom caveats shown after install. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
 | `commit_msg_template` | string | — | Custom commit message template. Default: "Brew cask update for {{ ProjectName }} version {{ Tag }}" |
@@ -520,7 +520,7 @@ Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. Config key: `homebrew_casks[].if:`. |
 | `license` | string | — | License identifier (SPDX). |
 | `livecheck` | HomebrewLivecheck | — | `livecheck` stanza configuration for the cask. When unset, the cask emits `livecheck do\n  skip "Auto-generated on release."\nend` (a binary cask's download URL/sha256 are rewritten on every release, so `brew livecheck` has nothing stable to poll). Set `strategy:` / `url:` / `regex:` (with `skip: false`) to opt into active version detection — the same shape a Homebrew cask `livecheck do … end` block accepts. Reuses the formula `livecheck` config type. |
-| `manpage` | string | — | Deprecated singular spelling of [`Self::manpages`]. The upstream replaced `manpage: foo.1` with `manpages: [foo.1]`; this field captures the legacy spelling so imported configs keep parsing. [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars) folds the value into [`Self::manpages`] at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
+| `manpage` | string | — | Deprecated singular spelling of `manpages`. The upstream replaced `manpage: foo.1` with `manpages: [foo.1]`; this field captures the legacy spelling so imported configs keep parsing. `apply_homebrew_cask_legacy_singulars` folds the value into `manpages` at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
 | `manpages` | list of string | — | Manual page references to install. |
 | `name` | string | — | Cask name (default: crate / project name). |
 | `repository` | RepositoryConfig | — | Unified repository config for the Homebrew tap. |
@@ -651,7 +651,7 @@ In the default `optional-deps` mode anodizer emits one thin npm package per buil
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `access` | string | — | NPM access level for scoped packages. Accepts `"public"` / `"restricted"`. Scoped packages on npmjs.org default to `restricted` unless this is set to `public`. |
-| `auth` | NpmAuthMode | `auto` | Credential-selection strategy: `auto` (default) decides per package by probing the registry for the package's existence; `token` always uses the token; `oidc` always uses Trusted Publishing with no token fallback. See [`NpmAuthMode`]. Absent in existing configs resolves to `auto`. |
+| `auth` | NpmAuthMode | `auto` | Credential-selection strategy: `auto` (default) decides per package by probing the registry for the package's existence; `token` always uses the token; `oidc` always uses Trusted Publishing with no token fallback. See `NpmAuthMode`. Absent in existing configs resolves to `auto`. |
 | `author` | string | — | Templated `author` field for `package.json`. Falls back to the project's `metadata.maintainers[0]`, and then to the crate's `Cargo.toml [package].authors[0]`, when unset. |
 | `bin` | string | — | Command name installed by the metapackage's `bin` map (`optional-deps` mode). Falls back to the metapackage basename when unset. |
 | `bugs` | string | — | Templated bug tracker URL. Emitted as `bugs.url` in `package.json`. |
@@ -733,7 +733,7 @@ Paths / globs are resolved relative to the project root. `..` segments are accep
 | `name_template` | string | — | Release title template (supports templates). |
 | `on_failure` | OnFailureConfig | — | In-process failure policy: what `anodizer release` does after a release-pipeline failure. `rollback` (default) deletes the run's release tag(s) and reverts the version-bump commit so the same version can be re-cut; `hold` leaves everything in place for forensics and manual recovery (`release --rollback-only --from-run=<id>`). `rollback` automatically degrades to `hold` the moment any one-way-door (Submitter) publisher has landed: the version is burned at a registry that never accepts it twice, so destructive rollback is refused and fix-forward is the only path. Root-level policy — in workspace configs (lockstep or per-crate) the top-level `release.on_failure` governs the whole run; setting it in a crate-level `release:` block is rejected at config load (`validate_on_failure_root_only`). |
 | `prerelease` | object | — | Mark release as pre-release: true, false, or "auto" (inferred from tag). |
-| `provider` | ForceTokenKind | — | Explicit publish target — the SCM provider whose `release.<provider>` block the publisher uses. When set, overrides the implicit token-type fallback chain in [`crate::scm::resolve_token_type`].
+| `provider` | ForceTokenKind | — | Explicit publish target — the SCM provider whose `release.<provider>` block the publisher uses. When set, overrides the implicit token-type fallback chain in `crate::scm::resolve_token_type`.
 
 Use this for **cross-platform publishing** pattern: source repo on one provider (e.g. GitLab) but releases land on another (e.g. GitHub). Without it, the publish target is inferred from which `*_TOKEN` env-var is set — fine for single-provider setups but ambiguous when both tokens are available.
 
@@ -751,12 +751,12 @@ Default: `true` — a failure here aborts the release. Set to `false` to log fai
 | `templated_extra_files` | list of TemplatedExtraFile | — | Extra files whose contents are rendered through the template engine before upload. Unlike `extra_files` which copy as-is, template variables like `{{ Tag }}` are expanded.
 
 Same path-traversal caveat as `extra_files`: `..` segments reach outside the project tree. |
-| `upload_concurrency` | integer | — | Maximum number of asset-upload requests in flight simultaneously.
+| `upload_concurrency` | integer | — | Maximum number of asset-upload requests in flight simultaneously. Applies to asset uploads on every release forge (GitHub, GitLab, Gitea).
 
 GitHub's secondary rate-limit is triggered by burst traffic. Keeping this value low avoids tripping the limit even for releases with many artifacts. Default: 4. Override at runtime with `ANODIZER_GITHUB_UPLOAD_CONCURRENCY`. |
-| `upload_pace` | HumanDuration | — | Minimum interval between successive asset-upload *starts* (a humantime string, e.g. `"200ms"`, `"1s"`, `"0s"`).
+| `upload_pace` | HumanDuration | — | Minimum interval between successive asset-upload *starts* (a humantime string, e.g. `"200ms"`, `"1s"`, `"0s"`). Applies to asset uploads on every release forge (GitHub, GitLab, Gitea).
 
-This is a *proactive* pace that smooths the initial burst of upload requests, layered on top of [`Self::upload_concurrency`] (the concurrency cap) and the reactive secondary-rate-limit backoff. With the concurrency cap alone, the first N uploads fire in the same instant — exactly the burst pattern that trips GitHub's secondary rate limit. Spacing each upload's *start* by this interval (with ±20% jitter so concurrent releases don't synchronise) makes the burst far less likely to trip the limit in the first place.
+This is a *proactive* pace that smooths the initial burst of upload requests, layered on top of `upload_concurrency` (the concurrency cap) and the reactive secondary-rate-limit backoff. With the concurrency cap alone, the first N uploads fire in the same instant — exactly the burst pattern that trips GitHub's secondary rate limit. Spacing each upload's *start* by this interval (with ±20% jitter so concurrent releases don't synchronise) makes the burst far less likely to trip the limit in the first place.
 
 Default: `"200ms"` — at the default concurrency of 4 this caps the initial start rate at ~5/s, which is below the burst threshold yet adds negligible wall-clock to a normal release (upload time is dominated by transfer, not start-spacing). Set to `"0s"` to disable pacing entirely (rely on the concurrency cap + reactive backoff). Override at runtime with `ANODIZER_GITHUB_UPLOAD_PACE_MS` (integer milliseconds; `0` disables). |
 | `use_existing_draft` | bool | — | Reuse an existing draft release instead of creating a new one. |
@@ -768,7 +768,7 @@ All fields are optional in YAML; missing fields fall back to the defaults (10 at
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `attempts` | integer | `10` | Total attempts (including the first). Default `10`. Values < 1 are clamped up to 1 by the policy layer. |
-| `delay` | HumanDuration | `10s` | Initial delay before the second attempt. Default `10s`. Subsequent delays grow exponentially (`delay × 2^(n-2)`) up to [`Self::max_delay`]. |
+| `delay` | HumanDuration | `10s` | Initial delay before the second attempt. Default `10s`. Subsequent delays grow exponentially (`delay × 2^(n-2)`) up to `max_delay`. |
 | `max_delay` | HumanDuration | `5m` | Upper bound on any individual sleep between attempts. Default `5m`. Without this cap, an exponential backoff with `delay=10s` would stretch attempt 9 to ~42 minutes. |
 
 ## `sboms`
@@ -832,7 +832,7 @@ Top-level `schemastore:` block. Shared fields here are defaults for every entry 
 | `bins` | map | — | Map of binary name → install path declared in the spec's `%files` section. Each entry tells the generated `.spec` which installed file the package owns. When omitted, each binary produced by the build for this crate defaults to `%{_bindir}/<name>` (i.e. `/usr/bin/<name>`, the RPM-idiomatic location for a built binary). Provide this only to override the install path or to declare extra owned paths. Stored as a `BTreeMap` so the emitted `%files` section iterates in deterministic key order. |
 | `build_host` | string | — | Override the build host recorded in the RPM header. Useful for reproducible builds where the actual hostname leaks build-env detail. |
 | `compression` | string | — | Compression algorithm (gzip, xz, zstd, none). |
-| `contents` | list of NfpmContent | — | Additional contents to include in the source RPM. Shares the unified [`NfpmContent`] type with nFPM contents; SRPM-style `source:` / `destination:` / `type:` keys are accepted via serde aliases. |
+| `contents` | list of NfpmContent | — | Additional contents to include in the source RPM. Shares the unified `NfpmContent` type with nFPM contents; SRPM-style `source:` / `destination:` / `type:` keys are accepted via serde aliases. |
 | `description` | string | — | Package description. |
 | `docs` | list of string | — | Documentation files to include. |
 | `enabled` | bool | — | Enable source RPM generation. Default: false. |
@@ -849,7 +849,7 @@ Top-level `schemastore:` block. Shared fields here are defaults for every entry 
 | `prerelease` | string | — | Prerelease suffix appended to the version (e.g. `rc1`, `beta2`). Prerelease component of the package version. |
 | `pretrans` | string | — | `%pretrans` scriptlet — executed on the package transaction *before* any package in the transaction is installed. Path to a script file. |
 | `section` | string | — | RPM section. |
-| `signature` | NfpmSignatureConfig | — | RPM signature configuration. Shares the unified [`NfpmSignatureConfig`] type with nFPM. |
+| `signature` | NfpmSignatureConfig | — | RPM signature configuration. Shares the unified `NfpmSignatureConfig` type with nFPM. |
 | `skip` | StringOrBool | — | Skip this config. Accepts bool or template string. |
 | `spec_file` | string | — | Path to the RPM spec file template. |
 | `summary` | string | — | Summary line. |
@@ -979,7 +979,7 @@ List of `KEY=VALUE` strings. Order is preserved. Values are template-rendered at
 ## `crates[].dockers_v2`
 Docker V2 configuration — the canonical Docker build API.
 
-Notable surface: - `images` + `tags` (cleaner separation than a single `image_templates` list) - `annotations` map for OCI annotations (`--annotation`) - `build_args` map for build-time variables - `skip` as a [`StringOrBool`] template for conditional opt-out - `sbom` as a [`StringOrBool`] — when truthy, adds `--sbom=true` to buildx - `flags` for arbitrary extra `docker build` flags - `platforms` is the only target selector — no per-arch field overrides
+Notable surface: - `images` + `tags` (cleaner separation than a single `image_templates` list) - `annotations` map for OCI annotations (`--annotation`) - `build_args` map for build-time variables - `skip` as a `StringOrBool` template for conditional opt-out - `sbom` as a `StringOrBool` — when truthy, adds `--sbom=true` to buildx - `flags` for arbitrary extra `docker build` flags - `platforms` is the only target selector — no per-arch field overrides
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
 | `annotations` | map | — | OCI annotations to apply via `--annotation key=value` flags. |
@@ -1035,7 +1035,7 @@ After each docker image push, a digest file (containing the sha256 digest) is wr
 ## `crates[].nfpms`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `amd64_variant` | list of Amd64Variant | — | amd64 microarchitecture variant filter (`["v1"]`, `["v2", "v3"]`, etc.), set via the `amd64_variant:` key. When set, only amd64 binaries with `amd64_variant` matching one of the listed values are included. The legacy `goamd64:` spelling is accepted via serde alias for back-compat with imported configs. When unset, all amd64 variants are included (no filtering). Each entry is typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed. |
+| `amd64_variant` | list of Amd64Variant | — | amd64 microarchitecture variant filter (`["v1"]`, `["v2", "v3"]`, etc.), set via the `amd64_variant:` key. When set, only amd64 binaries with `amd64_variant` matching one of the listed values are included. The legacy `goamd64:` spelling is accepted via serde alias for back-compat with imported configs. When unset, all amd64 variants are included (no filtering). Each entry is typed as `Amd64Variant`, so any value outside `v1`..`v4` is rejected when the config is parsed. |
 | `apk` | NfpmApkConfig | — | APK-specific configuration. |
 | `archlinux` | NfpmArchlinuxConfig | — | Archlinux-specific configuration. |
 | `bin_alias` | string | — | Rename the installed binary inside the package only.
@@ -1137,7 +1137,7 @@ Single-crate workspaces and lockstep-bumped monorepos (anodizer itself) leave th
 ## `crates[].publish.homebrew`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed. |
+| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as `Amd64Variant`, so any value outside `v1`..`v4` is rejected when the config is parsed. |
 | `arm_variant` | string | — | ARM version filter (e.g. "6", "7"). Only artifacts matching this variant are included. |
 | `cask` | HomebrewCaskConfig | — | Homebrew Cask configuration (macOS .app bundles). |
 | `caveats` | string | — | Post-install user-facing notes shown by `brew info`. |
@@ -1187,7 +1187,7 @@ Fields from both original types are present; any field may be `None` at either c
 | `binaries` | list of HomebrewCaskBinary | — | Binary stubs to create in /usr/local/bin.
 
 Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a structured `{ name, target }` object (`{ name: "my-cli", target: "mycli" }` → emits `binary "my-cli", target: "mycli"`). The `target:` form mirrors the Homebrew Ruby cask DSL for binary renames — without it, a wrapped binary installs at the wrong path. Cask binary entry. |
-| `binary` | string | — | Deprecated singular spelling of [`Self::binaries`]. The upstream replaced `binary: foo` with `binaries: [foo]`; this field captures the legacy spelling so imported configs keep parsing. [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars) folds the value into [`Self::binaries`] at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
+| `binary` | string | — | Deprecated singular spelling of `binaries`. The upstream replaced `binary: foo` with `binaries: [foo]`; this field captures the legacy spelling so imported configs keep parsing. `apply_homebrew_cask_legacy_singulars` folds the value into `binaries` at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
 | `caveats` | string | — | Custom caveats shown after install. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
 | `commit_msg_template` | string | — | Custom commit message template. Default: "Brew cask update for {{ ProjectName }} version {{ Tag }}" |
@@ -1204,7 +1204,7 @@ Each entry is either a bare string (`"my-cli"` → emits `binary "my-cli"`) or a
 | `if` | string | — | Template-conditional gate: when the rendered result is falsy (`"false"` / `"0"` / `"no"` / empty), the Homebrew Cask config is skipped. Render failure hard-errors. Config key: `homebrew_casks[].if:`. |
 | `license` | string | — | License identifier (SPDX). |
 | `livecheck` | HomebrewLivecheck | — | `livecheck` stanza configuration for the cask. When unset, the cask emits `livecheck do\n  skip "Auto-generated on release."\nend` (a binary cask's download URL/sha256 are rewritten on every release, so `brew livecheck` has nothing stable to poll). Set `strategy:` / `url:` / `regex:` (with `skip: false`) to opt into active version detection — the same shape a Homebrew cask `livecheck do … end` block accepts. Reuses the formula `livecheck` config type. |
-| `manpage` | string | — | Deprecated singular spelling of [`Self::manpages`]. The upstream replaced `manpage: foo.1` with `manpages: [foo.1]`; this field captures the legacy spelling so imported configs keep parsing. [`apply_homebrew_cask_legacy_singulars`](super::super::apply_homebrew_cask_legacy_singulars) folds the value into [`Self::manpages`] at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
+| `manpage` | string | — | Deprecated singular spelling of `manpages`. The upstream replaced `manpage: foo.1` with `manpages: [foo.1]`; this field captures the legacy spelling so imported configs keep parsing. `apply_homebrew_cask_legacy_singulars` folds the value into `manpages` at config-load time and emits a one-time deprecation warning per occurrence. The field is excluded from serialization so a round-tripped config emits only the canonical plural form. |
 | `manpages` | list of string | — | Manual page references to install. |
 | `name` | string | — | Cask name (default: crate / project name). |
 | `repository` | RepositoryConfig | — | Unified repository config for the Homebrew tap. |
@@ -1225,7 +1225,7 @@ Cannot be combined with `url.template:` — set one or the other. If both are pr
 ## `crates[].publish.scoop`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed. |
+| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as `Amd64Variant`, so any value outside `v1`..`v4` is rejected when the config is parsed. |
 | `checkver` | string | — | Scoop `checkver` strategy used by bucket maintainers to detect new releases. Defaults to `"github"` (derived from the configured GitHub repo) — `ScoopInstaller/Main` requires checkver for automated-update PRs. Override with a homepage regex when GitHub release detection is not appropriate.
 
 Example: `checkver: "github"` or `checkver: "v([\\d.]+)"`. |
@@ -1255,7 +1255,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 ## `crates[].publish.chocolatey`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed. |
+| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as `Amd64Variant`, so any value outside `v1`..`v4` is rejected when the config is parsed. |
 | `api_key` | string | — | Chocolatey API key for `choco push`. Falls back to `CHOCOLATEY_API_KEY` env var. |
 | `authors` | string | — | Package author(s) displayed in the Chocolatey gallery. |
 | `bug_tracker_url` | string | — | Bug tracker URL (`<bugTrackerUrl>`). Defaults to `{repository}/issues` when unset. |
@@ -1293,7 +1293,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 ## `crates[].publish.winget`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed. |
+| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as `Amd64Variant`, so any value outside `v1`..`v4` is rejected when the config is parsed. |
 | `author` | string | — | Author name. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
 | `commit_msg_template` | string | — | Custom commit message template. |
@@ -1346,7 +1346,7 @@ Example: `upgrade_behavior: "uninstallPrevious"`. |
 ## `crates[].publish.aur`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed. |
+| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as `Amd64Variant`, so any value outside `v1`..`v4` is rejected when the config is parsed. |
 | `backup` | list of string | — | List of config files to preserve on upgrade (relative to `/`). |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
 | `commit_msg_template` | string | — | Custom commit message template. Default: "Update to {{ version }}". |
@@ -1419,7 +1419,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 ## `crates[].publish.krew`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed. |
+| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as `Amd64Variant`, so any value outside `v1`..`v4` is rejected when the config is parsed. |
 | `arm_variant` | string | — | ARM version filter (e.g. "6", "7"). Only artifacts matching this variant are included. |
 | `caveats` | string | — | Post-install message shown to the user. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
@@ -1446,7 +1446,7 @@ Default: `false` — a failure here is logged but does not abort the release. Se
 ## `crates[].publish.nix`
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as [`Amd64Variant`], so any value outside `v1`..`v4` is rejected when the config is parsed. |
+| `amd64_variant` | Amd64Variant | — | amd64 microarchitecture variant filter (`v1` / `v2` / `v3` / `v4`). Only artifacts matching this variant are included. Default: `v1`. Typed as `Amd64Variant`, so any value outside `v1`..`v4` is rejected when the config is parsed. |
 | `changelog` | string | — | URL for `meta.changelog`. When unset, anodizer derives `<host>/<owner>/<repo>/releases/tag/<tag>` from the crate's `release` repository and the release tag (matching what ripgrep/fd set in nixpkgs). Set this to override (e.g. a `…/blob/<tag>/CHANGELOG.md` URL). Templated. Omitted only when no release repo is configured and no explicit value is given. |
 | `commit_author` | CommitAuthorConfig | — | Commit author with optional signing. |
 | `commit_msg_template` | string | — | Custom commit message template. |

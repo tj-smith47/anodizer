@@ -366,6 +366,9 @@ fn map_auto_probe(plugin_name: &str, in_index: Option<bool>) -> Result<KrewFlow>
 /// authenticated in CI, which is what makes the `None`→hard-error path
 /// rare in practice.
 fn is_plugin_in_krew_index(plugin_name: &str, token: Option<&str>) -> Option<bool> {
+    // Deliberately NOT routed through `core::http::github_api_base`: the
+    // upstream kubernetes-sigs/krew-index lives on public github.com
+    // regardless of the user's forge configuration or API-base override.
     let url = format!(
         "https://api.github.com/repos/kubernetes-sigs/krew-index/contents/plugins/{}.yaml",
         plugin_name

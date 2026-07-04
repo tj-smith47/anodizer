@@ -53,6 +53,26 @@ pub fn github_api_base<E: crate::EnvSource + ?Sized>(env: &E) -> String {
     raw.trim_end_matches('/').to_string()
 }
 
+/// Like [`github_api_base`], but honoring a configured `github_urls.api`
+/// (GitHub Enterprise Server) first.
+///
+/// Preflight probes and milestone operations must contact the same host the
+/// release backend will (see `build_octocrab_client`): probing github.com
+/// for a repo that lives on a GHES host false-404s (Blocker for a release
+/// that would succeed), or worse, returns a verdict for an unrelated
+/// same-named public repo. Precedence: `github_urls.api` >
+/// `ANODIZER_GITHUB_API_BASE` > `https://api.github.com`. Any trailing `/`
+/// is stripped, as in [`github_api_base`].
+pub fn github_api_base_with_config<E: crate::EnvSource + ?Sized>(
+    github_urls: Option<&crate::config::GitHubUrlsConfig>,
+    env: &E,
+) -> String {
+    github_urls
+        .and_then(|u| u.api.as_deref())
+        .map(|api| api.trim_end_matches('/').to_string())
+        .unwrap_or_else(|| github_api_base(env))
+}
+
 /// Format an HTTP body-read failure as a descriptive placeholder string.
 ///
 /// Used by [`body_of`] / [`body_of_blocking`]: a transport-level
@@ -113,6 +133,35 @@ mod tests {
     fn github_api_base_defaults_when_env_unset() {
         let env = crate::MapEnvSource::new();
         assert_eq!(github_api_base(&env), "https://api.github.com");
+    }
+
+    #[test]
+    fn github_api_base_with_config_prefers_configured_ghes_api() {
+        let urls = crate::config::GitHubUrlsConfig {
+            api: Some("https://github.example.com/api/v3/".to_string()),
+            ..Default::default()
+        };
+        let env =
+            crate::MapEnvSource::new().with("ANODIZER_GITHUB_API_BASE", "https://override.test");
+        assert_eq!(
+            github_api_base_with_config(Some(&urls), &env),
+            "https://github.example.com/api/v3"
+        );
+    }
+
+    #[test]
+    fn github_api_base_with_config_falls_back_to_env_resolver() {
+        let env =
+            crate::MapEnvSource::new().with("ANODIZER_GITHUB_API_BASE", "https://override.test/");
+        assert_eq!(
+            github_api_base_with_config(None, &env),
+            "https://override.test"
+        );
+        let unset = crate::MapEnvSource::new();
+        assert_eq!(
+            github_api_base_with_config(None, &unset),
+            "https://api.github.com"
+        );
     }
 
     #[test]

@@ -49,8 +49,8 @@ Anodizer respects these environment variables:
 
 | Variable | Type | Default | Description |
 |----------|------|---------|-------------|
-| `ANODIZER_GITHUB_UPLOAD_CONCURRENCY` | u32 | `4` | Cap on parallel asset uploads to a GitHub release. Override of `release.upload_concurrency:`. Keep low (≤8) to avoid GitHub's secondary rate limit when releases include many artifacts. |
-| `ANODIZER_GITHUB_UPLOAD_PACE_MS` | integer milliseconds | `200` | Proactive minimum interval between successive asset-upload *starts*, jittered ±20% and layered on top of the concurrency cap and the reactive backoff. Override of `release.upload_pace:`. Smooths the initial burst that trips GitHub's secondary rate limit. Set to `0` to disable pacing (rely on the cap + backoff). |
+| `ANODIZER_GITHUB_UPLOAD_CONCURRENCY` | u32 | `4` | Cap on parallel asset uploads to a release (applies to every forge: GitHub, GitLab, Gitea; the `GITHUB` infix is historical). Override of `release.upload_concurrency:`. Keep low (≤8) to avoid GitHub's secondary rate limit when releases include many artifacts. |
+| `ANODIZER_GITHUB_UPLOAD_PACE_MS` | integer milliseconds | `200` | Proactive minimum interval between successive asset-upload *starts* on any forge, jittered ±20% and layered on top of the concurrency cap and the reactive backoff. Override of `release.upload_pace:`. Smooths the initial burst that trips GitHub's secondary rate limit. Set to `0` to disable pacing (rely on the cap + backoff). |
 | `ANODIZER_GITHUB_SECONDARY_RL_DELAY_SECS` | integer seconds | `60` | Sleep duration after a GitHub secondary rate-limit response (403/429 carrying the `"secondary rate limit"` marker in the body or `secondary-rate-limits` in the `documentation_url`). Applied with ±20% jitter before the next upload retry. |
 
 ## Template access

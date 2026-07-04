@@ -31,6 +31,21 @@ pub(crate) enum AssetPresence {
     Present { size: Option<u64> },
 }
 
+/// Terminal disposition of one asset task, threaded back to the drain so
+/// the per-artifact verbose line reports what actually happened — a resume
+/// run's idempotent skips must not read as uploads.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum UploadOutcome {
+    /// The artifact's bytes were uploaded.
+    Uploaded(String),
+    /// A byte-identical remote asset already existed; nothing was sent.
+    SkippedIdentical(String),
+    /// GitHub only: a stale published asset reappeared after delete+retry
+    /// (eventual consistency) and its bytes were kept. The upload path
+    /// already warned at default visibility, so the drain stays silent.
+    SkippedStaleKept(String),
+}
+
 /// The API-shaped operations one forge contributes to the shared upload
 /// loop. Implementations own their client handles / coordinates so the
 /// returned futures are `'static` and can be moved into spawned tasks.
@@ -53,8 +68,13 @@ pub(crate) trait ForgeAssetClient: Send + Sync + 'static {
 
     /// Upload one artifact. Retry policy and conflict recovery beyond the
     /// driver's pre-upload probe are the implementation's responsibility.
-    fn upload_asset(&self, path: &Path, file_name: &str)
-    -> impl Future<Output = Result<()>> + Send;
+    /// Returns the [`UploadOutcome`] so a reactive in-upload skip (GitHub's
+    /// 422 `already_exists` recovery) reaches the drain's log honestly.
+    fn upload_asset(
+        &self,
+        path: &Path,
+        file_name: &str,
+    ) -> impl Future<Output = Result<UploadOutcome>> + Send;
 }
 
 /// The shared upload-loop policy knobs, resolved once per backend run.
@@ -234,7 +254,9 @@ pub(crate) async fn run_upload_loop<C: ForgeAssetClient>(
                         crate::AssetConflict::IdenticalSkip => {
                             // A prior attempt uploaded byte-identical
                             // content: pure no-op.
-                            return Ok::<String, anyhow::Error>(file_name);
+                            return Ok::<UploadOutcome, anyhow::Error>(
+                                UploadOutcome::SkippedIdentical(file_name),
+                            );
                         }
                         crate::AssetConflict::ReplaceDiffering => {
                             client.delete_asset(&file_name).await?;
@@ -248,16 +270,24 @@ pub(crate) async fn run_upload_loop<C: ForgeAssetClient>(
                 }
             }
 
-            client.upload_asset(&path, &file_name).await?;
-            Ok::<String, anyhow::Error>(file_name)
+            client.upload_asset(&path, &file_name).await
         });
     }
 
     while let Some(result) = join_set.join_next().await {
         match result {
-            Ok(Ok(file_name)) => {
+            Ok(Ok(UploadOutcome::Uploaded(file_name))) => {
                 log.verbose(&format!("uploaded artifact {}", file_name));
             }
+            Ok(Ok(UploadOutcome::SkippedIdentical(file_name))) => {
+                log.verbose(&format!(
+                    "skipped byte-identical asset {} — already uploaded",
+                    file_name
+                ));
+            }
+            // The stale-kept arm already reported itself with a
+            // default-visibility warn; a second drain line would be noise.
+            Ok(Ok(UploadOutcome::SkippedStaleKept(_))) => {}
             Ok(Err(e)) => return Err(e),
             Err(join_err) => {
                 return Err(anyhow::anyhow!(
@@ -321,7 +351,7 @@ mod tests {
             self.record(format!("delete:{file_name}"));
             Ok(())
         }
-        async fn upload_asset(&self, _path: &Path, file_name: &str) -> Result<()> {
+        async fn upload_asset(&self, _path: &Path, file_name: &str) -> Result<UploadOutcome> {
             if self.panic_upload {
                 panic!("boom");
             }
@@ -329,7 +359,7 @@ mod tests {
             if self.fail_upload {
                 anyhow::bail!("mock upload failed");
             }
-            Ok(())
+            Ok(UploadOutcome::Uploaded(file_name.to_string()))
         }
     }
 
@@ -406,7 +436,8 @@ mod tests {
             let a = write_artifact(dir.path(), "a.bin", b"AAAA");
             let client = Arc::new(MockForge::new(|| AssetPresence::Present { size: Some(4) }));
             let entries = vec![(a, Some("a.bin".to_string()))];
-            run_upload_loop(client.clone(), &plan(replace), &entries, &test_log())
+            let (log, cap) = StageLogger::with_capture("release", Verbosity::Normal);
+            run_upload_loop(client.clone(), &plan(replace), &entries, &log)
                 .await
                 .expect("idempotent skip succeeds");
             assert_eq!(
@@ -414,7 +445,41 @@ mod tests {
                 vec!["before:1", "probe:a.bin"],
                 "byte-identical remote must skip (replace={replace})"
             );
+            // The drain must report the skip, not claim an upload.
+            let messages = cap.all_messages();
+            assert!(
+                messages.iter().any(|(level, m)| {
+                    *level == anodizer_core::log::LogLevel::Verbose
+                        && m == "skipped byte-identical asset a.bin — already uploaded"
+                }),
+                "skip line missing (replace={replace}): {messages:?}"
+            );
+            assert!(
+                !messages
+                    .iter()
+                    .any(|(_, m)| m.contains("uploaded artifact")),
+                "an idempotent skip must not log an upload (replace={replace}): {messages:?}"
+            );
         }
+    }
+
+    #[tokio::test]
+    async fn uploaded_artifact_logged_for_real_uploads() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let a = write_artifact(dir.path(), "a.bin", b"AAAA");
+        let client = Arc::new(MockForge::new(|| AssetPresence::Absent));
+        let entries = vec![(a, Some("a.bin".to_string()))];
+        let (log, cap) = StageLogger::with_capture("release", Verbosity::Normal);
+        run_upload_loop(client.clone(), &plan(false), &entries, &log)
+            .await
+            .expect("upload succeeds");
+        assert!(
+            cap.all_messages().iter().any(|(level, m)| {
+                *level == anodizer_core::log::LogLevel::Verbose && m == "uploaded artifact a.bin"
+            }),
+            "real upload must keep the historical drain line: {:?}",
+            cap.all_messages()
+        );
     }
 
     #[tokio::test]

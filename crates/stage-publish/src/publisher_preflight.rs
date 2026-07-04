@@ -332,16 +332,20 @@ pub(crate) fn reachability_outcome(
     }
 }
 
-/// Probe `GET https://api.github.com/repos/{owner}/{repo}` to prove the target
-/// index/fork repo exists and `token` can push to it. See
-/// [`github_repo_check_at`] for the outcome mapping.
-pub(crate) fn github_repo_check(
+/// Probe `GET {api_base}/repos/{owner}/{repo}` to prove the target
+/// index/fork repo exists and `token` can push to it, resolving the base
+/// through [`anodizer_core::http::github_api_base`] — the same resolver the
+/// publish path's PR/branch lookups use, so one override redirects the whole
+/// run. See [`github_repo_check_at`] for the outcome mapping.
+pub(crate) fn github_repo_check<E: anodizer_core::EnvSource + ?Sized>(
     owner: &str,
     repo: &str,
     token: Option<&str>,
     policy: &RetryPolicy,
+    env: &E,
 ) -> PreflightCheck {
-    let url = format!("https://api.github.com/repos/{owner}/{repo}");
+    let base = anodizer_core::http::github_api_base(env);
+    let url = format!("{base}/repos/{owner}/{repo}");
     github_repo_check_at(&url, owner, repo, token, policy)
 }
 
@@ -420,7 +424,7 @@ pub(crate) fn github_repo_config_check(
         return PreflightCheck::Pass;
     }
     let token = crate::util::resolve_repo_token(ctx, repo, Some(preferred_env));
-    github_repo_check(&owner, &name, token.as_deref(), policy)
+    github_repo_check(&owner, &name, token.as_deref(), policy, ctx.env_source())
 }
 
 /// Run [`github_repo_config_check`] over every active entry of a
@@ -622,6 +626,27 @@ mod tests {
             github_repo_check_at(&url, "o", "r", Some("tok"), &fast_retry()),
             PreflightCheck::Pass
         ));
+    }
+
+    #[test]
+    fn github_repo_check_resolves_base_from_env_override() {
+        // The probe must route through the shared github_api_base resolver:
+        // the env override redirects it to the local responder instead of
+        // the hardcoded public host.
+        let (addr, calls) = spawn_oneshot_http_responder(vec![Box::leak(
+            http("200 OK", r#"{"permissions":{"push":true}}"#).into_boxed_str(),
+        )]);
+        let env = anodizer_core::MapEnvSource::new()
+            .with("ANODIZER_GITHUB_API_BASE", format!("http://{addr}"));
+        assert!(matches!(
+            github_repo_check("o", "r", Some("tok"), &fast_retry(), &env),
+            PreflightCheck::Pass
+        ));
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "probe must hit the env-resolved base"
+        );
     }
 
     #[test]
