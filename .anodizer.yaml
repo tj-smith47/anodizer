@@ -499,13 +499,19 @@ crates:
         repository:
           owner: tj-smith47
           name: anodizer
-        title: "anodizer"
+        # Title must differ from the package id (cpmr0050: TitleNotSameAsPackageId).
+        title: "Anodizer Release Automation"
         summary: "A Rust-native release automation tool"
         authors: "TJ Smith"
         owners: "tj-smith47"
         copyright: "Copyright © 2026 TJ Smith"
         require_license_acceptance: false
         project_url: "https://github.com/tj-smith47/anodizer"
+        # projectSourceUrl must point at software source AND differ from
+        # projectUrl (cpmr0041). Derivation defaults it to the repo root ==
+        # projectUrl, which trips the guideline; pin it to the source tree at
+        # the release tag instead.
+        project_source_url: "https://github.com/tj-smith47/anodizer/tree/{{ .Tag }}"
         package_source_url: "https://github.com/tj-smith47/anodizer/tree/{{ .Tag }}/crates/cli"
         # Dual-licensed (MIT OR Apache-2.0) → no single canonical LICENSE file,
         # so the tool omits a derived <licenseUrl>. Point at the README's
@@ -515,10 +521,7 @@ crates:
         docs_url: "https://tj-smith47.github.io/anodizer/docs/reference/configuration/"
         bug_tracker_url: "https://github.com/tj-smith47/anodizer/issues"
         release_notes: "https://github.com/tj-smith47/anodizer/releases/tag/{{ .Tag }}"
-        # jsdelivr CDN (Chocolatey requires a CDN-hosted icon), pinned to the
-        # release tag so each version's icon is immutable — a `master` ref is a
-        # moving target that moderation flags.
-        icon_url: "https://cdn.jsdelivr.net/gh/tj-smith47/anodizer@{{ .Tag }}/assets/logo.png"
+        icon_url: "https://raw.githubusercontent.com/tj-smith47/anodizer/master/assets/logo.png"
         tags:
           - release
           - automation
