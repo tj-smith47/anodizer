@@ -115,4 +115,53 @@ if [[ -n "$unreachable" ]]; then
     exit 1
 fi
 
-echo "audit-gate-mirror: OK — all ${job_count} ci.yml job(s) have a local mirror reachable from task gate."
+# Flag-set equality for the snapshot mirror. JOB_MIRROR proves the snapshot CI
+# job maps to a local target, but not that the two run the SAME pipeline. Both
+# invoke `anodizer release --snapshot …`; if their flag sets drift (a --skip
+# added in CI, a --single-target dropped locally) the local pre-commit/pre-push
+# gate silently proves a different pipeline than the CI job that gates
+# release.yml — the exact hole this audit exists to close, one level below its
+# job-mapping resolution. Normalize each invocation to the argv from the
+# `release` token onward and require exact equality.
+TASKFILE="Taskfile.yml"
+if [[ ! -f "$TASKFILE" ]]; then
+    echo "audit-gate-mirror: FAIL — ${TASKFILE} not found for the snapshot flag-set check." >&2
+    exit 2
+fi
+
+normalize_release_args() {
+    # stdin: a full command/args string. stdout: the substring from the first
+    # `release ` token onward, with internal/trailing whitespace collapsed.
+    sed -E 's/.*(release )/\1/; s/[[:space:]]+/ /g; s/[[:space:]]+$//'
+}
+
+if ! ci_snapshot_raw=$(yq -r '.jobs.snapshot.steps[] | select(.with.args != null) | .with.args' "$CI_WORKFLOW"); then
+    echo "audit-gate-mirror: yq failed to read the ci.yml snapshot args — refusing to report a pass on unparsed input." >&2
+    exit 2
+fi
+if ! task_snapshot_raw=$(yq -r '.tasks.snapshot.cmds[0]' "$TASKFILE"); then
+    echo "audit-gate-mirror: yq failed to read the Taskfile snapshot cmd — refusing to report a pass on unparsed input." >&2
+    exit 2
+fi
+
+ci_snapshot_args=$(printf '%s\n' "$ci_snapshot_raw" | head -n1 | normalize_release_args)
+task_snapshot_args=$(printf '%s\n' "$task_snapshot_raw" | head -n1 | normalize_release_args)
+
+if [[ -z "$ci_snapshot_args" || "$ci_snapshot_args" != release\ * ]]; then
+    echo "audit-gate-mirror: FAIL — could not extract a 'release …' snapshot invocation from ${CI_WORKFLOW} (found: '${ci_snapshot_args}')." >&2
+    exit 2
+fi
+if [[ -z "$task_snapshot_args" || "$task_snapshot_args" != release\ * ]]; then
+    echo "audit-gate-mirror: FAIL — could not extract a 'release …' snapshot invocation from ${TASKFILE} (found: '${task_snapshot_args}')." >&2
+    exit 2
+fi
+
+if [[ "$ci_snapshot_args" != "$task_snapshot_args" ]]; then
+    echo "audit-gate-mirror: FAIL — the snapshot flag sets have drifted; the local gate proves a different pipeline than CI." >&2
+    echo "" >&2
+    echo "  ${CI_WORKFLOW} snapshot job: ${ci_snapshot_args}" >&2
+    echo "  ${TASKFILE} snapshot task:  ${task_snapshot_args}" >&2
+    exit 1
+fi
+
+echo "audit-gate-mirror: OK — all ${job_count} ci.yml job(s) have a local mirror reachable from task gate; snapshot flag sets match."

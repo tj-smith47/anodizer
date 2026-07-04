@@ -102,10 +102,13 @@ tasks:
       - cargo clippy --all-targets -- -D warnings
 
   test:
-    desc: Run all tests (default members)
+    desc: Run all tests (default members, incl. doctests)
     deps: [_check:tmp-headroom]
     cmds:
       - cargo nextest run --workspace --no-fail-fast
+      # nextest never runs doctests; without this second pass a broken rustdoc
+      # example would ship through every gate that runs the workspace suite.
+      - cargo test --workspace --doc
 
   test:lib:
     desc: Run unit tests only (no integration/doc tests)
@@ -204,11 +207,17 @@ tasks:
       - cargo audit
 
   audit:workflows:
-    desc: "Guard: GitHub workflow files pass actionlint + the job-timeout and gate-mirror audits (mirrors the CI actionlint job)."
+    desc: "Guard: GitHub workflow files pass actionlint + the job-timeout, gate-mirror, and cross-file lockstep audits (mirrors the CI actionlint job)."
     cmds:
       - actionlint -color
       - task: audit:job-timeouts
       - task: audit:gate-mirror
+      - task: audit:workflow-lockstep
+
+  audit:workflow-lockstep:
+    desc: "Guard: hand-synced workflow copies (shard roster, publish secret env, trigger gate, release/nightly mutex, bootstrap artifact, post-release gate) stay in lockstep."
+    cmds:
+      - .claude/scripts/audit-workflow-lockstep.sh
 
   audit:log:
     desc: "Guard: no subprocess command-echo at default log verbosity (status vs verbose)."
@@ -259,6 +268,7 @@ tasks:
       - task: audit:job-timeouts
       - task: audit:repo-identity
       - task: audit:gate-mirror
+      - task: audit:workflow-lockstep
 
   ci:
     desc: Run all CI checks (everything except cross-platform builds)
