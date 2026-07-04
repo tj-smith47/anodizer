@@ -170,9 +170,15 @@ pub(crate) fn render_or_warn_with_vars(
 /// offending snippet is redacted via [`Context::redact`] before it reaches any
 /// log line or error, so a secret-flagged value never leaks.
 ///
-/// - **strict** ([`Context::render_is_strict`]): returns `Err`, failing the
-///   publish before any irreversible step.
-/// - **non-strict**: `log.warn`s the redacted snippet and returns `Ok(())`.
+/// - **strict**: returns `Err`, failing the publish before any irreversible
+///   step. Strict whenever [`Context::render_is_strict`] is set (the
+///   prepublish guard's render pass, or the user's global `--strict`) OR
+///   whenever this is a real publish — not [`Context::is_dry_run`], not
+///   [`Context::is_snapshot`] — since a residual delimiter reaching an actual
+///   publisher call renders an invalid field that the registry may reject
+///   after submission, with no way to undo it.
+/// - **non-strict** (dry-run / snapshot, and not otherwise strict):
+///   `log.warn`s the redacted snippet and returns `Ok(())`.
 ///
 /// Intended for manifest formats that never legitimately contain `{{ }}`
 /// (nuspec/JSON/YAML/Ruby/nix/PKGBUILD); do NOT apply to verbatim/raw paths
@@ -183,11 +189,88 @@ pub(crate) fn guard_no_unrendered(
     label: &str,
     text: &str,
 ) -> Result<()> {
-    assert_no_unrendered_logged(
-        text,
-        label,
-        ctx.render_is_strict(),
-        |s| ctx.redact(s),
-        |msg| log.warn(msg),
-    )
+    // A manifest bound for an irreversible publisher must never contain a
+    // residual `{{ }}` — it renders an invalid URL/field that a registry
+    // (e.g. Chocolatey's blocking PackageSourceUrlValidRequirement) rejects
+    // after submission, when nothing can be undone. Dry-run and snapshot
+    // stay lenient: neither publishes anything irreversible, and the
+    // determinism harness / nightly builds can legitimately hit an
+    // unrenderable field.
+    let strict = ctx.render_is_strict() || (!ctx.is_dry_run() && !ctx.is_snapshot());
+    assert_no_unrendered_logged(text, label, strict, |s| ctx.redact(s), |msg| log.warn(msg))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anodizer_core::config::Config;
+    use anodizer_core::context::ContextOptions;
+    use anodizer_core::log::Verbosity;
+
+    const RESIDUAL: &str = "https://example.com/tree/{{ .Tag }}/crates/cli";
+
+    fn ctx_with_opts(opts: ContextOptions) -> Context {
+        Context::new(Config::default(), opts)
+    }
+
+    fn log() -> StageLogger {
+        StageLogger::new("publish", Verbosity::Quiet)
+    }
+
+    #[test]
+    fn real_publish_hard_fails_on_residual_delimiters() {
+        let ctx = ctx_with_opts(ContextOptions {
+            dry_run: false,
+            snapshot: false,
+            strict: false,
+            ..ContextOptions::default()
+        });
+        let err = guard_no_unrendered(&ctx, &log(), "chocolatey nuspec", RESIDUAL)
+            .expect_err("residual {{ }} must hard-fail before an irreversible publish");
+        assert!(
+            err.to_string().contains("chocolatey nuspec"),
+            "error should name the manifest label: {err}"
+        );
+    }
+
+    #[test]
+    fn dry_run_stays_lenient_on_residual_delimiters() {
+        let ctx = ctx_with_opts(ContextOptions {
+            dry_run: true,
+            snapshot: false,
+            strict: false,
+            ..ContextOptions::default()
+        });
+        guard_no_unrendered(&ctx, &log(), "chocolatey nuspec", RESIDUAL)
+            .expect("dry-run must warn-and-continue, not fail");
+    }
+
+    #[test]
+    fn snapshot_stays_lenient_on_residual_delimiters() {
+        let ctx = ctx_with_opts(ContextOptions {
+            dry_run: false,
+            snapshot: true,
+            strict: false,
+            ..ContextOptions::default()
+        });
+        guard_no_unrendered(&ctx, &log(), "chocolatey nuspec", RESIDUAL)
+            .expect("snapshot must warn-and-continue, not fail");
+    }
+
+    #[test]
+    fn real_publish_still_passes_a_fully_rendered_manifest() {
+        let ctx = ctx_with_opts(ContextOptions {
+            dry_run: false,
+            snapshot: false,
+            strict: false,
+            ..ContextOptions::default()
+        });
+        guard_no_unrendered(
+            &ctx,
+            &log(),
+            "chocolatey nuspec",
+            "https://example.com/tree/v1.2.3/crates/cli",
+        )
+        .expect("a fully-rendered manifest must never fail the guard");
+    }
 }
