@@ -22,7 +22,9 @@ if command -v task >/dev/null 2>&1; then
   echo "[suite] task test (nextest run --workspace + cargo test --doc)"
   task test || exit 1
 elif cargo nextest --version >/dev/null 2>&1; then
-  # No go-task on this host: reproduce `task test`'s two passes directly.
+  # No go-task on this host: reproduce `task test`'s two passes directly. These
+  # two lines must stay verbatim-equal to the Taskfile `test` target's cmds;
+  # audit-workflow-lockstep fails CI if a Taskfile pass is missing here.
   echo "[suite] cargo nextest run --workspace + cargo test --doc"
   cargo nextest run --workspace --no-fail-fast || exit 1
   cargo test --workspace --doc || exit 1

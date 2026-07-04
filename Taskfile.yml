@@ -103,6 +103,9 @@ tasks:
 
   test:
     desc: Run all tests (default members, incl. doctests)
+    # The go-task-less fallback in .claude/scripts/test-os-suite.sh hand-mirrors
+    # these cargo passes for validation hosts that lack go-task; a pass added
+    # here must be added there too. audit-workflow-lockstep fails CI on drift.
     deps: [_check:tmp-headroom]
     cmds:
       - cargo nextest run --workspace --no-fail-fast
