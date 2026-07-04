@@ -40,10 +40,30 @@ tasks:
       - cargo check --all-targets
 
   check:determinism:
-    desc: "Run the determinism harness with default args (--runs=2)."
+    desc: "Byte-verify this host's OS-native release artifacts reproduce — CI-exact (--require-tools, host target matrix, preserve-dist)."
     deps: [_check:tmp-headroom]
     cmds:
-      - cargo run -p anodizer --release -- check determinism --runs=2
+      # Mirror anodizer-action's per-shard determinism command
+      # (scripts/determinism/run-harness.sh): --require-tools so a missing
+      # host-native producer HARD-FAILS instead of warn-skipping (the false
+      # coverage that once hid installer formats), and the host's own target
+      # subset (a Linux box cannot cross-build the darwin/windows partitions).
+      # The CSV is derived from `anodize targets` — the same source
+      # resolve-targets.sh filters — so it never drifts from the release matrix.
+      - |
+        set -eu
+        case "{{OS}}" in
+          linux)   runner=ubuntu-latest ;;
+          darwin)  runner=macos-latest ;;
+          windows) runner=windows-latest ;;
+          *) echo "check:determinism: unsupported host OS '{{OS}}'" >&2; exit 1 ;;
+        esac
+        csv=$(cargo run -q -p anodizer --release -- targets --json \
+          | jq -r --arg os "$runner" '(if type=="object" then .include else . end)|[.[]|select(.os==$os)|.target]|join(",")')
+        [ -n "$csv" ] || { echo "check:determinism: no targets for runner $runner" >&2; exit 1; }
+        echo "check:determinism (CI-exact): runner=$runner targets=$csv"
+        cargo run -p anodizer --release -- check determinism \
+          --require-tools --runs=2 --targets="$csv" --preserve-dist=./preserved-dist
 
   check:config:
     desc: "Validate this repo's anodize config (single-crate, post-restructure form)."
