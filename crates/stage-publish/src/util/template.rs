@@ -182,10 +182,11 @@ pub(crate) fn render_or_warn_with_vars(
 ///
 /// Intended for manifest formats that never legitimately contain `{{ }}`
 /// (nuspec/JSON/YAML/Ruby/nix/PKGBUILD); do NOT apply to verbatim/raw paths
-/// (e.g. announce `--raw`) where unrendered delimiters are by design. Called
-/// on the final assembled manifest text of every publisher whose registry
-/// submission is irreversible: chocolatey, scoop, homebrew, aur/aur-source,
-/// winget, krew, nix, and npm.
+/// (e.g. announce `--raw`) where unrendered delimiters are by design. Apply
+/// this at every irreversible manifest-writing publisher's final assembled
+/// manifest text, immediately before that publisher's first side-effecting
+/// step (clone/commit/push/upload) — never to a raw/verbatim passthrough
+/// field.
 pub(crate) fn guard_no_unrendered(
     ctx: &Context,
     log: &StageLogger,

@@ -843,10 +843,10 @@ fn publish_optional_deps_dry_run_returns_empty() {
 }
 
 /// A `description` template that fails to render (undefined field) falls
-/// back to its raw `{{ }}` text (the `insert_common_metadata` raw-fallback
-/// closure) and lands in every per-platform `package.json` —
-/// `guard_no_unrendered` must hard-fail the real publish before staging (and
-/// therefore before any `npm publish` subprocess), naming the manifest.
+/// back to its own raw `{{ }}` text and lands in every per-platform
+/// `package.json` — `guard_no_unrendered` must hard-fail the real publish
+/// before staging (and therefore before any `npm publish` subprocess),
+/// naming the manifest.
 #[test]
 fn publish_optional_deps_residual_description_template_errors_before_staging() {
     let (_tmp, ctx) = optional_deps_ctx();
@@ -878,6 +878,74 @@ fn publish_optional_deps_residual_description_template_dry_run_stays_lenient() {
     publish_to_npm(&ctx, &cfg, "demo", &log, &mut targets)
         .expect("dry-run must stay lenient on a residual template");
     assert!(targets.is_empty(), "dry-run must return no targets");
+}
+
+/// The `"npm metapackage package.json"` guard call site in
+/// `publish_optional_deps` has no metapackage-only templated field to drive:
+/// `insert_common_metadata` feeds description/homepage/license/author/
+/// repository/bugs into the metapackage from the same shared config fields
+/// it feeds into every per-platform package, and the per-platform packages
+/// stage (and guard) first — see
+/// `publish_optional_deps_residual_description_template_errors_before_staging`,
+/// whose residual surfaces as `"npm platform package.json"`, never reaching
+/// the metapackage call site. No publish-level test can isolate this guard.
+///
+/// This test instead proves the guard itself is correct and reachable in
+/// principle: it takes a real `generate_layout`-produced metapackage
+/// `package.json`, splices a residual `{{ }}` delimiter into it, and confirms
+/// `guard_no_unrendered` rejects it under the metapackage label.
+#[test]
+fn metapackage_package_json_guard_rejects_residual_in_generated_output() {
+    let (_tmp, ctx) = optional_deps_ctx();
+    let layout = generate_layout(
+        &ctx,
+        &opt_cfg(),
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect("layout");
+    let residual = layout.metapackage_json.replacen(
+        "\"name\"",
+        "\"description\":\"{{ .NoSuchField }}\",\"name\"",
+        1,
+    );
+    let log = ctx.logger("publish");
+    let err =
+        crate::util::guard_no_unrendered(&ctx, &log, "npm metapackage package.json", &residual)
+            .expect_err(
+                "a residual {{ }} spliced into the metapackage package.json must hard-fail",
+            );
+    assert!(
+        format!("{err:#}").contains("npm metapackage package.json"),
+        "error must name the manifest label; got: {err:#}"
+    );
+}
+
+/// Same splice, but on a lenient (dry-run) `Context`: the guard must
+/// warn-and-continue rather than fail.
+#[test]
+fn metapackage_package_json_guard_dry_run_stays_lenient_on_residual() {
+    let (_tmp, mut ctx) = optional_deps_ctx();
+    ctx.options.dry_run = true;
+    let layout = generate_layout(
+        &ctx,
+        &opt_cfg(),
+        "demo",
+        "1.2.3",
+        None,
+        &ctx.logger("publish"),
+    )
+    .expect("layout");
+    let residual = layout.metapackage_json.replacen(
+        "\"name\"",
+        "\"description\":\"{{ .NoSuchField }}\",\"name\"",
+        1,
+    );
+    let log = ctx.logger("publish");
+    crate::util::guard_no_unrendered(&ctx, &log, "npm metapackage package.json", &residual)
+        .expect("dry-run must stay lenient on a residual template");
 }
 
 #[test]

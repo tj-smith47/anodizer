@@ -1636,6 +1636,12 @@ fn submit_winget_manifests(
     let inst_yaml = rendered.installer_yaml.as_str();
     let locale_yaml = rendered.locale_yaml.as_str();
 
+    // Guard before the fork clone: a residual delimiter must bail with no
+    // clone/commit/push side effect, not just no push.
+    util::guard_no_unrendered(ctx, log, "winget version manifest", ver_yaml)?;
+    util::guard_no_unrendered(ctx, log, "winget installer manifest", inst_yaml)?;
+    util::guard_no_unrendered(ctx, log, "winget locale manifest", locale_yaml)?;
+
     let token = util::resolve_repo_token(
         ctx,
         winget_cfg.repository.as_ref(),
@@ -1654,10 +1660,6 @@ fn submit_winget_manifests(
         "winget",
         log,
     )?;
-
-    util::guard_no_unrendered(ctx, log, "winget version manifest", ver_yaml)?;
-    util::guard_no_unrendered(ctx, log, "winget installer manifest", inst_yaml)?;
-    util::guard_no_unrendered(ctx, log, "winget locale manifest", locale_yaml)?;
 
     let manifest_dir = write_winget_manifests_to_disk(
         repo_path,
@@ -5485,6 +5487,85 @@ license-file = "LICENSE.txt"
             ctx.template_vars_mut().set("RawVersion", "1.0.0");
             ctx.template_vars_mut().set("Tag", "v1.0.0");
             add_windows_zip(&mut ctx, "widget", &"f".repeat(64));
+
+            publish_to_winget(&mut ctx, "widget", &quiet())
+                .expect("dry-run must stay lenient on a residual template");
+        }
+
+        /// A broken `winget.url_template` (referencing an undefined field)
+        /// fails `render_url_template_with_ctx`'s Tera pass and falls back to
+        /// its own raw `{{ }}` text (the silent, non-strict-aware fallback in
+        /// `resolve_installer_url`), landing the residual in the InstallerUrl
+        /// of the INSTALLER manifest only — never the version or locale
+        /// manifest. `guard_no_unrendered` must hard-fail the real publish
+        /// before the fork clone, naming `"winget installer manifest"`.
+        #[test]
+        #[serial(path_env)]
+        fn publish_residual_url_template_errors_before_push() {
+            let (_tools, _guard) = gh_absent();
+            let (bare_url, bare) = init_bare_fork();
+            let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+                method: "POST",
+                path_pattern: "/repos/fork-owner/winget-pkgs/pulls",
+                response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+                times: None,
+            }]);
+            let mut c = live_winget_crate("widget", &bare_url);
+            if let Some(w) = c.publish.as_mut().and_then(|p| p.winget.as_mut()) {
+                w.url_template = Some("{{ .NoSuchField }}".to_string());
+            }
+            let mut ctx = build_ctx(vec![c], "1.0.0");
+            inject_api_base(&mut ctx, &addr);
+            add_windows_zip(&mut ctx, "widget", &"a".repeat(64));
+
+            let err = publish_to_winget(&mut ctx, "widget", &quiet())
+                .expect_err("residual {{ }} in the installer manifest must hard-fail");
+            assert!(
+                format!("{err:#}").contains("winget installer manifest"),
+                "error must name the installer manifest, not version/locale; got: {err:#}"
+            );
+            // The guard now runs before `clone_repo`, so the same
+            // no-push/no-PR evidence also proves no clone happened: a clone
+            // would need to succeed before any commit could exist to push.
+            let branches = git_stdout(bare.path(), &["branch", "--list"]);
+            assert!(
+                !branches.contains("AcmeCo.widget-1.0.0"),
+                "a residual-delimiter bail must leave no pushed branch:\n{branches}"
+            );
+            assert!(
+                req_log.lock().unwrap().is_empty(),
+                "a residual-delimiter bail must fire no PR POST"
+            );
+            drop(bare);
+        }
+
+        /// The same broken `winget.url_template` stays lenient in dry-run:
+        /// `publish_to_winget` early-returns before the manifest render (and
+        /// therefore before the guard), so it must still report `Ok`.
+        #[test]
+        #[serial(path_env)]
+        fn publish_residual_url_template_dry_run_stays_lenient() {
+            let (_tools, _guard) = gh_absent();
+            let (bare_url, _bare) = init_bare_fork();
+            let mut c = live_winget_crate("widget", &bare_url);
+            if let Some(w) = c.publish.as_mut().and_then(|p| p.winget.as_mut()) {
+                w.url_template = Some("{{ .NoSuchField }}".to_string());
+            }
+            let config = Config {
+                crates: vec![c],
+                ..Default::default()
+            };
+            let mut ctx = Context::new(
+                config,
+                ContextOptions {
+                    dry_run: true,
+                    ..Default::default()
+                },
+            );
+            ctx.template_vars_mut().set("Version", "1.0.0");
+            ctx.template_vars_mut().set("RawVersion", "1.0.0");
+            ctx.template_vars_mut().set("Tag", "v1.0.0");
+            add_windows_zip(&mut ctx, "widget", &"b".repeat(64));
 
             publish_to_winget(&mut ctx, "widget", &quiet())
                 .expect("dry-run must stay lenient on a residual template");
