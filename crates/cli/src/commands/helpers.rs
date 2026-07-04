@@ -3801,7 +3801,9 @@ list:
     /// The auto-detected slug fills a WORKSPACE crate's missing `github`
     /// block, not just top-level entries — a workspace-only crate's release
     /// stage reads the same per-crate override.
+    #[cfg(unix)]
     #[test]
+    #[serial_test::serial(cwd)]
     fn auto_detect_github_fills_workspace_crates_from_remote() {
         with_empty_git_repo_cwd(|| {
             assert!(
