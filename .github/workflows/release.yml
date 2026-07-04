@@ -34,11 +34,26 @@ permissions:
   actions: read
 
 concurrency:
+  # Mutually exclusive with nightly.yml's publish: both MUST declare this exact
+  # group with cancel-in-progress: false, or a nightly publish races a release
+  # on the irreversible leg. GHA has no cross-file constant, so the two literals
+  # are held byte-equal by audit-workflow-lockstep.sh.
   group: release-${{ github.repository }}
   cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
+  # Single source for the commit every pre-tag job checks out. The preflight,
+  # in-cluster-endpoint, and auto-tag jobs must all validate/tag the SAME tree;
+  # a per-step copy of this precedence chain would let one job gate a different
+  # commit than the tag actually tags.
+  RELEASE_REF: ${{ inputs.tag || github.event.workflow_run.head_sha || github.sha }}
+  # Publishers peeled off the self-hosted release job onto the github-hosted
+  # publish-npm job (npm provenance needs a GitHub OIDC token the registry only
+  # accepts from a github-hosted runner). The main job --skip=s this set; the
+  # hosted job --publishers=es it — one place keeps the two selectors exact
+  # complements (a mismatch double-publishes or silently drops a publisher).
+  HOSTED_PUBLISHERS: npm
 
 jobs:
   # Central pre-tag secret gate. Built FROM THE CHECKOUT (not the published
@@ -48,7 +63,9 @@ jobs:
   # `release` + `publish-npm` jobs need is present (and key material is
   # well-formed) WITHOUT checking host-local tools, so a missing CI secret
   # aborts before a tag is ever minted. Carries the full secret env block the
-  # `release` job uses so the check is meaningful.
+  # `release` job uses so the check is meaningful — the two blocks are held
+  # byte-equal by audit-workflow-lockstep.sh, so a secret added to the publish
+  # job can never be forgotten here and fail post-tag on the irreversible leg.
   preflight:
     name: Preflight secrets
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
@@ -64,7 +81,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
-          ref: ${{ inputs.tag || github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ env.RELEASE_REF }}
       - uses: ./.github/actions/setup-rust
         with:
           # Warms the cargo cache so the action's `from-source` build of HEAD is
@@ -153,7 +170,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
-          ref: ${{ inputs.tag || github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ env.RELEASE_REF }}
       - name: Probe in-cluster blob + upload endpoint reachability
         uses: tj-smith47/anodizer-action@v1
         with:
@@ -165,7 +182,11 @@ jobs:
   tag:
     name: Auto-tag
     needs: [preflight, blob-preflight]
-    if: ${{ needs.preflight.result == 'success' && needs.blob-preflight.result == 'success' && (github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch') }}
+    # The trigger gate is NOT re-checked here: both needs are gated on it and
+    # only reach result == 'success' when the trigger passed AND they ran, so
+    # these two checks already imply it (re-embedding a third copy only invites
+    # drift). preflight and blob-preflight carry the single trigger expression.
+    if: ${{ needs.preflight.result == 'success' && needs.blob-preflight.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -183,7 +204,7 @@ jobs:
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
-          ref: ${{ inputs.tag || github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ env.RELEASE_REF }}
       - name: Configure git identity
         run: |
           git config user.name "github-actions[bot]"
@@ -278,6 +299,9 @@ jobs:
       - name: Assert all shards present
         run: |
           set -euo pipefail
+          # This roster mirrors determinism.yml's shard matrix; the two are held
+          # byte-equal by audit-workflow-lockstep.sh so a shard added/renamed
+          # there can never leave a missing shard's dist un-asserted here.
           expected=(ubuntu-latest macos-latest windows-x86_64 windows-aarch64)
           missing=()
           for shard in "${expected[@]}"; do
@@ -303,7 +327,7 @@ jobs:
           # provenance is minted from a GitHub-hosted OIDC token and the
           # registry rejects it (HTTP 422) on the self-hosted arc-anodizer
           # runner, so the main publish skips npm and the hosted job runs it.
-          args: release --publish-only --skip=npm${{ inputs.skip_publishers != '' && format(',{0}', inputs.skip_publishers) || '' }}
+          args: release --publish-only --skip=${{ env.HOSTED_PUBLISHERS }}${{ inputs.skip_publishers != '' && format(',{0}', inputs.skip_publishers) || '' }}
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
@@ -396,7 +420,7 @@ jobs:
           # publish-time consumer — binaries are signed at build time on the
           # main job). So this runner is never asked for cosign/GPG material it
           # does not carry.
-          args: release --publish-only --publishers npm
+          args: release --publish-only --publishers ${{ env.HOSTED_PUBLISHERS }}
         env:
           GITHUB_TOKEN: ${{ secrets.GH_PAT }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -409,7 +433,9 @@ jobs:
     name: Advance master
     needs: [tag, release]
     # always() for the same reason as publish-npm: a skipped determinism-check
-    # must not auto-skip this job when `release` itself succeeded.
+    # must not auto-skip this job when `release` itself succeeded. This if: must
+    # stay byte-equal to publish-npm's (audit-workflow-lockstep.sh enforces it),
+    # so a one-sided edit can't split the two post-publish jobs' verdicts.
     if: ${{ always() && needs.release.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 5

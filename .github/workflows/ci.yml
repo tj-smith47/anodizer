@@ -41,6 +41,8 @@ jobs:
         run: .claude/scripts/audit-job-timeouts.sh
       - name: Audit gate mirror
         run: .claude/scripts/audit-gate-mirror.sh
+      - name: Audit workflow lockstep
+        run: .claude/scripts/audit-workflow-lockstep.sh
 
   fmt:
     name: Formatting
@@ -205,23 +207,12 @@ jobs:
       - name: Validate .anodizer.yaml
         run: ./target/release/anodizer check config
 
-  # PR-blocking freshness gate. anodizer generates its CLI / config reference
-  # docs + JSON schema from source (`cargo xtask gen-docs`); a PR that changes
-  # a flag, a config field, or the schema without regenerating would land stale
-  # committed docs. `task docs:check` regenerates into memory and fails on any
-  # diff, so a stale PR cannot merge. Runs on pull_request (and master push) —
-  # docs.yml's own freshness check only fires post-merge on master.
+  # PR-blocking freshness gate. Shared with docs.yml's deploy-gating check via
+  # the reusable docs-check.yml so both moments (pre-merge here, pre-deploy
+  # there) verify the identical freshness step. Runs on pull_request (and master
+  # push); docs.yml's copy only fires post-merge on master.
   docs-check:
-    name: Docs freshness
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: ./.github/actions/setup-docs
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Check generated docs are up-to-date
-        run: task docs:check
+    uses: ./.github/workflows/docs-check.yml
 
   coverage:
     name: Coverage

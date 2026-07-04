@@ -71,19 +71,12 @@ jobs:
             echo "Release run ${run_id} did not publish (Publish Release: ${conclusion:-absent}) -> skip docs deploy"
           fi
 
+  # Deploy-gating freshness check — the same reusable step body ci.yml runs
+  # PR-blocking, so a stale-docs deploy can never slip a check the PR gate lacks.
   docs-check:
-    name: Docs freshness
     needs: gate
     if: needs.gate.outputs.should_deploy == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: ./.github/actions/setup-docs
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Check generated docs are up-to-date
-        run: task docs:check
+    uses: ./.github/workflows/docs-check.yml
 
   build:
     needs: [gate, docs-check]

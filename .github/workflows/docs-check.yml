@@ -1,0 +1,26 @@
+name: Docs freshness
+
+# Reusable docs-freshness gate. anodizer generates its CLI / config reference
+# docs + JSON schema from source (`cargo xtask gen-docs`); a change to a flag, a
+# config field, or the schema without regenerating leaves stale committed docs.
+# `task docs:check` regenerates into memory and fails on any diff. Defined once
+# and enforced at two moments: PR-blocking (ci.yml) and deploy-gating (docs.yml)
+# — so the pre-merge and pre-deploy gates can never verify different things.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  docs-check:
+    name: Docs freshness
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: ./.github/actions/setup-docs
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check generated docs are up-to-date
+        run: task docs:check

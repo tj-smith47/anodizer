@@ -20,6 +20,9 @@ permissions:
   attestations: write
 
 concurrency:
+  # Mutually exclusive with release.yml's publish (see its concurrency note):
+  # this group + cancel-in-progress: false MUST match release.yml byte-for-byte,
+  # enforced by audit-workflow-lockstep.sh.
   group: release-${{ github.repository }}
   cancel-in-progress: false
 
