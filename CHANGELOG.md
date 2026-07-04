@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-07-04
+
+### Features
+
+* 9660d545de42 migrate tera 1.20 -> 2.0 via JSON-boundary adapter ([@tj-smith47](https://github.com/tj-smith47))
+* 315fa84bc67f verify TLS against the system trust store (reqwest 0.13, object_store 0.14) ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* 383235b500c4 register .AppImage.zsync sidecar so it ships ([@tj-smith47](https://github.com/tj-smith47))
+* b6f025d9b09f centralize conventional classifier, config discovery, tag-prefix fallback, release-commit subjects ([@tj-smith47](https://github.com/tj-smith47))
+* 9f8723d8164e bump previews root-level crates; unify config discovery + token hints ([@tj-smith47](https://github.com/tj-smith47))
+* 98cb49f06f6b finish the crate-universe conversion across the core + CLI tier ([@tj-smith47](https://github.com/tj-smith47))
+* b6ae0325207e one shared aggregate-name rule for tag/changelog; harden --crate surfaces ([@tj-smith47](https://github.com/tj-smith47))
+* 073e80c430b2 scope --workspace runs to the workspace; validate --crate selections; aggregate mixed-shape shared-prefix tags ([@tj-smith47](https://github.com/tj-smith47))
+* 735f4654b981 validate --crate selections everywhere, scope workspace runs, group tag aggregation by prefix ([@tj-smith47](https://github.com/tj-smith47))
+* eec56c00e405 one GitHub rate-limit detector; stop misclassifying 403s ([@tj-smith47](https://github.com/tj-smith47))
+* f5197c73a782 walk the crate universe in per-crate hooks + release notes; centralize find_crate and archive shaping ([@tj-smith47](https://github.com/tj-smith47))
+* 41437e5eeda8 build configured dockers_v2 dockerfile + extra_files, not repo-root Dockerfile ([@tj-smith47](https://github.com/tj-smith47))
+* 49e29fd9440f mirror child build's skip_stages in docker config resolve ([@tj-smith47](https://github.com/tj-smith47))
+* 125c8ae4094d align config-time env projection with the build planner ([@tj-smith47](https://github.com/tj-smith47))
+* 99d994fc8d40 archives render the group's amd64 micro-arch variant ([@tj-smith47](https://github.com/tj-smith47))
+* d27bd23a3dac centralize arch-token and variant-var policies; kill doubled mips filenames ([@tj-smith47](https://github.com/tj-smith47))
+* d3b6b5c0d217 derive amd64 micro-arch variant at config time; cross-check all derived-name consumers ([@tj-smith47](https://github.com/tj-smith47))
+* eb92234d8cc5 mark defaulted variant selectors in no-match publisher errors ([@tj-smith47](https://github.com/tj-smith47))
+* b7b85dab8544 type amd64_variant as enum + model process-env RUSTFLAGS tiers ([@tj-smith47](https://github.com/tj-smith47))
+* cb6297f8e822 type the whole amd64_variant config domain as the Amd64Variant enum ([@tj-smith47](https://github.com/tj-smith47))
+* 225dea7b49c7 unify micro-arch variant seeding on the core SSOT #minor ([@tj-smith47](https://github.com/tj-smith47))
+* 1b1c7b2d05d4 extend guard_no_unrendered backstop to winget/krew/nix/npm ([@tj-smith47](https://github.com/tj-smith47))
+* d75fed20e89d finish the crate-universe conversion past dispatch into publisher bodies ([@tj-smith47](https://github.com/tj-smith47))
+* cff96ec574d8 hard-fail on residual template delimiters before an irreversible publish ([@tj-smith47](https://github.com/tj-smith47))
+* ae88cbf6adfd one crate-universe SSOT; registry gates + required/retain collapse see workspace crates ([@tj-smith47](https://github.com/tj-smith47))
+* 10b1f9d7db76 shared rollback candidacy unstrands RollbackSkippedNoScope; one required-failure gate ([@tj-smith47](https://github.com/tj-smith47))
+* 51dc140c41f4 test winget installer guard, reorder before clone, cover npm metapackage guard ([@tj-smith47](https://github.com/tj-smith47))
+* e92bd4895edd derive prepare-skip, side-effect, and preflight stage sets from one source ([@tj-smith47](https://github.com/tj-smith47))
+* ce623c92c3ac guard GitLab link-probe token exposure, GHES-aware GitHub probes, honest skip logging ([@tj-smith47](https://github.com/tj-smith47))
+* 7e96e82ebdf5 require scheme match in GitLab probe host guard ([@tj-smith47](https://github.com/tj-smith47))
+* 1947f74e94e3 finish the crate-universe conversion across every stage run loop ([@tj-smith47](https://github.com/tj-smith47))
+* 90c5e69e8205 align preprocessor string scanning to the engine's raw boundary rule ([@tj-smith47](https://github.com/tj-smith47))
+* f29d0d5d0e75 complete tera 2.0 migration — homebrew .0 index, preprocessor .N compat, date filter ([@tj-smith47](https://github.com/tj-smith47))
+* b980399e29b6 fold shim boundary scan into string_lit; multiline go-control regexes; escape table pipes ([@tj-smith47](https://github.com/tj-smith47))
+* 4c257a4cb17c restore date filter timezone= kwarg (tera 1.x parity) ([@tj-smith47](https://github.com/tj-smith47))
+* 49497b3b32bd tri-state tool probe SSOT, one PATH-lookup primitive, token hints rendered from the env ladder ([@tj-smith47](https://github.com/tj-smith47))
+* 91f68dd106ec single toml→yaml transcode route + shared discovery walk ([@tj-smith47](https://github.com/tj-smith47))
+* 5a05d31b1e43 one RepoProbe->PreflightCheck mapper for both preflights ([@tj-smith47](https://github.com/tj-smith47))
+* 05149b2bf99d single github_api_base resolver in core::http ([@tj-smith47](https://github.com/tj-smith47))
+* 4ef8d97c9062 centralize operator lines, dockerhub username ladder, retriable-status rule, run-dir prefix ([@tj-smith47](https://github.com/tj-smith47))
+* cb9612953a87 one forge upload driver; fix GitLab resume idempotency ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.13.1] - 2026-07-02
 
 ### Bug Fixes
@@ -468,7 +518,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.13.1...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.14.0...HEAD
+[0.14.0]: https://github.com/tj-smith47/anodizer/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/tj-smith47/anodizer/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/tj-smith47/anodizer/compare/v0.12.3...v0.13.0
 [0.12.3]: https://github.com/tj-smith47/anodizer/compare/v0.12.2...v0.12.3
