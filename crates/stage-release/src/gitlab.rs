@@ -665,9 +665,16 @@ pub(crate) async fn gitlab_head_asset_size(
         .ok()
 }
 
-/// True when `url`'s host (and effective port) matches the host of at least
+/// True when `url`'s scheme, host, and effective port all match at least
 /// one of `allowed_bases`. Unparsable URLs on either side never match —
 /// fail-closed, since a match authorizes sending the token to that host.
+///
+/// Scheme equality is required (not just host/port): without it,
+/// `http://<host>:443/...` matches an `https://<host>/api/v4` base via
+/// `port_or_known_default`, and the authenticated HEAD travels cleartext.
+/// Strict equality (rather than only rejecting http-against-https) keeps
+/// the rule symmetric and origin-shaped: a match means the exact
+/// configured origin, nothing else.
 fn link_url_on_configured_host(url: &str, allowed_bases: &[&str]) -> bool {
     let Ok(link) = reqwest::Url::parse(url) else {
         return false;
@@ -677,7 +684,8 @@ fn link_url_on_configured_host(url: &str, allowed_bases: &[&str]) -> bool {
     };
     allowed_bases.iter().any(|base| {
         reqwest::Url::parse(base).is_ok_and(|b| {
-            b.host_str() == Some(link_host)
+            b.scheme() == link.scheme()
+                && b.host_str() == Some(link_host)
                 && b.port_or_known_default() == link.port_or_known_default()
         })
     })
@@ -1395,6 +1403,12 @@ mod tests {
             "https://gitlab.example.com:8443/demo.tar.gz",
             &bases
         ));
+        // Same host, same effective port (explicit :443), different scheme:
+        // matching would send the token over cleartext http.
+        assert!(!link_url_on_configured_host(
+            "http://gitlab.example.com:443/demo.tar.gz",
+            &bases
+        ));
         // Unparsable link URLs fail closed.
         assert!(!link_url_on_configured_host("not a url", &bases));
     }
@@ -1421,6 +1435,35 @@ mod tests {
             foreign_calls.load(std::sync::atomic::Ordering::SeqCst),
             0,
             "no request may reach the off-host link target"
+        );
+    }
+
+    #[tokio::test]
+    async fn head_probe_skips_scheme_downgrade_link_without_any_request() {
+        use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
+        // Same host and explicit port as the configured https base, but an
+        // http link scheme: matching would carry the token cleartext, so
+        // the guard must reject before any connection is attempted.
+        let (addr, calls) =
+            spawn_oneshot_http_responder(vec!["HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\n"]);
+        let client = build_gitlab_probe_client("glpat-secret", false, false).expect("client");
+        let https_base = format!("https://{addr}/api/v4");
+        let size = gitlab_head_asset_size(
+            &client,
+            &format!("http://{addr}/uploads/x/demo.tar.gz"),
+            &[https_base.as_str()],
+        )
+        .await;
+        assert_eq!(
+            size, None,
+            "scheme-downgrade link must degrade to size-unknown"
+        );
+        // Give any (buggy) in-flight request time to land before asserting.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "no request may travel over the downgraded scheme"
         );
     }
 

@@ -1388,12 +1388,6 @@ mod tests {
         );
     }
 
-    // GitHub close targets the hardcoded api.github.com host (no api_url
-    // override), so its list/find/PATCH wiring is not mockable without a live
-    // network. The empty-token guard above is its only hermetic seam; the
-    // list→find→close→NotFound logic is provider-shared and proven through the
-    // GitLab + Gitea mock tests below.
-
     // ---- GitLab close — milestone-absent maps to NotFound ---------------
 
     #[test]
