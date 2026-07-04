@@ -893,6 +893,14 @@ fn resolve_docker_configs(
     let opts = anodizer_core::context::ContextOptions {
         snapshot: child_snapshot,
         selected_crates: crate_name.map(|n| vec![n.to_string()]).unwrap_or_default(),
+        // The determinism child build skips SIDE_EFFECT_STAGES (incl `release`) and runs
+        // credential-less; this parent-side config-resolution Context must evaluate
+        // setup_env's release token gate the same way, else a release-mode (tagged-HEAD)
+        // probe demands a GitHub token it never uses to resolve dockers_v2.
+        skip_stages: anodizer_core::determinism_runner::SIDE_EFFECT_STAGES
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect(),
         ..Default::default()
     };
     let mut ctx = anodizer_core::context::Context::new(cfg.clone(), opts);
@@ -1487,6 +1495,66 @@ mod tests {
         assert!(
             resolved.is_empty(),
             "a skipped entry must produce no ResolvedDockerConfig: {resolved:?}"
+        );
+    }
+
+    /// Regression for the v0.14.0 release-blocker: on a RELEASE-mode probe
+    /// (`child_snapshot=false`, the tagged-HEAD path the CI determinism shard
+    /// actually takes) `setup_env`'s release token gate must be skipped for a
+    /// `release:`-configured crate, mirroring the credential-less
+    /// determinism child build. `child_snapshot=true` (the existing tests
+    /// above) never exercised this: untagged-HEAD local runs take the
+    /// snapshot escape hatch and never reach the token gate at all.
+    ///
+    /// This drives `setup_env` with a `Context` built the SAME way
+    /// `resolve_docker_configs` now builds its own (identical
+    /// `ContextOptions`, including `skip_stages`), routed through a
+    /// hermetic empty `MapEnvSource` so the assertion holds in every
+    /// environment — CI or local — regardless of whether a real GitHub
+    /// token happens to be set in the process env. `resolve_docker_configs`
+    /// itself cannot be driven end-to-end here with `child_snapshot=false`:
+    /// it also calls `resolve_git_context`, which independently requires
+    /// HEAD to sit exactly at a matching git tag (the real determinism
+    /// child build's premise — it runs against the just-cut release tag),
+    /// a fixture this unit test would have to fabricate by mutating this
+    /// repository's own tags, which is neither hermetic nor safe. Isolating
+    /// `setup_env` pins precisely the mechanism this fix restores without
+    /// that unrelated git-state coupling.
+    #[test]
+    fn setup_env_release_mode_skips_token_gate_with_determinism_skip_stages() {
+        use anodizer_core::config::{Config, CrateConfig, ReleaseConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+
+        let skip_stages: Vec<String> = anodizer_core::determinism_runner::SIDE_EFFECT_STAGES
+            .iter()
+            .map(|s| (*s).to_string())
+            .collect();
+        let config = Config {
+            project_name: "full".to_string(),
+            crates: vec![CrateConfig {
+                name: "full".to_string(),
+                path: ".".to_string(),
+                release: Some(ReleaseConfig::default()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let opts = ContextOptions {
+            snapshot: false,
+            skip_stages,
+            ..Default::default()
+        };
+        let mut ctx = Context::new(config.clone(), opts);
+        ctx.set_env_source(anodizer_core::env_source::MapEnvSource::new());
+        assert!(
+            ctx.should_skip("release"),
+            "resolve_docker_configs's skip_stages must mirror the determinism child \
+             build's SIDE_EFFECT_STAGES"
+        );
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        crate::commands::helpers::setup_env(&mut ctx, &config, &log).expect(
+            "a release-mode (tagged-HEAD) probe with skip_stages mirroring the \
+             determinism child build must not demand a GitHub token",
         );
     }
 
