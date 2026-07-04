@@ -66,6 +66,7 @@ pub fn publish_to_nix(ctx: &mut Context, crate_name: &str, log: &StageLogger) ->
         archives: _,
     } = render_nix_derivation_inner(ctx, crate_cfg, nix_cfg, crate_name, log)?;
     let name = name.as_str();
+    util::guard_no_unrendered(ctx, log, "nix derivation", &nix_expr)?;
 
     let token = util::resolve_repo_token(ctx, nix_cfg.repository.as_ref(), Some("NIX_PKGS_TOKEN"));
 
@@ -2897,6 +2898,73 @@ mod tests {
                 drv.contains("echo done >$out/.installed"),
                 "post_install line must be embedded: {drv}"
             );
+            drop(bare);
+        }
+
+        /// A `nix.description` template that fails to render (undefined
+        /// field) falls back to its raw `{{ }}` text via `render_or_warn` and
+        /// lands in the derivation — `guard_no_unrendered` must hard-fail the
+        /// real publish before anything is written to the overlay branch.
+        #[test]
+        fn publish_residual_description_template_errors_before_push() {
+            let (bare_url, bare) = make_bare_repo("main");
+            let mut nix = nix_cfg_local(&bare_url, "main");
+            nix.description = Some("{{ .NoSuchField }}".to_string());
+            let mut ctx = ctx_for(nix, two_archives());
+
+            let bare_path = Path::new(&bare_url);
+            let before = git_stdout(bare_path, &["rev-parse", "main"]);
+
+            let err = publish_to_nix(&mut ctx, "mytool", &quiet_log())
+                .expect_err("residual {{ }} in the derivation must hard-fail");
+            assert!(
+                format!("{err:#}").contains("nix derivation"),
+                "error must name the manifest label; got: {err:#}"
+            );
+            let after = git_stdout(bare_path, &["rev-parse", "main"]);
+            assert_eq!(
+                before, after,
+                "a residual-delimiter bail must leave the overlay branch untouched"
+            );
+            drop(bare);
+        }
+
+        /// The same residual `nix.description` template stays lenient in
+        /// dry-run: `publish_to_nix` early-returns before the derivation
+        /// render (and therefore before the guard), so the call must still
+        /// report `Ok(false)` rather than surface the residual as an error.
+        #[test]
+        fn publish_residual_description_template_dry_run_stays_lenient() {
+            let (bare_url, bare) = make_bare_repo("main");
+            let mut nix = nix_cfg_local(&bare_url, "main");
+            nix.description = Some("{{ .NoSuchField }}".to_string());
+            let mut ctx = TestContextBuilder::new()
+                .crates(vec![CrateConfig {
+                    name: "mytool".to_string(),
+                    path: ".".to_string(),
+                    tag_template: "v{{ .Version }}".to_string(),
+                    release: Some(ReleaseConfig {
+                        github: Some(anodizer_core::config::ScmRepoConfig {
+                            owner: "myorg".to_string(),
+                            name: "mytool".to_string(),
+                        }),
+                        ..Default::default()
+                    }),
+                    publish: Some(PublishConfig {
+                        nix: Some(nix),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }])
+                .dry_run(true)
+                .build();
+            for a in two_archives() {
+                ctx.artifacts.add(a);
+            }
+
+            let pushed = publish_to_nix(&mut ctx, "mytool", &quiet_log())
+                .expect("dry-run must stay lenient on a residual template");
+            assert!(!pushed, "dry-run must report no push");
             drop(bare);
         }
     }

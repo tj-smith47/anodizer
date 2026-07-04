@@ -101,6 +101,7 @@ pub struct StagedTarball {
 /// mint an npm attestation.
 pub fn assemble_postinstall_tarball(
     ctx: &Context,
+    log: &StageLogger,
     cfg: &NpmConfig,
     crate_name: &str,
     version: &str,
@@ -121,6 +122,7 @@ pub fn assemble_postinstall_tarball(
         binaries,
         provenance_override,
     )?;
+    crate::util::guard_no_unrendered(ctx, log, "npm package.json", &pkg_json)?;
     write_deterministic(&pkg_dir.join("package.json"), pkg_json.as_bytes())?;
 
     let postinstall = render_postinstall_js(&pkg_name);
@@ -934,6 +936,12 @@ fn publish_optional_deps(
         let binary = fs::read(&plat.binary_src)
             .with_context(|| format!("npm: read binary {}", plat.binary_src.display()))?;
         let embedded = vec![(plat.binary_name.clone(), binary, 0o755u32)];
+        crate::util::guard_no_unrendered(
+            ctx,
+            log,
+            "npm platform package.json",
+            &plat.package_json,
+        )?;
         staged_all.push(assemble_optional_deps_tarball(
             ctx,
             cfg,
@@ -950,6 +958,12 @@ fn publish_optional_deps(
         layout.shim_js.clone().into_bytes(),
         0o755u32,
     )];
+    crate::util::guard_no_unrendered(
+        ctx,
+        log,
+        "npm metapackage package.json",
+        &layout.metapackage_json,
+    )?;
     staged_all.push(assemble_optional_deps_tarball(
         ctx,
         cfg,
@@ -1004,6 +1018,7 @@ fn publish_postinstall(
     let provenance_override = effective_provenance_override(ctx, cfg, &pkg_name, log);
     let staged = assemble_postinstall_tarball(
         ctx,
+        log,
         cfg,
         crate_name,
         &version,

@@ -439,10 +439,11 @@ fn assemble_postinstall_tarball_is_reproducible() {
     let bins =
         collect_platform_binaries(&ctx, &cfg, "anodize-demo", "1.2.3", &ctx.logger("publish"))
             .expect("collect");
-    let t1 =
-        assemble_postinstall_tarball(&ctx, &cfg, "demo", "1.2.3", &bins, None).expect("assemble 1");
-    let t2 =
-        assemble_postinstall_tarball(&ctx, &cfg, "demo", "1.2.3", &bins, None).expect("assemble 2");
+    let log = ctx.logger("publish");
+    let t1 = assemble_postinstall_tarball(&ctx, &log, &cfg, "demo", "1.2.3", &bins, None)
+        .expect("assemble 1");
+    let t2 = assemble_postinstall_tarball(&ctx, &log, &cfg, "demo", "1.2.3", &bins, None)
+        .expect("assemble 2");
     let b1 = std::fs::read(&t1.tarball_path).expect("read 1");
     let b2 = std::fs::read(&t2.tarball_path).expect("read 2");
     assert_eq!(
@@ -456,14 +457,51 @@ fn assemble_postinstall_tarball_scoped_package_basename() {
     let ctx = ctx_with_archives();
     let cfg = scoped_cfg();
     let bins = vec![one_binary("linux", "x64")];
-    let staged =
-        assemble_postinstall_tarball(&ctx, &cfg, "demo", "1.2.3", &bins, None).expect("assemble");
+    let log = ctx.logger("publish");
+    let staged = assemble_postinstall_tarball(&ctx, &log, &cfg, "demo", "1.2.3", &bins, None)
+        .expect("assemble");
     let fname = staged
         .tarball_path
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or_default();
     assert_eq!(fname, "anodize-demo-1.2.3.tgz");
+}
+
+/// A `description` template that fails to render (undefined field) falls
+/// back to its raw `{{ }}` text and lands in `package.json` —
+/// `guard_no_unrendered` must hard-fail a real-publish assembly before
+/// `write_deterministic` ever touches the staging dir.
+#[test]
+fn assemble_postinstall_tarball_residual_description_template_errors() {
+    let ctx = ctx_with_archives();
+    let mut cfg = npm_cfg();
+    cfg.description = Some("{{ .NoSuchField }}".to_string());
+    let bins = vec![one_binary("linux", "x64")];
+    let log = ctx.logger("publish");
+    match assemble_postinstall_tarball(&ctx, &log, &cfg, "demo", "1.2.3", &bins, None) {
+        Ok(_) => panic!("a residual template delimiter in package.json must hard-fail"),
+        Err(err) => assert!(
+            format!("{err:#}").contains("npm package.json"),
+            "error must name the manifest label; got: {err:#}"
+        ),
+    }
+}
+
+/// The same residual `description` template stays lenient on a dry-run
+/// `Context`: `assemble_postinstall_tarball` runs unconditionally (staging
+/// happens before `publish_postinstall`'s own dry-run gate), so the guard's
+/// OWN dry-run leniency is what must carry this — not a caller-side gate.
+#[test]
+fn assemble_postinstall_tarball_residual_description_template_dry_run_stays_lenient() {
+    let mut ctx = ctx_with_archives();
+    ctx.options.dry_run = true;
+    let mut cfg = npm_cfg();
+    cfg.description = Some("{{ .NoSuchField }}".to_string());
+    let bins = vec![one_binary("linux", "x64")];
+    let log = ctx.logger("publish");
+    assemble_postinstall_tarball(&ctx, &log, &cfg, "demo", "1.2.3", &bins, None)
+        .expect("dry-run context must stay lenient on a residual template");
 }
 
 // -----------------------------------------------------------------------------
@@ -801,6 +839,44 @@ fn publish_optional_deps_dry_run_returns_empty() {
     let log = ctx.logger("publish");
     let mut targets = Vec::new();
     publish_to_npm(&ctx, &cfg, "demo", &log, &mut targets).expect("publish");
+    assert!(targets.is_empty(), "dry-run must return no targets");
+}
+
+/// A `description` template that fails to render (undefined field) falls
+/// back to its raw `{{ }}` text (the `insert_common_metadata` raw-fallback
+/// closure) and lands in every per-platform `package.json` —
+/// `guard_no_unrendered` must hard-fail the real publish before staging (and
+/// therefore before any `npm publish` subprocess), naming the manifest.
+#[test]
+fn publish_optional_deps_residual_description_template_errors_before_staging() {
+    let (_tmp, ctx) = optional_deps_ctx();
+    let mut cfg = opt_cfg();
+    cfg.description = Some("{{ .NoSuchField }}".to_string());
+    let log = ctx.logger("publish");
+    let mut targets = Vec::new();
+    let err = publish_to_npm(&ctx, &cfg, "demo", &log, &mut targets)
+        .expect_err("residual {{ }} in a platform package.json must hard-fail");
+    assert!(
+        format!("{err:#}").contains("npm platform package.json"),
+        "error must name the manifest label; got: {err:#}"
+    );
+    assert!(targets.is_empty(), "a staging bail must publish nothing");
+}
+
+/// The same residual `description` template stays lenient in dry-run:
+/// `publish_optional_deps` early-returns before staging (and therefore
+/// before the guard), so the call must still report no targets rather than
+/// surface the residual as an error.
+#[test]
+fn publish_optional_deps_residual_description_template_dry_run_stays_lenient() {
+    let (_tmp, mut ctx) = optional_deps_ctx();
+    ctx.options.dry_run = true;
+    let mut cfg = opt_cfg();
+    cfg.description = Some("{{ .NoSuchField }}".to_string());
+    let log = ctx.logger("publish");
+    let mut targets = Vec::new();
+    publish_to_npm(&ctx, &cfg, "demo", &log, &mut targets)
+        .expect("dry-run must stay lenient on a residual template");
     assert!(targets.is_empty(), "dry-run must return no targets");
 }
 

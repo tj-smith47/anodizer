@@ -1069,6 +1069,7 @@ pub fn publish_to_krew(
     let Some(manifest) = render_krew_manifest_for_crate(ctx, crate_name, log)? else {
         return Ok(KrewPublishOutcome::skipped());
     };
+    util::guard_no_unrendered(ctx, log, "krew manifest", &manifest)?;
 
     // The plugin's GitHub coordinates and the resolved plugin name are reused
     // below (webhook provenance, branch name, PR title). Recomputed here
@@ -3575,6 +3576,97 @@ mod tests {
             "branch carries the per-crate-scoped version (v0.1.0 from the hermetic tag)"
         );
         drop(bare);
+    }
+
+    /// A `krew.description` template that fails to render (undefined field)
+    /// falls back to its raw `{{ }}` text via `render_or_warn` and lands in
+    /// the plugin manifest — `guard_no_unrendered` must hard-fail the real
+    /// PrDirect publish before any branch is pushed, naming the manifest.
+    #[test]
+    #[serial(path_env)]
+    fn publish_residual_description_template_errors_before_push() {
+        let (_tools, _guard) = gh_absent();
+        let (bare_url, bare) = init_bare_fork();
+        let (addr, req_log) = spawn_scripted_responder(vec![ScriptedRoute {
+            method: "POST",
+            path_pattern: "/repos/fork-owner/krew-index/pulls",
+            response: "HTTP/1.1 201 Created\r\nContent-Length: 2\r\n\r\n{}",
+            times: None,
+        }]);
+        let mut c = pr_direct_crate("widget", "kubectl-widget", &bare_url);
+        if let Some(k) = c.publish.as_mut().and_then(|p| p.krew.as_mut()) {
+            k.description = Some("{{ .NoSuchField }}".to_string());
+        }
+        let mut ctx = build_ctx(vec![c], "1.0.0");
+        inject_api_base(&mut ctx, &addr);
+        add_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-unknown-linux-gnu",
+            "linux",
+            "amd64",
+            "kubectl-widget",
+            &"e".repeat(64),
+        );
+
+        let err = publish_to_krew(&mut ctx, "widget", &quiet())
+            .expect_err("residual {{ }} in the plugin manifest must hard-fail");
+        assert!(
+            format!("{err:#}").contains("krew manifest"),
+            "error must name the manifest label; got: {err:#}"
+        );
+        let branches = git_stdout(bare.path(), &["branch", "--list"]);
+        assert!(
+            !branches.contains("kubectl-widget-v1.0.0"),
+            "a residual-delimiter bail must leave no pushed branch:\n{branches}"
+        );
+        assert!(
+            req_log.lock().unwrap().is_empty(),
+            "a residual-delimiter bail must fire no PR POST"
+        );
+        drop(bare);
+    }
+
+    /// The same residual `krew.description` template stays lenient in
+    /// dry-run: `publish_to_krew` early-returns before the manifest render
+    /// (and therefore before the guard), so the call must still report a
+    /// `Skipped` outcome rather than surface the residual as an error.
+    #[test]
+    fn publish_residual_description_template_dry_run_stays_lenient() {
+        let mut c = pr_direct_crate("widget", "kubectl-widget", "/unused");
+        if let Some(k) = c.publish.as_mut().and_then(|p| p.krew.as_mut()) {
+            k.description = Some("{{ .NoSuchField }}".to_string());
+        }
+        let config = Config {
+            crates: vec![c],
+            ..Default::default()
+        };
+        let mut ctx = Context::new(
+            config,
+            ContextOptions {
+                dry_run: true,
+                ..Default::default()
+            },
+        );
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("RawVersion", "1.0.0");
+        ctx.template_vars_mut().set("Tag", "v1.0.0");
+        add_archive(
+            &mut ctx,
+            "widget",
+            "x86_64-unknown-linux-gnu",
+            "linux",
+            "amd64",
+            "kubectl-widget",
+            &"f".repeat(64),
+        );
+
+        let outcome = publish_to_krew(&mut ctx, "widget", &quiet())
+            .expect("dry-run must stay lenient on a residual template");
+        assert!(
+            !outcome.pushed,
+            "dry-run must report no push, regardless of the residual template"
+        );
     }
 }
 
