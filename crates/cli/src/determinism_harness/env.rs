@@ -140,13 +140,17 @@ fn windows_env_should_drop(key: &str) -> bool {
         return true;
     }
     // Drop every inherited rustflags-family var. The harness builds its own
-    // authoritative RUSTFLAGS / CARGO_TARGET_<msvc>_RUSTFLAGS carrying
-    // `/Brepro` (the flag that makes the PE COFF TimeDateStamp a content
-    // hash instead of wall-clock). Cargo picks ONE rustflags source,
-    // first-present-wins with NO merge, and CARGO_ENCODED_RUSTFLAGS sits at
-    // the top of that order — so a host-supplied one (Cargo exports it into
-    // the `cargo run`-launched anodizer process) would silently out-precedence
-    // the harness's `/Brepro` injection, yielding a non-reproducible binary.
+    // authoritative global RUSTFLAGS carrying `/Brepro` (the flag that makes
+    // the PE COFF TimeDateStamp a content hash instead of wall-clock) for an
+    // all-msvc build. Cargo picks ONE rustflags source, first-present-wins
+    // with NO merge, and CARGO_ENCODED_RUSTFLAGS sits at the top of that
+    // order — so a host-supplied one (Cargo exports it into the `cargo
+    // run`-launched anodizer process) would silently out-precedence the
+    // harness's `/Brepro` injection, yielding a non-reproducible binary. A
+    // host-supplied CARGO_TARGET_<triple>_RUSTFLAGS is dropped too: it sits
+    // below the global level and would never be read, but stripping it keeps
+    // the child env free of a var that could confuse a build invoked with an
+    // explicit `--target`.
     if key.eq_ignore_ascii_case("CARGO_ENCODED_RUSTFLAGS")
         || key.eq_ignore_ascii_case("RUSTFLAGS")
         || key.eq_ignore_ascii_case("CARGO_BUILD_RUSTFLAGS")
@@ -411,21 +415,20 @@ pub(crate) fn build_subprocess_env_with_env(
         env.insert("RUSTFLAGS".into(), rustflags.clone());
     }
 
-    // Windows MSVC determinism flags. The canonical flag set lives in
-    // `anodizer_core::determinism::MSVC_DETERMINISM_RUSTFLAGS` (also
-    // mirrored in `[target.*] rustflags` in `.cargo/config.toml`). This
-    // per-target env var path is required because the harness sets RUSTFLAGS
-    // for `--remap-path-prefix`, which (per cargo precedence) suppresses the
-    // `[target.<triple>] rustflags` config entry. `merge_*` deduplicates so
-    // an inherited token (host RUSTFLAGS carrying `/Brepro`) is not doubled.
-    for triple in ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"] {
-        let per_target = anodizer_core::determinism::merge_msvc_determinism_rustflags(&rustflags);
-        let key = format!(
-            "CARGO_TARGET_{}_RUSTFLAGS",
-            triple.replace('-', "_").to_uppercase()
-        );
-        env.insert(key, per_target);
-    }
+    // No per-target `CARGO_TARGET_<triple>_RUSTFLAGS` injection here: cargo
+    // resolves rustc flags from exactly one source, first-present-wins
+    // (`CARGO_ENCODED_RUSTFLAGS` > `RUSTFLAGS` > `target.<triple>.rustflags`
+    // / `CARGO_TARGET_<triple>_RUSTFLAGS` > `build.rustflags`). The global
+    // `RUSTFLAGS` set just above (always present, for `--remap-path-prefix`)
+    // out-precedences the per-target level, so a `CARGO_TARGET_*_RUSTFLAGS`
+    // entry here would never be read. The MSVC determinism flags
+    // (`anodizer_core::determinism::MSVC_DETERMINISM_RUSTFLAGS`) instead
+    // reach the build via two live paths: the `inject_msvc` merge below,
+    // which folds them into this same global `RUSTFLAGS` when every
+    // resolved target is windows-msvc, and stage-build's
+    // `merge_reproducible_rustflags`, which sets a per-invocation RUSTFLAGS
+    // (a level-2 value that overrides the inherited global) for the actual
+    // pipeline build.
 
     // When the host running this harness is itself windows-msvc, the host
     // build (e.g. `cargo run --release` invoked by a `before:` hook) lands at
@@ -1172,51 +1175,55 @@ mod tests {
         );
     }
 
-    /// Regression: the harness MUST inject
-    /// `CARGO_TARGET_<msvc-triple>_RUSTFLAGS=-C link-arg=/Brepro` so two
-    /// harness runs produce byte-identical `anodizer.exe` binaries.
-    /// Without `/Brepro`, link.exe stamps the PE COFF `TimeDateStamp`
-    /// with wall-clock time and the .exe (plus every archive wrapping
-    /// it) drifts.
-    ///
-    /// Per-target (not global) because `/Brepro` is link.exe-only;
-    /// lld/ld would reject the flag.
-    ///
-    /// Per-target RUSTFLAGS must ALSO carry the remap-path-prefix
-    /// entries: cargo precedence is `CARGO_TARGET_<triple>_RUSTFLAGS`
-    /// over `RUSTFLAGS`, so the per-target value REPLACES (not merges
-    /// with) the global.
+    /// Regression: cargo resolves rustc flags from exactly one
+    /// first-present-wins source (`CARGO_ENCODED_RUSTFLAGS` > `RUSTFLAGS` >
+    /// `CARGO_TARGET_<triple>_RUSTFLAGS` > `CARGO_BUILD_RUSTFLAGS`), with no
+    /// merge across levels. The harness always sets a global `RUSTFLAGS`
+    /// (for `--remap-path-prefix`), so a `CARGO_TARGET_<triple>_RUSTFLAGS`
+    /// entry would sit at a level cargo never reaches — it must never be
+    /// emitted. For an all-msvc target set, `-C link-arg=/Brepro` (the flag
+    /// that makes the PE COFF `TimeDateStamp` a content hash instead of
+    /// wall-clock, so two harness runs produce a byte-identical
+    /// `anodizer.exe`) instead reaches the build via the global `RUSTFLAGS`
+    /// merge.
     #[test]
-    fn harness_env_injects_msvc_determinism_flags() {
+    fn harness_env_carries_msvc_flags_via_global_rustflags_not_per_target() {
         let tmp = tempfile::tempdir().unwrap();
-        let env = build_with(tmp.path(), &[]);
+        let targets = vec![
+            "x86_64-pc-windows-msvc".to_string(),
+            "aarch64-pc-windows-msvc".to_string(),
+        ];
+        let mut inputs = inputs(tmp.path());
+        inputs.targets = &targets;
+        let env = build_subprocess_env_with_env(&inputs, &MapEnvSource::new(), false);
+
+        let rf = env
+            .get("RUSTFLAGS")
+            .expect("global RUSTFLAGS must be set when every resolved target is windows-msvc");
+        for needle in ["-C link-arg=/Brepro", "-C link-arg=/DEBUG:NONE"] {
+            assert!(
+                rf.contains(needle),
+                "global RUSTFLAGS must carry `{needle}` for an all-msvc target set. got={rf}"
+            );
+        }
+        assert!(
+            rf.contains("--remap-path-prefix="),
+            "global RUSTFLAGS must also carry --remap-path-prefix. got={rf}"
+        );
+
+        // Neither msvc nor non-msvc triples ever get a per-target entry —
+        // the loop that used to build these keys is gone.
         for triple_env in [
             "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS",
             "CARGO_TARGET_AARCH64_PC_WINDOWS_MSVC_RUSTFLAGS",
-        ] {
-            let rf = env.get(triple_env).unwrap_or_else(|| {
-                panic!("{triple_env} must be injected so link.exe gets /Brepro")
-            });
-            for needle in ["-C link-arg=/Brepro", "-C link-arg=/DEBUG:NONE"] {
-                assert!(
-                    rf.contains(needle),
-                    "{triple_env} must carry `{needle}`. got={rf}"
-                );
-            }
-            assert!(
-                rf.contains("--remap-path-prefix="),
-                "{triple_env} must also carry --remap-path-prefix. got={rf}"
-            );
-        }
-        // Linux / macOS targets must NOT get a per-target
-        // entry — `/Brepro` would error on lld/ld.
-        for triple_env in [
             "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS",
             "CARGO_TARGET_AARCH64_APPLE_DARWIN_RUSTFLAGS",
         ] {
             assert!(
                 !env.contains_key(triple_env),
-                "{triple_env} must NOT be injected — /Brepro is link.exe-only"
+                "{triple_env} must never be injected — the always-present global \
+                 RUSTFLAGS out-precedences it, so it would be dead. got keys={:?}",
+                env.keys().collect::<Vec<_>>()
             );
         }
     }
@@ -1277,11 +1284,10 @@ mod tests {
                 "non-windows host must NOT carry MSVC-only /Brepro in global RUSTFLAGS. got={rf}"
             );
         }
-        // The per-target windows entries still exist (they're target-keyed,
-        // valid for cross-building Windows from this host).
         assert!(
-            env.contains_key("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS"),
-            "per-target windows-msvc RUSTFLAGS must still be injected regardless of host"
+            !env.contains_key("CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS"),
+            "no CARGO_TARGET_<triple>_RUSTFLAGS key is ever injected — cargo's \
+             always-present global RUSTFLAGS out-precedences it"
         );
     }
 
