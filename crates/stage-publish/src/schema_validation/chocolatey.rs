@@ -18,7 +18,9 @@ use anodizer_core::log::StageLogger;
 use anyhow::Result;
 
 use super::{PublisherSchemaValidator, SchemaFinding, TagResolver, with_validated_crate_scope};
-use crate::chocolatey::{is_chocolatey_per_crate_configured, render_nuspec_for_crate};
+use crate::chocolatey::{
+    is_chocolatey_per_crate_configured, render_nuspec_for_crate, validate_install_mode_for_crate,
+};
 
 /// The NuGet nuspec XML Schema, with the `{0}` namespace placeholders replaced
 /// by the `2015/06` namespace the renderer stamps. Pinned and embedded so the
@@ -77,6 +79,23 @@ impl PublisherSchemaValidator for ChocolateySchemaValidator {
                 };
                 let mut out = validate_nuspec_structural(&nuspec);
                 out.extend(validate_nuspec_xmllint(&nuspec, strict, &log)?);
+
+                // The nuspec is metadata-only and never references a Windows
+                // artifact, so schema-checking it alone would let a full build
+                // pass while the live publish aborts on "no windows artifact".
+                // Reproduce that artifact-dependent bail here, gated on the
+                // partial-shard signal exactly as the winget/scoop validators
+                // gate theirs: an absent artifact is legitimate on a
+                // target-restricted shard (skip) but a genuine misconfiguration
+                // on a FULL build (ERROR).
+                let partial_shard = ctx.is_target_restricted_build();
+                if !validate_install_mode_for_crate(ctx, crate_name, partial_shard, &log)? {
+                    log.verbose(&format!(
+                        "skipped chocolatey install-mode validation for crate '{}' — produced \
+                         no Windows artifact in this target-restricted shard",
+                        crate_name
+                    ));
+                }
                 Ok(out)
             })?;
             findings.extend(crate_findings);
@@ -320,6 +339,36 @@ mod tests {
         ctx.template_vars_mut().set("Tag", &format!("v{version}"));
     }
 
+    /// Add a Windows amd64 `.zip` archive carrying the url + sha256 metadata the
+    /// chocolatey install script embeds. Every realistic chocolatey-configured
+    /// FULL build produces one; the validator's install-mode check
+    /// (`build_install_mode`) needs it, so a validate-success test must add it.
+    fn add_windows_zip(ctx: &mut Context, crate_name: &str) {
+        use std::collections::HashMap;
+
+        use anodizer_core::artifact::{Artifact, ArtifactKind};
+
+        let target = "x86_64-pc-windows-msvc";
+        let mut meta = HashMap::new();
+        meta.insert(
+            "url".to_string(),
+            format!(
+                "https://github.com/acme/widget/releases/download/v1.0.0/{crate_name}-{target}.zip"
+            ),
+        );
+        meta.insert("sha256".to_string(), "a".repeat(64));
+        meta.insert("format".to_string(), "zip".to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("/dist/{crate_name}-{target}.zip")),
+            name: format!("{crate_name}-{target}.zip"),
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: meta,
+            size: None,
+        });
+    }
+
     /// Parse a rendered nuspec and return its `<metadata>` node's child text by
     /// element name, for asserting each option lands in the schema-expected
     /// element.
@@ -344,6 +393,7 @@ mod tests {
             .crates(vec![choco_crate("widget", "v{{ .Version }}", cfg)])
             .build();
         scope_version(&mut ctx, "1.0.0");
+        add_windows_zip(&mut ctx, "widget");
 
         let findings = ChocolateySchemaValidator
             .validate(
@@ -453,6 +503,8 @@ mod tests {
             .crates(vec![alpha, beta])
             .build();
         scope_version(&mut ctx, "1.0.0");
+        add_windows_zip(&mut ctx, "alpha");
+        add_windows_zip(&mut ctx, "beta");
 
         let findings = ChocolateySchemaValidator
             .validate(
@@ -496,6 +548,7 @@ mod tests {
             .selected_crates(vec!["alpha".to_string()])
             .build();
         scope_version(&mut ctx_a, "2.0.0");
+        add_windows_zip(&mut ctx_a, "alpha");
         let findings_a = ChocolateySchemaValidator
             .validate(
                 &mut ctx_a,
@@ -518,6 +571,7 @@ mod tests {
             .selected_crates(vec!["beta".to_string()])
             .build();
         scope_version(&mut ctx_b, "3.1.0");
+        add_windows_zip(&mut ctx_b, "beta");
         let findings_b = ChocolateySchemaValidator
             .validate(
                 &mut ctx_b,
@@ -568,6 +622,67 @@ mod tests {
         );
     }
 
+    /// A TARGET-RESTRICTED determinism shard that built no Windows artifact for a
+    /// chocolatey-configured crate must still validate the nuspec but SKIP the
+    /// artifact-dependent install-mode check (zero findings, no error) — the
+    /// Windows archive legitimately landed on another shard. The skip is gated on
+    /// `partial_target`, so this holds only on a shard.
+    #[test]
+    fn partial_shard_without_windows_artifact_is_skipped_not_failed() {
+        use anodizer_core::partial::PartialTarget;
+        let cfg = every_option_choco_cfg();
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![choco_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        // A shard restricted to a triple this run built no Windows archive for.
+        ctx.options.partial_target = Some(PartialTarget::Targets(vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+        ]));
+        let findings = ChocolateySchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("shard: nuspec validates and install-mode self-skips");
+        assert!(
+            findings.is_empty(),
+            "a crate with no Windows archive in this shard must skip install-mode, got: {findings:?}"
+        );
+    }
+
+    /// On a FULL build (no `partial_target`) a chocolatey-configured crate that
+    /// produced NO Windows artifact is a genuine misconfiguration. The nuspec is
+    /// metadata-only and would validate cleanly, so the validator reproduces the
+    /// live `build_install_mode` "no windows artifact" bail — surfacing at
+    /// `check`/`--snapshot` the same failure a real publish would hit (the
+    /// failure-hiding class this closes; the nuspec render alone could not catch
+    /// it).
+    #[test]
+    fn full_build_without_windows_artifact_errors() {
+        let cfg = every_option_choco_cfg();
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![choco_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        // partial_target intentionally None — a full build; no Windows artifact.
+        let err = ChocolateySchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect_err(
+                "a full build with chocolatey configured but no Windows artifact must error",
+            );
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("no windows artifact") && msg.contains("chocolatey"),
+            "surfaces the genuine full-build absence, naming chocolatey: {msg}"
+        );
+    }
+
     /// A choco config that sets `repository` but leaves `license_url`,
     /// `project_source_url`, and `bug_tracker_url` UNSET — exercising the
     /// derived-default path. `license` is a single SPDX identifier so the
@@ -603,6 +718,7 @@ mod tests {
             .crates(vec![choco_crate("widget", "v{{ .Version }}", cfg)])
             .build();
         scope_version(&mut ctx, "1.0.0");
+        add_windows_zip(&mut ctx, "widget");
 
         let findings = ChocolateySchemaValidator
             .validate(

@@ -890,6 +890,21 @@ impl Context {
         self.options.snapshot
     }
 
+    /// Whether this run builds only a subset of the configured targets — either
+    /// a `--split` / `--targets` determinism shard (`partial_target`) or a
+    /// host-only `--single-target` build.
+    ///
+    /// A publisher whose eligible artifact is legitimately absent on a
+    /// restricted build (e.g. a Windows-only publisher on a Linux single-target
+    /// snapshot) must self-skip its schema validation rather than error: the
+    /// artifact lands on another target, not a misconfiguration. On a FULL build
+    /// the same absence IS a misconfiguration and must surface. Both restriction
+    /// signals are clap-exclusive, so this OR is the single "restricted build"
+    /// predicate the per-publisher validators gate their no-artifact skip on.
+    pub fn is_target_restricted_build(&self) -> bool {
+        self.options.partial_target.is_some() || self.options.single_target.is_some()
+    }
+
     /// Whether this run is `anodizer release --publish-only` (publishing a
     /// preserved dist rather than building from source).
     ///

@@ -87,7 +87,7 @@ impl PublisherSchemaValidator for AurSchemaValidator {
                 // still reports present, so the render is called and its `Err`
                 // propagates (`?`) on a partial shard too.
                 if let Some(aur_cfg) = aur_cfg.as_ref()
-                    && ctx.options.partial_target.is_some()
+                    && ctx.is_target_restricted_build()
                     && !crate_has_aur_linux_archive(ctx, aur_cfg, crate_name)?
                 {
                     log.verbose(&format!(

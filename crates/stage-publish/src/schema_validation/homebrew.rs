@@ -96,7 +96,7 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
                 // drops non-eligible-OS archives; it never swallows a broken
                 // eligible artifact.
                 if let Some(hb_cfg) = hb_cfg.as_ref() {
-                    if ctx.options.partial_target.is_some()
+                    if ctx.is_target_restricted_build()
                         && !crate_has_homebrew_archives(ctx, hb_cfg, crate_name)
                     {
                         log.verbose(&format!(

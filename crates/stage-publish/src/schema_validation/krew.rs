@@ -54,13 +54,18 @@ impl PublisherSchemaValidator for KrewSchemaValidator {
             if !is_krew_per_crate_configured(ctx, crate_name) {
                 continue;
             }
-            // A real release always produces at least one archive artifact (the
-            // publish path errors otherwise), but a single-target / sharded
-            // snapshot may build only one platform. Skip a crate whose archives
-            // were not built in this run rather than fail on the publisher's own
-            // "no archive artifacts" guard — there is nothing to render or
-            // validate. The eligibility predicate is the SAME collector the live
-            // publish uses, so the skipped set never diverges.
+            // A real release always produces at least one archive artifact, but
+            // a target-restricted determinism shard may build none for this
+            // crate (e.g. a macOS/Windows-only shard). The self-skip is gated on
+            // the partial-shard signal exactly as aur/homebrew/nix gate theirs:
+            // on a FULL build, an empty archive set is a genuine misconfiguration
+            // (krew configured but nothing it can package), so it must fall
+            // through to the render and ERROR — the same "no archive artifacts"
+            // bail the live publish path hits — rather than silently skip.
+            // `crate_has_krew_artifacts` is the SAME collector the live publish
+            // uses, so the validated set never diverges; it is presence-only, so
+            // a matched-but-broken artifact still reports present and the
+            // render's `Err` propagates (`?`) on a partial shard too.
             let Some(krew_cfg) = ctx
                 .config
                 .find_crate(crate_name)
@@ -69,10 +74,12 @@ impl PublisherSchemaValidator for KrewSchemaValidator {
             else {
                 continue;
             };
-            if !crate_has_krew_artifacts(ctx, crate_name, &krew_cfg)? {
+            if ctx.is_target_restricted_build()
+                && !crate_has_krew_artifacts(ctx, crate_name, &krew_cfg)?
+            {
                 log.verbose(&format!(
                     "skipped krew schema validation for crate '{}' — produced no archive \
-                     artifact in this snapshot shard",
+                     artifact in this target-restricted shard",
                     crate_name
                 ));
                 continue;
@@ -420,20 +427,23 @@ mod tests {
         );
     }
 
-    /// A single-target / sharded snapshot that built no archive for a
+    /// A TARGET-RESTRICTED determinism shard that built no archive for a
     /// krew-configured crate must SKIP it (zero findings, no error) rather than
-    /// trip the publisher's "no archive artifacts" guard — there is nothing to
-    /// render or validate. This is the exact case anodizer's own linux-only
-    /// `task snapshot` would hit for a crate whose archives land on another
-    /// shard.
+    /// trip the publisher's "no archive artifacts" guard — the archive
+    /// legitimately landed on another shard. The self-skip is gated on
+    /// `partial_target`, so this holds only on a shard.
     #[test]
-    fn crate_without_artifact_is_skipped_not_failed() {
+    fn partial_shard_without_artifact_is_skipped_not_failed() {
+        use anodizer_core::partial::PartialTarget;
         let cfg = every_option_krew_cfg();
         let mut ctx = TestContextBuilder::new()
             .snapshot(true)
             .crates(vec![krew_crate("widget", "v{{ .Version }}", cfg)])
             .build();
-        // No archive artifact in this shard at all.
+        // A shard restricted to a triple this run built no archive for.
+        ctx.options.partial_target = Some(PartialTarget::Targets(vec![
+            "x86_64-pc-windows-msvc".to_string(),
+        ]));
         let findings = KrewSchemaValidator
             .validate(
                 &mut ctx,
@@ -443,6 +453,33 @@ mod tests {
         assert!(
             findings.is_empty(),
             "a crate with no archive in this shard must be skipped, got: {findings:?}"
+        );
+    }
+
+    /// The counterpart: on a FULL build (no `partial_target`) a krew-configured
+    /// crate that produced NO archive is a genuine misconfiguration — the same
+    /// "no archive artifacts" bail the live publish hits must surface at
+    /// `check`/`--snapshot` rather than being silently skipped (the
+    /// failure-hiding class this closes).
+    #[test]
+    fn full_build_without_artifact_errors() {
+        let cfg = every_option_krew_cfg();
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![krew_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        // partial_target intentionally None — a full build; no archive at all.
+        let err = KrewSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect_err("a full build with krew configured but no archive must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("no archive artifacts") && msg.contains("krew"),
+            "surfaces the genuine full-build absence, naming krew: {msg}"
         );
     }
 

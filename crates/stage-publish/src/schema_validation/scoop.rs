@@ -51,12 +51,16 @@ impl PublisherSchemaValidator for ScoopSchemaValidator {
             if !is_scoop_per_crate_configured(ctx, crate_name) {
                 continue;
             }
-            // A real release always produces a Windows archive artifact (the
-            // publish path errors otherwise), but a single-target / sharded
-            // snapshot may build only one platform. Skip a crate whose Windows
-            // archive was not built in this run rather than fail on the
-            // publisher's own "no Windows archive" guard — there is nothing to
-            // render or validate.
+            // A real release always produces a Windows archive artifact, but a
+            // target-restricted determinism shard may build none for this crate
+            // (e.g. a Linux/macOS-only shard). The self-skip is gated on the
+            // partial-shard signal exactly as homebrew/nix gate theirs: on a FULL
+            // build, an empty archive set is a genuine misconfiguration (scoop
+            // configured but nothing it can package), so it must fall through to
+            // the render and ERROR — the same "no Windows archive artifact" bail
+            // the live publish path hits — rather than silently skip. The probe
+            // is the SAME collector the live publish uses, so the validated set
+            // never diverges.
             let Some(scoop_cfg) = ctx
                 .config
                 .find_crate(crate_name)
@@ -73,10 +77,12 @@ impl PublisherSchemaValidator for ScoopSchemaValidator {
             // `check`. Surfacing it here makes the config error fail validation
             // independent of which artifacts this run built.
             reject_unsupported_use(scoop_cfg.use_artifact.as_deref(), crate_name)?;
-            if !crate_has_scoop_artifacts(ctx, crate_name, &scoop_cfg) {
+            if ctx.is_target_restricted_build()
+                && !crate_has_scoop_artifacts(ctx, crate_name, &scoop_cfg)
+            {
                 log.verbose(&format!(
                     "skipped scoop schema validation for crate '{}' — produced no Windows \
-                     archive artifact in this snapshot shard",
+                     archive artifact in this target-restricted shard",
                     crate_name
                 ));
                 continue;
@@ -433,19 +439,23 @@ mod tests {
         );
     }
 
-    /// A single-target / sharded snapshot that built no Windows archive for a
+    /// A TARGET-RESTRICTED determinism shard that built no Windows archive for a
     /// scoop-configured crate must SKIP it (zero findings, no error) rather than
-    /// trip the publisher's "no Windows archive" guard — there is nothing to
-    /// render or validate. This is the exact case anodizer's own linux-only
-    /// `task snapshot` hits.
+    /// trip the publisher's "no Windows archive" guard — the archive
+    /// legitimately landed on another shard. The self-skip is gated on
+    /// `partial_target`, so this holds only on a shard.
     #[test]
-    fn crate_without_windows_artifact_is_skipped_not_failed() {
+    fn partial_shard_without_windows_artifact_is_skipped_not_failed() {
+        use anodizer_core::partial::PartialTarget;
         let cfg = every_option_scoop_cfg();
         let mut ctx = TestContextBuilder::new()
             .snapshot(true)
             .crates(vec![scoop_crate("widget", "v{{ .Version }}", cfg)])
             .build();
         scope_version(&mut ctx, "1.0.0");
+        ctx.options.partial_target = Some(PartialTarget::Targets(vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+        ]));
         // Only a linux archive — no Windows archive in this shard.
         let mut meta = HashMap::new();
         meta.insert(
@@ -473,6 +483,50 @@ mod tests {
         assert!(
             findings.is_empty(),
             "a crate with no Windows archive in this shard must be skipped, got: {findings:?}"
+        );
+    }
+
+    /// On a FULL build (no `partial_target`) a scoop-configured crate that
+    /// produced NO Windows archive is a genuine misconfiguration — the same "no
+    /// Windows archive artifact" bail the live publish hits must surface at
+    /// `check`/`--snapshot` rather than being silently skipped (the
+    /// failure-hiding class this closes).
+    #[test]
+    fn full_build_without_windows_artifact_errors() {
+        let cfg = every_option_scoop_cfg();
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![scoop_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        // Only a linux archive — no Windows archive; partial_target None.
+        let mut meta = HashMap::new();
+        meta.insert(
+            "url".to_string(),
+            "https://github.com/acme/widget/releases/download/v1.0.0/widget-linux.tar.gz"
+                .to_string(),
+        );
+        meta.insert("sha256".to_string(), "a".repeat(64));
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from("/dist/widget-x86_64-unknown-linux-gnu.tar.gz"),
+            name: "widget-x86_64-unknown-linux-gnu.tar.gz".to_string(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "widget".to_string(),
+            metadata: meta,
+            size: None,
+        });
+
+        let err = ScoopSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect_err("a full build with scoop configured but no Windows archive must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("no Windows archive artifact") && msg.contains("scoop"),
+            "surfaces the genuine full-build absence, naming scoop: {msg}"
         );
     }
 

@@ -57,12 +57,16 @@ impl PublisherSchemaValidator for WingetSchemaValidator {
             if !is_winget_per_crate_configured(ctx, crate_name) {
                 continue;
             }
-            // A real release always produces a Windows installer artifact (the
-            // publish path errors otherwise), but a single-target / sharded
-            // snapshot may build only one platform. Skip a crate whose Windows
-            // installer was not built in this run rather than fail on the
-            // publisher's own "no Windows artifact" guard — there is nothing to
-            // render or validate.
+            // A real release always produces a Windows installer artifact, but a
+            // target-restricted determinism shard may build none for this crate
+            // (e.g. a Linux/macOS-only shard). The self-skip is gated on the
+            // partial-shard signal exactly as homebrew/nix gate theirs: on a FULL
+            // build, an empty installer set is a genuine misconfiguration (winget
+            // configured but nothing it can package), so it must fall through to
+            // the render and ERROR — the same "no Windows archive or binary
+            // artifact" bail the live publish path hits (`collect_winget_installers`)
+            // — rather than silently skip. The probe is the SAME collector the
+            // live publish uses, so the validated set never diverges.
             let Some(winget_cfg) = ctx
                 .config
                 .find_crate(crate_name)
@@ -71,10 +75,12 @@ impl PublisherSchemaValidator for WingetSchemaValidator {
             else {
                 continue;
             };
-            if !crate_has_winget_installer_artifacts(ctx, crate_name, &winget_cfg) {
+            if ctx.is_target_restricted_build()
+                && !crate_has_winget_installer_artifacts(ctx, crate_name, &winget_cfg)
+            {
                 log.verbose(&format!(
                     "skipped winget schema validation for crate '{}' — produced no Windows \
-                     installer artifact in this snapshot shard",
+                     installer artifact in this target-restricted shard",
                     crate_name
                 ));
                 continue;
@@ -508,19 +514,23 @@ mod tests {
         );
     }
 
-    /// A single-target / sharded snapshot that built no Windows installer for a
-    /// winget-configured crate must SKIP it (zero findings, no error) rather
-    /// than trip the publisher's "no Windows artifact" guard — there is nothing
-    /// to render or validate. This is the exact case anodizer's own
-    /// linux-only `task snapshot` hits.
+    /// A TARGET-RESTRICTED determinism shard that built no Windows installer for
+    /// a winget-configured crate must SKIP it (zero findings, no error) rather
+    /// than trip the publisher's "no Windows artifact" guard — the installer
+    /// legitimately landed on another shard. The self-skip is gated on
+    /// `partial_target`, so this holds only on a shard.
     #[test]
-    fn crate_without_windows_artifact_is_skipped_not_failed() {
+    fn partial_shard_without_windows_artifact_is_skipped_not_failed() {
+        use anodizer_core::partial::PartialTarget;
         let cfg = every_option_winget_cfg();
         let mut ctx = TestContextBuilder::new()
             .snapshot(true)
             .crates(vec![winget_crate("widget", "v{{ .Version }}", cfg)])
             .build();
         scope_version(&mut ctx, "1.0.0");
+        ctx.options.partial_target = Some(PartialTarget::Targets(vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+        ]));
         // Only a linux archive — no Windows installer in this shard.
         let mut meta = HashMap::new();
         meta.insert(
@@ -553,18 +563,22 @@ mod tests {
 
     /// The portable-binary counterpart of the archive shard-skip above: a
     /// linux-only `UploadableBinary` (no Windows target) for a winget-configured
-    /// crate must SKIP — the shard-guard and the live collector share one Windows
-    /// predicate, so a non-Windows portable binary never tricks the guard into
-    /// driving the renderer past `collect_winget_installers`' "no Windows
-    /// artifact" bail.
+    /// crate must SKIP on a TARGET-RESTRICTED shard — the shard-guard and the
+    /// live collector share one Windows predicate, so a non-Windows portable
+    /// binary never tricks the guard into driving the renderer past
+    /// `collect_winget_installers`' "no Windows artifact" bail.
     #[test]
-    fn crate_with_only_linux_portable_binary_is_skipped_not_failed() {
+    fn partial_shard_with_only_linux_portable_binary_is_skipped_not_failed() {
+        use anodizer_core::partial::PartialTarget;
         let cfg = every_option_winget_cfg();
         let mut ctx = TestContextBuilder::new()
             .snapshot(true)
             .crates(vec![winget_crate("widget", "v{{ .Version }}", cfg)])
             .build();
         scope_version(&mut ctx, "1.0.0");
+        ctx.options.partial_target = Some(PartialTarget::Targets(vec![
+            "x86_64-unknown-linux-gnu".to_string(),
+        ]));
         // Only a linux portable binary — no Windows installer in this shard.
         let mut meta = HashMap::new();
         meta.insert("sha256".to_string(), "a".repeat(64));
@@ -648,6 +662,50 @@ mod tests {
         assert!(
             format!("{err:#}").contains("sha256"),
             "the surfaced error must name the missing sha256, got: {err:#}"
+        );
+    }
+
+    /// On a FULL build (no `partial_target`) a winget-configured crate that
+    /// produced NO Windows installer is a genuine misconfiguration — the same
+    /// `collect_winget_installers` "no Windows archive or binary artifact" bail
+    /// the live publish hits must surface at `check`/`--snapshot` rather than
+    /// being silently skipped (the failure-hiding class this closes).
+    #[test]
+    fn full_build_without_windows_artifact_errors() {
+        let cfg = every_option_winget_cfg();
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![winget_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        // Only a linux archive — no Windows installer; partial_target None.
+        let mut meta = HashMap::new();
+        meta.insert(
+            "url".to_string(),
+            "https://github.com/acme/widget/releases/download/v1.0.0/widget-linux.tar.gz"
+                .to_string(),
+        );
+        meta.insert("sha256".to_string(), "a".repeat(64));
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from("/dist/widget-x86_64-unknown-linux-gnu.tar.gz"),
+            name: "widget-x86_64-unknown-linux-gnu.tar.gz".to_string(),
+            target: Some("x86_64-unknown-linux-gnu".to_string()),
+            crate_name: "widget".to_string(),
+            metadata: meta,
+            size: None,
+        });
+
+        let err = WingetSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect_err("a full build with winget configured but no Windows installer must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("no Windows archive or binary artifact") && msg.contains("winget"),
+            "surfaces the genuine full-build absence, naming winget: {msg}"
         );
     }
 

@@ -269,6 +269,51 @@ pub(crate) fn render_nuspec_for_crate(
     Ok(Some(nuspec))
 }
 
+/// Reproduce the live chocolatey publish's artifact-dependent bail in the
+/// offline schema validator, honoring determinism-shard tolerance.
+///
+/// The `.nuspec` render ([`render_nuspec_for_crate`]) is metadata-only and never
+/// touches a Windows artifact, so schema-checking it alone would let a full
+/// build pass while a real publish aborts in [`build_install_mode`] with
+/// `chocolatey: no windows artifact found` (or an empty-sha256 bail). This runs
+/// the SAME `select_windows_artifacts` + `build_install_mode` the live publish
+/// runs and propagates only their `Err`, so that defect surfaces in
+/// `check`/`--snapshot`.
+///
+/// Returns `Ok(false)` when `partial_shard` is set and the crate built no
+/// Windows artifact — on a target-restricted shard the artifact is legitimately
+/// absent, so there is nothing to check. On a FULL build (`partial_shard` false)
+/// an absent artifact is a genuine misconfiguration and reaches the bail.
+/// Returns `Ok(true)` when the check ran (clean). The selection is the SAME
+/// filter the live publish applies, so the validated set never diverges.
+pub(crate) fn validate_install_mode_for_crate(
+    ctx: &Context,
+    crate_name: &str,
+    partial_shard: bool,
+    log: &StageLogger,
+) -> Result<bool> {
+    let (_crate_cfg, publish) = crate::util::get_publish_config(ctx, crate_name, "chocolatey")?;
+    let Some(choco_cfg) = publish.chocolatey.as_ref() else {
+        return Ok(true);
+    };
+    let version = ctx.version();
+    let pkg_name = choco_cfg.name.as_deref().unwrap_or(crate_name);
+    let (artifact_32, artifact_64) = select_windows_artifacts(ctx, choco_cfg, crate_name, log);
+    if partial_shard && artifact_32.is_none() && artifact_64.is_none() {
+        return Ok(false);
+    }
+    build_install_mode(
+        ctx,
+        choco_cfg,
+        pkg_name,
+        &version,
+        artifact_32,
+        artifact_64,
+        crate_name,
+    )?;
+    Ok(true)
+}
+
 /// Skip-unaware nuspec render: resolve metadata + text fields and build the
 /// `.nuspec` XML body. Every resolved-with-warning value is resolved exactly
 /// once here, so both the live publish path (which has already evaluated the
