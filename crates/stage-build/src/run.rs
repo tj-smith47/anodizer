@@ -799,6 +799,21 @@ fn plan_build_jobs(
                         target,
                     );
                     target_env.insert("RUSTFLAGS".to_string(), new_rustflags);
+
+                    // `/Brepro` and its sibling RUSTFLAGS above guard rustc/
+                    // link.exe; they never reach a C compile. cc-rs/cmake
+                    // invoke `cl.exe` directly, and `cl.exe`'s object codegen
+                    // has a proven register-allocation coin-flip across
+                    // otherwise-identical rebuilds (zstd-sys, ring,
+                    // aws-lc-sys, ...). Pinning clang-cl here keeps a real
+                    // `anodizer release` build byte-identical to what the
+                    // determinism harness already proves reproducible, since
+                    // a release publishes the shards' preserved dist rather
+                    // than rebuilding (anodizer_core::determinism::msvc_c_toolchain_env
+                    // no-ops for non-msvc targets).
+                    for (key, value) in anodizer_core::determinism::msvc_c_toolchain_env(target) {
+                        target_env.insert(key, value);
+                    }
                 }
 
                 // Surface a doomed routing decision before cargo spends
@@ -1499,6 +1514,65 @@ mod env_scope_tests {
                 .unwrap(),
             None,
             "projection must agree with the planner's baseline stamp"
+        );
+    }
+
+    fn reproducible_crate(target: &str) -> CrateConfig {
+        CrateConfig {
+            name: "myapp".to_string(),
+            path: "no-such-dir".to_string(),
+            builds: Some(vec![BuildConfig {
+                binary: Some("myapp".to_string()),
+                targets: Some(vec![target.to_string()]),
+                reproducible: Some(true),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }
+    }
+
+    /// A `reproducible: true` windows-msvc build must carry the clang-cl
+    /// pin alongside RUSTFLAGS — see `anodizer_core::determinism::msvc_c_toolchain_env`.
+    #[test]
+    fn reproducible_windows_msvc_build_pins_clang_cl() {
+        let krate = reproducible_crate(WINDOWS);
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .sealed_env()
+            .build();
+        let (jobs, _) = plan(&krate, &mut ctx);
+        let job = jobs.iter().find(|j| j.target == WINDOWS).unwrap();
+        let env = &job.cmd.as_ref().unwrap().env;
+        for key in [
+            "CC_x86_64-pc-windows-msvc",
+            "CC_x86_64_pc_windows_msvc",
+            "CXX_x86_64-pc-windows-msvc",
+            "CXX_x86_64_pc_windows_msvc",
+        ] {
+            assert_eq!(
+                env.get(key).map(String::as_str),
+                Some("clang-cl"),
+                "missing/wrong pin for {key}: {env:?}"
+            );
+        }
+    }
+
+    /// A non-msvc reproducible build must not gain any `CC_`/`CXX_` keys —
+    /// the pin is windows-msvc-only.
+    #[test]
+    fn reproducible_linux_build_gets_no_msvc_c_toolchain_pins() {
+        let krate = reproducible_crate(LINUX);
+        let mut ctx = TestContextBuilder::new()
+            .project_name("myapp")
+            .sealed_env()
+            .build();
+        let (jobs, _) = plan(&krate, &mut ctx);
+        let job = jobs.iter().find(|j| j.target == LINUX).unwrap();
+        let env = &job.cmd.as_ref().unwrap().env;
+        assert!(
+            !env.keys()
+                .any(|k| k.starts_with("CC_") || k.starts_with("CXX_")),
+            "linux target must carry no CC_/CXX_ pins: {env:?}"
         );
     }
 }
