@@ -200,9 +200,20 @@ impl PublishReport {
             .iter()
             .filter(|r| r.required && r.outcome.is_required_release_failure())
             .map(|r| {
+                // Exhaustive match (not `_ =>`) mirrors
+                // `is_required_release_failure`: a future message-carrying
+                // required-failure variant must be compile-forced to extract
+                // its message here rather than silently rendering `<name>: `
+                // with an empty reason.
                 let msg = match &r.outcome {
                     PublisherOutcome::Failed(m) | PublisherOutcome::RollbackFailed(m) => m.as_str(),
-                    _ => "",
+                    PublisherOutcome::Succeeded
+                    | PublisherOutcome::Skipped(_)
+                    | PublisherOutcome::RolledBack
+                    | PublisherOutcome::RollbackSkippedNoScope
+                    | PublisherOutcome::PendingModeration
+                    | PublisherOutcome::PendingValidation
+                    | PublisherOutcome::PublishedNoRollback => "",
                 };
                 format!("{}: {}", r.name, msg)
             })
