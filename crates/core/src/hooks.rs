@@ -669,6 +669,13 @@ fn run_before_publish_entry(
 
         let mut vars = base_vars.clone();
         bind_per_artifact_vars(&mut vars, artifact);
+        // Export the artifact filename as `$ANODIZER_ARTIFACT` (same value as the
+        // `{{ ArtifactName }}` template var) so a hook `cmd` can read it from the
+        // process environment — unquoted and injection-safe — as documented. Uses
+        // the same `with_extra_env` channel on_error / on_rollback use for their
+        // `ANODIZER_*` vars. Bound ONLY in this per-artifact path; the run_once
+        // branch above never sets it (per the documented contract).
+        let artifact_env = [("ANODIZER_ARTIFACT".to_string(), artifact.name().to_string())];
         // Reuse the existing single-entry runner so dry-run, output capture,
         // env allow-list, redaction, and `if:` evaluation behave identically
         // to the lifecycle hook sites — only the per-artifact iteration is
@@ -680,7 +687,7 @@ fn run_before_publish_entry(
         let executed = run_hooks_inner(
             single,
             "before-publish",
-            HookRunContext::new(dry_run, log, Some(&vars)),
+            HookRunContext::new(dry_run, log, Some(&vars)).with_extra_env(&artifact_env),
             HookResultLine::PerArtifact(artifact.name()),
         )?;
         // An `if:`-skipped artifact reaches no command, so it must not inflate
@@ -1609,6 +1616,89 @@ mod tests {
             lines,
             vec!["a.deb", "b.deb", "c.deb"],
             "run_once:false must fire once per artifact with per-artifact vars; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// The documented `$ANODIZER_ARTIFACT` env channel: a per-artifact
+    /// `before_publish` hook that reads the ENVIRONMENT variable (not the
+    /// template var) must see each artifact's filename. Proves the channel is
+    /// wired, not fiction.
+    #[test]
+    fn before_publish_binds_anodizer_artifact_env_per_artifact() {
+        let dir = std::env::temp_dir().join(format!("anodizer-bp-env-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("env.txt");
+        let _ = std::fs::remove_file(&out);
+        let out_s = out.display().to_string().replace('\\', "/");
+
+        let log = test_logger();
+        let artifacts = vec![
+            pkg_artifact("foo", "a.deb"),
+            pkg_artifact("foo", "b.deb"),
+            pkg_artifact("foo", "c.deb"),
+        ];
+        let base = TemplateVars::new();
+        // Read `$ANODIZER_ARTIFACT` from the process env — NOT `{{ ArtifactName }}`
+        // — so this fails if the env channel is unbound even when the template
+        // var works.
+        run_before_publish_entry(
+            &HookEntry::Structured(StructuredHook {
+                cmd: format!("echo \"$ANODIZER_ARTIFACT\" >> {out_s}"),
+                run_once: false,
+                ..Default::default()
+            }),
+            &artifacts,
+            false,
+            &log,
+            &base,
+        )
+        .expect("per-artifact entry must run");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        let mut lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+        lines.sort_unstable();
+        assert_eq!(
+            lines,
+            vec!["a.deb", "b.deb", "c.deb"],
+            "$ANODIZER_ARTIFACT must carry each artifact's filename; got: {contents:?}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    /// The complementary contract: under `run_once: true`, `$ANODIZER_ARTIFACT`
+    /// is NOT bound (the command iterates the dist dir itself). A hook that
+    /// prints the bracketed env value must see it empty.
+    #[test]
+    fn before_publish_run_once_does_not_bind_anodizer_artifact_env() {
+        let dir = std::env::temp_dir().join(format!("anodizer-bp-env1-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("env-once.txt");
+        let _ = std::fs::remove_file(&out);
+        let out_s = out.display().to_string().replace('\\', "/");
+
+        let log = test_logger();
+        let artifacts = vec![pkg_artifact("foo", "a.deb"), pkg_artifact("foo", "b.deb")];
+        let base = TemplateVars::new();
+        run_before_publish_entry(
+            &HookEntry::Structured(StructuredHook {
+                cmd: format!("echo \"[$ANODIZER_ARTIFACT]\" >> {out_s}"),
+                run_once: true,
+                ..Default::default()
+            }),
+            &artifacts,
+            false,
+            &log,
+            &base,
+        )
+        .expect("run_once entry must run");
+
+        let contents = std::fs::read_to_string(&out).unwrap();
+        let lines: Vec<&str> = contents.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            lines,
+            vec!["[]"],
+            "run_once must fire exactly once with $ANODIZER_ARTIFACT unbound (empty); got: {contents:?}"
         );
         let _ = std::fs::remove_file(&out);
     }
