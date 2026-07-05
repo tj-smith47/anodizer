@@ -351,3 +351,14 @@ the krew-index PR, so no rollback evidence is recorded for that flow.
 ## Dry-run mode
 
 When running with `--dry-run`, Anodizer prints the plugin manifest it would generate and the target repository without cloning, committing, or pushing.
+
+## Artifact eligibility
+
+anodizer packages only the archives krew can install: genuine macOS targets
+(`*-apple-darwin`, `darwin-universal`) plus the Linux archives it supports. Apple
+**non-macOS** targets (`aarch64-apple-ios`, `*-tvos`, `*-watchos`) are excluded —
+they never appear in the generated plugin manifest. If the build produces **no**
+eligible archive, anodizer fails the release rather than emitting an empty
+manifest. See
+[Artifact eligibility](./selecting-publishers.md#artifact-eligibility) for the
+full rule.

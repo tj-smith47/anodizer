@@ -32,6 +32,16 @@ It is also exercised by `task prepush`, which drives the same snapshot pass, so
 a malformed publisher artifact fails the local pre-push gate before it can reach
 a real release.
 
+### On a sharded determinism build
+
+When determinism runs as a target-restricted shard matrix, emission-validate
+checks the emissions the current shard can satisfy and **self-skips** a publisher
+whose input archives this shard did not produce — a cross-platform aggregator
+(`homebrew`, `nix`) is validated on the shard that built its inputs, not failed
+on one that couldn't. On a **full**, non-sharded build there is no self-skip: a
+configured publisher with no eligible artifact still errors. See
+[Emission-validate on sharded builds](../advanced/determinism.md#emission-validate-on-sharded-builds).
+
 ## Two layers
 
 Validation runs in two layers per publisher.

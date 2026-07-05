@@ -70,11 +70,63 @@ before_publish:
 | `env` | list of `KEY=VALUE` | none | Additional environment variables for the hook. Template-rendered. The host environment is also inherited; per-hook values override inherited keys of the same name. |
 | `output` | bool | `false` | When `true`, stream stdout/stderr to anodizer's logger in real time. When `false`, output is captured and only surfaced if the hook fails (with secrets redacted). |
 | `if` | string template | unset | When set, the hook only runs if the rendered result is truthy (not `"false"` / `"0"` / `"no"` / empty). Render failure hard-errors. Same surface as build / archive / sign hooks' `if:`. |
+| `ids` | list of strings | none | Artifact-id allow-list. When set, the per-artifact iteration only fires for artifacts whose `id` matches one of these. Ignored when `run_once: true`. |
+| `artifacts` | enum | `all` | Artifact-kind filter (`checksum` / `source` / `package` / `installer` / `diskimage` / `archive` / `binary` / `sbom` / `image` / `all`). The hook fires only for matching artifacts. Ignored when `run_once: true`. |
+| `run_once` | bool | `false` | Run the hook a single time with run-level vars instead of once per matching artifact. See [Per-artifact iteration and `run_once`](#per-artifact-iteration-and-run-once). |
 
 ### Execution order
 
 Hooks fire **sequentially**, in declared order. A failure short-circuits
 the remaining hooks AND the publish phase.
+
+## Per-artifact iteration and `run_once`
+
+By default a `before_publish` hook runs **once per matching artifact**. anodizer
+iterates every artifact in the staged `dist/` tree (narrowed by the hook's `ids`
+/ `artifacts` filters) and runs the command once for each, with the per-artifact
+template variables and the `$ANODIZER_ARTIFACT` environment channel bound:
+
+| Variable | Env channel | Value |
+|----------|-------------|-------|
+| `{{ ArtifactName }}` | `$ANODIZER_ARTIFACT` | Artifact filename (e.g. `myapp-1.0.0-linux-amd64.tar.gz`) |
+| `{{ ArtifactPath }}` | — | Full path to the artifact under `dist/` |
+| `{{ ArtifactExt }}` | — | Compound-aware extension (`.tar.gz`, `.deb`) |
+| `{{ ArtifactKind }}` | — | Artifact kind (`archive`, `package`, `binary`, …) |
+| `{{ ArtifactID }}` | — | The artifact's configured `id` |
+| `{{ Os }}` / `{{ Arch }}` / `{{ Target }}` | — | The artifact's platform triple, split |
+
+```yaml
+before_publish:
+  hooks:
+    # Runs once per package artifact, scanning each one by name.
+    - cmd: "clamscan {{ ArtifactPath }}"
+      artifacts: package
+```
+
+Set **`run_once: true`** to run the command a **single time** with the run-level
+template vars (`{{ .Version }}`, `{{ .Tag }}`, …) instead. This is a
+Rust-additive extension with no GoReleaser counterpart — it suits a one-shot
+upload, a single notification, or any step that should fire once regardless of
+how many artifacts the build produced:
+
+```yaml
+before_publish:
+  hooks:
+    # Runs exactly once, whatever the artifact count.
+    - cmd: "./scripts/notify-staging.sh {{ Version }}"
+      run_once: true
+```
+
+When `run_once: true`:
+
+- The `ids` and `artifacts` filters **do not apply** — they are per-artifact
+  concepts.
+- The per-artifact vars (`{{ ArtifactName }}`, `{{ ArtifactPath }}`, …) and
+  `$ANODIZER_ARTIFACT` are **not** bound.
+- If the command needs the artifacts, it must **iterate `dist/` itself** (e.g.
+  `for f in dist/*.tar.gz; do …; done`).
+
+A non-zero exit still aborts the release, exactly as in the per-artifact case.
 
 ## Skipping the hook
 

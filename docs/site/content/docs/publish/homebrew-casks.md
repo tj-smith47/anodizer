@@ -386,3 +386,13 @@ homebrew_casks:
       trash:
         - "~/Library/Preferences/com.myorg.myapp.plist"
 ```
+
+## Artifact eligibility
+
+anodizer folds only genuine macOS targets (`*-apple-darwin`, `darwin-universal`)
+into a cask. Apple **non-macOS** targets (`aarch64-apple-ios`, `*-tvos`,
+`*-watchos`) are excluded — a cask installs macOS apps, so they never appear in
+the generated cask. If the build produces **no** eligible macOS archive,
+anodizer fails the release rather than emitting an empty cask. See
+[Artifact eligibility](./selecting-publishers.md#artifact-eligibility) for the
+full rule.

@@ -282,3 +282,14 @@ npms:
       - cli
       - rust
 ```
+
+## Artifact eligibility
+
+anodizer packages only the archives npm can install: genuine macOS targets
+(`*-apple-darwin`, `darwin-universal`) plus the Linux archives it supports. Apple
+**non-macOS** targets (`aarch64-apple-ios`, `*-tvos`, `*-watchos`) are excluded —
+they never appear in the generated package or its optional-dependency set. If the
+build produces **no** eligible archive, anodizer fails the release rather than
+emitting an empty package. See
+[Artifact eligibility](./selecting-publishers.md#artifact-eligibility) for the
+full rule.

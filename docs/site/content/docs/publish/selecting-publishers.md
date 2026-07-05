@@ -111,6 +111,40 @@ Error: invalid --publishers value(s): crates. Valid publishers: cargo, …
 
 Use `homebrew`, `chocolatey`, and `cargo` (the canonical names from the table above).
 
+## Artifact eligibility
+
+The install-aggregator publishers — Homebrew formulae, Homebrew casks, `nix`,
+`krew`, `npm`, and `aur` — each package only the archives whose operating system
+they can actually install. anodizer selects those archives for you; you never
+list them by hand.
+
+| Aggregator | Accepts | Excludes |
+|------------|---------|----------|
+| `homebrew`, `homebrew` casks, `nix`, `krew`, `npm` | genuine macOS targets (`*-apple-darwin`, `darwin-universal`) and the Linux archives each supports | Apple **non-macOS** targets (`aarch64-apple-ios`, `*-tvos`, `*-watchos`) — Homebrew/nix/krew/npm cannot install those, so they never appear in the emitted formula, manifest, or package |
+| `aur` | Linux archives only | everything non-Linux |
+
+An `aarch64-apple-ios` build in your target list is fine — it still builds and
+uploads as a release asset. It is simply **not** folded into a Homebrew cask or
+an npm package, because those installers would 404 or target the wrong OS.
+
+### No eligible archive is a hard error, never a silent skip
+
+If a configured install aggregator finds **no** archive it can install, anodizer
+**fails the release** rather than emitting an empty or wrong-OS artifact:
+
+```bash
+$ anodizer release
+...
+Error: aur: no linux archives matched — the aur publisher has no eligible artifact to package
+```
+
+This closes a failure-hiding gap where a misconfigured build (say, an `aur`
+block with only macOS targets configured) would otherwise ship an installable
+file that installs nothing or points at the wrong platform. Fix the target list
+or remove the publisher, then re-run. (On a sharded determinism build the check
+is per-shard — see [Artifact validation](./validation.md) and
+[Determinism](../advanced/determinism.md#emission-validate-on-sharded-builds).)
+
 ## Worked examples
 
 ### Publish a single channel from a finished build

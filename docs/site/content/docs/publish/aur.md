@@ -392,3 +392,12 @@ The `skip_upload` field controls whether Anodizer pushes to the AUR git repo:
 | template string | Evaluated as a template; skips when the result is `"true"` |
 
 The `disable` field works similarly but skips the entire stage, including PKGBUILD generation.
+
+## Artifact eligibility
+
+anodizer packages only the **Linux** archives for AUR; every non-Linux target is
+excluded from the generated `PKGBUILD`. If a configured AUR build produces no
+Linux archive, anodizer fails the release (`aur: no linux archives matched`)
+rather than emitting an empty `PKGBUILD`. See
+[Artifact eligibility](./selecting-publishers.md#artifact-eligibility) for the
+full rule.

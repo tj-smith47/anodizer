@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Features
+
+* add a per-publisher `on_rollback` failure hook ([@tj-smith47](https://github.com/tj-smith47))
+* expose the rollback trigger reason to `on_rollback` hooks as `{{ .Reason }}` / `ANODIZER_ROLLBACK_REASON` ([@tj-smith47](https://github.com/tj-smith47))
+* wire the `$ANODIZER_ARTIFACT` env channel for per-artifact `before_publish` hooks ([@tj-smith47](https://github.com/tj-smith47))
+
+### Bug Fixes
+
+* exclude Apple-non-macOS archives (`ios`/`tvos`/`watchos`) from the nix/krew/cask/npm install aggregators ([@tj-smith47](https://github.com/tj-smith47))
+* close AUR + Homebrew failure-hiding: a full build with no eligible archive now errors instead of emitting an empty package ([@tj-smith47](https://github.com/tj-smith47))
+* OS-filter Homebrew formula artifacts; gate the emission-validate skip on a restricted build only ([@tj-smith47](https://github.com/tj-smith47))
+* emission-validate self-skips a publisher whose artifacts a determinism shard did not produce, instead of failing the whole gate ([@tj-smith47](https://github.com/tj-smith47))
+* gate index/manifest validator (krew/winget/scoop/chocolatey/nix) no-artifact skips on restricted builds; a full build with no eligible artifact now errors instead of passing `check` then aborting at publish ([@tj-smith47](https://github.com/tj-smith47))
+* make required-failure reason extraction exhaustive so `{{ .Reason }}` is always populated ([@tj-smith47](https://github.com/tj-smith47))
+* keep `--split --single-target` composable (only `--targets` / `--host-targets` conflict with `--single-target`) ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.14.0] - 2026-07-04
 
 ### Features

@@ -254,6 +254,24 @@ Similar to `Var.*` but for pipeline outputs rather than user config values.
 > body_template: "Build: {{ Outputs.build_id | default(value=\"unknown\") }}"
 > ```
 
+### Failure-hook context (`on_error` / `on_rollback`)
+
+These variables are bound **only** inside a publisher's `on_error` and
+`on_rollback` hooks, which fire when a publish fails or is reverted:
+
+| Variable | Env channel | Value |
+|----------|-------------|-------|
+| `Publisher` | `ANODIZER_PUBLISHER` | Name of the failing / reverted publisher |
+| `Error` | `ANODIZER_ERROR` | This publisher's own error message; empty on a clean revert |
+| `RollbackFailed` | `ANODIZER_ROLLBACK_FAILED` | `true` when the revert itself failed (`on_rollback`) |
+| `Reason` | `ANODIZER_ROLLBACK_REASON` | The run-wide required sibling failure(s) that triggered the rollback — distinct from `Error` (this publisher's own revert error), which is empty on a publisher reverted without ever failing (`on_rollback`) |
+
+`Error` and `Reason` carry untrusted git/API text — read them from
+`$ANODIZER_ERROR` / `$ANODIZER_ROLLBACK_REASON` with `--raw` rather than
+splicing them into `cmd`. See
+[Release resilience](../advanced/release-resilience.md#on_rollback-hooks) for the
+full hook reference.
+
 ## Functions and filters
 
 Tera provides many [built-in filters](https://keats.github.io/tera/docs/#built-in-filters) (`lower`, `upper`, `title`, `trim`, `length`, `default`, …). On top of those, anodizer registers a full set of release-oriented helpers. Most are available in **both forms** — as a filter (`{{ X | fn(...) }}`) and as a function (`{{ fn(s=X, ...) }}`) — so the GoReleaser positional form (`{{ fn X ... }}`) auto-translates onto them.

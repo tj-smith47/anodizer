@@ -546,6 +546,29 @@ merges every shard's `dist/` and runs `--publish-only` doesn't
 re-verify either — it trusts that each shard already validated its
 own outputs and treats the merged tree as authoritative.
 
+### Emission-validate on sharded builds
+
+The pre-publish emission-validate pass (which renders and schema-checks every
+publisher's artifact — see [Artifact validation](../publish/validation.md))
+follows the same one-directional tolerance. On a target-restricted shard it
+validates the emissions the shard **can** satisfy and **self-skips** any
+publisher whose input archives this shard did not produce, instead of failing
+the whole gate:
+
+- A cross-platform install aggregator (`homebrew`, `nix`, `krew`, `npm`)
+  self-skips on a shard that lacks its inputs — e.g. the Windows shard has no
+  macOS/Linux archive to fold into a Homebrew formula, so its formula emission
+  is skipped there and validated on the shard that produced those archives.
+- A single-platform publisher **is** validated on its own shard. `winget` and
+  `chocolatey` are checked on the Windows shard; `aur` on the Linux shard.
+
+This is scoped to sharded (target-restricted) runs. On a **full**, non-sharded
+build the self-skip does not apply: a configured publisher that produces no
+eligible artifact still **errors** (see
+[Artifact eligibility](../publish/selecting-publishers.md#artifact-eligibility)),
+so a misconfiguration is never hidden by the same mechanism that makes sharding
+possible.
+
 PR builds run the same harness with a fast advisory subset
 (`--stages=archive,sbom,sign,checksum`) on a single Linux shard via the
 action's `determinism-stages` input.
