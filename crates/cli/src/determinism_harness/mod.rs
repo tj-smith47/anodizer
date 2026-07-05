@@ -2241,6 +2241,7 @@ mod tests {
         }
         // An unknown token resolves to None rather than a silent default.
         assert_eq!(StageId::from_token("not-a-stage"), None);
+        assert_eq!(StageId::from_token(""), None);
     }
 
     #[test]
@@ -2282,7 +2283,6 @@ mod tests {
             "x86_64-unknown-linux-gnu".to_string(),
         ];
         require_c_toolchain(&targets, false, |_| true).unwrap();
-        assert_eq!(StageId::from_token(""), None);
     }
 
     fn empty_harness() -> Harness {

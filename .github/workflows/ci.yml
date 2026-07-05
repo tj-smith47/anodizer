@@ -230,6 +230,15 @@ jobs:
       - uses: ./.github/actions/setup-rust
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Ensure clang-cl + nasm present
+        shell: bash
+        run: |
+          command -v clang-cl >/dev/null 2>&1 || choco install llvm -y --no-progress
+          command -v nasm     >/dev/null 2>&1 || choco install nasm -y --no-progress
+          # choco installs land in fixed prefixes that are not on PATH for the next
+          # step; append both so `require_on_path` in the guard sees them.
+          printf '%s\n' 'C:\Program Files\LLVM\bin' >> "$GITHUB_PATH"
+          printf '%s\n' 'C:\Program Files\NASM'     >> "$GITHUB_PATH"
       - name: Native object determinism (clang-cl)
         shell: bash
         run: bash scripts/native-object-determinism.sh

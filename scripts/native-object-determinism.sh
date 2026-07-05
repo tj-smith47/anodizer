@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Fast per-PR regression guard for the clang-cl C-codegen determinism fix.
-#
-# The release-time determinism check (cargo xtask / anodizer check determinism)
-# proves the same invariant but only runs at release; this catches a dropped
-# clang-cl pin or an uncovered new C dependency on the PR instead. Real deps are
-# built via `-p` from the workspace lockfile (never a synthetic Cargo.toml) so
-# there is zero drift between what this guards and what actually ships.
+# Fast per-PR guard that the C-heavy deps still compile to byte-identical objects
+# under clang-cl. It catches clang-cl itself regressing to non-deterministic codegen
+# (e.g. an LLVM bump) or a newly-added C dependency that is non-deterministic even
+# under clang-cl — before the release-time determinism check would. (A clang-cl pin
+# dropped from anodizer's own shipping code is caught by the Rust unit tests, not here:
+# this script sets the pins in its own env.) Real deps are built via `-p` from the
+# workspace lockfile (never a synthetic Cargo.toml) so there is zero drift between
+# what this guards and what actually ships.
 #
 # NASM-assembled objects (aws-lc-sys perlasm, blake3 asm) differ only in the
 # COFF TimeDateStamp (bytes 4-7) between rebuilds — link /Brepro normalizes
