@@ -898,9 +898,12 @@ impl Context {
     /// restricted build (e.g. a Windows-only publisher on a Linux single-target
     /// snapshot) must self-skip its schema validation rather than error: the
     /// artifact lands on another target, not a misconfiguration. On a FULL build
-    /// the same absence IS a misconfiguration and must surface. Both restriction
-    /// signals are clap-exclusive, so this OR is the single "restricted build"
-    /// predicate the per-publisher validators gate their no-artifact skip on.
+    /// the same absence IS a misconfiguration and must surface. The two
+    /// restriction sources are mutually exclusive at the CLI: `--single-target`
+    /// (`single_target`) carries `conflicts_with` against both `--targets` and
+    /// `--split` (the two flags that populate `partial_target`), so at most one
+    /// signal is ever set and this OR is the single "restricted build" predicate
+    /// the per-publisher validators gate their no-artifact skip on.
     pub fn is_target_restricted_build(&self) -> bool {
         self.options.partial_target.is_some() || self.options.single_target.is_some()
     }

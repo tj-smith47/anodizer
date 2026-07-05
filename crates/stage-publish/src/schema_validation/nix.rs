@@ -90,19 +90,26 @@ impl PublisherSchemaValidator for NixSchemaValidator {
                         .and_then(|p| p.nix.clone());
 
                     // A real release always builds at least one archive the
-                    // derivation `src` points at, but a sharded / single-target
-                    // snapshot may build none for this crate. The probe
-                    // distinguishes ABSENCE from ERROR: a clean `Ok(false)` (no
-                    // Nix-mappable artifact) skips, while a matched-but-broken
-                    // artifact (missing sha256) propagates as `Err` via the `?` —
-                    // the same defect the live publish path bails on — rather than
-                    // being silently skipped.
+                    // derivation `src` points at, but a target-restricted
+                    // determinism shard / `--single-target` snapshot may build
+                    // none for this crate. The self-skip is gated on the
+                    // restricted-build signal exactly as aur/homebrew gate theirs:
+                    // on a FULL build, an empty Linux/Darwin-archive set is a
+                    // genuine misconfiguration (nix configured but nothing it can
+                    // package), so it must fall through to the render and ERROR —
+                    // the same "no Linux/Darwin archive artifacts found" bail the
+                    // live publish path hits — rather than silently skip.
+                    // `crate_has_nix_archive` is presence-only: a matched-but-
+                    // broken (missing sha256) artifact still reports present, so
+                    // the render is called and its `Err` propagates (`?`) on a
+                    // restricted shard too.
                     if let Some(nix_cfg) = nix_cfg.as_ref()
+                        && ctx.is_target_restricted_build()
                         && !crate_has_nix_archive(ctx, nix_cfg, crate_name)?
                     {
                         log.verbose(&format!(
                             "skipped derivation schema validation for crate '{}' — produced no \
-                             Nix-mappable archive in this snapshot shard",
+                             Nix-mappable archive in this target-restricted shard",
                             crate_name
                         ));
                         return Ok((out, None));
@@ -682,18 +689,25 @@ mod tests {
     // shard-tolerance + skip + present-but-broken artifact.
     // -----------------------------------------------------------------
 
-    /// A single-target / sharded snapshot that built no Nix-mappable archive
-    /// for a nix-configured crate must SKIP it (zero findings, no error)
-    /// rather than trip the publisher's "no Linux/Darwin archive" guard.
+    /// A TARGET-RESTRICTED determinism shard that built no Nix-mappable archive
+    /// for a nix-configured crate must SKIP it (zero findings, no error) rather
+    /// than trip the publisher's "no Linux/Darwin archive" guard — the archive
+    /// legitimately landed on another shard. The self-skip is gated on the
+    /// restricted-build signal, so this holds only on a shard.
     #[test]
-    fn crate_without_matching_artifact_is_skipped_not_failed() {
+    fn partial_shard_without_artifact_is_skipped_not_failed() {
+        use anodizer_core::partial::PartialTarget;
         let cfg = every_option_nix_cfg();
         let mut ctx = TestContextBuilder::new()
             .snapshot(true)
             .crates(vec![nix_crate("widget", "v{{ .Version }}", cfg)])
             .build();
         scope_version(&mut ctx, "1.0.0");
-        // No archive at all in this shard.
+        // A shard restricted to a non-Linux/Darwin triple nix packages nothing
+        // for; no archive at all was built for this crate in this run.
+        ctx.options.partial_target = Some(PartialTarget::Targets(vec![
+            "x86_64-pc-windows-msvc".to_string(),
+        ]));
 
         let findings = NixSchemaValidator
             .validate(
@@ -704,6 +718,38 @@ mod tests {
         assert!(
             findings.is_empty(),
             "a crate with no Nix-mappable archive in this shard must be skipped, got: {findings:?}"
+        );
+    }
+
+    /// The counterpart: on a FULL build (neither `partial_target` nor
+    /// `single_target`) a nix-configured crate that produced NO Linux/Darwin
+    /// archive is a genuine misconfiguration — the same "no Linux/Darwin archive
+    /// artifacts found" bail the live publish hits must surface at
+    /// `check`/`--snapshot` rather than being silently skipped (the
+    /// failure-hiding class this closes).
+    #[test]
+    fn full_build_without_artifact_errors() {
+        let cfg = every_option_nix_cfg();
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![nix_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        // Both restriction signals intentionally None — a full build; no archive
+        // at all.
+        assert!(ctx.options.partial_target.is_none());
+        assert!(ctx.options.single_target.is_none());
+
+        let err = NixSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect_err("a full build with nix configured but no archive must error");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("no Linux/Darwin archive"),
+            "surfaces the genuine full-build absence, naming the missing archive: {msg}"
         );
     }
 

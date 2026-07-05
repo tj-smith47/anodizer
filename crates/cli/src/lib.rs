@@ -268,6 +268,7 @@ pub enum Commands {
         #[arg(
             long,
             conflicts_with = "merge",
+            conflicts_with = "single_target",
             help = "Run only the build stage for split CI fan-out (outputs artifacts JSON to dist/)"
         )]
         split: bool,

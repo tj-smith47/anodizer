@@ -725,22 +725,25 @@ fn validate_nix(ctx: &mut Context, crate_cfg: &CrateConfig, log: &StageLogger) -
         return Ok(());
     }
 
-    // A target-restricted shard (`--targets=`, the sharded determinism harness)
-    // produces archives for only its own platforms; a windows-only shard yields
-    // windows archives (so `produced` above is non-empty) but no Linux/Darwin —
-    // the platforms a nix derivation `src` fetches. There is nothing to
-    // cross-check, so self-skip here rather than tripping the publish path's
-    // hard "no Linux/Darwin archive" guard (the v0.6.0 false-failure).
+    // A target-restricted build produces archives for only its own platforms:
+    // a `--targets=` determinism shard OR a host-only `--single-target` snapshot
+    // (the winserver/mbp local validation flow). A windows-only restriction
+    // yields windows archives (so `produced` above is non-empty) but no
+    // Linux/Darwin — the platforms a nix derivation `src` fetches. There is
+    // nothing to cross-check, so self-skip here rather than tripping the publish
+    // path's hard "no Linux/Darwin archive" guard (the v0.6.0 false-failure).
     //
-    // The skip is gated on the partial-shard signal because `crate_has_nix_archive`
-    // reports absence the SAME way on a full build, where the absence is instead a
-    // genuine misconfiguration (nix configured with no nix-eligible artifact) that
-    // MUST still surface — the homebrew presence probe it mirrors does not itself
-    // distinguish the two cases, so a FULL build falls through to
-    // `render_nix_for_validation` below and keeps erroring. `crate_has_nix_archive`
-    // returns `Err` (not `Ok(false)`) for a present-but-broken nix artifact
-    // (missing sha256), so that defect still propagates on a partial shard.
-    if ctx.options.partial_target.is_some()
+    // The skip is gated on the restricted-build signal (both `--targets=` and
+    // `--single-target`, via `is_target_restricted_build`) because
+    // `crate_has_nix_archive` reports absence the SAME way on a full build, where
+    // the absence is instead a genuine misconfiguration (nix configured with no
+    // nix-eligible artifact) that MUST still surface — the homebrew presence
+    // probe it mirrors does not itself distinguish the two cases, so a FULL build
+    // falls through to `render_nix_for_validation` below and keeps erroring.
+    // `crate_has_nix_archive` returns `Err` (not `Ok(false)`) for a
+    // present-but-broken nix artifact (missing sha256), so that defect still
+    // propagates on a restricted build.
+    if ctx.is_target_restricted_build()
         && let Some(nix_cfg) = crate_cfg.publish.as_ref().and_then(|p| p.nix.as_ref())
         && !nix::crate_has_nix_archive(ctx, nix_cfg, &crate_cfg.name)?
     {
@@ -1986,6 +1989,34 @@ mod tests {
         assert!(
             format!("{err}").contains("Linux/Darwin"),
             "surfaces the genuine full-build absence: {err}"
+        );
+    }
+
+    /// `--single-target` false-failure guard: the winserver/mbp local
+    /// validation flow sets `single_target` (NOT `partial_target`). A
+    /// windows-only single-target snapshot with nix configured produces only a
+    /// windows archive — nix packages nothing there — so the emission validator
+    /// MUST self-skip rather than false-fail with the "no Linux/Darwin archive"
+    /// bail. Gating on `is_target_restricted_build()` (which covers
+    /// `single_target`) is what closes this; a `partial_target`-only gate would
+    /// let it through and error.
+    #[test]
+    fn single_target_windows_nix_missing_linux_darwin_self_skips() {
+        let cfg = nix_crate();
+        let mut ctx = scoped_ctx(cfg.clone());
+        add_archive(
+            &mut ctx,
+            "cfgd",
+            "x86_64-pc-windows-msvc",
+            "cfgd-1.0.0-x86_64-pc-windows-msvc.zip",
+        );
+        // A host-only single-target build (the local installer-determinism
+        // flow), not a determinism shard — `partial_target` stays None.
+        ctx.options.single_target = Some("x86_64-pc-windows-msvc".to_string());
+        assert!(ctx.options.partial_target.is_none());
+        validate_nix(&mut ctx, &cfg, &log()).expect(
+            "a windows-only single-target build must self-skip nix (no Linux/Darwin archive), \
+             not false-fail — the is_target_restricted_build seam covers single_target",
         );
     }
 
