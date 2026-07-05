@@ -1899,9 +1899,14 @@ mod tests {
     /// Aggregator self-skip: on the SAME windows-only shard, the cross-platform
     /// aggregators must NOT false-fail. nix carries a deliberately-broken url —
     /// it fails the cross-check if ever run — so the pass succeeding proves nix
-    /// self-skipped for want of a Linux/Darwin archive; homebrew is configured
-    /// alongside it to prove the other aggregator does not false-fail on the
-    /// partial set either. This is the v0.6.0 regression guard.
+    /// self-skipped for want of a Linux/Darwin archive; homebrew (installs on
+    /// macOS/Linux only) is configured alongside it to prove it too self-skips
+    /// a windows-only set rather than emitting a broken windows-url formula. To
+    /// keep the pass non-vacuous — a run that skips EVERY validator succeeds for
+    /// the wrong reason — a CORRECT windows `binstall` override is configured so
+    /// a real windows cross-check DOES run on this shard and passes: the pass
+    /// therefore proves the aggregators self-skip AND that a legitimate windows
+    /// emission still validates. This is the v0.6.0 regression guard.
     #[test]
     fn target_restricted_windows_shard_aggregators_self_skip() {
         use anodizer_core::partial::PartialTarget;
@@ -1922,6 +1927,25 @@ mod tests {
                 ..Default::default()
             });
         }
+        // A CORRECT windows binstall override so the pass is non-vacuous: this
+        // windows validator DOES execute on the windows shard and must succeed
+        // ({ target } resolves to the Rust triple the produced asset carries).
+        let mut overrides = BTreeMap::new();
+        overrides.insert(
+            "x86_64-pc-windows-msvc".to_string(),
+            BinstallOverride {
+                pkg_url: Some(
+                    "https://github.com/o/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-{ target }.zip"
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
+        );
+        cfg.binstall = Some(BinstallConfig {
+            enabled: Some(true),
+            overrides: Some(overrides),
+            ..Default::default()
+        });
         let mut ctx = scoped_ctx(cfg.clone());
         add_archive(
             &mut ctx,
@@ -1933,8 +1957,9 @@ mod tests {
             "x86_64-pc-windows-msvc".to_string(),
         ]));
         validate_snapshot_emissions(&mut ctx, &log()).expect(
-            "windows-only shard: nix self-skips (no Linux/Darwin archive) and homebrew does not \
-             false-fail — the v0.6.0 regression must not return",
+            "windows-only shard: nix + homebrew self-skip (no Linux/Darwin archive) while the \
+             correct windows binstall override cross-checks and passes — the v0.6.0 regression \
+             must not return and the pass must not be vacuous",
         );
     }
 

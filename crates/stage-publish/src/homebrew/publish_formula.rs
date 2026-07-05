@@ -237,12 +237,20 @@ fn render_install_and_test_blocks(
 }
 
 /// Filter `crate_name`'s `Archive` + `UploadableBinary` artifacts down to the
-/// set a homebrew formula would draw from: drop universal-binary leftovers and
-/// raw `gz` blobs, apply the `ids:` allow-list, and apply the
-/// `amd64_variant` / `arm_variant` microarch selectors. Reads no url/sha256
-/// metadata, so it only answers "does a candidate exist" — a presence probe
-/// that is `bail!`-free, distinct from [`collect_archive_entries`]'s render
-/// path (which errors when a matched artifact is missing url/sha256).
+/// set a homebrew formula would draw from: keep only macOS/Linux targets (the
+/// only OSes Homebrew installs on), drop universal-binary leftovers and raw
+/// `gz` blobs, apply the `ids:` allow-list, and apply the `amd64_variant` /
+/// `arm_variant` microarch selectors. Reads no url/sha256 metadata, so it only
+/// answers "does a candidate exist" — a presence probe that is `bail!`-free,
+/// distinct from [`collect_archive_entries`]'s render path (which errors when a
+/// matched artifact is missing url/sha256).
+///
+/// The OS filter mirrors the nix aggregator's Linux/Darwin-only system mapping:
+/// a windows (or any non-macOS/Linux) archive must never reach a formula's
+/// url/sha256, or `brew install` on macOS/Linux would fetch a windows zip. It
+/// also makes [`crate_has_homebrew_archives`] report a windows-only artifact set
+/// as absence (`false`), so a determinism shard that produced only windows
+/// archives self-skips instead of emitting a broken windows-url formula.
 fn homebrew_matching_artifacts<'a>(
     ctx: &'a Context,
     hb_cfg: &HomebrewConfig,
@@ -261,6 +269,13 @@ fn homebrew_matching_artifacts<'a>(
     ));
     all_artifacts
         .into_iter()
+        // Homebrew installs only on macOS + Linux; a windows/other-OS archive
+        // must never become a formula's url/sha256 (brew would fetch it on
+        // macOS/Linux and 404-class fail). Mirrors nix's Linux/Darwin-only map.
+        .filter(|a| {
+            let target = a.target.as_deref().unwrap_or("");
+            anodizer_core::target::is_darwin(target) || anodizer_core::target::is_linux(target)
+        })
         // OnlyReplacingUnibins: exclude universal binaries that didn't replace
         // single-arch variants.
         .filter(|a| a.only_replacing_unibins())
@@ -754,16 +769,23 @@ pub(crate) fn render_homebrew_formula_for_crate(
     Ok(Some(rendered))
 }
 
-/// True when at least one archive artifact (`Archive` or `UploadableBinary`)
-/// for `crate_name` survives the homebrew filters — i.e. the formula render
-/// has a candidate to point at. A sharded snapshot that built no matching
-/// archive returns false so the validator can SKIP rather than trip the
-/// publisher's "no archives matched" guard.
+/// True when at least one macOS/Linux archive artifact (`Archive` or
+/// `UploadableBinary`) for `crate_name` survives the homebrew filters — i.e.
+/// the formula render has a candidate to point at. A sharded snapshot that
+/// built no homebrew-eligible archive (e.g. a windows-only determinism shard)
+/// returns false so the validator can SKIP rather than trip the publisher's
+/// "no archives matched" guard.
+///
+/// The macOS/Linux OS filter lives in [`homebrew_matching_artifacts`]: a
+/// windows-only artifact set reports as `false` (absence) exactly as nix's
+/// `crate_has_nix_archive` reports `Ok(false)` for a windows-only shard.
 ///
 /// This is presence-only: it does NOT read url/sha256, so it returns `true`
-/// even for a matched artifact whose metadata is incomplete. That is
-/// deliberate — a present-but-broken artifact is a real defect the caller must
-/// surface by then calling the render (which `Err`s), not silently skip.
+/// even for a matched (macOS/Linux) artifact whose metadata is incomplete.
+/// That is deliberate — a present-but-broken artifact is a real defect the
+/// caller must surface by then calling the render (which `Err`s), not silently
+/// skip. The OS filter does not swallow that: a broken macOS/Linux artifact is
+/// still eligible, so the probe returns `true` and the render surfaces it.
 pub(crate) fn crate_has_homebrew_archives(
     ctx: &Context,
     hb_cfg: &HomebrewConfig,
@@ -1344,6 +1366,40 @@ mod tests {
         assert!(
             !crate_has_homebrew_archives(&ctx, &hb, "mytool"),
             "crate_has_homebrew_archives must agree with the presence probe"
+        );
+    }
+
+    /// Homebrew installs on macOS + Linux only: a windows archive is NOT an
+    /// eligible candidate, so the presence probe (and thus
+    /// `crate_has_homebrew_archives`) excludes it. Guards the failure-hiding
+    /// class where a windows `.zip` would otherwise render a flat windows-url
+    /// formula that 404s `brew install` on macOS/Linux.
+    #[test]
+    fn homebrew_matching_artifacts_excludes_windows() {
+        let hb = HomebrewConfig::default();
+        let win = archive("x86_64-pc-windows-msvc", "https://e/win.zip", "w");
+        let mac = archive("aarch64-apple-darwin", "https://e/mac.tar.gz", "m");
+        let ctx = single_crate_ctx(hb.clone(), vec![win, mac]);
+        let matched = homebrew_matching_artifacts(&ctx, &hb, "mytool");
+        assert_eq!(matched.len(), 1, "only the macOS archive is eligible");
+        assert_eq!(
+            matched[0].target.as_deref(),
+            Some("aarch64-apple-darwin"),
+            "the windows archive must be filtered out"
+        );
+    }
+
+    /// A windows-ONLY artifact set carries no homebrew-eligible archive, so the
+    /// presence probe reports absence — mirroring nix's `Ok(false)` for a
+    /// windows-only shard, which lets the emission validator self-skip.
+    #[test]
+    fn crate_has_homebrew_archives_false_for_windows_only() {
+        let hb = HomebrewConfig::default();
+        let win = archive("x86_64-pc-windows-msvc", "https://e/win.zip", "w");
+        let ctx = single_crate_ctx(hb.clone(), vec![win]);
+        assert!(
+            !crate_has_homebrew_archives(&ctx, &hb, "mytool"),
+            "a windows-only set is not homebrew-eligible"
         );
     }
 

@@ -79,19 +79,29 @@ impl PublisherSchemaValidator for HomebrewSchemaValidator {
                     .and_then(|c| c.publish.as_ref())
                     .and_then(|p| p.homebrew.clone());
 
-                // FORMULA path. A real release always builds at least one archive
-                // a formula can point at, but a sharded / single-target snapshot
-                // may build none for this crate. The presence probe is `bail!`-
-                // free and does NOT read url/sha256: when it reports a candidate
-                // exists, the render is called and ANY error propagates (`?`) — a
-                // present-but-broken artifact, a missing url/sha256, is a real
-                // defect to surface, not a skip. Only genuine artifact ABSENCE
-                // skips.
+                // FORMULA path. A real release always builds at least one
+                // macOS/Linux archive a formula can point at, but a
+                // target-restricted determinism shard may build none for this
+                // crate (e.g. a windows-only shard — homebrew installs only on
+                // macOS/Linux). The self-skip is gated on the partial-shard
+                // signal exactly as `validate_nix` gates its nix skip: on a
+                // FULL build, an empty homebrew-eligible set is a genuine
+                // misconfiguration (homebrew configured but nothing it can
+                // package), so it must fall through to the render and ERROR
+                // rather than silently skip. `crate_has_homebrew_archives` is
+                // presence-only and does NOT read url/sha256 — a
+                // present-but-broken (missing url/sha256) macOS/Linux artifact
+                // still reports present, so the render is called and its `Err`
+                // propagates (`?`) on a partial shard too. The OS filter only
+                // drops non-eligible-OS archives; it never swallows a broken
+                // eligible artifact.
                 if let Some(hb_cfg) = hb_cfg.as_ref() {
-                    if !crate_has_homebrew_archives(ctx, hb_cfg, crate_name) {
+                    if ctx.options.partial_target.is_some()
+                        && !crate_has_homebrew_archives(ctx, hb_cfg, crate_name)
+                    {
                         log.verbose(&format!(
-                            "skipped formula schema validation for crate '{}' — produced no archive \
-                             artifact for homebrew in this snapshot shard",
+                            "skipped formula schema validation for crate '{}' — no macOS/Linux \
+                             (homebrew-eligible) archive in this target-restricted shard",
                             crate_name
                         ));
                     } else if let Some(rendered) =
@@ -468,6 +478,188 @@ mod tests {
         });
     }
 
+    /// Add an archive for an arbitrary `target` + extension, carrying url +
+    /// sha256 metadata. Used to build windows-only / linux-only artifact sets
+    /// for the OS-eligibility gating tests.
+    fn add_target_archive(
+        ctx: &mut Context,
+        crate_name: &str,
+        version: &str,
+        target: &str,
+        ext: &str,
+    ) {
+        let mut meta = HashMap::new();
+        meta.insert(
+            "url".to_string(),
+            format!(
+                "https://github.com/acme/widget/releases/download/v{version}/{crate_name}-{target}.{ext}"
+            ),
+        );
+        meta.insert("sha256".to_string(), "a".repeat(64));
+        meta.insert("format".to_string(), ext.to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("/dist/{crate_name}-{target}.{ext}")),
+            name: format!("{crate_name}-{target}.{ext}"),
+            target: Some(target.to_string()),
+            crate_name: crate_name.to_string(),
+            metadata: meta,
+            size: None,
+        });
+    }
+
+    /// A minimal homebrew config (formula only, no cask) pointing at a real tap.
+    fn minimal_homebrew_cfg() -> HomebrewConfig {
+        HomebrewConfig {
+            name: Some("widget".to_string()),
+            repository: Some(RepositoryConfig {
+                owner: Some("acme".to_string()),
+                name: Some("homebrew-tap".to_string()),
+                branch: Some("main".to_string()),
+                ..Default::default()
+            }),
+            description: Some("A widget management tool".to_string()),
+            homepage: Some("https://acme.example/widget".to_string()),
+            license: Some("MIT".to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn windows_shard_ctx(cfg: HomebrewConfig) -> Context {
+        use anodizer_core::partial::PartialTarget;
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![homebrew_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        add_target_archive(&mut ctx, "widget", "1.0.0", "x86_64-pc-windows-msvc", "zip");
+        ctx.options.partial_target = Some(PartialTarget::Targets(vec![
+            "x86_64-pc-windows-msvc".to_string(),
+        ]));
+        ctx
+    }
+
+    /// OS-eligibility (a): a windows-only artifact set is NOT homebrew-eligible
+    /// (brew installs on macOS/Linux only). `crate_has_homebrew_archives` must
+    /// report absence, and on a target-restricted windows shard the formula
+    /// validator must self-skip — never render a flat windows-`.zip`-url formula
+    /// that would 404 `brew install` on macOS/Linux.
+    #[test]
+    fn windows_only_shard_reports_no_eligible_archive_and_self_skips() {
+        let cfg = minimal_homebrew_cfg();
+        let mut ctx = windows_shard_ctx(cfg.clone());
+        assert!(
+            !crate_has_homebrew_archives(&ctx, &cfg, "widget"),
+            "a windows-only artifact set carries no homebrew-eligible (macOS/Linux) archive"
+        );
+        let findings = HomebrewSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("windows shard: homebrew must self-skip, not render a windows-url formula");
+        assert!(
+            findings.is_empty(),
+            "self-skip produces no findings, got: {findings:?}"
+        );
+    }
+
+    /// OS-eligibility (b): the self-skip is gated on the partial-shard signal. On
+    /// a FULL build (no `partial_target`) with homebrew configured but ONLY a
+    /// windows archive produced, there is nothing homebrew can package — a
+    /// genuine misconfiguration that must ERROR, not silently skip (the
+    /// failure-hiding class this mirrors from nix's full-build hard bail).
+    #[test]
+    fn full_build_homebrew_only_windows_archive_errors() {
+        let cfg = minimal_homebrew_cfg();
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![homebrew_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        add_target_archive(&mut ctx, "widget", "1.0.0", "x86_64-pc-windows-msvc", "zip");
+        // partial_target intentionally None — a full build.
+        let err = HomebrewSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect_err(
+                "a full build with homebrew configured but only a windows archive must error",
+            );
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("no archives matched"),
+            "surfaces the genuine full-build absence: {msg}"
+        );
+    }
+
+    /// OS-eligibility (c): a full build with a macOS/Linux archive renders and
+    /// validates cleanly — the OS filter drops only non-eligible archives, never
+    /// a legitimate formula.
+    #[test]
+    fn full_build_homebrew_linux_archive_validates() {
+        let cfg = minimal_homebrew_cfg();
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![homebrew_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        add_target_archive(
+            &mut ctx,
+            "widget",
+            "1.0.0",
+            "x86_64-unknown-linux-gnu",
+            "tar.gz",
+        );
+        let findings = HomebrewSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect("a linux archive renders a valid formula");
+        assert!(
+            findings.is_empty(),
+            "a legitimate linux formula must clear the floor, got: {findings:?}"
+        );
+    }
+
+    /// OS-eligibility (d): the OS filter must NOT swallow a present-but-broken
+    /// ELIGIBLE artifact. A macOS archive missing its `sha256` is a real defect
+    /// (`brew audit` would reject the formula); even on a target-restricted
+    /// (partial) shard the presence probe reports it present, so the render runs
+    /// and its `Err` propagates rather than skipping.
+    #[test]
+    fn present_but_broken_macos_artifact_errors_even_on_partial_shard() {
+        use anodizer_core::partial::PartialTarget;
+        let cfg = minimal_homebrew_cfg();
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![homebrew_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        add_macos_archive(&mut ctx, "widget", "1.0.0");
+        // Strip the sha256 to simulate a present-but-broken eligible artifact.
+        for a in ctx.artifacts.all_mut() {
+            a.metadata.remove("sha256");
+        }
+        ctx.options.partial_target = Some(PartialTarget::Targets(vec![
+            "x86_64-apple-darwin".to_string(),
+        ]));
+        let err = HomebrewSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect_err(
+                "a present macOS artifact missing sha256 must error, not be skipped by the OS filter",
+            );
+        assert!(
+            format!("{err:#}").contains("sha256"),
+            "surfaces the broken-artifact defect: {err:#}"
+        );
+    }
+
     /// (a) Single-crate mode: one crate, every option set, formula AND same-tap
     /// cask. Both rendered Ruby files must clear the structural floor with zero
     /// findings, and each option must land in its expected stanza.
@@ -675,20 +867,28 @@ mod tests {
         );
     }
 
-    /// A single-target / sharded snapshot that built no archive for a
-    /// homebrew-configured crate must SKIP it (zero findings, no error) rather
-    /// than trip the publisher's "no archives matched" guard. This is the exact
-    /// case anodizer's own linux-only `task snapshot` hits when only a Windows
-    /// archive is present.
+    /// A target-restricted / sharded snapshot that built no homebrew-eligible
+    /// archive for a homebrew-configured crate must SKIP it (zero findings, no
+    /// error) rather than trip the publisher's "no archives matched" guard. The
+    /// skip is gated on the partial-shard signal (`partial_target`): this is the
+    /// exact case anodizer's own linux-only `task snapshot` hits when only a
+    /// Windows archive is present. The FULL-build counterpart (no
+    /// `partial_target`) is a genuine misconfiguration that must ERROR, proven
+    /// by `full_build_homebrew_only_windows_archive_errors`.
     #[test]
     fn crate_without_matching_artifact_is_skipped_not_failed() {
+        use anodizer_core::partial::PartialTarget;
         let cfg = every_option_homebrew_cfg();
         let mut ctx = TestContextBuilder::new()
             .snapshot(true)
             .crates(vec![homebrew_crate("widget", "v{{ .Version }}", cfg)])
             .build();
         scope_version(&mut ctx, "1.0.0");
-        // No archive artifact at all in this shard.
+        // No homebrew-eligible archive in this shard — a target-restricted
+        // build whose platforms homebrew does not package.
+        ctx.options.partial_target = Some(PartialTarget::Targets(vec![
+            "x86_64-pc-windows-msvc".to_string(),
+        ]));
 
         let findings = HomebrewSchemaValidator
             .validate(
@@ -698,7 +898,7 @@ mod tests {
             .expect("validation runs without erroring on the absent archive");
         assert!(
             findings.is_empty(),
-            "a crate with no archive in this shard must be skipped, got: {findings:?}"
+            "a crate with no homebrew-eligible archive in this shard must be skipped, got: {findings:?}"
         );
     }
 
