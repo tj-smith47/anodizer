@@ -65,6 +65,17 @@ tasks:
         cargo run -p anodizer --release -- check determinism \
           --require-tools --runs=2 --targets="$csv" --preserve-dist=./preserved-dist
 
+  check:native-object-determinism:
+    desc: "Guard: aws-lc-sys/ring/zstd-sys/lzma-sys/blake3 stay byte-identical under clang-cl across rebuilds, ignoring the benign COFF TimeDateStamp (mirrors the CI native-object-determinism job). Windows-only — clang-cl C-codegen determinism has no equivalent on other hosts."
+    cmds:
+      - |
+        set -eu
+        if [ "{{OS}}" != "windows" ]; then
+          echo "check:native-object-determinism: skip — windows-only guard (this host is {{OS}})."
+          exit 0
+        fi
+        bash scripts/native-object-determinism.sh
+
   check:config:
     desc: "Validate this repo's anodize config (single-crate, post-restructure form)."
     deps: [_check:tmp-headroom]
@@ -310,15 +321,16 @@ tasks:
     # local equivalent here (enforced by audit:gate-mirror). Slow by design
     # (the instrumented coverage run dominates); the snapshot step is the same
     # dry-run CI runs. `task ci` remains the fast inner-loop subset.
-    desc: "FULL local gate — mirrors EVERY blocking CI job (fmt, clippy, cargo-audit, test, package, docs-check, validate-readme, check-config, snapshot, coverage, actionlint). Slow; the pre-push floor."
+    desc: "FULL local gate — mirrors EVERY blocking CI job (fmt, clippy, cargo-audit, test, package, docs-check, validate-readme, check-config, native-object-determinism, snapshot, coverage, actionlint). Slow; the pre-push floor."
     cmds:
-      - task: ci                     # fmt:check, clippy, test, docs:check, package
-      - task: audit:deps             # cargo-audit
-      - task: docs:validate-readme   # validate-readme
-      - task: check:config           # check-config
-      - task: snapshot               # snapshot (dry-run)
-      - task: audit:workflows        # actionlint
-      - task: coverage:gate          # coverage floor
+      - task: ci                              # fmt:check, clippy, test, docs:check, package
+      - task: audit:deps                      # cargo-audit
+      - task: docs:validate-readme            # validate-readme
+      - task: check:config                    # check-config
+      - task: check:native-object-determinism # native-object-determinism (windows-only; no-ops elsewhere)
+      - task: snapshot                        # snapshot (dry-run)
+      - task: audit:workflows                 # actionlint
+      - task: coverage:gate                   # coverage floor
 
   commit:
     desc: "Lint (regenerates docs), restage only the user's intended files, then commit. Usage: task commit -- -m 'my message'"

@@ -34,6 +34,7 @@ declare -A JOB_MIRROR=(
     [validate-readme]="docs:validate-readme"
     [check-config]="check:config"
     [docs-check]="docs:check"
+    [native-object-determinism]="check:native-object-determinism"
     [coverage]="coverage:gate"
 )
 

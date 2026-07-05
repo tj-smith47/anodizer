@@ -213,6 +213,27 @@ jobs:
       - name: Validate .anodizer.yaml
         run: ./target/release/anodizer check config
 
+  native-object-determinism:
+    name: Native Object Determinism (Windows)
+    runs-on: windows-latest
+    # Two full C-heavy dep builds (aws-lc-sys/ring/zstd-sys/lzma-sys/blake3) plus
+    # a cargo clean between them; baseline is well under 30 min but keep the
+    # same headroom as the other real-build jobs in this workflow.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      # No sccache here (unlike the other Rust jobs): the guard rebuilds the
+      # same crates twice to compare their C objects, and a compile cache
+      # would return the same cached object for both builds regardless of
+      # whether clang-cl codegen is actually deterministic, hiding the exact
+      # regression this job exists to catch.
+      - uses: ./.github/actions/setup-rust
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Native object determinism (clang-cl)
+        shell: bash
+        run: bash scripts/native-object-determinism.sh
+
   # PR-blocking freshness gate. Shared with docs.yml's deploy-gating check via
   # the reusable docs-check.yml so both moments (pre-merge here, pre-deploy
   # there) verify the identical freshness step. Runs on pull_request (and master
