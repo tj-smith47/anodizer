@@ -2764,6 +2764,182 @@ mod tests {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // on_rollback firing — the two questions on_error cannot answer:
+    // (a) a publisher that SUCCEEDED then got reverted by a sibling's failure
+    //     fires on_rollback but NOT on_error;
+    // (b) a publisher that FAILED and was rolled back (cargo yank) fires BOTH.
+    // Exercised through the real stage sequence (dispatch / synthetic report →
+    // run_rollback_if_needed → fire_on_error_hooks).
+    // -----------------------------------------------------------------------
+    mod on_rollback_firing {
+        use super::*;
+        use crate::testing::*;
+        use anodizer_core::config::{CrateConfig, HookEntry, PublishConfig, StructuredHook};
+        use anodizer_core::test_helpers::TestContextBuilder;
+        use anodizer_core::{
+            PublishEvidence, PublishReport, Publisher, PublisherGroup, PublisherOutcome,
+            PublisherResult, context::Context,
+        };
+
+        /// An env-var probe hook: appends `$ANODIZER_PUBLISHER` to `out` so the
+        /// test can assert WHICH publisher a given hook fired for, with no
+        /// template-brace escaping.
+        fn publisher_probe(out: &std::path::Path) -> HookEntry {
+            let out_sh = out.display().to_string().replace('\\', "/");
+            HookEntry::Structured(StructuredHook {
+                cmd: format!("printf '%s\\n' \"$ANODIZER_PUBLISHER\" >> {out_sh}"),
+                ..Default::default()
+            })
+        }
+
+        /// Single-crate context carrying BOTH an `on_error` probe (writes to
+        /// `on_error_out`) and an `on_rollback` probe (writes to
+        /// `on_rollback_out`), so a run can prove which hook fired for whom.
+        fn ctx_with_both_hooks(
+            on_error_out: &std::path::Path,
+            on_rollback_out: &std::path::Path,
+            dist: std::path::PathBuf,
+        ) -> Context {
+            let publish = PublishConfig {
+                on_error: Some(vec![publisher_probe(on_error_out)]),
+                on_rollback: Some(vec![publisher_probe(on_rollback_out)]),
+                ..Default::default()
+            };
+            TestContextBuilder::new()
+                .tag("v1.0.0")
+                .dist(dist)
+                .crates(vec![CrateConfig {
+                    name: "app".to_string(),
+                    path: ".".to_string(),
+                    publish: Some(publish),
+                    ..Default::default()
+                }])
+                .build()
+        }
+
+        /// A succeeded Manager (homebrew) reverted because a sibling required
+        /// Manager (krew) failed: homebrew's `on_rollback` fires, its
+        /// `on_error` does NOT; krew's `on_error` fires, its `on_rollback`
+        /// does NOT.
+        #[test]
+        fn succeeded_then_reverted_fires_on_rollback_not_on_error() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let on_error_out = dir.path().join("on_error.txt");
+            let on_rollback_out = dir.path().join("on_rollback.txt");
+            let mut ctx =
+                ctx_with_both_hooks(&on_error_out, &on_rollback_out, dir.path().join("dist"));
+
+            let publishers = vec![
+                fake(
+                    "homebrew",
+                    PublisherGroup::Manager,
+                    false,
+                    FakeOutcome::Succeed,
+                ),
+                fake(
+                    "krew",
+                    PublisherGroup::Manager,
+                    true,
+                    FakeOutcome::Fail("krew PR rejected".into()),
+                ),
+            ];
+            let log = ctx.logger("publish-test");
+            PublishStage::run_with_publishers(&mut ctx, &log, &publishers)
+                .expect("run_with_publishers Ok");
+            run_rollback_if_needed(&mut ctx, &publishers, &log);
+            fire_on_error_hooks(&ctx, &log);
+
+            let on_rollback = std::fs::read_to_string(&on_rollback_out)
+                .expect("on_rollback hook must have run for the reverted publisher");
+            assert_eq!(
+                on_rollback.trim(),
+                "homebrew",
+                "on_rollback fires only for the reverted (succeeded) publisher"
+            );
+            let on_error = std::fs::read_to_string(&on_error_out)
+                .expect("on_error hook must have run for the failed publisher");
+            assert_eq!(
+                on_error.trim(),
+                "krew",
+                "on_error fires only for the failed publisher — never the reverted one"
+            );
+        }
+
+        /// A cargo-shaped submitter that yanks its recorded crates on failure.
+        struct YankSubmitter;
+        impl Publisher for YankSubmitter {
+            fn name(&self) -> &str {
+                "cargo"
+            }
+            fn group(&self) -> PublisherGroup {
+                PublisherGroup::Submitter
+            }
+            fn required(&self) -> bool {
+                true
+            }
+            fn skips_on_nightly(&self) -> bool {
+                false
+            }
+            fn run(&self, _ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
+                Ok(PublishEvidence::new("cargo"))
+            }
+            fn rollback(
+                &self,
+                _ctx: &mut Context,
+                _evidence: &PublishEvidence,
+            ) -> anyhow::Result<()> {
+                Ok(())
+            }
+            fn programmatic_rollback_on_failure(&self, _evidence: &PublishEvidence) -> bool {
+                true
+            }
+        }
+
+        /// A failed cargo submitter whose recorded crates get yanked fires
+        /// BOTH `on_error` (it failed) and `on_rollback` (it was rolled back),
+        /// while its row keeps the `Failed` outcome on a successful yank. The
+        /// report is seeded directly because a `FakePublisher` cannot record
+        /// the partial-publish evidence real cargo lands a `Failed`+evidence
+        /// row with.
+        #[test]
+        fn failed_and_rolled_back_fires_both_hooks() {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let on_error_out = dir.path().join("on_error.txt");
+            let on_rollback_out = dir.path().join("on_rollback.txt");
+            let mut ctx =
+                ctx_with_both_hooks(&on_error_out, &on_rollback_out, dir.path().join("dist"));
+
+            let publishers: Vec<Box<dyn Publisher>> = vec![Box::new(YankSubmitter)];
+            let mut report = PublishReport::default();
+            report.results.push(PublisherResult {
+                name: "cargo".to_string(),
+                group: PublisherGroup::Submitter,
+                required: true,
+                outcome: PublisherOutcome::Failed("crate B publish rejected".into()),
+                evidence: Some(PublishEvidence::new("cargo")),
+            });
+            ctx.set_publish_report(report);
+
+            let log = ctx.logger("publish-test");
+            run_rollback_if_needed(&mut ctx, &publishers, &log);
+            fire_on_error_hooks(&ctx, &log);
+
+            // Row keeps Failed on a successful yank.
+            let final_report = ctx.publish_report().expect("report present");
+            assert!(
+                matches!(final_report.results[0].outcome, PublisherOutcome::Failed(_)),
+                "a successful yank keeps the Failed outcome"
+            );
+            let on_rollback = std::fs::read_to_string(&on_rollback_out)
+                .expect("on_rollback must fire for the yanked publisher");
+            assert_eq!(on_rollback.trim(), "cargo");
+            let on_error = std::fs::read_to_string(&on_error_out)
+                .expect("on_error must fire for the failed publisher");
+            assert_eq!(on_error.trim(), "cargo");
+        }
+    }
+
     #[test]
     fn test_run_dry_run_nix() {
         use anodizer_core::config::{NixConfig, RepositoryConfig};

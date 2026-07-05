@@ -237,6 +237,43 @@ env form plus `--raw` anyway, for the two reasons above.
 Hook failures are logged as warnings and never change the release outcome.
 For ad-hoc notifications (outside a release), use `anodizer notify`.
 
+## `on_rollback` hooks
+
+`on_error` fires only for a publisher that *itself* failed. A triggered
+rollback, though, can revert a publisher that **succeeded and never errored** —
+a pushed Homebrew tap, an opened PR, a pushed git tag — because a *sibling*
+required publisher failed. That reverted-but-not-failed publisher has no
+`on_error` surface. `on_rollback` is its notification surface: it fires once per
+publisher a rollback reverted, including the succeeded-then-reverted case, and
+including a revert that itself failed (`{{ .RollbackFailed }}` is then `true` —
+the orphaned-artifact escalation signal).
+
+```yaml
+publish:
+  on_rollback:
+    - cmd: 'anodizer notify --raw "anodizer: $ANODIZER_PUBLISHER reverted @ $ANODIZER_VERSION (rollback_failed=$ANODIZER_ROLLBACK_FAILED)"'
+```
+
+`on_rollback` is independent of `on_error`: a publisher that both failed and was
+rolled back (cargo, whose recorded crates are yanked on a partial-publish
+failure) fires **both** hooks — they answer different questions.
+
+| Env var | Template variable | Value |
+|---|---|---|
+| `ANODIZER_PUBLISHER` | `{{ .Publisher }}` | Publisher name (e.g. `homebrew`) |
+| `ANODIZER_VERSION` | `{{ .Version }}` | Release version (e.g. `0.8.0`) |
+| `ANODIZER_TAG` | `{{ .Tag }}` | Release tag (e.g. `v0.8.0`) |
+| `ANODIZER_GROUP` | `{{ .Group }}` | Publisher group: `Assets`, `Manager`, or `Submitter` |
+| `ANODIZER_REQUIRED` | `{{ .Required }}` | `true` / `false` |
+| `ANODIZER_ROLLBACK_FAILED` | `{{ .RollbackFailed }}` | `true` when the revert itself failed (live artifact needing manual cleanup); `false` on a clean revert |
+| `ANODIZER_ERROR` | `{{ .Error }}` | The rollback failure message; empty on a clean revert |
+
+The same security note applies: `{{ .Error }}` carries untrusted git/API text —
+read it from `$ANODIZER_ERROR` with `--raw` rather than interpolating it into
+`cmd`. Hook failures are logged as warnings and never change the release
+outcome or abort the remaining rollbacks. In workspace per-crate mode both
+channels carry the per-crate-scoped `Version` / `Tag`.
+
 ### Rollback scope preflight
 
 Each publisher declares a `rollback_scope_needed` label (the bullet list

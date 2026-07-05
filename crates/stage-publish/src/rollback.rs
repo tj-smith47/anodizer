@@ -84,20 +84,18 @@ pub fn run(
         // Clone the data we need so we can mutate `report.results[i].outcome`
         // afterward without overlapping borrows. Evidence is guaranteed
         // present by the target filter above.
-        let (name, evidence, current) = {
+        let (row, evidence) = {
             let r = &report.results[i];
             (
-                r.name.clone(),
+                r.clone(),
                 r.evidence
                     .clone()
                     .expect("evidence present per filter above"),
-                r.outcome.clone(),
             )
         };
 
-        let (outcome, disposition) = execute_rollback_step(
-            &name, &evidence, &current, publishers, &aux, ctx, "rollback",
-        );
+        let (outcome, disposition) =
+            execute_rollback_step(&row, &evidence, publishers, &aux, ctx, "rollback");
         match disposition {
             RollbackDisposition::RolledBack => rolled_back += 1,
             // The live summary folds "publisher not found" into `failed` (the
@@ -253,14 +251,15 @@ pub(crate) enum RollbackDisposition {
 /// them. `prefix` labels the scope-unavailable warning (`"rollback"` /
 /// `"rollback-only"`).
 pub(crate) fn execute_rollback_step(
-    name: &str,
+    row: &anodizer_core::PublisherResult,
     evidence: &anodizer_core::PublishEvidence,
-    current: &PublisherOutcome,
     publishers: &[Box<dyn Publisher>],
     aux: &[Box<dyn Publisher>],
     ctx: &mut Context,
     prefix: &str,
 ) -> (PublisherOutcome, RollbackDisposition) {
+    let name = row.name.as_str();
+    let current = &row.outcome;
     let log = ctx.logger("publish");
     let Some(publisher) = publishers
         .iter()
@@ -311,11 +310,34 @@ pub(crate) fn execute_rollback_step(
             } else {
                 PublisherOutcome::RolledBack
             };
+            // The publisher's own state was reverted — including a
+            // `Succeeded`-then-reverted publisher whose on_error never fires.
+            // Empty error: a clean revert has no failure message.
+            crate::failure_hooks::fire_on_rollback(
+                ctx,
+                name,
+                row.group,
+                row.required,
+                false,
+                "",
+                &log,
+            );
             (outcome, RollbackDisposition::RolledBack)
         }
         Err(err) => {
             let msg = format!("{:#}", err);
             log.warn(&format!("rollback for '{name}' failed: {msg}"));
+            // A live artifact anodizer could not pull — the on_rollback hook is
+            // the escalation surface (`{{ .RollbackFailed }}` == true).
+            crate::failure_hooks::fire_on_rollback(
+                ctx,
+                name,
+                row.group,
+                row.required,
+                true,
+                &msg,
+                &log,
+            );
             (
                 PublisherOutcome::RollbackFailed(msg),
                 RollbackDisposition::Failed,
@@ -760,6 +782,121 @@ mod tests {
         assert!(matches!(
             report.results[0].outcome,
             PublisherOutcome::Succeeded
+        ));
+    }
+
+    /// Build a Context whose single crate declares an `on_rollback` hook that
+    /// appends `<publisher> rf=<RollbackFailed>` (read from the process env, so
+    /// no template-brace escaping) to `out` — the probe every on_rollback
+    /// routing test asserts against.
+    fn ctx_with_on_rollback_probe(out: &std::path::Path) -> Context {
+        use anodizer_core::config::{CrateConfig, HookEntry, PublishConfig, StructuredHook};
+        use anodizer_core::test_helpers::TestContextBuilder;
+        let out_sh = out.display().to_string().replace('\\', "/");
+        let publish = PublishConfig {
+            on_rollback: Some(vec![HookEntry::Structured(StructuredHook {
+                cmd: format!(
+                    "printf '%s\\n' \"$ANODIZER_PUBLISHER rf=$ANODIZER_ROLLBACK_FAILED\" >> {out_sh}"
+                ),
+                ..Default::default()
+            })]),
+            ..Default::default()
+        };
+        TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                publish: Some(publish),
+                ..Default::default()
+            }])
+            .build()
+    }
+
+    /// Headline case: a `Succeeded` publisher reverted only because the
+    /// unwind triggered — its `on_rollback` fires with `RollbackFailed=false`.
+    /// This is the surface `on_error` cannot reach (the publisher never
+    /// failed).
+    #[test]
+    fn on_rollback_fires_for_succeeded_then_reverted_publisher() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("rb.txt");
+        let mut ctx = ctx_with_on_rollback_probe(&out);
+        let publishers = vec![fake(
+            "homebrew",
+            PublisherGroup::Manager,
+            true,
+            FakeOutcome::Succeed,
+        )];
+        let mut report = PublishReport::default();
+        report
+            .results
+            .push(succeeded("homebrew", PublisherGroup::Manager, true));
+
+        run(&publishers, &mut report, &mut ctx, RollbackMode::BestEffort);
+
+        assert!(matches!(
+            report.results[0].outcome,
+            PublisherOutcome::RolledBack
+        ));
+        let body = std::fs::read_to_string(&out).expect("on_rollback hook must have run");
+        assert_eq!(
+            body.trim(),
+            "homebrew rf=false",
+            "on_rollback fires for the reverted publisher with RollbackFailed=false"
+        );
+    }
+
+    /// A revert that itself fails fires `on_rollback` with
+    /// `RollbackFailed=true` — the orphaned-artifact escalation surface.
+    #[test]
+    fn on_rollback_fires_with_rollback_failed_true_when_revert_fails() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("rb.txt");
+        let mut ctx = ctx_with_on_rollback_probe(&out);
+        let publishers = vec![fake_with_rollback(
+            "homebrew",
+            PublisherGroup::Manager,
+            true,
+            FakeOutcome::Succeed,
+            FakeRollback::Fail("tap delete rejected".into()),
+        )];
+        let mut report = PublishReport::default();
+        report
+            .results
+            .push(succeeded("homebrew", PublisherGroup::Manager, true));
+
+        run(&publishers, &mut report, &mut ctx, RollbackMode::BestEffort);
+
+        assert!(matches!(
+            report.results[0].outcome,
+            PublisherOutcome::RollbackFailed(_)
+        ));
+        let body = std::fs::read_to_string(&out).expect("on_rollback hook must have run");
+        assert_eq!(body.trim(), "homebrew rf=true");
+    }
+
+    /// A publisher with no `on_rollback` configured must roll back cleanly with
+    /// no hook side effect — the absent-hook path is a silent no-op.
+    #[test]
+    fn on_rollback_absent_is_noop() {
+        let mut ctx = Context::test_fixture();
+        let publishers = vec![fake(
+            "homebrew",
+            PublisherGroup::Manager,
+            true,
+            FakeOutcome::Succeed,
+        )];
+        let mut report = PublishReport::default();
+        report
+            .results
+            .push(succeeded("homebrew", PublisherGroup::Manager, true));
+
+        run(&publishers, &mut report, &mut ctx, RollbackMode::BestEffort);
+
+        assert!(matches!(
+            report.results[0].outcome,
+            PublisherOutcome::RolledBack
         ));
     }
 }

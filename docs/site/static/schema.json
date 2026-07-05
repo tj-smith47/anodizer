@@ -11645,6 +11645,17 @@
             "$ref": "#/definitions/HookEntry"
           }
         },
+        "on_rollback": {
+          "description": "Hooks that fire once per publisher that a triggered rollback REVERTED — including a publisher that itself `Succeeded` and was only reverted because a sibling required publisher failed (the case `on_error`, which fires solely for the failed publisher, never reaches). A publisher whose rollback was attempted but could not complete fires this too, with `{{ .RollbackFailed }}` set to `true` so the hook can escalate the orphaned-artifact case. Each entry is a standard hook (`cmd` / `dir` / `env` / `output`); the template surface adds `{{ .Publisher }}`, `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}` (Assets/Manager/Submitter), `{{ .Required }}`, `{{ .RollbackFailed }}` (`true` when the revert itself failed), and `{{ .Error }}` (the rollback failure message, empty on a clean revert). The same values are exported to the hook process as `ANODIZER_PUBLISHER`, `ANODIZER_VERSION`, `ANODIZER_TAG`, `ANODIZER_GROUP`, `ANODIZER_REQUIRED`, `ANODIZER_ROLLBACK_FAILED`, and `ANODIZER_ERROR`. A hook's own failure is logged as a warning and never changes the release outcome or aborts the remaining rollbacks. It is independent of `on_error`: a publisher that both failed and was rolled back fires both.\n\n```yaml publish: on_rollback: - cmd: 'anodizer notify --raw \"anodizer: $ANODIZER_PUBLISHER reverted @ $ANODIZER_VERSION (rollback_failed=$ANODIZER_ROLLBACK_FAILED)\"' ```",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/HookEntry"
+          }
+        },
         "scoop": {
           "description": "Scoop manifest publishing configuration.",
           "default": null,
@@ -11774,6 +11785,17 @@
         },
         "on_error": {
           "description": "Hooks fired once per failed publisher — same surface as `publish.on_error` on individual crate configs. Merged into every crate's resolved publish config.",
+          "default": null,
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "$ref": "#/definitions/HookEntry"
+          }
+        },
+        "on_rollback": {
+          "description": "Hooks fired once per publisher a triggered rollback reverted — same surface as `publish.on_rollback` on individual crate configs. Merged into every crate's resolved publish config.",
           "default": null,
           "type": [
             "array",

@@ -237,15 +237,15 @@ pub(crate) fn run_with_publishers(
     let mut skipped_no_scope = 0usize;
 
     for i in target_indices {
-        let (name, evidence) = {
+        let (row, evidence) = {
             let r = &report.results[i];
-            (r.name.clone(), r.evidence.clone())
+            (r.clone(), r.evidence.clone())
         };
 
         let Some(evidence) = evidence else {
             log.warn(&format!(
                 "skipped rollback for '{}' — no evidence in prior report",
-                name,
+                row.name,
             ));
             failed += 1;
             report.results[i].outcome =
@@ -257,11 +257,9 @@ pub(crate) fn run_with_publishers(
         // `Failed`-keeps-its-outcome-on-successful-yank rule are shared with the
         // live path via `rollback::execute_rollback_step` so the two cannot
         // drift (the replay path previously skipped `retain_on_rollback`).
-        let current = report.results[i].outcome.clone();
         let (outcome, disposition) = crate::rollback::execute_rollback_step(
-            &name,
+            &row,
             &evidence,
-            &current,
             publishers,
             &aux,
             ctx,

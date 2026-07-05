@@ -153,6 +153,10 @@ pub struct PublishDefaults {
     /// `publish.on_error` on individual crate configs. Merged into
     /// every crate's resolved publish config.
     pub on_error: Option<Vec<HookEntry>>,
+    /// Hooks fired once per publisher a triggered rollback reverted — same
+    /// surface as `publish.on_rollback` on individual crate configs. Merged
+    /// into every crate's resolved publish config.
+    pub on_rollback: Option<Vec<HookEntry>>,
 }
 
 /// Marker block under `defaults.crates:` that signals crate-axis defaults

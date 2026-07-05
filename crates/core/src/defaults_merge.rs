@@ -553,6 +553,7 @@ fn merge_publish_defaults(target: &mut PublishConfig, defaults: &PublishDefaults
     deep_merge_option(&mut target.aur, defaults.aur.as_ref());
     deep_merge_option(&mut target.aur_source, defaults.aur_source.as_ref());
     merge_append_list(&mut target.on_error, defaults.on_error.as_ref());
+    merge_append_list(&mut target.on_rollback, defaults.on_rollback.as_ref());
 }
 
 // ---------------------------------------------------------------------------
@@ -861,6 +862,56 @@ mod tests {
             .expect("crate b on_error");
         assert_eq!(b.len(), 1, "crate b inherits the defaults list outright");
         assert!(b[0] == "notify-default");
+    }
+
+    /// `defaults.publish.on_rollback` append-merges into EVERY crate of a
+    /// multi-crate (lockstep) workspace independently, mirroring `on_error`:
+    /// a crate with its own hooks keeps them first with the defaults appended
+    /// after; a crate with no `publish:` block inherits the defaults outright.
+    #[test]
+    fn on_rollback_defaults_append_merge_across_lockstep_crates() {
+        use crate::config::HookEntry;
+
+        let mut crate_a = make_crate("a");
+        crate_a.publish = Some(PublishConfig {
+            on_rollback: Some(vec![HookEntry::Simple("revert-a".to_string())]),
+            ..Default::default()
+        });
+        let crate_b = make_crate("b");
+
+        let mut config = Config {
+            crates: vec![crate_a, crate_b],
+            defaults: Some(Defaults {
+                publish: Some(PublishDefaults {
+                    on_rollback: Some(vec![HookEntry::Simple("revert-default".to_string())]),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        apply_defaults(&mut config);
+
+        let a = config.crates[0]
+            .publish
+            .as_ref()
+            .expect("crate a publish block")
+            .on_rollback
+            .as_ref()
+            .expect("crate a on_rollback");
+        assert_eq!(a.len(), 2, "per-crate hook first, defaults appended");
+        assert!(a[0] == "revert-a", "crate a's own hook must come first");
+        assert!(a[1] == "revert-default", "defaults hook appended after");
+
+        let b = config.crates[1]
+            .publish
+            .as_ref()
+            .expect("crate b publish block created by the merge")
+            .on_rollback
+            .as_ref()
+            .expect("crate b on_rollback");
+        assert_eq!(b.len(), 1, "crate b inherits the defaults list outright");
+        assert!(b[0] == "revert-default");
     }
 
     // --------------- Cargo (crates.io) publisher defaults ---------------

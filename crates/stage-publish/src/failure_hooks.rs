@@ -29,15 +29,19 @@ use anodizer_core::log::StageLogger;
 use anodizer_core::template::TemplateVars;
 use anodizer_core::{PublisherGroup, PublisherResult};
 
-/// Walk the in-scope crates' `publish:` blocks and return the `on_error`
-/// hooks for the first crate that declares them.
+/// Walk the in-scope crates' `publish:` blocks and return the failure hooks
+/// (`select` picks the `on_error` / `on_rollback` list) for the first crate
+/// that declares them.
 ///
 /// Scope follows the active per-crate run: when `selected_crates` is set
 /// (workspace per-crate mode), only those crates are consulted; otherwise
 /// (single-crate / lockstep) every crate is. Returned hooks are cloned so
 /// the borrow on `ctx.config` does not outlive the subsequent `run_hooks`
 /// call.
-fn resolve_on_error_hooks(ctx: &Context) -> Vec<HookEntry> {
+fn resolve_hooks(
+    ctx: &Context,
+    select: impl Fn(&anodizer_core::config::PublishConfig) -> Option<&[HookEntry]>,
+) -> Vec<HookEntry> {
     let selected = &ctx.options.selected_crates;
     for c in ctx.config.crate_universe() {
         if !selected.is_empty() && !selected.iter().any(|s| s == &c.name) {
@@ -46,7 +50,7 @@ fn resolve_on_error_hooks(ctx: &Context) -> Vec<HookEntry> {
         let Some(publish) = c.publish.as_ref() else {
             continue;
         };
-        if let Some(hooks) = publish.on_error.as_deref() {
+        if let Some(hooks) = select(publish) {
             return hooks.to_vec();
         }
     }
@@ -117,12 +121,13 @@ const FAILURE_ENV_VARS: [(&str, &str); 7] = [
     ("ANODIZER_ROLLED_BACK", "RolledBack"),
 ];
 
-/// Project the bound failure vars into `ANODIZER_*` env pairs. Reading back
-/// from `vars` (rather than re-deriving from the publisher result) keeps the
-/// env channel equal to the template surface by construction — including the
-/// per-crate-scoped `Version` / `Tag` already bound on the context.
-fn failure_env(vars: &TemplateVars) -> Vec<(String, String)> {
-    FAILURE_ENV_VARS
+/// Project the bound vars into `ANODIZER_*` env pairs via `env_table`.
+/// Reading back from `vars` (rather than re-deriving from the publisher
+/// result) keeps the env channel equal to the template surface by
+/// construction — including the per-crate-scoped `Version` / `Tag` already
+/// bound on the context.
+fn project_env(vars: &TemplateVars, env_table: &[(&str, &str)]) -> Vec<(String, String)> {
+    env_table
         .iter()
         .map(|(env_key, var_key)| {
             let value = vars.get(var_key).cloned().unwrap_or_default();
@@ -133,14 +138,17 @@ fn failure_env(vars: &TemplateVars) -> Vec<(String, String)> {
 
 /// Execute the resolved hook list, downgrading any hook failure to a warning
 /// so it cannot cascade into the release outcome or abort sibling steps.
+/// `env_table` selects which vars are also exported as `ANODIZER_*` process
+/// environment (the failure-hook or rollback-hook table).
 fn run_warn_only(
     hooks: &[HookEntry],
     label: &str,
     dry_run: bool,
     log: &StageLogger,
     vars: &TemplateVars,
+    env_table: &[(&str, &str)],
 ) {
-    let env = failure_env(vars);
+    let env = project_env(vars, env_table);
     let ctx = HookRunContext::new(dry_run, log, Some(vars)).with_extra_env(&env);
     if let Err(err) = run_hooks(hooks, label, ctx) {
         log.warn(&format!(
@@ -162,12 +170,115 @@ pub(crate) fn fire_on_error(
     rollback_happened: bool,
     log: &StageLogger,
 ) {
-    let hooks = resolve_on_error_hooks(ctx);
+    let hooks = resolve_hooks(ctx, |p| p.on_error.as_deref());
     if hooks.is_empty() {
         return;
     }
     let vars = bind_failure_vars(ctx.template_vars(), result, error, rollback_happened);
-    run_warn_only(&hooks, "on-error", ctx.is_dry_run(), log, &vars);
+    run_warn_only(
+        &hooks,
+        "on-error",
+        ctx.is_dry_run(),
+        log,
+        &vars,
+        &FAILURE_ENV_VARS,
+    );
+}
+
+/// The rollback-context key/value pairs bound on top of the standard per-crate
+/// vars — the single source of truth for the on_rollback template binding
+/// ([`bind_rollback_vars`]). Every key here must have a matching
+/// [`ROLLBACK_ENV_VARS`] entry so the env channel never silently lags the
+/// template surface; the exhaustiveness test pins that invariant. `Version` /
+/// `Tag` are deliberately absent (already bound per-crate on
+/// `ctx.template_vars()`), mirroring [`failure_var_values`].
+fn rollback_var_values(
+    name: &str,
+    group: PublisherGroup,
+    required: bool,
+    rollback_failed: bool,
+    error: &str,
+) -> [(&'static str, String); 5] {
+    let bool_str = |b: bool| (if b { "true" } else { "false" }).to_string();
+    [
+        ("Publisher", name.to_string()),
+        ("Group", group_label(group).to_string()),
+        ("Required", bool_str(required)),
+        ("RollbackFailed", bool_str(rollback_failed)),
+        ("Error", error.to_string()),
+    ]
+}
+
+/// Bind the on_rollback template surface ([`rollback_var_values`]) on top of
+/// the standard per-crate vars: `{{ .Publisher }}`, `{{ .Group }}`,
+/// `{{ .Required }}`, `{{ .RollbackFailed }}`, `{{ .Error }}`.
+fn bind_rollback_vars(
+    base: &TemplateVars,
+    name: &str,
+    group: PublisherGroup,
+    required: bool,
+    rollback_failed: bool,
+    error: &str,
+) -> TemplateVars {
+    let mut vars = base.clone();
+    for (key, value) in rollback_var_values(name, group, required, rollback_failed, error) {
+        vars.set(key, &value);
+    }
+    vars
+}
+
+/// `ANODIZER_*` env var → template var pairs exported to an on_rollback hook.
+/// Same construction and injection-safety rationale as [`FAILURE_ENV_VARS`]:
+/// `.Error` carries the rollback failure message (git stderr / API body), so
+/// hooks read `"$ANODIZER_ERROR"` rather than interpolating it into `cmd`.
+const ROLLBACK_ENV_VARS: [(&str, &str); 7] = [
+    ("ANODIZER_PUBLISHER", "Publisher"),
+    ("ANODIZER_VERSION", "Version"),
+    ("ANODIZER_TAG", "Tag"),
+    ("ANODIZER_GROUP", "Group"),
+    ("ANODIZER_REQUIRED", "Required"),
+    ("ANODIZER_ROLLBACK_FAILED", "RollbackFailed"),
+    ("ANODIZER_ERROR", "Error"),
+];
+
+/// Fire `on_rollback` hooks for a single publisher a triggered rollback
+/// reverted, called from the rollback path once the publisher's rollback step
+/// is final. This fires for a publisher that `Succeeded` and was reverted only
+/// because a sibling required publisher failed — the case [`fire_on_error`],
+/// which fires solely for the failed publisher, cannot reach. It also fires
+/// when the revert itself failed: `rollback_failed` is then `true` (exposed as
+/// `{{ .RollbackFailed }}`) and `error` carries the rollback failure message
+/// (`{{ .Error }}`, empty on a clean revert). Independent of `on_error`: a
+/// publisher that both failed and was rolled back fires both hooks.
+pub(crate) fn fire_on_rollback(
+    ctx: &Context,
+    name: &str,
+    group: PublisherGroup,
+    required: bool,
+    rollback_failed: bool,
+    error: &str,
+    log: &StageLogger,
+) {
+    let hooks = resolve_hooks(ctx, |p| p.on_rollback.as_deref());
+    if hooks.is_empty() {
+        return;
+    }
+    let vars = bind_rollback_vars(
+        ctx.template_vars(),
+        name,
+        group,
+        required,
+        rollback_failed,
+        error,
+    );
+    run_warn_only(
+        &hooks,
+        "on-rollback",
+        ctx.is_dry_run(),
+        log,
+        &vars,
+        &ROLLBACK_ENV_VARS,
+    );
 }
 
 #[cfg(test)]
@@ -601,6 +712,263 @@ mod tests {
             body.trim(),
             "cargo@2.0.0",
             "only the in-scope crate's hooks fire; .Version resolves per crate"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // on_rollback firing surface
+    // -----------------------------------------------------------------------
+
+    /// A clean revert (`rollback_failed = false`) binds the publisher context
+    /// on the template surface with `.RollbackFailed = false` and an empty
+    /// `.Error`.
+    #[test]
+    fn on_rollback_fires_with_publisher_group_required_vars() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("fired.txt");
+        let publish = PublishConfig {
+            on_rollback: Some(vec![probe_hook(
+                &out,
+                "P={{ .Publisher }} V={{ .Version }} G={{ .Group }} R={{ .Required }} RF={{ .RollbackFailed }} E={{ .Error }}",
+            )]),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .tag("v1.2.3")
+            .crates(vec![crate_with_publish("app", publish)])
+            .build();
+
+        fire_on_rollback(
+            &ctx,
+            "homebrew",
+            PublisherGroup::Manager,
+            true,
+            false,
+            "",
+            &log(),
+        );
+
+        let body = std::fs::read_to_string(&out).expect("hook must have written output");
+        assert_eq!(
+            body.trim(),
+            "P=homebrew V=1.2.3 G=Manager R=true RF=false E=",
+            "on_rollback must bind .Publisher/.Version/.Group/.Required/.RollbackFailed/.Error"
+        );
+    }
+
+    /// A failed revert (`rollback_failed = true`) surfaces `.RollbackFailed`
+    /// and carries the rollback failure message in `.Error`.
+    #[test]
+    fn on_rollback_marks_rollback_failed_with_error_message() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("fired.txt");
+        let publish = PublishConfig {
+            on_rollback: Some(vec![probe_hook(
+                &out,
+                "RF={{ .RollbackFailed }} E={{ .Error }}",
+            )]),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![crate_with_publish("app", publish)])
+            .build();
+
+        fire_on_rollback(
+            &ctx,
+            "homebrew",
+            PublisherGroup::Manager,
+            true,
+            true,
+            "tap delete rejected",
+            &log(),
+        );
+
+        let body = std::fs::read_to_string(&out).expect("hook must have written output");
+        assert_eq!(body.trim(), "RF=true E=tap delete rejected");
+    }
+
+    const ALL_ROLLBACK_ENV_KEYS: [&str; 7] = [
+        "ANODIZER_PUBLISHER",
+        "ANODIZER_VERSION",
+        "ANODIZER_TAG",
+        "ANODIZER_GROUP",
+        "ANODIZER_REQUIRED",
+        "ANODIZER_ROLLBACK_FAILED",
+        "ANODIZER_ERROR",
+    ];
+
+    #[test]
+    fn on_rollback_exports_context_env_vars() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("env.txt");
+        let publish = PublishConfig {
+            on_rollback: Some(vec![env_probe_hook(&out, &ALL_ROLLBACK_ENV_KEYS)]),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .tag("v1.2.3")
+            .crates(vec![crate_with_publish("app", publish)])
+            .build();
+
+        fire_on_rollback(
+            &ctx,
+            "homebrew",
+            PublisherGroup::Manager,
+            true,
+            true,
+            "boom",
+            &log(),
+        );
+
+        let body = std::fs::read_to_string(&out).expect("hook must have written output");
+        for expected in [
+            "ANODIZER_PUBLISHER=homebrew",
+            "ANODIZER_VERSION=1.2.3",
+            "ANODIZER_TAG=v1.2.3",
+            "ANODIZER_GROUP=Manager",
+            "ANODIZER_REQUIRED=true",
+            "ANODIZER_ROLLBACK_FAILED=true",
+            "ANODIZER_ERROR=boom",
+        ] {
+            assert!(
+                body.lines().any(|l| l == expected),
+                "hook env must carry {expected}; got: {body:?}"
+            );
+        }
+    }
+
+    /// The env channel must mirror the on_rollback template surface exactly —
+    /// the same invariant [`env_channel_mirrors_failure_var_surface_exactly`]
+    /// pins for `on_error`. `Version` / `Tag` are ambient (bound by the
+    /// context per-crate), so they appear on the env side but not in
+    /// `rollback_var_values`.
+    #[test]
+    fn rollback_env_channel_mirrors_var_surface_exactly() {
+        use std::collections::BTreeSet;
+        let bound: BTreeSet<&str> =
+            rollback_var_values("homebrew", PublisherGroup::Manager, true, true, "boom")
+                .iter()
+                .map(|(key, _)| *key)
+                .collect();
+        let ambient: BTreeSet<&str> = BTreeSet::from(["Tag", "Version"]);
+        assert!(
+            bound.is_disjoint(&ambient),
+            "rollback_var_values must not re-bind the ambient per-crate vars"
+        );
+        let env_side: BTreeSet<&str> = ROLLBACK_ENV_VARS.iter().map(|(_, var)| *var).collect();
+        assert_eq!(
+            env_side.len(),
+            ROLLBACK_ENV_VARS.len(),
+            "ROLLBACK_ENV_VARS must not map the same template var twice"
+        );
+        let expected: BTreeSet<&str> = bound.union(&ambient).copied().collect();
+        assert_eq!(
+            env_side, expected,
+            "ROLLBACK_ENV_VARS must mirror rollback_var_values plus the ambient \
+             Tag/Version exactly — adding a var on either side without the \
+             matching entry on the other silently drops it from one channel"
+        );
+        let env_keys: BTreeSet<&str> = ROLLBACK_ENV_VARS.iter().map(|(key, _)| *key).collect();
+        assert_eq!(env_keys.len(), ROLLBACK_ENV_VARS.len(), "env names unique");
+        assert!(
+            env_keys.iter().all(|k| k.starts_with("ANODIZER_")),
+            "every exported env var must carry the ANODIZER_ prefix"
+        );
+    }
+
+    #[test]
+    fn on_rollback_failing_hook_warns_but_does_not_cascade() {
+        let publish = PublishConfig {
+            on_rollback: Some(vec![cmd_hook("exit 9")]),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![crate_with_publish("app", publish)])
+            .build();
+        // Reaching the end proves the failing hook was swallowed (warn-only)
+        // and did not panic or propagate.
+        fire_on_rollback(
+            &ctx,
+            "cargo",
+            PublisherGroup::Submitter,
+            true,
+            false,
+            "",
+            &log(),
+        );
+    }
+
+    #[test]
+    fn on_rollback_dry_run_logs_but_does_not_execute() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("fired.txt");
+        let publish = PublishConfig {
+            on_rollback: Some(vec![probe_hook(&out, "should-not-run")]),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .tag("v1.0.0")
+            .dry_run(true)
+            .crates(vec![crate_with_publish("app", publish)])
+            .build();
+
+        fire_on_rollback(
+            &ctx,
+            "homebrew",
+            PublisherGroup::Manager,
+            true,
+            false,
+            "",
+            &log(),
+        );
+
+        assert!(
+            !out.exists(),
+            "dry-run must log the hook without executing it"
+        );
+    }
+
+    /// Per-crate mode: only the in-scope crate's on_rollback hooks fire and
+    /// `.Version` resolves from the per-crate template vars — the workspace
+    /// per-crate config mode, mirroring the `on_error` per-crate test.
+    #[test]
+    fn on_rollback_per_crate_mode_resolves_scoped_and_isolated() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("fired.txt");
+        let scoped = PublishConfig {
+            on_rollback: Some(vec![probe_hook(&out, "{{ .Publisher }}@{{ .Version }}")]),
+            ..Default::default()
+        };
+        let other = PublishConfig {
+            on_rollback: Some(vec![probe_hook(&out, "WRONG-CRATE")]),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new()
+            .tag("v2.0.0")
+            .crates(vec![
+                crate_with_publish("app-core", scoped),
+                crate_with_publish("app-cli", other),
+            ])
+            .selected_crates(vec!["app-core".to_string()])
+            .build();
+
+        fire_on_rollback(
+            &ctx,
+            "cargo",
+            PublisherGroup::Submitter,
+            true,
+            false,
+            "",
+            &log(),
+        );
+
+        let body = std::fs::read_to_string(&out).expect("scoped crate hook must run");
+        assert_eq!(
+            body.trim(),
+            "cargo@2.0.0",
+            "only the in-scope crate's on_rollback hooks fire; .Version resolves per crate"
         );
     }
 }
