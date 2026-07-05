@@ -36,24 +36,17 @@ use crate::nix;
 /// version-sync emission, re-scopes the template vars to that crate and runs
 /// the matching cross-check. The first broken emission aborts with an
 /// actionable error.
+///
+/// On a target-restricted build (`--targets=`, the sharded determinism harness)
+/// the run produces only the shard's platforms' artifacts. Each validator
+/// self-skips the emissions it cannot satisfy on that partial set — the
+/// per-triple binstall / derived-name checks skip triples not built here, and
+/// the cross-platform aggregators (nix, homebrew) self-skip a crate with no
+/// eligible archive — so the single-platform emissions the shard CAN satisfy
+/// (its own archives → the windows / linux / macos publishers) are still
+/// validated. This closes the gap where a windows-only asset cross-check ran on
+/// zero shards; it does NOT skip validators wholesale.
 pub(crate) fn validate_snapshot_emissions(ctx: &mut Context, log: &StageLogger) -> Result<()> {
-    // A target-restricted build (`--targets=`, used by the sharded determinism
-    // harness so each runner only validates the targets it can natively build)
-    // intentionally produces a SUBSET of the configured targets' artifacts.
-    // Cross-platform publishers (homebrew, nix, scoop, …) aggregate assets
-    // across every target, so their emissions cannot be cross-checked against a
-    // by-construction-incomplete asset set: nix finds no Linux/Darwin archive, a
-    // homebrew formula is missing platforms, etc. Step aside rather than fail on
-    // the partial set — exactly as the harness skips produce-stages that don't
-    // belong to a shard. A full (non-sharded) `--snapshot` / `--dry-run` still
-    // exercises emission-validate end-to-end.
-    if ctx.options.partial_target.is_some() {
-        log.status(
-            "skipped emission validation — build is target-restricted (--targets); \
-             cross-platform emission checks require the full artifact set",
-        );
-        return Ok(());
-    }
     validate_snapshot_emissions_with_resolver(ctx, log, &resolve_crate_tag_or_snapshot)
 }
 
@@ -732,6 +725,33 @@ fn validate_nix(ctx: &mut Context, crate_cfg: &CrateConfig, log: &StageLogger) -
         return Ok(());
     }
 
+    // A target-restricted shard (`--targets=`, the sharded determinism harness)
+    // produces archives for only its own platforms; a windows-only shard yields
+    // windows archives (so `produced` above is non-empty) but no Linux/Darwin —
+    // the platforms a nix derivation `src` fetches. There is nothing to
+    // cross-check, so self-skip here rather than tripping the publish path's
+    // hard "no Linux/Darwin archive" guard (the v0.6.0 false-failure).
+    //
+    // The skip is gated on the partial-shard signal because `crate_has_nix_archive`
+    // reports absence the SAME way on a full build, where the absence is instead a
+    // genuine misconfiguration (nix configured with no nix-eligible artifact) that
+    // MUST still surface — the homebrew presence probe it mirrors does not itself
+    // distinguish the two cases, so a FULL build falls through to
+    // `render_nix_for_validation` below and keeps erroring. `crate_has_nix_archive`
+    // returns `Err` (not `Ok(false)`) for a present-but-broken nix artifact
+    // (missing sha256), so that defect still propagates on a partial shard.
+    if ctx.options.partial_target.is_some()
+        && let Some(nix_cfg) = crate_cfg.publish.as_ref().and_then(|p| p.nix.as_ref())
+        && !nix::crate_has_nix_archive(ctx, nix_cfg, &crate_cfg.name)?
+    {
+        log.verbose(&format!(
+            "skipped nix emission validation for crate '{}' — no Linux/Darwin (nix-eligible) \
+             archive in this target-restricted shard",
+            crate_cfg.name,
+        ));
+        return Ok(());
+    }
+
     let Some(render) = nix::render_nix_for_validation(ctx, &crate_cfg.name, log)? else {
         // Publisher would skip (skip / if-falsy / skip_upload); nothing to
         // validate.
@@ -831,8 +851,8 @@ mod tests {
 
     use anodizer_core::artifact::{Artifact, ArtifactKind};
     use anodizer_core::config::{
-        BinstallConfig, BinstallOverride, BuildConfig, CrateConfig, NixConfig, PublishConfig,
-        RepositoryConfig, VersionSyncConfig,
+        BinstallConfig, BinstallOverride, BuildConfig, CrateConfig, HomebrewConfig, NixConfig,
+        PublishConfig, RepositoryConfig, VersionSyncConfig, WingetConfig,
     };
     use anodizer_core::context::Context;
     use anodizer_core::log::{StageLogger, Verbosity};
@@ -1830,15 +1850,60 @@ mod tests {
         validate_nix(&mut ctx, &cfg, &log()).expect("zero produced archives must skip, not bail");
     }
 
-    /// A target-restricted build (`--targets=`, the sharded determinism harness)
-    /// must SKIP the whole emission-validate pass. The partial asset set cannot
-    /// satisfy a cross-platform publisher, so validating it always fails — the
-    /// exact failure that broke the v0.6.0 macOS + windows-aarch64 shards
-    /// (`nix: no Linux/Darwin archive`, `schema-validate publisher 'homebrew'`).
-    /// Here a deliberately-broken nix url would fail outside a restricted build;
-    /// with `partial_target` set the pass steps aside before reaching it.
+    /// Headline: the Windows-only asset cross-check that ran on ZERO shards
+    /// before per-validator self-skip. A target-restricted windows shard with a
+    /// broken `binstall` windows override (a `pkg_url` pointing at an asset the
+    /// release never produces for that triple) MUST now FAIL emission-validate —
+    /// the pass no longer wholesale-skips a target-restricted build, so the
+    /// windows 404 that `cargo binstall` would hit is caught on its own shard.
     #[test]
-    fn target_restricted_build_skips_whole_emission_validate() {
+    fn target_restricted_windows_shard_validates_binstall_windows_gap() {
+        use anodizer_core::partial::PartialTarget;
+        let mut overrides = BTreeMap::new();
+        overrides.insert(
+            "x86_64-pc-windows-msvc".to_string(),
+            BinstallOverride {
+                pkg_url: Some(
+                    "https://github.com/o/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-windows-WRONG.zip"
+                        .to_string(),
+                ),
+                ..Default::default()
+            },
+        );
+        let cfg = binstall_crate(BinstallConfig {
+            enabled: Some(true),
+            overrides: Some(overrides),
+            ..Default::default()
+        });
+        let mut ctx = scoped_ctx(cfg.clone());
+        add_archive(
+            &mut ctx,
+            "cfgd",
+            "x86_64-pc-windows-msvc",
+            "cfgd-1.0.0-x86_64-pc-windows-msvc.zip",
+        );
+        ctx.options.partial_target = Some(PartialTarget::Targets(vec![
+            "x86_64-pc-windows-msvc".to_string(),
+        ]));
+        let err = validate_snapshot_emissions(&mut ctx, &log()).expect_err(
+            "a windows-only shard must now VALIDATE the windows binstall override and catch the 404",
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("x86_64-pc-windows-msvc"),
+            "names the triple: {msg}"
+        );
+        assert!(msg.contains("404"), "explains the 404 class: {msg}");
+    }
+
+    /// Aggregator self-skip: on the SAME windows-only shard, the cross-platform
+    /// aggregators must NOT false-fail. nix carries a deliberately-broken url —
+    /// it fails the cross-check if ever run — so the pass succeeding proves nix
+    /// self-skipped for want of a Linux/Darwin archive; homebrew is configured
+    /// alongside it to prove the other aggregator does not false-fail on the
+    /// partial set either. This is the v0.6.0 regression guard.
+    #[test]
+    fn target_restricted_windows_shard_aggregators_self_skip() {
         use anodizer_core::partial::PartialTarget;
         let mut cfg = nix_crate();
         if let Some(nc) = cfg.publish.as_mut().and_then(|p| p.nix.as_mut()) {
@@ -1846,6 +1911,74 @@ mod tests {
                 "https://github.com/o/cfgd/releases/download/v{{ version }}/cfgd-{{ arch }}-WRONG.tar.gz"
                     .to_string(),
             );
+        }
+        if let Some(pub_cfg) = cfg.publish.as_mut() {
+            pub_cfg.homebrew = Some(HomebrewConfig {
+                repository: Some(RepositoryConfig {
+                    owner: Some("o".to_string()),
+                    name: Some("homebrew-tap".to_string()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            });
+        }
+        let mut ctx = scoped_ctx(cfg.clone());
+        add_archive(
+            &mut ctx,
+            "cfgd",
+            "x86_64-pc-windows-msvc",
+            "cfgd-1.0.0-x86_64-pc-windows-msvc.zip",
+        );
+        ctx.options.partial_target = Some(PartialTarget::Targets(vec![
+            "x86_64-pc-windows-msvc".to_string(),
+        ]));
+        validate_snapshot_emissions(&mut ctx, &log()).expect(
+            "windows-only shard: nix self-skips (no Linux/Darwin archive) and homebrew does not \
+             false-fail — the v0.6.0 regression must not return",
+        );
+    }
+
+    /// Full-build failure-hiding guard: the presence-probe skip must NOT hide a
+    /// real emission bug on a FULL (non-target-restricted) build. nix is
+    /// configured but the run produced only a windows archive — no Linux/Darwin
+    /// artifact the derivation `src` can fetch. With no `partial_target` this is
+    /// a genuine misconfiguration a real `nix build` would 404 on, so it MUST
+    /// still error; the probe narrows the skip to target-restricted shards only.
+    #[test]
+    fn full_build_nix_missing_linux_darwin_still_errors() {
+        let cfg = nix_crate();
+        let mut ctx = scoped_ctx(cfg.clone());
+        add_archive(
+            &mut ctx,
+            "cfgd",
+            "x86_64-pc-windows-msvc",
+            "cfgd-1.0.0-x86_64-pc-windows-msvc.zip",
+        );
+        // partial_target intentionally None — a full build.
+        let err = validate_nix(&mut ctx, &cfg, &log()).expect_err(
+            "a full build with nix configured but no Linux/Darwin archive must still error",
+        );
+        assert!(
+            format!("{err}").contains("Linux/Darwin"),
+            "surfaces the genuine full-build absence: {err}"
+        );
+    }
+
+    /// Linux shard symmetry: a linux-only target-restricted shard validates the
+    /// single-platform emissions it CAN satisfy (nix cross-checks its produced
+    /// Linux archive) and self-skips the windows-only validators (winget has no
+    /// Windows installer here) without error.
+    #[test]
+    fn target_restricted_linux_shard_validates_and_self_skips_cross_platform() {
+        use anodizer_core::partial::PartialTarget;
+        let mut cfg = nix_crate();
+        if let Some(pub_cfg) = cfg.publish.as_mut() {
+            pub_cfg.winget = Some(WingetConfig {
+                publisher: Some("Acme".to_string()),
+                license: Some("MIT".to_string()),
+                short_description: Some("cfgd".to_string()),
+                ..Default::default()
+            });
         }
         let mut ctx = scoped_ctx(cfg.clone());
         add_archive(
@@ -1857,8 +1990,10 @@ mod tests {
         ctx.options.partial_target = Some(PartialTarget::Targets(vec![
             "x86_64-unknown-linux-gnu".to_string(),
         ]));
-        validate_snapshot_emissions(&mut ctx, &log())
-            .expect("target-restricted build must skip emission-validate, not fail");
+        validate_snapshot_emissions(&mut ctx, &log()).expect(
+            "linux-only shard must validate nix against its linux archive and self-skip the \
+             windows winget validator without error",
+        );
     }
 
     /// Per-crate mode: two nix-configured crates share one snapshot run, but only
