@@ -246,9 +246,22 @@ pub fn debian_arch_from_arch(arch: &str) -> Option<&'static str> {
     Some(mapped)
 }
 
-/// Returns `true` if the target triple represents a macOS (Darwin) target.
+/// Returns `true` if the target triple represents any Apple/Darwin-kernel
+/// target — macOS **and** iOS/tvOS/watchOS (all `*-apple-*`). Broad by design:
+/// use [`is_macos`] when a consumer accepts only real macOS (e.g. a Homebrew
+/// formula), since iOS/tvOS/watchOS archives cannot be `brew install`ed.
 pub fn is_darwin(triple: &str) -> bool {
     triple.contains("darwin") || triple.contains("apple")
+}
+
+/// Returns `true` only for a genuine macOS target (`*-apple-darwin`, plus the
+/// synthetic `darwin-universal`) — NOT iOS/tvOS/watchOS, which are `*-apple-*`
+/// but carry a different platform suffix. This is the eligibility predicate for
+/// macOS-install channels: unlike [`is_darwin`]'s broad `apple` match, it
+/// excludes `aarch64-apple-ios`/`-tvos`/`-watchos` so a non-installable Apple
+/// archive never becomes a formula/cask `url`.
+pub fn is_macos(triple: &str) -> bool {
+    triple.contains("darwin")
 }
 
 /// Returns `true` if the target triple represents a Linux target.
@@ -329,6 +342,28 @@ mod tests {
         let (os, arch) = map_target("x86_64-pc-windows-msvc");
         assert_eq!(os, "windows");
         assert_eq!(arch, "amd64");
+    }
+
+    #[test]
+    fn test_is_macos_excludes_apple_non_macos() {
+        // Genuine macOS (and the synthetic universal) are macOS...
+        assert!(is_macos("x86_64-apple-darwin"));
+        assert!(is_macos("aarch64-apple-darwin"));
+        assert!(is_macos("darwin-universal"));
+        // ...but iOS/tvOS/watchOS are `is_darwin` (broad apple) yet NOT `is_macos`.
+        for t in [
+            "aarch64-apple-ios",
+            "aarch64-apple-tvos",
+            "aarch64-apple-watchos",
+        ] {
+            assert!(is_darwin(t), "{t} is a broad apple/darwin target");
+            assert!(
+                !is_macos(t),
+                "{t} must NOT be macOS — no brew-installable binary"
+            );
+        }
+        assert!(!is_macos("x86_64-unknown-linux-gnu"));
+        assert!(!is_macos("x86_64-pc-windows-msvc"));
     }
 
     #[test]

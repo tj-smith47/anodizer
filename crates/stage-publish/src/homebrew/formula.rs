@@ -351,6 +351,14 @@ pub fn generate_formula_with_opts(
             })
         };
 
+        // Defensive fallback for a triple that classifies as neither
+        // macOS(darwin) nor linux. Unreachable in production: the upstream
+        // `homebrew_matching_artifacts` filter admits only `is_macos`
+        // (`*-apple-darwin`) or `is_linux` triples, so windows and the
+        // apple-non-macOS targets (`*-apple-ios`/`-tvos`/`-watchos`, which do NOT
+        // contain "darwin") are already excluded before this render — an iOS
+        // archive can no longer reach this `# platform:` url block. Retained so a
+        // future eligibility widening cannot silently drop an unclassified entry.
         let unknown: Vec<_> = archives
             .iter()
             .filter(|(p, _, _)| {

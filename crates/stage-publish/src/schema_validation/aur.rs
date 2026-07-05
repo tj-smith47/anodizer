@@ -74,18 +74,25 @@ impl PublisherSchemaValidator for AurSchemaValidator {
                     .and_then(|p| p.aur.clone());
 
                 // A real release always builds at least one Linux archive the
-                // PKGBUILD points at, but a sharded / single-target snapshot may
-                // build none for this crate. The probe distinguishes ABSENCE from
-                // ERROR: a clean `Ok(false)` (no artifact matched) skips, while a
-                // matched-but-broken artifact (missing sha256) propagates as
-                // `Err` via the `?` — the same defect the live publish path bails
-                // on — rather than being silently skipped.
+                // PKGBUILD points at, but a target-restricted determinism shard
+                // may build none for this crate (e.g. a macOS/Windows-only shard —
+                // AUR ships Linux archives only). The self-skip is gated on the
+                // partial-shard signal exactly as `validate_nix`/homebrew gate
+                // theirs: on a FULL build, an empty linux-archive set is a genuine
+                // misconfiguration (AUR configured but nothing it can package), so
+                // it must fall through to the render and ERROR — the same "no
+                // linux archives matched" bail the live publish path hits — rather
+                // than silently skip. `crate_has_aur_linux_archive` is
+                // presence-only: a matched-but-broken (missing sha256) archive
+                // still reports present, so the render is called and its `Err`
+                // propagates (`?`) on a partial shard too.
                 if let Some(aur_cfg) = aur_cfg.as_ref()
+                    && ctx.options.partial_target.is_some()
                     && !crate_has_aur_linux_archive(ctx, aur_cfg, crate_name)?
                 {
                     log.verbose(&format!(
-                        "skipped binary PKGBUILD schema validation for crate '{}' — produced no \
-                         linux archive for aur in this snapshot shard",
+                        "skipped binary PKGBUILD schema validation for crate '{}' — no linux \
+                         archive for aur in this target-restricted shard",
                         crate_name
                     ));
                     return Ok(out);
@@ -844,18 +851,25 @@ mod tests {
         );
     }
 
-    /// A single-target / sharded snapshot that built no linux archive for a
-    /// binary-AUR-configured crate must SKIP it (zero findings, no error)
-    /// rather than trip the publisher's "no linux archives matched" guard.
+    /// A target-restricted (partial) shard that built no linux archive for a
+    /// binary-AUR-configured crate must SKIP it (zero findings, no error) rather
+    /// than trip the publisher's "no linux archives matched" guard. The skip is
+    /// gated on the partial-shard signal (`partial_target`); a FULL build with no
+    /// linux archive is a real misconfiguration that must ERROR instead, proven by
+    /// `full_build_aur_no_linux_archive_errors`.
     #[test]
     fn binary_crate_without_matching_artifact_is_skipped_not_failed() {
+        use anodizer_core::partial::PartialTarget;
         let cfg = every_option_aur_cfg();
         let mut ctx = TestContextBuilder::new()
             .snapshot(true)
             .crates(vec![aur_crate("widget", "v{{ .Version }}", cfg)])
             .build();
         scope_version(&mut ctx, "1.0.0");
-        // No archive artifact at all in this shard.
+        // No linux archive in this shard — a macOS-only target restriction.
+        ctx.options.partial_target = Some(PartialTarget::Targets(vec![
+            "x86_64-apple-darwin".to_string(),
+        ]));
 
         let findings = AurSchemaValidator
             .validate(
@@ -866,6 +880,55 @@ mod tests {
         assert!(
             findings.is_empty(),
             "a binary-AUR crate with no archive in this shard must be skipped, got: {findings:?}"
+        );
+    }
+
+    /// The self-skip is gated on the partial-shard signal. On a FULL build (no
+    /// `partial_target`) with binary AUR configured but no linux archive produced
+    /// (e.g. a macOS/Windows-only target matrix), there is nothing AUR can
+    /// package — a genuine misconfiguration that must ERROR with the same "no
+    /// linux archives matched" bail the live publish path hits, not silently skip
+    /// (the failure-hiding class this mirrors from homebrew/nix's full-build hard
+    /// bail).
+    #[test]
+    fn full_build_aur_no_linux_archive_errors() {
+        let cfg = every_option_aur_cfg();
+        let mut ctx = TestContextBuilder::new()
+            .snapshot(true)
+            .crates(vec![aur_crate("widget", "v{{ .Version }}", cfg)])
+            .build();
+        scope_version(&mut ctx, "1.0.0");
+        // A macOS archive only — no linux archive AUR can point at.
+        let target = "x86_64-apple-darwin";
+        let mut meta = HashMap::new();
+        meta.insert(
+            "url".to_string(),
+            format!(
+                "https://github.com/acme/widget/releases/download/v1.0.0/widget-{target}.tar.gz"
+            ),
+        );
+        meta.insert("sha256".to_string(), "a".repeat(64));
+        meta.insert("format".to_string(), "tar.gz".to_string());
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            path: std::path::PathBuf::from(format!("/dist/widget-{target}.tar.gz")),
+            name: format!("widget-{target}.tar.gz"),
+            target: Some(target.to_string()),
+            crate_name: "widget".to_string(),
+            metadata: meta,
+            size: None,
+        });
+        // partial_target intentionally None — a full build.
+
+        let err = AurSchemaValidator
+            .validate(
+                &mut ctx,
+                &crate::schema_validation::test_current_version_resolver(),
+            )
+            .expect_err("a full build with binary AUR configured but no linux archive must error");
+        assert!(
+            format!("{err:#}").contains("no linux archives matched"),
+            "surfaces the genuine full-build absence: {err:#}"
         );
     }
 

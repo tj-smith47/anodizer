@@ -246,11 +246,16 @@ fn render_install_and_test_blocks(
 /// matched artifact is missing url/sha256).
 ///
 /// The OS filter mirrors the nix aggregator's Linux/Darwin-only system mapping:
-/// a windows (or any non-macOS/Linux) archive must never reach a formula's
-/// url/sha256, or `brew install` on macOS/Linux would fetch a windows zip. It
-/// also makes [`crate_has_homebrew_archives`] report a windows-only artifact set
-/// as absence (`false`), so a determinism shard that produced only windows
-/// archives self-skips instead of emitting a broken windows-url formula.
+/// a windows, iOS/tvOS/watchOS, or any other non-macOS/Linux archive must never
+/// reach a formula's url/sha256, or `brew install` on macOS/Linux would fetch an
+/// un-installable artifact. macOS eligibility uses [`is_macos`] (genuine
+/// `*-apple-darwin` only), NOT the broad [`is_darwin`]="apple" — the latter also
+/// admits `aarch64-apple-ios`/`-tvos`/`-watchos`, which are buildable targets
+/// but carry no `brew`-installable binary and would otherwise land in the
+/// formula's untyped `# platform:` url block (a 404-class install). It also makes
+/// [`crate_has_homebrew_archives`] report a non-eligible-only artifact set as
+/// absence (`false`), so a determinism shard that produced only windows/iOS
+/// archives self-skips instead of emitting a broken-url formula.
 fn homebrew_matching_artifacts<'a>(
     ctx: &'a Context,
     hb_cfg: &HomebrewConfig,
@@ -269,12 +274,15 @@ fn homebrew_matching_artifacts<'a>(
     ));
     all_artifacts
         .into_iter()
-        // Homebrew installs only on macOS + Linux; a windows/other-OS archive
-        // must never become a formula's url/sha256 (brew would fetch it on
-        // macOS/Linux and 404-class fail). Mirrors nix's Linux/Darwin-only map.
+        // Homebrew installs only on macOS + Linux; a windows/iOS/other-OS
+        // archive must never become a formula's url/sha256 (brew would fetch it
+        // on macOS/Linux and 404-class fail). `is_macos` (genuine `*-apple-darwin`
+        // only) excludes iOS/tvOS/watchOS, which the broad `is_darwin`="apple"
+        // would wrongly admit. Mirrors nix's Linux/Darwin-only map. A target-less
+        // artifact (empty triple) matches neither predicate and is excluded.
         .filter(|a| {
             let target = a.target.as_deref().unwrap_or("");
-            anodizer_core::target::is_darwin(target) || anodizer_core::target::is_linux(target)
+            anodizer_core::target::is_macos(target) || anodizer_core::target::is_linux(target)
         })
         // OnlyReplacingUnibins: exclude universal binaries that didn't replace
         // single-arch variants.
@@ -1386,6 +1394,52 @@ mod tests {
             matched[0].target.as_deref(),
             Some("aarch64-apple-darwin"),
             "the windows archive must be filtered out"
+        );
+    }
+
+    /// The apple-non-macOS targets (`*-apple-ios`/`-tvos`/`-watchos`) are
+    /// buildable but carry no `brew`-installable binary; the broad `is_darwin`
+    /// ("apple") predicate would wrongly admit them (they land in the formula's
+    /// untyped `# platform:` url block — a 404-class install). The macOS-specific
+    /// `is_macos` eligibility must exclude them while keeping genuine macOS.
+    #[test]
+    fn homebrew_matching_artifacts_excludes_apple_non_macos() {
+        let hb = HomebrewConfig::default();
+        let ios = archive("aarch64-apple-ios", "https://e/ios.tar.gz", "i");
+        let tvos = archive("aarch64-apple-tvos", "https://e/tvos.tar.gz", "t");
+        let watchos = archive("aarch64-apple-watchos", "https://e/watchos.tar.gz", "w");
+        let mac = archive("aarch64-apple-darwin", "https://e/mac.tar.gz", "m");
+        let ctx = single_crate_ctx(hb.clone(), vec![ios, tvos, watchos, mac]);
+        let matched = homebrew_matching_artifacts(&ctx, &hb, "mytool");
+        assert_eq!(
+            matched.len(),
+            1,
+            "only the genuine macOS archive is eligible; ios/tvos/watchos excluded"
+        );
+        assert_eq!(
+            matched[0].target.as_deref(),
+            Some("aarch64-apple-darwin"),
+            "the apple-non-macOS archives must be filtered out"
+        );
+    }
+
+    /// A target-less archive (no triple) matches neither `is_macos` nor
+    /// `is_linux`, so the OS filter excludes it — the presence probe reports
+    /// absence rather than routing it through a flat-url formula. Documents the
+    /// intended behavior of the `unwrap_or("")` fallback in the filter.
+    #[test]
+    fn homebrew_matching_artifacts_excludes_target_less() {
+        let hb = HomebrewConfig::default();
+        let mut targetless = archive("x86_64-unknown-linux-gnu", "https://e/x.tar.gz", "s");
+        targetless.target = None;
+        let ctx = single_crate_ctx(hb.clone(), vec![targetless]);
+        assert!(
+            homebrew_matching_artifacts(&ctx, &hb, "mytool").is_empty(),
+            "a target-less archive is not a homebrew candidate"
+        );
+        assert!(
+            !crate_has_homebrew_archives(&ctx, &hb, "mytool"),
+            "crate_has_homebrew_archives must agree the target-less set is absent"
         );
     }
 
