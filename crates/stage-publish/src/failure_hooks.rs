@@ -198,7 +198,8 @@ fn rollback_var_values(
     required: bool,
     rollback_failed: bool,
     error: &str,
-) -> [(&'static str, String); 5] {
+    reason: &str,
+) -> [(&'static str, String); 6] {
     let bool_str = |b: bool| (if b { "true" } else { "false" }).to_string();
     [
         ("Publisher", name.to_string()),
@@ -206,12 +207,16 @@ fn rollback_var_values(
         ("Required", bool_str(required)),
         ("RollbackFailed", bool_str(rollback_failed)),
         ("Error", error.to_string()),
+        // The run-wide sibling failure(s) that triggered the unwind — distinct
+        // from `Error` (this publisher's own revert failure). Empty on the
+        // `--rollback-only` replay path, which has no live trigger in scope.
+        ("Reason", reason.to_string()),
     ]
 }
 
 /// Bind the on_rollback template surface ([`rollback_var_values`]) on top of
 /// the standard per-crate vars: `{{ .Publisher }}`, `{{ .Group }}`,
-/// `{{ .Required }}`, `{{ .RollbackFailed }}`, `{{ .Error }}`.
+/// `{{ .Required }}`, `{{ .RollbackFailed }}`, `{{ .Error }}`, `{{ .Reason }}`.
 fn bind_rollback_vars(
     base: &TemplateVars,
     name: &str,
@@ -219,9 +224,10 @@ fn bind_rollback_vars(
     required: bool,
     rollback_failed: bool,
     error: &str,
+    reason: &str,
 ) -> TemplateVars {
     let mut vars = base.clone();
-    for (key, value) in rollback_var_values(name, group, required, rollback_failed, error) {
+    for (key, value) in rollback_var_values(name, group, required, rollback_failed, error, reason) {
         vars.set(key, &value);
     }
     vars
@@ -231,7 +237,7 @@ fn bind_rollback_vars(
 /// Same construction and injection-safety rationale as [`FAILURE_ENV_VARS`]:
 /// `.Error` carries the rollback failure message (git stderr / API body), so
 /// hooks read `"$ANODIZER_ERROR"` rather than interpolating it into `cmd`.
-const ROLLBACK_ENV_VARS: [(&str, &str); 7] = [
+const ROLLBACK_ENV_VARS: [(&str, &str); 8] = [
     ("ANODIZER_PUBLISHER", "Publisher"),
     ("ANODIZER_VERSION", "Version"),
     ("ANODIZER_TAG", "Tag"),
@@ -239,6 +245,7 @@ const ROLLBACK_ENV_VARS: [(&str, &str); 7] = [
     ("ANODIZER_REQUIRED", "Required"),
     ("ANODIZER_ROLLBACK_FAILED", "RollbackFailed"),
     ("ANODIZER_ERROR", "Error"),
+    ("ANODIZER_ROLLBACK_REASON", "Reason"),
 ];
 
 /// Fire `on_rollback` hooks for a single publisher a triggered rollback
@@ -248,8 +255,13 @@ const ROLLBACK_ENV_VARS: [(&str, &str); 7] = [
 /// which fires solely for the failed publisher, cannot reach. It also fires
 /// when the revert itself failed: `rollback_failed` is then `true` (exposed as
 /// `{{ .RollbackFailed }}`) and `error` carries the rollback failure message
-/// (`{{ .Error }}`, empty on a clean revert). Independent of `on_error`: a
-/// publisher that both failed and was rolled back fires both hooks.
+/// (`{{ .Error }}`, empty on a clean revert). `reason` is the run-wide
+/// triggering cause — the sibling required failure(s) that unwound the run —
+/// exposed as `{{ .Reason }}`; distinct from `error`, and empty on the
+/// `--rollback-only` replay path (no live trigger in scope). Independent of
+/// `on_error`: a publisher that both failed and was rolled back fires both
+/// hooks.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn fire_on_rollback(
     ctx: &Context,
     name: &str,
@@ -257,6 +269,7 @@ pub(crate) fn fire_on_rollback(
     required: bool,
     rollback_failed: bool,
     error: &str,
+    reason: &str,
     log: &StageLogger,
 ) {
     let hooks = resolve_hooks(ctx, |p| p.on_rollback.as_deref());
@@ -270,6 +283,7 @@ pub(crate) fn fire_on_rollback(
         required,
         rollback_failed,
         error,
+        reason,
     );
     run_warn_only(
         &hooks,
@@ -729,7 +743,7 @@ mod tests {
         let publish = PublishConfig {
             on_rollback: Some(vec![probe_hook(
                 &out,
-                "P={{ .Publisher }} V={{ .Version }} G={{ .Group }} R={{ .Required }} RF={{ .RollbackFailed }} E={{ .Error }}",
+                "P={{ .Publisher }} V={{ .Version }} G={{ .Group }} R={{ .Required }} RF={{ .RollbackFailed }} E={{ .Error }} RSN={{ .Reason }}",
             )]),
             ..Default::default()
         };
@@ -745,14 +759,15 @@ mod tests {
             true,
             false,
             "",
+            "cargo: publish rejected",
             &log(),
         );
 
         let body = std::fs::read_to_string(&out).expect("hook must have written output");
         assert_eq!(
             body.trim(),
-            "P=homebrew V=1.2.3 G=Manager R=true RF=false E=",
-            "on_rollback must bind .Publisher/.Version/.Group/.Required/.RollbackFailed/.Error"
+            "P=homebrew V=1.2.3 G=Manager R=true RF=false E= RSN=cargo: publish rejected",
+            "on_rollback must bind .Publisher/.Version/.Group/.Required/.RollbackFailed/.Error/.Reason"
         );
     }
 
@@ -781,6 +796,7 @@ mod tests {
             true,
             true,
             "tap delete rejected",
+            "",
             &log(),
         );
 
@@ -788,7 +804,7 @@ mod tests {
         assert_eq!(body.trim(), "RF=true E=tap delete rejected");
     }
 
-    const ALL_ROLLBACK_ENV_KEYS: [&str; 7] = [
+    const ALL_ROLLBACK_ENV_KEYS: [&str; 8] = [
         "ANODIZER_PUBLISHER",
         "ANODIZER_VERSION",
         "ANODIZER_TAG",
@@ -796,6 +812,7 @@ mod tests {
         "ANODIZER_REQUIRED",
         "ANODIZER_ROLLBACK_FAILED",
         "ANODIZER_ERROR",
+        "ANODIZER_ROLLBACK_REASON",
     ];
 
     #[test]
@@ -818,6 +835,7 @@ mod tests {
             true,
             true,
             "boom",
+            "cargo: publish rejected",
             &log(),
         );
 
@@ -830,6 +848,7 @@ mod tests {
             "ANODIZER_REQUIRED=true",
             "ANODIZER_ROLLBACK_FAILED=true",
             "ANODIZER_ERROR=boom",
+            "ANODIZER_ROLLBACK_REASON=cargo: publish rejected",
         ] {
             assert!(
                 body.lines().any(|l| l == expected),
@@ -846,11 +865,17 @@ mod tests {
     #[test]
     fn rollback_env_channel_mirrors_var_surface_exactly() {
         use std::collections::BTreeSet;
-        let bound: BTreeSet<&str> =
-            rollback_var_values("homebrew", PublisherGroup::Manager, true, true, "boom")
-                .iter()
-                .map(|(key, _)| *key)
-                .collect();
+        let bound: BTreeSet<&str> = rollback_var_values(
+            "homebrew",
+            PublisherGroup::Manager,
+            true,
+            true,
+            "boom",
+            "cargo: publish rejected",
+        )
+        .iter()
+        .map(|(key, _)| *key)
+        .collect();
         let ambient: BTreeSet<&str> = BTreeSet::from(["Tag", "Version"]);
         assert!(
             bound.is_disjoint(&ambient),
@@ -887,8 +912,11 @@ mod tests {
             .tag("v1.0.0")
             .crates(vec![crate_with_publish("app", publish)])
             .build();
-        // Reaching the end proves the failing hook was swallowed (warn-only)
-        // and did not panic or propagate.
+        // Capture the logger so the swallowed failure's observable effect — a
+        // logged warning — can be asserted, not just "reached the end".
+        let (log, cap) = StageLogger::with_capture("test", Verbosity::Normal);
+        // No cascade: the call has no Result to inspect, so returning normally
+        // (rather than panicking/propagating) is itself the no-cascade proof.
         fire_on_rollback(
             &ctx,
             "cargo",
@@ -896,7 +924,20 @@ mod tests {
             true,
             false,
             "",
-            &log(),
+            "",
+            &log,
+        );
+        assert_eq!(
+            cap.warn_count(),
+            1,
+            "a failing on_rollback hook must log exactly one warning"
+        );
+        assert!(
+            cap.warn_messages()
+                .iter()
+                .any(|m| m.contains("on-rollback") && m.contains("hook failed")),
+            "the warning must name the on-rollback hook failure; got: {:?}",
+            cap.warn_messages()
         );
     }
 
@@ -920,6 +961,7 @@ mod tests {
             PublisherGroup::Manager,
             true,
             false,
+            "",
             "",
             &log(),
         );
@@ -960,6 +1002,7 @@ mod tests {
             PublisherGroup::Submitter,
             true,
             false,
+            "",
             "",
             &log(),
         );

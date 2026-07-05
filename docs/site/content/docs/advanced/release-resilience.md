@@ -246,7 +246,10 @@ required publisher failed. That reverted-but-not-failed publisher has no
 `on_error` surface. `on_rollback` is its notification surface: it fires once per
 publisher a rollback reverted, including the succeeded-then-reverted case, and
 including a revert that itself failed (`{{ .RollbackFailed }}` is then `true` —
-the orphaned-artifact escalation signal).
+the orphaned-artifact escalation signal). Because a reverted-but-never-failed
+publisher never errored, `{{ .Reason }}` carries WHY the unwind fired — the
+run-wide required sibling failure(s) — which its own `{{ .Error }}` (empty on a
+clean revert) cannot.
 
 ```yaml
 publish:
@@ -266,7 +269,8 @@ failure) fires **both** hooks — they answer different questions.
 | `ANODIZER_GROUP` | `{{ .Group }}` | Publisher group: `Assets`, `Manager`, or `Submitter` |
 | `ANODIZER_REQUIRED` | `{{ .Required }}` | `true` / `false` |
 | `ANODIZER_ROLLBACK_FAILED` | `{{ .RollbackFailed }}` | `true` when the revert itself failed (live artifact needing manual cleanup); `false` on a clean revert |
-| `ANODIZER_ERROR` | `{{ .Error }}` | The rollback failure message; empty on a clean revert |
+| `ANODIZER_ERROR` | `{{ .Error }}` | This publisher's own revert failure message; empty on a clean revert |
+| `ANODIZER_ROLLBACK_REASON` | `{{ .Reason }}` | The run-wide trigger cause — the required sibling failure(s) that unwound the run, as `<name>: <error>`. Distinct from `{{ .Error }}`; empty on a `--rollback-only` replay |
 
 The same security note applies: `{{ .Error }}` carries untrusted git/API text —
 read it from `$ANODIZER_ERROR` with `--raw` rather than interpolating it into

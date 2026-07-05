@@ -76,6 +76,14 @@ pub fn run(
         target_indices.len()
     ));
 
+    // The run-wide trigger cause is the same for every publisher reverted in
+    // this pass: the required failure(s) that unwound the run. Computed once
+    // here (before any outcome is mutated below, while the failed rows still
+    // carry their `Failed`/`RollbackFailed` messages) and threaded to every
+    // `on_rollback` firing as `{{ .Reason }}` so a reverted-but-never-failed
+    // publisher's hook learns WHY it was reverted.
+    let reason = report.required_failure_reason();
+
     let mut rolled_back = 0usize;
     let mut failed = 0usize;
     let mut skipped_no_scope = 0usize;
@@ -95,7 +103,7 @@ pub fn run(
         };
 
         let (outcome, disposition) =
-            execute_rollback_step(&row, &evidence, publishers, &aux, ctx, "rollback");
+            execute_rollback_step(&row, &evidence, publishers, &aux, ctx, "rollback", &reason);
         match disposition {
             RollbackDisposition::RolledBack => rolled_back += 1,
             // The live summary folds "publisher not found" into `failed` (the
@@ -249,7 +257,10 @@ pub(crate) enum RollbackDisposition {
 /// resolution, retain-opt-out, scope gating, and the
 /// `Failed`-keeps-its-outcome-on-successful-yank rule cannot drift between
 /// them. `prefix` labels the scope-unavailable warning (`"rollback"` /
-/// `"rollback-only"`).
+/// `"rollback-only"`). `reason` is the run-wide rollback trigger cause
+/// forwarded to every `on_rollback` firing as `{{ .Reason }}`; the live path
+/// passes the computed sibling-failure summary, the replay path passes empty.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_rollback_step(
     row: &anodizer_core::PublisherResult,
     evidence: &anodizer_core::PublishEvidence,
@@ -257,6 +268,7 @@ pub(crate) fn execute_rollback_step(
     aux: &[Box<dyn Publisher>],
     ctx: &mut Context,
     prefix: &str,
+    reason: &str,
 ) -> (PublisherOutcome, RollbackDisposition) {
     let name = row.name.as_str();
     let current = &row.outcome;
@@ -320,6 +332,7 @@ pub(crate) fn execute_rollback_step(
                 row.required,
                 false,
                 "",
+                reason,
                 &log,
             );
             (outcome, RollbackDisposition::RolledBack)
@@ -336,6 +349,7 @@ pub(crate) fn execute_rollback_step(
                 row.required,
                 true,
                 &msg,
+                reason,
                 &log,
             );
             (
@@ -811,6 +825,133 @@ mod tests {
                 ..Default::default()
             }])
             .build()
+    }
+
+    /// Like [`ctx_with_on_rollback_probe`] but the hook records
+    /// `reason=<Reason>|err=<Error>` (both read from the process env) so a test
+    /// can assert `{{ .Reason }}` carries the run-wide trigger cause while
+    /// `{{ .Error }}` (the publisher's own revert failure) stays empty.
+    fn ctx_with_on_rollback_reason_probe(out: &std::path::Path) -> Context {
+        use anodizer_core::config::{CrateConfig, HookEntry, PublishConfig, StructuredHook};
+        use anodizer_core::test_helpers::TestContextBuilder;
+        let out_sh = out.display().to_string().replace('\\', "/");
+        let publish = PublishConfig {
+            on_rollback: Some(vec![HookEntry::Structured(StructuredHook {
+                cmd: format!(
+                    "printf '%s\\n' \"reason=$ANODIZER_ROLLBACK_REASON|err=$ANODIZER_ERROR\" >> {out_sh}"
+                ),
+                ..Default::default()
+            })]),
+            ..Default::default()
+        };
+        TestContextBuilder::new()
+            .tag("v1.0.0")
+            .crates(vec![CrateConfig {
+                name: "app".to_string(),
+                path: ".".to_string(),
+                publish: Some(publish),
+                ..Default::default()
+            }])
+            .build()
+    }
+
+    /// A `Succeeded` publisher reverted because a sibling required publisher
+    /// failed must fire `on_rollback` with `{{ .Reason }}` carrying that
+    /// triggering failure (publisher name + message) while `{{ .Error }}` — its
+    /// OWN revert error — stays empty. This is the `.Error`-can't-answer-why gap
+    /// the run-wide reason closes.
+    #[test]
+    fn on_rollback_reason_carries_triggering_sibling_failure() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("rb.txt");
+        let mut ctx = ctx_with_on_rollback_reason_probe(&out);
+        // `good` succeeded and is reverted; `bad` is the required sibling whose
+        // failure triggered the unwind and supplies the reason string.
+        let publishers = vec![fake(
+            "good",
+            PublisherGroup::Manager,
+            true,
+            FakeOutcome::Succeed,
+        )];
+        let mut report = PublishReport::default();
+        report
+            .results
+            .push(succeeded("good", PublisherGroup::Manager, true));
+        report.results.push(failed(
+            "bad",
+            PublisherGroup::Manager,
+            true,
+            "tap push rejected",
+        ));
+
+        run(&publishers, &mut report, &mut ctx, RollbackMode::BestEffort);
+
+        assert!(matches!(
+            report.results[0].outcome,
+            PublisherOutcome::RolledBack
+        ));
+        let body = std::fs::read_to_string(&out).expect("on_rollback hook must have run");
+        assert_eq!(
+            body.trim(),
+            "reason=bad: tap push rejected|err=",
+            "{{ .Reason }} carries the triggering sibling failure; {{ .Error }} (own revert error) is empty"
+        );
+    }
+
+    /// A non-firing disposition — a `retain_on_rollback: true` publisher, whose
+    /// step returns before the firing seam — must fire ZERO `on_rollback` hooks.
+    /// A probe-ABSENT assertion so a future refactor that relocates the fire
+    /// calls above the early `return`s is caught.
+    #[test]
+    fn on_rollback_does_not_fire_for_retained_publisher() {
+        struct RetainPublisher;
+        impl Publisher for RetainPublisher {
+            fn name(&self) -> &str {
+                "retain-pub"
+            }
+            fn group(&self) -> PublisherGroup {
+                PublisherGroup::Manager
+            }
+            fn required(&self) -> bool {
+                true
+            }
+            fn skips_on_nightly(&self) -> bool {
+                false
+            }
+            fn run(&self, _ctx: &mut Context) -> anyhow::Result<PublishEvidence> {
+                Ok(PublishEvidence::new("retain-pub"))
+            }
+            fn rollback(
+                &self,
+                _ctx: &mut Context,
+                _evidence: &PublishEvidence,
+            ) -> anyhow::Result<()> {
+                panic!("rollback() invoked on a retain_on_rollback=true publisher")
+            }
+            fn retain_on_rollback(&self) -> bool {
+                true
+            }
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("rb.txt");
+        let mut ctx = ctx_with_on_rollback_probe(&out);
+        let publishers: Vec<Box<dyn Publisher>> = vec![Box::new(RetainPublisher)];
+        let mut report = PublishReport::default();
+        report
+            .results
+            .push(succeeded("retain-pub", PublisherGroup::Manager, true));
+
+        run(&publishers, &mut report, &mut ctx, RollbackMode::BestEffort);
+
+        assert!(matches!(
+            report.results[0].outcome,
+            PublisherOutcome::Succeeded
+        ));
+        assert!(
+            !out.exists(),
+            "a retained (non-firing) disposition must fire zero on_rollback hooks"
+        );
     }
 
     /// Headline case: a `Succeeded` publisher reverted only because the

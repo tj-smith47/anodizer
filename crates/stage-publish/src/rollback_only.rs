@@ -257,6 +257,9 @@ pub(crate) fn run_with_publishers(
         // `Failed`-keeps-its-outcome-on-successful-yank rule are shared with the
         // live path via `rollback::execute_rollback_step` so the two cannot
         // drift (the replay path previously skipped `retain_on_rollback`).
+        // The replay reverts an already-decided set persisted from a prior
+        // run; the original trigger cause is not in scope here, so `on_rollback`
+        // fires with an empty `{{ .Reason }}` rather than a fabricated one.
         let (outcome, disposition) = crate::rollback::execute_rollback_step(
             &row,
             &evidence,
@@ -264,6 +267,7 @@ pub(crate) fn run_with_publishers(
             &aux,
             ctx,
             "rollback-only",
+            "",
         );
         match disposition {
             crate::rollback::RollbackDisposition::RolledBack => rolled_back += 1,

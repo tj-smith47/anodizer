@@ -183,6 +183,33 @@ impl PublishReport {
             .collect()
     }
 
+    /// A concise, run-wide human summary of the required failure(s) that
+    /// triggered a rollback — each failed required publisher rendered as
+    /// `<name>: <error>` and joined with `; `. Empty when no required
+    /// publisher failed.
+    ///
+    /// Threaded into the `on_rollback` hook surface as `{{ .Reason }}` /
+    /// `ANODIZER_ROLLBACK_REASON` so a reverted-but-never-failed publisher's
+    /// hook learns WHY the unwind fired (which sibling failure), a fact
+    /// `{{ .Error }}` (that publisher's own revert error, empty on a clean
+    /// revert) cannot carry. Shares the required-failure filter with
+    /// [`Self::required_failure_names`] so the reason names exactly the set
+    /// the exit gate reports.
+    pub fn required_failure_reason(&self) -> String {
+        self.results
+            .iter()
+            .filter(|r| r.required && r.outcome.is_required_release_failure())
+            .map(|r| {
+                let msg = match &r.outcome {
+                    PublisherOutcome::Failed(m) | PublisherOutcome::RollbackFailed(m) => m.as_str(),
+                    _ => "",
+                };
+                format!("{}: {}", r.name, msg)
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    }
+
     /// Returns true if any publisher in `group` failed.
     ///
     /// When `required_only` is true, only publishers with `required: true` count.

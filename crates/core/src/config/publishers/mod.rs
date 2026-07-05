@@ -221,11 +221,14 @@ pub struct PublishConfig {
     /// `env` / `output`); the template surface adds `{{ .Publisher }}`,
     /// `{{ .Version }}`, `{{ .Tag }}`, `{{ .Group }}`
     /// (Assets/Manager/Submitter), `{{ .Required }}`, `{{ .RollbackFailed }}`
-    /// (`true` when the revert itself failed), and `{{ .Error }}` (the rollback
-    /// failure message, empty on a clean revert). The same values are exported
-    /// to the hook process as `ANODIZER_PUBLISHER`, `ANODIZER_VERSION`,
+    /// (`true` when the revert itself failed), `{{ .Error }}` (the rollback
+    /// failure message, empty on a clean revert), and `{{ .Reason }}` (the
+    /// run-wide sibling failure(s) that triggered the unwind — distinct from
+    /// `{{ .Error }}`; empty on a `--rollback-only` replay). The same values are
+    /// exported to the hook process as `ANODIZER_PUBLISHER`, `ANODIZER_VERSION`,
     /// `ANODIZER_TAG`, `ANODIZER_GROUP`, `ANODIZER_REQUIRED`,
-    /// `ANODIZER_ROLLBACK_FAILED`, and `ANODIZER_ERROR`. A hook's own failure is
+    /// `ANODIZER_ROLLBACK_FAILED`, `ANODIZER_ERROR`, and
+    /// `ANODIZER_ROLLBACK_REASON`. A hook's own failure is
     /// logged as a warning and never changes the release outcome or aborts the
     /// remaining rollbacks. It is independent of `on_error`: a publisher that
     /// both failed and was rolled back fires both.
