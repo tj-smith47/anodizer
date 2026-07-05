@@ -733,6 +733,41 @@ pub struct Harness {
     pub disk_safety_factor: f64,
 }
 
+/// Hard-fail before any worktree is created when this run is about to build
+/// a windows-msvc target (explicitly via `targets`, or implicitly via a
+/// windows-msvc host build with no explicit `--target`) and `clang-cl` is
+/// not on PATH.
+///
+/// `clang-cl` is the deterministic C/C++ compiler pin the harness's child
+/// env wires in for cc-rs/cmake-driven crates (see
+/// [`env::build_subprocess_env`] /
+/// `anodizer_core::determinism::msvc_c_toolchain_env`). Without this gate a
+/// missing `clang-cl` surfaces deep inside the child build as a confusing
+/// cc-rs "failed to find tool" spawn error, well after worktree setup and
+/// registry prefetch have already run. `probe` is injected (not a bare
+/// [`anodizer_core::tool_detect::on_path`] call) so the hard-fail wiring is
+/// unit-testable without depending on whether clang-cl happens to be
+/// installed on the test host — same shape as [`Harness::gate_installer_stages`].
+fn require_c_toolchain<P>(targets: &[String], host_is_windows_msvc: bool, probe: P) -> Result<()>
+where
+    P: Fn(&str) -> bool,
+{
+    let needs_clang_cl = if targets.is_empty() {
+        host_is_windows_msvc
+    } else {
+        targets
+            .iter()
+            .any(|t| anodizer_core::target::is_windows_msvc(t))
+    };
+    if needs_clang_cl && !probe("clang-cl") {
+        anyhow::bail!(
+            "windows-msvc determinism requires `clang-cl` (LLVM) on PATH for byte-reproducible \
+             C objects (zstd-sys/ring/aws-lc-sys/…); install LLVM or add its bin dir to PATH"
+        );
+    }
+    Ok(())
+}
+
 impl Harness {
     /// Apply the external-tool availability gate to `effective_stages`,
     /// returning the stages whose backing tool is reachable.
@@ -846,6 +881,12 @@ impl Harness {
 
         let effective_stages =
             self.gate_installer_stages(&effective_stages, installer_detect::host_tool_probe)?;
+
+        require_c_toolchain(
+            self.targets.as_deref().unwrap_or(&[]),
+            anodizer_core::determinism::host_is_windows_msvc(),
+            anodizer_core::tool_detect::on_path,
+        )?;
 
         // Provision once: both runs must sign with identical key
         // material, otherwise even byte-deterministic GPG signatures
@@ -2200,6 +2241,47 @@ mod tests {
         }
         // An unknown token resolves to None rather than a silent default.
         assert_eq!(StageId::from_token("not-a-stage"), None);
+    }
+
+    #[test]
+    fn require_c_toolchain_errors_on_msvc_target_without_clang_cl() {
+        let targets = vec!["x86_64-pc-windows-msvc".to_string()];
+        let err = require_c_toolchain(&targets, false, |_| false).unwrap_err();
+        assert!(
+            err.to_string().contains("clang-cl"),
+            "error must name clang-cl as the missing tool: {err}"
+        );
+    }
+
+    #[test]
+    fn require_c_toolchain_ok_on_msvc_target_with_clang_cl_present() {
+        let targets = vec!["aarch64-pc-windows-msvc".to_string()];
+        require_c_toolchain(&targets, false, |_| true).unwrap();
+    }
+
+    #[test]
+    fn require_c_toolchain_ok_on_non_msvc_target_without_clang_cl() {
+        let targets = vec!["x86_64-unknown-linux-gnu".to_string()];
+        require_c_toolchain(&targets, false, |_| false).unwrap();
+    }
+
+    #[test]
+    fn require_c_toolchain_errors_on_empty_targets_when_host_is_msvc() {
+        require_c_toolchain(&[], true, |_| false).unwrap_err();
+    }
+
+    #[test]
+    fn require_c_toolchain_ok_on_empty_targets_when_host_is_not_msvc() {
+        require_c_toolchain(&[], false, |_| false).unwrap();
+    }
+
+    #[test]
+    fn require_c_toolchain_ok_on_mixed_targets_with_clang_cl_present() {
+        let targets = vec![
+            "x86_64-pc-windows-msvc".to_string(),
+            "x86_64-unknown-linux-gnu".to_string(),
+        ];
+        require_c_toolchain(&targets, false, |_| true).unwrap();
         assert_eq!(StageId::from_token(""), None);
     }
 

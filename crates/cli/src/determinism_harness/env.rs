@@ -466,6 +466,33 @@ pub(crate) fn build_subprocess_env_with_env(
         env.insert("RUSTFLAGS".into(), rustflags.clone());
     }
 
+    // Pin `clang-cl` as the C/C++ compiler for every windows-msvc build
+    // target so cc-rs/cmake-driven crates (zstd-sys, ring, aws-lc-sys, …)
+    // compile with a deterministic LLVM backend instead of `cl.exe`'s
+    // proven register-allocation coin-flip (see
+    // `anodizer_core::determinism::msvc_c_toolchain_env`). Per-target,
+    // unlike the `/Brepro` RUSTFLAGS merge above: cc-rs resolves the
+    // compiler per triple, so a mixed target set still needs the pin on
+    // just its windows-msvc member(s). Inserted with plain `insert`
+    // (before the Windows inherit-everything `or_insert` pass below) so a
+    // pin here always wins over an inherited host `CC`/`CXX`.
+    for target in inputs.targets {
+        for (key, value) in anodizer_core::determinism::msvc_c_toolchain_env(target) {
+            env.insert(key, value);
+        }
+    }
+    // Empty `targets` means a host-only build (no explicit `--target`), so
+    // the pin must key off the actual running host triple rather than a
+    // fixed guess — reuses the already-injected `host_is_windows_msvc` bool
+    // to avoid a redundant probe when the host isn't windows-msvc at all.
+    if inputs.targets.is_empty() && host_is_windows_msvc {
+        if let Ok(host_triple) = anodizer_core::partial::detect_host_target() {
+            for (key, value) in anodizer_core::determinism::msvc_c_toolchain_env(&host_triple) {
+                env.insert(key, value);
+            }
+        }
+    }
+
     // Inherit only the explicit allow-list of identity-only host env so
     // build scripts that conditionally embed git/CI info still work, and
     // no credential-bearing vars (GITHUB_TOKEN, ACTIONS_RUNTIME_TOKEN,
@@ -1321,6 +1348,89 @@ mod tests {
                 "a mixed target set must NOT carry MSVC-only /Brepro in global RUSTFLAGS. got={rf}"
             );
         }
+    }
+
+    /// A windows-msvc target must pin `clang-cl` as `CC`/`CXX` under both the
+    /// hyphenated and underscored triple spellings — cc-rs probes both forms
+    /// (see `anodizer_core::determinism::msvc_c_toolchain_env`), so a missing
+    /// spelling would leave `cl.exe`'s non-deterministic codegen in play for
+    /// build scripts that query the other form.
+    #[test]
+    fn harness_env_pins_clang_cl_for_msvc_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let targets = vec!["x86_64-pc-windows-msvc".to_string()];
+        let mut inputs = inputs(tmp.path());
+        inputs.targets = &targets;
+        let env = build_subprocess_env_with_env(&inputs, &MapEnvSource::new(), false);
+        for key in [
+            "CC_x86_64-pc-windows-msvc",
+            "CC_x86_64_pc_windows_msvc",
+            "CXX_x86_64-pc-windows-msvc",
+            "CXX_x86_64_pc_windows_msvc",
+        ] {
+            assert_eq!(
+                env.get(key).map(String::as_str),
+                Some("clang-cl"),
+                "expected {key}=clang-cl in child env, got={env:?}"
+            );
+        }
+    }
+
+    /// A non-msvc target must not carry any `CC_`/`CXX_` pin — the harness
+    /// must not force clang-cl on a linux-gnu or darwin build.
+    #[test]
+    fn harness_env_omits_clang_cl_for_non_msvc_target() {
+        let tmp = tempfile::tempdir().unwrap();
+        let targets = vec!["x86_64-unknown-linux-gnu".to_string()];
+        let mut inputs = inputs(tmp.path());
+        inputs.targets = &targets;
+        let env = build_subprocess_env_with_env(&inputs, &MapEnvSource::new(), false);
+        assert!(
+            !env.keys()
+                .any(|k| k.starts_with("CC_") || k.starts_with("CXX_")),
+            "non-msvc target must not carry a CC_/CXX_ pin. got={env:?}"
+        );
+    }
+
+    /// A mixed target set must still pin clang-cl for its windows-msvc
+    /// member — unlike the global-RUSTFLAGS `/Brepro` merge (gated `all`),
+    /// the CC/CXX pin is per-triple, so the non-msvc sibling target must
+    /// not suppress it.
+    #[test]
+    fn harness_env_pins_clang_cl_for_msvc_member_of_mixed_targets() {
+        let tmp = tempfile::tempdir().unwrap();
+        let targets = vec![
+            "aarch64-pc-windows-msvc".to_string(),
+            "x86_64-unknown-linux-gnu".to_string(),
+        ];
+        let mut inputs = inputs(tmp.path());
+        inputs.targets = &targets;
+        let env = build_subprocess_env_with_env(&inputs, &MapEnvSource::new(), false);
+        assert_eq!(
+            env.get("CC_aarch64-pc-windows-msvc").map(String::as_str),
+            Some("clang-cl")
+        );
+        assert_eq!(
+            env.get("CC_aarch64_pc_windows_msvc").map(String::as_str),
+            Some("clang-cl")
+        );
+    }
+
+    /// Empty `targets` (host-only build) must NOT trigger the CC/CXX pin
+    /// just because `host_is_windows_msvc` is true when the dev/CI machine
+    /// running this test is not itself windows-msvc — the pin's host-triple
+    /// resolution goes through a real `detect_host_target()` probe, so this
+    /// only asserts the false-probe no-op path is safe on every host.
+    #[test]
+    fn harness_env_omits_clang_cl_for_empty_targets_when_host_not_msvc() {
+        let tmp = tempfile::tempdir().unwrap();
+        let inputs = inputs(tmp.path());
+        let env = build_subprocess_env_with_env(&inputs, &MapEnvSource::new(), false);
+        assert!(
+            !env.keys()
+                .any(|k| k.starts_with("CC_") || k.starts_with("CXX_")),
+            "host_is_windows_msvc=false must not pin clang-cl. got={env:?}"
+        );
     }
 
     /// Regression: the inherit-everything pass must DROP every rustflags-
