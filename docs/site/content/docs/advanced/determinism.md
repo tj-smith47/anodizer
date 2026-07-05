@@ -555,19 +555,31 @@ validates the emissions the shard **can** satisfy and **self-skips** any
 publisher whose input archives this shard did not produce, instead of failing
 the whole gate:
 
-- A cross-platform install aggregator (`homebrew`, `nix`, `krew`, `npm`)
-  self-skips on a shard that lacks its inputs — e.g. the Windows shard has no
-  macOS/Linux archive to fold into a Homebrew formula, so its formula emission
-  is skipped there and validated on the shard that produced those archives.
+- A cross-platform install aggregator (`homebrew`, `nix`, `krew`) self-skips on
+  a shard that lacks its inputs — e.g. the Windows shard has no macOS/Linux
+  archive to fold into a Homebrew formula, so its formula emission is skipped
+  there and validated on the shard that produced those archives. (`npm` has no
+  emission-validate coverage at all, so there is nothing for it to self-skip.)
 - A single-platform publisher **is** validated on its own shard. `winget` and
   `chocolatey` are checked on the Windows shard; `aur` on the Linux shard.
 
-This is scoped to sharded (target-restricted) runs. On a **full**, non-sharded
-build the self-skip does not apply: a configured publisher that produces no
-eligible artifact still **errors** (see
+This self-skip is gated on a run being **target-restricted** — a determinism
+shard (`--split`/`--targets`) or a host-only `--single-target` build; both are
+legitimate reasons a run is missing an artifact another target would produce.
+On a **full** build (neither restriction set), the self-skip does not apply for
+the **index/manifest publishers** — `homebrew`, `nix`, `aur`, `krew`, `winget`,
+`scoop`, `chocolatey` — each of which generates an installable reference that
+would 404 if let through unchecked: a configured one with no eligible artifact
+still **errors** (see
 [Artifact eligibility](../publish/selecting-publishers.md#artifact-eligibility)),
 so a misconfiguration is never hidden by the same mechanism that makes sharding
 possible.
+
+This gate doesn't cover every publisher, though. The build-time packagers
+**nfpm** and **snapcraft** emit local `.deb`/`.rpm`/`.snap` packages rather than
+an index entry — with no eligible binary they simply produce nothing, not an
+error. **mcp** publishes an existing image reference by name (a config-driven
+skip), not a generated manifest, so it isn't part of this check either.
 
 PR builds run the same harness with a fast advisory subset
 (`--stages=archive,sbom,sign,checksum`) on a single Linux shard via the

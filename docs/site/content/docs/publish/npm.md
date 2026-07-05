@@ -285,11 +285,23 @@ npms:
 
 ## Artifact eligibility
 
-anodizer packages only the archives npm can install: genuine macOS targets
-(`*-apple-darwin`, `darwin-universal`) plus the Linux archives it supports. Apple
-**non-macOS** targets (`aarch64-apple-ios`, `*-tvos`, `*-watchos`) are excluded —
-they never appear in the generated package or its optional-dependency set. If the
-build produces **no** eligible archive, anodizer fails the release rather than
-emitting an empty package. See
-[Artifact eligibility](./selecting-publishers.md#artifact-eligibility) for the
-full rule.
+npm has the broadest OS coverage of any anodizer publisher — unlike the
+macOS+Linux-only aggregators (Homebrew, nix, krew, AUR), it packages an archive
+for every OS npm's `os` field represents: `linux`, `darwin` (genuine macOS
+only), `win32` (Windows), `freebsd`, `openbsd`, `netbsd`, `aix`, and `android`.
+Each built target's npm `os`/`cpu`/`libc` triple is derived automatically from
+its real target triple (see [Quick start](#quick-start-optional-deps) above); a
+target npm has no mapping for at all — an unmapped arch, or `darwin-universal`
+(npm has no universal-arch selector) — is excluded from npm coverage with a
+warning rather than silently dropped.
+
+Apple **non-macOS** targets (`aarch64-apple-ios`, `*-tvos`, `*-watchos`) are the
+one systematic exclusion: npm has no `ios` platform value, and a `darwin`-tagged
+package built from a watchOS/tvOS archive would be wrongly selected by `npm
+install` on a real macOS host. They never appear in the generated package or its
+optional-dependency set.
+
+If the build produces **no** eligible archive at all, anodizer fails the release
+rather than emitting an empty package. See
+[Artifact eligibility](./selecting-publishers.md#artifact-eligibility) for how
+npm's coverage compares to the other install aggregators.

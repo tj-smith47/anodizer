@@ -285,11 +285,16 @@ publish:
 
 ## Artifact eligibility
 
-anodizer folds only the archives Homebrew can install into the formula and cask:
-genuine macOS targets (`*-apple-darwin`, `darwin-universal`) plus the Linux
-archives it supports. Apple **non-macOS** targets (`aarch64-apple-ios`, `*-tvos`,
-`*-watchos`) are excluded — they never appear in the generated formula. If the
-build produces **no** eligible archive, anodizer fails the release rather than
-emitting an empty formula. See
-[Artifact eligibility](./selecting-publishers.md#artifact-eligibility) for the
-full rule.
+**Formula:** anodizer folds only the archives Homebrew can install into the
+formula: genuine macOS targets (`*-apple-darwin`, `darwin-universal`) plus the
+Linux archives it supports. Apple **non-macOS** targets (`aarch64-apple-ios`,
+`*-tvos`, `*-watchos`) are excluded — they never appear in the generated
+formula. If the build produces **no** eligible archive, anodizer fails the
+release rather than emitting an empty formula. See
+[Artifact eligibility](./selecting-publishers.md#artifact-eligibility) for how
+this compares to the other install aggregators.
+
+**Cask:** the embedded same-tap cask (`cask:`/`homebrew_casks:`) is
+**macOS-only** — anodizer generates it only when the build produces a genuine
+macOS artifact (`*-apple-darwin`), never from a Linux archive, matching the
+standalone [Homebrew Casks](./homebrew-casks.md#artifact-eligibility) publisher.

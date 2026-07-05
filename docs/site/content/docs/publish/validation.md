@@ -34,12 +34,18 @@ a real release.
 
 ### On a sharded determinism build
 
-When determinism runs as a target-restricted shard matrix, emission-validate
-checks the emissions the current shard can satisfy and **self-skips** a publisher
-whose input archives this shard did not produce — a cross-platform aggregator
-(`homebrew`, `nix`) is validated on the shard that built its inputs, not failed
-on one that couldn't. On a **full**, non-sharded build there is no self-skip: a
-configured publisher with no eligible artifact still errors. See
+When determinism runs as a target-restricted shard matrix (a shard, or a
+host-only `--single-target` build), emission-validate checks the emissions the
+current shard can satisfy and **self-skips** a publisher whose input archives
+this shard did not produce — a cross-platform aggregator (`homebrew`, `nix`) is
+validated on the shard that built its inputs, not failed on one that couldn't.
+On a **full** build (neither restriction set), the self-skip does not apply for
+the index/manifest publishers (`homebrew`, `nix`, `aur`, `krew`, `winget`,
+`scoop`, `chocolatey`): a configured one with no eligible artifact still errors,
+since it would otherwise generate an installable reference that 404s. The
+build-time packagers `nfpm`/`snapcraft` and the image-reference publisher `mcp`
+aren't covered by this gate — with no eligible input they simply produce
+nothing (or a config-driven skip, for `mcp`), not an error. See
 [Emission-validate on sharded builds](../advanced/determinism.md#emission-validate-on-sharded-builds).
 
 ## Two layers

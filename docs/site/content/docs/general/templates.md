@@ -269,12 +269,12 @@ These variables are bound **only** inside a publisher's `on_error` and
 `Error` and `Reason` carry untrusted git/API text — read them from
 `$ANODIZER_ERROR` / `$ANODIZER_ROLLBACK_REASON` with `--raw` rather than
 splicing them into `cmd`. See
-[Release resilience](../advanced/release-resilience.md#on_rollback-hooks) for the
+[Release resilience](../advanced/release-resilience.md#on-rollback-hooks) for the
 full hook reference.
 
 ## Functions and filters
 
-Tera provides many [built-in filters](https://keats.github.io/tera/docs/#built-in-filters) (`lower`, `upper`, `title`, `trim`, `length`, `default`, …). On top of those, anodizer registers a full set of release-oriented helpers. Most are available in **both forms** — as a filter (`{{ X | fn(...) }}`) and as a function (`{{ fn(s=X, ...) }}`) — so the GoReleaser positional form (`{{ fn X ... }}`) auto-translates onto them.
+Tera provides many [built-in filters](https://keats.github.io/tera/#built-in-filters) (`lower`, `upper`, `title`, `trim`, `length`, `default`, …). On top of those, anodizer registers a full set of release-oriented helpers. Most are available in **both forms** — as a filter (`{{ X | fn(...) }}`) and as a function (`{{ fn(s=X, ...) }}`) — so the GoReleaser positional form (`{{ fn X ... }}`) auto-translates onto them.
 
 Examples below use the Tera-native no-dot idiom.
 

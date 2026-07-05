@@ -120,12 +120,13 @@ list them by hand.
 
 | Aggregator | Accepts | Excludes |
 |------------|---------|----------|
-| `homebrew`, `homebrew` casks, `nix`, `krew`, `npm` | genuine macOS targets (`*-apple-darwin`, `darwin-universal`) and the Linux archives each supports | Apple **non-macOS** targets (`aarch64-apple-ios`, `*-tvos`, `*-watchos`) — Homebrew/nix/krew/npm cannot install those, so they never appear in the emitted formula, manifest, or package |
+| `homebrew`, `homebrew` casks, `nix`, `krew` | genuine macOS targets (`*-apple-darwin`, `darwin-universal`) and the Linux archives each supports | Apple **non-macOS** targets (`aarch64-apple-ios`, `*-tvos`, `*-watchos`) — Homebrew/nix/krew cannot install those, so they never appear in the emitted formula or manifest |
+| `npm` | every OS npm's `os` field represents: `linux`, `darwin` (genuine macOS only), `win32`, `freebsd`, `openbsd`, `netbsd`, `aix`, `android` — the broadest coverage of any publisher | Apple **non-macOS** targets (same exclusion as above — npm has no `ios` `os` value) and any target npm has no os/arch mapping for (e.g. `darwin-universal`) |
 | `aur` | Linux archives only | everything non-Linux |
 
 An `aarch64-apple-ios` build in your target list is fine — it still builds and
 uploads as a release asset. It is simply **not** folded into a Homebrew cask or
-an npm package, because those installers would 404 or target the wrong OS.
+an npm package, because those installers would target the wrong OS.
 
 ### No eligible archive is a hard error, never a silent skip
 
@@ -135,7 +136,10 @@ If a configured install aggregator finds **no** archive it can install, anodizer
 ```bash
 $ anodizer release
 ...
-Error: aur: no linux archives matched — the aur publisher has no eligible artifact to package
+Error: aur: no linux archives matched filters for 'myapp' — PKGBUILD would have
+placeholder URL and empty sha256. Check your archive configuration and aur
+filters (ids=<none>, amd64_variant=<default v1>, arm_variant=7 [hardcoded]). At
+least one linux Archive artifact must match.
 ```
 
 This closes a failure-hiding gap where a misconfigured build (say, an `aur`
