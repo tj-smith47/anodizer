@@ -90,6 +90,47 @@ pub fn merge_msvc_determinism_rustflags(base: &str) -> String {
     out
 }
 
+/// cc-rs env-var pins that force `clang-cl` as the C and C++ compiler for a
+/// windows-msvc `triple`, so C objects compiled by build-dependency crates
+/// (zstd-sys, ring, aws-lc-sys, lzma-sys, blake3, ...) are byte-reproducible.
+///
+/// This is the single source of truth for the windows-msvc C-toolchain pin,
+/// mirroring how [`MSVC_DETERMINISM_RUSTFLAGS`] is the source of truth for
+/// the Rust-side flags. The two guard different compilers: `/Brepro` and the
+/// sibling link-args are rustc/link.exe flags that never reach a C compile —
+/// cc-rs and cmake invoke `cl.exe` directly, and `cl.exe`'s object codegen has
+/// a proven register-allocation coin-flip across otherwise-identical rebuilds
+/// (a single function alternating `mov eax,ecx` / `mov rax,rcx`). `clang-cl`
+/// accepts the same MSVC-compatible command line but its LLVM backend is
+/// deterministic, so pinning it as `CC`/`CXX` closes the gap `/Brepro` cannot.
+///
+/// cc-rs resolves a target's compiler through a fixed, prioritized env-var
+/// order: `<VAR>_<target>` (hyphenated triple) first, then
+/// `<VAR>_<target_with_underscores>`, then `TARGET_<VAR>`, then bare `<VAR>`.
+/// Both of the first two forms are set here so the pin takes effect
+/// regardless of which spelling a build script or `cc::Build` call queries;
+/// `TARGET_CC`/`CC` are deliberately left unset — a bare `TARGET_CC` would
+/// also apply to a same-host non-msvc target build, which is not what this
+/// pin is for. The `cmake` crate derives its `CMAKE_C_COMPILER` /
+/// `CMAKE_CXX_COMPILER` from `cc::Build::get_compiler()` rather than probing
+/// its own env vars, so these `CC_*`/`CXX_*` pairs propagate into
+/// `aws-lc-sys`'s CMake-driven build without any `CMAKE_*` override.
+///
+/// Returns an empty `Vec` for a non-msvc `triple` so callers can invoke this
+/// unconditionally per build target.
+pub fn msvc_c_toolchain_env(triple: &str) -> Vec<(String, String)> {
+    if !crate::target::is_windows_msvc(triple) {
+        return Vec::new();
+    }
+    let underscored = triple.replace('-', "_");
+    vec![
+        (format!("CC_{triple}"), "clang-cl".to_string()),
+        (format!("CC_{underscored}"), "clang-cl".to_string()),
+        (format!("CXX_{triple}"), "clang-cl".to_string()),
+        (format!("CXX_{underscored}"), "clang-cl".to_string()),
+    ]
+}
+
 /// `true` when the detected host target triple is a Windows-MSVC triple.
 ///
 /// Runtime host detection (via `rustc -vV` in
@@ -660,6 +701,64 @@ mod tests {
             1,
             "/Brepro must appear exactly once after a double merge. got={twice}"
         );
+    }
+
+    #[test]
+    fn msvc_c_toolchain_env_pins_clang_cl_x86_64() {
+        let env = msvc_c_toolchain_env("x86_64-pc-windows-msvc");
+        assert_eq!(
+            env,
+            vec![
+                (
+                    "CC_x86_64-pc-windows-msvc".to_string(),
+                    "clang-cl".to_string()
+                ),
+                (
+                    "CC_x86_64_pc_windows_msvc".to_string(),
+                    "clang-cl".to_string()
+                ),
+                (
+                    "CXX_x86_64-pc-windows-msvc".to_string(),
+                    "clang-cl".to_string()
+                ),
+                (
+                    "CXX_x86_64_pc_windows_msvc".to_string(),
+                    "clang-cl".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn msvc_c_toolchain_env_pins_clang_cl_aarch64() {
+        let env = msvc_c_toolchain_env("aarch64-pc-windows-msvc");
+        assert_eq!(
+            env,
+            vec![
+                (
+                    "CC_aarch64-pc-windows-msvc".to_string(),
+                    "clang-cl".to_string()
+                ),
+                (
+                    "CC_aarch64_pc_windows_msvc".to_string(),
+                    "clang-cl".to_string()
+                ),
+                (
+                    "CXX_aarch64-pc-windows-msvc".to_string(),
+                    "clang-cl".to_string()
+                ),
+                (
+                    "CXX_aarch64_pc_windows_msvc".to_string(),
+                    "clang-cl".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn msvc_c_toolchain_env_empty_for_non_msvc_targets() {
+        assert!(msvc_c_toolchain_env("x86_64-unknown-linux-gnu").is_empty());
+        assert!(msvc_c_toolchain_env("aarch64-apple-darwin").is_empty());
     }
 
     #[test]
