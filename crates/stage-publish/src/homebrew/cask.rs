@@ -854,7 +854,7 @@ pub(super) fn generate_cask_from_context(
         .find(|a| {
             a.target
                 .as_deref()
-                .map(|t| t.contains("darwin") || t.contains("macos"))
+                .map(anodizer_core::target::is_macos)
                 .unwrap_or(true)
         })
         .or_else(|| {
@@ -865,7 +865,7 @@ pub(super) fn generate_cask_from_context(
                 .find(|a| {
                     a.target
                         .as_deref()
-                        .map(|t| t.contains("darwin") || t.contains("macos"))
+                        .map(anodizer_core::target::is_macos)
                         .unwrap_or(false)
                 })
         })
@@ -1244,13 +1244,13 @@ pub(crate) fn crate_has_macos_cask_artifact(ctx: &Context, crate_name: &str) -> 
     let dmg_is_darwin = |a: &anodizer_core::artifact::Artifact| {
         a.target
             .as_deref()
-            .map(|t| t.contains("darwin") || t.contains("macos"))
+            .map(anodizer_core::target::is_macos)
             .unwrap_or(true)
     };
     let archive_is_darwin = |a: &anodizer_core::artifact::Artifact| {
         a.target
             .as_deref()
-            .map(|t| t.contains("darwin") || t.contains("macos"))
+            .map(anodizer_core::target::is_macos)
             .unwrap_or(false)
     };
     ctx.artifacts
