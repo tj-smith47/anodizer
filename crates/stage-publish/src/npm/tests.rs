@@ -253,6 +253,27 @@ fn npm_triple_rejects_unsupported() {
     assert!(npm_triple("x86_64-unknown-haiku").is_none());
 }
 
+/// Apple-but-not-macOS targets must not become a `darwin` npm package: a
+/// watchOS/tvOS archive (os="darwin" via map_target) or an iOS archive would
+/// otherwise be pulled by `npm install` on a real macOS host and fail.
+#[test]
+fn npm_triple_rejects_apple_non_macos() {
+    assert!(
+        npm_triple("aarch64-apple-darwin").is_some(),
+        "genuine macOS stays supported"
+    );
+    for triple in [
+        "aarch64-apple-ios",
+        "aarch64-apple-watchos",
+        "aarch64-apple-tvos",
+    ] {
+        assert!(
+            npm_triple(triple).is_none(),
+            "{triple} must not map to an npm package"
+        );
+    }
+}
+
 // -----------------------------------------------------------------------------
 // Platform-binary collection (postinstall mode)
 // -----------------------------------------------------------------------------

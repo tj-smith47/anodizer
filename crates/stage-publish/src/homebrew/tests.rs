@@ -2339,6 +2339,32 @@ fn find_top_level_cask_artifact_returns_none_for_no_macos() {
     assert!(super::cask::find_top_level_cask_artifact(&ctx, None).is_none());
 }
 
+/// `find_top_level_cask_artifact` excludes Apple-but-not-macOS archives
+/// (`*-apple-ios`/`-watchos`/`-tvos`): they match the old broad
+/// `contains("apple")` selector but carry no `brew`-installable binary.
+#[test]
+fn find_top_level_cask_artifact_excludes_apple_non_macos() {
+    let config = Config::default();
+    let mut ctx = Context::new(config, ContextOptions::default());
+    for triple in [
+        "aarch64-apple-ios",
+        "aarch64-apple-watchos",
+        "aarch64-apple-tvos",
+    ] {
+        ctx.artifacts.add(art_with_url_sha(
+            ArtifactKind::Archive,
+            &format!("mytool-{triple}.tar.gz"),
+            triple,
+            "https://e.com/mytool.tar.gz",
+            "sha",
+        ));
+    }
+    assert!(
+        super::cask::find_top_level_cask_artifact(&ctx, None).is_none(),
+        "iOS/watchOS/tvOS archives must not be selected as a cask url"
+    );
+}
+
 /// `find_top_level_cask_artifact` with an IDs filter excludes non-matching
 /// artifacts. Pins the ids filter behaviour.
 #[test]
@@ -4600,5 +4626,59 @@ fn top_level_cask_darwin_and_linux_coexist_with_deterministic_order() {
     assert!(
         arm_in_macos < intel_in_macos,
         "within on_macos, on_arm must precede on_intel (arch_block sort):\n{c}"
+    );
+}
+
+/// A watchOS archive (os="darwin" via map_target's broad apple rule) must NOT
+/// win the `on_macos`/`on_arm` cask slot — only the genuine `*-apple-darwin`
+/// arm64 binary is `brew`-installable. Guards the `build_cask_platform_blocks`
+/// `is_macos` gate against the failure-hiding emission.
+#[test]
+fn top_level_cask_excludes_watchos_from_macos_block() {
+    use anodizer_core::config::HomebrewCaskConfig;
+    let cask_cfg = HomebrewCaskConfig {
+        name: Some("mytool".to_string()),
+        ..Default::default()
+    };
+    let config = Config {
+        crates: vec![CrateConfig {
+            name: "mytool".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            ..Default::default()
+        }],
+        homebrew_casks: Some(vec![cask_cfg.clone()]),
+        ..Default::default()
+    };
+    let mut ctx = Context::new(config, ContextOptions::default());
+    ctx.template_vars_mut().set("Tag", "v1.2.3");
+    ctx.template_vars_mut().set("Version", "1.2.3");
+    // Genuine macOS arm64 build...
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-darwin-arm64.tar.gz",
+        "aarch64-apple-darwin",
+        "https://e.com/mytool-1.2.3-darwin-arm64.tar.gz",
+        "sha_real_darwin",
+    ));
+    // ...and a watchOS arm64 build that map_target also classifies os="darwin".
+    ctx.artifacts.add(art_with_url_sha(
+        ArtifactKind::Archive,
+        "mytool-watchos-arm64.tar.gz",
+        "aarch64-apple-watchos",
+        "https://e.com/mytool-1.2.3-watchos-arm64.tar.gz",
+        "sha_watchos",
+    ));
+    let rendered = super::publish_top::render_top_level_cask_entry(&ctx, &cask_cfg, &test_log())
+        .expect("top-level cask render")
+        .expect("top-level cask applicable");
+    let c = rendered.content;
+    assert!(
+        c.contains("sha_real_darwin"),
+        "genuine macOS arm64 binary must be in the cask:\n{c}"
+    );
+    assert!(
+        !c.contains("sha_watchos"),
+        "watchOS archive must never reach the on_macos cask block:\n{c}"
     );
 }

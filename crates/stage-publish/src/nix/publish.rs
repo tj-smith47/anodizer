@@ -202,7 +202,7 @@ pub(crate) fn crate_has_nix_archive(
     let all_artifacts = collect_platform_artifacts(ctx, crate_name, nix_cfg)?;
     Ok(all_artifacts
         .iter()
-        .any(|a| nix_system(&a.os, &a.arch).is_some()))
+        .any(|a| nix_system_for_artifact(a).is_some()))
 }
 
 /// The skip-unaware render body shared by the live [`publish_to_nix`] path and
@@ -526,6 +526,28 @@ fn release_repo_coords(
 // Artifact + archive helpers
 // ---------------------------------------------------------------------------
 
+/// The nix system for a platform artifact, or `None` when it is not
+/// nix-installable.
+///
+/// Wraps [`nix_system`] with the genuine-macOS check the raw `(os, arch)`
+/// mapping cannot make on its own: `map_target` classifies every `*-apple-*`
+/// triple as `os = "darwin"`, folding `aarch64-apple-ios` / `-tvos` /
+/// `-watchos` in with real macOS. A nix darwin package built from a watchOS
+/// archive is a failure-hiding emission — a `nix build` on `aarch64-darwin`
+/// would fetch a binary that cannot run there. So a `darwin`-classified
+/// artifact is nix-eligible only when its triple is genuine macOS
+/// ([`is_macos`]); this mirrors homebrew's `is_macos || is_linux` artifact
+/// filter. Linux is already precise (`map_target` never mislabels a non-Linux
+/// triple `linux`), so it passes through untouched.
+///
+/// [`is_macos`]: anodizer_core::target::is_macos
+fn nix_system_for_artifact(a: &OsArtifact) -> Option<String> {
+    if a.os == "darwin" && !anodizer_core::target::is_macos(&a.target) {
+        return None;
+    }
+    nix_system(&a.os, &a.arch)
+}
+
 /// Gathers all Linux/Darwin platform artifacts for the crate, applying
 /// the configured ID filter and `amd64_variant` (defaulting to `v1`).
 fn collect_platform_artifacts(
@@ -558,7 +580,7 @@ fn build_archive_tuples(
 ) -> Result<Vec<(String, String, String)>> {
     if let Some(empty) = all_artifacts
         .iter()
-        .find(|a| nix_system(&a.os, &a.arch).is_some() && a.sha256.is_empty())
+        .find(|a| nix_system_for_artifact(a).is_some() && a.sha256.is_empty())
     {
         anyhow::bail!(
             "nix: artifact for crate '{}' at url '{}' (os={}, arch={}) is \
@@ -588,7 +610,7 @@ fn build_archive_tuples(
     let archives: Vec<(String, String, String)> = all_artifacts
         .iter()
         .filter_map(|a| {
-            let system = nix_system(&a.os, &a.arch)?;
+            let system = nix_system_for_artifact(a)?;
             if !seen_systems.insert(system.clone()) {
                 return None;
             }
@@ -837,7 +859,7 @@ fn resolve_source_roots(
     let mut per_system: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
     for art in all_artifacts {
-        if let Some(system) = nix_system(&art.os, &art.arch) {
+        if let Some(system) = nix_system_for_artifact(art) {
             let wrap_dir = archive_cfgs
                 .iter()
                 .find(|cfg| match (&art.id, &cfg.id) {
@@ -1311,11 +1333,41 @@ mod tests {
     // -----------------------------------------------------------------
 
     fn os_artifact(os: &str, arch: &str, url: &str, sha256: &str) -> util::OsArtifact {
+        // Synthesize a representative genuine triple so `is_macos`-based nix
+        // eligibility treats a "darwin" os as real macOS. Apple-but-not-macOS
+        // targets (watchos/tvos) also map to os="darwin" but carry a different
+        // triple — see `nix_system_for_artifact_excludes_apple_non_macos`.
+        let target = match os {
+            "darwin" => "aarch64-apple-darwin",
+            "linux" => "x86_64-unknown-linux-gnu",
+            "windows" => "x86_64-pc-windows-msvc",
+            _ => "",
+        };
         util::OsArtifact {
             url: url.to_string(),
             sha256: sha256.to_string(),
             os: os.to_string(),
             arch: arch.to_string(),
+            target: target.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// Build an artifact carrying an explicit triple, so tests can drive the
+    /// Apple-but-not-macOS eligibility path (`os` alone cannot express it).
+    fn os_artifact_with_target(
+        os: &str,
+        arch: &str,
+        target: &str,
+        url: &str,
+        sha256: &str,
+    ) -> util::OsArtifact {
+        util::OsArtifact {
+            url: url.to_string(),
+            sha256: sha256.to_string(),
+            os: os.to_string(),
+            arch: arch.to_string(),
+            target: target.to_string(),
             ..Default::default()
         }
     }
@@ -1325,6 +1377,98 @@ mod tests {
         let cfg = NixConfig::default();
         let err =
             build_archive_tuples(&[], &cfg, "mytool", "1.0.0", &quiet_log()).expect_err("no arts");
+        assert!(format!("{err}").contains("no Linux/Darwin archive"));
+    }
+
+    #[test]
+    fn nix_system_for_artifact_excludes_apple_non_macos() {
+        let sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        // Genuine macOS (and Linux) stay nix-eligible.
+        assert_eq!(
+            nix_system_for_artifact(&os_artifact_with_target(
+                "darwin",
+                "arm64",
+                "aarch64-apple-darwin",
+                "u",
+                sha,
+            )),
+            Some("aarch64-darwin".to_string()),
+        );
+        assert_eq!(
+            nix_system_for_artifact(&os_artifact_with_target(
+                "linux",
+                "amd64",
+                "x86_64-unknown-linux-gnu",
+                "u",
+                sha,
+            )),
+            Some("x86_64-linux".to_string()),
+        );
+        // map_target folds watchos/tvos into os="darwin"; these carry no
+        // nix-installable binary and must NOT become a darwin nix system.
+        for target in [
+            "aarch64-apple-watchos",
+            "aarch64-apple-tvos",
+            "aarch64-apple-ios",
+        ] {
+            assert_eq!(
+                nix_system_for_artifact(&os_artifact_with_target(
+                    "darwin", "arm64", target, "u", sha,
+                )),
+                None,
+                "{target} is Apple-but-not-macOS — must be nix-ineligible",
+            );
+        }
+    }
+
+    #[test]
+    fn build_archive_tuples_excludes_watchos_darwin_keeps_linux() {
+        // A watchOS archive maps to os="darwin" (map_target's broad apple rule)
+        // but is not a real macOS binary; it must be dropped, leaving only the
+        // genuine linux system in the tuples — never emitted as aarch64-darwin.
+        let sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let arts = vec![
+            os_artifact_with_target(
+                "darwin",
+                "arm64",
+                "aarch64-apple-watchos",
+                "https://example.com/watch.tar.gz",
+                sha,
+            ),
+            os_artifact_with_target(
+                "linux",
+                "amd64",
+                "x86_64-unknown-linux-gnu",
+                "https://example.com/linux.tar.gz",
+                sha,
+            ),
+        ];
+        let cfg = NixConfig::default();
+        let tuples = build_archive_tuples(&arts, &cfg, "mytool", "1.0.0", &quiet_log()).unwrap();
+        assert_eq!(tuples.len(), 1);
+        assert_eq!(tuples[0].0, "x86_64-linux");
+        assert!(
+            !tuples.iter().any(|(sys, _, _)| sys.contains("darwin")),
+            "watchOS archive must never surface as a darwin nix system"
+        );
+    }
+
+    #[test]
+    fn build_archive_tuples_only_apple_non_macos_bails_as_no_archive() {
+        // A full build whose only Apple archive is tvOS has no nix-installable
+        // system: build_archive_tuples must bail (failure surfaced), not emit a
+        // bogus aarch64-darwin package.
+        let sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+        let arts = vec![os_artifact_with_target(
+            "darwin",
+            "arm64",
+            "aarch64-apple-tvos",
+            "https://example.com/tv.tar.gz",
+            sha,
+        )];
+        let cfg = NixConfig::default();
+        let err = build_archive_tuples(&arts, &cfg, "mytool", "1.0.0", &quiet_log())
+            .expect_err("tvOS-only must bail");
         assert!(format!("{err}").contains("no Linux/Darwin archive"));
     }
 

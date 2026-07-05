@@ -729,9 +729,13 @@ pub(super) fn build_cask_platform_blocks(
         for art in scope.artifacts_of_kind(ctx, *kind) {
             let target = art.target.as_deref().unwrap_or("");
             let (os, arch) = anodizer_core::target::map_target(target);
-            let os_block = if os == "darwin" {
+            // `is_macos` (genuine `*-apple-darwin` only), NOT `os == "darwin"`:
+            // map_target folds `*-apple-watchos`/`-tvos` into os="darwin", but a
+            // watchOS archive dropped into the `on_macos` block is a
+            // non-installable cask `url`. Mirrors the formula's `is_macos` gate.
+            let os_block = if anodizer_core::target::is_macos(target) {
                 "macos"
-            } else if os == "linux" {
+            } else if anodizer_core::target::is_linux(target) {
                 "linux"
             } else {
                 continue;
@@ -1193,9 +1197,13 @@ pub(super) fn find_top_level_cask_artifact<'a>(
         if !anodizer_core::artifact::matches_id_filter(a, ids) {
             return false;
         }
+        // `is_macos` (genuine `*-apple-darwin` only), NOT the broad
+        // `contains("apple")`: the latter also selects `*-apple-ios`/`-watchos`/
+        // `-tvos`, which carry no `brew`-installable binary and would land in the
+        // cask's `url`/`sha256` (a 404-class cask install). Mirrors the formula.
         a.target
             .as_deref()
-            .map(|t| t.contains("darwin") || t.contains("macos") || t.contains("apple"))
+            .map(anodizer_core::target::is_macos)
             .unwrap_or(false)
     };
 

@@ -38,6 +38,15 @@ pub(crate) struct OsArtifact {
     pub sha256: String,
     pub os: String,
     pub arch: String,
+    /// The full Rust target triple this artifact was built for (empty when the
+    /// source artifact carried no triple). Retained alongside the coarse `os`
+    /// because `os` is derived from [`anodizer_core::target::map_target`], whose
+    /// `darwin` classification is deliberately broad: it folds `*-apple-ios` /
+    /// `-tvos` / `-watchos` into `darwin`. Publishers that install only on
+    /// genuine macOS (nix, homebrew) re-check the triple with
+    /// [`anodizer_core::target::is_macos`] to exclude those Apple-but-not-macOS
+    /// targets, which the `os` string alone cannot distinguish.
+    pub target: String,
     /// Artifact ID from metadata (matches the `id:` field in archive configs).
     /// Used by publishers such as `nix` to correlate artifacts to their
     /// per-archive configuration entries.
@@ -143,6 +152,7 @@ fn artifact_to_os_artifact(
         sha256,
         os: infer_os(target, os_fallback),
         arch: infer_arch(target),
+        target: target.to_string(),
         id,
         amd64_variant,
         arm_variant,

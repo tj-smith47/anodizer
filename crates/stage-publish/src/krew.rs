@@ -242,6 +242,25 @@ fn warn_if_short_description_too_long(
     }
 }
 
+/// True when the artifact's triple targets an OS `kubectl krew` installs on
+/// (Linux, macOS, or Windows).
+///
+/// Excludes Apple-but-not-macOS targets, which carry no kubectl-installable
+/// binary: `map_target` folds `*-apple-watchos` / `-tvos` into `os = "darwin"`
+/// and `*-apple-ios` into `os = "ios"`. Without this gate a watchOS archive
+/// would be published as a `darwin` `KrewPlatform` selector that a real arm64
+/// macOS host matches and then fails to run, and an iOS archive would emit a
+/// bogus `os: ios` platform. Uses [`is_macos`] (genuine `*-apple-darwin` only),
+/// mirroring the homebrew/nix eligibility filter. A target-less artifact
+/// matches no predicate and is excluded.
+///
+/// [`is_macos`]: anodizer_core::target::is_macos
+fn krew_eligible(a: &OsArtifact) -> bool {
+    anodizer_core::target::is_macos(&a.target)
+        || anodizer_core::target::is_linux(&a.target)
+        || anodizer_core::target::is_windows(&a.target)
+}
+
 /// Map the internal OS names to Krew's expected labels.
 ///
 /// See `krew_arch` for the rationale behind keeping a separate mapping
@@ -922,13 +941,21 @@ pub(crate) fn render_krew_manifest_for_crate(
         }
     }
 
-    let all_artifacts = util::find_all_platform_artifacts_with_variant(
+    let all_artifacts: Vec<OsArtifact> = util::find_all_platform_artifacts_with_variant(
         ctx,
         crate_name,
         ids_filter,
         Some(amd64_variant),
         arm_variant,
-    )?;
+    )?
+    .into_iter()
+    // Krew installs only on linux/darwin/windows. Drop Apple-but-not-macOS
+    // archives here so the `is_empty()` guard below still fires on a build
+    // whose only Apple target was watchos/tvos (os=darwin) or ios — otherwise
+    // the manifest would ship a `darwin`/`ios` platform selector for a binary
+    // that cannot run there. Mirrors homebrew/nix `is_macos` eligibility.
+    .filter(krew_eligible)
+    .collect();
 
     let url_template = krew_cfg.url_template.as_deref();
 
@@ -1887,14 +1914,44 @@ mod tests {
     // -----------------------------------------------------------------------
 
     fn make_os_artifact(os: &str, arch: &str, binary: Option<&str>) -> OsArtifact {
+        // Synthesize a genuine triple so `krew_eligible` (triple-based) keeps
+        // the artifact. Apple-but-not-macOS targets map to os="darwin"/"ios"
+        // too but carry a different triple — see `krew_eligible_excludes_*`.
+        let target = match os {
+            "darwin" => "aarch64-apple-darwin",
+            "linux" => "x86_64-unknown-linux-gnu",
+            "windows" => "x86_64-pc-windows-msvc",
+            _ => "",
+        };
         OsArtifact {
             url: format!("https://example.com/{}-{}.tar.gz", os, arch),
             sha256: "deadbeef".into(),
             os: os.into(),
             arch: arch.into(),
+            target: target.into(),
             binary: binary.map(|s| s.to_string()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn krew_eligible_excludes_apple_non_macos() {
+        let mk = |os: &str, target: &str| OsArtifact {
+            os: os.into(),
+            target: target.into(),
+            ..Default::default()
+        };
+        // Genuine krew platforms stay eligible.
+        assert!(krew_eligible(&mk("darwin", "aarch64-apple-darwin")));
+        assert!(krew_eligible(&mk("linux", "x86_64-unknown-linux-gnu")));
+        assert!(krew_eligible(&mk("windows", "x86_64-pc-windows-msvc")));
+        assert!(krew_eligible(&mk("darwin", "darwin-universal")));
+        // watchos/tvos map to os="darwin", ios to os="ios" — none installable.
+        assert!(!krew_eligible(&mk("darwin", "aarch64-apple-watchos")));
+        assert!(!krew_eligible(&mk("darwin", "aarch64-apple-tvos")));
+        assert!(!krew_eligible(&mk("ios", "aarch64-apple-ios")));
+        // A target-less artifact is excluded (no OS to install on).
+        assert!(!krew_eligible(&mk("darwin", "")));
     }
 
     #[test]

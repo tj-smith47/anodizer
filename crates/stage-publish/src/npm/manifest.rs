@@ -79,7 +79,12 @@ pub(crate) fn npm_triple(target: &str) -> Option<NpmTriple> {
     let (os, arch) = anodizer_core::target::map_target(target);
     let npm_os: &str = match os.as_str() {
         "linux" => "linux",
-        "darwin" => "darwin",
+        // `is_macos` (genuine `*-apple-darwin` only): map_target folds
+        // `*-apple-watchos`/`-tvos` into os="darwin", but an npm package with
+        // `os: ["darwin"]` built from a watchOS archive would be selected by
+        // `npm install` on a real macOS host and fail. Excluded like ios
+        // (os="ios", already unmapped). Mirrors homebrew/nix/krew eligibility.
+        "darwin" if anodizer_core::target::is_macos(target) => "darwin",
         "windows" => "win32",
         "freebsd" => "freebsd",
         "openbsd" => "openbsd",
