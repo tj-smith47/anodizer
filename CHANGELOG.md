@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-07-06
+
+### Bug Fixes
+
+* 20f3db081207 allow http scheme in blob rollback delete client ([@tj-smith47](https://github.com/tj-smith47))
+* 72daf41a9c1a anchor .cargo_vcs_info.json normalization to the crate root ([@tj-smith47](https://github.com/tj-smith47))
+* 68f887b3f747 bound npm retry wall-time under the publish-npm job timeout ([@tj-smith47](https://github.com/tj-smith47))
+* 4abf66e56f7d compare re-cut crates modulo .cargo_vcs_info.json so same-source re-cuts skip clean ([@tj-smith47](https://github.com/tj-smith47))
+* 57eb14a1345a count only Normal path components for the crate-root vcs-info gate ([@tj-smith47](https://github.com/tj-smith47))
+* 5eb94287af6b give git-revert rollback a commit identity ([@tj-smith47](https://github.com/tj-smith47))
+* 38229cd0a3c9 skip schemastore schemas not owned by the current publish leg ([@tj-smith47](https://github.com/tj-smith47))
+* 5e74097f11e9 surface npm retry-budget exhaustion and correct the metapackage install docs ([@tj-smith47](https://github.com/tj-smith47))
+* 034b9b0f171e neutralize git config before clone in revert no-identity test ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.15.0] - 2026-07-06
 
 ### Features
@@ -544,7 +558,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.15.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.15.1...HEAD
+[0.15.1]: https://github.com/tj-smith47/anodizer/compare/v0.15.0...v0.15.1
 [0.15.0]: https://github.com/tj-smith47/anodizer/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/tj-smith47/anodizer/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/tj-smith47/anodizer/compare/v0.13.0...v0.13.1
