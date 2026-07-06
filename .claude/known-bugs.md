@@ -12,7 +12,34 @@ cold without re-investigating.
 
 ## Open
 
-_(No open code/config gaps. Every non-paid dogfooding field is landed in
+- [ ] **cargo poison guard blocks legitimate same-version re-cuts: cksum
+  compare includes `.cargo_vcs_info.json` (v0.15.0 candidate — blocks cfgd
+  v0.5.0).** `stage-publish/src/cargo.rs` `decide_already_published` skips an
+  already-published version ONLY on byte-identical `.crate` sha256 vs the
+  index cksum, hard-failing otherwise ("bump the version"). But cargo embeds
+  the release commit in `.cargo_vcs_info.json` (`git.sha1`), so ANY re-cut of
+  a partially-published release — new commit, identical crate sources — has a
+  different tarball cksum and hard-fails the whole publish leg. Proven
+  first-hand on cfgd 2026-07-05: cfgd-crd@0.5.0 published from `fb7e0c36`
+  (index cksum `0844b18c…`); repackaging at that exact commit in a clean
+  worktree reproduces `0844b18c…` byte-for-byte, while packaging at
+  `53320c53` (cfgd-crd sources UNTOUCHED) yields `e4dc36b0…` — the only delta
+  is the vcs sha1. Fix shape: compare content identity modulo
+  `.cargo_vcs_info.json` (e.g. per-entry digests excluding the stamp, or
+  normalize the stamp before hashing) so a true content poison still fails
+  while a same-source re-cut skips clean. Until fixed, every monorepo re-cut
+  after a partial publish is wedged on its already-published crates.
+- [ ] **schemastore publisher misfires on per-crate publish-only legs whose
+  crate doesn't own the schemas.** cfgd run 28755784707 `Publish cfgd-core`
+  leg: `publisher schemastore failed: publish: crate 'cfgd' selected for a
+  per-crate emission is not present in the crate universe` — the leg's
+  universe is only `cfgd-core`, but the schemastore config targets `cfgd`.
+  Non-required so it only warned, but it reports a FAILED publisher on every
+  lib-crate leg (noise that can mask real failures). Fix shape: treat a
+  schemastore selection whose crate is outside the leg's universe as
+  not-applicable (skip), not failed.
+
+_(Otherwise: no open code/config gaps. Every non-paid dogfooding field is landed in
 `.anodizer.yaml` and committed; `flatpaks` is additionally PROVEN locally
 (anodizer's own emitter produced a real 12.3 MB `.flatpak`). What remains before
 a release is external SETUP only — see "Before-release setup" below. The two

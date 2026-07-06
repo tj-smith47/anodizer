@@ -260,6 +260,10 @@ jobs:
         with:
           determinism: true
           preserve-dist: "true"
+          # Without upload-dist nothing leaves the shard runner — preserve-dist
+          # only writes preserved-dist/ locally, and the release job's
+          # download-dist finds no context manifests.
+          upload-dist: "true"
           shard-label: ${{ matrix.crate }}-${{ matrix.shard }}
           determinism-crate: ${{ matrix.crate }}
         env:
@@ -294,6 +298,67 @@ jobs:
 | 1 | 1 | 1 | 1 | N crates × 4 shards | 1 | N crates (sequential) |
 
 **Race situation:** none — all crates build deterministically under one run; `--publish-only` iterates in topo order.
+
+#### Pitfalls when adapting this structure
+
+**Uploading `preserved-dist/` with your own `actions/upload-artifact` step.**
+If you replace `upload-dist: "true"` with a manual upload step (e.g. to control
+artifact naming), you MUST set `include-hidden-files: true`. The upload
+action's v4+ default excludes hidden files, silently stripping dist
+dot-directories (`.completions/`, `.manpages/`) that the preserved context
+manifest lists as artifacts — `release --publish-only` then fails its
+hash-verify on the restored tree:
+
+```
+publish-only hash-verify: hashing preserved artifact
+./dist/<crate>/.completions/<bin>/_<bin> → No such file or directory
+```
+
+**Library-only crates when you narrow the determinism matrix.** If your matrix
+covers only binary crates (source-only crates have nothing to
+determinism-check across OSes), a per-crate `release --publish-only --crate
+<lib>` leg still refuses to start: no shard ever preserved a dist for it.
+Produce one inline on the publish runner — the build-less harness is cheap
+(two hermetic source-package runs, compared byte-for-byte):
+
+```yaml
+      - name: Preserve dist (library-only determinism)
+        uses: tj-smith47/anodizer-action@v1
+        with:
+          determinism: true
+          determinism-crate: myproj-core
+          preserve-dist: "true"
+          shard-label: linux
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_PAT }}
+      # The harness scratches in ./dist during its runs; only the preserved
+      # tree is the publish input.
+      - name: Stage preserved dist for publish
+        run: |
+          rm -rf dist
+          mkdir -p dist
+          mv preserved-dist/myproj-core dist/myproj-core
+```
+
+**Splitting publish into per-crate jobs with rollback-on-failure.** Every
+downstream leg's `if:` must require ALL upstream legs to be
+success-or-skipped — not just its direct `needs:` parent. A failed upstream
+leg fires rollback (deleting the run's tags) while sibling legs are still
+running; each survivor then resolves the *previous* release's tag and aborts
+on a tag-vs-HEAD mismatch, or worse, races the rollback's push to the release
+branch. The failure mode is masked by GitHub's skip semantics: a failed leg
+makes its dependent resolve `skipped`, and a naive
+`result == 'success' || result == 'skipped'` check treats that as green.
+
+```yaml
+    # publish-bins must not run when publish-lib FAILED (rollback racing),
+    # but must run when it was SKIPPED (lib not in this release's tag set).
+    needs: [tag, determinism-check, publish-lib, publish-core]
+    if: >-
+      ${{ !cancelled() && needs.tag.result == 'success'
+          && (needs.publish-lib.result == 'success' || needs.publish-lib.result == 'skipped')
+          && (needs.publish-core.result == 'success' || needs.publish-core.result == 'skipped') }}
+```
 
 ---
 
@@ -371,6 +436,10 @@ jobs:
         with:
           determinism: true
           preserve-dist: "true"
+          # Without upload-dist nothing leaves the shard runner — preserve-dist
+          # only writes preserved-dist/ locally, and the release job's
+          # download-dist finds no context manifests.
+          upload-dist: "true"
           shard-label: ${{ matrix.crate }}-${{ matrix.shard }}
           determinism-crate: ${{ matrix.crate }}
         env:
