@@ -313,10 +313,20 @@ fn targets_crates_io(cfg: Option<&CargoPublishConfig>) -> bool {
     }
 }
 
+/// Local `.crate` package produced by [`local_crate_cksum`]: the sha256 the
+/// fast path compares against the crates.io index `cksum`, plus the raw
+/// tarball bytes the slow path (`crates_equal_modulo_vcs`) needs when the
+/// fast path doesn't match.
+struct LocalCrate {
+    cksum: String,
+    bytes: Vec<u8>,
+}
+
 /// Package `crate_name` locally and return the lowercase-hex sha256 of the
-/// produced `.crate` tarball — the same digest crates.io records as a
-/// version's `cksum`. Used by the content-vs-version guard to prove a
-/// re-cut of an already-published version is byte-identical to what shipped.
+/// produced `.crate` tarball, plus the tarball bytes — the same digest
+/// crates.io records as a version's `cksum`. Used by the content-vs-version
+/// guard to prove a re-cut of an already-published version is byte-identical
+/// (or identical modulo `.cargo_vcs_info.json`) to what shipped.
 ///
 /// Returns `Ok(None)` when the crate does not target crates.io (the guard is
 /// inapplicable — see [`targets_crates_io`]). Returns `Err` when packaging or
@@ -328,16 +338,18 @@ fn targets_crates_io(cfg: Option<&CargoPublishConfig>) -> bool {
 /// `.crate` tarball's bytes (the mtimes it writes are cargo's own canonical
 /// constant, independent of the env var), so the local `.crate` reproduces the
 /// bytes the original `cargo publish` uploaded purely from identical source at
-/// the same commit. The `.cargo_vcs_info.json` git sha (carried in the tarball)
-/// is what ties content to commit, so a re-cut from a different commit is
-/// correctly flagged. Seeding the var would be a no-op that misleads a reader
-/// into thinking it is load-bearing.
+/// the same commit. `cargo package` also embeds the release `git.sha1` in
+/// `.cargo_vcs_info.json`, so a re-cut from a DIFFERENT commit changes the
+/// tarball bytes even with identical sources — `decide_already_published`'s
+/// slow path (`crates_equal_modulo_vcs`) is what tells that apart from a real
+/// content change. Seeding `SOURCE_DATE_EPOCH` would be a no-op that misleads
+/// a reader into thinking it is load-bearing.
 fn local_crate_cksum(
     crate_name: &str,
     crate_cfg: &CrateConfig,
     cargo_cfg: Option<&CargoPublishConfig>,
     log: &StageLogger,
-) -> Result<Option<String>> {
+) -> Result<Option<LocalCrate>> {
     if !targets_crates_io(cargo_cfg) {
         return Ok(None);
     }
@@ -373,7 +385,9 @@ fn local_crate_cksum(
         .join(format!("{crate_name}-{version}.crate"));
     let cksum = anodizer_core::hashing::sha256_file(&crate_file)
         .with_context(|| format!("publish: sha256 local .crate for '{crate_name}'"))?;
-    Ok(Some(cksum))
+    let bytes = std::fs::read(&crate_file)
+        .with_context(|| format!("publish: read local .crate bytes for '{crate_name}'"))?;
+    Ok(Some(LocalCrate { cksum, bytes }))
 }
 
 /// Refuse to run the content-vs-version poison guard against a dirty working
@@ -426,38 +440,206 @@ fn ensure_publish_tree_clean(ctx: &Context) -> Result<()> {
     );
 }
 
+/// Fetch the published `.crate` tarball bytes for `{name}-{version}` from
+/// crates.io's static CDN — the canonical immutable per-version artifact
+/// path (mirrors how `cargo` itself downloads dependencies). Used by the
+/// content-vs-version guard's slow path when the local `.crate` doesn't
+/// byte-match the index cksum, to prove (or disprove) that the mismatch is
+/// only the `.cargo_vcs_info.json` commit stamp.
+///
+/// Routes through [`retry_http_blocking_bytes`] (not the text-bodied
+/// `retry_http_blocking`): a `.crate` is a gzip tarball, and `resp.text()`'s
+/// lossy UTF-8 pass would corrupt it silently.
+fn fetch_published_crate(
+    name: &str,
+    version: &str,
+    policy: &anodizer_core::retry::RetryPolicy,
+) -> Result<Vec<u8>> {
+    use anodizer_core::retry::{SuccessClass, retry_http_blocking_bytes};
+    use std::time::Duration;
+
+    let client = anodizer_core::http::blocking_client(Duration::from_secs(30))
+        .context("publish: build HTTP client for published .crate fetch")?;
+    let url = format!("https://static.crates.io/crates/{name}/{name}-{version}.crate");
+    let label = format!("publish: fetch published .crate for '{name}-{version}'");
+    let (_status, bytes) = retry_http_blocking_bytes(
+        &label,
+        policy,
+        SuccessClass::Strict,
+        |_| client.get(&url).send(),
+        |status, body| {
+            format!(
+                "publish: crates.io static CDN returned {} for '{name}-{version}': {}",
+                status,
+                redact_bearer_tokens(body)
+            )
+        },
+    )?;
+    Ok(bytes)
+}
+
+/// Outcome of comparing a local `.crate` tarball against the published one,
+/// modulo the release-commit stamp `cargo package` embeds in
+/// `.cargo_vcs_info.json`.
+enum CrateContentMatch {
+    /// Every entry matches, except `.cargo_vcs_info.json`'s `git.sha1` (the
+    /// legitimate per-commit delta of a same-source re-cut).
+    IdenticalModuloVcs,
+    /// At least one entry genuinely differs; lists the differing paths so an
+    /// operator can see what drifted.
+    Differs(Vec<String>),
+}
+
+/// Untar a gzip-compressed `.crate` tarball into `path -> bytes`, keyed by
+/// the archive's own in-tar path (e.g. `{name}-{version}/src/lib.rs`).
+fn read_crate_entries(
+    crate_bytes: &[u8],
+) -> Result<std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>> {
+    use std::io::Read as _;
+
+    let decoder = flate2::read::GzDecoder::new(crate_bytes);
+    let mut archive = tar::Archive::new(decoder);
+    let mut entries = std::collections::BTreeMap::new();
+    for entry in archive
+        .entries()
+        .context("publish: read .crate tar entries")?
+    {
+        let mut entry = entry.context("publish: read .crate tar entry")?;
+        let path = entry
+            .path()
+            .context("publish: read .crate entry path")?
+            .into_owned();
+        let mut bytes = Vec::new();
+        entry
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("publish: read .crate entry '{}'", path.display()))?;
+        entries.insert(path, bytes);
+    }
+    Ok(entries)
+}
+
+/// Parse `.cargo_vcs_info.json` bytes and strip the `git.sha1` field — the
+/// one field that legitimately differs between two same-source re-cuts (it
+/// records the commit `cargo package` ran at, not the packaged sources).
+///
+/// Returns `None` when the bytes don't parse as JSON — the caller then falls
+/// back to a raw byte compare, which fails closed (real drift) rather than
+/// silently treating unparseable metadata as a match.
+fn vcs_info_modulo_sha(bytes: &[u8]) -> Option<serde_json::Value> {
+    let mut value: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    if let Some(git) = value.get_mut("git")
+        && let Some(obj) = git.as_object_mut()
+    {
+        obj.remove("sha1");
+    }
+    Some(value)
+}
+
+/// Pure, unit-testable comparison at the heart of the content-vs-version
+/// guard's slow path: are `local_crate` and `published_crate` the SAME
+/// published sources, differing only in the release commit stamp?
+///
+/// Both inputs are `.crate` files (gzip-compressed tarballs). Two crates
+/// represent the same published sources iff, for every tar entry path, the
+/// bytes are equal, EXCEPT `.cargo_vcs_info.json`, which is compared modulo
+/// its `git.sha1` field (a legitimate per-commit delta — see
+/// [`local_crate_cksum`]).
+fn crates_equal_modulo_vcs(
+    local_crate: &[u8],
+    published_crate: &[u8],
+) -> Result<CrateContentMatch> {
+    let local_entries = read_crate_entries(local_crate)
+        .context("publish: unpack local .crate for content comparison")?;
+    let published_entries = read_crate_entries(published_crate)
+        .context("publish: unpack published .crate for content comparison")?;
+
+    let mut differs = Vec::new();
+    let all_paths: std::collections::BTreeSet<&std::path::PathBuf> = local_entries
+        .keys()
+        .chain(published_entries.keys())
+        .collect();
+
+    for path in all_paths {
+        let path_str = path.display().to_string();
+        let (Some(local_bytes), Some(published_bytes)) =
+            (local_entries.get(path), published_entries.get(path))
+        else {
+            // Present in only one archive — an unambiguous content divergence.
+            differs.push(path_str);
+            continue;
+        };
+
+        let is_vcs_info = path
+            .file_name()
+            .is_some_and(|f| f == ".cargo_vcs_info.json");
+
+        if is_vcs_info {
+            match (
+                vcs_info_modulo_sha(local_bytes),
+                vcs_info_modulo_sha(published_bytes),
+            ) {
+                (Some(l), Some(p)) if l == p => {}
+                // Either side failed to parse, or a field OTHER than git.sha1
+                // differs — a structural change beyond the commit stamp is
+                // real drift, so fall back to a raw byte compare.
+                _ => {
+                    if local_bytes != published_bytes {
+                        differs.push(path_str);
+                    }
+                }
+            }
+        } else if local_bytes != published_bytes {
+            differs.push(path_str);
+        }
+    }
+
+    if differs.is_empty() {
+        Ok(CrateContentMatch::IdenticalModuloVcs)
+    } else {
+        Ok(CrateContentMatch::Differs(differs))
+    }
+}
+
 /// Outcome of the already-published content-vs-version poison guard for one
-/// crate. `Skip` means the version is on crates.io with byte-identical
-/// content (a safe idempotent re-cut); `Publish` means proceed to
-/// `cargo publish`. A poisoned version (published with DIFFERENT content)
-/// never reaches either arm — the guard hard-fails instead.
+/// crate. `Skip` means the version is on crates.io with content identical to
+/// (or identical modulo `.cargo_vcs_info.json` vs) the local `.crate` — a
+/// safe idempotent re-cut; `Publish` means proceed to `cargo publish`. A
+/// poisoned version (published with genuinely DIFFERENT content) never
+/// reaches either arm — the guard hard-fails instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CargoSkipDecision {
     Skip,
     Publish,
 }
 
-/// Decide whether an already-published crates.io version is a safe skip by
-/// comparing the local `.crate` sha256 against the index-recorded `cksum`.
+/// Decide whether an already-published crates.io version is a safe skip.
 ///
-/// - local == index → byte-identical re-cut → [`CargoSkipDecision::Skip`].
-/// - local != index → SILENT POISON (content drifted but the version was not
-///   bumped) → HARD FAIL with an actionable bump-the-version message.
-/// - index cksum is empty → cannot verify content identity → FAIL CLOSED. An
-///   empty cksum on an index entry the parser DID return signals a
-///   malformed/unparsed index line, not a benign registry gap (crates.io
-///   always records a cksum). Silently skipping it would reopen the poison
-///   hole this guard exists to close.
-/// - `local_cksum_check` returns `Ok(None)` → no local digest was produced for
-///   a crates.io-targeting crate (the caller already routes non-crates.io
-///   targets to `Publish`, so reaching here is unexpected) → FAIL CLOSED
-///   rather than skip an unverifiable version.
-/// - `local_cksum_check` returns `Err` → FAIL CLOSED: an uncomputable local
-///   digest cannot prove content identity against an immutable published
-///   version, so refuse to skip.
+/// 1. **Fast path:** local `.crate` sha256 == index `cksum` → byte-identical
+///    re-cut → [`CargoSkipDecision::Skip`], no download.
+/// 2. **Slow path** (local sha256 != index `cksum`): fetch the published
+///    `.crate` via `fetch_published`, verify ITS sha256 matches `index_cksum`
+///    (a mismatched download is not a valid comparison basis — fail closed),
+///    then compare local vs published with [`crates_equal_modulo_vcs`]:
+///    identical modulo `.cargo_vcs_info.json` → `Skip` (same sources,
+///    different release commit); genuinely different → HARD FAIL, naming the
+///    differing entry paths.
+/// 3. index cksum is empty → cannot verify content identity → FAIL CLOSED. An
+///    empty cksum on an index entry the parser DID return signals a
+///    malformed/unparsed index line, not a benign registry gap (crates.io
+///    always records a cksum). Silently skipping it would reopen the poison
+///    hole this guard exists to close.
+/// 4. `local_crate_check` returns `Ok(None)` → no local digest was produced
+///    for a crates.io-targeting crate (the caller already routes
+///    non-crates.io targets to `Publish`, so reaching here is unexpected) →
+///    FAIL CLOSED rather than skip an unverifiable version.
+/// 5. `local_crate_check` returns `Err`, or `fetch_published` returns `Err` →
+///    FAIL CLOSED: an uncomputable local digest, or an unreachable published
+///    artifact, cannot prove content identity against an immutable published
+///    version, so refuse to skip.
 ///
-/// `Skip` is therefore reachable ONLY via a confirmed byte-identical match;
-/// every other ("cannot verify") outcome fails closed.
+/// `Skip` is therefore reachable ONLY via a confirmed byte-identical match or
+/// a confirmed identical-modulo-vcs match against the verified published
+/// artifact; every other ("cannot verify") outcome fails closed.
 #[allow(clippy::too_many_arguments)]
 fn decide_already_published(
     name: &str,
@@ -465,11 +647,12 @@ fn decide_already_published(
     index_cksum: &str,
     crate_cfg: &CrateConfig,
     cargo_cfg: Option<&CargoPublishConfig>,
-    local_cksum_check: impl Fn(
+    local_crate_check: impl Fn(
         &str,
         &CrateConfig,
         Option<&CargoPublishConfig>,
-    ) -> Result<Option<String>>,
+    ) -> Result<Option<LocalCrate>>,
+    fetch_published: impl Fn(&str, &str) -> Result<Vec<u8>>,
     log: &StageLogger,
 ) -> Result<CargoSkipDecision> {
     if index_cksum.is_empty() {
@@ -482,37 +665,81 @@ fn decide_already_published(
         );
     }
 
-    match local_cksum_check(name, crate_cfg, cargo_cfg) {
+    let local = match local_crate_check(name, crate_cfg, cargo_cfg) {
         Ok(None) => anyhow::bail!(
             "publish: '{name}-{version}' is published on crates.io but no local .crate checksum \
              was produced to compare against (the crate targets crates.io, so a digest was \
              expected). Refusing to skip a version whose content identity is unverifiable."
         ),
-        Ok(Some(local)) if local.eq_ignore_ascii_case(index_cksum) => {
-            log.verbose(&format!(
-                "'{name}-{version}' local .crate checksum matches the crates.io \
-                 index ({index_cksum}); safe idempotent re-cut"
-            ));
-            Ok(CargoSkipDecision::Skip)
-        }
-        Ok(Some(local)) => {
-            anyhow::bail!(
-                "publish: '{name}-{version}' is ALREADY published on crates.io with DIFFERENT \
-                 content (index cksum {index_cksum}, local .crate cksum {local}). Re-publishing \
-                 would be SILENTLY SKIPPED by cargo, so the changed code would never ship under \
-                 this version. Bump the version (crates.io versions are immutable) and re-run."
-            );
-        }
+        Ok(Some(local)) => local,
         Err(e) => {
-            // Fail closed — cannot prove identity, so cannot safely skip.
-            Err(e).with_context(|| {
+            return Err(e).with_context(|| {
                 format!(
                     "publish: '{name}-{version}' is already published on crates.io but its local \
                      .crate checksum could not be computed; refusing to skip a version that may \
                      have drifted from the published content. Resolve the packaging error and \
                      re-run, or bump the version."
                 )
-            })
+            });
+        }
+    };
+
+    // Fast path: byte-identical tarball → no download needed.
+    if local.cksum.eq_ignore_ascii_case(index_cksum) {
+        log.verbose(&format!(
+            "'{name}-{version}' local .crate checksum matches the crates.io \
+             index ({index_cksum}); safe idempotent re-cut"
+        ));
+        return Ok(CargoSkipDecision::Skip);
+    }
+
+    // Slow path: the local tarball's sha256 doesn't match the index cksum,
+    // which is exactly what a same-source re-cut from a NEW commit looks
+    // like (cargo package embeds the release git sha in
+    // .cargo_vcs_info.json). Fetch the published artifact and compare
+    // modulo that one file before concluding real content drift.
+    let published_bytes = fetch_published(name, version).with_context(|| {
+        format!(
+            "publish: '{name}-{version}' is already published on crates.io with a local .crate \
+             checksum that does not match the index (index cksum {index_cksum}, local .crate \
+             cksum {}), but the published .crate could not be fetched to rule out a same-source \
+             re-cut. Refusing to skip a version whose content identity is unverifiable.",
+            local.cksum
+        )
+    })?;
+
+    use sha2::Digest as _;
+    let published_cksum =
+        anodizer_core::hashing::hex_lower(&sha2::Sha256::digest(&published_bytes));
+    if !published_cksum.eq_ignore_ascii_case(index_cksum) {
+        anyhow::bail!(
+            "publish: '{name}-{version}' is already published on crates.io, but the .crate \
+             fetched from the static CDN has sha256 {published_cksum}, which does NOT match the \
+             index-recorded cksum {index_cksum}. A mismatched download cannot be used to verify \
+             content identity — refusing to skip. Re-run once crates.io is consistent, or bump \
+             the version."
+        );
+    }
+
+    match crates_equal_modulo_vcs(&local.bytes, &published_bytes)? {
+        CrateContentMatch::IdenticalModuloVcs => {
+            log.verbose(&format!(
+                "'{name}-{version}' local .crate differs from the crates.io index only in \
+                 .cargo_vcs_info.json's release commit stamp; same-source re-cut, safe idempotent \
+                 skip"
+            ));
+            Ok(CargoSkipDecision::Skip)
+        }
+        CrateContentMatch::Differs(paths) => {
+            anyhow::bail!(
+                "publish: '{name}-{version}' is ALREADY published on crates.io with DIFFERENT \
+                 content (index cksum {index_cksum}, local .crate cksum {}). Re-publishing would \
+                 be SILENTLY SKIPPED by cargo, so the changed code would never ship under this \
+                 version. Differing entries: {}. Bump the version (crates.io versions are \
+                 immutable) and re-run.",
+                local.cksum,
+                paths.join(", ")
+            );
         }
     }
 }
@@ -1831,6 +2058,7 @@ fn publish_to_cargo_with(
         already_published_check,
         |name, crate_cfg, cargo_cfg| local_crate_cksum(name, crate_cfg, cargo_cfg, log),
         &anodizer_core::crate_scope::resolve_crate_tag,
+        fetch_published_crate,
     )
 }
 
@@ -1838,14 +2066,20 @@ fn publish_to_cargo_with(
 /// content-vs-version guard's local `.crate` checksum computer are injected.
 ///
 /// The local-cksum stub returns `(crate_name, crate_cfg, cargo_cfg) ->
-/// Result<Option<cksum>>`:
-/// - `Ok(Some(hex))` — the local `.crate` sha256 the guard compares against
-///   the index-recorded `cksum`.
+/// Result<Option<LocalCrate>>`:
+/// - `Ok(Some(LocalCrate))` — the local `.crate` sha256 + bytes the guard
+///   compares against the index-recorded `cksum` (fast path) and, on
+///   mismatch, against the fetched published `.crate` (slow path).
 /// - `Ok(None)` — guard inapplicable (non-crates.io registry); the
 ///   already-published skip is also suppressed for that crate.
 /// - `Err(_)` — local digest uncomputable; the guard FAILS CLOSED rather
 ///   than treat an unverifiable already-published version as a safe skip.
-#[allow(clippy::type_complexity)]
+///
+/// `fetch_published` mirrors `already_published_check`'s injection pattern —
+/// production wires [`fetch_published_crate`] (a real crates.io static-CDN
+/// GET), tests inject a stub so the slow path (only reached when the local
+/// and index cksums disagree) can be exercised without a network round-trip.
+#[allow(clippy::type_complexity, clippy::too_many_arguments)]
 fn publish_to_cargo_with_guard(
     ctx: &mut Context,
     selected: &[String],
@@ -1860,8 +2094,9 @@ fn publish_to_cargo_with_guard(
         &str,
         &CrateConfig,
         Option<&CargoPublishConfig>,
-    ) -> Result<Option<String>>,
+    ) -> Result<Option<LocalCrate>>,
     resolve_tag: &dyn Fn(&Context, &CrateConfig) -> Option<String>,
+    fetch_published: impl Fn(&str, &str, &anodizer_core::retry::RetryPolicy) -> Result<Vec<u8>>,
 ) -> Result<()> {
     // Defensive guard: the `--skip=cargo` gate lives in the
     // dispatcher in `lib.rs::PublishStage::run` so every publisher emits its
@@ -2046,6 +2281,7 @@ fn publish_to_cargo_with_guard(
                         crate_cfg,
                         cargo_cfg,
                         &local_cksum_check,
+                        |n, v| fetch_published(n, v, &retry_policy),
                         log,
                     )?
                 }
@@ -3123,6 +3359,145 @@ mod tests {
 
     // ---- content-vs-version guard decision unit tests --------------------
 
+    /// Build an in-memory `.crate` tarball (a gzip-compressed tar) with the
+    /// given `(in-tar path, content)` entries — for `crates_equal_modulo_vcs`
+    /// and `decide_already_published` fixtures that need real archive bytes
+    /// rather than opaque cksum labels.
+    fn make_crate_tarball(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write as _;
+
+        let mut builder = tar::Builder::new(Vec::new());
+        for (path, content) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, path, *content)
+                .expect("append tar entry");
+        }
+        let tar_bytes = builder.into_inner().expect("finish tar");
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&tar_bytes).expect("gzip write");
+        gz.finish().expect("gzip finish")
+    }
+
+    /// Minimal `.cargo_vcs_info.json` body: `{"git":{"sha1":"<sha>"},"path_in_vcs":"<vcs_path>"}`.
+    fn vcs_info_json(sha1: &str, path_in_vcs: &str) -> Vec<u8> {
+        format!(r#"{{"git":{{"sha1":"{sha1}"}},"path_in_vcs":"{path_in_vcs}"}}"#).into_bytes()
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::Digest as _;
+        anodizer_core::hashing::hex_lower(&sha2::Sha256::digest(bytes))
+    }
+
+    #[test]
+    fn crates_equal_modulo_vcs_identical_archives_match() {
+        let bytes = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("deadbeef", "."),
+            ),
+        ]);
+        let m = crates_equal_modulo_vcs(&bytes, &bytes).expect("compare");
+        assert!(matches!(m, CrateContentMatch::IdenticalModuloVcs));
+    }
+
+    #[test]
+    fn crates_equal_modulo_vcs_differs_only_in_vcs_sha1_matches() {
+        let local = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_a", "."),
+            ),
+        ]);
+        let published = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_b", "."),
+            ),
+        ]);
+        let m = crates_equal_modulo_vcs(&local, &published).expect("compare");
+        assert!(
+            matches!(m, CrateContentMatch::IdenticalModuloVcs),
+            "a git.sha1-only delta is a same-source re-cut"
+        );
+    }
+
+    #[test]
+    fn crates_equal_modulo_vcs_differs_in_src_file_reports_path() {
+        let local = make_crate_tarball(&[
+            ("c-1.0.0/src/lib.rs", b"fn a() {}"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_a", "."),
+            ),
+        ]);
+        let published = make_crate_tarball(&[
+            ("c-1.0.0/src/lib.rs", b"fn a() { /* changed */ }"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_a", "."),
+            ),
+        ]);
+        let m = crates_equal_modulo_vcs(&local, &published).expect("compare");
+        match m {
+            CrateContentMatch::Differs(paths) => {
+                assert_eq!(paths, vec!["c-1.0.0/src/lib.rs".to_string()]);
+            }
+            CrateContentMatch::IdenticalModuloVcs => panic!("a real source edit must be flagged"),
+        }
+    }
+
+    #[test]
+    fn crates_equal_modulo_vcs_differs_in_vcs_non_sha_field_reports_path() {
+        let local = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_a", "."),
+            ),
+        ]);
+        let published = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_a", "subdir"),
+            ),
+        ]);
+        let m = crates_equal_modulo_vcs(&local, &published).expect("compare");
+        match m {
+            CrateContentMatch::Differs(paths) => {
+                assert_eq!(paths, vec!["c-1.0.0/.cargo_vcs_info.json".to_string()]);
+            }
+            CrateContentMatch::IdenticalModuloVcs => {
+                panic!("a path_in_vcs change is structural drift, not just the commit stamp")
+            }
+        }
+    }
+
+    #[test]
+    fn crates_equal_modulo_vcs_extra_entry_reports_path() {
+        let local = make_crate_tarball(&[("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n")]);
+        let published = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n"),
+            ("c-1.0.0/src/extra.rs", b"// only in published"),
+        ]);
+        let m = crates_equal_modulo_vcs(&local, &published).expect("compare");
+        match m {
+            CrateContentMatch::Differs(paths) => {
+                assert_eq!(paths, vec!["c-1.0.0/src/extra.rs".to_string()]);
+            }
+            CrateContentMatch::IdenticalModuloVcs => {
+                panic!("an entry present in only one archive must be flagged")
+            }
+        }
+    }
+
     #[test]
     fn targets_crates_io_true_for_default_and_false_for_custom() {
         assert!(targets_crates_io(None), "no cfg ⇒ crates.io");
@@ -3142,19 +3517,36 @@ mod tests {
         assert!(!targets_crates_io(Some(&custom_idx)), "index= ⇒ custom");
     }
 
+    /// Fetch closure that panics if invoked — for tests proving a code path
+    /// never reaches the slow-path download.
+    fn fetch_panics(_: &str, _: &str) -> Result<Vec<u8>> {
+        panic!("fetch_published must not run on this path")
+    }
+
     #[test]
     fn decide_already_published_empty_index_cksum_fails_closed() {
         // An empty cksum on a returned index entry cannot prove content
         // identity. Skipping it would reopen the poison hole, so the guard
-        // fails closed WITHOUT invoking the local computer at all.
+        // fails closed WITHOUT invoking the local computer or the fetcher.
         let cfg = CrateConfig::default();
         let log = StageLogger::new("t", anodizer_core::log::Verbosity::Normal);
-        let local_panics =
-            |_: &str, _: &CrateConfig, _: Option<&CargoPublishConfig>| -> Result<Option<String>> {
-                panic!("local cksum must not run when index cksum is empty")
-            };
-        let err = decide_already_published("c", "1.0.0", "", &cfg, None, local_panics, &log)
-            .expect_err("empty cksum ⇒ fail closed, never skip");
+        let local_panics = |_: &str,
+                            _: &CrateConfig,
+                            _: Option<&CargoPublishConfig>|
+         -> Result<Option<LocalCrate>> {
+            panic!("local cksum must not run when index cksum is empty")
+        };
+        let err = decide_already_published(
+            "c",
+            "1.0.0",
+            "",
+            &cfg,
+            None,
+            local_panics,
+            fetch_panics,
+            &log,
+        )
+        .expect_err("empty cksum ⇒ fail closed, never skip");
         assert!(
             err.to_string().contains("carries no cksum"),
             "actionable empty-cksum error: {err}"
@@ -3171,9 +3563,18 @@ mod tests {
         let local_none = |_: &str,
                           _: &CrateConfig,
                           _: Option<&CargoPublishConfig>|
-         -> Result<Option<String>> { Ok(None) };
-        let err = decide_already_published("c", "1.0.0", "abcd", &cfg, None, local_none, &log)
-            .expect_err("local None ⇒ fail closed, never skip");
+         -> Result<Option<LocalCrate>> { Ok(None) };
+        let err = decide_already_published(
+            "c",
+            "1.0.0",
+            "abcd",
+            &cfg,
+            None,
+            local_none,
+            fetch_panics,
+            &log,
+        )
+        .expect_err("local None ⇒ fail closed, never skip");
         assert!(
             err.to_string().contains("content identity is unverifiable"),
             "actionable local-None error: {err}"
@@ -3182,24 +3583,166 @@ mod tests {
 
     #[test]
     fn decide_already_published_match_is_case_insensitive_skip() {
+        // Fast path: local sha256 == index cksum (case-insensitive) ⇒ Skip
+        // WITHOUT ever invoking the (panicking) fetch closure.
         let cfg = CrateConfig::default();
         let log = StageLogger::new("t", anodizer_core::log::Verbosity::Normal);
-        let local =
-            |_: &str, _: &CrateConfig, _: Option<&CargoPublishConfig>| Ok(Some("ABCD".into()));
-        let d = decide_already_published("c", "1.0.0", "abcd", &cfg, None, local, &log)
-            .expect("case-insensitive match ⇒ Skip");
+        let local = |_: &str, _: &CrateConfig, _: Option<&CargoPublishConfig>| {
+            Ok(Some(LocalCrate {
+                cksum: "ABCD".to_string(),
+                bytes: Vec::new(),
+            }))
+        };
+        let d =
+            decide_already_published("c", "1.0.0", "abcd", &cfg, None, local, fetch_panics, &log)
+                .expect("case-insensitive match ⇒ Skip, no download");
         assert_eq!(d, CargoSkipDecision::Skip);
     }
 
     #[test]
-    fn decide_already_published_mismatch_hard_fails() {
+    fn decide_already_published_slow_path_identical_modulo_vcs_skips() {
+        // Local sha256 != index cksum (the fast path misses), but the
+        // fetched published .crate is identical to the local one except for
+        // .cargo_vcs_info.json's git.sha1 — the same-source-re-cut case the
+        // whole slow path exists for.
+        let local_bytes = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_new", "."),
+            ),
+        ]);
+        let published_bytes = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_old", "."),
+            ),
+        ]);
+        let index_cksum = sha256_hex(&published_bytes);
+        let local_cksum = sha256_hex(&local_bytes);
+        assert_ne!(local_cksum, index_cksum, "fixture must miss the fast path");
+
         let cfg = CrateConfig::default();
         let log = StageLogger::new("t", anodizer_core::log::Verbosity::Normal);
-        let local =
-            |_: &str, _: &CrateConfig, _: Option<&CargoPublishConfig>| Ok(Some("xxxx".into()));
-        let err = decide_already_published("c", "1.0.0", "abcd", &cfg, None, local, &log)
-            .expect_err("drift ⇒ hard fail");
-        assert!(format!("{err:#}").contains("DIFFERENT content"));
+        let local_bytes_clone = local_bytes.clone();
+        let local = move |_: &str, _: &CrateConfig, _: Option<&CargoPublishConfig>| {
+            Ok(Some(LocalCrate {
+                cksum: local_cksum.clone(),
+                bytes: local_bytes_clone.clone(),
+            }))
+        };
+        let published_bytes_clone = published_bytes.clone();
+        let fetch = move |_: &str, _: &str| Ok(published_bytes_clone.clone());
+        let d =
+            decide_already_published("c", "1.0.0", &index_cksum, &cfg, None, local, fetch, &log)
+                .expect("same-source re-cut (vcs-only delta) ⇒ Skip");
+        assert_eq!(d, CargoSkipDecision::Skip);
+    }
+
+    #[test]
+    fn decide_already_published_slow_path_real_drift_hard_fails() {
+        // Local sha256 != index cksum, and the fetched published .crate has a
+        // GENUINE content difference (not just the vcs stamp) ⇒ hard fail,
+        // naming the differing path.
+        let local_bytes = make_crate_tarball(&[
+            ("c-1.0.0/src/lib.rs", b"fn a() {}"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_a", "."),
+            ),
+        ]);
+        let published_bytes = make_crate_tarball(&[
+            ("c-1.0.0/src/lib.rs", b"fn a() { /* poisoned */ }"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_a", "."),
+            ),
+        ]);
+        let index_cksum = sha256_hex(&published_bytes);
+        let local_cksum = sha256_hex(&local_bytes);
+        assert_ne!(local_cksum, index_cksum, "fixture must miss the fast path");
+
+        let cfg = CrateConfig::default();
+        let log = StageLogger::new("t", anodizer_core::log::Verbosity::Normal);
+        let local_bytes_clone = local_bytes.clone();
+        let local = move |_: &str, _: &CrateConfig, _: Option<&CargoPublishConfig>| {
+            Ok(Some(LocalCrate {
+                cksum: local_cksum.clone(),
+                bytes: local_bytes_clone.clone(),
+            }))
+        };
+        let published_bytes_clone = published_bytes.clone();
+        let fetch = move |_: &str, _: &str| Ok(published_bytes_clone.clone());
+        let err =
+            decide_already_published("c", "1.0.0", &index_cksum, &cfg, None, local, fetch, &log)
+                .expect_err("real content drift ⇒ hard fail");
+        let msg = format!("{err:#}");
+        assert!(msg.contains("DIFFERENT content"), "{msg}");
+        assert!(
+            msg.contains("c-1.0.0/src/lib.rs"),
+            "error must name the differing path: {msg}"
+        );
+    }
+
+    #[test]
+    fn decide_already_published_published_fetch_err_fails_closed() {
+        // The fast path misses; fetching the published .crate to run the
+        // slow-path comparison fails (network) ⇒ fail closed, never skip a
+        // version whose content identity couldn't be confirmed either way.
+        let cfg = CrateConfig::default();
+        let log = StageLogger::new("t", anodizer_core::log::Verbosity::Normal);
+        let local = |_: &str, _: &CrateConfig, _: Option<&CargoPublishConfig>| {
+            Ok(Some(LocalCrate {
+                cksum: "local_sha".to_string(),
+                bytes: Vec::new(),
+            }))
+        };
+        let fetch_err =
+            |_: &str, _: &str| -> Result<Vec<u8>> { Err(anyhow::anyhow!("connection refused")) };
+        let err = decide_already_published(
+            "c",
+            "1.0.0",
+            "index_sha",
+            &cfg,
+            None,
+            local,
+            fetch_err,
+            &log,
+        )
+        .expect_err("published fetch failure ⇒ fail closed");
+        assert!(
+            format!("{err:#}").contains("could not be fetched"),
+            "{err:#}"
+        );
+    }
+
+    #[test]
+    fn decide_already_published_published_sha_mismatch_fails_closed() {
+        // The fast path misses; the fetched "published" bytes don't actually
+        // hash to the index cksum — a mismatched download is not a valid
+        // comparison basis ⇒ fail closed rather than trust it either way.
+        let cfg = CrateConfig::default();
+        let log = StageLogger::new("t", anodizer_core::log::Verbosity::Normal);
+        let local = |_: &str, _: &CrateConfig, _: Option<&CargoPublishConfig>| {
+            Ok(Some(LocalCrate {
+                cksum: "local_sha".to_string(),
+                bytes: Vec::new(),
+            }))
+        };
+        let fetch = |_: &str, _: &str| Ok(b"not the real published bytes".to_vec());
+        let err = decide_already_published(
+            "c",
+            "1.0.0",
+            "index_sha_that_wont_match",
+            &cfg,
+            None,
+            local,
+            fetch,
+            &log,
+        )
+        .expect_err("published-sha mismatch ⇒ fail closed");
+        assert!(format!("{err:#}").contains("does NOT match"));
     }
 
     // ---- retry plumbing through is_already_published_at ------------------
@@ -5602,6 +6145,45 @@ mod partial_rollback_tests {
         Some(format!("v{}", c.name))
     }
 
+    /// Fetch closure that panics if invoked — for guard tests whose local
+    /// cksum either matches the index (fast path) or must never reach the
+    /// download at all (fail-closed-before-the-guard cases).
+    fn fetch_panics(_: &str, _: &str, _: &anodizer_core::retry::RetryPolicy) -> Result<Vec<u8>> {
+        panic!("fetch_published must not run on this path")
+    }
+
+    /// Build an in-memory `.crate` tarball (a gzip-compressed tar) with the
+    /// given `(in-tar path, content)` entries — for guard tests that must
+    /// exercise the slow-path content comparison with real archive bytes.
+    fn make_crate_tarball(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write as _;
+
+        let mut builder = tar::Builder::new(Vec::new());
+        for (path, content) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, path, *content)
+                .expect("append tar entry");
+        }
+        let tar_bytes = builder.into_inner().expect("finish tar");
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&tar_bytes).expect("gzip write");
+        gz.finish().expect("gzip finish")
+    }
+
+    /// Minimal `.cargo_vcs_info.json` body: `{"git":{"sha1":"<sha>"}}`.
+    fn vcs_info_json(sha1: &str) -> Vec<u8> {
+        format!(r#"{{"git":{{"sha1":"{sha1}"}}}}"#).into_bytes()
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::Digest as _;
+        anodizer_core::hashing::hex_lower(&sha2::Sha256::digest(bytes))
+    }
+
     /// Always-not-published injection: drives the publish loop straight to
     /// the `cargo publish` spawn without a sparse-index GET.
     fn never_published(
@@ -6114,7 +6696,10 @@ mod partial_rollback_tests {
              _p: &anodizer_core::retry::RetryPolicy|
              -> Result<Option<String>> { Ok(Some("deadbeef".to_string())) };
         let local_matches = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
-            Ok(Some("deadbeef".to_string()))
+            Ok(Some(LocalCrate {
+                cksum: "deadbeef".to_string(),
+                bytes: Vec::new(),
+            }))
         };
 
         let log = StageLogger::new("publish-test", anodizer_core::log::Verbosity::Normal);
@@ -6130,6 +6715,7 @@ mod partial_rollback_tests {
                 always_published,
                 local_matches,
                 &fixed_tag_resolver,
+                fetch_panics,
             )
         });
         result.expect("already-published-identical path returns Ok");
@@ -6171,7 +6757,10 @@ mod partial_rollback_tests {
             Err(anyhow::anyhow!("index transport blew up"))
         };
         let local_unused = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
-            Ok(Some("unused".to_string()))
+            Ok(Some(LocalCrate {
+                cksum: "unused".to_string(),
+                bytes: Vec::new(),
+            }))
         };
 
         let log = StageLogger::new("publish-test", anodizer_core::log::Verbosity::Normal);
@@ -6187,6 +6776,7 @@ mod partial_rollback_tests {
                 index_errors,
                 local_unused,
                 &fixed_tag_resolver,
+                fetch_panics,
             )
         });
         let err = result.expect_err("index error must fail closed, not publish blindly");
@@ -6483,6 +7073,7 @@ mod partial_rollback_tests {
                 index_absent,
                 local_panics,
                 &fixed_tag_resolver,
+                fetch_panics,
             )
         });
         result.expect("absent version must publish");
@@ -6531,6 +7122,7 @@ mod partial_rollback_tests {
                 index_absent,
                 local_panics,
                 &fixed_tag_resolver,
+                fetch_panics,
             )
         });
         let err = result
@@ -6568,7 +7160,10 @@ mod partial_rollback_tests {
         let index_match =
             |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| Ok(Some("abc123".into()));
         let local_match = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
-            Ok(Some("ABC123".to_string())) // case-insensitive match
+            Ok(Some(LocalCrate {
+                cksum: "ABC123".to_string(), // case-insensitive match
+                bytes: Vec::new(),
+            }))
         };
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "no-fail");
@@ -6582,6 +7177,7 @@ mod partial_rollback_tests {
                 index_match,
                 local_match,
                 &fixed_tag_resolver,
+                fetch_panics,
             )
         });
         result.expect("identical content must be a safe skip");
@@ -6592,7 +7188,9 @@ mod partial_rollback_tests {
         );
     }
 
-    /// already-published + local checksum DIFFERENT → HARD FAIL (poison).
+    /// already-published + local content GENUINELY DIFFERENT (not just the
+    /// vcs commit stamp) → the slow path fetches the published `.crate` and
+    /// hard-fails on the real drift.
     #[test]
     #[serial(cargo_stub_path)]
     fn guard_hard_fails_when_already_published_different() {
@@ -6609,11 +7207,41 @@ mod partial_rollback_tests {
         let log = StageLogger::new("guard-test", anodizer_core::log::Verbosity::Normal);
         let mut record: Vec<CargoYankTarget> = Vec::new();
 
-        let index_cksum = |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| {
-            Ok(Some("published_sha".into()))
+        let local_bytes = make_crate_tarball(&[
+            ("gamma-3.0.0/src/lib.rs", b"fn a() {}"),
+            (
+                "gamma-3.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_a"),
+            ),
+        ]);
+        let published_bytes = make_crate_tarball(&[
+            ("gamma-3.0.0/src/lib.rs", b"fn a() { /* poisoned */ }"),
+            (
+                "gamma-3.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_a"),
+            ),
+        ]);
+        let index_sha = sha256_hex(&published_bytes);
+        assert_ne!(
+            sha256_hex(&local_bytes),
+            index_sha,
+            "fixture must miss the fast path"
+        );
+
+        let index_sha_for_closure = index_sha.clone();
+        let index_cksum = move |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| {
+            Ok(Some(index_sha_for_closure.clone()))
         };
-        let local_differs = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
-            Ok(Some("local_changed_sha".to_string()))
+        let local_bytes_for_closure = local_bytes.clone();
+        let local_differs = move |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
+            Ok(Some(LocalCrate {
+                cksum: sha256_hex(&local_bytes_for_closure),
+                bytes: local_bytes_for_closure.clone(),
+            }))
+        };
+        let published_bytes_for_closure = published_bytes.clone();
+        let fetch = move |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| {
+            Ok(published_bytes_for_closure.clone())
         };
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "no-fail");
@@ -6627,13 +7255,16 @@ mod partial_rollback_tests {
                 index_cksum,
                 local_differs,
                 &fixed_tag_resolver,
+                fetch,
             )
         });
         let err = result.expect_err("content drift must hard-fail");
         let msg = format!("{err:#}");
         assert!(
-            msg.contains("DIFFERENT content") && msg.contains("Bump the version"),
-            "error must explain the poison and prescribe a bump: {msg}"
+            msg.contains("DIFFERENT content")
+                && msg.contains("Bump the version")
+                && msg.contains("gamma-3.0.0/src/lib.rs"),
+            "error must explain the poison, name the differing path, and prescribe a bump: {msg}"
         );
         assert_eq!(
             publish_count(&argv_log, "gamma"),
@@ -6668,7 +7299,10 @@ mod partial_rollback_tests {
             Err(anyhow::anyhow!("connection refused"))
         };
         let local_unused = |_n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
-            Ok(Some("unused".to_string()))
+            Ok(Some(LocalCrate {
+                cksum: "unused".to_string(),
+                bytes: Vec::new(),
+            }))
         };
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "no-fail");
@@ -6682,6 +7316,7 @@ mod partial_rollback_tests {
                 index_unreachable,
                 local_unused,
                 &fixed_tag_resolver,
+                fetch_panics,
             )
         });
         let err = result.expect_err("unreachable index must fail closed");
@@ -6734,6 +7369,7 @@ mod partial_rollback_tests {
                 index_present,
                 local_errs,
                 &fixed_tag_resolver,
+                fetch_panics,
             )
         });
         let err = result.expect_err("uncomputable local cksum must fail closed");
@@ -6790,6 +7426,7 @@ mod partial_rollback_tests {
                 index_says_published,
                 local_panics,
                 &fixed_tag_resolver,
+                fetch_panics,
             )
         });
         result.expect("custom registry publish must proceed");
@@ -6823,18 +7460,57 @@ mod partial_rollback_tests {
         let log = StageLogger::new("guard-test", anodizer_core::log::Verbosity::Normal);
         let mut record: Vec<CargoYankTarget> = Vec::new();
 
+        // ws-a: byte-identical re-cut (fast path, no fetch). ws-b: local sha
+        // misses the index (slow path), and the fetched published .crate has
+        // a genuine content difference (poison → hard fail).
+        let ws_b_local_bytes = make_crate_tarball(&[
+            ("ws-b-0.7.0/src/lib.rs", b"fn b() {}"),
+            (
+                "ws-b-0.7.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_a"),
+            ),
+        ]);
+        let ws_b_published_bytes = make_crate_tarball(&[
+            ("ws-b-0.7.0/src/lib.rs", b"fn b() { /* poisoned */ }"),
+            (
+                "ws-b-0.7.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_a"),
+            ),
+        ]);
+        let ws_b_index_sha = sha256_hex(&ws_b_published_bytes);
+        assert_ne!(
+            sha256_hex(&ws_b_local_bytes),
+            ws_b_index_sha,
+            "fixture must miss the fast path for ws-b"
+        );
+
         // Both already published; index cksums differ per crate.
-        let index_per_crate = |n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| match n {
-            "ws-a" => Ok(Some("a_published".into())),
-            "ws-b" => Ok(Some("b_published".into())),
-            _ => Ok(None),
-        };
-        // a matches (safe skip); b drifts (poison → hard fail).
-        let local_per_crate = |n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| match n
-        {
-            "ws-a" => Ok(Some("a_published".to_string())),
-            "ws-b" => Ok(Some("b_DRIFTED".to_string())),
-            _ => Ok(None),
+        let ws_b_index_sha_for_closure = ws_b_index_sha.clone();
+        let index_per_crate =
+            move |n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| match n {
+                "ws-a" => Ok(Some("a_published".into())),
+                "ws-b" => Ok(Some(ws_b_index_sha_for_closure.clone())),
+                _ => Ok(None),
+            };
+        // a matches (safe skip, fast path); b misses the fast path and drifts
+        // for real on the slow path (poison → hard fail).
+        let ws_b_local_bytes_for_closure = ws_b_local_bytes.clone();
+        let local_per_crate =
+            move |n: &str, _c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| match n {
+                "ws-a" => Ok(Some(LocalCrate {
+                    cksum: "a_published".to_string(),
+                    bytes: Vec::new(),
+                })),
+                "ws-b" => Ok(Some(LocalCrate {
+                    cksum: sha256_hex(&ws_b_local_bytes_for_closure),
+                    bytes: ws_b_local_bytes_for_closure.clone(),
+                })),
+                _ => Ok(None),
+            };
+        let ws_b_published_bytes_for_closure = ws_b_published_bytes.clone();
+        let fetch = move |n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| {
+            assert_eq!(n, "ws-b", "only ws-b's fast path should miss");
+            Ok(ws_b_published_bytes_for_closure.clone())
         };
 
         let new_path = install_cargo_stub(tmp.path(), &argv_log, "no-fail");
@@ -6848,6 +7524,7 @@ mod partial_rollback_tests {
                 index_per_crate,
                 local_per_crate,
                 &fixed_tag_resolver,
+                fetch,
             )
         });
         let err = result.expect_err("ws-b drift must abort the run");
@@ -7621,6 +8298,39 @@ mod binstall_on_publish_tests {
         c
     }
 
+    /// Fetch closure that panics if invoked — for guard tests whose local
+    /// cksum matches the index (fast path) or never reaches the download.
+    fn fetch_panics(_: &str, _: &str, _: &anodizer_core::retry::RetryPolicy) -> Result<Vec<u8>> {
+        panic!("fetch_published must not run on this path")
+    }
+
+    /// Build an in-memory `.crate` tarball (a gzip-compressed tar) with the
+    /// given `(in-tar path, content)` entries — for the negative-control test
+    /// that must exercise the slow-path content comparison with real bytes.
+    fn make_crate_tarball(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write as _;
+
+        let mut builder = tar::Builder::new(Vec::new());
+        for (path, content) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            header.set_cksum();
+            builder
+                .append_data(&mut header, path, *content)
+                .expect("append tar entry");
+        }
+        let tar_bytes = builder.into_inner().expect("finish tar");
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&tar_bytes).expect("gzip write");
+        gz.finish().expect("gzip finish")
+    }
+
+    fn sha256_hex(bytes: &[u8]) -> String {
+        use sha2::Digest as _;
+        anodizer_core::hashing::hex_lower(&sha2::Sha256::digest(bytes))
+    }
+
     /// BLOCKER reproduction: a binstall crate, already published with the
     /// WITH-binstall content (as the original publish uploaded), must be a SAFE
     /// SKIP on re-cut — NOT a false poison. The guard now writes the binstall
@@ -7660,7 +8370,10 @@ mod binstall_on_publish_tests {
             } else {
                 "WITHOUT"
             };
-            Ok(Some(marker.to_string()))
+            Ok(Some(LocalCrate {
+                cksum: marker.to_string(),
+                bytes: Vec::new(),
+            }))
         };
         let fixed_tag = |_: &Context, _: &CrateConfig| Some("v1.2.3".to_string());
 
@@ -7672,6 +8385,7 @@ mod binstall_on_publish_tests {
             index_with_binstall,
             local_reads_disk,
             &fixed_tag,
+            fetch_panics,
         )
         .expect(
             "a binstall crate re-cut whose published content already includes the binstall table \
@@ -7709,17 +8423,46 @@ mod binstall_on_publish_tests {
         let log = quiet_log();
         let mut record: Vec<CargoYankTarget> = Vec::new();
 
+        // Real tarball bytes standing in for "packaged WITH the binstall
+        // table" vs "published WITHOUT it" — a genuine content divergence,
+        // not just the vcs commit stamp, so the slow path must hard-fail.
+        let with_binstall_bytes = make_crate_tarball(&[(
+            "anodizer-9.9.9/Cargo.toml",
+            b"[package]\nname = \"anodizer\"\n\n[package.metadata.binstall]\npkg-url = \"x\"\n",
+        )]);
+        let without_binstall_bytes = make_crate_tarball(&[(
+            "anodizer-9.9.9/Cargo.toml",
+            b"[package]\nname = \"anodizer\"\n",
+        )]);
+        let index_sha = sha256_hex(&without_binstall_bytes);
+
+        let index_sha_for_closure = index_sha.clone();
         let index_without_binstall =
-            |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| Ok(Some("WITHOUT".into()));
-        let local_reads_disk = |_n: &str, c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
-            let marker = if has_binstall_table(&c.path) {
-                "WITH"
-            } else {
-                "WITHOUT"
+            move |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| {
+                Ok(Some(index_sha_for_closure.clone()))
             };
-            Ok(Some(marker.to_string()))
-        };
+        let with_binstall_bytes_for_local = with_binstall_bytes.clone();
+        let without_binstall_bytes_for_local = without_binstall_bytes.clone();
+        let local_reads_disk =
+            move |_n: &str, c: &CrateConfig, _cfg: Option<&CargoPublishConfig>| {
+                // The guard's pre-publish mutation writes the binstall table
+                // before packaging; a real `cargo package` here would reflect it,
+                // so the stub packages the "WITH" fixture whenever the on-disk
+                // manifest carries the table (as it does after that mutation).
+                let bytes = if has_binstall_table(&c.path) {
+                    with_binstall_bytes_for_local.clone()
+                } else {
+                    without_binstall_bytes_for_local.clone()
+                };
+                Ok(Some(LocalCrate {
+                    cksum: sha256_hex(&bytes),
+                    bytes,
+                }))
+            };
         let fixed_tag = |_: &Context, _: &CrateConfig| Some("v9.9.9".to_string());
+        let fetch = move |_n: &str, _v: &str, _p: &anodizer_core::retry::RetryPolicy| {
+            Ok(without_binstall_bytes.clone())
+        };
 
         let err = publish_to_cargo_with_guard(
             &mut ctx,
@@ -7729,6 +8472,7 @@ mod binstall_on_publish_tests {
             index_without_binstall,
             local_reads_disk,
             &fixed_tag,
+            fetch,
         )
         .expect_err("a genuine content divergence must still hard-fail");
         assert!(
@@ -7778,7 +8522,10 @@ mod binstall_on_publish_tests {
             } else {
                 "WITHOUT"
             };
-            Ok(Some(m.to_string()))
+            Ok(Some(LocalCrate {
+                cksum: m.to_string(),
+                bytes: Vec::new(),
+            }))
         };
         let fixed_tag = |_: &Context, _: &CrateConfig| Some("v1.0.0".to_string());
 
@@ -7790,6 +8537,7 @@ mod binstall_on_publish_tests {
             index_with,
             local_reads_disk,
             &fixed_tag,
+            fetch_panics,
         )
         .expect("crate A's binstall write must not false-trip the dirty check for crate B");
         assert!(
@@ -7859,6 +8607,7 @@ mod binstall_on_publish_tests {
             index_present,
             local_panics,
             &fixed_tag,
+            fetch_panics,
         )
         .expect_err("a dirty tree is an unverifiable precondition; the guard must refuse");
         let msg = format!("{err:#}");

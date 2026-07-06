@@ -281,6 +281,73 @@ where
     .with_context(|| format!("{label}: exhausted retry attempts"))
 }
 
+/// Binary-body sibling of [`retry_http_blocking`] for endpoints whose success
+/// payload is not valid UTF-8 (e.g. a gzip-compressed `.crate` tarball).
+///
+/// `resp.text()` runs a lossy UTF-8 conversion that silently rewrites
+/// non-UTF-8 byte sequences to U+FFFD, corrupting a binary payload with no
+/// error raised — a caller hashing the "recovered" bytes would never match
+/// the original digest. This variant reads the success body via
+/// `resp.bytes()` instead, keeping every other behavior (retry classification,
+/// `HttpError` wrapping, `success_class`) identical to the text variant. The
+/// error-path body is still decoded lossily into text purely for the
+/// `error_msg` formatter — error responses are conventionally textual/JSON,
+/// and a few replacement characters in an already-failing message are
+/// harmless.
+pub fn retry_http_blocking_bytes<F, M>(
+    label: &str,
+    policy: &RetryPolicy,
+    success_class: SuccessClass,
+    mut send: F,
+    error_msg: M,
+) -> anyhow::Result<(reqwest::StatusCode, Vec<u8>)>
+where
+    F: FnMut(u32) -> Result<reqwest::blocking::Response, reqwest::Error>,
+    M: Fn(reqwest::StatusCode, &str) -> String,
+{
+    use anyhow::Context as _;
+    retry_sync(policy, |attempt| match send(attempt) {
+        Ok(resp) => {
+            let status = resp.status();
+            let succeeded = match success_class {
+                SuccessClass::Strict => status.is_success(),
+                SuccessClass::AllowRedirects => status.is_success() || status.is_redirection(),
+            };
+            let bytes = resp
+                .bytes()
+                .map(|b| b.to_vec())
+                .unwrap_or_else(|e| format!("<failed to read body: {e}>").into_bytes());
+            if succeeded {
+                Ok((status, bytes))
+            } else {
+                let body_text = String::from_utf8_lossy(&bytes).into_owned();
+                let msg = error_msg(status, &body_text);
+                let inner = anyhow::anyhow!("{msg}");
+                let wrapped = anyhow::Error::new(HttpError::new(
+                    std::io::Error::other(inner.to_string()),
+                    status.as_u16(),
+                ))
+                .context(inner);
+                if is_retriable(wrapped.as_ref()) {
+                    Err(ControlFlow::Continue(wrapped))
+                } else {
+                    Err(ControlFlow::Break(wrapped))
+                }
+            }
+        }
+        Err(e) => {
+            let err = anyhow::Error::new(HttpError::from_response(e, None))
+                .context(format!("{label}: HTTP transport error"));
+            if is_retriable(err.as_ref()) {
+                Err(ControlFlow::Continue(err))
+            } else {
+                Err(ControlFlow::Break(err))
+            }
+        }
+    })
+    .with_context(|| format!("{label}: exhausted retry attempts"))
+}
+
 /// Async sibling of [`retry_http_blocking`] for `reqwest::Client` (non-blocking)
 /// call sites such as the GitLab and Gitea release publishers.
 ///
@@ -1327,6 +1394,117 @@ mod tests {
         );
         let (status, _) = result.expect("3xx is success under AllowRedirects");
         assert_eq!(status.as_u16(), 307);
+    }
+
+    // ----- retry_http_blocking_bytes behavioural tests ---------------------
+
+    #[test]
+    fn retry_http_blocking_bytes_preserves_non_utf8_body() {
+        // A body with invalid-UTF-8 byte sequences (gzip magic + a bare
+        // continuation byte) proves the bytes variant does not run a lossy
+        // UTF-8 pass over the success payload — `resp.text()` would silently
+        // rewrite these to U+FFFD, corrupting the digest of whatever the
+        // caller hashes.
+        let body: Vec<u8> = vec![0x1f, 0x8b, 0x08, 0x00, 0x80, 0xff, 0xfe, 0x00];
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral port");
+        let addr = listener.local_addr().expect("local_addr");
+        let body_for_thread = body.clone();
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut buf = [0u8; 1024];
+                let _ = stream.read(&mut buf);
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body_for_thread.len()
+                );
+                let _ = stream.write_all(header.as_bytes());
+                let _ = stream.write_all(&body_for_thread);
+                let _ = stream.flush();
+                let _ = stream.shutdown(std::net::Shutdown::Both);
+            }
+        });
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 1,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let result = retry_http_blocking_bytes(
+            "test",
+            &policy,
+            SuccessClass::Strict,
+            |_| client.get(format!("http://{addr}/")).send(),
+            |_, _| String::from("should not be called on success"),
+        );
+        let (status, bytes) = result.expect("success");
+        assert_eq!(status.as_u16(), 200);
+        assert_eq!(bytes, body, "binary body must round-trip byte-for-byte");
+    }
+
+    #[test]
+    fn retry_http_blocking_bytes_4xx_fast_fails_no_retry() {
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 9\r\n\r\nnot found",
+        ]);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 5,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let result = retry_http_blocking_bytes(
+            "myscope",
+            &policy,
+            SuccessClass::Strict,
+            |_| client.get(format!("http://{addr}/")).send(),
+            |status, body| format!("custom error: {status} body={body}"),
+        );
+        let err = result.expect_err("4xx must fast-fail");
+        let chain = format!("{err:#}");
+        assert!(
+            chain.contains("custom error") && chain.contains("not found"),
+            "error formatter must see the (lossily-decoded) error body: {chain}"
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "4xx must NOT retry (only one connection accepted)"
+        );
+    }
+
+    #[test]
+    fn retry_http_blocking_bytes_retries_5xx_then_succeeds() {
+        let (addr, calls) = spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok",
+        ]);
+        let client = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("client");
+        let policy = RetryPolicy {
+            max_attempts: 3,
+            base_delay: Duration::from_millis(1),
+            max_delay: Duration::from_millis(2),
+        };
+        let result = retry_http_blocking_bytes(
+            "test",
+            &policy,
+            SuccessClass::Strict,
+            |_| client.get(format!("http://{addr}/")).send(),
+            |status, body| format!("{status}: {body}"),
+        );
+        let (status, bytes) = result.expect("eventually succeeds");
+        assert_eq!(status.as_u16(), 200);
+        assert_eq!(bytes, b"ok");
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "one retry then success");
     }
 
     // ----- retry_http_async behavioural tests ------------------------------
