@@ -573,8 +573,16 @@ fn crates_equal_modulo_vcs(
         // ({name}-{version}/.cargo_vcs_info.json). A file with this basename
         // anywhere deeper is ordinary packaged source and must be byte-compared,
         // not sha-normalized, or a real source change hiding inside a `git.sha1`
-        // key would be masked into a false skip.
-        let is_vcs_info = path.components().count() == 2
+        // key would be masked into a false skip. Count only Normal components so
+        // a leading `./` (a CurDir component) can't inflate the count and
+        // misclassify the root file as nested source; cargo's .crate tarballs
+        // never emit `./`-prefixed entries, but the gate shouldn't depend on
+        // that external emission detail.
+        let normal_component_count = path
+            .components()
+            .filter(|c| matches!(c, std::path::Component::Normal(_)))
+            .count();
+        let is_vcs_info = normal_component_count == 2
             && path
                 .file_name()
                 .is_some_and(|f| f == ".cargo_vcs_info.json");
@@ -3388,6 +3396,40 @@ mod tests {
         gz.finish().expect("gzip finish")
     }
 
+    /// Like [`make_crate_tarball`] but writes each entry's path directly into
+    /// the header's raw name bytes instead of going through
+    /// `tar::Builder::append_data`. `append_data` normalizes the path via
+    /// `tar`'s `copy_path_into_inner`, which deliberately drops a leading
+    /// `./` (`Component::CurDir`) — so it can't produce the `./`-prefixed
+    /// root entry the leading-CurDir hardening test below needs to prove
+    /// against. `tar::Builder::append` (unlike `append_data`) writes the
+    /// header as-is with no path processing.
+    fn make_crate_tarball_raw_paths(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        use std::io::Write as _;
+
+        let mut builder = tar::Builder::new(Vec::new());
+        for (path, content) in entries {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(content.len() as u64);
+            header.set_mode(0o644);
+            let path_bytes = path.as_bytes();
+            let name_slot = &mut header.as_old_mut().name;
+            assert!(
+                path_bytes.len() < name_slot.len(),
+                "raw path fixture '{path}' too long for the tar header name field"
+            );
+            name_slot[..path_bytes.len()].copy_from_slice(path_bytes);
+            header.set_cksum();
+            builder
+                .append(&header, *content)
+                .expect("append raw tar entry");
+        }
+        let tar_bytes = builder.into_inner().expect("finish tar");
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(&tar_bytes).expect("gzip write");
+        gz.finish().expect("gzip finish")
+    }
+
     /// Minimal `.cargo_vcs_info.json` body: `{"git":{"sha1":"<sha>"},"path_in_vcs":"<vcs_path>"}`.
     fn vcs_info_json(sha1: &str, path_in_vcs: &str) -> Vec<u8> {
         format!(r#"{{"git":{{"sha1":"{sha1}"}},"path_in_vcs":"{path_in_vcs}"}}"#).into_bytes()
@@ -3562,6 +3604,30 @@ mod tests {
         assert!(
             matches!(m, CrateContentMatch::IdenticalModuloVcs),
             "the root .cargo_vcs_info.json's git.sha1 is still normalized"
+        );
+    }
+
+    #[test]
+    fn crates_equal_modulo_vcs_root_vcs_info_dot_slash_prefixed_still_normalized() {
+        let local = make_crate_tarball_raw_paths(&[
+            ("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n"),
+            (
+                "./c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_a", "."),
+            ),
+        ]);
+        let published = make_crate_tarball_raw_paths(&[
+            ("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n"),
+            (
+                "./c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_b", "."),
+            ),
+        ]);
+        let m = crates_equal_modulo_vcs(&local, &published).expect("compare");
+        assert!(
+            matches!(m, CrateContentMatch::IdenticalModuloVcs),
+            "a leading `./` (a CurDir component) must not inflate the root gate's \
+             component count and misclassify the crate-root vcs-info as nested source"
         );
     }
 
