@@ -569,9 +569,15 @@ fn crates_equal_modulo_vcs(
             continue;
         };
 
-        let is_vcs_info = path
-            .file_name()
-            .is_some_and(|f| f == ".cargo_vcs_info.json");
+        // cargo package emits .cargo_vcs_info.json ONLY at the crate root
+        // ({name}-{version}/.cargo_vcs_info.json). A file with this basename
+        // anywhere deeper is ordinary packaged source and must be byte-compared,
+        // not sha-normalized, or a real source change hiding inside a `git.sha1`
+        // key would be masked into a false skip.
+        let is_vcs_info = path.components().count() == 2
+            && path
+                .file_name()
+                .is_some_and(|f| f == ".cargo_vcs_info.json");
 
         if is_vcs_info {
             match (
@@ -3494,6 +3500,88 @@ mod tests {
             }
             CrateContentMatch::IdenticalModuloVcs => {
                 panic!("an entry present in only one archive must be flagged")
+            }
+        }
+    }
+
+    #[test]
+    fn crates_equal_modulo_vcs_nested_decoy_is_byte_compared() {
+        let local = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_a", "."),
+            ),
+            (
+                "c-1.0.0/tests/data/.cargo_vcs_info.json",
+                &vcs_info_json("commit_a", "."),
+            ),
+        ]);
+        let published = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_a", "."),
+            ),
+            (
+                "c-1.0.0/tests/data/.cargo_vcs_info.json",
+                &vcs_info_json("commit_b", "."),
+            ),
+        ]);
+        let m = crates_equal_modulo_vcs(&local, &published).expect("compare");
+        match m {
+            CrateContentMatch::Differs(paths) => {
+                assert_eq!(
+                    paths,
+                    vec!["c-1.0.0/tests/data/.cargo_vcs_info.json".to_string()]
+                );
+            }
+            CrateContentMatch::IdenticalModuloVcs => {
+                panic!("a nested .cargo_vcs_info.json is ordinary source, not the root vcs stamp")
+            }
+        }
+    }
+
+    #[test]
+    fn crates_equal_modulo_vcs_root_vcs_info_still_normalized() {
+        let local = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_a", "."),
+            ),
+        ]);
+        let published = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_b", "."),
+            ),
+        ]);
+        let m = crates_equal_modulo_vcs(&local, &published).expect("compare");
+        assert!(
+            matches!(m, CrateContentMatch::IdenticalModuloVcs),
+            "the root .cargo_vcs_info.json's git.sha1 is still normalized"
+        );
+    }
+
+    #[test]
+    fn crates_equal_modulo_vcs_root_vcs_info_missing_on_one_side_differs() {
+        let local = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_a", "."),
+            ),
+        ]);
+        let published = make_crate_tarball(&[("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n")]);
+        let m = crates_equal_modulo_vcs(&local, &published).expect("compare");
+        match m {
+            CrateContentMatch::Differs(paths) => {
+                assert_eq!(paths, vec!["c-1.0.0/.cargo_vcs_info.json".to_string()]);
+            }
+            CrateContentMatch::IdenticalModuloVcs => {
+                panic!("a root vcs-info present on only one side is an unambiguous divergence")
             }
         }
     }
