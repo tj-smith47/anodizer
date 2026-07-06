@@ -12,43 +12,9 @@ cold without re-investigating.
 
 ## Open
 
-- [ ] **npm publisher's transient-retry budget can exceed the `publish-npm`
-  job `timeout-minutes`, guillotining the loop mid-publish and leaving a
-  PARTIAL npm release (one-way door).** v0.15.0 run 28766146134: the npm
-  publisher published 4 platform packages
-  (`@tj-smith47/anodizer-{darwin-arm64,darwin-x64,linux-arm64-glibc,linux-arm64-musl}@0.15.0`),
-  then hit a genuine registry transient-failure storm on the next package
-  (`npm publish attempt 1/10 … 7/10 failed (transient), retrying…`). The
-  publish-npm job's `timeout-minutes: 20` (`.github/workflows/release.yml`)
-  fired mid-retry and GitHub cancelled the job (`The operation was canceled`,
-  orphan `anodizer` pid terminated) — so linux-x64 (glibc+musl), win32
-  (x64+arm64), and the **meta-package** never published. Net: `npm install
-  @tj-smith47/anodizer@0.15.0` 404s (meta-package absent) while 4 orphan
-  platform packages are live and immutable. Root cause is a coordination
-  defect: the publisher's max retry duration (10 attempts × backoff) is not
-  bounded below the job timeout, so a transient storm is killed mid-loop
-  instead of failing cleanly with a resumable error. Fix shape: bound the
-  publisher's total retry wall-time to comfortably fit inside
-  `timeout-minutes` (and/or raise the timeout) so a registry storm exits with
-  a clear "N of M published, re-run to complete" error rather than a
-  guillotine. The publisher IS idempotent (`version_already_published` in
-  `crates/stage-publish/src/npm/publish.rs` skips already-published packages),
-  so an in-budget failure would recover cleanly on re-run. Immediate recovery
-  for 0.15.0: re-run the publish-npm job (idempotent-skips the 4, publishes
-  the rest) — user-gated.
-- [ ] **npm Trusted Publishing (OIDC provenance) FAILED for every package,
-  silently falling back to `NPM_TOKEN` — the `Publish npm (provenance)` job
-  publishes WITHOUT provenance.** Same run: each package logged `OIDC /
-  Trusted Publishing publish FAILED for '<pkg>'; falling back to NPM_TOKEN —
-  Trusted Publishing was NOT exercised`. So the provenance guarantee the
-  dedicated GH-hosted job exists to provide is not being delivered; every
-  0.15.0 npm package shipped via the long-lived token fallback. Fix shape:
-  verify each package's Trusted Publisher config on npmjs (registry +
-  repository + workflow filename must match the publishing workflow), then
-  confirm a subsequent publish exercises OIDC (no fallback warning). Until
-  then npm packages carry no provenance attestation.
-
-_(Non-npm surface: no open code/config gaps. Every non-paid dogfooding field
+_(No open code/config gaps. Both v0.15.0 npm findings — the retry-budget
+guillotine and the OIDC-fallback — are fixed and proven; see Resolved. Every
+non-paid dogfooding field
 is landed in `.anodizer.yaml` and committed; `flatpaks` is additionally PROVEN
 locally (anodizer's own emitter produced a real 12.3 MB `.flatpak`). The two
 `skip: true` blocks left in `.anodizer.yaml` are PAID-only (`notarize`,
@@ -63,7 +29,7 @@ DONE. Several FAIL at release until their backing account/secret/endpoint exists
 | Field (config landed) | Fires at release once… | Owner |
 |---|---|---|
 | `dockers_v2` → `registry.jarvispro.io/anodizer` | runner does `docker login registry.jarvispro.io` (creds in ns `jarvispro` `registry-credentials`); confirm ambient auth or add a login step | [you] |
-| `npms` (scope `@tj-smith47`, tokenless OIDC — CODE done) | npmjs.com Trusted Publisher set (org `tj-smith47`, repo `anodizer`, workflow `release.yml`); one token-seeded publish creates `@tj-smith47/anodizer`, then drop the token; runner npm ≥ 11.5.1 + Node ≥ 22.14 | [you] |
+| `npms` (scope `@tj-smith47`, tokenless OIDC) | ✅ PROVEN 2026-07-06 — Trusted Publisher live, packages created; v0.15.0 re-run published with real provenance (0 token fallbacks). Runner npm ≥ 11.5.1 floor enforced by anodizer-action `5629a41` | **[done]** |
 | `dockerhub` README sync (`tsmthtj/anodizer`, required:false) | free Docker Hub repo `tsmthtj/anodizer` exists | secrets `DOCKER_USERNAME`+`DOCKER_PASSWORD` **[me]**; repo **[you]** |
 | `gemfury` (account `tj-smith47`, **required:true**) | free fury.io OSS account + push-token GH secret | [you] — **hard-fails the whole release until set** |
 | `uploads` → `https://uploads.jarvispro.io/anodizer/{Version}/` (PUT, real-tag only) | endpoint stood up + `UPLOAD_JARVISPRO_USERNAME`/`UPLOAD_JARVISPRO_SECRET` secrets | [you] |
@@ -88,6 +54,43 @@ Recommendation: leave unexercised (the two sibling multi-component models cover
 the behavioral surface) OR nominate a repo to restructure. Your call; not blocking.
 
 ## Resolved
+
+- [x] **npm publisher's transient-retry budget could exceed the `publish-npm`
+  job `timeout-minutes`, guillotining the loop mid-publish (partial release) —
+  RESOLVED 2026-07-06 (`b0eea2f1` + `4d7e2068`).** v0.15.0 run 28766146134
+  stormed on one package (`npm publish attempt 1/10 … 7/10 failed (transient)`)
+  and the 20m job timeout SIGKILLed it mid-attempt-7, leaving 4 platform
+  packages live and the rest + metapackage absent. **Fixed:** `retry_sync`
+  gained an optional wall-clock deadline (`retry_sync_deadline`); the npm
+  publish sequence derives it once from a new optional `retry.max_elapsed`
+  config (`Context::retry_deadline`) and stops before a backoff would blow the
+  budget, exiting with the last error (recoverable via the idempotent
+  `version_already_published` skip) and a distinct "retry budget exhausted;
+  idempotent re-run resumes" breadcrumb instead of being guillotined.
+  `.anodizer.yaml` sets `retry.max_elapsed: 15m` (< the 20m job timeout);
+  default unset = GoReleaser attempt-count parity. **Evidence:** `retry.rs`
+  deadline tests (already-elapsed → 1 attempt no-sleep; `None` == `retry_sync`;
+  far-future no-op), `Context::retry_deadline` config → Some/None tests, npm
+  retry tests — core 75/75, stage-publish 2506/2506. **0.15.0 recovery:**
+  re-ran publish-npm run 28766146134 → success; full package set live.
+
+- [x] **npm Trusted Publishing (OIDC provenance) fell back to `NPM_TOKEN` for
+  every package (no provenance) — RESOLVED 2026-07-06 (anodizer-action
+  `5629a41`).** NOT a server-side gap (the Trusted Publisher was configured):
+  the anodizer-action dependency detector (`resolve_requirement` in
+  `scripts/install/auto-detect-deps.sh`) satisfied the npm requirement the
+  moment `npm` was on PATH with no version check. GitHub runners ship npm
+  10.9.x (< the 11.5.1 OIDC floor), so the ambient stale npm suppressed the
+  node/npm-floor install and every OIDC exchange fell back to the token.
+  **Fixed** in anodizer-action `5629a41` (version-gate the on-PATH check
+  against `NPM_DEFAULT_VERSION`; an under-floor binary falls through to install
+  the upgrade); pushed, `v1` advanced. **Proven:** the v0.15.0 publish-npm
+  re-run on the fixed `@v1` published with real provenance — 0 `falling back to
+  NPM_TOKEN` warnings, Rekor attestation uploaded
+  (`tj-smith47/anodizer/attestations/34060634`), unscoped `anodizer`
+  metapackage + all 8 `@tj-smith47/anodizer-*` live at 0.15.0. (The 4 platform
+  packages that published token-only on the first 0.15.0 run stay
+  provenance-less and immutable; v0.15.1 publishes all fresh with provenance.)
 
 - [x] **`release.ids` silently drops signature/certificate/SBOM uploads —
   RESOLVED 2026-06-11 (review-fix pass on fb7e5a16).** Found while building
