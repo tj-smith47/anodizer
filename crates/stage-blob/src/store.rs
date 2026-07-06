@@ -214,10 +214,18 @@ pub(crate) fn build_s3_store(
     } else {
         None
     };
-    // `disable_ssl: true` (a plaintext-HTTP endpoint such as an in-cluster
-    // MinIO) must enable `allow_http` — threaded through the ClientOptions we
-    // pass so it cannot be clobbered (see `timed_client_options`).
-    let allow_http = config.disable_ssl.unwrap_or(false);
+    // A plaintext-http endpoint (in-cluster MinIO) MUST allow the http scheme or
+    // object_store/reqwest rejects every request pre-flight with an opaque
+    // "builder error". Derive it from BOTH the explicit disable_ssl flag AND the
+    // endpoint scheme, so a caller that supplies the endpoint but not disable_ssl
+    // (the rollback delete path synthesizes a minimal config) still connects.
+    // Threaded through the ClientOptions we pass so it cannot be clobbered (see
+    // `timed_client_options`).
+    let allow_http = config.disable_ssl.unwrap_or(false)
+        || config
+            .endpoint
+            .as_deref()
+            .is_some_and(|e| e.starts_with("http://"));
     builder = builder.with_client_options(timed_client_options(allow_http, acl_headers));
 
     Ok(Box::new(
@@ -451,6 +459,27 @@ mod allow_http_regression {
             !msg.contains("builder error"),
             "disable_ssl http endpoint must be attempted (transport error), \
              never rejected pre-flight as a scheme/builder error: {err}"
+        );
+    }
+
+    /// Regression: the blob rollback path (`publisher.rs`
+    /// `rollback_via_object_store`) synthesizes a minimal `BlobConfig` with
+    /// `..Default::default()`, which drops `disable_ssl` even when the
+    /// captured endpoint is `http://`. `build_s3_store` must still enable
+    /// `allow_http` from the endpoint scheme alone, or every rollback DELETE
+    /// against an in-cluster MinIO endpoint is rejected pre-flight with the
+    /// same opaque "builder error" the upload-path regression above pins.
+    #[tokio::test]
+    #[serial_test::serial(aws_env)]
+    async fn disable_ssl_none_with_http_endpoint_is_attempted_not_rejected() {
+        let res = attempt_dead_port_put("http://127.0.0.1:1", None).await;
+        let err = res.expect_err("a dead port must fail the PUT");
+        let msg = err.to_string().to_lowercase();
+        assert!(
+            !msg.contains("builder error"),
+            "an http:// endpoint must enable allow_http from the scheme alone, \
+             even when disable_ssl is None (the rollback delete path's synthesized \
+             config): {err}"
         );
     }
 

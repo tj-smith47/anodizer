@@ -330,8 +330,12 @@ fn rollback_via_object_store(
     for ((provider_str, bucket, region, endpoint), group_targets) in &groups {
         // Synthesize a minimal `BlobConfig` sufficient for
         // `build_store`'s DELETE path. KMS / ACL / cache-control / etc.
-        // are upload-side concerns and intentionally omitted — the
-        // delete operation only needs auth + addressing.
+        // are upload-side concerns and intentionally omitted — the delete
+        // operation only needs auth + addressing. `disable_ssl` is dropped
+        // here too, but that's not an upload-side concern: an http://
+        // endpoint (the addressing tuple above) still yields the right
+        // `allow_http` on its own, since `build_s3_store` derives it from
+        // the endpoint scheme as well as the explicit flag.
         let cfg = BlobConfig {
             provider: provider_str.clone(),
             bucket: bucket.clone(),
