@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-07-06
+
+### Features
+
+* 5f37d22b9b7c add per-publisher on_rollback failure hook ([@tj-smith47](https://github.com/tj-smith47))
+* a54143cb7658 expose rollback trigger reason to on_rollback hooks ([@tj-smith47](https://github.com/tj-smith47))
+
+---
+### Bug Fixes
+
+* 42790451f866 provision clang-cl+nasm defensively; correct guard comment; drop stray test assert ([@tj-smith47](https://github.com/tj-smith47))
+* 2f8ed2c7823b keep --split --single-target composable (revert over-broad conflict) ([@tj-smith47](https://github.com/tj-smith47))
+* a36a24b4db7d make required_failure_reason message extraction exhaustive ([@tj-smith47](https://github.com/tj-smith47))
+* fe42673455fc add clang-cl C-toolchain pin primitive for windows-msvc ([@tj-smith47](https://github.com/tj-smith47))
+* 75e77b27cc64 pin clang-cl in stage-build for windows-msvc release builds ([@tj-smith47](https://github.com/tj-smith47))
+* 2d6e41c9bff1 pin clang-cl in the harness child env + hard-require it for windows-msvc ([@tj-smith47](https://github.com/tj-smith47))
+* dcc962211412 per-shard self-skip, not wholesale skip ([@tj-smith47](https://github.com/tj-smith47))
+* 38b618520256 OS-filter formula artifacts + gate emission-validate skip on partial shard ([@tj-smith47](https://github.com/tj-smith47))
+* bbe4ef0623f1 wire the documented $ANODIZER_ARTIFACT env channel ([@tj-smith47](https://github.com/tj-smith47))
+* 48f914cd3627 close AUR + homebrew failure-hiding on full builds lacking eligible archives ([@tj-smith47](https://github.com/tj-smith47))
+* c50e732284ca exclude Apple-non-macOS archives from nix/krew/cask/npm ([@tj-smith47](https://github.com/tj-smith47))
+* d9ca19d88500 gate index/manifest validator no-artifact skips on restricted builds ([@tj-smith47](https://github.com/tj-smith47))
+* ee51d58ccf79 gate nix validator no-artifact skip on restricted builds ([@tj-smith47](https://github.com/tj-smith47))
+* 150b5c8936e1 drop dead per-target CARGO_TARGET_<T>_RUSTFLAGS injection ([@tj-smith47](https://github.com/tj-smith47))
+* 742a31d93983 route cask darwin-selection through is_macos ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.14.0] - 2026-07-04
 
 ### Features
@@ -518,7 +544,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.14.0...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.15.0...HEAD
+[0.15.0]: https://github.com/tj-smith47/anodizer/compare/v0.14.0...v0.15.0
 [0.14.0]: https://github.com/tj-smith47/anodizer/compare/v0.13.1...v0.14.0
 [0.13.1]: https://github.com/tj-smith47/anodizer/compare/v0.13.0...v0.13.1
 [0.13.0]: https://github.com/tj-smith47/anodizer/compare/v0.12.3...v0.13.0
