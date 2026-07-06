@@ -12,10 +12,45 @@ cold without re-investigating.
 
 ## Open
 
-_(No open code/config gaps. Every non-paid dogfooding field is landed in
-`.anodizer.yaml` and committed; `flatpaks` is additionally PROVEN locally
-(anodizer's own emitter produced a real 12.3 MB `.flatpak`). What remains before
-a release is external SETUP only — see "Before-release setup" below. The two
+- [ ] **npm publisher's transient-retry budget can exceed the `publish-npm`
+  job `timeout-minutes`, guillotining the loop mid-publish and leaving a
+  PARTIAL npm release (one-way door).** v0.15.0 run 28766146134: the npm
+  publisher published 4 platform packages
+  (`@tj-smith47/anodizer-{darwin-arm64,darwin-x64,linux-arm64-glibc,linux-arm64-musl}@0.15.0`),
+  then hit a genuine registry transient-failure storm on the next package
+  (`npm publish attempt 1/10 … 7/10 failed (transient), retrying…`). The
+  publish-npm job's `timeout-minutes: 20` (`.github/workflows/release.yml`)
+  fired mid-retry and GitHub cancelled the job (`The operation was canceled`,
+  orphan `anodizer` pid terminated) — so linux-x64 (glibc+musl), win32
+  (x64+arm64), and the **meta-package** never published. Net: `npm install
+  @tj-smith47/anodizer@0.15.0` 404s (meta-package absent) while 4 orphan
+  platform packages are live and immutable. Root cause is a coordination
+  defect: the publisher's max retry duration (10 attempts × backoff) is not
+  bounded below the job timeout, so a transient storm is killed mid-loop
+  instead of failing cleanly with a resumable error. Fix shape: bound the
+  publisher's total retry wall-time to comfortably fit inside
+  `timeout-minutes` (and/or raise the timeout) so a registry storm exits with
+  a clear "N of M published, re-run to complete" error rather than a
+  guillotine. The publisher IS idempotent (`version_already_published` in
+  `crates/stage-publish/src/npm/publish.rs` skips already-published packages),
+  so an in-budget failure would recover cleanly on re-run. Immediate recovery
+  for 0.15.0: re-run the publish-npm job (idempotent-skips the 4, publishes
+  the rest) — user-gated.
+- [ ] **npm Trusted Publishing (OIDC provenance) FAILED for every package,
+  silently falling back to `NPM_TOKEN` — the `Publish npm (provenance)` job
+  publishes WITHOUT provenance.** Same run: each package logged `OIDC /
+  Trusted Publishing publish FAILED for '<pkg>'; falling back to NPM_TOKEN —
+  Trusted Publishing was NOT exercised`. So the provenance guarantee the
+  dedicated GH-hosted job exists to provide is not being delivered; every
+  0.15.0 npm package shipped via the long-lived token fallback. Fix shape:
+  verify each package's Trusted Publisher config on npmjs (registry +
+  repository + workflow filename must match the publishing workflow), then
+  confirm a subsequent publish exercises OIDC (no fallback warning). Until
+  then npm packages carry no provenance attestation.
+
+_(Non-npm surface: no open code/config gaps. Every non-paid dogfooding field
+is landed in `.anodizer.yaml` and committed; `flatpaks` is additionally PROVEN
+locally (anodizer's own emitter produced a real 12.3 MB `.flatpak`). The two
 `skip: true` blocks left in `.anodizer.yaml` are PAID-only (`notarize`,
 `artifactories`).)_
 
