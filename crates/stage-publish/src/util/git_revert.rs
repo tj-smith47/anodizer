@@ -479,6 +479,26 @@ mod tests {
     fn revert_head_in_succeeds_with_no_ambient_identity() {
         let bare = tempfile::tempdir().expect("bare tempdir");
         let work = tempfile::tempdir().expect("work tempdir");
+
+        // Neutralize the ambient git config for the WHOLE test, before the
+        // first git command runs, so the clone's checkout obeys it too: on a
+        // host whose system gitconfig enables `core.autocrlf` (git-for-Windows)
+        // a clone under the real config would check `README` out as CRLF, and
+        // the later autocrlf-off neutralization would make `revert_head_in`'s
+        // dirty-tree guard compare that CRLF tree against the LF blob and
+        // fabricate a phantom `M README`. With one config in effect throughout
+        // (autocrlf off), the checkout stays LF, the tree is clean, and the
+        // revert proceeds. This also strips ambient GIT_AUTHOR_*/GIT_COMMITTER_*
+        // (even if a sibling test's `ensure_git_identity()` set them
+        // process-wide) and points global/system config at nothing so no host
+        // ~/.gitconfig / /etc/gitconfig identity can leak in and mask the bug.
+        let _author_name = EnvGuard::remove("GIT_AUTHOR_NAME");
+        let _author_email = EnvGuard::remove("GIT_AUTHOR_EMAIL");
+        let _committer_name = EnvGuard::remove("GIT_COMMITTER_NAME");
+        let _committer_email = EnvGuard::remove("GIT_COMMITTER_EMAIL");
+        let _config_global = EnvGuard::set("GIT_CONFIG_GLOBAL", "/dev/null");
+        let _config_nosystem = EnvGuard::set("GIT_CONFIG_NOSYSTEM", "1");
+
         assert!(
             anodizer_core::test_helpers::output_with_spawn_retry(
                 || {
@@ -582,18 +602,6 @@ mod tests {
             .status
             .success()
         );
-
-        // Neutralize every ambient identity source: unset GIT_AUTHOR_*/
-        // GIT_COMMITTER_* (even if a sibling test's `ensure_git_identity()`
-        // already set them process-wide), and point global/system git
-        // config at nothing so the real host's ~/.gitconfig / /etc/gitconfig
-        // cannot leak an identity in and mask the bug.
-        let _author_name = EnvGuard::remove("GIT_AUTHOR_NAME");
-        let _author_email = EnvGuard::remove("GIT_AUTHOR_EMAIL");
-        let _committer_name = EnvGuard::remove("GIT_COMMITTER_NAME");
-        let _committer_email = EnvGuard::remove("GIT_COMMITTER_EMAIL");
-        let _config_global = EnvGuard::set("GIT_CONFIG_GLOBAL", "/dev/null");
-        let _config_nosystem = EnvGuard::set("GIT_CONFIG_NOSYSTEM", "1");
 
         revert_head_in(&repo_path).expect(
             "revert must succeed even with no ambient GIT_AUTHOR_*/GIT_COMMITTER_* env, \
