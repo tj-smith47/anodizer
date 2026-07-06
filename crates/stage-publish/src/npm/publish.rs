@@ -1298,7 +1298,10 @@ where
     F: FnMut(u32) -> Result<(), ControlFlow<anyhow::Error, anyhow::Error>>,
 {
     let max_attempts = policy.max_attempts.max(1);
-    retry_sync_deadline(policy, deadline, |attempt| {
+    let mut last_attempt = 0u32;
+    let mut last_was_continue = false;
+    let result = retry_sync_deadline(policy, deadline, |attempt| {
+        last_attempt = attempt;
         if attempt > 1 {
             log.warn(&format!(
                 "npm publish attempt {}/{} failed (transient), retrying…",
@@ -1306,8 +1309,22 @@ where
                 max_attempts
             ));
         }
-        attempt_op(attempt)
-    })
+        let r = attempt_op(attempt);
+        last_was_continue = matches!(r, Err(ControlFlow::Continue(_)));
+        r
+    });
+    // A budget stop is the ONLY way to end with Err + a deadline set + the last
+    // op returning Continue + fewer than max_attempts used: attempts-exhausted
+    // ends at last_attempt == max_attempts, and a fatal Break sets
+    // last_was_continue = false. Distinguish it so the failure reads as
+    // resumable rather than a hard npm error.
+    if result.is_err() && deadline.is_some() && last_was_continue && last_attempt < max_attempts {
+        log.warn(
+            "npm retry budget (retry.max_elapsed) exhausted before the job timeout; \
+             stopping now — an idempotent re-run resumes from the already-published packages",
+        );
+    }
+    result
 }
 
 /// `npm unpublish <package>@<version> --force` invocation used by rollback.

@@ -3453,6 +3453,31 @@ mod tests {
     }
 
     #[test]
+    fn retry_deadline_is_some_when_config_sets_max_elapsed() {
+        let mut config = Config::default();
+        config.retry = Some(crate::config::RetryConfig {
+            max_elapsed: Some(crate::config::HumanDuration(
+                std::time::Duration::from_secs(15 * 60),
+            )),
+            ..Default::default()
+        });
+        let ctx = Context::new(config, ContextOptions::default());
+        assert!(
+            ctx.retry_deadline().is_some(),
+            "retry.max_elapsed: 15m must resolve to a wall-clock deadline"
+        );
+    }
+
+    #[test]
+    fn retry_deadline_is_none_when_config_omits_retry() {
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        assert!(
+            ctx.retry_deadline().is_none(),
+            "no retry config must leave the deadline unbounded"
+        );
+    }
+
+    #[test]
     #[serial_test::serial]
     fn populate_runtime_vars_sets_rustc_version() {
         let config = Config::default();

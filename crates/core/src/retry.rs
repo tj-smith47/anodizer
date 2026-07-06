@@ -138,10 +138,10 @@ where
 
 /// Like [`retry_sync`], but stops retrying once the next backoff sleep would
 /// push total wall-time past `deadline`. On budget exhaustion it returns the
-/// last `Continue` error (the same value `retry_sync` would return after the
-/// final attempt), so a caller whose write is idempotent recovers on re-run
-/// instead of being killed mid-attempt by an outer timeout. `deadline: None`
-/// is byte-for-byte the old attempt-count-only behavior.
+/// last error observed before the budget was hit, so a caller whose write is
+/// idempotent recovers on re-run instead of being killed mid-attempt by an
+/// outer timeout. `deadline: None` is byte-for-byte the old attempt-count-only
+/// behavior.
 pub fn retry_sync_deadline<T, E, F>(
     policy: &RetryPolicy,
     deadline: Option<std::time::Instant>,
