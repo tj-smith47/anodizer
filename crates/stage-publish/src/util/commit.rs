@@ -75,6 +75,26 @@ const DEFAULT_COMMIT_AUTHOR_NAME: &str = "anodizer";
 /// Default commit author email used when no author is configured.
 const DEFAULT_COMMIT_AUTHOR_EMAIL: &str = "bot@anodizer.dev";
 
+/// Resolve the default commit identity used whenever no config-supplied
+/// author is in scope: the local `git config user.{name,email}` (read from
+/// the process's current directory — the source repo being released, not
+/// the publisher-owned repo a commit lands in), falling back to the
+/// built-in defaults above when unset.
+///
+/// This is the single source of truth for that fallback chain, shared by
+/// [`resolve_commit_opts`] (when a publisher's `commit_author` config
+/// supplies no name/email) and the rollback git-revert path
+/// (`super::git_revert`), so a revert commit is authored identically to the
+/// forward publish commit it undoes rather than duplicating the default
+/// literals a second time and risking drift.
+pub(crate) fn resolved_commit_identity() -> (String, String) {
+    let name = anodizer_core::git::local_git_user_name()
+        .unwrap_or_else(|| DEFAULT_COMMIT_AUTHOR_NAME.to_string());
+    let email = anodizer_core::git::local_git_user_email()
+        .unwrap_or_else(|| DEFAULT_COMMIT_AUTHOR_EMAIL.to_string());
+    (name, email)
+}
+
 /// Resolve commit author name/email from a CommitAuthorConfig, falling back
 /// to the local `git config user.{name, email}`, then to built-in defaults.
 ///
@@ -117,15 +137,14 @@ pub(crate) fn resolve_commit_opts(
         (None, None, None, false)
     };
 
+    let (default_name, default_email) = resolved_commit_identity();
     let name = match cfg_name {
         Some(raw) => super::template::render_or_warn(ctx, log, "commit_author.name", raw)?,
-        None => anodizer_core::git::local_git_user_name()
-            .unwrap_or_else(|| DEFAULT_COMMIT_AUTHOR_NAME.to_string()),
+        None => default_name,
     };
     let email = match cfg_email {
         Some(raw) => super::template::render_or_warn(ctx, log, "commit_author.email", raw)?,
-        None => anodizer_core::git::local_git_user_email()
-            .unwrap_or_else(|| DEFAULT_COMMIT_AUTHOR_EMAIL.to_string()),
+        None => default_email,
     };
 
     // Render template variables in signing config fields so that e.g.

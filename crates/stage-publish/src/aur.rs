@@ -1662,6 +1662,15 @@ impl anodizer_core::Publisher for AurOurPublisher {
             "aur rollback reverted {} repo(s), {} failure(s)",
             reverted, failed
         ));
+        // See the matching comment in `run_token_revert_rollback`: without
+        // this, a failed AUR revert is silently folded into the outer
+        // `rollback complete` summary's success count instead of `failed`.
+        if failed > 0 {
+            anyhow::bail!(
+                "aur rollback: {failed} of {} repo(s) failed to revert (see per-target warnings above)",
+                prepared.len()
+            );
+        }
         Ok(())
     }
 

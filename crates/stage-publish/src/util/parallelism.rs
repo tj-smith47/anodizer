@@ -242,6 +242,17 @@ pub(crate) fn run_token_revert_rollback<T: TokenRevertTarget>(
     log.status(&format!(
         "{publisher} rollback reverted {reverted} {reverted_noun}(s), {failed} failure(s)"
     ));
+    // A per-target git-revert failure must surface as `Err` here so
+    // `execute_rollback_step` maps this publisher's row to
+    // `RollbackFailed`/`RollbackDisposition::Failed` instead of `RolledBack`
+    // — otherwise the outer `rollback complete — N rolled back, M failed`
+    // summary miscounts an unreverted index repo as a success.
+    if failed > 0 {
+        anyhow::bail!(
+            "{publisher} rollback: {failed} of {} {reverted_noun}(s) failed to revert (see per-target warnings above)",
+            prepared.len()
+        );
+    }
     Ok(())
 }
 
@@ -687,7 +698,7 @@ mod tests {
             token_env_var: None,
         }];
 
-        run_token_revert_rollback(
+        let err = run_token_revert_rollback(
             &ctx,
             &targets,
             "scoop",
@@ -695,7 +706,11 @@ mod tests {
             "bucket clone targets",
             "bucket",
         )
-        .expect("a per-target failure is a warn, not a hard error");
+        .expect_err("a per-target git-revert failure must surface as Err so the caller's rollback summary counts it as failed, not rolled-back");
+        assert!(
+            format!("{err:#}").contains("1 of 1"),
+            "error should report the failure count: {err:#}"
+        );
 
         let warns: Vec<String> = cap
             .all_messages()

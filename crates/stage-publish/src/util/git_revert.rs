@@ -128,7 +128,13 @@ pub(crate) fn run_git_revert_and_push(target: &RevertTarget, log: &StageLogger) 
 /// failure so a merge-conflict / empty-repo failure mode is visible.
 ///
 /// `--no-edit` keeps the revert non-interactive (no $EDITOR invocation
-/// in CI / non-tty environments).
+/// in CI / non-tty environments). The revert commit carries an explicit
+/// identity via `GIT_AUTHOR_*`/`GIT_COMMITTER_*` env vars (same mechanism
+/// and same resolved name/email as the forward publish commit, via
+/// [`super::commit::resolved_commit_identity`]) because self-hosted
+/// runners without a global `~/.gitconfig` have no ambient identity for
+/// `git revert` to fall back on, and would otherwise fail every rollback
+/// with "Author identity unknown" (exit 128).
 fn revert_head_in(path: &Path) -> Result<()> {
     // Reject a dirty working tree up front. `git revert` would otherwise
     // either succeed against a clean tree or fail with a less actionable
@@ -156,9 +162,14 @@ fn revert_head_in(path: &Path) -> Result<()> {
         );
     }
 
+    let (author_name, author_email) = super::commit::resolved_commit_identity();
     let output = Command::new("git")
         .args(["revert", "HEAD", "--no-edit"])
         .current_dir(path)
+        .env("GIT_AUTHOR_NAME", &author_name)
+        .env("GIT_AUTHOR_EMAIL", &author_email)
+        .env("GIT_COMMITTER_NAME", &author_name)
+        .env("GIT_COMMITTER_EMAIL", &author_email)
         .output()
         .with_context(|| format!("git_revert: git revert in {}", path.display()))?;
     if !output.status.success() {
@@ -210,6 +221,7 @@ fn push_after_revert(path: &Path, branch: Option<&str>, log: &StageLogger) -> Re
 mod tests {
     use super::*;
     use anodizer_core::log::{StageLogger, Verbosity};
+    use serial_test::serial;
     use std::process::Command;
     use std::sync::OnceLock;
 
@@ -398,6 +410,210 @@ mod tests {
         assert!(
             msg.contains("dirty working tree"),
             "expected dirty-tree error, got: {msg}"
+        );
+    }
+
+    /// Sets or removes a process env var for the guard's lifetime, restoring
+    /// the prior value (or absence) on drop. Every caller carries
+    /// `#[serial(git_env)]`, shared with `commit.rs`'s identical group, so no
+    /// other git-identity test reads or writes the environment concurrently.
+    enum EnvGuard {
+        Set {
+            key: &'static str,
+            prev: Option<String>,
+        },
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var(key).ok();
+            // SAFETY: serialized via `#[serial(git_env)]`; restored on drop.
+            // env-ok: EnvGuard set/restore; every caller test is #[serial(git_env)]
+            unsafe { std::env::set_var(key, value) };
+            Self::Set { key, prev }
+        }
+
+        /// Removes `key` from the process env for the guard's lifetime, even
+        /// if a sibling test's `ensure_git_identity()` `OnceLock` already set
+        /// it process-wide — that ambient identity is exactly what would
+        /// otherwise mask the "no ambient identity" bug this proves fixed.
+        fn remove(key: &'static str) -> Self {
+            let prev = std::env::var(key).ok();
+            // SAFETY: serialized via `#[serial(git_env)]`; restored on drop.
+            // env-ok: EnvGuard set/restore; every caller test is #[serial(git_env)]
+            unsafe { std::env::remove_var(key) };
+            Self::Set { key, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            let Self::Set { key, prev } = self;
+            // SAFETY: see `EnvGuard::set`/`remove` — serialized, restored
+            // immediately on drop.
+            unsafe {
+                match prev {
+                    // env-ok: EnvGuard set/restore; every caller test is #[serial(git_env)]
+                    Some(v) => std::env::set_var(key, v),
+                    // env-ok: EnvGuard set/restore; every caller test is #[serial(git_env)]
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    /// Regression for the runner failure mode: on a host with no ambient git
+    /// identity anywhere in the resolution chain (`GIT_AUTHOR_*`/
+    /// `GIT_COMMITTER_*` env unset, no global config, no system config, and a
+    /// fresh clone has no local `user.*` either), `git revert` used to fail
+    /// with "Author identity unknown" because `revert_head_in` set no
+    /// identity on the child. It now applies the same resolved identity the
+    /// forward publish commit uses. This test does NOT use
+    /// `init_bare_remote_with_one_commit()` / `ensure_git_identity()` — that
+    /// helper's `OnceLock` sets `GIT_AUTHOR_*` process-wide for the rest of
+    /// the test binary's lifetime, which would mask exactly the bug under
+    /// test here (an ambient identity leaking in from a sibling test would
+    /// make this pass even without the fix).
+    #[test]
+    #[serial(git_env)]
+    fn revert_head_in_succeeds_with_no_ambient_identity() {
+        let bare = tempfile::tempdir().expect("bare tempdir");
+        let work = tempfile::tempdir().expect("work tempdir");
+        assert!(
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["init", "--bare", "-b", "master"])
+                        .arg(bare.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success()
+        );
+        for args in [
+            vec!["init", "-b", "master"],
+            vec!["config", "user.email", "seed@example.invalid"],
+            vec!["config", "user.name", "Seed"],
+            vec!["config", "commit.gpgsign", "false"],
+        ] {
+            assert!(
+                anodizer_core::test_helpers::output_with_spawn_retry(
+                    || {
+                        let mut cmd = Command::new("git");
+                        cmd.args(&args).current_dir(work.path());
+                        cmd
+                    },
+                    "git",
+                )
+                .status
+                .success(),
+                "git {args:?} failed"
+            );
+        }
+        std::fs::write(work.path().join("README"), "hello\n").unwrap();
+        assert!(
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["add", "README"]).current_dir(work.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success()
+        );
+        assert!(
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["commit", "-m", "initial commit"])
+                        .current_dir(work.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success()
+        );
+        assert!(
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["remote", "add", "origin"])
+                        .arg(bare.path())
+                        .current_dir(work.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success()
+        );
+        assert!(
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["push", "-u", "origin", "master"])
+                        .current_dir(work.path());
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success()
+        );
+
+        // A fresh clone carries no local `user.*` config of its own.
+        let clone_dir = tempfile::tempdir().expect("clone tempdir");
+        let repo_path = clone_dir.path().join("repo");
+        assert!(
+            anodizer_core::test_helpers::output_with_spawn_retry(
+                || {
+                    let mut cmd = Command::new("git");
+                    cmd.args(["clone", &bare.path().to_string_lossy()])
+                        .arg(&repo_path);
+                    cmd
+                },
+                "git",
+            )
+            .status
+            .success()
+        );
+
+        // Neutralize every ambient identity source: unset GIT_AUTHOR_*/
+        // GIT_COMMITTER_* (even if a sibling test's `ensure_git_identity()`
+        // already set them process-wide), and point global/system git
+        // config at nothing so the real host's ~/.gitconfig / /etc/gitconfig
+        // cannot leak an identity in and mask the bug.
+        let _author_name = EnvGuard::remove("GIT_AUTHOR_NAME");
+        let _author_email = EnvGuard::remove("GIT_AUTHOR_EMAIL");
+        let _committer_name = EnvGuard::remove("GIT_COMMITTER_NAME");
+        let _committer_email = EnvGuard::remove("GIT_COMMITTER_EMAIL");
+        let _config_global = EnvGuard::set("GIT_CONFIG_GLOBAL", "/dev/null");
+        let _config_nosystem = EnvGuard::set("GIT_CONFIG_NOSYSTEM", "1");
+
+        revert_head_in(&repo_path).expect(
+            "revert must succeed even with no ambient GIT_AUTHOR_*/GIT_COMMITTER_* env, \
+             no global config, and no system config -- the fix must supply an explicit \
+             identity on the git-revert child, or this fails with 'Author identity unknown'",
+        );
+
+        let log_out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(["log", "-1", "--pretty=%s"])
+                    .current_dir(&repo_path);
+                cmd
+            },
+            "git",
+        );
+        let subject = String::from_utf8_lossy(&log_out.stdout).trim().to_string();
+        assert!(
+            subject.starts_with("Revert"),
+            "expected HEAD to be a revert commit, got subject={subject:?}"
         );
     }
 }
