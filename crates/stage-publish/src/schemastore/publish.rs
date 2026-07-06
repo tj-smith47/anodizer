@@ -270,10 +270,26 @@ pub(crate) fn schema_change_needed(
 fn effective_schemas<'a>(
     ctx: &Context,
     cfg: &'a SchemastoreConfig,
+    log: &StageLogger,
 ) -> anyhow::Result<Vec<(&'a SchemaEntry, String)>> {
     let mut out = Vec::new();
     for entry in &cfg.schemas {
         if cfg.resolved_skip(entry) {
+            continue;
+        }
+        // A schema bound to a crate absent from THIS leg's universe belongs to
+        // another leg (per-crate / workspace-split publish runs each leg with
+        // a config whose crate universe holds only that leg's crates). Skip
+        // before `resolve_description`, which would otherwise choke trying to
+        // derive metadata for a crate this leg can't see.
+        if let Some(crate_name) = entry.crate_.as_deref()
+            && ctx.config.find_crate(crate_name).is_none()
+        {
+            log.verbose(&format!(
+                "{}: binds crate '{crate_name}' not in this leg's crate universe; \
+                 skipping (its owning leg publishes it)",
+                entry_label(&entry.name)
+            ));
             continue;
         }
         // `if:` gate — falsy renders skip the entry. Reuse the shared
@@ -329,7 +345,7 @@ pub(crate) fn run_publish(ctx: &mut Context) -> anyhow::Result<PublishEvidence> 
     // mutably (version re-scoping) without aliasing `ctx.config`.
     let cfg = ctx.config.schemastore.clone();
 
-    let effective = effective_schemas(ctx, &cfg)?;
+    let effective = effective_schemas(ctx, &cfg, &log)?;
     if effective.is_empty() {
         log.status("no schemas to register (all skipped or none configured)");
         return Ok(PublishEvidence::new("schemastore"));
@@ -2474,6 +2490,93 @@ mod tests {
         assert!(
             chain.contains("if") || chain.contains("template") || chain.contains("render"),
             "expected an if-template render error in the chain; got {chain}"
+        );
+    }
+
+    // --- effective_schemas: cross-leg crate filtering ---------------------
+    //
+    // Per-crate / workspace-split publish runs each leg with a `ctx.config`
+    // whose crate universe holds only that leg's crates. A schema entry bound
+    // to a crate outside the current leg's universe belongs to another leg
+    // and must be filtered before `resolve_description` ever sees it.
+
+    #[test]
+    fn effective_schemas_filters_entry_bound_to_crate_outside_leg_universe() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![crate_cfg("cfgd-core", "v{{ .Version }}")])
+            .build();
+        let mut entry = vendor_entry();
+        entry.crate_ = Some("cfgd".into());
+        ctx.config.schemastore = SchemastoreConfig {
+            schemas: vec![entry],
+            ..Default::default()
+        };
+        let effective = effective_schemas(&ctx, &ctx.config.schemastore, &quiet_log())
+            .expect("cross-leg entry must be filtered, not errored");
+        assert!(
+            effective.is_empty(),
+            "an entry bound to a crate absent from this leg's universe must be dropped; got {effective:?}"
+        );
+    }
+
+    #[test]
+    fn effective_schemas_keeps_entry_bound_to_crate_in_leg_universe() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![crate_cfg("cfgd", "v{{ .Version }}")])
+            .build();
+        let mut entry = vendor_entry();
+        entry.crate_ = Some("cfgd".into());
+        ctx.config.schemastore = SchemastoreConfig {
+            schemas: vec![entry],
+            ..Default::default()
+        };
+        let effective = effective_schemas(&ctx, &ctx.config.schemastore, &quiet_log())
+            .expect("owning-leg entry must resolve");
+        assert_eq!(
+            effective.len(),
+            1,
+            "an entry whose bound crate IS in the universe must be kept"
+        );
+    }
+
+    #[test]
+    fn effective_schemas_keeps_project_bound_entry_regardless_of_universe() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![crate_cfg("cfgd-core", "v{{ .Version }}")])
+            .build();
+        let mut entry = vendor_entry();
+        entry.crate_ = None;
+        ctx.config.schemastore = SchemastoreConfig {
+            schemas: vec![entry],
+            ..Default::default()
+        };
+        let effective = effective_schemas(&ctx, &ctx.config.schemastore, &quiet_log())
+            .expect("project-bound entry must resolve");
+        assert_eq!(
+            effective.len(),
+            1,
+            "an entry with crate_ == None is project/primary-bound and present on every leg — \
+             must never be filtered"
+        );
+    }
+
+    #[test]
+    fn effective_schemas_all_cross_leg_yields_empty() {
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![crate_cfg("cfgd-core", "v{{ .Version }}")])
+            .build();
+        let mut entry = vendor_entry();
+        entry.crate_ = Some("cfgd".into());
+        ctx.config.schemastore = SchemastoreConfig {
+            schemas: vec![entry],
+            ..Default::default()
+        };
+        let effective = effective_schemas(&ctx, &ctx.config.schemastore, &quiet_log())
+            .expect("all-cross-leg config must resolve, not error");
+        assert!(
+            effective.is_empty(),
+            "when every entry is cross-leg, effective_schemas must return empty — this is what \
+             drives run_publish's clean 'no schemas to register' no-op"
         );
     }
 
