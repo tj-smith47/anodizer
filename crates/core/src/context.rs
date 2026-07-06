@@ -1029,6 +1029,21 @@ impl Context {
         self.config.retry.unwrap_or_default().to_policy()
     }
 
+    /// Resolve the user's `retry.max_elapsed` budget into an absolute
+    /// wall-clock deadline anchored at the moment of this call, or `None`
+    /// when no budget is configured. Publishers whose surrounding CI job
+    /// has a hard timeout compute this once at the start of a publish
+    /// sequence and pass it to [`crate::retry::retry_sync_deadline`] so a
+    /// long transient storm exits cleanly (resumable) instead of being
+    /// killed mid-write by the outer timeout.
+    pub fn retry_deadline(&self) -> Option<std::time::Instant> {
+        self.config
+            .retry
+            .unwrap_or_default()
+            .max_elapsed_duration()
+            .map(|budget| std::time::Instant::now() + budget)
+    }
+
     /// Create a [`StageLogger`] for the given stage name, pre-attached to
     /// the context's env-pairs list so that subprocess stderr / stdout
     /// flowing through [`StageLogger::check_output`] is automatically

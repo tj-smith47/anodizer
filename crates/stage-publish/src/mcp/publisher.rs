@@ -372,6 +372,7 @@ mod publisher_tests {
             attempts: 3,
             delay: HumanDuration(Duration::from_millis(1)),
             max_delay: HumanDuration(Duration::from_millis(5)),
+            max_elapsed: None,
         });
         ctx.config.mcp = McpConfig {
             name: Some(server_name.to_string()),
@@ -397,6 +398,7 @@ mod publisher_tests {
                 attempts: 3,
                 delay: HumanDuration(Duration::from_millis(1)),
                 max_delay: HumanDuration(Duration::from_millis(5)),
+                max_elapsed: None,
             }),
             mcp: McpConfig {
                 name: Some(server_name.to_string()),
@@ -733,6 +735,7 @@ mod publisher_tests {
             attempts: 1,
             delay: HumanDuration(Duration::from_millis(1)),
             max_delay: HumanDuration(Duration::from_millis(5)),
+            max_elapsed: None,
         });
 
         let evidence = evidence_for("io.github.user/weather", "1.0.0+sha.abc", &registry);

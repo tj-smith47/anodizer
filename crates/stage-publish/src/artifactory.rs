@@ -3441,6 +3441,7 @@ mod tests {
             attempts: 2,
             delay: anodizer_core::config::HumanDuration(Duration::from_millis(1)),
             max_delay: anodizer_core::config::HumanDuration(Duration::from_millis(2)),
+            max_elapsed: None,
         });
         config.artifactories = Some(vec![ArtifactoryConfig {
             name: Some("prod".to_string()),
@@ -3492,6 +3493,7 @@ mod tests {
             attempts: 2,
             delay: anodizer_core::config::HumanDuration(Duration::from_millis(1)),
             max_delay: anodizer_core::config::HumanDuration(Duration::from_millis(2)),
+            max_elapsed: None,
         });
         config.artifactories = Some(vec![ArtifactoryConfig {
             name: Some("prod".to_string()),

@@ -934,6 +934,7 @@ fn gemfury_push_transient_503_retries_under_single_attempt_policy() {
             attempts: 1,
             delay: HumanDuration(Duration::from_millis(1)),
             max_delay: HumanDuration(Duration::from_millis(1)),
+            max_elapsed: None,
         }),
         gemfury: Some(vec![GemFuryConfig {
             account: Some("acme".into()),
@@ -1261,6 +1262,7 @@ fn fast_retry() -> anodizer_core::config::RetryConfig {
         attempts: 1,
         delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(0)),
         max_delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(0)),
+        max_elapsed: None,
     }
 }
 

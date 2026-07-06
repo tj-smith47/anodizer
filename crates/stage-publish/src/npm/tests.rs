@@ -21,7 +21,7 @@ use super::publish::{
     AuthDecision, NpmAuth, PackageExistence, assemble_optional_deps_tarball,
     assemble_postinstall_tarball, build_npm_publish_command, decide_auth, encode_package_path,
     probe_package_existence, publish_to_npm, publish_with_oidc_fallback, resolve_auth_for_package,
-    write_npmrc,
+    retry_npm_publish, write_npmrc,
 };
 use super::publisher::NpmPublisher;
 use anodizer_core::test_helpers::responder::spawn_oneshot_http_responder;
@@ -1747,6 +1747,84 @@ fn oidc_failure_no_token_available_does_not_fall_back() {
     );
     assert!(res.is_err(), "no token → failure propagates");
     assert_eq!(attempts, 1, "no retry without a token");
+}
+
+#[test]
+fn npm_publish_retry_honors_already_elapsed_deadline() {
+    // A large base_delay proves the pre-attempt sleep is SKIPPED: with the
+    // wall-clock budget already spent, the npm publish ladder must abort after
+    // the FIRST transient attempt instead of running the full attempt count and
+    // being SIGKILLed mid-loop by the outer job timeout.
+    use std::ops::ControlFlow;
+    use std::sync::atomic::AtomicU32;
+
+    let policy = anodizer_core::retry::RetryPolicy {
+        max_attempts: 10,
+        base_delay: std::time::Duration::from_secs(10),
+        max_delay: std::time::Duration::from_secs(300),
+    };
+    let deadline = Some(std::time::Instant::now());
+    let (log, _cap) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Normal,
+    );
+
+    let attempts = AtomicU32::new(0);
+    let start = std::time::Instant::now();
+    let res = retry_npm_publish(&policy, deadline, &log, |_attempt| {
+        attempts.fetch_add(1, Ordering::SeqCst);
+        Err(ControlFlow::Continue(anyhow::anyhow!(
+            "npm publish failed: 503 registry unavailable"
+        )))
+    });
+
+    assert!(
+        res.is_err(),
+        "budget-exhausted publish must surface the error"
+    );
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        1,
+        "an already-elapsed deadline must stop after ONE attempt, not run the ladder"
+    );
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(1),
+        "deadline check must skip the 10s backoff sleep, took {:?}",
+        start.elapsed()
+    );
+}
+
+#[test]
+fn npm_publish_retry_runs_full_ladder_without_deadline() {
+    // With no budget, a transient storm runs the full attempt count (the pure
+    // attempt-count GoReleaser-parity behavior) — the deadline is opt-in.
+    use std::ops::ControlFlow;
+    use std::sync::atomic::AtomicU32;
+
+    let policy = anodizer_core::retry::RetryPolicy {
+        max_attempts: 3,
+        base_delay: std::time::Duration::from_millis(1),
+        max_delay: std::time::Duration::from_millis(2),
+    };
+    let (log, _cap) = anodizer_core::log::StageLogger::with_capture(
+        "publish",
+        anodizer_core::log::Verbosity::Normal,
+    );
+
+    let attempts = AtomicU32::new(0);
+    let res = retry_npm_publish(&policy, None, &log, |_attempt| {
+        attempts.fetch_add(1, Ordering::SeqCst);
+        Err(ControlFlow::Continue(anyhow::anyhow!(
+            "npm publish failed: 503 registry unavailable"
+        )))
+    });
+
+    assert!(res.is_err());
+    assert_eq!(
+        attempts.load(Ordering::SeqCst),
+        3,
+        "no deadline → run the full attempt ladder"
+    );
 }
 
 #[test]

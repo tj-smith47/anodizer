@@ -49,7 +49,7 @@ use anodizer_core::config::{
 };
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;
-use anodizer_core::retry::{RetryPolicy, retry_sync};
+use anodizer_core::retry::{RetryPolicy, retry_sync_deadline};
 use anodizer_core::template_file_render::render_templated_file_entry;
 use anyhow::{Context as _, Result, bail};
 use tempfile::TempDir;
@@ -924,6 +924,11 @@ fn publish_optional_deps(
     }
 
     let policy = ctx.retry_policy();
+    // One sequence-level wall-clock deadline: the loop propagates the first
+    // storming package's exhausted-budget Err via `?`, aborting cleanly before
+    // the outer job timeout can SIGKILL mid-publish. Successful packages
+    // publish in seconds, so the budget effectively bounds the whole sequence.
+    let publish_deadline = ctx.retry_deadline();
 
     // Stage EVERY tarball (per-platform + metapackage) up front, BEFORE the
     // first irreversible `npm publish`. Reading each platform binary and
@@ -980,7 +985,16 @@ fn publish_optional_deps(
     // the next attempt.
     for staged in &staged_all {
         if let Some(t) = publish_one_tarball(
-            ctx, staged, &version, &registry, &dist_tag, &access, &policy, cfg, log,
+            ctx,
+            staged,
+            &version,
+            &registry,
+            &dist_tag,
+            &access,
+            &policy,
+            publish_deadline,
+            cfg,
+            log,
         )? {
             targets.push(t);
         }
@@ -1035,8 +1049,18 @@ fn publish_postinstall(
     }
 
     let policy = ctx.retry_policy();
+    let publish_deadline = ctx.retry_deadline();
     if let Some(t) = publish_one_tarball(
-        ctx, &staged, &version, &registry, &dist_tag, &access, &policy, cfg, log,
+        ctx,
+        &staged,
+        &version,
+        &registry,
+        &dist_tag,
+        &access,
+        &policy,
+        publish_deadline,
+        cfg,
+        log,
     )? {
         targets.push(t);
     }
@@ -1057,6 +1081,7 @@ fn publish_one_tarball(
     dist_tag: &str,
     access: &Option<String>,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     cfg: &NpmConfig,
     log: &StageLogger,
 ) -> Result<Option<NpmTarget>> {
@@ -1096,6 +1121,7 @@ fn publish_one_tarball(
                 access.as_deref(),
                 npm_auth,
                 policy,
+                deadline,
                 log,
             )
         },
@@ -1201,7 +1227,10 @@ pub(crate) fn build_npm_publish_command(
 }
 
 /// `npm publish <tarball> --userconfig <.npmrc> --registry <url> --tag
-/// <dist_tag> [--access <a>]`, wrapped in [`retry_sync`]. A token is read from
+/// <dist_tag> [--access <a>]`, wrapped in [`retry_sync_deadline`]. Transient
+/// registry failures retry until either the attempt count is exhausted or the
+/// optional wall-clock `deadline` (from `retry.max_elapsed`) would be crossed
+/// by the next backoff. A token is read from
 /// `.npmrc`, never argv; under OIDC the npm CLI mints a short-lived credential
 /// from the threaded `ACTIONS_ID_TOKEN_REQUEST_*` env. Transient registry
 /// failures retry; others break.
@@ -1214,17 +1243,10 @@ fn run_npm_publish(
     access: Option<&str>,
     auth: &NpmAuth,
     policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
     log: &StageLogger,
 ) -> Result<()> {
-    let max_attempts = policy.max_attempts.max(1);
-    retry_sync(policy, |attempt| {
-        if attempt > 1 {
-            log.warn(&format!(
-                "npm publish attempt {}/{} failed (transient), retrying…",
-                attempt - 1,
-                max_attempts
-            ));
-        }
+    retry_npm_publish(policy, deadline, log, |_attempt| {
         let mut cmd = build_npm_publish_command(tarball, cfg_dir, registry, dist_tag, access, auth);
         log.verbose(&format!(
             "running npm publish {} --registry {} --tag {}",
@@ -1256,6 +1278,35 @@ fn run_npm_publish(
         } else {
             Err(ControlFlow::Break(err))
         }
+    })
+}
+
+/// Drive the `npm publish` attempt ladder under [`retry_sync_deadline`],
+/// warning once per transient re-attempt and honoring the optional wall-clock
+/// `deadline` derived from `retry.max_elapsed`. `attempt_op` performs one
+/// publish attempt: `Ok` on success, `ControlFlow::Continue` for a transient
+/// failure (retry), `ControlFlow::Break` for a fatal one (stop now). Splitting
+/// the ladder from the subprocess build keeps the deadline wiring testable
+/// without spawning `npm`.
+pub(crate) fn retry_npm_publish<F>(
+    policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
+    log: &StageLogger,
+    mut attempt_op: F,
+) -> Result<()>
+where
+    F: FnMut(u32) -> Result<(), ControlFlow<anyhow::Error, anyhow::Error>>,
+{
+    let max_attempts = policy.max_attempts.max(1);
+    retry_sync_deadline(policy, deadline, |attempt| {
+        if attempt > 1 {
+            log.warn(&format!(
+                "npm publish attempt {}/{} failed (transient), retrying…",
+                attempt - 1,
+                max_attempts
+            ));
+        }
+        attempt_op(attempt)
     })
 }
 

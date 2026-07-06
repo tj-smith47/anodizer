@@ -2683,6 +2683,7 @@ mod tests {
             attempts: 3,
             delay: HumanDuration(std::time::Duration::from_millis(1)),
             max_delay: HumanDuration(std::time::Duration::from_millis(5)),
+            max_elapsed: None,
         }
     }
 

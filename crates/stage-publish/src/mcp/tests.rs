@@ -48,6 +48,7 @@ fn mcp_ctx(mcp_overrides: impl FnOnce(&mut McpConfig)) -> Context {
         attempts: 3,
         delay: HumanDuration(Duration::from_millis(1)),
         max_delay: HumanDuration(Duration::from_millis(5)),
+        max_elapsed: None,
     });
 
     config.mcp = McpConfig {
@@ -452,6 +453,7 @@ fn dry_run_short_circuits_before_network() {
         attempts: 3,
         delay: HumanDuration(Duration::from_millis(1)),
         max_delay: HumanDuration(Duration::from_millis(5)),
+        max_elapsed: None,
     });
     config.mcp = McpConfig {
         name: Some("io.github.test/server".to_string()),

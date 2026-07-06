@@ -15,6 +15,12 @@ dist: ./dist
 # Show artifact file sizes after build (confirms report_sizes wiring)
 report_sizes: true
 
+# Cap total retry wall-time under the publish-npm job's 20m timeout so a
+# registry transient storm exits cleanly (idempotent re-run recovers) instead
+# of being killed mid-publish and leaving a partial, immutable npm release.
+retry:
+  max_elapsed: 15m
+
 # Non-secret config loaded from a tracked file; overridable per-environment.
 env_files:
   - .env.release

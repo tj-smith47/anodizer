@@ -853,6 +853,7 @@ mod orchestrator_tests {
             attempts: 5,
             delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(1)),
             max_delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(2)),
+            max_elapsed: None,
         });
         ctx
     }
@@ -2467,6 +2468,7 @@ mod orchestrator_tests {
             attempts: 1,
             delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(1)),
             max_delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(2)),
+            max_elapsed: None,
         });
         ctx
     }
@@ -2656,6 +2658,7 @@ mod orchestrator_tests {
             attempts: 5,
             delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(1)),
             max_delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(2)),
+            max_elapsed: None,
         });
         ctx
     }

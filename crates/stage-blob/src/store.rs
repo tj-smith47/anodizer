@@ -318,6 +318,7 @@ mod retry_bridge_tests {
             attempts: 3,
             delay: anodizer_core::config::HumanDuration(std::time::Duration::from_secs(1)),
             max_delay: anodizer_core::config::HumanDuration(std::time::Duration::from_secs(1)),
+            max_elapsed: None,
         };
         let bridged = to_object_store_retry(&cfg);
         assert_eq!(bridged.retry_timeout, std::time::Duration::from_secs(3));
@@ -356,6 +357,7 @@ mod retry_bridge_tests {
             attempts: 5,
             delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(250)),
             max_delay: anodizer_core::config::HumanDuration(std::time::Duration::from_secs(2)),
+            max_elapsed: None,
         };
         let bridged = to_object_store_retry(&cfg);
         assert_eq!(
@@ -418,6 +420,7 @@ mod allow_http_regression {
             attempts: 1,
             delay: HumanDuration(std::time::Duration::from_millis(1)),
             max_delay: HumanDuration(std::time::Duration::from_millis(1)),
+            max_elapsed: None,
         };
         let ctx = Context::new(Config::default(), ContextOptions::default());
         let store = build_s3_store(&config, "b", &ctx, &retry).expect("store builds");

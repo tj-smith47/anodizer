@@ -1838,6 +1838,7 @@ mod live_http_tests {
             attempts: 2,
             delay: HumanDuration(Duration::from_millis(1)),
             max_delay: HumanDuration(Duration::from_millis(2)),
+            max_elapsed: None,
         }
     }
 

@@ -49,6 +49,15 @@ pub struct RetryConfig {
     /// Without this cap, an exponential backoff with `delay=10s` would
     /// stretch attempt 9 to ~42 minutes.
     pub max_delay: HumanDuration,
+    /// Optional cap on TOTAL retry wall-time across all attempts of a single
+    /// operation. When set, retrying stops before a backoff sleep would push
+    /// elapsed time past this budget, so a long transient storm fails cleanly
+    /// (with the last error, resumable on an idempotent re-run) instead of
+    /// running the full attempt ladder. Unset (the default) preserves pure
+    /// attempt-count behavior. Publishers whose surrounding CI job has a hard
+    /// timeout should set this comfortably below that timeout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_elapsed: Option<HumanDuration>,
 }
 
 impl RetryConfig {
@@ -81,6 +90,11 @@ impl RetryConfig {
             max_delay: self.max_delay.duration(),
         }
     }
+
+    /// The configured total-retry-wall-time budget, if any.
+    pub fn max_elapsed_duration(&self) -> Option<std::time::Duration> {
+        self.max_elapsed.map(|h| h.duration())
+    }
 }
 
 impl Default for RetryConfig {
@@ -89,6 +103,7 @@ impl Default for RetryConfig {
             attempts: Self::DEFAULT_ATTEMPTS,
             delay: HumanDuration(Self::DEFAULT_DELAY),
             max_delay: HumanDuration(Self::DEFAULT_MAX_DELAY),
+            max_elapsed: None,
         }
     }
 }
@@ -162,6 +177,7 @@ max_delay: 1h30m
             attempts: 0,
             delay: HumanDuration(std::time::Duration::from_secs(1)),
             max_delay: HumanDuration(std::time::Duration::from_secs(2)),
+            max_elapsed: None,
         };
         assert_eq!(c.to_policy().max_attempts, 1);
     }
@@ -175,6 +191,7 @@ max_delay: 1h30m
             attempts: 3,
             delay: HumanDuration(std::time::Duration::from_secs(10)),
             max_delay: HumanDuration(std::time::Duration::from_secs(1)),
+            max_elapsed: None,
         };
         let p = c.to_policy();
         assert_eq!(p.max_attempts, 3);
@@ -188,10 +205,37 @@ max_delay: 1h30m
             attempts: 4,
             delay: HumanDuration(std::time::Duration::from_millis(250)),
             max_delay: HumanDuration(std::time::Duration::from_secs(7)),
+            max_elapsed: None,
         };
         let p = c.to_policy();
         assert_eq!(p.max_attempts, 4);
         assert_eq!(p.base_delay, std::time::Duration::from_millis(250));
         assert_eq!(p.max_delay, std::time::Duration::from_secs(7));
+    }
+
+    #[test]
+    fn max_elapsed_defaults_to_none() {
+        let c = RetryConfig::default();
+        assert_eq!(c.max_elapsed, None);
+        assert_eq!(c.max_elapsed_duration(), None);
+    }
+
+    #[test]
+    fn max_elapsed_parses_and_other_fields_default() {
+        let c: RetryConfig = serde_yaml_ng::from_str("max_elapsed: 15m").unwrap();
+        assert_eq!(
+            c.max_elapsed_duration(),
+            Some(std::time::Duration::from_secs(15 * 60))
+        );
+        // Unspecified fields fall back to defaults.
+        assert_eq!(c.attempts, 10);
+        assert_eq!(c.delay.duration(), std::time::Duration::from_secs(10));
+        assert_eq!(c.max_delay.duration(), std::time::Duration::from_secs(300));
+    }
+
+    #[test]
+    fn max_elapsed_unset_leaves_accessor_none() {
+        let c: RetryConfig = serde_yaml_ng::from_str("attempts: 5").unwrap();
+        assert_eq!(c.max_elapsed_duration(), None);
     }
 }

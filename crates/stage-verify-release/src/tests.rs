@@ -464,6 +464,7 @@ fn asset_ctx(addr: SocketAddr, crates: Vec<CrateConfig>) -> Context {
         attempts: 2,
         delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(1)),
         max_delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(2)),
+        max_elapsed: None,
     });
     ctx.config.verify_release = VerifyReleaseConfig {
         enabled: true,

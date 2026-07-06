@@ -3801,6 +3801,7 @@ fn test_retry_config_attempts_one_short_circuits_github_backend_policy() {
         attempts: 1,
         delay: HumanDuration(std::time::Duration::from_millis(5)),
         max_delay: HumanDuration(std::time::Duration::from_millis(10)),
+        max_elapsed: None,
     };
     let policy = resolve_policy_like_github_backend(Some(cfg));
     assert_eq!(
@@ -3826,6 +3827,7 @@ fn test_retry_config_custom_values_flow_into_upload_constants() {
         attempts: 4,
         delay: HumanDuration(std::time::Duration::from_millis(250)),
         max_delay: HumanDuration(std::time::Duration::from_secs(7)),
+        max_elapsed: None,
     };
     let policy = cfg.to_policy();
 

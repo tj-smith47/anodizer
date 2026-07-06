@@ -770,6 +770,7 @@ All fields are optional in YAML; missing fields fall back to the defaults (10 at
 | `attempts` | integer | `10` | Total attempts (including the first). Default `10`. Values < 1 are clamped up to 1 by the policy layer. |
 | `delay` | HumanDuration | `10s` | Initial delay before the second attempt. Default `10s`. Subsequent delays grow exponentially (`delay × 2^(n-2)`) up to `max_delay`. |
 | `max_delay` | HumanDuration | `5m` | Upper bound on any individual sleep between attempts. Default `5m`. Without this cap, an exponential backoff with `delay=10s` would stretch attempt 9 to ~42 minutes. |
+| `max_elapsed` | HumanDuration | — | Optional cap on TOTAL retry wall-time across all attempts of a single operation. When set, retrying stops before a backoff sleep would push elapsed time past this budget, so a long transient storm fails cleanly (with the last error, resumable on an idempotent re-run) instead of running the full attempt ladder. Unset (the default) preserves pure attempt-count behavior. Publishers whose surrounding CI job has a hard timeout should set this comfortably below that timeout. |
 
 ## `sboms`
 | Field | Type | Default | Description |

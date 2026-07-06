@@ -12517,6 +12517,17 @@
               "$ref": "#/definitions/HumanDuration"
             }
           ]
+        },
+        "max_elapsed": {
+          "description": "Optional cap on TOTAL retry wall-time across all attempts of a single operation. When set, retrying stops before a backoff sleep would push elapsed time past this budget, so a long transient storm fails cleanly (with the last error, resumable on an idempotent re-run) instead of running the full attempt ladder. Unset (the default) preserves pure attempt-count behavior. Publishers whose surrounding CI job has a hard timeout should set this comfortably below that timeout.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/HumanDuration"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "additionalProperties": false

@@ -1307,6 +1307,7 @@ mod tests {
             attempts: 1,
             delay: HumanDuration(Duration::from_millis(1)),
             max_delay: HumanDuration(Duration::from_millis(1)),
+            max_elapsed: None,
         }
     }
 

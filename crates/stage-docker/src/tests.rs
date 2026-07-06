@@ -558,6 +558,7 @@ fn test_docker_retry_precedence_per_pipe_top_level_defaults() {
         attempts: 4,
         delay: HumanDuration(Duration::from_millis(250)),
         max_delay: HumanDuration(Duration::from_secs(7)),
+        max_elapsed: None,
     });
     let (a, d, m) = resolve_retry_params(&None, &top).unwrap();
     assert_eq!(a, 4);

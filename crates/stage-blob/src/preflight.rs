@@ -261,6 +261,7 @@ fn probe_target(ctx: &Context, rt: &tokio::runtime::Runtime, target: &ProbeTarge
         attempts: policy.max_attempts,
         delay: HumanDuration(policy.base_delay),
         max_delay: HumanDuration(policy.max_delay),
+        max_elapsed: None,
     };
     let store = build_store_with_retry(target.provider, &target.cfg, &target.bucket, ctx, &retry)
         .context("construct object store")?;

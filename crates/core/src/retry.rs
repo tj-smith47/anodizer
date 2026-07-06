@@ -129,7 +129,24 @@ pub const IDEMPOTENT_PUT_ATTEMPTS: u32 = 3;
 /// - `Err(ControlFlow::Break(e))` to stop immediately (4xx-style fast-fail).
 ///
 /// Returns the last error if all attempts are exhausted.
-pub fn retry_sync<T, E, F>(policy: &RetryPolicy, mut op: F) -> Result<T, E>
+pub fn retry_sync<T, E, F>(policy: &RetryPolicy, op: F) -> Result<T, E>
+where
+    F: FnMut(u32) -> Result<T, ControlFlow<E, E>>,
+{
+    retry_sync_deadline(policy, None, op)
+}
+
+/// Like [`retry_sync`], but stops retrying once the next backoff sleep would
+/// push total wall-time past `deadline`. On budget exhaustion it returns the
+/// last `Continue` error (the same value `retry_sync` would return after the
+/// final attempt), so a caller whose write is idempotent recovers on re-run
+/// instead of being killed mid-attempt by an outer timeout. `deadline: None`
+/// is byte-for-byte the old attempt-count-only behavior.
+pub fn retry_sync_deadline<T, E, F>(
+    policy: &RetryPolicy,
+    deadline: Option<std::time::Instant>,
+    mut op: F,
+) -> Result<T, E>
 where
     F: FnMut(u32) -> Result<T, ControlFlow<E, E>>,
 {
@@ -145,6 +162,14 @@ where
             Err(ControlFlow::Continue(e)) => {
                 if attempt >= max {
                     return Err(e);
+                }
+                if let Some(deadline) = deadline {
+                    // Give up before the NEXT backoff would blow the budget, so
+                    // a long registry storm exits cleanly (resumable) rather than
+                    // being SIGKILLed mid-publish by the job timeout.
+                    if std::time::Instant::now() + policy.delay_for(attempt + 1) > deadline {
+                        return Err(e);
+                    }
                 }
             }
         }
@@ -928,6 +953,80 @@ mod tests {
         });
         assert_eq!(result, Err("fail 4".to_string()));
         assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn deadline_already_elapsed_stops_after_one_attempt_without_sleeping() {
+        // A large base_delay proves the pre-attempt sleep is SKIPPED: with a
+        // deadline already in the past, the budget check must fire after the
+        // first Continue and return before any 10s sleep runs.
+        let policy = RetryPolicy {
+            max_attempts: 10,
+            base_delay: Duration::from_secs(10),
+            max_delay: Duration::from_secs(300),
+        };
+        let deadline = std::time::Instant::now();
+        let calls = AtomicU32::new(0);
+        let start = std::time::Instant::now();
+        let result: Result<(), &str> = retry_sync_deadline(&policy, Some(deadline), |_| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(ControlFlow::Continue("transient"))
+        });
+        assert_eq!(result, Err("transient"));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "budget-exhausted retry must call op exactly once"
+        );
+        assert!(
+            start.elapsed() < Duration::from_secs(1),
+            "deadline check must skip the 10s backoff sleep, took {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn deadline_none_matches_retry_sync_on_success() {
+        let calls = AtomicU32::new(0);
+        let result: Result<u32, &str> = retry_sync_deadline(&fast_policy(), None, |attempt| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            if attempt < 2 {
+                Err(ControlFlow::Continue("transient"))
+            } else {
+                Ok(attempt)
+            }
+        });
+        assert_eq!(result, Ok(2));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        let sync_calls = AtomicU32::new(0);
+        let sync_result: Result<u32, &str> = retry_sync(&fast_policy(), |attempt| {
+            sync_calls.fetch_add(1, Ordering::SeqCst);
+            if attempt < 2 {
+                Err(ControlFlow::Continue("transient"))
+            } else {
+                Ok(attempt)
+            }
+        });
+        assert_eq!(sync_result, result);
+        assert_eq!(sync_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn deadline_far_in_future_does_not_change_behavior() {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3600);
+        let calls = AtomicU32::new(0);
+        let result: Result<u32, &str> =
+            retry_sync_deadline(&fast_policy(), Some(deadline), |attempt| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                if attempt < 3 {
+                    Err(ControlFlow::Continue("transient"))
+                } else {
+                    Ok(attempt)
+                }
+            });
+        assert_eq!(result, Ok(3));
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
     }
 
     #[tokio::test]

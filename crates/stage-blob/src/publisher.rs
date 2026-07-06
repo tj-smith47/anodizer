@@ -697,6 +697,7 @@ mod publisher_tests {
             attempts: 1,
             delay: HumanDuration(std::time::Duration::from_millis(1)),
             max_delay: HumanDuration(std::time::Duration::from_millis(1)),
+            max_elapsed: None,
         });
         let mut evidence = PublishEvidence::new("blob");
         let target = BlobTarget {
