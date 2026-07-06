@@ -1177,6 +1177,11 @@ gemfury:
   - id: fury
     account: tj-smith47
     required: true
+    # Disabled: the tj-smith47 Fury account is over its free-tier quota, so
+    # every push 403s ("account access denied"). Config retained so a plan
+    # upgrade only needs this flag flipped back to false. CloudSmith already
+    # provides an equivalent apt/yum/apk source in the meantime.
+    skip: true
     formats: [apk, deb, rpm]
 
 # Generic HTTP PUT upload — mirrors the release archives + checksums to a
