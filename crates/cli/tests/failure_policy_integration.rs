@@ -74,22 +74,24 @@ fn git_stdout(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-fn run_failing_release(repo: &Path) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_anodizer"))
-        .args([
-            "release",
-            "--no-preflight",
-            "--simulate-failure",
-            "cargo",
-            SKIP_ALL_BUT_PUBLISH,
-        ])
-        .env("ANODIZE_TEST_HARNESS", "1")
-        .env_remove("CARGO_REGISTRY_TOKEN")
-        .env_remove("GITHUB_TOKEN")
-        .env_remove("ANODIZER_GITHUB_TOKEN")
-        .current_dir(repo)
-        .output()
-        .expect("invoking anodizer release")
+fn run_failing_release(repo: &Path, extra_env: &[(&str, &str)]) -> std::process::Output {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_anodizer"));
+    cmd.args([
+        "release",
+        "--no-preflight",
+        "--simulate-failure",
+        "cargo",
+        SKIP_ALL_BUT_PUBLISH,
+    ])
+    .env("ANODIZE_TEST_HARNESS", "1")
+    .env_remove("CARGO_REGISTRY_TOKEN")
+    .env_remove("GITHUB_TOKEN")
+    .env_remove("ANODIZER_GITHUB_TOKEN")
+    .current_dir(repo);
+    for (key, value) in extra_env {
+        cmd.env(key, value);
+    }
+    cmd.output().expect("invoking anodizer release")
 }
 
 fn summary_failure_policy(repo: &Path) -> serde_json::Value {
@@ -125,8 +127,27 @@ fn release_failure_default_rollback_reverts_bump_and_deletes_tag() {
     let (repo, origin) = setup_tagged_repo_with_origin(CARGO_PUBLISH_CONFIG);
     let bump_sha = git_stdout(repo.path(), &["rev-parse", "HEAD"]);
 
-    let output = run_failing_release(repo.path());
+    // Hermetic crates.io index for the rollback path's GLOBAL published-state
+    // probe: `test-project@0.1.0` is a real (unrelated) crate on the live
+    // index, and the guard must consult registry state before deleting the
+    // tag. A local 404 responder answers "version absent" so the test both
+    // stays offline-safe and proves the probe actually ran end-to-end.
+    let (index_addr, index_hits) =
+        anodizer_core::test_helpers::responder::spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+        ]);
+    let index_base = format!("http://{index_addr}");
+    let output = run_failing_release(
+        repo.path(),
+        &[("ANODIZER_TEST_CRATES_IO_INDEX_BASE", index_base.as_str())],
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        index_hits.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "rollback must consult the crates.io index for test-project@0.1.0 exactly once; \
+         stderr: {stderr}"
+    );
     assert!(
         !output.status.success(),
         "release must still exit non-zero after rollback; stderr: {stderr}"
@@ -194,7 +215,7 @@ crates:
     let (repo, origin) = setup_tagged_repo_with_origin(config);
     let bump_sha = git_stdout(repo.path(), &["rev-parse", "HEAD"]);
 
-    let output = run_failing_release(repo.path());
+    let output = run_failing_release(repo.path(), &[]);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         !output.status.success(),

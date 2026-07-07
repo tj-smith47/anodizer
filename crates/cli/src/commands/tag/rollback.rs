@@ -78,9 +78,11 @@ pub struct RollbackOpts {
     /// `--force`: override the published-state guard. Without it,
     /// rollback refuses when the tag's run summary shows a one-way-door
     /// (Submitter) publisher landed — the version is burned at a
-    /// registry that never accepts the same version twice — or, when no
-    /// summary exists, when the tag's GitHub release is published
-    /// (non-draft).
+    /// registry that never accepts the same version twice — when the
+    /// crates.io index shows the tag's crate@version live (GLOBAL state:
+    /// a prior run may have published it; an unreachable index fails
+    /// closed) — or, when no summary exists, when the tag's GitHub
+    /// release is published (non-draft).
     pub force: bool,
     pub scope: Scope,
     pub mode: Mode,
@@ -275,7 +277,29 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
     if opts.force {
         log.warn("skipped the published-state guard — --force");
     } else {
-        check_not_irreversibly_published(&cwd, gh_binary, &deletable, &log)?;
+        // Best-effort config load (rollback is failure-recovery tooling — a
+        // broken or missing config must not stop it): drives the dist-dir
+        // resolution for run summaries and the tag→crate mapping for the
+        // crates.io index probe. The probe itself reuses the publish stage's
+        // sparse-index client so rollback and publish can never disagree
+        // about what "published on crates.io" means.
+        let repo_config = crate::pipeline::load_repo_config(&cwd).ok();
+        let retry_policy = repo_config
+            .as_ref()
+            .and_then(|c| c.retry)
+            .unwrap_or_default()
+            .to_policy();
+        let index_probe = |name: &str, version: &str| {
+            anodizer_stage_publish::cargo::published_on_crates_io(name, version, &retry_policy)
+        };
+        check_not_irreversibly_published(
+            &cwd,
+            gh_binary,
+            &deletable,
+            repo_config.as_ref(),
+            &index_probe,
+            &log,
+        )?;
     }
 
     // Safety check (--mode=revert only). Non-bump commits on top of
@@ -480,20 +504,37 @@ fn resolve_push_branch_with_env<E: anodizer_core::EnvSource + ?Sized>(
 ///    `<dist>/<crate>/run-*/summary.json` in per-crate workspaces)
 ///    whose `tag` matches a tag about to be deleted — the
 ///    per-publisher truth written by the release run itself, including
-///    failed runs. A summary that shows only reversible publishers
-///    (github-release assets, blobs, tap/bucket/index commits)
-///    PERMITS rollback: their state can be deleted and the same
-///    version re-cut.
-/// 2. Only for tags with no matching summary (e.g. a fresh checkout
+///    failed runs. A summary that shows a landed Submitter REFUSES.
+/// 2. The crates.io sparse index, for every tag that maps (via the repo
+///    config's crate tag families) to a crates.io-targeting crate. The
+///    run summary answers a PER-RUN question; whether a version is
+///    burned on a one-way-door registry is GLOBAL state — a PRIOR run
+///    may have published it, and that run's summary lives on another
+///    runner. A version live on the index REFUSES even when this run's
+///    summary is clean; an unreachable index FAILS CLOSED (publication
+///    state unverifiable). Skipped with a warning when no config is
+///    parseable (no tag→crate mapping exists to probe with).
+/// 3. Only for tags with no matching summary (e.g. a fresh checkout
 ///    that never ran the release): fall back to probing the GitHub
 ///    Releases API for a published (non-draft) release at the tag.
+///
+/// Only a tag that clears every applicable layer is rolled back;
+/// reversible-only evidence (github-release assets, blobs,
+/// tap/bucket/index commits) permits rollback because their state can
+/// be deleted and the same version re-cut.
+///
+/// `index_probe` is `(crate_name, version) -> published?` — production
+/// wires [`anodizer_stage_publish::cargo::published_on_crates_io`];
+/// tests inject stubs (same seam convention as `gh_binary`).
 fn check_not_irreversibly_published(
     cwd: &std::path::Path,
     gh_binary: &std::path::Path,
     tags: &[String],
+    repo_config: Option<&anodizer_core::config::Config>,
+    index_probe: &dyn Fn(&str, &str) -> Result<bool>,
     log: &StageLogger,
 ) -> Result<()> {
-    let summaries = collect_run_summaries(&resolve_dist_dir(cwd), log);
+    let summaries = collect_run_summaries(&resolve_dist_dir(cwd, repo_config), log);
     let mut burned: Vec<(String, Vec<String>)> = Vec::new();
     let mut unsummarized: Vec<String> = Vec::new();
     for tag in tags {
@@ -515,7 +556,7 @@ fn check_not_irreversibly_published(
             burned.push((tag.clone(), names));
         } else {
             log.status(&format!(
-                "no one-way-door publisher landed for {tag} (per run summary) — rollback permitted"
+                "no one-way-door publisher landed for {tag} per this run's summary"
             ));
         }
     }
@@ -541,6 +582,7 @@ fn check_not_irreversibly_published(
              (or re-run the failed stages against this tag). Pass --force to override.",
         );
     }
+    check_not_burned_on_crates_io(tags, repo_config, index_probe, log)?;
     if unsummarized.is_empty() {
         return Ok(());
     }
@@ -548,20 +590,132 @@ fn check_not_irreversibly_published(
 }
 
 /// Best-effort dist-dir resolution for the published-state guard: the
-/// repo config's `dist:` when a config is present and parseable, else
-/// the default `dist`. Relative values anchor at `cwd`. Best-effort
-/// because rollback is failure-recovery tooling — a broken or missing
-/// config must not stop it (the guard then simply finds no summaries
-/// and falls back to the GitHub release probe).
-fn resolve_dist_dir(cwd: &std::path::Path) -> std::path::PathBuf {
-    let dist = crate::pipeline::load_repo_config(cwd)
-        .map(|c| c.dist)
-        .unwrap_or_else(|_| std::path::PathBuf::from("dist"));
+/// repo config's `dist:` when a config was loaded, else the default
+/// `dist`. Relative values anchor at `cwd`. Best-effort because
+/// rollback is failure-recovery tooling — a broken or missing config
+/// must not stop it (the guard then simply finds no summaries and
+/// falls back to the GitHub release probe).
+fn resolve_dist_dir(
+    cwd: &std::path::Path,
+    repo_config: Option<&anodizer_core::config::Config>,
+) -> std::path::PathBuf {
+    let dist = repo_config
+        .map(|c| c.dist.clone())
+        .unwrap_or_else(|| std::path::PathBuf::from("dist"));
     if dist.is_absolute() {
         dist
     } else {
         cwd.join(dist)
     }
+}
+
+/// Resolve the `(crate name, version)` pairs a tag stamps on crates.io, per
+/// the repo config: every crate whose `publish.cargo` block targets
+/// crates.io (per the publisher's own [`targets_crates_io`] judgment —
+/// custom `registry:`/`index:` targets are out of the probe's scope) and
+/// whose tag family prefix (from its `tag_template`, monorepo prefix
+/// stripped) matches the tag. Per-crate tags (`crd-v0.5.0`) resolve to
+/// their own crate — note the tag prefix is the template's, NOT the crate
+/// name (cfgd's `crd-v...` family belongs to the crate `cfgd-crd`);
+/// lockstep tags (every crate sharing the bare `v...` family) resolve to
+/// every such crate.
+///
+/// Publish-time `skip:`/`if:` gating is deliberately NOT evaluated (no
+/// template context exists in a rollback): a gated crate may be probed even
+/// though the release never publishes it, which can only tighten the guard
+/// (`--force` remains the escape hatch), never loosen it.
+///
+/// [`targets_crates_io`]: anodizer_stage_publish::cargo::targets_crates_io
+fn crates_io_versions_for_tag(
+    config: &anodizer_core::config::Config,
+    tag: &str,
+) -> Vec<(String, String)> {
+    let stripped = match config.monorepo_tag_prefix() {
+        Some(prefix) => git::strip_monorepo_prefix(tag, prefix),
+        None => tag,
+    };
+    let mut out = Vec::new();
+    for c in config.crate_universe() {
+        let Some(cargo_cfg) = c.publish.as_ref().and_then(|p| p.cargo.as_ref()) else {
+            continue;
+        };
+        if !anodizer_stage_publish::cargo::targets_crates_io(Some(cargo_cfg)) {
+            continue;
+        }
+        let prefix = git::per_crate_tag_prefix(&c.name, &c.tag_template);
+        let Some(version) = stripped.strip_prefix(&prefix) else {
+            continue;
+        };
+        if git::parse_semver(version).is_err() {
+            continue;
+        }
+        out.push((c.name.clone(), version.to_string()));
+    }
+    out
+}
+
+/// Layer 2 of [`check_not_irreversibly_published`]: refuse rollback when
+/// any tag's crates.io-targeting crate@version is live on the crates.io
+/// sparse index — GLOBAL registry state, consulted regardless of what this
+/// run's summaries say (a prior run may have burned the version; its
+/// summary lives on another runner's disk).
+///
+/// - version on the index → REFUSE (burned; fix forward).
+/// - index unreachable → REFUSE (fail closed: publication state is
+///   unverifiable, and gambling a destructive delete on a transient outage
+///   is the poison-guard anti-pattern). `--force` is the operator escape.
+/// - no parseable config → warn and proceed: with no tag→crate mapping
+///   there is nothing to probe; run-summary / GitHub-release evidence
+///   still applies.
+fn check_not_burned_on_crates_io(
+    tags: &[String],
+    repo_config: Option<&anodizer_core::config::Config>,
+    index_probe: &dyn Fn(&str, &str) -> Result<bool>,
+    log: &StageLogger,
+) -> Result<()> {
+    let Some(config) = repo_config else {
+        log.warn(
+            "skipped the crates.io index probe — no parseable anodizer config to map tags \
+             to crates (run-summary / GitHub-release evidence still applies)",
+        );
+        return Ok(());
+    };
+    let mut burned: Vec<String> = Vec::new();
+    let mut indeterminate: Vec<String> = Vec::new();
+    for tag in tags {
+        for (name, version) in crates_io_versions_for_tag(config, tag) {
+            match index_probe(&name, &version) {
+                Ok(true) => burned.push(format!("  {tag}: {name}@{version}")),
+                Ok(false) => log.status(&format!(
+                    "'{name}@{version}' is not on the crates.io index — {tag} carries no \
+                     cargo one-way door"
+                )),
+                Err(e) => indeterminate.push(format!("  {tag}: {name}@{version} ({e:#})")),
+            }
+        }
+    }
+    if !burned.is_empty() {
+        bail!(
+            "refusing to roll back — these version(s) are live on the crates.io index \
+             (published by a prior run, whatever this run's summaries say):\n{}\n\
+             crates.io never accepts the same version twice, so deleting the tag(s) cannot \
+             lead to a clean same-version re-cut — it only orphans the live published state.\n\
+             Fix forward instead: keep the tag, repair the failure, and cut the NEXT version. \
+             Pass --force to override.",
+            burned.join("\n")
+        );
+    }
+    if !indeterminate.is_empty() {
+        bail!(
+            "refusing to roll back: the crates.io index could not be reached to verify \
+             whether these version(s) are already published:\n{}\n\
+             Without the index there is no proof the version(s) are safe to destroy — a \
+             prior run may have burned them on crates.io. Restore network access and \
+             retry, or pass --force if you are certain nothing irreversible shipped.",
+            indeterminate.join("\n")
+        );
+    }
+    Ok(())
 }
 
 /// Collect every parseable run summary under `<dist>/run-*/summary.json`
@@ -1325,6 +1479,32 @@ mod tests {
         StageLogger::new("test", Verbosity::Quiet)
     }
 
+    /// crates.io index probe stub that must never be consulted — used by
+    /// tests whose fixtures carry no repo config (no tag→crate mapping
+    /// exists), pinning that the probe layer stays quiet on that path.
+    fn probe_untouched(_: &str, _: &str) -> Result<bool> {
+        panic!("crates.io index probe must not be consulted on this path")
+    }
+
+    /// Minimal in-memory repo config: one crates.io-targeting cargo crate
+    /// per `(name, tag_template)` pair.
+    fn config_with_cargo_crates(crates: &[(&str, &str)]) -> anodizer_core::config::Config {
+        let mut config = anodizer_core::config::Config::default();
+        config.crates = crates
+            .iter()
+            .map(|(name, tmpl)| anodizer_core::config::CrateConfig {
+                name: name.to_string(),
+                tag_template: tmpl.to_string(),
+                publish: Some(anodizer_core::config::PublishConfig {
+                    cargo: Some(anodizer_core::config::CargoPublishConfig::default()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            })
+            .collect();
+        config
+    }
+
     #[test]
     #[cfg(unix)]
     fn guard_refuses_when_release_is_published() {
@@ -1596,6 +1776,8 @@ mod tests {
             tmp.path(),
             &gh,
             &["v1.0.0".to_string()],
+            None,
+            &probe_untouched,
             &quiet_log(),
         )
         .expect_err("irreversible publish in the summary must block rollback");
@@ -1645,8 +1827,15 @@ mod tests {
             ],
         );
 
-        check_not_irreversibly_published(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log())
-            .expect("reversible-only summary must permit rollback without probing GitHub");
+        check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string()],
+            None,
+            &probe_untouched,
+            &quiet_log(),
+        )
+        .expect("reversible-only summary must permit rollback without probing GitHub");
     }
 
     #[test]
@@ -1684,6 +1873,8 @@ mod tests {
             tmp.path(),
             &gh,
             &["v1.0.0".to_string()],
+            None,
+            &probe_untouched,
             &quiet_log(),
         )
         .expect_err("legacy summary with a landed Submitter must block");
@@ -1716,6 +1907,8 @@ mod tests {
             tmp.path(),
             &gh,
             &["v1.0.0".to_string()],
+            None,
+            &probe_untouched,
             &quiet_log(),
         )
         .expect_err("unsummarized tag must fall back to the release probe");
@@ -1748,6 +1941,8 @@ mod tests {
             tmp.path(),
             &gh,
             &["mycrate-v1.0.0".to_string()],
+            None,
+            &probe_untouched,
             &quiet_log(),
         )
         .expect_err("per-crate summary must be found and must block");
@@ -1766,7 +1961,245 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("summary.json"), "not json {").unwrap();
 
-        check_not_irreversibly_published(tmp.path(), &gh, &["v1.0.0".to_string()], &quiet_log())
-            .expect("malformed summary + 404 probe must permit rollback");
+        check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string()],
+            None,
+            &probe_untouched,
+            &quiet_log(),
+        )
+        .expect("malformed summary + 404 probe must permit rollback");
+    }
+
+    // -----------------------------------------------------------------
+    // Global crates.io index probe (layer 2): the run summary answers a
+    // per-run question, but whether a version is burned on crates.io is
+    // GLOBAL state — a PRIOR run may have published it, and that run's
+    // summary lives on another runner's disk.
+    // -----------------------------------------------------------------
+
+    #[test]
+    fn crates_io_versions_for_tag_maps_tag_families_to_crates() {
+        // The tag family prefix comes from the crate's tag_template, NOT
+        // the crate name: cfgd's `crd-v...` tags belong to `cfgd-crd`.
+        let config = config_with_cargo_crates(&[
+            ("cfgd-crd", "crd-v{{ Version }}"),
+            ("cfgd", "v{{ Version }}"),
+        ]);
+        assert_eq!(
+            crates_io_versions_for_tag(&config, "crd-v0.5.0"),
+            vec![("cfgd-crd".to_string(), "0.5.0".to_string())]
+        );
+        assert_eq!(
+            crates_io_versions_for_tag(&config, "v0.5.0"),
+            vec![("cfgd".to_string(), "0.5.0".to_string())]
+        );
+        assert!(
+            crates_io_versions_for_tag(&config, "other-v1.0.0").is_empty(),
+            "a tag outside every configured family maps to nothing"
+        );
+    }
+
+    #[test]
+    fn crates_io_versions_for_tag_lockstep_maps_every_sharing_crate() {
+        // Lockstep workspaces share one `v...` family across all crates —
+        // a lockstep tag must probe every crates.io-targeting crate.
+        let config =
+            config_with_cargo_crates(&[("core", "v{{ Version }}"), ("cli", "v{{ Version }}")]);
+        assert_eq!(
+            crates_io_versions_for_tag(&config, "v1.2.3"),
+            vec![
+                ("core".to_string(), "1.2.3".to_string()),
+                ("cli".to_string(), "1.2.3".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn crates_io_versions_for_tag_excludes_custom_registry_crates() {
+        // A custom `registry:` points at a different index; the crates.io
+        // probe carries no signal for it (same scoping judgment the
+        // publisher's guard applies).
+        let mut config = config_with_cargo_crates(&[("corp-crate", "v{{ Version }}")]);
+        config.crates[0]
+            .publish
+            .as_mut()
+            .expect("fixture publish block")
+            .cargo
+            .as_mut()
+            .expect("fixture cargo block")
+            .registry = Some("corp".to_string());
+        assert!(crates_io_versions_for_tag(&config, "v1.0.0").is_empty());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn crates_io_probe_refuses_burned_version_despite_clean_summary() {
+        use anodizer_core::publish_report::PublisherGroup;
+        // The v0.5.0 attempt-#5 regression: this run's summary for
+        // crd-v0.5.0 shows only reversible publishers (clean), but
+        // cfgd-crd@0.5.0 is live on crates.io from a PRIOR run — the
+        // per-run summary must not permit deleting a tag whose version is
+        // globally burned.
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+        write_summary(
+            tmp.path(),
+            "cfgd-crd/run-crd-v0.5.0",
+            "crd-v0.5.0",
+            false,
+            vec![summary_result(
+                "github-release",
+                PublisherGroup::Assets,
+                "succeeded",
+            )],
+        );
+        let config = config_with_cargo_crates(&[("cfgd-crd", "crd-v{{ Version }}")]);
+        let probe = |name: &str, version: &str| -> Result<bool> {
+            assert_eq!(
+                (name, version),
+                ("cfgd-crd", "0.5.0"),
+                "probe must target the crate name + version the tag stamps on crates.io"
+            );
+            Ok(true)
+        };
+
+        let err = check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["crd-v0.5.0".to_string()],
+            Some(&config),
+            &probe,
+            &quiet_log(),
+        )
+        .expect_err("a version live on the crates.io index must refuse rollback");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("live on the crates.io index"),
+            "must name the global registry state: {msg}"
+        );
+        assert!(
+            msg.contains("cfgd-crd@0.5.0"),
+            "must name the burned crate@version: {msg}"
+        );
+        assert!(msg.contains("prior run"), "must explain the source: {msg}");
+        assert!(
+            msg.contains("Fix forward"),
+            "must suggest fix-forward: {msg}"
+        );
+        assert!(msg.contains("--force"), "must name the escape hatch: {msg}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn crates_io_probe_permits_absent_version_with_clean_summary() {
+        use anodizer_core::publish_report::PublisherGroup;
+        // Clean summary AND the version positively absent from the index:
+        // nothing irreversible anywhere ⇒ rollback permitted.
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+        write_summary(
+            tmp.path(),
+            "run-v1.0.0",
+            "v1.0.0",
+            false,
+            vec![summary_result(
+                "github-release",
+                PublisherGroup::Assets,
+                "succeeded",
+            )],
+        );
+        let config = config_with_cargo_crates(&[("mycrate", "v{{ Version }}")]);
+        let probe = |_: &str, _: &str| -> Result<bool> { Ok(false) };
+
+        check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string()],
+            Some(&config),
+            &probe,
+            &quiet_log(),
+        )
+        .expect("clean summary + version absent from the index must permit rollback");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn crates_io_probe_unreachable_index_fails_closed() {
+        use anodizer_core::publish_report::PublisherGroup;
+        // The index cannot be consulted: publication state is unverifiable,
+        // so the guard must refuse (fail closed) rather than gamble a
+        // destructive tag delete on a transient outage.
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+        write_summary(
+            tmp.path(),
+            "run-v1.0.0",
+            "v1.0.0",
+            false,
+            vec![summary_result(
+                "github-release",
+                PublisherGroup::Assets,
+                "succeeded",
+            )],
+        );
+        let config = config_with_cargo_crates(&[("mycrate", "v{{ Version }}")]);
+        let probe =
+            |_: &str, _: &str| -> Result<bool> { Err(anyhow::anyhow!("connection refused")) };
+
+        let err = check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["v1.0.0".to_string()],
+            Some(&config),
+            &probe,
+            &quiet_log(),
+        )
+        .expect_err("an unreachable index must fail closed");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("could not be reached"),
+            "must explain the index is unreachable: {msg}"
+        );
+        assert!(
+            msg.contains("no proof the version(s) are safe to destroy"),
+            "must explain publication state is unverifiable: {msg}"
+        );
+        assert!(msg.contains("--force"), "must name the escape hatch: {msg}");
+    }
+
+    #[test]
+    #[serial(cwd)]
+    #[cfg(unix)]
+    fn run_force_bypasses_crates_io_probe() {
+        // --force skips the whole published-state guard, index probe
+        // included: with a committed config whose crate family matches the
+        // tag (the probe WOULD map v1.0.0 → mycrate@1.0.0), the rollback
+        // still completes without consulting any registry. Companion to
+        // `run_force_bypasses_published_release_guard`, which pins the same
+        // bypass for the GitHub-release layer.
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        std::fs::write(
+            dir.join(".anodizer.yaml"),
+            "crates:\n  - name: mycrate\n    path: .\n    tag_template: \"v{{ Version }}\"\n    publish:\n      cargo: {}\n",
+        )
+        .unwrap();
+        init_github_origin_repo(dir);
+
+        let _cwd = anodizer_core::test_helpers::CwdGuard::new(dir).unwrap();
+
+        let mut opts = opts_for(dir, None);
+        opts.force = true;
+        run(opts).expect("--force rollback must proceed without the crates.io probe");
+        let tags = git::get_tags_at_head_in(dir).unwrap();
+        assert!(
+            !tags.contains(&"v1.0.0".to_string()),
+            "tag must be deleted under --force"
+        );
     }
 }
