@@ -37,3 +37,4 @@ cobertura.xml
 # `preserved-dist` path). Local runs write it into the repo root.
 /preserved-dist/
 /preserved-dist-*/
+.tokensave
