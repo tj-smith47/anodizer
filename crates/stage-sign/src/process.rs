@@ -30,8 +30,28 @@ use crate::helpers::{
 pub(crate) const KEYLESS_COSIGN_HARNESS_SKIP: &str = "keyless cosign cannot sign in the determinism harness (no ambient OIDC); \
      signatures are non-deterministic and allowlisted";
 
-/// True when a sign config is keyless cosign (resolved `cmd` basename is
-/// `cosign`, no explicit `--key` arg) AND the determinism harness is active.
+/// True when a sign config invokes keyless cosign: resolved `cmd` basename is
+/// exactly `cosign` and no arg supplies `--key`. Keyless mode is the path
+/// that talks to Fulcio and lazily initializes the `~/.sigstore` TUF trust
+/// root on a fresh host.
+pub(crate) fn is_keyless_cosign(cmd: &str, args: &[String]) -> bool {
+    // Compare the basename so an absolute/relative path to cosign still matches.
+    let basename = std::path::Path::new(cmd)
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or(cmd);
+    if basename != "cosign" {
+        return false;
+    }
+    // A `--key` (the keyed form, e.g. `--key=env://COSIGN_KEY`) signs with a
+    // local key and never contacts Fulcio. The flag is a literal, so the raw
+    // (unrendered) args are sufficient to detect it.
+    let has_key = args.iter().any(|a| a == "--key" || a.starts_with("--key="));
+    !has_key
+}
+
+/// True when a sign config is keyless cosign AND the determinism harness is
+/// active.
 ///
 /// Shared by the `signs` / `binary_signs` loop here and the `docker_signs`
 /// loop in `lib.rs`. The discriminator is purely `cmd == cosign` + absence of
@@ -43,19 +63,7 @@ pub(crate) fn is_keyless_cosign_under_harness(cmd: &str, args: &[String], ctx: &
     if ctx.env_var("ANODIZER_IN_DETERMINISM_HARNESS").is_none() {
         return false;
     }
-    // Compare the basename so an absolute/relative path to cosign still matches.
-    let basename = std::path::Path::new(cmd)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(cmd);
-    if basename != "cosign" {
-        return false;
-    }
-    // A `--key` (the keyed form, e.g. `--key=env://COSIGN_KEY`) signs with the
-    // harness's ephemeral key and must still run. The flag is a literal, so the
-    // raw (unrendered) args are sufficient to detect it.
-    let has_key = args.iter().any(|a| a == "--key" || a.starts_with("--key="));
-    !has_key
+    is_keyless_cosign(cmd, args)
 }
 
 /// Force keyed cosign signing fully offline under the determinism harness by
@@ -395,14 +403,78 @@ fn execute_sign_job(job: &SignJob, log: &StageLogger) -> Result<()> {
     Ok(())
 }
 
+/// Retry policy for cosign invocations.
+///
+/// cosign talks to sigstore infrastructure (Fulcio, Rekor, the TUF CDN), so a
+/// non-zero exit is frequently transient. The canonical failure is the cold
+/// TUF-cache flock race on a fresh CI runner (`creating cached local store:
+/// resource temporarily unavailable`), whose contention window spans multiple
+/// seconds — cosign's own 3 internal tries burn out in ~2.5s, entirely inside
+/// it. The nominal spread here is 2+4+8+15 = 29s before the last attempt,
+/// wide enough to outlive the window even under jitter shrink.
+pub(crate) const COSIGN_TRANSIENT_RETRY: anodizer_core::retry::RetryPolicy =
+    anodizer_core::retry::RetryPolicy {
+        max_attempts: 5,
+        base_delay: std::time::Duration::from_secs(2),
+        max_delay: std::time::Duration::from_secs(15),
+    };
+
+/// Retry `op` per `policy` with jittered exponential backoff, warning on each
+/// failed attempt.
+///
+/// Not [`anodizer_core::retry::retry_sync`]: that helper sleeps internally
+/// (unpinnable in tests — this policy spreads ~29s) and does not jitter,
+/// while concurrent sign workers retrying a shared-lock collision must
+/// de-synchronize or they re-collide every round. `sleep` is injected so
+/// tests assert the spacing without serving it.
+///
+/// A spawn failure with `ErrorKind::NotFound` fast-fails: a missing signer
+/// binary cannot heal, and burning the full backoff budget on it would turn a
+/// one-line config error into a half-minute stall.
+pub(crate) fn retry_transient(
+    policy: &anodizer_core::retry::RetryPolicy,
+    log: &StageLogger,
+    what: &str,
+    sleep: &(dyn Fn(std::time::Duration) + Sync),
+    op: &mut dyn FnMut() -> Result<()>,
+) -> Result<()> {
+    let max = policy.max_attempts.max(1);
+    let mut attempt: u32 = 1;
+    loop {
+        match op() {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let unspawnable = e
+                    .root_cause()
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
+                if unspawnable || attempt >= max {
+                    return Err(e);
+                }
+                let delay = anodizer_core::retry::jitter_duration(policy.delay_for(attempt + 1));
+                log.warn(&format!(
+                    "sign attempt {attempt}/{max} for {what} failed ({}); retrying in {:.1}s",
+                    e.root_cause(),
+                    delay.as_secs_f64()
+                ));
+                sleep(delay);
+                attempt += 1;
+            }
+        }
+    }
+}
+
 /// Process a list of `SignConfig` entries against a set of artifacts, executing
 /// the signing command for each matching artifact.  This is the shared
 /// implementation behind both the `signs` and `binary_signs` top-level config
 /// sections.
 ///
-/// Signing commands are executed in parallel using `std::thread::scope` with
-/// chunked parallelism (similar to the build stage), since each signing
-/// invocation is an independent external process.
+/// Signing commands are executed in parallel via
+/// [`anodizer_core::parallel::run_parallel_chunks`], bounded by
+/// `ctx.options.parallelism` like every other subprocess-per-job stage, since
+/// each signing invocation is an independent external process. Keyless cosign
+/// fan-outs sign their first artifact alone before parallelizing (see the
+/// TUF warm-up below).
 pub(crate) fn process_sign_configs(
     sign_configs: &[SignConfig],
     ctx: &mut Context,
@@ -410,12 +482,7 @@ pub(crate) fn process_sign_configs(
     filter_mode: ArtifactFilter,
     label: &str,
 ) -> Result<()> {
-    let parallelism = std::cmp::max(
-        1,
-        std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(4),
-    );
+    let parallelism = ctx.options.parallelism.max(1);
 
     for (sign_idx, sign_cfg) in sign_configs.iter().enumerate() {
         let sub_label = sign_cfg
@@ -890,10 +957,45 @@ pub(crate) fn process_sign_configs(
             "binary-sign" => "binary-sign",
             _ => "sign",
         };
-        anodizer_core::parallel::run_parallel_chunks(&sign_jobs, parallelism, stage_name, |job| {
+        // cosign is the network-dependent signer (Fulcio/Rekor/TUF CDN), so
+        // its failures are retried; local signers (gpg, osslsigncode) fail
+        // deterministically and keep the single fast attempt.
+        let run_job = |job: &SignJob| {
             let thread_log = anodizer_core::log::StageLogger::new(static_label, verbosity);
-            execute_sign_job(job, &thread_log)
-        })?;
+            if is_cosign_cmd(&job.cmd) {
+                retry_transient(
+                    &COSIGN_TRANSIENT_RETRY,
+                    &thread_log,
+                    &job.artifact_display,
+                    &|d| std::thread::sleep(d),
+                    &mut || execute_sign_job(job, &thread_log),
+                )
+            } else {
+                execute_sign_job(job, &thread_log)
+            }
+        };
+        // Keyless cosign lazily initializes the `~/.sigstore` TUF trust root
+        // under an exclusive flock on its FIRST run per host. Fanning out onto
+        // a cold cache makes every first-wave worker race that lock and the
+        // losers die with `creating cached local store: resource temporarily
+        // unavailable` (flock EAGAIN). Sign one artifact alone to warm the
+        // cache with a single process, then parallelize the rest.
+        let parallel_jobs = if is_keyless_cosign(&cmd, &args) && sign_jobs.len() > 1 {
+            log.verbose(
+                "keyless cosign: signing first artifact serially to initialize \
+                 the sigstore TUF trust root before parallel fan-out",
+            );
+            run_job(&sign_jobs[0])?;
+            &sign_jobs[1..]
+        } else {
+            &sign_jobs[..]
+        };
+        anodizer_core::parallel::run_parallel_chunks(
+            parallel_jobs,
+            parallelism,
+            stage_name,
+            run_job,
+        )?;
 
         for job in &sign_jobs {
             all_new_artifacts.extend(job.new_artifacts.iter().cloned());

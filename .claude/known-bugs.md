@@ -12,27 +12,7 @@ cold without re-investigating.
 
 ## Open
 
-- [ ] **Parallel keyless cosign signing races on the cold TUF cache and
-  fast-fail retries lose every round (cfgd v0.5.0 run 28853272910, Publish
-  cfgd leg, 2×: 09:42Z + 10:05Z 2026-07-07).** The sign stage fans out
-  `signing 22 artifacts with parallelism=4`; on a fresh runner all four
-  workers invoke cosign simultaneously against an uninitialized
-  `~/.sigstore` TUF store, and the losers die with `getting key from
-  Fulcio: getting CTFE public keys: creating cached local store: resource
-  temporarily unavailable` (flock EAGAIN — the known cosign concurrent
-  TUF-init race). The per-artifact retry runs 3 attempts inside ~2.5s, all
-  within the contention window, then the stage aborts fail-fast with 0/22
-  signed. Sigstore infra was UP both times (`cosign initialize` from
-  another host succeeded during the failure window). Sibling legs
-  (operator/csi) passed the identical stage minutes earlier — timing luck;
-  the fattest artifact set loses most often. **Fix shape:** initialize the
-  TUF trust root ONCE before fanning out (run the first sign alone, or an
-  explicit `cosign initialize`-equivalent pre-warm step), and/or add jitter
-  + a longer backoff to the sign retry so a lock collision doesn't burn the
-  whole budget in 2.5s. Evidence:
-  `~/.cache/cfgd-debug/cfgd-publish-attempt6{,-rerun}.log` on the dev box.
-
-_(Otherwise no open code/config gaps. Both v0.15.0 npm findings — the retry-budget
+_(No open code/config gaps. Both v0.15.0 npm findings — the retry-budget
 guillotine and the OIDC-fallback — are fixed and proven; see Resolved. Every
 non-paid dogfooding field
 is landed in `.anodizer.yaml` and committed; `flatpaks` is additionally PROVEN
@@ -74,6 +54,45 @@ Recommendation: leave unexercised (the two sibling multi-component models cover
 the behavioral surface) OR nominate a repo to restructure. Your call; not blocking.
 
 ## Resolved
+
+- [x] **Parallel keyless cosign signing races on the cold TUF cache and
+  fast-fail retries lose every round (cfgd v0.5.0 run 28853272910, Publish
+  cfgd leg, 3×: 09:42Z + 10:05Z + retry 2026-07-07) — RESOLVED
+  2026-07-07.** The sign stage fanned out `signing 22 artifacts with
+  parallelism=4`; on a fresh runner all four first-wave workers invoked
+  cosign simultaneously against an uninitialized `~/.sigstore` TUF store,
+  and the losers died with `getting key from Fulcio: getting CTFE public
+  keys: creating cached local store: resource temporarily unavailable`
+  (flock EAGAIN — the known cosign concurrent TUF-init race). cosign's own
+  3 internal tries burned out in ~2.5s, entirely inside the contention
+  window; anodizer had NO retry of its own, so the stage aborted fail-fast
+  with 0/22 signed. Sigstore infra was UP each time; a different artifact
+  lost each run — pure timing. **Fixed** in
+  `crates/stage-sign/src/process.rs`, both halves: (1) serial TUF warm-up —
+  a keyless-cosign fan-out (`is_keyless_cosign`: basename `cosign`, no
+  `--key`) signs its FIRST artifact alone, warming the trust root with a
+  single process, then parallelizes the remainder; (2) `retry_transient` —
+  cosign invocations (network-dependent: Fulcio/Rekor/TUF CDN) retry per
+  `COSIGN_TRANSIENT_RETRY` (5 attempts, jittered exponential backoff 2s
+  base / 15s cap, nominal 29s spread), spawn-`NotFound` fast-fails, and
+  local signers (gpg/osslsigncode) keep the single fast attempt. Rider: the
+  sign stage now honors `ctx.options.parallelism` like every other
+  subprocess-per-job stage instead of deriving its own
+  `available_parallelism()`.
+  **Evidence (red→green: all three behavioral tests failed on pre-fix code
+  with the exact production stderr — 6/8 stub workers lost an mkdir-lock
+  TUF-init race — then passed after the fix):**
+  `keyless_cosign_survives_cold_tuf_cache_with_parallel_fan_out`,
+  `keyless_cosign_first_invocation_completes_before_fan_out` (pins the
+  serialization: exactly one start precedes the earliest end),
+  `transient_cosign_failure_is_retried_to_success`,
+  `non_cosign_signer_fails_fast_without_retry`,
+  `cosign_retry_backoff_spans_the_contention_window` (injected sleep pins
+  the ±20% jitter envelope and the ≥15s nominal spread),
+  `missing_binary_fast_fails_without_retry`,
+  `success_on_first_attempt_never_sleeps`, `keyless_cosign_classifier`;
+  stage-sign suite 174/174, cli suite 1114/1114 + all integration suites
+  green.
 
 - [x] **Cargo poison guard dead-ends every re-cut of a partially-published
   workspace release (cfgd v0.5.0 attempt #5, 2026-07-07) — RESOLVED

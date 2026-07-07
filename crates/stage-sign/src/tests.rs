@@ -26,6 +26,18 @@ fn combined_meta() -> std::collections::HashMap<String, String> {
     )])
 }
 
+/// Write an executable shell script to `dir/name` and return its path.
+#[cfg(unix)]
+fn write_script(dir: &std::path::Path, name: &str, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let path = dir.join(name);
+    std::fs::write(&path, body).expect("write script");
+    let mut perms = std::fs::metadata(&path).expect("stat").permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&path, perms).expect("chmod");
+    path
+}
+
 /// Return a shell command + args that writes `content_expr` to `dest_file`.
 /// On Unix: sh -c "echo $VAR > file"
 /// On Windows: cmd.exe /C "echo %VAR% > file"
@@ -4503,18 +4515,6 @@ mod authenticode {
 
     // ---- non-dry-run rename lifecycle (S1/S2) ----
 
-    /// Write an executable shell script to `dir/name` and return its path.
-    #[cfg(unix)]
-    fn write_script(dir: &std::path::Path, name: &str, body: &str) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-        let path = dir.join(name);
-        std::fs::write(&path, body).expect("write script");
-        let mut perms = std::fs::metadata(&path).expect("stat").permissions();
-        perms.set_mode(0o755);
-        std::fs::set_permissions(&path, perms).expect("chmod");
-        path
-    }
-
     #[cfg(unix)]
     fn run_authenticode_live(
         tool: PathBuf,
@@ -4791,5 +4791,375 @@ mod authenticode {
             unmasked.contains(pw),
             "the non-secret env key does NOT mask — `redact_extra` is what saves us: {unmasked}"
         );
+    }
+}
+
+/// Keyless cosign's first invocation on a fresh host initializes the
+/// `~/.sigstore` TUF trust root under an exclusive flock; concurrent
+/// first-wave workers lose that lock with `creating cached local store:
+/// resource temporarily unavailable` (cfgd v0.5.0 run 28853272910, Publish
+/// leg, 0/22 signed). These tests pin the two halves of the fix: the first
+/// sign is serialized to warm the cache, and transient cosign failures are
+/// retried across a multi-second window instead of fast-failing.
+#[cfg(unix)]
+mod cosign_tuf_race {
+    use super::*;
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use std::path::Path;
+
+    /// A keyless cosign sign config pointed at a stub script named `cosign`,
+    /// with the stub's state directory exported in the child env.
+    fn stub_signs(stub: &Path, state: &Path) -> Vec<SignConfig> {
+        vec![SignConfig {
+            id: Some("cosign-keyless".to_string()),
+            cmd: Some(stub.to_string_lossy().into_owned()),
+            args: Some(vec![
+                "sign-blob".to_string(),
+                "--output-signature".to_string(),
+                "{{ .Signature }}".to_string(),
+                "{{ .Artifact }}".to_string(),
+            ]),
+            artifacts: Some("all".to_string()),
+            ids: None,
+            signature: None,
+            stdin: None,
+            stdin_file: None,
+            env: Some(vec![format!("STUB_STATE={}", state.display())]),
+            certificate: None,
+            output: None,
+            authenticode: None,
+            if_condition: None,
+        }]
+    }
+
+    fn add_archives(ctx: &mut anodizer_core::context::Context, dir: &Path, n: usize) {
+        for i in 0..n {
+            let path = dir.join(format!("myapp-{i}.tar.gz"));
+            std::fs::write(&path, format!("artifact {i}")).unwrap();
+            ctx.artifacts.add(Artifact {
+                kind: ArtifactKind::Archive,
+                name: format!("myapp-{i}.tar.gz"),
+                path,
+                target: None,
+                crate_name: "myapp".to_string(),
+                metadata: Default::default(),
+                size: None,
+            });
+        }
+    }
+
+    fn build_ctx(stub: &Path, state: &Path) -> anodizer_core::context::Context {
+        TestContextBuilder::new()
+            .dry_run(false)
+            .parallelism(4)
+            .signs(stub_signs(stub, state))
+            .sealed_env()
+            .build()
+    }
+
+    /// The production failure, reduced: a stub cosign whose cache-init is an
+    /// atomic one-shot (`mkdir` = the flock), held open for 500ms. Any
+    /// instance that starts before the warm marker exists and doesn't own the
+    /// lock fails exactly like cosign's concurrent TUF-init race. The stage
+    /// must sign all 8 artifacts anyway.
+    #[test]
+    fn keyless_cosign_survives_cold_tuf_cache_with_parallel_fan_out() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_script(
+            tmp.path(),
+            "cosign",
+            concat!(
+                "#!/bin/sh\n",
+                "if [ ! -f \"$STUB_STATE/warm\" ]; then\n",
+                "  if mkdir \"$STUB_STATE/lock\" 2>/dev/null; then\n",
+                "    sleep 0.5\n",
+                "    : > \"$STUB_STATE/warm\"\n",
+                "  else\n",
+                "    echo \"signing $4: getting key from Fulcio: getting CTFE public keys: creating cached local store: resource temporarily unavailable\" >&2\n",
+                "    exit 1\n",
+                "  fi\n",
+                "fi\n",
+                "printf sig > \"$3\"\n",
+                "exit 0\n",
+            ),
+        );
+
+        let mut ctx = build_ctx(&stub, &state);
+        add_archives(&mut ctx, tmp.path(), 8);
+
+        SignStage.run(&mut ctx).expect(
+            "cold-TUF-cache race: every artifact must sign (first sign serialized, rest fanned out)",
+        );
+        assert_eq!(
+            ctx.artifacts.by_kind(ArtifactKind::Signature).len(),
+            8,
+            "all 8 artifacts must carry a signature"
+        );
+    }
+
+    /// Pins the serialization itself: the FIRST cosign invocation must
+    /// complete before any second one starts. The stub logs start/end
+    /// wall-clock nanos per invocation; without the serial warm-up, a
+    /// parallelism-4 fan-out records 4 starts before the earliest end.
+    #[test]
+    fn keyless_cosign_first_invocation_completes_before_fan_out() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_script(
+            tmp.path(),
+            "cosign",
+            concat!(
+                "#!/bin/sh\n",
+                "echo \"start $(date +%s%N)\" >> \"$STUB_STATE/events\"\n",
+                "sleep 0.15\n",
+                "echo \"end $(date +%s%N)\" >> \"$STUB_STATE/events\"\n",
+                "printf sig > \"$3\"\n",
+                "exit 0\n",
+            ),
+        );
+
+        let mut ctx = build_ctx(&stub, &state);
+        add_archives(&mut ctx, tmp.path(), 6);
+        SignStage.run(&mut ctx).expect("all stub signs succeed");
+
+        let events = std::fs::read_to_string(state.join("events")).expect("events log");
+        let mut starts: Vec<u128> = Vec::new();
+        let mut ends: Vec<u128> = Vec::new();
+        for line in events.lines() {
+            let (kind, ts) = line.split_once(' ').expect("event shape");
+            let ts: u128 = ts.trim().parse().expect("timestamp");
+            match kind {
+                "start" => starts.push(ts),
+                "end" => ends.push(ts),
+                other => panic!("unexpected event kind {other}"),
+            }
+        }
+        assert_eq!(starts.len(), 6, "one start per artifact: {events}");
+        assert_eq!(ends.len(), 6, "one end per artifact: {events}");
+        let first_end = *ends.iter().min().expect("at least one end");
+        let early = starts.iter().filter(|s| **s < first_end).count();
+        assert_eq!(
+            early, 1,
+            "exactly one cosign invocation may start before the first one \
+             completes (the TUF warm-up must run alone); got {early} early \
+             starts:\n{events}"
+        );
+    }
+
+    /// A transiently-failing cosign (fails the first attempt with the
+    /// flock-EAGAIN stderr, succeeds after) must be retried to success
+    /// rather than aborting the stage on the first non-zero exit.
+    #[test]
+    fn transient_cosign_failure_is_retried_to_success() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_script(
+            tmp.path(),
+            "cosign",
+            concat!(
+                "#!/bin/sh\n",
+                "n=$(cat \"$STUB_STATE/attempts\" 2>/dev/null || echo 0)\n",
+                "n=$((n+1))\n",
+                "echo \"$n\" > \"$STUB_STATE/attempts\"\n",
+                "if [ \"$n\" -lt 2 ]; then\n",
+                "  echo \"signing $4: getting key from Fulcio: getting CTFE public keys: creating cached local store: resource temporarily unavailable\" >&2\n",
+                "  exit 1\n",
+                "fi\n",
+                "printf sig > \"$3\"\n",
+                "exit 0\n",
+            ),
+        );
+
+        let mut ctx = build_ctx(&stub, &state);
+        add_archives(&mut ctx, tmp.path(), 1);
+        SignStage
+            .run(&mut ctx)
+            .expect("a transient cosign failure must be retried to success");
+
+        let attempts = std::fs::read_to_string(state.join("attempts")).expect("attempts file");
+        assert_eq!(
+            attempts.trim(),
+            "2",
+            "the stub must have been retried exactly once"
+        );
+    }
+
+    /// Non-cosign signers don't talk to sigstore, so their failures are
+    /// deterministic: exactly one attempt, no retry, fail fast.
+    #[test]
+    fn non_cosign_signer_fails_fast_without_retry() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).unwrap();
+        let stub = write_script(
+            tmp.path(),
+            "fakesigner",
+            concat!(
+                "#!/bin/sh\n",
+                "n=$(cat \"$STUB_STATE/attempts\" 2>/dev/null || echo 0)\n",
+                "n=$((n+1))\n",
+                "echo \"$n\" > \"$STUB_STATE/attempts\"\n",
+                "echo \"fakesigner: bad key\" >&2\n",
+                "exit 1\n",
+            ),
+        );
+
+        let mut ctx = build_ctx(&stub, &state);
+        add_archives(&mut ctx, tmp.path(), 1);
+        let result = SignStage.run(&mut ctx);
+        assert!(result.is_err(), "a failing non-cosign signer must error");
+
+        let attempts = std::fs::read_to_string(state.join("attempts")).expect("attempts file");
+        assert_eq!(
+            attempts.trim(),
+            "1",
+            "non-cosign signers must fail fast with no retry"
+        );
+    }
+}
+
+/// Unit pins for the cosign transient-retry machinery (platform-neutral —
+/// the injected sleep means no wall-clock time is served).
+mod cosign_retry_policy {
+    use crate::process::{COSIGN_TRANSIENT_RETRY, is_keyless_cosign, retry_transient};
+    use anodizer_core::log::{StageLogger, Verbosity};
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    fn quiet_log() -> StageLogger {
+        StageLogger::new("sign", Verbosity::Quiet)
+    }
+
+    /// The backoff schedule must outlive a multi-second TUF contention
+    /// window: every sleep sits inside its ±20% jitter envelope, and the
+    /// nominal spread before the final attempt is at least 15s (the whole
+    /// point of the fix — 3 fast tries in ~2.5s lost every round).
+    #[test]
+    fn cosign_retry_backoff_spans_the_contention_window() {
+        let log = quiet_log();
+        let sleeps: Mutex<Vec<Duration>> = Mutex::new(Vec::new());
+        let attempts = std::cell::Cell::new(0u32);
+
+        let result = retry_transient(
+            &COSIGN_TRANSIENT_RETRY,
+            &log,
+            "myapp.tar.gz",
+            &|d| sleeps.lock().expect("sleep recorder").push(d),
+            &mut || {
+                attempts.set(attempts.get() + 1);
+                anyhow::bail!("creating cached local store: resource temporarily unavailable")
+            },
+        );
+
+        assert!(result.is_err(), "exhausted retries must surface the error");
+        assert_eq!(
+            attempts.get(),
+            COSIGN_TRANSIENT_RETRY.max_attempts,
+            "every attempt in the policy must be spent"
+        );
+
+        let sleeps = sleeps.into_inner().expect("sleep recorder");
+        assert_eq!(
+            sleeps.len() as u32,
+            COSIGN_TRANSIENT_RETRY.max_attempts - 1,
+            "one sleep between each pair of attempts"
+        );
+        let mut nominal_total = Duration::ZERO;
+        for (i, actual) in sleeps.iter().enumerate() {
+            let nominal = COSIGN_TRANSIENT_RETRY.delay_for(i as u32 + 2);
+            nominal_total += nominal;
+            assert!(
+                *actual >= nominal * 4 / 5 && *actual <= nominal * 6 / 5,
+                "sleep {i} = {actual:?} outside the ±20% jitter envelope of {nominal:?}"
+            );
+        }
+        assert!(
+            nominal_total >= Duration::from_secs(15),
+            "nominal retry spread must be ≥15s to outlive the TUF contention \
+             window; got {nominal_total:?}"
+        );
+        let served: Duration = sleeps.iter().sum();
+        assert!(
+            served >= Duration::from_secs(12),
+            "even fully jitter-shrunk (×0.8), the served spread stays \
+             multi-second; got {served:?}"
+        );
+    }
+
+    /// A missing signer binary (spawn `NotFound`) cannot heal — it must
+    /// fail on the first attempt with zero sleeps, even through anyhow
+    /// context wrapping.
+    #[test]
+    fn missing_binary_fast_fails_without_retry() {
+        let log = quiet_log();
+        let sleeps: Mutex<Vec<Duration>> = Mutex::new(Vec::new());
+        let attempts = std::cell::Cell::new(0u32);
+
+        let result = retry_transient(
+            &COSIGN_TRANSIENT_RETRY,
+            &log,
+            "myapp.tar.gz",
+            &|d| sleeps.lock().expect("sleep recorder").push(d),
+            &mut || {
+                attempts.set(attempts.get() + 1);
+                Err(anyhow::Error::from(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "No such file or directory",
+                ))
+                .context("sign: failed to spawn 'cosign' for myapp.tar.gz"))
+            },
+        );
+
+        assert!(result.is_err());
+        assert_eq!(attempts.get(), 1, "NotFound must not be retried");
+        assert!(
+            sleeps.lock().expect("sleep recorder").is_empty(),
+            "NotFound must not burn backoff budget"
+        );
+    }
+
+    /// First-attempt success never sleeps.
+    #[test]
+    fn success_on_first_attempt_never_sleeps() {
+        let log = quiet_log();
+        let sleeps: Mutex<Vec<Duration>> = Mutex::new(Vec::new());
+        let result = retry_transient(
+            &COSIGN_TRANSIENT_RETRY,
+            &log,
+            "myapp.tar.gz",
+            &|d| sleeps.lock().expect("sleep recorder").push(d),
+            &mut || Ok(()),
+        );
+        assert!(result.is_ok());
+        assert!(sleeps.lock().expect("sleep recorder").is_empty());
+    }
+
+    /// The keyless discriminator drives the serial TUF warm-up: bare and
+    /// path-qualified `cosign` without `--key` warm; keyed cosign and
+    /// non-cosign signers must not.
+    #[test]
+    fn keyless_cosign_classifier() {
+        let keyless = vec!["sign-blob".to_string(), "artifact.tar.gz".to_string()];
+        assert!(is_keyless_cosign("cosign", &keyless));
+        assert!(is_keyless_cosign("/usr/local/bin/cosign", &keyless));
+
+        let keyed_eq = vec![
+            "sign-blob".to_string(),
+            "--key=env://COSIGN_KEY".to_string(),
+        ];
+        assert!(!is_keyless_cosign("cosign", &keyed_eq));
+        let keyed_split = vec![
+            "sign-blob".to_string(),
+            "--key".to_string(),
+            "cosign.key".to_string(),
+        ];
+        assert!(!is_keyless_cosign("cosign", &keyed_split));
+
+        assert!(!is_keyless_cosign("gpg", &keyless));
+        assert!(!is_keyless_cosign("/usr/bin/gpg", &keyless));
     }
 }

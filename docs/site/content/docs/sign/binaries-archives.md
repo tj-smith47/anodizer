@@ -68,3 +68,20 @@ signs:
     cmd: cosign
     args: ["sign-blob", "--key=cosign.key", "--output-signature=${signature}", "${artifact}"]
 ```
+
+## Execution & resilience
+
+Signing commands run one subprocess per artifact, in parallel, bounded by
+`--parallelism`. Two cosign-specific behaviors keep fresh CI runners from
+flaking:
+
+- **Cold-cache warm-up** — a keyless cosign config (no `--key` argument) signs
+  its *first* artifact serially before fanning out. cosign initializes the
+  `~/.sigstore` TUF trust root under an exclusive lock on its first run per
+  host; parallel first-wave workers would race that lock and lose with
+  `creating cached local store: resource temporarily unavailable`.
+- **Transient retry** — failed cosign invocations are retried up to 5 attempts
+  with jittered exponential backoff (2s base, 15s cap; ~29s total spread),
+  since cosign depends on network infrastructure (Fulcio, Rekor, the TUF CDN).
+  A missing cosign binary fails immediately. Local signers (gpg, osslsigncode,
+  signtool) are deterministic and fail fast with no retry.
