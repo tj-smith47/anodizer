@@ -1200,10 +1200,12 @@ uploads:
     exts: [tar.gz, zip, sha256]
     # Per-version prefix; the artifact name is appended to this target
     # (custom_artifact_name=false keeps the default append behaviour). The
-    # endpoint is the api-server ClusterIP Service, reached in-cluster from the
-    # release runner (same as MinIO) — plain http is fine because the traffic
+    # base endpoint is the api-server ClusterIP Service, reached in-cluster from
+    # the release runner (same as MinIO) — plain http is fine because the traffic
     # never leaves the pod network and is never exposed via Traefik/Cloudflare.
-    target: "http://api-server.jarvispro.svc.cluster.local:8478/anodizer/{{ .Version }}/"
+    # Supplied via the UPLOAD_JARVISPRO_TARGET secret so the internal host:port
+    # stays out of the committed config and is redacted from CI logs.
+    target: "{{ .Env.UPLOAD_JARVISPRO_TARGET }}/anodizer/{{ .Version }}/"
     method: PUT
     mode: archive
     # anodizer supports same-version re-cuts (delete the remote tag, re-push
@@ -1395,7 +1397,9 @@ announce:
     message_template: "{{ ProjectName }} {{ Tag }} released! {{ ReleaseURL }}"
   webhook:
     enabled: true
-    endpoint_url: "https://tj.jarvispro.io/webhooks/anodizer"
+    # Supplied via the ANNOUNCE_WEBHOOK_URL secret so the internal endpoint
+    # stays out of the committed config and is redacted from CI logs.
+    endpoint_url: "{{ Env.ANNOUNCE_WEBHOOK_URL }}"
     content_type: application/json
     message_template: '{"project":"{{ ProjectName }}","tag":"{{ Tag }}","url":"{{ ReleaseURL }}"}'
     headers:

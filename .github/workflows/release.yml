@@ -84,17 +84,21 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           ref: ${{ env.RELEASE_REF }}
-      - uses: ./.github/actions/setup-rust
+
+      - name: Set up Rust toolchain (warm cache)
+        uses: ./.github/actions/setup-rust
         with:
           # Warms the cargo cache so the action's `from-source` build of HEAD is
           # fast on re-runs. anodizer is the one consumer that builds ITSELF from
           # source to gate its own release; a downstream consumer would pin
           # `version:` to a published binary and need no Rust toolchain here.
           cache-key: preflight-secrets
+
       - name: Validate publish secrets
         # Dogfood the published action as the preflight gate: it builds anodizer
         # from this checkout (from-source), installs cosign for the offline
@@ -123,6 +127,7 @@ jobs:
           apk-private-key: ${{ secrets.APK_PRIVATE_KEY }}
           args: release --preflight-secrets --skip=blob
         env:
+          ANNOUNCE_WEBHOOK_URL: ${{ secrets.ANNOUNCE_WEBHOOK_URL }}
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
@@ -139,6 +144,7 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
           UPLOAD_JARVISPRO_SECRET: ${{ secrets.UPLOAD_JARVISPRO_SECRET }}
+          UPLOAD_JARVISPRO_TARGET: ${{ secrets.UPLOAD_JARVISPRO_TARGET }}
           UPLOAD_JARVISPRO_USERNAME: ${{ secrets.UPLOAD_JARVISPRO_USERNAME }}
 
   # Pre-tag in-cluster reachability gate. The github-hosted `preflight` job
@@ -173,10 +179,12 @@ jobs:
       contents: read
       actions: read # cross-run download of the CI-built anodizer-linux artifact
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           ref: ${{ env.RELEASE_REF }}
+
       - name: Probe in-cluster blob + upload endpoint reachability
         uses: tj-smith47/anodizer-action@v1
         with:
@@ -184,6 +192,8 @@ jobs:
           artifact-workflow: ci.yml
           artifact-run-id: auto
           args: preflight --publish-only --publishers blob,uploads --skip sign,verify-release
+        env:
+          UPLOAD_JARVISPRO_TARGET: ${{ secrets.UPLOAD_JARVISPRO_TARGET }}
 
   tag:
     name: Auto-tag
@@ -206,15 +216,18 @@ jobs:
       publish_from_artifact: ${{ steps.resolve.outputs.publish_from_artifact }}
       publish_version: ${{ steps.resolve.outputs.publish_version }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
           ref: ${{ env.RELEASE_REF }}
+
       - name: Configure git identity
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
       - name: Auto-tag release
         id: autotag
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.tag == '' }}
@@ -228,6 +241,7 @@ jobs:
         env:
           # GITHUB_TOKEN: its pushes do NOT retrigger CI, so the tag push cannot loop the pipeline.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Resolve release target
         id: resolve
         uses: ./.github/actions/resolve-release-target
@@ -268,18 +282,25 @@ jobs:
       packages: write
       attestations: write
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           ref: ${{ needs.tag.outputs.sha }}
 
-      - uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable branch
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@3c5f7ea28cd621ae0bf5283f0e981fb97b8a7af9 # stable branch
         with:
           toolchain: stable
 
-      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
-      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
-      - uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4.4.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -335,6 +356,7 @@ jobs:
           # runner, so the main publish skips npm and the hosted job runs it.
           args: release --publish-only --skip=${{ env.HOSTED_PUBLISHERS }}${{ inputs.skip_publishers != '' && format(',{0}', inputs.skip_publishers) || '' }}
         env:
+          ANNOUNCE_WEBHOOK_URL: ${{ secrets.ANNOUNCE_WEBHOOK_URL }}
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
           CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
@@ -351,6 +373,7 @@ jobs:
           SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.SNAPCRAFT_STORE_CREDENTIALS }}
           UPLOAD_JARVISPRO_SECRET: ${{ secrets.UPLOAD_JARVISPRO_SECRET }}
+          UPLOAD_JARVISPRO_TARGET: ${{ secrets.UPLOAD_JARVISPRO_TARGET }}
           UPLOAD_JARVISPRO_USERNAME: ${{ secrets.UPLOAD_JARVISPRO_USERNAME }}
 
       # No workflow-side rollback step: the binary executes the
@@ -395,7 +418,8 @@ jobs:
       id-token: write
       attestations: write # anodizer-action's build-provenance step writes artifact attestations to the GH attestations API
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           ref: ${{ needs.tag.outputs.sha }}
