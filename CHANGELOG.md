@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.5] - 2026-07-07
+
+### Bug Fixes
+
+* 22571b14e0d6 declare every run-path tool in publisher requirements ([@tj-smith47](https://github.com/tj-smith47))
+
 ## [0.15.4] - 2026-07-07
 
 ### Bug Fixes
@@ -570,7 +576,8 @@ Changes since `v0.5.0`. Will be cut as the next release.
   retry behavior callout updated to flag stateful
   `--publish-only` / `--rollback-only` / `tag rollback`.
 
-[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.15.4...HEAD
+[Unreleased]: https://github.com/tj-smith47/anodizer/compare/v0.15.5...HEAD
+[0.15.5]: https://github.com/tj-smith47/anodizer/compare/v0.15.4...v0.15.5
 [0.15.4]: https://github.com/tj-smith47/anodizer/compare/v0.15.3...v0.15.4
 [0.15.3]: https://github.com/tj-smith47/anodizer/compare/v0.15.1...v0.15.3
 [0.15.1]: https://github.com/tj-smith47/anodizer/compare/v0.15.0...v0.15.1
