@@ -12,7 +12,27 @@ cold without re-investigating.
 
 ## Open
 
-_(No open code/config gaps. Both v0.15.0 npm findings — the retry-budget
+- [ ] **Parallel keyless cosign signing races on the cold TUF cache and
+  fast-fail retries lose every round (cfgd v0.5.0 run 28853272910, Publish
+  cfgd leg, 2×: 09:42Z + 10:05Z 2026-07-07).** The sign stage fans out
+  `signing 22 artifacts with parallelism=4`; on a fresh runner all four
+  workers invoke cosign simultaneously against an uninitialized
+  `~/.sigstore` TUF store, and the losers die with `getting key from
+  Fulcio: getting CTFE public keys: creating cached local store: resource
+  temporarily unavailable` (flock EAGAIN — the known cosign concurrent
+  TUF-init race). The per-artifact retry runs 3 attempts inside ~2.5s, all
+  within the contention window, then the stage aborts fail-fast with 0/22
+  signed. Sigstore infra was UP both times (`cosign initialize` from
+  another host succeeded during the failure window). Sibling legs
+  (operator/csi) passed the identical stage minutes earlier — timing luck;
+  the fattest artifact set loses most often. **Fix shape:** initialize the
+  TUF trust root ONCE before fanning out (run the first sign alone, or an
+  explicit `cosign initialize`-equivalent pre-warm step), and/or add jitter
+  + a longer backoff to the sign retry so a lock collision doesn't burn the
+  whole budget in 2.5s. Evidence:
+  `~/.cache/cfgd-debug/cfgd-publish-attempt6{,-rerun}.log` on the dev box.
+
+_(Otherwise no open code/config gaps. Both v0.15.0 npm findings — the retry-budget
 guillotine and the OIDC-fallback — are fixed and proven; see Resolved. Every
 non-paid dogfooding field
 is landed in `.anodizer.yaml` and committed; `flatpaks` is additionally PROVEN
