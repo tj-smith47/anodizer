@@ -666,8 +666,19 @@ one-way-door publisher, by evidence strength:
 1. **Run summaries** (`<dist>/run-*/summary.json`, per-crate
    `<dist>/<crate>/run-*/summary.json`) whose `tag` matches a tag being
    rolled back. A landed Submitter-group publisher → refuse, naming the
-   publishers; only-reversible publishers → proceed.
-2. **GitHub release probe** — only for tags with NO summary on disk. A
+   publishers; only-reversible publishers → proceed to the next layer.
+2. **crates.io index probe** — for every tag whose crate tag family (from
+   the config's `tag_template`s) maps to a crates.io-targeting
+   `publish.cargo` crate. The run summary answers a *per-run* question;
+   whether a version is burned on a one-way-door registry is **global**
+   state — a PRIOR run may have published it, and that run's summary lives
+   on another runner's disk. The crate's exact `name@version` live on the
+   sparse index → refuse (fix forward); an **unreachable index** → refuse
+   (fail closed: publication state is unverifiable). Skipped with a warning
+   when no anodizer config is parseable (no tag→crate mapping to probe
+   with); crates on a custom `registry:`/`index:` are out of the probe's
+   scope, exactly like the publish stage's own content guard.
+3. **GitHub release probe** — only for tags with NO summary on disk. A
    published (non-draft) release → refuse. An **unanswerable probe**
    (gh missing, auth/network error) also refuses — fail closed: with no
    summary and no probe answer there is zero evidence the version is safe

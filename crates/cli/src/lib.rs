@@ -822,7 +822,7 @@ pub enum TagSub {
         no_push: bool,
         #[arg(
             long,
-            help = "Override the published-state guard: roll back even when the tag's run summary shows a one-way-door publisher (crates.io, chocolatey, winget, snapcraft, ...) accepted the version, or — when no summary exists — when a published (non-draft) GitHub release exists for the tag. Without it, rollback refuses because those registries never accept the same version twice: the version is burned and the only clean recovery is fixing forward"
+            help = "Override the published-state guard: roll back even when the tag's run summary shows a one-way-door publisher (crates.io, chocolatey, winget, snapcraft, ...) accepted the version, when the crates.io index shows the tag's crate@version live (GLOBAL state — published by any prior run, not just this one; an unreachable index also refuses), or — when no summary exists — when a published (non-draft) GitHub release exists for the tag. Without it, rollback refuses because those registries never accept the same version twice: the version is burned and the only clean recovery is fixing forward"
         )]
         force: bool,
         #[arg(
