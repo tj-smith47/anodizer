@@ -150,9 +150,6 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
     }
 
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        // Mirrors `resolve_api_key`: templated `api_key` from config, else
-        // the CHOCOLATEY_API_KEY env var. The push itself is plain HTTPS
-        // (no choco CLI).
         ctx.config
             .crate_universe()
             .into_iter()
@@ -165,11 +162,30 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
                     ch.if_condition.as_deref(),
                 )
             })
-            .filter_map(|ch| {
-                crate::publisher_helpers::secret_requirement(
+            .flat_map(|ch| {
+                // `xmllint` is MANDATORY at gate time: the strict pre-publish
+                // schema floor runs `xmllint --schema` against the rendered
+                // nuspec and FAILS when the tool is absent (moderation
+                // submission is a one-way door — see
+                // `schema_validation::chocolatey`). Declared REQUIRED (not
+                // advisory) — the caller wraps publisher requirements via
+                // `SourcedRequirement::new`, the same frame that makes
+                // `git`/`npm` hard requirements — so preflight and
+                // `anodizer tools` provision it up front instead of the run
+                // dying at the guard after the GitHub release shipped.
+                let mut reqs = vec![anodizer_core::EnvRequirement::Tool {
+                    name: "xmllint".to_string(),
+                }];
+                // Mirrors `resolve_api_key`: templated `api_key` from config,
+                // else the CHOCOLATEY_API_KEY env var. The push itself is
+                // plain HTTPS (no choco CLI).
+                if let Some(req) = crate::publisher_helpers::secret_requirement(
                     ch.api_key.as_deref(),
                     "CHOCOLATEY_API_KEY",
-                )
+                ) {
+                    reqs.push(req);
+                }
+                reqs
             })
             .collect()
     }
@@ -688,6 +704,50 @@ mod publisher_tests {
             p.preflight(&ctx).expect("preflight"),
             PreflightCheck::Pass
         ));
+    }
+
+    #[test]
+    fn chocolatey_requirements_emit_xmllint_tool() {
+        // The strict pre-publish gate schema-validates the rendered nuspec via
+        // `xmllint --schema` and HARD-FAILS when the tool is absent (moderation
+        // submission is a one-way door), so requirements() must report it —
+        // otherwise the action's auto-install (driven by `anodizer tools`)
+        // leaves it off a clean runner and the release dies at the prepublish
+        // guard after the GitHub release already shipped.
+        let ctx = TestContextBuilder::new()
+            .crates(vec![choco_crate("demo", None)])
+            .build();
+        let reqs = ChocolateyPublisher::new().requirements(&ctx);
+        assert!(
+            reqs.iter().any(|r| matches!(
+                r,
+                anodizer_core::EnvRequirement::Tool { name } if name == "xmllint"
+            )),
+            "expected a mandatory Tool{{name:\"xmllint\"}} requirement; got: {reqs:?}"
+        );
+    }
+
+    #[test]
+    fn chocolatey_requirements_omit_xmllint_when_all_entries_skipped() {
+        // Every entry inactive ⇒ the publisher renders/validates nothing, so
+        // demanding xmllint would gate a run that never touches a nuspec.
+        let mut crate_cfg = choco_crate("demo", None);
+        if let Some(ch) = crate_cfg
+            .publish
+            .as_mut()
+            .and_then(|p| p.chocolatey.as_mut())
+        {
+            ch.skip = Some(StringOrBool::Bool(true));
+        }
+        let ctx = TestContextBuilder::new().crates(vec![crate_cfg]).build();
+        let reqs = ChocolateyPublisher::new().requirements(&ctx);
+        assert!(
+            !reqs.iter().any(|r| matches!(
+                r,
+                anodizer_core::EnvRequirement::Tool { name } if name == "xmllint"
+            )),
+            "expected NO xmllint Tool requirement when every entry is skipped; got: {reqs:?}"
+        );
     }
 
     #[test]

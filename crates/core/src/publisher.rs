@@ -135,6 +135,21 @@ pub trait Publisher: Send + Sync {
         Vec::new()
     }
 
+    /// Environment requirements whose absence DEGRADES this publisher's run
+    /// rather than failing it: optional validators (`ruby -c`, `bash -n`,
+    /// `nix-instantiate --parse`) that warn+skip when missing, or a preferred
+    /// transport with a full fallback (`gh` vs the GitHub REST API).
+    ///
+    /// Collected alongside [`Publisher::requirements`] but surfaced as
+    /// ADVISORY: preflight warns instead of blocking, and `anodizer tools`
+    /// reports them as recommended so an auto-provisioned runner installs
+    /// them and gets the stronger validation/transport. Hard needs (the run
+    /// path errors without the tool) belong in `requirements()` instead.
+    /// Default is empty.
+    fn advisory_requirements(&self, _ctx: &Context) -> Vec<crate::env_preflight::EnvRequirement> {
+        Vec::new()
+    }
+
     /// Whether this publisher opts out of nightly runs (the
     /// `customization/publish/nightlies.md` skip-list).
     ///

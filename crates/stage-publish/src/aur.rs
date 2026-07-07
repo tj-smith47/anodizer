@@ -1562,6 +1562,31 @@ impl anodizer_core::Publisher for AurOurPublisher {
             .collect()
     }
 
+    fn advisory_requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // The schema floor's `bash -n` pass over the rendered PKGBUILD
+        // warn+skips when bash is absent — a recommendation, never a gate
+        // failure. Same active-entry gate as `requirements`.
+        let any_active = ctx
+            .config
+            .crate_universe()
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.aur.as_ref())
+            .any(|a| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    a.skip.as_ref(),
+                    a.skip_upload.as_ref(),
+                    a.if_condition.as_deref(),
+                )
+            });
+        if !any_active {
+            return Vec::new();
+        }
+        vec![anodizer_core::EnvRequirement::Tool {
+            name: "bash".to_string(),
+        }]
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let selected =
@@ -1785,6 +1810,38 @@ mod publisher_tests {
             p.preflight(&ctx).expect("preflight ok"),
             PreflightCheck::Pass
         ));
+    }
+
+    /// The AUR schema floor runs `bash -n` over the rendered PKGBUILD when
+    /// the tool is present and warn+skips otherwise, so it is ADVISORY:
+    /// recommended to the auto-install layer, never a blocker.
+    #[test]
+    fn aur_advisory_requirements_emit_bash_when_active() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![aur_crate("demo")])
+            .build();
+        let reqs = AurOurPublisher::new().advisory_requirements(&ctx);
+        assert!(
+            reqs.iter().any(|r| matches!(
+                r,
+                anodizer_core::EnvRequirement::Tool { name } if name == "bash"
+            )),
+            "active aur entry must recommend bash: {reqs:?}"
+        );
+    }
+
+    #[test]
+    fn aur_advisory_requirements_empty_when_all_entries_skipped() {
+        let mut c = aur_crate("demo");
+        if let Some(a) = c.publish.as_mut().and_then(|p| p.aur.as_mut()) {
+            a.skip = Some(StringOrBool::Bool(true));
+        }
+        let ctx = TestContextBuilder::new().crates(vec![c]).build();
+        let reqs = AurOurPublisher::new().advisory_requirements(&ctx);
+        assert!(
+            reqs.is_empty(),
+            "every entry skipped ⇒ no advisory recommendations: {reqs:?}"
+        );
     }
 
     #[test]

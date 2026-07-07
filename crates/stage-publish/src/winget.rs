@@ -1962,6 +1962,31 @@ impl anodizer_core::Publisher for WingetPublisher {
             .collect()
     }
 
+    fn advisory_requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // Every winget publish lands as a PR against the upstream index;
+        // `gh pr create` is the preferred transport with a full REST-API
+        // fallback, so `gh` is a recommendation, never a gate failure.
+        let any_active = ctx
+            .config
+            .crate_universe()
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.winget.as_ref())
+            .any(|w| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    None,
+                    w.skip_upload.as_ref(),
+                    w.if_condition.as_deref(),
+                )
+            });
+        if !any_active {
+            return Vec::new();
+        }
+        vec![anodizer_core::EnvRequirement::Tool {
+            name: "gh".to_string(),
+        }]
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let mut targets: Vec<WingetTarget> = Vec::new();
@@ -2749,6 +2774,38 @@ mod publisher_tests {
             p.preflight(&ctx).expect("preflight ok"),
             PreflightCheck::Pass
         ));
+    }
+
+    /// Every winget publish lands as a PR against the upstream index;
+    /// `gh pr create` is the preferred transport with a full REST-API
+    /// fallback, so `gh` is ADVISORY — recommended, never a blocker.
+    #[test]
+    fn winget_advisory_requirements_emit_gh_when_active() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![winget_crate("demo")])
+            .build();
+        let reqs = WingetPublisher::new().advisory_requirements(&ctx);
+        assert!(
+            reqs.iter().any(|r| matches!(
+                r,
+                anodizer_core::EnvRequirement::Tool { name } if name == "gh"
+            )),
+            "active winget entry must recommend gh: {reqs:?}"
+        );
+    }
+
+    #[test]
+    fn winget_advisory_requirements_empty_when_all_entries_skipped() {
+        let mut c = winget_crate("demo");
+        if let Some(w) = c.publish.as_mut().and_then(|p| p.winget.as_mut()) {
+            w.skip_upload = Some(anodizer_core::config::StringOrBool::Bool(true));
+        }
+        let ctx = TestContextBuilder::new().crates(vec![c]).build();
+        let reqs = WingetPublisher::new().advisory_requirements(&ctx);
+        assert!(
+            reqs.is_empty(),
+            "every entry skipped ⇒ no advisory recommendations: {reqs:?}"
+        );
     }
 
     #[test]

@@ -197,6 +197,44 @@ impl anodizer_core::Publisher for NixPublisher {
             .collect()
     }
 
+    fn advisory_requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // Same active-entry walk as `requirements`, but for tools whose
+        // absence only degrades the publish: the schema floor's
+        // `nix-instantiate --parse` pass over the rendered expression
+        // warn+skips without the tool, and `gh pr create` is the preferred
+        // PR transport with a full REST-API fallback — recommendations,
+        // never gate failures.
+        let active: Vec<_> = ctx
+            .config
+            .crate_universe()
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.nix.as_ref())
+            .filter(|n| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    n.skip.as_ref(),
+                    n.skip_upload.as_ref(),
+                    n.if_condition.as_deref(),
+                )
+            })
+            .collect();
+        if active.is_empty() {
+            return Vec::new();
+        }
+        let mut out = vec![anodizer_core::EnvRequirement::Tool {
+            name: "nix-instantiate".to_string(),
+        }];
+        if active
+            .iter()
+            .any(|n| crate::publisher_helpers::pull_request_enabled(n.repository.as_ref()))
+        {
+            out.push(anodizer_core::EnvRequirement::Tool {
+                name: "gh".to_string(),
+            });
+        }
+        out
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let selected =
@@ -500,6 +538,73 @@ mod publisher_tests {
                 anodizer_core::EnvRequirement::Tool { name } if name == "nixfmt"
             )),
             "expected a mandatory Tool{{name:\"nixfmt\"}} requirement; got: {reqs:?}"
+        );
+    }
+
+    /// The nix schema floor runs `nix-instantiate --parse` over the rendered
+    /// expression when the tool is present and warn+skips otherwise, so it is
+    /// ADVISORY: recommended to the auto-install layer, never a blocker.
+    #[test]
+    fn nix_advisory_requirements_emit_nix_instantiate_when_active() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![nix_crate("demo")])
+            .build();
+        let reqs = NixPublisher::new().advisory_requirements(&ctx);
+        assert!(
+            reqs.iter().any(|r| matches!(
+                r,
+                anodizer_core::EnvRequirement::Tool { name } if name == "nix-instantiate"
+            )),
+            "active nix entry must recommend nix-instantiate: {reqs:?}"
+        );
+        assert!(
+            !reqs.iter().any(|r| matches!(
+                r,
+                anodizer_core::EnvRequirement::Tool { name } if name == "gh"
+            )),
+            "no pull_request block ⇒ no gh recommendation: {reqs:?}"
+        );
+    }
+
+    /// `pull_request.enabled` publishes via `gh pr create` when the CLI is
+    /// present, with a full REST-API fallback — so `gh` is a recommended
+    /// transport, not a hard need.
+    #[test]
+    fn nix_advisory_requirements_emit_gh_when_pull_request_enabled() {
+        let mut c = nix_crate("demo");
+        if let Some(repo) = c
+            .publish
+            .as_mut()
+            .and_then(|p| p.nix.as_mut())
+            .and_then(|n| n.repository.as_mut())
+        {
+            repo.pull_request = Some(anodizer_core::config::PullRequestConfig {
+                enabled: Some(true),
+                ..Default::default()
+            });
+        }
+        let ctx = TestContextBuilder::new().crates(vec![c]).build();
+        let reqs = NixPublisher::new().advisory_requirements(&ctx);
+        assert!(
+            reqs.iter().any(|r| matches!(
+                r,
+                anodizer_core::EnvRequirement::Tool { name } if name == "gh"
+            )),
+            "pull_request.enabled must recommend gh: {reqs:?}"
+        );
+    }
+
+    #[test]
+    fn nix_advisory_requirements_empty_when_all_entries_skipped() {
+        let mut c = nix_crate("demo");
+        if let Some(n) = c.publish.as_mut().and_then(|p| p.nix.as_mut()) {
+            n.skip = Some(anodizer_core::config::StringOrBool::Bool(true));
+        }
+        let ctx = TestContextBuilder::new().crates(vec![c]).build();
+        let reqs = NixPublisher::new().advisory_requirements(&ctx);
+        assert!(
+            reqs.is_empty(),
+            "every entry skipped ⇒ no advisory recommendations: {reqs:?}"
         );
     }
 

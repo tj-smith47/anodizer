@@ -65,6 +65,43 @@ fn signature_env_requirements(
     }
 }
 
+/// ADVISORY tool requirements for the nfpm schema floor: the pre-publish
+/// guard cross-checks built packages with the native tooling when present
+/// (`dpkg-deb --info` for deb, `rpm -qp` for rpm) and warn+skips when
+/// absent, so these must never block a release — but `anodizer tools`
+/// still recommends them so an auto-provisioned runner gets the stronger
+/// validation. Keyed on the configured `formats`, so an rpm-only config
+/// never recommends dpkg-deb.
+pub fn advisory_env_requirements(
+    ctx: &anodizer_core::context::Context,
+) -> Vec<anodizer_core::EnvRequirement> {
+    let mut want_deb = false;
+    let mut want_rpm = false;
+    for c in ctx.config.crate_universe() {
+        for n in c.nfpms.iter().flatten() {
+            for format in &n.formats {
+                match format.as_str() {
+                    "deb" => want_deb = true,
+                    "rpm" => want_rpm = true,
+                    _ => {}
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if want_deb {
+        out.push(anodizer_core::EnvRequirement::Tool {
+            name: "dpkg-deb".to_string(),
+        });
+    }
+    if want_rpm {
+        out.push(anodizer_core::EnvRequirement::Tool {
+            name: "rpm".to_string(),
+        });
+    }
+    out
+}
+
 /// Environment requirements for the nfpm stage, derived from the same config
 /// `run` reads: the `nfpm` binary whenever any crate declares `nfpms:`, plus
 /// signing-key material for each configured package signature.

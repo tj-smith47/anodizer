@@ -283,6 +283,89 @@ builds:
         );
     }
 
+    /// End-to-end through `collect_requirements`: a chocolatey-configured
+    /// crate surfaces `xmllint` in the `tools` JSON as REQUIRED, so the GitHub
+    /// Action installs it up front instead of the release dying at the strict
+    /// prepublish guard (which hard-fails without `xmllint`) after the GitHub
+    /// release already shipped.
+    #[test]
+    fn chocolatey_config_emits_xmllint_in_json() {
+        use anodizer_core::test_helpers::TestContextBuilder;
+
+        let krate: anodizer_core::config::CrateConfig = serde_yaml_ng::from_str(
+            r#"
+name: app
+publish:
+  chocolatey:
+    description: A great tool
+"#,
+        )
+        .expect("crate config yaml");
+        let ctx = TestContextBuilder::new().crates(vec![krate]).build();
+
+        let reqs = collect_requirements(&ctx, PreflightScope::Full);
+        let tools = Tools {
+            schema_version: SCHEMA_VERSION,
+            tools: tool_requirements(&reqs),
+        };
+        let json = serde_json::to_string(&tools).unwrap();
+        assert!(
+            json.contains(r#"["xmllint"]"#),
+            "tools JSON must list xmllint: {json}"
+        );
+        let xmllint = tools
+            .tools
+            .iter()
+            .find(|t| t.any_of == vec!["xmllint".to_string()])
+            .expect("xmllint present");
+        assert!(
+            !xmllint.advisory,
+            "xmllint must be required in the tools emit — the prepublish guard hard-fails without it"
+        );
+    }
+
+    /// End-to-end through `collect_requirements`: a homebrew-configured crate
+    /// surfaces the optional `ruby -c` validator in the `tools` JSON as
+    /// ADVISORY (the schema floor warn+skips without it), alongside the hard
+    /// `git` requirement — so the GitHub Action provisions the stronger
+    /// validation without a missing ruby ever blocking the gate.
+    #[test]
+    fn homebrew_config_emits_advisory_ruby_in_json() {
+        use anodizer_core::test_helpers::TestContextBuilder;
+
+        let krate: anodizer_core::config::CrateConfig = serde_yaml_ng::from_str(
+            r#"
+name: app
+publish:
+  homebrew:
+    repository:
+      owner: acme
+      name: homebrew-tap
+"#,
+        )
+        .expect("crate config yaml");
+        let ctx = TestContextBuilder::new().crates(vec![krate]).build();
+
+        let reqs = collect_requirements(&ctx, PreflightScope::Full);
+        let tools = Tools {
+            schema_version: SCHEMA_VERSION,
+            tools: tool_requirements(&reqs),
+        };
+        let find = |name: &str| {
+            tools
+                .tools
+                .iter()
+                .find(|t| t.any_of == vec![name.to_string()])
+        };
+        let ruby = find("ruby").expect("ruby present in tools emit");
+        assert!(
+            ruby.advisory,
+            "ruby must be advisory — the homebrew schema floor degrades gracefully without it"
+        );
+        let git = find("git").expect("git present in tools emit");
+        assert!(!git.advisory, "git must stay required for the tap push");
+    }
+
     #[test]
     fn json_envelope_shape() {
         let tools = Tools {

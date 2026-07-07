@@ -7618,3 +7618,47 @@ mod vendor_derivation {
         assert_eq!(beta.vendor.as_deref(), Some("Beta Team"));
     }
 }
+
+/// The nfpm schema floor cross-checks built packages with the native tooling
+/// when present (`dpkg-deb --info` / `rpm -qp`) and warn+skips otherwise, so
+/// the advisory set must track exactly the configured formats.
+#[test]
+fn advisory_env_requirements_track_configured_formats() {
+    use anodizer_core::config::{Config, CrateConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    let ctx_for = |formats: Vec<&str>| {
+        let mut config = Config::default();
+        config.crates = vec![CrateConfig {
+            name: "app".to_string(),
+            path: ".".to_string(),
+            tag_template: "v{{ .Version }}".to_string(),
+            nfpms: Some(vec![NfpmConfig {
+                formats: formats.into_iter().map(str::to_string).collect(),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        }];
+        Context::new(config, ContextOptions::default())
+    };
+    let names = |ctx: &Context| -> Vec<String> {
+        super::advisory_env_requirements(ctx)
+            .into_iter()
+            .filter_map(|r| match r {
+                anodizer_core::EnvRequirement::Tool { name } => Some(name),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        names(&ctx_for(vec!["deb", "rpm"])),
+        vec!["dpkg-deb".to_string(), "rpm".to_string()]
+    );
+    assert_eq!(names(&ctx_for(vec!["rpm"])), vec!["rpm".to_string()]);
+    assert_eq!(
+        names(&ctx_for(vec!["apk"])),
+        Vec::<String>::new(),
+        "apk has no native cross-check tool"
+    );
+    let no_nfpm = Context::new(Config::default(), ContextOptions::default());
+    assert_eq!(names(&no_nfpm), Vec::<String>::new());
+}

@@ -276,6 +276,58 @@ impl anodizer_core::Publisher for HomebrewPublisher {
         out
     }
 
+    fn advisory_requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // Same active-entry walk as `requirements`, but for tools whose
+        // absence only degrades the publish: the schema floor's `ruby -c`
+        // pass over rendered formulas/casks warn+skips without ruby, and
+        // `gh pr create` is the preferred PR transport with a full REST-API
+        // fallback — so both are recommendations, never gate failures.
+        let formula_repos = ctx
+            .config
+            .crate_universe()
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.homebrew.as_ref())
+            .filter(|h| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    None,
+                    h.skip_upload.as_ref(),
+                    h.if_condition.as_deref(),
+                )
+            })
+            .map(|h| h.repository.as_ref());
+        let cask_repos = ctx
+            .config
+            .homebrew_casks
+            .iter()
+            .flatten()
+            .filter(|c| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    None,
+                    c.skip_upload.as_ref(),
+                    c.if_condition.as_deref(),
+                )
+            })
+            .map(|c| c.repository.as_ref());
+        let repos: Vec<_> = formula_repos.chain(cask_repos).collect();
+        if repos.is_empty() {
+            return Vec::new();
+        }
+        let mut out = vec![anodizer_core::EnvRequirement::Tool {
+            name: "ruby".to_string(),
+        }];
+        if repos
+            .iter()
+            .any(|r| crate::publisher_helpers::pull_request_enabled(*r))
+        {
+            out.push(anodizer_core::EnvRequirement::Tool {
+                name: "gh".to_string(),
+            });
+        }
+        out
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
 
@@ -1023,6 +1075,99 @@ mod publisher_tests {
         assert!(
             warns.iter().any(|m| m.contains("nothing pushed")),
             "truly-empty homebrew config must warn; got: {warns:?}"
+        );
+    }
+
+    /// The homebrew schema floor runs `ruby -c` over rendered formulas/casks
+    /// when the tool is present and warn+skips otherwise, so it is ADVISORY:
+    /// recommended to the auto-install layer, never a blocker.
+    #[test]
+    fn homebrew_advisory_requirements_emit_ruby_when_active() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![homebrew_crate("demo")])
+            .build();
+        let reqs = HomebrewPublisher::new().advisory_requirements(&ctx);
+        assert!(
+            reqs.iter().any(|r| matches!(
+                r,
+                anodizer_core::EnvRequirement::Tool { name } if name == "ruby"
+            )),
+            "active homebrew entry must recommend ruby: {reqs:?}"
+        );
+        assert!(
+            !reqs.iter().any(|r| matches!(
+                r,
+                anodizer_core::EnvRequirement::Tool { name } if name == "gh"
+            )),
+            "no pull_request block ⇒ no gh recommendation: {reqs:?}"
+        );
+    }
+
+    /// A cask-only config renders Ruby too, so the recommendation must not
+    /// key exclusively off per-crate formula blocks.
+    #[test]
+    fn homebrew_advisory_requirements_emit_ruby_for_cask_only_config() {
+        use anodizer_core::config::{Config, HomebrewCaskConfig};
+        use anodizer_core::context::{Context, ContextOptions};
+        let mut config = Config::default();
+        config.homebrew_casks = Some(vec![HomebrewCaskConfig {
+            repository: Some(anodizer_core::config::RepositoryConfig {
+                owner: Some("acme".to_string()),
+                name: Some("homebrew-tap".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }]);
+        let ctx = Context::new(config, ContextOptions::default());
+        let reqs = HomebrewPublisher::new().advisory_requirements(&ctx);
+        assert!(
+            reqs.iter().any(|r| matches!(
+                r,
+                anodizer_core::EnvRequirement::Tool { name } if name == "ruby"
+            )),
+            "active cask entry must recommend ruby: {reqs:?}"
+        );
+    }
+
+    /// `pull_request.enabled` publishes via `gh pr create` when the CLI is
+    /// present, with a full REST-API fallback — so `gh` is a recommended
+    /// transport, not a hard need.
+    #[test]
+    fn homebrew_advisory_requirements_emit_gh_when_pull_request_enabled() {
+        let mut c = homebrew_crate("demo");
+        if let Some(repo) = c
+            .publish
+            .as_mut()
+            .and_then(|p| p.homebrew.as_mut())
+            .and_then(|h| h.repository.as_mut())
+        {
+            repo.pull_request = Some(anodizer_core::config::PullRequestConfig {
+                enabled: Some(true),
+                ..Default::default()
+            });
+        }
+        let ctx = TestContextBuilder::new().crates(vec![c]).build();
+        let reqs = HomebrewPublisher::new().advisory_requirements(&ctx);
+        assert!(
+            reqs.iter().any(|r| matches!(
+                r,
+                anodizer_core::EnvRequirement::Tool { name } if name == "gh"
+            )),
+            "pull_request.enabled must recommend gh: {reqs:?}"
+        );
+    }
+
+    #[test]
+    fn homebrew_advisory_requirements_empty_when_all_entries_skipped() {
+        let mut c = homebrew_crate("demo");
+        if let Some(h) = c.publish.as_mut().and_then(|p| p.homebrew.as_mut()) {
+            h.skip_upload = Some(anodizer_core::config::StringOrBool::Bool(true));
+        }
+        let ctx = TestContextBuilder::new().crates(vec![c]).build();
+        let reqs = HomebrewPublisher::new().advisory_requirements(&ctx);
+        assert!(
+            reqs.is_empty(),
+            "every entry skipped ⇒ no advisory recommendations: {reqs:?}"
         );
     }
 

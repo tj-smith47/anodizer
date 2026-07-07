@@ -64,22 +64,7 @@ impl anodizer_core::Publisher for SchemastorePublisher {
     }
 
     fn requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
-        let cfg = &ctx.config.schemastore;
-        let globally_inactive = crate::publisher_helpers::entry_inactive(
-            ctx,
-            cfg.skip.as_ref(),
-            None,
-            cfg.if_condition.as_deref(),
-        );
-        let any_schema_active = cfg.schemas.iter().any(|s| {
-            !crate::publisher_helpers::entry_inactive(
-                ctx,
-                s.skip.as_ref(),
-                None,
-                s.if_condition.as_deref(),
-            )
-        });
-        if globally_inactive || !any_schema_active {
+        if !schemastore_active(ctx) {
             return Vec::new();
         }
         crate::publisher_helpers::git_repo_requirements(
@@ -87,6 +72,20 @@ impl anodizer_core::Publisher for SchemastorePublisher {
             ctx.config.schemastore.repository.as_ref(),
             Some("SCHEMASTORE_TOKEN"),
         )
+    }
+
+    fn advisory_requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // Every SchemaStore publish lands as a PR against
+        // `SchemaStore/schemastore`; `gh pr create` is the preferred
+        // transport with a full REST-API fallback, so `gh` is a
+        // recommendation, never a gate failure. Same activity gate as
+        // `requirements`.
+        if !schemastore_active(ctx) {
+            return Vec::new();
+        }
+        vec![anodizer_core::EnvRequirement::Tool {
+            name: "gh".to_string(),
+        }]
     }
 
     fn preflight(&self, ctx: &Context) -> anyhow::Result<PreflightCheck> {
@@ -98,6 +97,29 @@ impl anodizer_core::Publisher for SchemastorePublisher {
     fn rollback(&self, ctx: &mut Context, evidence: &PublishEvidence) -> anyhow::Result<()> {
         rollback_publish(ctx, evidence)
     }
+}
+
+/// Whether the SchemaStore publisher would do any work this run: the
+/// top-level block is not skipped/if-false AND at least one schema entry is
+/// itself active. Shared by the hard and advisory requirement derivations so
+/// their gates can never drift.
+fn schemastore_active(ctx: &Context) -> bool {
+    let cfg = &ctx.config.schemastore;
+    let globally_inactive = crate::publisher_helpers::entry_inactive(
+        ctx,
+        cfg.skip.as_ref(),
+        None,
+        cfg.if_condition.as_deref(),
+    );
+    let any_schema_active = cfg.schemas.iter().any(|s| {
+        !crate::publisher_helpers::entry_inactive(
+            ctx,
+            s.skip.as_ref(),
+            None,
+            s.if_condition.as_deref(),
+        )
+    });
+    !globally_inactive && any_schema_active
 }
 
 /// Run the SchemaStore publish, returning evidence of what was registered.

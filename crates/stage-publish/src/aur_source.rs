@@ -1175,6 +1175,40 @@ impl anodizer_core::Publisher for AurSourcePublisher {
         per_crate.chain(top_level).collect()
     }
 
+    fn advisory_requirements(&self, ctx: &Context) -> Vec<anodizer_core::EnvRequirement> {
+        // The schema floor's `bash -n` pass over the rendered source
+        // PKGBUILD warn+skips when bash is absent — a recommendation, never
+        // a gate failure. Same both-homes active-entry gate as
+        // `requirements`.
+        let per_crate_active = ctx
+            .config
+            .crate_universe()
+            .into_iter()
+            .filter_map(|c| c.publish.as_ref()?.aur_source.as_ref())
+            .any(|a| {
+                !crate::publisher_helpers::entry_inactive(
+                    ctx,
+                    a.skip.as_ref(),
+                    a.skip_upload.as_ref(),
+                    a.if_condition.as_deref(),
+                )
+            });
+        let top_level_active = ctx.config.aur_sources.iter().flatten().any(|a| {
+            !crate::publisher_helpers::entry_inactive(
+                ctx,
+                a.skip.as_ref(),
+                a.skip_upload.as_ref(),
+                a.if_condition.as_deref(),
+            )
+        });
+        if !per_crate_active && !top_level_active {
+            return Vec::new();
+        }
+        vec![anodizer_core::EnvRequirement::Tool {
+            name: "bash".to_string(),
+        }]
+    }
+
     fn run(&self, ctx: &mut Context) -> anyhow::Result<anodizer_core::PublishEvidence> {
         let log = ctx.logger("publish");
         let mut targets: Vec<AurSourceTarget> = Vec::new();
@@ -1347,6 +1381,41 @@ mod publisher_tests {
         assert_eq!(p.group(), PublisherGroup::Submitter);
         assert!(!p.required());
         assert_eq!(p.rollback_scope_needed(), Some("AUR_SSH_KEY write"));
+    }
+
+    /// The AUR schema floor runs `bash -n` over the rendered source
+    /// PKGBUILD when the tool is present and warn+skips otherwise, so it is
+    /// ADVISORY: recommended to the auto-install layer, never a blocker.
+    #[test]
+    fn aur_source_advisory_requirements_emit_bash_when_active() {
+        let ctx = TestContextBuilder::new()
+            .crates(vec![aur_source_crate(
+                "demo",
+                "ssh://aur@aur.archlinux.org/demo.git",
+            )])
+            .build();
+        let reqs = AurSourcePublisher::new().advisory_requirements(&ctx);
+        assert!(
+            reqs.iter().any(|r| matches!(
+                r,
+                anodizer_core::EnvRequirement::Tool { name } if name == "bash"
+            )),
+            "active aur_source entry must recommend bash: {reqs:?}"
+        );
+    }
+
+    #[test]
+    fn aur_source_advisory_requirements_empty_when_all_entries_skipped() {
+        let mut c = aur_source_crate("demo", "ssh://aur@aur.archlinux.org/demo.git");
+        if let Some(a) = c.publish.as_mut().and_then(|p| p.aur_source.as_mut()) {
+            a.skip = Some(anodizer_core::config::StringOrBool::Bool(true));
+        }
+        let ctx = TestContextBuilder::new().crates(vec![c]).build();
+        let reqs = AurSourcePublisher::new().advisory_requirements(&ctx);
+        assert!(
+            reqs.is_empty(),
+            "every entry skipped ⇒ no advisory recommendations: {reqs:?}"
+        );
     }
 
     /// `git_url` unset → derives `ssh://aur@aur.archlinux.org/<pkg>.git`

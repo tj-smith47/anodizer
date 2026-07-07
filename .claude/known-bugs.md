@@ -55,6 +55,47 @@ the behavioral surface) OR nominate a repo to restructure. Your call; not blocki
 
 ## Resolved
 
+- [x] **Chocolatey's prepublish guard hard-requires `xmllint` but no
+  requirement ever declared it — release died AFTER signing + GitHub
+  release (cfgd v0.5.0 run 28853272910, Publish cfgd leg, 2026-07-07
+  15:27Z) — RESOLVED 2026-07-07.** The strict pre-publish schema floor
+  treats a missing `xmllint` as a gate FAILURE (chocolatey moderation is a
+  one-way door), but `ChocolateyPublisher::requirements()` declared only
+  the CHOCOLATEY_API_KEY secret — so `anodizer tools` never told the
+  Action to install xmllint, preflight never probed it, and ubuntu-latest
+  (which ships without it) sailed through to the guard post-release.
+  **Fixed** in `chocolatey/publisher.rs`: `requirements()` now emits
+  `Tool{xmllint}` (hard, non-advisory) per active entry, gated by the same
+  `entry_inactive` filter as the secret. Sweeping the whole
+  spawn-vs-declared surface (every publisher + the schema_validation
+  layer) surfaced and closed the rest of the class in the same change:
+  (1) `git_repo_requirements` never demanded `ssh` on the
+  `repository.git.url` SSH-clone path (git spawns ssh unless a custom
+  `ssh_command` replaces it) — now hard-demanded, mirroring
+  `aur_ssh_requirements`; (2) gracefully-degrading tools were invisible to
+  the auto-install layer — added `Publisher::advisory_requirements()`
+  (collected via `SourcedRequirement::new_advisory`, same frame as the
+  build stage's cross toolchain) and declared `ruby` (homebrew formula+cask
+  floor), `bash` (aur + upstream-aur PKGBUILD floor), `nix-instantiate`
+  (nix floor), `gh` (preferred PR transport for homebrew/nix when
+  `pull_request.enabled`, always for winget/schemastore; full REST-API
+  fallback), and `dpkg-deb`/`rpm` (nfpm package cross-check, via
+  `anodizer_stage_nfpm::advisory_env_requirements`). Advisory reqs ride
+  the publish row's deselection predicate, so `--publishers`/`--skip`
+  drop them with their publisher.
+  **Evidence (red→green):** requirements-level
+  `chocolatey_requirements_emit_xmllint_tool` failed pre-fix with
+  `got: [EnvAllOf { vars: ["CHOCOLATEY_API_KEY"] }]`, tools-level
+  `chocolatey_config_emits_xmllint_in_json` failed pre-fix; both green
+  after. Class fixes: `git_repo_requirements_ssh_url_demands_ssh_tool`,
+  9 per-publisher `*_advisory_requirements_*` tests,
+  `advisory_env_requirements_track_configured_formats` (nfpm),
+  `homebrew_config_emits_advisory_ruby_in_json` and
+  `advisory_requirements_respect_publisher_deselection` — every one run
+  red first, then green. Live-eyeballed `anodizer tools --json` against a
+  chocolatey+homebrew+nfpm config: xmllint/git/cargo/nfpm required,
+  ruby/dpkg-deb/rpm/zig recommended, stdout pure JSON.
+
 - [x] **Parallel keyless cosign signing races on the cold TUF cache and
   fast-fail retries lose every round (cfgd v0.5.0 run 28853272910, Publish
   cfgd leg, 3×: 09:42Z + 10:05Z + retry 2026-07-07) — RESOLVED

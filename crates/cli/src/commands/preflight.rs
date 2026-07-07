@@ -353,14 +353,19 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
     // after the loop. The gate is decided ONCE, at the table row, so the two
     // halves can never gate on divergent predicates.
     let mut build_runs = false;
+    let mut publish_runs = false;
+    let mut nfpm_runs = false;
     for gated in GATED_STAGES {
         let stage_on = in_scope(gated.stage)
             && match gated.gate {
                 StageGate::Skip => !ctx.should_skip(gated.stage),
                 StageGate::Selected => !ctx.publisher_deselected(gated.stage),
             };
-        if gated.stage == "build" {
-            build_runs = stage_on;
+        match gated.stage {
+            "build" => build_runs = stage_on,
+            "publish" => publish_runs = stage_on,
+            "nfpm" => nfpm_runs = stage_on,
+            _ => {}
         }
         if !stage_on {
             continue;
@@ -386,6 +391,39 @@ pub fn collect_requirements(ctx: &Context, scope: PreflightScope) -> Vec<Sourced
             anodizer_stage_build::cross_tool_requirements(ctx)
                 .into_iter()
                 .map(|r| SourcedRequirement::new_advisory("stage:build", r)),
+        );
+    }
+
+    // Publisher ADVISORY requirements — optional validators (`ruby -c`,
+    // `bash -n`, `nix-instantiate --parse`) and preferred transports (`gh`)
+    // whose absence degrades a publish gracefully instead of failing it.
+    // Same gate + deselection predicate as the hard `publish` table row, so
+    // a deselected publisher can never surface even a warn for tools it will
+    // not use.
+    if publish_runs {
+        for publisher in anodizer_stage_publish::registry::all_publishers() {
+            if ctx.publisher_deselected(publisher.name()) {
+                continue;
+            }
+            let source = format!("publish:{}", publisher.name());
+            out.extend(
+                publisher
+                    .advisory_requirements(ctx)
+                    .into_iter()
+                    .map(|r| SourcedRequirement::new_advisory(&source, r)),
+            );
+        }
+    }
+
+    // nfpm's schema floor cross-checks built .deb/.rpm packages with the
+    // native tooling (`dpkg-deb --info`, `rpm -qp`) when present, and
+    // warn+skips when absent — advisory, reusing the nfpm row's gate
+    // decision like the build stage's cross-toolchain append.
+    if nfpm_runs {
+        out.extend(
+            anodizer_stage_nfpm::advisory_env_requirements(ctx)
+                .into_iter()
+                .map(|r| SourcedRequirement::new_advisory("stage:nfpm", r)),
         );
     }
 
@@ -710,6 +748,45 @@ publish:
         assert!(
             aur_key,
             "workspace crate's aur key requirement missing: {reqs:?}"
+        );
+    }
+
+    /// Publisher ADVISORY requirements ride the same deselection predicate
+    /// as the hard set: a `--publishers` allowlist that excludes homebrew
+    /// must drop its `ruby` recommendation, while an unfiltered run carries
+    /// it (advisory, sourced to the publisher).
+    #[test]
+    fn advisory_requirements_respect_publisher_deselection() {
+        let yaml = r#"
+name: top
+publish:
+  homebrew:
+    repository: { owner: acme, name: homebrew-tap }
+"#;
+        let ruby_advisory = |reqs: &[SourcedRequirement]| {
+            reqs.iter().any(|r| {
+                r.advisory
+                    && r.source == "publish:homebrew"
+                    && matches!(
+                        &r.requirement,
+                        EnvRequirement::Tool { name } if name == "ruby"
+                    )
+            })
+        };
+        let ctx = TestContextBuilder::new()
+            .crates(vec![crate_from_yaml(yaml)])
+            .build();
+        assert!(
+            ruby_advisory(&collect_requirements(&ctx, PreflightScope::Full)),
+            "unfiltered run must carry homebrew's advisory ruby"
+        );
+        let deselected = TestContextBuilder::new()
+            .crates(vec![crate_from_yaml(yaml)])
+            .publisher_allowlist(vec!["npm".to_string()])
+            .build();
+        assert!(
+            !ruby_advisory(&collect_requirements(&deselected, PreflightScope::Full)),
+            "a --publishers allowlist excluding homebrew must drop its advisory ruby"
         );
     }
 

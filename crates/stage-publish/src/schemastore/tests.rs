@@ -499,3 +499,57 @@ fn format_vendor_schema_preserves_key_order() {
         "key order must be preserved (type < $schema < title); got:\n{out}"
     );
 }
+
+/// The SchemaStore publish always lands as a PR against
+/// `SchemaStore/schemastore`; `gh pr create` is the preferred transport with
+/// a full REST-API fallback, so `gh` is ADVISORY — recommended, never a
+/// blocker.
+#[test]
+fn schemastore_advisory_requirements_emit_gh_when_active() {
+    use anodizer_core::Publisher;
+    use anodizer_core::config::{Config, SchemaEntry, SchemastoreConfig};
+    use anodizer_core::context::{Context, ContextOptions};
+    let config = Config {
+        schemastore: SchemastoreConfig {
+            schemas: vec![SchemaEntry {
+                name: "Anodizer".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let ctx = Context::new(config, ContextOptions::default());
+    let reqs = crate::schemastore::SchemastorePublisher::new().advisory_requirements(&ctx);
+    assert!(
+        reqs.iter().any(|r| matches!(
+            r,
+            anodizer_core::EnvRequirement::Tool { name } if name == "gh"
+        )),
+        "active schemastore config must recommend gh: {reqs:?}"
+    );
+}
+
+#[test]
+fn schemastore_advisory_requirements_empty_when_skipped() {
+    use anodizer_core::Publisher;
+    use anodizer_core::config::{Config, SchemaEntry, SchemastoreConfig, StringOrBool};
+    use anodizer_core::context::{Context, ContextOptions};
+    let config = Config {
+        schemastore: SchemastoreConfig {
+            skip: Some(StringOrBool::Bool(true)),
+            schemas: vec![SchemaEntry {
+                name: "Anodizer".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let ctx = Context::new(config, ContextOptions::default());
+    let reqs = crate::schemastore::SchemastorePublisher::new().advisory_requirements(&ctx);
+    assert!(
+        reqs.is_empty(),
+        "a skipped schemastore config must recommend nothing: {reqs:?}"
+    );
+}

@@ -389,6 +389,19 @@ pub(crate) fn git_repo_requirements(
         .and_then(|g| g.url.as_deref())
         .is_some_and(|u| !u.is_empty());
     if ssh_url {
+        // The SSH clone spawns `ssh` via git — either the default transport
+        // or the `ssh -i …` GIT_SSH_COMMAND built for a configured key
+        // (`clone_repo_ssh`). A custom `ssh_command` replaces that invocation
+        // wholesale, so it lifts the demand — same rule as
+        // `aur_ssh_requirements`.
+        let custom_ssh_command = git_cfg
+            .and_then(|g| g.ssh_command.as_deref())
+            .is_some_and(|c| !c.is_empty());
+        if !custom_ssh_command {
+            out.push(anodizer_core::EnvRequirement::Tool {
+                name: "ssh".to_string(),
+            });
+        }
         for field in [
             git_cfg.and_then(|g| g.private_key.as_deref()),
             git_cfg.and_then(|g| g.ssh_command.as_deref()),
@@ -449,6 +462,16 @@ pub(crate) fn aur_ssh_requirements(
         }
     }
     out
+}
+
+/// True when `repo` opts into PR-based publishing — the same
+/// `pull_request.enabled == Some(true)` gate `maybe_submit_pr` dispatches
+/// on, so advisory `gh` recommendations track exactly the configs that
+/// would reach the gh-CLI transport.
+pub(crate) fn pull_request_enabled(repo: Option<&anodizer_core::config::RepositoryConfig>) -> bool {
+    repo.and_then(|r| r.pull_request.as_ref())
+        .and_then(|pr| pr.enabled)
+        .unwrap_or(false)
 }
 
 /// Requirement for a secret resolved as "templated config value, else env
@@ -580,6 +603,56 @@ mod tests {
         assert!(
             !ssh_demanded(&reqs),
             "git_ssh_command without a key must not demand ssh: {reqs:?}"
+        );
+    }
+
+    /// A `repository.git.url` clone rides SSH: git spawns `ssh` (either the
+    /// default transport or the `ssh -i …` GIT_SSH_COMMAND built for a
+    /// configured key), so the `ssh` binary must be demanded alongside `git`
+    /// — mirroring `aur_ssh_requirements`. Only a custom `ssh_command`
+    /// (which replaces the invocation wholesale) lifts the demand.
+    #[test]
+    fn git_repo_requirements_ssh_url_demands_ssh_tool() {
+        use anodizer_core::config::{GitRepoConfig, RepositoryConfig};
+        use anodizer_core::test_helpers::TestContextBuilder;
+        let ssh_demanded = |reqs: &[anodizer_core::EnvRequirement]| {
+            reqs.iter().any(|r| {
+                matches!(
+                    r,
+                    anodizer_core::EnvRequirement::Tool { name } if name == "ssh"
+                )
+            })
+        };
+        let repo_with_git = |ssh_command: Option<&str>| RepositoryConfig {
+            git: Some(GitRepoConfig {
+                url: Some("ssh://git@github.com/acme/tap.git".to_string()),
+                ssh_command: ssh_command.map(str::to_string),
+                private_key: Some("{{ .Env.TAP_SSH_KEY }}".to_string()),
+            }),
+            ..Default::default()
+        };
+        let ctx = TestContextBuilder::new().build();
+
+        let reqs = git_repo_requirements(&ctx, Some(&repo_with_git(None)), None);
+        assert!(
+            ssh_demanded(&reqs),
+            "an SSH git.url without a custom ssh_command must demand ssh: {reqs:?}"
+        );
+
+        let reqs = git_repo_requirements(
+            &ctx,
+            Some(&repo_with_git(Some("ssh-wrapper -o IdentityAgent=none"))),
+            None,
+        );
+        assert!(
+            !ssh_demanded(&reqs),
+            "a custom ssh_command must lift the ssh demand: {reqs:?}"
+        );
+
+        let reqs = git_repo_requirements(&ctx, Some(&RepositoryConfig::default()), None);
+        assert!(
+            !ssh_demanded(&reqs),
+            "the HTTPS clone path must not demand ssh: {reqs:?}"
         );
     }
 
