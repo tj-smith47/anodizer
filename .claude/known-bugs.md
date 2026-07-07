@@ -55,6 +55,83 @@ the behavioral surface) OR nominate a repo to restructure. Your call; not blocki
 
 ## Resolved
 
+- [x] **Cargo poison guard dead-ends every re-cut of a partially-published
+  workspace release (cfgd v0.5.0 attempt #5, 2026-07-07) — RESOLVED
+  2026-07-07.** cfgd-crd@0.5.0 was published to
+  crates.io by a PRIOR release run; the re-cut's locally-packaged tarball
+  differed from the published one in exactly two files —
+  `cfgd-crd-0.5.0/CHANGELOG.md` (anodizer's own changelog stage regenerates
+  it each re-cut) and `cfgd-crd-0.5.0/Cargo.lock` (workspace lockfile moved
+  via an unrelated dependabot bump) — with byte-identical sources. The guard
+  ("ALREADY published with DIFFERENT content… Differing entries:
+  cfgd-crd-0.5.0/CHANGELOG.md, cfgd-crd-0.5.0/Cargo.lock") hard-failed, and
+  since anodizer publishes workspace crates sequentially with fail-stop,
+  partially-published releases are a state the tool itself guarantees — so
+  every future re-cut was dead. **Root cause:** `crates_equal_modulo_vcs`'s
+  equivalence set covered only `.cargo_vcs_info.json` (modulo `git.sha1`),
+  treating the tool's own release-process artifacts as poison. **Fixed:**
+  built-in (deliberately NOT user-configurable) re-cut equivalence rules in
+  `crates/stage-publish/src/cargo.rs`, crate-root position only: crate-root
+  `CHANGELOG.md` drift is equivalent ONLY when the changelog stage is
+  configured/active for the run (`changelog_stage_regenerates_files`,
+  threaded as an explicit bool from `publish_to_cargo_with_guard` through
+  `decide_already_published`); crate-root `Cargo.lock` drift is equivalent
+  ONLY for lib-only crates (bin-ness judged from the packaged normalized
+  `Cargo.toml` inside the tarball + conventional bin-source paths — binary
+  crates stay byte-strict because `cargo install --locked` exposes the
+  packaged lockfile). Clean-skip log enumerates exactly which normalizations
+  applied; non-qualifying drift hard-fails naming the file AND why it was
+  not forgiven; nested files and `Cargo.toml` stay byte-strict.
+  **Evidence (red→green proven by temporarily neutering the two new
+  normalization branches — headline test then reproduced the attempt-#5
+  hard-fail verbatim):**
+  `decide_already_published_recut_changelog_and_lockfile_skips_with_changelog_stage`
+  (the exact cfgd-crd@0.5.0 scenario),
+  `decide_already_published_changelog_drift_without_changelog_stage_hard_fails`,
+  `decide_already_published_lockfile_drift_on_binary_crate_hard_fails`,
+  `crates_equal_modulo_vcs_source_drift_beside_normalizable_files_differs`,
+  `crates_equal_modulo_vcs_nested_changelog_and_lockfile_are_byte_compared`,
+  `crates_equal_modulo_vcs_cargo_toml_drift_always_differs`,
+  `packaged_crate_has_bin_targets_reads_the_normalized_manifest`;
+  stage-publish suite 2524/2524.
+
+- [x] **Tag rollback consulted only the per-run summary, deleting tags whose
+  versions were burned on crates.io by a PRIOR run (cfgd crd-v0.5.0, attempt
+  #5) — RESOLVED 2026-07-07.** Attempt #5's
+  rollback logged "no one-way-door publisher landed for crd-v0.5.0 (per run
+  summary) — rollback permitted" and deleted the tag even though crd@0.5.0
+  had been live on crates.io since a prior run. **Root cause:** the
+  published-state guard's evidence layers (run summary; GH-release fallback)
+  both answer per-run/per-checkout questions, but one-way-door burn state is
+  GLOBAL. **Fixed:** `check_not_irreversibly_published`
+  (`crates/cli/src/commands/tag/rollback.rs`) gained a layer-2 crates.io
+  sparse-index probe: each deletable tag maps to `(crate, version)` pairs via
+  the config's crate tag families (`crates_io_versions_for_tag`; per-crate
+  AND lockstep tags, custom-registry crates excluded), and the probe reuses
+  the publish stage's sparse-index client
+  (`anodizer_stage_publish::cargo::published_on_crates_io`, new pub wrapper
+  over `is_already_published`; `targets_crates_io` made pub). Version live on
+  the index → refuse (fix forward); index unreachable → refuse (fail
+  closed); no parseable config → warn + proceed (no mapping to probe).
+  `--force` help (cli + rustdoc) documents the new layer; docs
+  (`release-resilience.md`) updated. Test seam: injectable
+  `index_probe: &dyn Fn(&str, &str) -> Result<bool>` param (same convention
+  as the `gh_binary` stub), plus a harness-gated
+  `ANODIZER_TEST_CRATES_IO_INDEX_BASE` env override (honored only under
+  `ANODIZE_TEST_HARNESS=1`) so the spawned-binary failure-policy integration
+  test stays hermetic (`test-project@0.1.0` is squatted on the real index).
+  **Evidence (red→green proven by temporarily removing the layer-2 call —
+  refuse + fail-closed tests then failed):**
+  `crates_io_probe_refuses_burned_version_despite_clean_summary` (asserts the
+  probe receives `cfgd-crd@0.5.0` from tag `crd-v0.5.0`),
+  `crates_io_probe_permits_absent_version_with_clean_summary`,
+  `crates_io_probe_unreachable_index_fails_closed`,
+  `crates_io_versions_for_tag_{maps_tag_families_to_crates,lockstep_maps_every_sharing_crate,excludes_custom_registry_crates}`,
+  `run_force_bypasses_crates_io_probe`; end-to-end:
+  `release_failure_default_rollback_reverts_bump_and_deletes_tag` now runs
+  against a local 404 index responder and asserts exactly one probe hit
+  during the auto-rollback path. cli suite fully green.
+
 - [x] **npm publisher's transient-retry budget could exceed the `publish-npm`
   job `timeout-minutes`, guillotining the loop mid-publish (partial release) —
   RESOLVED 2026-07-06 (`b0eea2f1` + `4d7e2068`).** v0.15.0 run 28766146134

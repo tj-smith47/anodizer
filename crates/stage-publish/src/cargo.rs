@@ -176,21 +176,24 @@ pub fn publish_command(crate_name: &str, cfg: Option<&CargoPublishConfig>) -> Ve
 /// would surface the violation in a debug build long before the slice
 /// could panic at runtime.
 pub(crate) fn sparse_index_url(crate_name: &str) -> String {
+    format!("https://index.crates.io/{}", sparse_index_path(crate_name))
+}
+
+/// The registry-relative sparse-index path for a crate (`1/a`, `2/ab`,
+/// `3/a/abc`, `ab/cd/abcdef`), shared by [`sparse_index_url`] and the
+/// test-harness index-base override in [`published_on_crates_io`] so the
+/// sharding scheme exists exactly once.
+fn sparse_index_path(crate_name: &str) -> String {
     debug_assert!(
         crate_name.is_ascii(),
         "cargo crate names must be ASCII; got {crate_name:?}"
     );
     let lower = crate_name.to_ascii_lowercase();
     match lower.len() {
-        1 => format!("https://index.crates.io/1/{}", lower),
-        2 => format!("https://index.crates.io/2/{}", lower),
-        3 => format!("https://index.crates.io/3/{}/{}", &lower[..1], lower),
-        _ => format!(
-            "https://index.crates.io/{}/{}/{}",
-            &lower[..2],
-            &lower[2..4],
-            lower
-        ),
+        1 => format!("1/{}", lower),
+        2 => format!("2/{}", lower),
+        3 => format!("3/{}/{}", &lower[..1], lower),
+        _ => format!("{}/{}/{}", &lower[..2], &lower[2..4], lower),
     }
 }
 
@@ -296,6 +299,37 @@ fn parse_index_cksum_for_version(body: &str, version: &str) -> Option<String> {
     })
 }
 
+/// Probe crates.io's sparse index for whether `name` at `version` is
+/// published — the GLOBAL registry answer, independent of any single run's
+/// evidence. `Ok(true)` = the version is live (burned — crates.io never
+/// accepts the same version twice), `Ok(false)` = positively absent (index
+/// 404 or version missing from the index body), `Err` = the index could not
+/// be consulted (callers making destructive decisions must FAIL CLOSED on
+/// this).
+///
+/// Public so failure-recovery tooling (`tag rollback`'s published-state
+/// guard) reuses the same sparse-index client + JSONL parser the publish
+/// stage trusts, instead of growing a second index parser.
+pub fn published_on_crates_io(
+    name: &str,
+    version: &str,
+    policy: &anodizer_core::retry::RetryPolicy,
+) -> Result<bool> {
+    // Test-harness index-base override, mirroring `--simulate-failure`'s env
+    // gating: integration tests drive the real binary across a process
+    // boundary, so an env-routed base pointing at a local responder is the
+    // only way to keep this probe hermetic there. Honored ONLY under
+    // ANODIZE_TEST_HARNESS=1 so no production run can point the
+    // published-state guard at a friendly index.
+    let url = match std::env::var("ANODIZER_TEST_CRATES_IO_INDEX_BASE") {
+        Ok(base) if std::env::var("ANODIZE_TEST_HARNESS").as_deref() == Ok("1") => {
+            format!("{}/{}", base.trim_end_matches('/'), sparse_index_path(name))
+        }
+        _ => sparse_index_url(name),
+    };
+    Ok(is_already_published_at(&url, name, version, policy)?.is_some())
+}
+
 /// Whether a crate's resolved `publish.cargo` block targets the default
 /// crates.io registry, where the sparse-index cksum the content-vs-version
 /// guard compares against is authoritative.
@@ -306,11 +340,55 @@ fn parse_index_cksum_for_version(body: &str, version: &str) -> Option<String> {
 /// only hold against the registry actually being published to, so both are
 /// disabled for non-crates.io targets and the publish is attempted (the
 /// target registry's own server-side conflict handling governs idempotency).
-fn targets_crates_io(cfg: Option<&CargoPublishConfig>) -> bool {
+///
+/// Public for the same reason as [`published_on_crates_io`]: `tag rollback`'s
+/// published-state guard must scope its crates.io probe with the same
+/// judgment the publisher applies.
+pub fn targets_crates_io(cfg: Option<&CargoPublishConfig>) -> bool {
     match cfg {
         None => true,
         Some(c) => c.registry.is_none() && c.index.is_none(),
     }
+}
+
+/// Whether anodizer's changelog stage (re)generates on-disk `CHANGELOG.md`
+/// files under this run's config — the condition under which a crate-root
+/// `CHANGELOG.md` difference against an already-published version is
+/// anodizer's own re-cut artifact rather than operator-authored drift (see
+/// [`crates_equal_modulo_vcs`]).
+///
+/// Mirrors the gates `ChangelogStage::run` applies before writing files (a
+/// deliberate pairing — keep the two in sync when the stage grows a new
+/// gate):
+/// - a `changelog:` block must be configured,
+/// - the stage must not be `--skip`ped,
+/// - snapshot mode skips the stage unless `changelog.snapshot: true`,
+/// - `use: github-native` delegates the release body to GitHub's API and
+///   writes no on-disk changelog files,
+/// - a truthy `changelog.skip` template turns the stage off. An unrenderable
+///   template also counts as inactive: the guard then stays byte-strict on
+///   CHANGELOG.md (fail closed) instead of forgiving drift it cannot prove
+///   the tool produced.
+fn changelog_stage_regenerates_files(ctx: &Context) -> bool {
+    let Some(cfg) = ctx.config.changelog.as_ref() else {
+        return false;
+    };
+    if ctx.should_skip("changelog") {
+        return false;
+    }
+    if ctx.is_snapshot() && !cfg.resolved_snapshot() {
+        return false;
+    }
+    if cfg.resolved_use_source() == "github-native" {
+        return false;
+    }
+    if let Some(d) = cfg.skip.as_ref() {
+        match d.try_evaluates_to_true(|s| ctx.render_template(s)) {
+            Ok(false) => {}
+            Ok(true) | Err(_) => return false,
+        }
+    }
+    true
 }
 
 /// Local `.crate` package produced by [`local_crate_cksum`]: the sha256 the
@@ -478,15 +556,48 @@ fn fetch_published_crate(
     Ok(bytes)
 }
 
+/// A release-process normalization [`crates_equal_modulo_vcs`] applied to
+/// forgive a byte difference in one crate-root entry. These are the ONLY
+/// files whose drift the guard may attribute to anodizer's own release
+/// machinery; the set is built in on purpose — a user-facing ignore list
+/// would let a config knob reopen the content-drift poison hole the guard
+/// exists to close.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecutNormalization {
+    /// Crate-root `.cargo_vcs_info.json`, compared modulo its `git.sha1`
+    /// field (the release commit stamp of a same-source re-cut).
+    VcsCommitStamp,
+    /// Crate-root `CHANGELOG.md`, forgiven because the changelog stage is
+    /// active for this run and regenerates the file on every re-cut.
+    ChangelogRegenerated,
+    /// Crate-root `Cargo.lock` on a crate with no binary targets: cargo
+    /// ignores a dependency's packaged lockfile for library consumers, so
+    /// lockfile-only drift cannot change what any consumer builds.
+    LockfileLibOnly,
+}
+
+impl RecutNormalization {
+    /// Operator-facing description for the clean-skip log line.
+    fn describe(self) -> &'static str {
+        match self {
+            Self::VcsCommitStamp => ".cargo_vcs_info.json (commit stamp)",
+            Self::ChangelogRegenerated => "CHANGELOG.md (regenerated by the changelog stage)",
+            Self::LockfileLibOnly => "Cargo.lock (lib-only crate)",
+        }
+    }
+}
+
 /// Outcome of comparing a local `.crate` tarball against the published one,
-/// modulo the release-commit stamp `cargo package` embeds in
-/// `.cargo_vcs_info.json`.
+/// modulo anodizer's own release-process artifacts (see
+/// [`RecutNormalization`]).
 enum CrateContentMatch {
-    /// Every entry matches, except `.cargo_vcs_info.json`'s `git.sha1` (the
-    /// legitimate per-commit delta of a same-source re-cut).
-    IdenticalModuloVcs,
-    /// At least one entry genuinely differs; lists the differing paths so an
-    /// operator can see what drifted.
+    /// Every entry matches, except release-process artifacts the comparison
+    /// normalized; `normalized` enumerates exactly which rules fired (empty
+    /// when the archives are byte-identical).
+    Equivalent { normalized: Vec<RecutNormalization> },
+    /// At least one entry genuinely differs; lists the differing paths (with
+    /// a why-not-normalized annotation for conditionally-normalizable files)
+    /// so an operator can see what drifted and why it was not forgiven.
     Differs(Vec<String>),
 }
 
@@ -535,18 +646,111 @@ fn vcs_info_modulo_sha(bytes: &[u8]) -> Option<serde_json::Value> {
     Some(value)
 }
 
+/// Whether `path` is the named file at the crate root of a `.crate` tarball
+/// (`{name}-{version}/<file_name>`).
+///
+/// The release-process normalizations apply ONLY at exactly this position: a
+/// file with the same basename anywhere deeper is ordinary packaged source
+/// and must be byte-compared, or a real source change hiding under a
+/// well-known name would be masked into a false skip. Count only Normal
+/// components so a leading `./` (a CurDir component) can't inflate the count
+/// and misclassify the root file as nested source; cargo's .crate tarballs
+/// never emit `./`-prefixed entries, but the gate shouldn't depend on that
+/// external emission detail.
+fn is_crate_root_entry(path: &std::path::Path, file_name: &str) -> bool {
+    let normal_component_count = path
+        .components()
+        .filter(|c| matches!(c, std::path::Component::Normal(_)))
+        .count();
+    normal_component_count == 2 && path.file_name().is_some_and(|f| f == file_name)
+}
+
+/// Whether the packaged crate carries any binary target, judged from the
+/// LOCAL tarball's entries.
+///
+/// Source of truth: the normalized crate-root `Cargo.toml` INSIDE the
+/// tarball. `cargo package` rewrites the packaged manifest with explicit
+/// target sections (auto-discovered bins become literal `[[bin]]` tables),
+/// so the packaged manifest — unlike the workspace-relative source manifest
+/// — states bin-ness explicitly, needs no `cargo metadata` subprocess, and
+/// describes exactly the artifact being compared (the tarball bytes are
+/// already in memory). Local vs published manifests are interchangeable
+/// here: a Cargo.toml byte difference is never normalizable, so the caller
+/// hard-fails before this answer matters.
+///
+/// Belt-and-braces: conventional bin source paths (`src/main.rs`,
+/// `src/bin/**`) in the tarball also count as binary targets, guarding
+/// against a manifest normalization scheme that leaves auto-discovery
+/// implicit. The supplement only ever WIDENS "has bins" (tightening the
+/// guard toward byte-strict), never widens "lib-only".
+///
+/// Returns `None` when the root Cargo.toml is missing or unparseable — the
+/// caller fails closed (byte-strict Cargo.lock) on an indeterminate answer.
+fn packaged_crate_has_bin_targets(
+    entries: &std::collections::BTreeMap<std::path::PathBuf, Vec<u8>>,
+) -> Option<bool> {
+    let manifest_bytes = entries
+        .iter()
+        .find(|(p, _)| is_crate_root_entry(p, "Cargo.toml"))
+        .map(|(_, b)| b)?;
+    let manifest = std::str::from_utf8(manifest_bytes).ok()?;
+    let doc = manifest.parse::<toml_edit::DocumentMut>().ok()?;
+    let explicit_bins = match doc.get("bin") {
+        None => false,
+        Some(item) => item
+            .as_array_of_tables()
+            .map(|t| !t.is_empty())
+            .or_else(|| item.as_array().map(|a| !a.is_empty()))
+            // A `bin` key of an unrecognized shape: assume binary targets
+            // exist so the lockfile stays byte-strict (fail closed).
+            .unwrap_or(true),
+    };
+    let conventional_bin_sources = entries.keys().any(|p| {
+        let mut normals = p
+            .components()
+            .filter_map(|c| match c {
+                std::path::Component::Normal(n) => n.to_str(),
+                _ => None,
+            })
+            .skip(1); // {name}-{version}/ root dir
+        matches!(
+            (normals.next(), normals.next()),
+            (Some("src"), Some("main.rs")) | (Some("src"), Some("bin"))
+        )
+    });
+    Some(explicit_bins || conventional_bin_sources)
+}
+
 /// Pure, unit-testable comparison at the heart of the content-vs-version
 /// guard's slow path: are `local_crate` and `published_crate` the SAME
-/// published sources, differing only in the release commit stamp?
+/// published sources, differing only in anodizer's own release-process
+/// artifacts?
 ///
 /// Both inputs are `.crate` files (gzip-compressed tarballs). Two crates
 /// represent the same published sources iff, for every tar entry path, the
-/// bytes are equal, EXCEPT `.cargo_vcs_info.json`, which is compared modulo
-/// its `git.sha1` field (a legitimate per-commit delta — see
-/// [`local_crate_cksum`]).
+/// bytes are equal, EXCEPT (crate-root position only — see
+/// [`is_crate_root_entry`]):
+///
+/// - `.cargo_vcs_info.json` — compared modulo its `git.sha1` field (a
+///   legitimate per-commit delta — see [`local_crate_cksum`]).
+/// - `CHANGELOG.md` — forgiven ONLY when `changelog_stage_active` is true:
+///   anodizer's changelog stage regenerates the file on every re-cut, so
+///   the drift is the tool's own artifact. With no changelog stage in play
+///   the drift is operator-authored and stays a hard divergence.
+/// - `Cargo.lock` — forgiven ONLY for lib-only crates (no binary targets;
+///   see [`packaged_crate_has_bin_targets`]): cargo ignores a dependency's
+///   packaged lockfile for library consumers, but for binary crates
+///   `cargo install --locked` makes it consumer-visible, so it stays
+///   byte-strict there.
+///
+/// A file present in only one archive is always an unambiguous divergence,
+/// even for the normalizable names. Every other entry — `Cargo.toml`
+/// included — is byte-compared; the equivalence set is deliberately BUILT
+/// IN with no config knob, so consumers cannot widen it into a poison hole.
 fn crates_equal_modulo_vcs(
     local_crate: &[u8],
     published_crate: &[u8],
+    changelog_stage_active: bool,
 ) -> Result<CrateContentMatch> {
     let local_entries = read_crate_entries(local_crate)
         .context("publish: unpack local .crate for content comparison")?;
@@ -554,6 +758,7 @@ fn crates_equal_modulo_vcs(
         .context("publish: unpack published .crate for content comparison")?;
 
     let mut differs = Vec::new();
+    let mut normalized = Vec::new();
     let all_paths: std::collections::BTreeSet<&std::path::PathBuf> = local_entries
         .keys()
         .chain(published_entries.keys())
@@ -568,47 +773,54 @@ fn crates_equal_modulo_vcs(
             differs.push(path_str);
             continue;
         };
+        if local_bytes == published_bytes {
+            continue;
+        }
 
-        // cargo package emits .cargo_vcs_info.json ONLY at the crate root
-        // ({name}-{version}/.cargo_vcs_info.json). A file with this basename
-        // anywhere deeper is ordinary packaged source and must be byte-compared,
-        // not sha-normalized, or a real source change hiding inside a `git.sha1`
-        // key would be masked into a false skip. Count only Normal components so
-        // a leading `./` (a CurDir component) can't inflate the count and
-        // misclassify the root file as nested source; cargo's .crate tarballs
-        // never emit `./`-prefixed entries, but the gate shouldn't depend on
-        // that external emission detail.
-        let normal_component_count = path
-            .components()
-            .filter(|c| matches!(c, std::path::Component::Normal(_)))
-            .count();
-        let is_vcs_info = normal_component_count == 2
-            && path
-                .file_name()
-                .is_some_and(|f| f == ".cargo_vcs_info.json");
-
-        if is_vcs_info {
+        if is_crate_root_entry(path, ".cargo_vcs_info.json") {
             match (
                 vcs_info_modulo_sha(local_bytes),
                 vcs_info_modulo_sha(published_bytes),
             ) {
-                (Some(l), Some(p)) if l == p => {}
+                (Some(l), Some(p)) if l == p => {
+                    normalized.push(RecutNormalization::VcsCommitStamp);
+                }
                 // Either side failed to parse, or a field OTHER than git.sha1
                 // differs — a structural change beyond the commit stamp is
-                // real drift, so fall back to a raw byte compare.
-                _ => {
-                    if local_bytes != published_bytes {
-                        differs.push(path_str);
-                    }
-                }
+                // real drift.
+                _ => differs.push(path_str),
             }
-        } else if local_bytes != published_bytes {
+        } else if is_crate_root_entry(path, "CHANGELOG.md") {
+            if changelog_stage_active {
+                normalized.push(RecutNormalization::ChangelogRegenerated);
+            } else {
+                differs.push(format!(
+                    "{path_str} (not treated as a release-process artifact: no changelog \
+                     stage is configured/enabled for this run, so anodizer did not \
+                     regenerate this file and the drift is real)"
+                ));
+            }
+        } else if is_crate_root_entry(path, "Cargo.lock") {
+            match packaged_crate_has_bin_targets(&local_entries) {
+                Some(false) => normalized.push(RecutNormalization::LockfileLibOnly),
+                Some(true) => differs.push(format!(
+                    "{path_str} (not treated as a release-process artifact: the crate has \
+                     binary targets, so the packaged lockfile is consumer-visible via \
+                     `cargo install --locked` and stays byte-strict)"
+                )),
+                None => differs.push(format!(
+                    "{path_str} (not treated as a release-process artifact: could not \
+                     determine binary targets from the packaged Cargo.toml, so the \
+                     lockfile stays byte-strict)"
+                )),
+            }
+        } else {
             differs.push(path_str);
         }
     }
 
     if differs.is_empty() {
-        Ok(CrateContentMatch::IdenticalModuloVcs)
+        Ok(CrateContentMatch::Equivalent { normalized })
     } else {
         Ok(CrateContentMatch::Differs(differs))
     }
@@ -616,10 +828,11 @@ fn crates_equal_modulo_vcs(
 
 /// Outcome of the already-published content-vs-version poison guard for one
 /// crate. `Skip` means the version is on crates.io with content identical to
-/// (or identical modulo `.cargo_vcs_info.json` vs) the local `.crate` — a
-/// safe idempotent re-cut; `Publish` means proceed to `cargo publish`. A
-/// poisoned version (published with genuinely DIFFERENT content) never
-/// reaches either arm — the guard hard-fails instead.
+/// (or source-equivalent modulo release-process artifacts vs — see
+/// [`crates_equal_modulo_vcs`]) the local `.crate` — a safe idempotent
+/// re-cut; `Publish` means proceed to `cargo publish`. A poisoned version
+/// (published with genuinely DIFFERENT content) never reaches either arm —
+/// the guard hard-fails instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CargoSkipDecision {
     Skip,
@@ -633,10 +846,19 @@ enum CargoSkipDecision {
 /// 2. **Slow path** (local sha256 != index `cksum`): fetch the published
 ///    `.crate` via `fetch_published`, verify ITS sha256 matches `index_cksum`
 ///    (a mismatched download is not a valid comparison basis — fail closed),
-///    then compare local vs published with [`crates_equal_modulo_vcs`]:
-///    identical modulo `.cargo_vcs_info.json` → `Skip` (same sources,
-///    different release commit); genuinely different → HARD FAIL, naming the
-///    differing entry paths.
+///    then compare local vs published with [`crates_equal_modulo_vcs`].
+///    The equivalence set is built in (never user-configurable) and covers,
+///    at the crate-root position only:
+///    - `.cargo_vcs_info.json` modulo `git.sha1` (always);
+///    - `CHANGELOG.md` (only when `changelog_stage_active` — anodizer's own
+///      changelog stage regenerates it between re-cuts);
+///    - `Cargo.lock` (only for lib-only crates — binary crates expose the
+///      packaged lockfile to consumers via `cargo install --locked`).
+///
+///    Source-equivalent → `Skip`, with a log line enumerating exactly which
+///    normalizations applied; genuinely different → HARD FAIL, naming the
+///    differing entry paths (annotated with WHY a conditionally-normalizable
+///    file was not forgiven when the condition did not hold).
 /// 3. index cksum is empty → cannot verify content identity → FAIL CLOSED. An
 ///    empty cksum on an index entry the parser DID return signals a
 ///    malformed/unparsed index line, not a benign registry gap (crates.io
@@ -652,8 +874,9 @@ enum CargoSkipDecision {
 ///    version, so refuse to skip.
 ///
 /// `Skip` is therefore reachable ONLY via a confirmed byte-identical match or
-/// a confirmed identical-modulo-vcs match against the verified published
-/// artifact; every other ("cannot verify") outcome fails closed.
+/// a confirmed source-equivalent match (release-process artifacts only)
+/// against the verified published artifact; every other ("cannot verify")
+/// outcome fails closed.
 #[allow(clippy::too_many_arguments)]
 fn decide_already_published(
     name: &str,
@@ -661,6 +884,7 @@ fn decide_already_published(
     index_cksum: &str,
     crate_cfg: &CrateConfig,
     cargo_cfg: Option<&CargoPublishConfig>,
+    changelog_stage_active: bool,
     local_crate_check: impl Fn(
         &str,
         &CrateConfig,
@@ -735,12 +959,25 @@ fn decide_already_published(
         );
     }
 
-    match crates_equal_modulo_vcs(&local.bytes, &published_bytes)? {
-        CrateContentMatch::IdenticalModuloVcs => {
+    match crates_equal_modulo_vcs(&local.bytes, &published_bytes, changelog_stage_active)? {
+        CrateContentMatch::Equivalent { normalized } => {
+            // `normalized` is non-empty whenever this arm is reached from the
+            // real pipeline (byte-identical archives take the fast path), but
+            // an injected local cksum in tests can land here with no delta —
+            // describe that honestly rather than index into an empty list.
+            let applied = if normalized.is_empty() {
+                "none (archives are byte-identical)".to_string()
+            } else {
+                normalized
+                    .iter()
+                    .map(|n| n.describe())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
             log.verbose(&format!(
-                "'{name}-{version}' local .crate differs from the crates.io index only in \
-                 .cargo_vcs_info.json's release commit stamp; same-source re-cut, safe idempotent \
-                 skip"
+                "'{name}-{version}' local .crate differs from the published crate only in \
+                 release-process artifacts: {applied} — source-equivalent re-cut, safe \
+                 idempotent skip"
             ));
             Ok(CargoSkipDecision::Skip)
         }
@@ -2170,6 +2407,12 @@ fn publish_to_cargo_with_guard(
     // pattern used by artifactory/cloudsmith.
     let retry_policy = ctx.retry_policy();
 
+    // Resolved once for the whole publish set: whether this run's config has
+    // the changelog stage regenerating on-disk CHANGELOG.md files, which is
+    // what lets the already-published guard treat crate-root CHANGELOG.md
+    // drift on a re-cut as anodizer's own artifact instead of a poison.
+    let changelog_stage_active = changelog_stage_regenerates_files(ctx);
+
     // Hard backstop, BEFORE the first irreversible `cargo publish`: refuse to
     // start when any crate in the publish set has a workspace-internal
     // (non-dev) dependency that is neither in the set nor already on
@@ -2294,6 +2537,7 @@ fn publish_to_cargo_with_guard(
                         &index_cksum,
                         crate_cfg,
                         cargo_cfg,
+                        changelog_stage_active,
                         &local_cksum_check,
                         |n, v| fetch_published(n, v, &retry_policy),
                         log,
@@ -2312,7 +2556,8 @@ fn publish_to_cargo_with_guard(
         };
         if matches!(guard, CargoSkipDecision::Skip) {
             log.status(&format!(
-                "skipped '{}-{}' — already published on crates.io with identical content",
+                "skipped '{}-{}' — already published on crates.io with verified equivalent \
+                 content",
                 name, crate_version
             ));
             continue;
@@ -3449,8 +3694,8 @@ mod tests {
                 &vcs_info_json("deadbeef", "."),
             ),
         ]);
-        let m = crates_equal_modulo_vcs(&bytes, &bytes).expect("compare");
-        assert!(matches!(m, CrateContentMatch::IdenticalModuloVcs));
+        let m = crates_equal_modulo_vcs(&bytes, &bytes, false).expect("compare");
+        assert!(matches!(m, CrateContentMatch::Equivalent { .. }));
     }
 
     #[test]
@@ -3469,9 +3714,9 @@ mod tests {
                 &vcs_info_json("commit_b", "."),
             ),
         ]);
-        let m = crates_equal_modulo_vcs(&local, &published).expect("compare");
+        let m = crates_equal_modulo_vcs(&local, &published, false).expect("compare");
         assert!(
-            matches!(m, CrateContentMatch::IdenticalModuloVcs),
+            matches!(m, CrateContentMatch::Equivalent { .. }),
             "a git.sha1-only delta is a same-source re-cut"
         );
     }
@@ -3492,12 +3737,12 @@ mod tests {
                 &vcs_info_json("commit_a", "."),
             ),
         ]);
-        let m = crates_equal_modulo_vcs(&local, &published).expect("compare");
+        let m = crates_equal_modulo_vcs(&local, &published, false).expect("compare");
         match m {
             CrateContentMatch::Differs(paths) => {
                 assert_eq!(paths, vec!["c-1.0.0/src/lib.rs".to_string()]);
             }
-            CrateContentMatch::IdenticalModuloVcs => panic!("a real source edit must be flagged"),
+            CrateContentMatch::Equivalent { .. } => panic!("a real source edit must be flagged"),
         }
     }
 
@@ -3517,12 +3762,12 @@ mod tests {
                 &vcs_info_json("commit_a", "subdir"),
             ),
         ]);
-        let m = crates_equal_modulo_vcs(&local, &published).expect("compare");
+        let m = crates_equal_modulo_vcs(&local, &published, false).expect("compare");
         match m {
             CrateContentMatch::Differs(paths) => {
                 assert_eq!(paths, vec!["c-1.0.0/.cargo_vcs_info.json".to_string()]);
             }
-            CrateContentMatch::IdenticalModuloVcs => {
+            CrateContentMatch::Equivalent { .. } => {
                 panic!("a path_in_vcs change is structural drift, not just the commit stamp")
             }
         }
@@ -3535,12 +3780,12 @@ mod tests {
             ("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n"),
             ("c-1.0.0/src/extra.rs", b"// only in published"),
         ]);
-        let m = crates_equal_modulo_vcs(&local, &published).expect("compare");
+        let m = crates_equal_modulo_vcs(&local, &published, false).expect("compare");
         match m {
             CrateContentMatch::Differs(paths) => {
                 assert_eq!(paths, vec!["c-1.0.0/src/extra.rs".to_string()]);
             }
-            CrateContentMatch::IdenticalModuloVcs => {
+            CrateContentMatch::Equivalent { .. } => {
                 panic!("an entry present in only one archive must be flagged")
             }
         }
@@ -3570,7 +3815,7 @@ mod tests {
                 &vcs_info_json("commit_b", "."),
             ),
         ]);
-        let m = crates_equal_modulo_vcs(&local, &published).expect("compare");
+        let m = crates_equal_modulo_vcs(&local, &published, false).expect("compare");
         match m {
             CrateContentMatch::Differs(paths) => {
                 assert_eq!(
@@ -3578,7 +3823,7 @@ mod tests {
                     vec!["c-1.0.0/tests/data/.cargo_vcs_info.json".to_string()]
                 );
             }
-            CrateContentMatch::IdenticalModuloVcs => {
+            CrateContentMatch::Equivalent { .. } => {
                 panic!("a nested .cargo_vcs_info.json is ordinary source, not the root vcs stamp")
             }
         }
@@ -3600,9 +3845,9 @@ mod tests {
                 &vcs_info_json("commit_b", "."),
             ),
         ]);
-        let m = crates_equal_modulo_vcs(&local, &published).expect("compare");
+        let m = crates_equal_modulo_vcs(&local, &published, false).expect("compare");
         assert!(
-            matches!(m, CrateContentMatch::IdenticalModuloVcs),
+            matches!(m, CrateContentMatch::Equivalent { .. }),
             "the root .cargo_vcs_info.json's git.sha1 is still normalized"
         );
     }
@@ -3623,9 +3868,9 @@ mod tests {
                 &vcs_info_json("commit_b", "."),
             ),
         ]);
-        let m = crates_equal_modulo_vcs(&local, &published).expect("compare");
+        let m = crates_equal_modulo_vcs(&local, &published, false).expect("compare");
         assert!(
-            matches!(m, CrateContentMatch::IdenticalModuloVcs),
+            matches!(m, CrateContentMatch::Equivalent { .. }),
             "a leading `./` (a CurDir component) must not inflate the root gate's \
              component count and misclassify the crate-root vcs-info as nested source"
         );
@@ -3641,12 +3886,12 @@ mod tests {
             ),
         ]);
         let published = make_crate_tarball(&[("c-1.0.0/Cargo.toml", b"[package]\nname = \"c\"\n")]);
-        let m = crates_equal_modulo_vcs(&local, &published).expect("compare");
+        let m = crates_equal_modulo_vcs(&local, &published, false).expect("compare");
         match m {
             CrateContentMatch::Differs(paths) => {
                 assert_eq!(paths, vec!["c-1.0.0/.cargo_vcs_info.json".to_string()]);
             }
-            CrateContentMatch::IdenticalModuloVcs => {
+            CrateContentMatch::Equivalent { .. } => {
                 panic!("a root vcs-info present on only one side is an unambiguous divergence")
             }
         }
@@ -3696,6 +3941,7 @@ mod tests {
             "",
             &cfg,
             None,
+            false,
             local_panics,
             fetch_panics,
             &log,
@@ -3724,6 +3970,7 @@ mod tests {
             "abcd",
             &cfg,
             None,
+            false,
             local_none,
             fetch_panics,
             &log,
@@ -3747,9 +3994,18 @@ mod tests {
                 bytes: Vec::new(),
             }))
         };
-        let d =
-            decide_already_published("c", "1.0.0", "abcd", &cfg, None, local, fetch_panics, &log)
-                .expect("case-insensitive match ⇒ Skip, no download");
+        let d = decide_already_published(
+            "c",
+            "1.0.0",
+            "abcd",
+            &cfg,
+            None,
+            false,
+            local,
+            fetch_panics,
+            &log,
+        )
+        .expect("case-insensitive match ⇒ Skip, no download");
         assert_eq!(d, CargoSkipDecision::Skip);
     }
 
@@ -3788,9 +4044,18 @@ mod tests {
         };
         let published_bytes_clone = published_bytes.clone();
         let fetch = move |_: &str, _: &str| Ok(published_bytes_clone.clone());
-        let d =
-            decide_already_published("c", "1.0.0", &index_cksum, &cfg, None, local, fetch, &log)
-                .expect("same-source re-cut (vcs-only delta) ⇒ Skip");
+        let d = decide_already_published(
+            "c",
+            "1.0.0",
+            &index_cksum,
+            &cfg,
+            None,
+            false,
+            local,
+            fetch,
+            &log,
+        )
+        .expect("same-source re-cut (vcs-only delta) ⇒ Skip");
         assert_eq!(d, CargoSkipDecision::Skip);
     }
 
@@ -3828,9 +4093,18 @@ mod tests {
         };
         let published_bytes_clone = published_bytes.clone();
         let fetch = move |_: &str, _: &str| Ok(published_bytes_clone.clone());
-        let err =
-            decide_already_published("c", "1.0.0", &index_cksum, &cfg, None, local, fetch, &log)
-                .expect_err("real content drift ⇒ hard fail");
+        let err = decide_already_published(
+            "c",
+            "1.0.0",
+            &index_cksum,
+            &cfg,
+            None,
+            false,
+            local,
+            fetch,
+            &log,
+        )
+        .expect_err("real content drift ⇒ hard fail");
         let msg = format!("{err:#}");
         assert!(msg.contains("DIFFERENT content"), "{msg}");
         assert!(
@@ -3860,6 +4134,7 @@ mod tests {
             "index_sha",
             &cfg,
             None,
+            false,
             local,
             fetch_err,
             &log,
@@ -3891,12 +4166,331 @@ mod tests {
             "index_sha_that_wont_match",
             &cfg,
             None,
+            false,
             local,
             fetch,
             &log,
         )
         .expect_err("published-sha mismatch ⇒ fail closed");
         assert!(format!("{err:#}").contains("does NOT match"));
+    }
+
+    /// Normalized lib-only packaged manifest, as `cargo package` writes it
+    /// (explicit `[lib]`, no `[[bin]]`).
+    const LIB_ONLY_MANIFEST: &[u8] =
+        b"[package]\nname = \"c\"\nversion = \"1.0.0\"\n\n[lib]\npath = \"src/lib.rs\"\n";
+
+    /// Normalized packaged manifest carrying an explicit `[[bin]]` target.
+    const BIN_MANIFEST: &[u8] = b"[package]\nname = \"c\"\nversion = \"1.0.0\"\n\n[[bin]]\nname = \"c\"\npath = \"src/main.rs\"\n";
+
+    #[test]
+    fn decide_already_published_recut_changelog_and_lockfile_skips_with_changelog_stage() {
+        // The exact cfgd-crd@0.5.0 scenario: a re-cut of a partially-published
+        // workspace release where the published crate and the local re-cut
+        // differ in exactly two crate-root files — CHANGELOG.md (regenerated
+        // by anodizer's changelog stage between re-cuts) and Cargo.lock (the
+        // workspace lockfile moved via an unrelated dependency bump) — on a
+        // lib-only crate. Sources identical ⇒ safe idempotent Skip.
+        let local_bytes = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", LIB_ONLY_MANIFEST),
+            ("c-1.0.0/src/lib.rs", b"fn a() {}"),
+            (
+                "c-1.0.0/CHANGELOG.md",
+                b"# Changelog\n\n## 1.0.0 (re-cut)\n",
+            ),
+            ("c-1.0.0/Cargo.lock", b"# lockfile v2\n"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_new", "."),
+            ),
+        ]);
+        let published_bytes = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", LIB_ONLY_MANIFEST),
+            ("c-1.0.0/src/lib.rs", b"fn a() {}"),
+            ("c-1.0.0/CHANGELOG.md", b"# Changelog\n\n## 1.0.0\n"),
+            ("c-1.0.0/Cargo.lock", b"# lockfile v1\n"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_old", "."),
+            ),
+        ]);
+        let index_cksum = sha256_hex(&published_bytes);
+        let local_cksum = sha256_hex(&local_bytes);
+        assert_ne!(local_cksum, index_cksum, "fixture must miss the fast path");
+
+        let cfg = CrateConfig::default();
+        let log = StageLogger::new("t", anodizer_core::log::Verbosity::Normal);
+        let local_bytes_clone = local_bytes.clone();
+        let local = move |_: &str, _: &CrateConfig, _: Option<&CargoPublishConfig>| {
+            Ok(Some(LocalCrate {
+                cksum: local_cksum.clone(),
+                bytes: local_bytes_clone.clone(),
+            }))
+        };
+        let published_bytes_clone = published_bytes.clone();
+        let fetch = move |_: &str, _: &str| Ok(published_bytes_clone.clone());
+        let d = decide_already_published(
+            "c",
+            "1.0.0",
+            &index_cksum,
+            &cfg,
+            None,
+            true,
+            local,
+            fetch,
+            &log,
+        )
+        .expect("changelog+lockfile-only re-cut of a lib crate ⇒ Skip");
+        assert_eq!(d, CargoSkipDecision::Skip);
+    }
+
+    #[test]
+    fn decide_already_published_changelog_drift_without_changelog_stage_hard_fails() {
+        // Same CHANGELOG.md delta, but no changelog stage configured for the
+        // run: anodizer did not regenerate the file, so the drift is real and
+        // the guard must hard-fail, naming the file AND the why.
+        let local_bytes = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", LIB_ONLY_MANIFEST),
+            (
+                "c-1.0.0/CHANGELOG.md",
+                b"# Changelog\n\n## 1.0.0 (edited)\n",
+            ),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_new", "."),
+            ),
+        ]);
+        let published_bytes = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", LIB_ONLY_MANIFEST),
+            ("c-1.0.0/CHANGELOG.md", b"# Changelog\n\n## 1.0.0\n"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_old", "."),
+            ),
+        ]);
+        let index_cksum = sha256_hex(&published_bytes);
+        let local_cksum = sha256_hex(&local_bytes);
+
+        let cfg = CrateConfig::default();
+        let log = StageLogger::new("t", anodizer_core::log::Verbosity::Normal);
+        let local_bytes_clone = local_bytes.clone();
+        let local = move |_: &str, _: &CrateConfig, _: Option<&CargoPublishConfig>| {
+            Ok(Some(LocalCrate {
+                cksum: local_cksum.clone(),
+                bytes: local_bytes_clone.clone(),
+            }))
+        };
+        let published_bytes_clone = published_bytes.clone();
+        let fetch = move |_: &str, _: &str| Ok(published_bytes_clone.clone());
+        let err = decide_already_published(
+            "c",
+            "1.0.0",
+            &index_cksum,
+            &cfg,
+            None,
+            false,
+            local,
+            fetch,
+            &log,
+        )
+        .expect_err("CHANGELOG.md drift with no changelog stage ⇒ hard fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("c-1.0.0/CHANGELOG.md"),
+            "must name the file: {msg}"
+        );
+        assert!(
+            msg.contains("no changelog stage is configured/enabled for this run"),
+            "must say why the file was not treated as equivalent: {msg}"
+        );
+    }
+
+    #[test]
+    fn decide_already_published_lockfile_drift_on_binary_crate_hard_fails() {
+        // Root Cargo.lock delta on a crate WITH a [[bin]] target: the packaged
+        // lockfile is consumer-visible via `cargo install --locked`, so it
+        // stays byte-strict — hard fail naming the file AND the why.
+        let local_bytes = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", BIN_MANIFEST),
+            ("c-1.0.0/src/main.rs", b"fn main() {}"),
+            ("c-1.0.0/Cargo.lock", b"# lockfile v2\n"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_new", "."),
+            ),
+        ]);
+        let published_bytes = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", BIN_MANIFEST),
+            ("c-1.0.0/src/main.rs", b"fn main() {}"),
+            ("c-1.0.0/Cargo.lock", b"# lockfile v1\n"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_old", "."),
+            ),
+        ]);
+        let index_cksum = sha256_hex(&published_bytes);
+        let local_cksum = sha256_hex(&local_bytes);
+
+        let cfg = CrateConfig::default();
+        let log = StageLogger::new("t", anodizer_core::log::Verbosity::Normal);
+        let local_bytes_clone = local_bytes.clone();
+        let local = move |_: &str, _: &CrateConfig, _: Option<&CargoPublishConfig>| {
+            Ok(Some(LocalCrate {
+                cksum: local_cksum.clone(),
+                bytes: local_bytes_clone.clone(),
+            }))
+        };
+        let published_bytes_clone = published_bytes.clone();
+        let fetch = move |_: &str, _: &str| Ok(published_bytes_clone.clone());
+        let err = decide_already_published(
+            "c",
+            "1.0.0",
+            &index_cksum,
+            &cfg,
+            None,
+            true,
+            local,
+            fetch,
+            &log,
+        )
+        .expect_err("Cargo.lock drift on a binary crate ⇒ hard fail");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("c-1.0.0/Cargo.lock"),
+            "must name the file: {msg}"
+        );
+        assert!(
+            msg.contains("binary targets") && msg.contains("cargo install --locked"),
+            "must say why the lockfile stayed byte-strict: {msg}"
+        );
+    }
+
+    #[test]
+    fn crates_equal_modulo_vcs_source_drift_beside_normalizable_files_differs() {
+        // A real src/lib.rs edit rides along with the forgivable metadata
+        // deltas: the source drift must still be flagged — the normalizations
+        // never mask a genuine content change.
+        let local = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", LIB_ONLY_MANIFEST),
+            ("c-1.0.0/src/lib.rs", b"fn a() {}"),
+            ("c-1.0.0/CHANGELOG.md", b"# Changelog (re-cut)\n"),
+            ("c-1.0.0/Cargo.lock", b"# lockfile v2\n"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_new", "."),
+            ),
+        ]);
+        let published = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", LIB_ONLY_MANIFEST),
+            ("c-1.0.0/src/lib.rs", b"fn a() { /* poisoned */ }"),
+            ("c-1.0.0/CHANGELOG.md", b"# Changelog\n"),
+            ("c-1.0.0/Cargo.lock", b"# lockfile v1\n"),
+            (
+                "c-1.0.0/.cargo_vcs_info.json",
+                &vcs_info_json("commit_old", "."),
+            ),
+        ]);
+        let m = crates_equal_modulo_vcs(&local, &published, true).expect("compare");
+        match m {
+            CrateContentMatch::Differs(paths) => {
+                assert_eq!(paths, vec!["c-1.0.0/src/lib.rs".to_string()]);
+            }
+            CrateContentMatch::Equivalent { .. } => {
+                panic!("a real source edit must be flagged even beside forgivable metadata")
+            }
+        }
+    }
+
+    #[test]
+    fn crates_equal_modulo_vcs_nested_changelog_and_lockfile_are_byte_compared() {
+        // Root-only discipline: CHANGELOG.md / Cargo.lock at 3+ Normal
+        // components are ordinary packaged source (e.g. test fixtures) and
+        // must be byte-compared, never normalized.
+        let local = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", LIB_ONLY_MANIFEST),
+            ("c-1.0.0/tests/data/CHANGELOG.md", b"fixture a"),
+            ("c-1.0.0/tests/data/Cargo.lock", b"fixture lock a"),
+        ]);
+        let published = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", LIB_ONLY_MANIFEST),
+            ("c-1.0.0/tests/data/CHANGELOG.md", b"fixture b"),
+            ("c-1.0.0/tests/data/Cargo.lock", b"fixture lock b"),
+        ]);
+        let m = crates_equal_modulo_vcs(&local, &published, true).expect("compare");
+        match m {
+            CrateContentMatch::Differs(paths) => {
+                assert_eq!(
+                    paths,
+                    vec![
+                        "c-1.0.0/tests/data/CHANGELOG.md".to_string(),
+                        "c-1.0.0/tests/data/Cargo.lock".to_string(),
+                    ]
+                );
+            }
+            CrateContentMatch::Equivalent { .. } => {
+                panic!("nested CHANGELOG.md / Cargo.lock are ordinary source, never normalized")
+            }
+        }
+    }
+
+    #[test]
+    fn crates_equal_modulo_vcs_cargo_toml_drift_always_differs() {
+        // Cargo.toml is NEVER in the equivalence set — a manifest delta is
+        // real drift regardless of the changelog-stage flag.
+        let local = make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", LIB_ONLY_MANIFEST),
+            ("c-1.0.0/src/lib.rs", b"fn a() {}"),
+        ]);
+        let published = make_crate_tarball(&[
+            (
+                "c-1.0.0/Cargo.toml",
+                b"[package]\nname = \"c\"\nversion = \"1.0.0\"\nedition = \"2024\"\n".as_slice(),
+            ),
+            ("c-1.0.0/src/lib.rs", b"fn a() {}"),
+        ]);
+        let m = crates_equal_modulo_vcs(&local, &published, true).expect("compare");
+        match m {
+            CrateContentMatch::Differs(paths) => {
+                assert_eq!(paths, vec!["c-1.0.0/Cargo.toml".to_string()]);
+            }
+            CrateContentMatch::Equivalent { .. } => {
+                panic!("a Cargo.toml delta must always be flagged")
+            }
+        }
+    }
+
+    #[test]
+    fn packaged_crate_has_bin_targets_reads_the_normalized_manifest() {
+        let lib_only = read_crate_entries(&make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", LIB_ONLY_MANIFEST),
+            ("c-1.0.0/src/lib.rs", b"fn a() {}"),
+        ]))
+        .expect("unpack");
+        assert_eq!(packaged_crate_has_bin_targets(&lib_only), Some(false));
+
+        let with_bin = read_crate_entries(&make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", BIN_MANIFEST),
+            ("c-1.0.0/src/main.rs", b"fn main() {}"),
+        ]))
+        .expect("unpack");
+        assert_eq!(packaged_crate_has_bin_targets(&with_bin), Some(true));
+
+        // Conventional bin sources count even without an explicit [[bin]]
+        // (belt-and-braces against implicit target auto-discovery).
+        let implicit_bin = read_crate_entries(&make_crate_tarball(&[
+            ("c-1.0.0/Cargo.toml", LIB_ONLY_MANIFEST),
+            ("c-1.0.0/src/main.rs", b"fn main() {}"),
+        ]))
+        .expect("unpack");
+        assert_eq!(packaged_crate_has_bin_targets(&implicit_bin), Some(true));
+
+        // No root Cargo.toml ⇒ indeterminate ⇒ caller fails closed.
+        let no_manifest = read_crate_entries(&make_crate_tarball(&[(
+            "c-1.0.0/src/lib.rs",
+            b"fn a() {}".as_slice(),
+        )]))
+        .expect("unpack");
+        assert_eq!(packaged_crate_has_bin_targets(&no_manifest), None);
     }
 
     // ---- retry plumbing through is_already_published_at ------------------
