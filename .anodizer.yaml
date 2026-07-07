@@ -1206,6 +1206,12 @@ uploads:
     target: "http://api-server.jarvispro.svc.cluster.local:8478/anodizer/{{ .Version }}/"
     method: PUT
     mode: archive
+    # anodizer supports same-version re-cuts (delete the remote tag, re-push
+    # fixes, auto-tag re-mints the same vX.Y.Z); a re-cut's artifacts legitimately
+    # differ in bytes, so this self-hosted mirror must replace the stale copy
+    # rather than hard-error on immutable-version drift. Safe because the
+    # api-server store is fully overwrite/idempotent — never a one-way door.
+    overwrite: true
     username: "{{ .Env.UPLOAD_JARVISPRO_USERNAME }}"
     password: "{{ .Env.UPLOAD_JARVISPRO_SECRET }}"
     custom_artifact_name: false
