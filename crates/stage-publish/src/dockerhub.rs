@@ -907,6 +907,7 @@ impl anodizer_core::Publisher for DockerhubPublisher {
                     &ProbeAuth::None,
                     "preflight: dockerhub login",
                     fail,
+                    ctx.preflight_is_strict(),
                     &policy,
                     &ctx.logger("preflight"),
                 ),

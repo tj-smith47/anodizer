@@ -352,7 +352,13 @@ impl anodizer_core::Publisher for GemFuryPublisher {
             );
             acc = merge(
                 acc,
-                reachability_outcome(status, &url, "preflight: gemfury", fail),
+                reachability_outcome(
+                    status,
+                    &url,
+                    "preflight: gemfury",
+                    fail,
+                    ctx.preflight_is_strict(),
+                ),
             );
         }
         Ok(acc)

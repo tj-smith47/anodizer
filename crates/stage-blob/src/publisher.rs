@@ -401,6 +401,53 @@ fn rollback_via_object_store(
     Ok(())
 }
 
+/// Whether the object a [`BlobTargetSnapshot`] points at exists in its
+/// bucket, via a `HEAD` through the SAME `ObjectStore` backend (and ambient
+/// credential chain) the upload used — the strongest honest post-publish
+/// landing probe for buckets with no public read URL.
+///
+/// Returns `Ok(true)` when the object exists, `Ok(false)` on a definitive
+/// not-found, and `Err(_)` when the store could not be built or the HEAD
+/// failed for any other reason (auth, network) — the caller must surface
+/// that as "could not verify", never as "absent".
+///
+/// [`BlobTargetSnapshot`]: anodizer_core::publish_evidence::BlobTargetSnapshot
+pub fn blob_object_exists(
+    ctx: &Context,
+    target: &anodizer_core::publish_evidence::BlobTargetSnapshot,
+) -> anyhow::Result<bool> {
+    use crate::provider::Provider;
+    use crate::store::build_store;
+    use anodizer_core::config::BlobConfig;
+    use object_store::ObjectStoreExt as _;
+
+    let provider = Provider::parse(&target.provider)?;
+    // Addressing-only config, mirroring the rollback path: HEAD needs auth +
+    // addressing, none of the upload-side KMS/ACL/cache concerns.
+    let cfg = BlobConfig {
+        provider: target.provider.clone(),
+        bucket: target.bucket.clone(),
+        region: target.region.clone(),
+        endpoint: target.endpoint.clone(),
+        ..Default::default()
+    };
+    let store = build_store(provider, &cfg, &target.bucket, ctx)?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| anyhow::anyhow!("blob: failed to construct tokio runtime: {}", e))?;
+    let path = object_store::path::Path::from(target.key.as_str());
+    match rt.block_on(store.head(&path)) {
+        Ok(_) => Ok(true),
+        Err(object_store::Error::NotFound { .. }) => Ok(false),
+        Err(e) => Err(anyhow::anyhow!(
+            "HEAD {} failed: {}",
+            blob_target_url(target),
+            e
+        )),
+    }
+}
+
 /// True when at least one selected crate has a `blobs:` block. Mirrors the
 /// dispatch predicate `BlobStage::run` evaluates internally; used by the
 /// stage-publish registry to decide whether to push a `BlobPublisher`.
@@ -419,6 +466,21 @@ mod publisher_tests {
     use anodizer_core::config::{BlobConfig, CrateConfig};
     use anodizer_core::test_helpers::TestContextBuilder;
     use anodizer_core::{PreflightCheck, PublishEvidence, Publisher, PublisherGroup};
+
+    #[test]
+    fn blob_object_exists_unknown_provider_is_an_error_not_absent() {
+        // A landing probe that cannot even build a store must surface Err —
+        // mapping it to "absent" would fabricate a missing-object finding.
+        let ctx = TestContextBuilder::new().build();
+        let target = anodizer_core::publish_evidence::BlobTargetSnapshot {
+            provider: "not-a-provider".to_string(),
+            bucket: "bkt".to_string(),
+            key: "k".to_string(),
+            region: None,
+            endpoint: None,
+        };
+        assert!(blob_object_exists(&ctx, &target).is_err());
+    }
 
     #[test]
     fn blob_publisher_classification() {

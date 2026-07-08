@@ -16,9 +16,14 @@
 //! [`probe_version_published`] backs the npm duplicate-version warning — npm
 //! has no companion state-query checker, so this is its only duplicate guard.
 //!
-//! All probes degrade to [`PreflightCheck::Warning`] (never a hard block) on a
-//! transport failure or an indeterminate status: a transient network blip must
-//! surface but must not abort a release that would otherwise succeed.
+//! On an indeterminate outcome (5xx / rate-limit / unexpected status — the
+//! probe reached the host but got no verdict) every probe degrades to
+//! [`PreflightCheck::Warning`]: a transient network blip must surface but must
+//! not abort a release that would otherwise succeed. Under strict preflight
+//! (`--strict-preflight`, the global `--strict`, or `preflight.strict: true`)
+//! those indeterminate outcomes are promoted to [`PreflightCheck::Blocker`]
+//! (fail-closed); definitive failures keep their required→Blocker /
+//! optional→Warning severity either way.
 
 use std::time::Duration;
 
@@ -126,6 +131,40 @@ pub(crate) fn probe_version_published(
     .is_ok()
 }
 
+/// Like [`probe_version_published`] but preserves the *indeterminate* case:
+/// `Ok(true)` = a 200 (visible), `Ok(false)` = a definitive 404 (absent),
+/// `Err` = a transport failure or a non-404 status that leaves the answer
+/// unknown (the registry could not be consulted).
+///
+/// Post-publish landing verification needs this three-way split: an npm
+/// version is immutable once published, so a transient 5xx or DNS blip must
+/// never be reported as "not visible" and fail an already-landed release — the
+/// same fail-closed discipline cargo's [`crate::cargo::published_on_crates_io`]
+/// applies. The bare-`bool` [`probe_version_published`] is still correct for
+/// the pre-publish duplicate-version *warning*, where an unreachable registry
+/// safely folds to "no warning" and the publisher's own conflict handling
+/// governs a true duplicate.
+pub(crate) fn probe_version_landing(
+    url: &str,
+    label: &str,
+    policy: &RetryPolicy,
+    log: &anodizer_core::log::StageLogger,
+) -> anyhow::Result<bool> {
+    use anyhow::Context as _;
+    let client = blocking_client(PROBE_TIMEOUT).context("build HTTP client for landing probe")?;
+    match retry_http_blocking(
+        RetryLog::new(label, log),
+        policy,
+        SuccessClass::Strict,
+        |_| client.get(url).send(),
+        |status, body| format!("{status}: {}", redact_bearer_tokens(body)),
+    ) {
+        Ok(_) => Ok(true),
+        Err(err) if http_status(&err) == 404 => Ok(false),
+        Err(err) => Err(err),
+    }
+}
+
 /// HTTP verb for a [`classify_http_endpoint`] reachability check. `Get` for a
 /// health/whoami/repo GET; `PostJson` for an endpoint (Docker Hub `users/login`)
 /// whose credentials travel in a JSON body rather than a header.
@@ -156,9 +195,11 @@ pub(crate) enum ProbeAuth {
 ///
 /// Only the *definitive* failures (credentials rejected, endpoint unreachable,
 /// resource missing) honour this severity; an *indeterminate* result (5xx or an
-/// unexpected status — endpoint reachable but not answering cleanly) always
-/// degrades to [`PreflightCheck::Warning`] regardless, so a transient upstream
-/// hiccup never aborts a release whose credentials are actually valid.
+/// unexpected status — endpoint reachable but not answering cleanly) degrades
+/// to [`PreflightCheck::Warning`] regardless, so a transient upstream hiccup
+/// never aborts a release whose credentials are actually valid — unless strict
+/// preflight is on, which promotes indeterminates to
+/// [`PreflightCheck::Blocker`].
 #[derive(Clone, Copy)]
 pub(crate) enum FailSeverity {
     Blocker,
@@ -274,7 +315,9 @@ pub(crate) fn classify_http_endpoint(
 /// * unreachable (connection refused / DNS / TLS) ⇒ `fail` severity — the exact
 ///   failure mode a no-op preflight let slip past the one-way doors.
 /// * indeterminate (5xx / unexpected) ⇒ [`PreflightCheck::Warning`] — likely
-///   transient, must not abort a release whose credentials are actually valid.
+///   transient, must not abort a release whose credentials are actually
+///   valid — promoted to [`PreflightCheck::Blocker`] under strict preflight
+///   (`strict`, fail-closed).
 ///
 /// A bare base-URL reachability probe (whose root path legitimately 404s on a
 /// healthy host) must NOT use this — it should call [`classify_http_endpoint`]
@@ -287,6 +330,7 @@ pub(crate) fn probe_http_endpoint(
     auth: &ProbeAuth,
     label: &str,
     fail: FailSeverity,
+    strict: bool,
     policy: &RetryPolicy,
     log: &anodizer_core::log::StageLogger,
 ) -> PreflightCheck {
@@ -302,9 +346,10 @@ pub(crate) fn probe_http_endpoint(
         EndpointStatus::Unreachable(e) => {
             fail.apply(format!("{label}: endpoint {url} unreachable ({e})"))
         }
-        EndpointStatus::Indeterminate(e) => PreflightCheck::Warning(format!(
-            "{label}: could not verify {url} ({e}); verify the endpoint manually"
-        )),
+        EndpointStatus::Indeterminate(e) => anodizer_core::git::indeterminate_check(
+            strict,
+            format!("{label}: could not verify {url} ({e}); verify the endpoint manually"),
+        ),
     }
 }
 
@@ -316,15 +361,17 @@ pub(crate) fn probe_http_endpoint(
 /// * host unreachable (connection refused / DNS / TLS) ⇒ `fail` severity — the
 ///   failure mode a no-op preflight let slip past the one-way doors.
 ///
-/// A 2xx/3xx, a 404 (host up, resource simply absent), and any 5xx (degraded to
-/// a Warning) all prove the host is reachable, so the probe must not abort on
-/// them. Use this — not [`probe_http_endpoint`] — whenever a 404 does NOT mean a
-/// misconfigured target.
+/// A 2xx/3xx and a 404 (host up, resource simply absent) prove the host is
+/// reachable, so the probe must not abort on them. A 5xx is indeterminate —
+/// degraded to a Warning by default, promoted to a Blocker under strict
+/// preflight (`strict`). Use this — not [`probe_http_endpoint`] — whenever a
+/// 404 does NOT mean a misconfigured target.
 pub(crate) fn reachability_outcome(
     status: EndpointStatus,
     url: &str,
     label: &str,
     fail: FailSeverity,
+    strict: bool,
 ) -> PreflightCheck {
     match status {
         EndpointStatus::Reachable | EndpointStatus::NotFound => PreflightCheck::Pass,
@@ -335,9 +382,10 @@ pub(crate) fn reachability_outcome(
         EndpointStatus::Unreachable(e) => fail.apply(format!(
             "{label}: endpoint {url} unreachable ({e}); the publish would fail to connect"
         )),
-        EndpointStatus::Indeterminate(e) => PreflightCheck::Warning(format!(
-            "{label}: could not verify {url} ({e}); verify the endpoint manually"
-        )),
+        EndpointStatus::Indeterminate(e) => anodizer_core::git::indeterminate_check(
+            strict,
+            format!("{label}: could not verify {url} ({e}); verify the endpoint manually"),
+        ),
     }
 }
 
@@ -351,12 +399,13 @@ pub(crate) fn github_repo_check<E: anodizer_core::EnvSource + ?Sized>(
     repo: &str,
     token: Option<&str>,
     policy: &RetryPolicy,
+    strict: bool,
     env: &E,
     log: &anodizer_core::log::StageLogger,
 ) -> PreflightCheck {
     let base = anodizer_core::http::github_api_base(env);
     let url = format!("{base}/repos/{owner}/{repo}");
-    github_repo_check_at(&url, owner, repo, token, policy, log)
+    github_repo_check_at(&url, owner, repo, token, policy, strict, log)
 }
 
 /// `url`-taking core of [`github_repo_check`] so a unit test can drive the
@@ -373,12 +422,18 @@ pub(crate) fn github_repo_check<E: anodizer_core::EnvSource + ?Sized>(
 ///   [`PreflightCheck::Warning`] (push scope undeterminable)
 /// * 200 with `permissions.push == true` ⇒ [`PreflightCheck::Pass`]
 /// * transport failure / other status ⇒ [`PreflightCheck::Warning`]
+///
+/// Every `Warning` above is an *indeterminate* outcome; under strict
+/// preflight (`strict`) the shared mapper promotes them to
+/// [`PreflightCheck::Blocker`]. `push_denied` stays a Warning either way —
+/// it is this caller's definitive optional-surface severity.
 pub(crate) fn github_repo_check_at(
     url: &str,
     owner: &str,
     repo: &str,
     token: Option<&str>,
     policy: &RetryPolicy,
+    strict: bool,
     log: &anodizer_core::log::StageLogger,
 ) -> PreflightCheck {
     anodizer_core::git::github_repo_push_check(
@@ -397,6 +452,7 @@ pub(crate) fn github_repo_check_at(
                 "index/fork repo {owner}/{repo} not found or token lacks read access"
             )),
         },
+        strict,
         log,
     )
 }
@@ -441,6 +497,7 @@ pub(crate) fn github_repo_config_check(
         &name,
         token.as_deref(),
         policy,
+        ctx.preflight_is_strict(),
         ctx.env_source(),
         &ctx.logger("preflight"),
     )
@@ -682,6 +739,7 @@ mod tests {
                 "r",
                 Some("tok"),
                 &fast_retry(),
+                false,
                 anodizer_core::test_helpers::test_logger()
             ),
             PreflightCheck::Pass
@@ -704,6 +762,7 @@ mod tests {
                 "r",
                 Some("tok"),
                 &fast_retry(),
+                false,
                 &env,
                 anodizer_core::test_helpers::test_logger()
             ),
@@ -728,6 +787,7 @@ mod tests {
             "r",
             Some("tok"),
             &fast_retry(),
+            false,
             anodizer_core::test_helpers::test_logger(),
         ) {
             PreflightCheck::Warning(m) => assert!(m.contains("cannot push"), "{m}"),
@@ -748,6 +808,7 @@ mod tests {
                 "r",
                 None,
                 &fast_retry(),
+                false,
                 anodizer_core::test_helpers::test_logger()
             ),
             PreflightCheck::Warning(_)
@@ -766,6 +827,7 @@ mod tests {
             "missing",
             Some("tok"),
             &fast_retry(),
+            false,
             anodizer_core::test_helpers::test_logger(),
         ) {
             PreflightCheck::Blocker(m) => assert!(m.contains("not found"), "{m}"),
@@ -786,6 +848,7 @@ mod tests {
                 "r",
                 Some("tok"),
                 &fast_retry(),
+                false,
                 anodizer_core::test_helpers::test_logger()
             ),
             PreflightCheck::Blocker(_)
@@ -817,6 +880,7 @@ mod tests {
                     "r",
                     Some("tok"),
                     &fast_retry(),
+                    false,
                     anodizer_core::test_helpers::test_logger()
                 ),
                 PreflightCheck::Warning(_)
@@ -838,6 +902,7 @@ mod tests {
                 "r",
                 Some("tok"),
                 &fast_retry(),
+                false,
                 anodizer_core::test_helpers::test_logger()
             ),
             PreflightCheck::Warning(_)
@@ -857,6 +922,7 @@ mod tests {
                 "r",
                 Some("tok"),
                 &fast_retry(),
+                false,
                 anodizer_core::test_helpers::test_logger()
             ),
             PreflightCheck::Warning(_)
@@ -899,6 +965,7 @@ mod tests {
                 "r",
                 Some("tok"),
                 &fast_retry(),
+                false,
                 anodizer_core::test_helpers::test_logger()
             ),
             PreflightCheck::Warning(_)
@@ -1005,6 +1072,7 @@ mod tests {
             &ProbeAuth::Token("t".into()),
             "test",
             FailSeverity::Blocker,
+            false,
             &fast_retry(),
             anodizer_core::test_helpers::test_logger(),
         ) {
@@ -1028,6 +1096,7 @@ mod tests {
                 &ProbeAuth::Token("t".into()),
                 "test",
                 FailSeverity::Warning,
+                false,
                 &fast_retry(),
                 anodizer_core::test_helpers::test_logger()
             ),
@@ -1044,7 +1113,8 @@ mod tests {
                 EndpointStatus::NotFound,
                 "http://x/y",
                 "test",
-                FailSeverity::Blocker
+                FailSeverity::Blocker,
+                false
             ),
             PreflightCheck::Pass
         ));
@@ -1057,10 +1127,89 @@ mod tests {
             "http://x/y",
             "test",
             FailSeverity::Blocker,
+            false,
         ) {
             PreflightCheck::Blocker(m) => assert!(m.contains("rejected"), "{m}"),
             other => panic!("expected Blocker, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn reachability_outcome_indeterminate_warns_lenient_blocks_strict() {
+        match reachability_outcome(
+            EndpointStatus::Indeterminate("HTTP 503".into()),
+            "http://x/y",
+            "test",
+            FailSeverity::Blocker,
+            false,
+        ) {
+            PreflightCheck::Warning(m) => assert!(m.contains("could not verify"), "{m}"),
+            other => panic!("expected Warning, got {other:?}"),
+        }
+        match reachability_outcome(
+            EndpointStatus::Indeterminate("HTTP 503".into()),
+            "http://x/y",
+            "test",
+            FailSeverity::Blocker,
+            true,
+        ) {
+            PreflightCheck::Blocker(m) => assert!(m.contains("could not verify"), "{m}"),
+            other => panic!("strict must promote indeterminate to Blocker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn probe_http_endpoint_indeterminate_warns_lenient_blocks_strict() {
+        // 500 twice: one response per probe run (the responder is one-shot per
+        // scripted line).
+        for (strict, want_blocker) in [(false, false), (true, true)] {
+            let (addr, _c) = spawn_oneshot_http_responder(vec![Box::leak(
+                http("500 Internal Server Error", "").into_boxed_str(),
+            )]);
+            let client = default_probe_client().expect("client");
+            let url = format!("http://{addr}/health");
+            let out = probe_http_endpoint(
+                &client,
+                ProbeMethod::Get,
+                &url,
+                &ProbeAuth::None,
+                "test",
+                FailSeverity::Warning,
+                strict,
+                &fast_retry(),
+                anodizer_core::test_helpers::test_logger(),
+            );
+            match (want_blocker, out) {
+                (false, PreflightCheck::Warning(_)) => {}
+                (true, PreflightCheck::Blocker(_)) => {}
+                (_, other) => panic!("strict={strict}: unexpected outcome {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn probe_http_endpoint_strict_keeps_definitive_severity() {
+        // A definitive 404 under strict keeps the caller's fail severity —
+        // strict only touches indeterminate outcomes.
+        let (addr, _c) = spawn_oneshot_http_responder(vec![Box::leak(
+            http("404 Not Found", "").into_boxed_str(),
+        )]);
+        let client = default_probe_client().expect("client");
+        let url = format!("http://{addr}/repo");
+        assert!(matches!(
+            probe_http_endpoint(
+                &client,
+                ProbeMethod::Get,
+                &url,
+                &ProbeAuth::None,
+                "test",
+                FailSeverity::Warning,
+                true,
+                &fast_retry(),
+                anodizer_core::test_helpers::test_logger()
+            ),
+            PreflightCheck::Warning(_)
+        ));
     }
 
     #[test]
@@ -1079,6 +1228,7 @@ mod tests {
                 &ProbeAuth::None,
                 "test",
                 FailSeverity::Warning,
+                false,
                 &fast_retry(),
                 anodizer_core::test_helpers::test_logger()
             ),

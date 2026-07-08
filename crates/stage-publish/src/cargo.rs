@@ -179,6 +179,22 @@ pub(crate) fn sparse_index_url(crate_name: &str) -> String {
     format!("https://index.crates.io/{}", sparse_index_path(crate_name))
 }
 
+/// The crates.io web-API base for the token-validity probe (`/api/v1/me`).
+///
+/// Mirrors the sparse-index base override in [`published_on_crates_io`]:
+/// integration tests drive the real binary across a process boundary, so an
+/// env-routed base pointing at a local responder is the only way to keep the
+/// live token probe hermetic there. Honored ONLY under `ANODIZE_TEST_HARNESS=1`
+/// so no production run can point the credential probe at a friendly endpoint.
+fn crates_io_api_base() -> String {
+    match std::env::var("ANODIZER_TEST_CRATES_IO_API_BASE") {
+        Ok(base) if std::env::var("ANODIZE_TEST_HARNESS").as_deref() == Ok("1") => {
+            base.trim_end_matches('/').to_string()
+        }
+        _ => "https://crates.io".to_string(),
+    }
+}
+
 /// The registry-relative sparse-index path for a crate (`1/a`, `2/ab`,
 /// `3/a/abc`, `ab/cd/abcdef`), shared by [`sparse_index_url`] and the
 /// test-harness index-base override in [`published_on_crates_io`] so the
@@ -3023,9 +3039,10 @@ impl anodizer_core::Publisher for CargoPublisher {
             return Ok(anodizer_core::PreflightCheck::Pass);
         }
         let policy = anodizer_core::retry::RetryPolicy::PREFLIGHT;
+        let api_url = format!("{}/api/v1/me", crates_io_api_base());
         Ok(
             match crate::publisher_preflight::probe_token_auth(
-                "https://crates.io/api/v1/me",
+                &api_url,
                 &token,
                 "preflight: crates.io token",
                 &policy,
@@ -3036,9 +3053,10 @@ impl anodizer_core::Publisher for CargoPublisher {
                     anodizer_core::PreflightCheck::Blocker("crates.io token invalid".into())
                 }
                 crate::publisher_preflight::TokenAuth::Indeterminate(reason) => {
-                    anodizer_core::PreflightCheck::Warning(format!(
-                        "could not verify crates.io token ({reason})"
-                    ))
+                    anodizer_core::git::indeterminate_check(
+                        ctx.preflight_is_strict(),
+                        format!("could not verify crates.io token ({reason})"),
+                    )
                 }
             },
         )

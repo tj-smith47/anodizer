@@ -8,7 +8,7 @@
 //! exact YAML the live build stages — via the same render path — and checks
 //! it against a schema transcribed from snapd's own validators, so a
 //! structural defect (an over-long summary, an out-of-enum confinement, a
-//! malformed name) surfaces in the snapshot/dry-run pass rather than after a
+//! malformed name) surfaces in the emission-validate pass rather than after a
 //! release has packed and uploaded a registry-rejected snap.
 //!
 //! This validates `snap.yaml` (the snap's final metadata), NOT a

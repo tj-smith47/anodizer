@@ -14,7 +14,7 @@
 //! always-on structural floor (pure-Rust line scanning) and, when `bash` is on
 //! `PATH`, a real `bash -n` syntax check of the PKGBUILD. A structural defect (a
 //! missing required variable, an unbalanced template that produced broken Bash)
-//! surfaces in the snapshot/dry-run pass rather than after a pushed PKGBUILD
+//! surfaces in the emission-validate pass rather than after a pushed PKGBUILD
 //! fails `makepkg` for every installer.
 
 use anodizer_core::context::Context;

@@ -394,9 +394,10 @@ impl anodizer_core::Publisher for NpmPublisher {
                     TokenAuth::Invalid => {
                         PreflightCheck::Blocker("npm token invalid or expired".into())
                     }
-                    TokenAuth::Indeterminate(reason) => {
-                        PreflightCheck::Warning(format!("could not verify npm token ({reason})"))
-                    }
+                    TokenAuth::Indeterminate(reason) => anodizer_core::git::indeterminate_check(
+                        ctx.preflight_is_strict(),
+                        format!("could not verify npm token ({reason})"),
+                    ),
                 };
                 acc = merge(acc, outcome);
             }

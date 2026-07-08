@@ -235,6 +235,11 @@ struct SignJob {
     /// successful Authenticode sign (e.g. `authenticode-signed myapp.exe`). The
     /// detached path leaves this `None` (its result is the registered `.sig`).
     authenticode_result: Option<String>,
+    /// Post-sign verification command, executed right after the sign
+    /// succeeds so "the signer exited 0" is upgraded to "the signature
+    /// verifies". `None` when verification is disabled, skipped (inputs not
+    /// derivable), or in dry-run.
+    verify: Option<crate::verify::VerifyJob>,
 }
 
 /// Best-effort removal of an Authenticode job's `-out` temp on the error path.
@@ -510,6 +515,12 @@ pub(crate) fn is_deterministic_sign_failure(err: &anyhow::Error) -> bool {
         "unsupported pem type",
         "parsing private key",
         "none of the expected identities matched",
+        // Post-sign verification failures: a signature that does not match
+        // its artifact/key is identical on every re-run (cosign's
+        // "invalid signature when validating ASN.1 encoded signature",
+        // gpg's "BAD signature from ...").
+        "invalid signature",
+        "bad signature",
     ];
     let chain = format!("{err:#}").to_lowercase();
     DETERMINISTIC_NEEDLES.iter().any(|n| chain.contains(n))
@@ -634,6 +645,29 @@ pub(crate) fn process_sign_configs(
             ));
         }
 
+        // Resolve the post-sign verification mode once per config (the
+        // discriminating inputs — cmd, raw argv, identity env — are all
+        // config-level), so a skip is logged a single time and the keyed
+        // public key is derived a single time.
+        let verify_mode = crate::verify::resolve_config_verify_mode(
+            sign_cfg.verify.as_ref(),
+            &cmd,
+            &args,
+            sign_cfg.certificate.is_some(),
+            ctx.env_source(),
+        );
+        match &verify_mode {
+            crate::verify::ConfigVerifyMode::Disabled => log.verbose(&format!(
+                "{} config '{}': signature verification disabled by `verify.enabled: false`",
+                label, sub_label
+            )),
+            crate::verify::ConfigVerifyMode::Skip(reason) => log.verbose(&format!(
+                "{} config '{}': skipping signature verification — {}",
+                label, sub_label, reason
+            )),
+            _ => {}
+        }
+
         type ArtifactEntry = (
             std::path::PathBuf,
             String,
@@ -690,6 +724,47 @@ pub(crate) fn process_sign_configs(
                 sub_label
             ));
         }
+
+        // Keyed cosign verification needs the PUBLIC half of the signing
+        // key: `cosign verify-blob --key` rejects a private key, so derive
+        // it once per config via `cosign public-key --key <ref>` (the same
+        // local, network-free load the preflight gate uses) into a temp
+        // file that lives until the parallel fan-out below completes. A
+        // failed derivation is a hard error: the identical key material
+        // would fail signing moments later anyway.
+        let pubkey_file: Option<tempfile::NamedTempFile> = match &verify_mode {
+            crate::verify::ConfigVerifyMode::CosignKeyed { key_ref, .. }
+                if !ctx.is_dry_run() && !artifact_paths.is_empty() =>
+            {
+                let derive_env: Vec<(String, String)> = sign_cfg
+                    .env
+                    .as_deref()
+                    .map(|env_list| {
+                        anodizer_core::config::render_env_entries(env_list, |v| {
+                            ctx.render_template(v)
+                        })
+                        .with_context(|| format!("sign[{label}]: render env entries"))
+                    })
+                    .transpose()?
+                    .unwrap_or_default();
+                let tmp = tempfile::Builder::new()
+                    .prefix("anodizer-verify-")
+                    .suffix(".pub")
+                    .tempfile()
+                    .context("sign verify: create temp file for derived public key")?;
+                crate::verify::derive_cosign_public_key(
+                    &cmd,
+                    key_ref,
+                    Some(&derive_env),
+                    tmp.path(),
+                )?;
+                Some(tmp)
+            }
+            _ => None,
+        };
+        let pubkey_path: Option<String> = pubkey_file
+            .as_ref()
+            .map(|f| f.path().to_string_lossy().into_owned());
 
         let mut sign_jobs: Vec<SignJob> = Vec::new();
 
@@ -969,6 +1044,23 @@ pub(crate) fn process_sign_configs(
                 Some(rendered_env)
             };
 
+            // Verify against the exact same artifact/signature strings the
+            // sign argv used (they are cwd-relative in the same way), under
+            // the same rendered env, with the same resolved binary.
+            let verify_job = crate::verify::build_blob_verify_args(
+                &verify_mode,
+                artifact_str.as_ref(),
+                &signature_str,
+                certificate_str.as_deref(),
+                pubkey_path.as_deref(),
+            )
+            .map(|vargs| crate::verify::VerifyJob {
+                cmd: cmd.clone(),
+                args: vargs,
+                env: rendered_env.clone(),
+                what: artifact_str.to_string(),
+            });
+
             sign_jobs.push(SignJob {
                 cmd: cmd.clone(),
                 args: fully_resolved,
@@ -989,6 +1081,7 @@ pub(crate) fn process_sign_configs(
                 authenticode_result: None,
                 redact_extra: Vec::new(),
                 env_remove: Vec::new(),
+                verify: verify_job,
             });
         }
 
@@ -1020,10 +1113,31 @@ pub(crate) fn process_sign_configs(
                     &job.artifact_display,
                     &|d| std::thread::sleep(d),
                     &mut || execute_sign_job(job, &thread_log),
-                )
+                )?;
             } else {
-                execute_sign_job(job, &thread_log)
+                execute_sign_job(job, &thread_log)?;
             }
+            // Verification runs after the sign in the same worker, so the
+            // keyless TUF warm-up below covers it too: the first job's
+            // verify completes serially before the parallel fan-out. A bad
+            // signature is a deterministic failure — `retry_transient`
+            // fast-fails it via `is_deterministic_sign_failure` — while the
+            // ladder still absorbs the transient network/TUF class a
+            // tlog-checking cosign verify can hit.
+            if let Some(v) = &job.verify {
+                if is_cosign_cmd(&v.cmd) {
+                    retry_transient(
+                        &COSIGN_TRANSIENT_RETRY,
+                        &thread_log,
+                        &format!("verification of {}", v.what),
+                        &|d| std::thread::sleep(d),
+                        &mut || crate::verify::execute_verify_job(v, &thread_log),
+                    )?;
+                } else {
+                    crate::verify::execute_verify_job(v, &thread_log)?;
+                }
+            }
+            Ok(())
         };
         // Keyless cosign lazily initializes the `~/.sigstore` TUF trust root
         // under an exclusive flock on its FIRST run per host. Fanning out onto
@@ -1048,6 +1162,14 @@ pub(crate) fn process_sign_configs(
             log,
             run_job,
         )?;
+
+        let verified = sign_jobs.iter().filter(|j| j.verify.is_some()).count();
+        if verified > 0 {
+            // Reaching here means every verify job exited 0 (a failure
+            // propagates out of the parallel runner above).
+            log.status(&format!("verified {verified} signature(s)")); // status-ok: per-config verification result
+        }
+        drop(pubkey_file);
 
         for job in &sign_jobs {
             all_new_artifacts.extend(job.new_artifacts.iter().cloned());
@@ -1310,6 +1432,10 @@ fn process_authenticode_config(
             rename_after,
             authenticode_result: Some(format!("authenticode-signed {artifact_base}")),
             env_remove,
+            // Authenticode embeds the signature in place via a different
+            // trust model (PKCS#7 in the PE/MSI container); the detached
+            // cosign/gpg verifiers do not apply.
+            verify: None,
         });
     }
 

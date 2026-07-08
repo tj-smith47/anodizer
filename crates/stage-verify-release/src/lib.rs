@@ -1,21 +1,27 @@
 //! Opt-in post-release verification gate (`verify_release:`).
 //!
 //! Runs LAST in the release pipeline — after the release is created and every
-//! publisher has run — and REPORTS post-publish defects across THREE
+//! publisher has run — and REPORTS post-publish defects across FOUR
 //! independently-toggleable checks:
 //!
-//! - **asset-existence** — every produced artifact has a matching uploaded
-//!   asset on the published release ([`asset_check`]). The produced set is
-//!   derived for free from `release_uploadable_kinds()` + the artifact
-//!   registry (no new config); the published set is fetched live via
-//!   [`anodizer_stage_release::fetch_published_asset_names`]. The expected
-//!   set additionally includes the signature / certificate / SBOM asset
-//!   names the resolved `signs:` / `sboms:` config demands
+//! - **asset existence + content** — every produced artifact has a matching
+//!   uploaded asset on the published release, and every present asset's
+//!   stored size/digest matches the local bytes ([`asset_check`]). The
+//!   produced set is derived for free from `release_uploadable_kinds()` +
+//!   the artifact registry (no new config); the published set is fetched
+//!   live via [`anodizer_stage_release::fetch_published_assets`]. The
+//!   expected set additionally includes the signature / certificate / SBOM
+//!   asset names the resolved `signs:` / `sboms:` config demands
 //!   ([`anodizer_stage_sign::expected_signature_assets`],
 //!   [`anodizer_stage_sbom::expected_sbom_assets`]) — derived from config +
 //!   the artifact set rather than from the producing stages' registrations,
 //!   so a sign/SBOM stage that silently produced nothing still fails the
 //!   gate with the exact missing names.
+//! - **publisher landing checks** — every publisher that succeeded this run
+//!   actually landed: published crate versions are visible on the crates.io
+//!   sparse index, npm package versions answer a registry GET, and uploaded
+//!   blob objects answer a `HEAD` through the upload's own store backend
+//!   ([`landing`]).
 //! - **install smoke-test** — each Linux package is installed in a pinned
 //!   container and `<bin> --version` is run ([`smoke`]). Skipped with a
 //!   notice when Docker is unavailable.
@@ -38,10 +44,12 @@
 //! verifies that crate's produced artifacts / debs.
 
 mod asset_check;
+mod landing;
 mod libc_check;
 mod smoke;
 
-pub use asset_check::{AssetDiff, diff_assets};
+pub use asset_check::{AssetDiff, ContentVerdict, check_asset_content, diff_assets};
+pub use landing::LandingProbes;
 pub use libc_check::{
     GlibcVersion, LibcCheckOutcome, check_glibc_ceiling, check_glibc_requirements,
     max_glibc_requirement,
@@ -69,14 +77,18 @@ const STAGE_NAME: &str = "verify-release";
 /// than re-running a publish.
 const PUBLISHED_NOTE: &str = "the release IS published — investigate";
 
-/// Publishers whose published artifacts this gate verifies. When EVERY one is
-/// deselected by the active `--publishers`/`--skip` surface, this run did not
-/// (re)create a release to check, so the stage self-skips — the same
+/// Publishers whose published surface this gate verifies. When EVERY one is
+/// deselected by the active `--publishers`/`--skip` surface, this run
+/// published nothing the gate can check, so the stage self-skips — the same
 /// consumer-aware gating `signs:` uses ([`anodizer_stage_sign::signs_consumers`]).
-/// asset-existence fetches the GitHub Release's asset list, so github-release is
-/// the sole consumer; a future asset-bearing target is a one-line edit here.
+///
+/// Each check axis is additionally gated on ITS OWN publisher: the asset
+/// existence/content check consumes only github-release, and each landing
+/// check fires only when its publisher's recorded outcome is `Succeeded` —
+/// so a `--publishers npm` run still verifies the npm landing while skipping
+/// the GitHub asset check.
 pub fn verify_release_consumers() -> &'static [&'static str] {
-    &["github-release"]
+    &["github-release", "cargo", "npm", "blob"]
 }
 
 impl Stage for VerifyReleaseStage {
@@ -92,14 +104,14 @@ impl Stage for VerifyReleaseStage {
         if ctx.should_skip(STAGE_NAME) {
             return Ok(());
         }
-        // A `--publishers npm`-style run never touched github-release, so its
-        // assets are out of the selected surface — nothing to verify here.
+        // A `--skip=github-release,cargo,npm,blob`-style run touched none of
+        // the verifiable surfaces — nothing to verify here.
         if verify_release_consumers()
             .iter()
             .all(|p| ctx.publisher_deselected(p))
         {
             ctx.logger(STAGE_NAME)
-                .status("skipped — github-release not in the selected publish surface");
+                .status("skipped — no verifiable publisher in the selected publish surface");
             return Ok(());
         }
         // The gate verifies a real, published release; dry-run / snapshot
@@ -126,8 +138,17 @@ impl Stage for VerifyReleaseStage {
             .collect();
 
         if crates.is_empty() {
-            log.verbose("no crates with a release block; nothing to verify");
-            return Ok(());
+            // Landing checks are report-driven (a crate can publish to cargo
+            // without a release block), so only the per-crate checks go quiet.
+            log.verbose("no crates with a release block; no release assets to verify");
+        }
+
+        // The asset check consumes the GitHub Release surface only; a
+        // `--publishers npm`-style run never touched it, so its assets are
+        // out of the selected surface while the landing checks still apply.
+        let github_selected = !ctx.publisher_deselected("github-release");
+        if cfg.assert_assets_enabled() && !github_selected {
+            log.verbose("github-release not in the selected publish surface — asset check skipped");
         }
 
         let mut issues: Vec<String> = Vec::new();
@@ -160,11 +181,46 @@ impl Stage for VerifyReleaseStage {
                 &rt,
                 &cfg,
                 crate_cfg,
+                github_selected,
                 smoke_enabled,
                 docker_ok,
                 &mut issues,
                 &mut smoke_strategy_logged,
             )?;
+        }
+
+        let mut landing_probed = 0usize;
+        if cfg.landing_checks_enabled() {
+            let policy = ctx.retry_policy();
+            let cargo_probe = |name: &str, version: &str| {
+                anodizer_stage_publish::cargo::published_on_crates_io(name, version, &policy, &log)
+            };
+            let npm_probe = |registry: &str, package: &str, version: &str| {
+                anodizer_stage_publish::npm::version_visible_on_registry(
+                    registry, package, version, &policy, &log,
+                )
+            };
+            let blob_probe = |t: &anodizer_core::publish_evidence::BlobTargetSnapshot| {
+                anodizer_stage_blob::blob_object_exists(ctx, t)
+            };
+            let probes = LandingProbes {
+                cargo_index: &cargo_probe,
+                npm_registry: &npm_probe,
+                blob_head: &blob_probe,
+            };
+            landing_probed = landing::run_landing_checks(ctx, &log, &probes, &mut issues);
+        }
+
+        // Distinguish "everything verified" from "nothing was in scope to
+        // verify": stamping a passing verdict when no check actually ran
+        // would fabricate green evidence for a run that proved nothing.
+        let asset_check_ran = cfg.assert_assets_enabled() && github_selected && !crates.is_empty();
+        let libc_ran = cfg.glibc_check_enabled() && !crates.is_empty();
+        let smoke_ran = smoke_enabled && docker_ok;
+        let any_check_ran = asset_check_ran || libc_ran || smoke_ran || landing_probed > 0;
+        if !any_check_ran && issues.is_empty() {
+            log.verbose("no check ran against the selected publish surface — no verdict recorded");
+            return Ok(());
         }
 
         if issues.is_empty() {
@@ -279,6 +335,229 @@ fn config_expected_asset_names(
     Ok(names)
 }
 
+/// Cap on the bytes the digest-fallback path will download and hash when
+/// GitHub exposes no `sha256:` digest for an asset. Beyond this the check
+/// stays honest but cheaper: size-only, with a verbose notice. 64 MiB covers
+/// typical release binaries/archives without turning the gate into a full
+/// re-download of multi-hundred-MB artifacts.
+const DIGEST_DOWNLOAD_CAP: u64 = 64 * 1024 * 1024;
+
+/// Per-crate rollup of the byte-level asset checks.
+struct ContentSummary {
+    /// Number of size/digest defects pushed into the issues vec.
+    issue_count: usize,
+    /// Assets whose size matched but whose digest could not be verified by
+    /// any means (no `sha256:` digest served and too large to download).
+    digest_unverified: usize,
+}
+
+/// Map every uploadable asset NAME of one crate to its local file path and
+/// (when the checksum stage ran) its already-computed sha256.
+///
+/// Derived-asset names (signatures / SBOMs / renamed uploads) resolve through
+/// the artifact registry first, then the release upload candidates so a
+/// custom destination name maps to the same local file the upload read. An
+/// expected name with no local entry (e.g. a config-derived expectation whose
+/// producing stage never registered a file) simply gets no content check —
+/// the existence diff already reports it.
+fn local_asset_index(
+    ctx: &Context,
+    crate_name: &str,
+    ids: Option<&[String]>,
+    exclude: Option<&[String]>,
+) -> std::collections::BTreeMap<String, (std::path::PathBuf, Option<String>)> {
+    let mut idx = std::collections::BTreeMap::new();
+    let sha_of = |path: &std::path::Path| {
+        ctx.artifacts
+            .all()
+            .iter()
+            .find(|a| a.path == path)
+            .and_then(|a| a.metadata.get("sha256").cloned())
+    };
+    for a in ctx
+        .artifacts
+        .all()
+        .iter()
+        .filter(|a| a.crate_name == crate_name)
+    {
+        idx.entry(a.name.clone())
+            .or_insert_with(|| (a.path.clone(), a.metadata.get("sha256").cloned()));
+    }
+    for (path, custom_name) in anodizer_stage_release::collect_release_upload_candidates(
+        ctx, crate_name, ids, exclude, false,
+    ) {
+        if let Some(name) = custom_name {
+            let sha = sha_of(&path);
+            idx.insert(name, (path, sha));
+        }
+    }
+    idx
+}
+
+/// Compare each expected asset that IS present on the release against its
+/// local bytes: stored size must equal the local file size, and the stored
+/// `sha256:` digest (when GitHub serves one) must equal the local sha256.
+/// When no digest is served, small assets are downloaded and hashed instead;
+/// larger ones are verified by size only, with a verbose notice.
+#[allow(clippy::too_many_arguments)]
+fn verify_published_contents(
+    ctx: &Context,
+    log: &StageLogger,
+    crate_cfg: &CrateConfig,
+    release_cfg: &anodizer_core::config::ReleaseConfig,
+    expected: &[String],
+    published: &[anodizer_stage_release::PublishedAsset],
+    issues: &mut Vec<String>,
+) -> ContentSummary {
+    let local = local_asset_index(
+        ctx,
+        &crate_cfg.name,
+        release_cfg.ids.as_deref(),
+        release_cfg.exclude.as_deref(),
+    );
+    let mut summary = ContentSummary {
+        issue_count: 0,
+        digest_unverified: 0,
+    };
+    for name in expected {
+        let Some(asset) = published.iter().find(|p| &p.name == name) else {
+            continue;
+        };
+        let Some((path, meta_sha)) = local.get(name) else {
+            log.verbose(&format!(
+                "no local file registered for asset '{name}' — name-only check"
+            ));
+            continue;
+        };
+        let local_size = match std::fs::metadata(path) {
+            Ok(md) => md.len(),
+            Err(e) => {
+                log.verbose(&format!(
+                    "local file {} for asset '{name}' unreadable ({e}) — name-only check",
+                    path.display()
+                ));
+                continue;
+            }
+        };
+        // A checksum-stage sha256 is reused when present; otherwise the local
+        // file is hashed here (cheap relative to the release it verifies).
+        let local_sha = match meta_sha {
+            Some(s) => s.clone(),
+            None => match anodizer_core::hashing::sha256_file(path) {
+                Ok(s) => s,
+                Err(e) => {
+                    issues.push(format!(
+                        "could not hash local file {} for asset '{name}' of crate '{}': {e:#}",
+                        path.display(),
+                        crate_cfg.name
+                    ));
+                    summary.issue_count += 1;
+                    continue;
+                }
+            },
+        };
+        match check_asset_content(local_size, &local_sha, asset.size, asset.digest.as_deref()) {
+            ContentVerdict::Match => {
+                log.verbose(&format!("asset '{name}' size+digest match"));
+            }
+            ContentVerdict::SizeMismatch { local, published } => {
+                issues.push(format!(
+                    "asset '{name}' of crate '{}' size mismatch: local {local} B vs \
+                     published {published} B — the uploaded asset does not match the \
+                     produced artifact",
+                    crate_cfg.name
+                ));
+                summary.issue_count += 1;
+            }
+            ContentVerdict::DigestMismatch { local, published } => {
+                issues.push(format!(
+                    "asset '{name}' of crate '{}' digest mismatch: local sha256 {local} \
+                     vs published sha256 {published} — the uploaded asset does not \
+                     match the produced artifact",
+                    crate_cfg.name
+                ));
+                summary.issue_count += 1;
+            }
+            ContentVerdict::DigestUnavailable => {
+                if asset.size > DIGEST_DOWNLOAD_CAP {
+                    log.verbose(&format!(
+                        "asset '{name}' digest field unavailable and asset too large \
+                         to download — verified size only"
+                    ));
+                    summary.digest_unverified += 1;
+                    continue;
+                }
+                match download_sha256(
+                    &asset.download_url,
+                    ctx.options.token.as_deref(),
+                    DIGEST_DOWNLOAD_CAP,
+                ) {
+                    Ok(remote_sha) if remote_sha.eq_ignore_ascii_case(&local_sha) => {
+                        log.verbose(&format!(
+                            "asset '{name}' digest verified via download (no digest field)"
+                        ));
+                    }
+                    Ok(remote_sha) => {
+                        issues.push(format!(
+                            "asset '{name}' of crate '{}' digest mismatch (verified via \
+                             download): local sha256 {local_sha} vs downloaded sha256 \
+                             {remote_sha}",
+                            crate_cfg.name
+                        ));
+                        summary.issue_count += 1;
+                    }
+                    Err(e) => {
+                        issues.push(format!(
+                            "could not download asset '{name}' of crate '{}' to verify \
+                             its digest: {e:#}",
+                            crate_cfg.name
+                        ));
+                        summary.issue_count += 1;
+                    }
+                }
+            }
+        }
+    }
+    summary
+}
+
+/// Download a release asset and return its sha256 hex, refusing to read more
+/// than `cap` bytes — the digest fallback must never turn into an unbounded
+/// re-download.
+fn download_sha256(url: &str, token: Option<&str>, cap: u64) -> Result<String> {
+    use sha2::{Digest as _, Sha256};
+    use std::io::Read as _;
+    let client = anodizer_core::http::blocking_client(std::time::Duration::from_secs(120))?;
+    let mut req = client.get(url).header("Accept", "application/octet-stream");
+    if let Some(token) = token {
+        // reqwest strips the Authorization header on the cross-host redirect
+        // GitHub issues to its storage backend, so the token never leaks to
+        // the presigned URL host.
+        req = req.header("Authorization", format!("Bearer {token}"));
+    }
+    let resp = req.send()?;
+    let status = resp.status();
+    if !status.is_success() {
+        anyhow::bail!("GET {url} returned HTTP {status}");
+    }
+    let mut hasher = Sha256::new();
+    let mut reader = resp.take(cap + 1);
+    let mut buf = [0u8; 64 * 1024];
+    let mut total: u64 = 0;
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        total += n as u64;
+        if total > cap {
+            anyhow::bail!("asset exceeds the {cap}-byte digest-download cap");
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(anodizer_core::hashing::hex_lower(&hasher.finalize()))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn verify_one_crate(
     ctx: &Context,
@@ -286,6 +565,7 @@ fn verify_one_crate(
     rt: &tokio::runtime::Runtime,
     cfg: &VerifyReleaseConfig,
     crate_cfg: &CrateConfig,
+    github_selected: bool,
     smoke_enabled: bool,
     docker_ok: bool,
     issues: &mut Vec<String>,
@@ -297,14 +577,16 @@ fn verify_one_crate(
         return Ok(());
     };
 
-    // (a) asset-existence ---------------------------------------------------
-    if cfg.assert_assets_enabled() {
-        match rt.block_on(anodizer_stage_release::fetch_published_asset_names(
+    // (a) asset existence + content ------------------------------------------
+    if cfg.assert_assets_enabled() && github_selected {
+        match rt.block_on(anodizer_stage_release::fetch_published_assets(
             ctx,
             release_cfg,
             crate_cfg,
         )) {
-            Ok(Some(published)) => {
+            Ok(Some(published_assets)) => {
+                let published: Vec<String> =
+                    published_assets.iter().map(|a| a.name.clone()).collect();
                 let produced = produced_asset_names(
                     ctx,
                     &crate_cfg.name,
@@ -383,6 +665,31 @@ fn verify_one_crate(
                         crate_cfg.name,
                         diff.orphan.len(),
                         diff.orphan.join(", ")
+                    ));
+                }
+
+                // Every expected asset that IS present also gets a byte-level
+                // check: stored size (and digest, when GitHub exposes one)
+                // must match the local artifact.
+                let content = verify_published_contents(
+                    ctx,
+                    log,
+                    crate_cfg,
+                    release_cfg,
+                    &all_expected,
+                    &published_assets,
+                    issues,
+                );
+                let present = all_expected.len() - diff.missing.len();
+                if !diff.has_missing() && content.issue_count == 0 {
+                    let digest_note = match content.digest_unverified {
+                        0 => "sizes+digests match".to_string(),
+                        k => format!("sizes match ({k} digest(s) unverifiable)"),
+                    };
+                    log.status(&format!(
+                        "github: crate '{}' {present}/{} assets present, {digest_note}",
+                        crate_cfg.name,
+                        all_expected.len(),
                     ));
                 }
             }

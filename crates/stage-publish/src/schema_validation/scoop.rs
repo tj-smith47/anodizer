@@ -8,7 +8,7 @@
 //! live publish would push — via the same render path — and checks it against
 //! the vendored schema, so a structural defect (an out-of-place architecture
 //! key, a wrong-typed `bin`, a missing required field) surfaces in the
-//! snapshot/dry-run pass rather than after a bucket commit has shipped.
+//! emission-validate pass rather than after a bucket commit has shipped.
 
 use anodizer_core::context::Context;
 use anyhow::Result;

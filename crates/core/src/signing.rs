@@ -113,9 +113,66 @@ pub struct SignConfig {
     /// signature. The signing command, argv, timestamp URL, and artifact
     /// selector are all derived; supply only the cert (a secret).
     pub authenticode: Option<AuthenticodeConfig>,
+    /// Post-sign verification knobs. Verification is ON by default wherever
+    /// its inputs are derivable (keyed cosign, keyless cosign on GitHub
+    /// Actions, gpg); set `verify: { enabled: false }` to disable, or supply
+    /// the keyless certificate identity / issuer when they cannot be derived
+    /// from the environment.
+    pub verify: Option<SignVerifyConfig>,
     /// Template-conditional: skip this sign config if rendered result is "false" or empty.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
+}
+
+/// Post-sign verification settings shared by [`SignConfig`] and
+/// [`DockerSignConfig`].
+///
+/// After each signature is produced, the sign stage re-verifies it with the
+/// matching verifier (`cosign verify-blob` for detached cosign signatures,
+/// `cosign verify` for registry-attached docker signatures, `gpg --verify`
+/// for gpg) so "the signer exited 0" is upgraded to "the signature actually
+/// verifies". Everything is derived when possible:
+///
+/// - **keyed cosign** — the public key is derived once per run via
+///   `cosign public-key --key <ref>`; nothing to configure.
+/// - **keyless cosign** — the certificate identity/issuer are derived from
+///   the ambient GitHub Actions OIDC environment
+///   (`GITHUB_SERVER_URL`/`GITHUB_WORKFLOW_REF`); outside GitHub Actions,
+///   supply them here or verification skips with a named reason.
+/// - **gpg** — verified against the same keyring that signed.
+///
+/// ```yaml
+/// signs:
+///   - cmd: cosign
+///     args: ["sign-blob", "--bundle={{ Signature }}", "--yes", "{{ Artifact }}"]
+///     verify:
+///       certificate_identity: "https://github.com/acme/app/.github/workflows/release.yml@refs/tags/v1.0.0"
+///       certificate_oidc_issuer: "https://token.actions.githubusercontent.com"
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, Default, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct SignVerifyConfig {
+    /// Whether to verify each produced signature (default: `true`).
+    pub enabled: Option<bool>,
+    /// Exact certificate identity (SAN) expected in a keyless signing
+    /// certificate (`cosign --certificate-identity`). Overrides the value
+    /// derived from the GitHub Actions environment.
+    pub certificate_identity: Option<String>,
+    /// Regular expression matched against the keyless certificate identity
+    /// (`cosign --certificate-identity-regexp`). Ignored when
+    /// [`certificate_identity`](Self::certificate_identity) is set.
+    pub certificate_identity_regexp: Option<String>,
+    /// Expected OIDC issuer of the keyless signing certificate
+    /// (`cosign --certificate-oidc-issuer`). Overrides the derived
+    /// GitHub Actions issuer.
+    pub certificate_oidc_issuer: Option<String>,
+}
+
+impl SignVerifyConfig {
+    /// Whether verification is enabled (default: `true`).
+    pub fn is_enabled(&self) -> bool {
+        self.enabled.unwrap_or(true)
+    }
 }
 
 /// Authenticode (Windows PE/MSI/DLL) signing backend for a [`SignConfig`].
@@ -336,6 +393,14 @@ impl SignConfig {
         })
     }
 
+    /// Whether post-sign verification is enabled (default: `true`; an
+    /// absent `verify:` block means "verify with derived inputs").
+    pub fn verify_enabled(&self) -> bool {
+        self.verify
+            .as_ref()
+            .is_none_or(SignVerifyConfig::is_enabled)
+    }
+
     /// `true` when this sign config will invoke gpg.
     ///
     /// The top-level `signs:` driver defaults to gpg when `cmd:` is unset
@@ -393,6 +458,10 @@ pub struct DockerSignConfig {
     /// Capture and log stdout/stderr of the docker signing command.
     #[serde(deserialize_with = "deserialize_string_or_bool_opt", default)]
     pub output: Option<StringOrBool>,
+    /// Post-sign verification knobs — see [`SignVerifyConfig`]. Docker
+    /// signatures are verified with `cosign verify` against the registry
+    /// the sign just pushed to.
+    pub verify: Option<SignVerifyConfig>,
     /// Template-conditional: skip this docker sign config if rendered result is "false" or empty.
     #[serde(rename = "if")]
     pub if_condition: Option<String>,
@@ -449,6 +518,13 @@ impl DockerSignConfig {
                 .map(|s| (*s).to_string())
                 .collect()
         })
+    }
+
+    /// Whether post-sign verification is enabled (default: `true`).
+    pub fn verify_enabled(&self) -> bool {
+        self.verify
+            .as_ref()
+            .is_none_or(SignVerifyConfig::is_enabled)
     }
 }
 

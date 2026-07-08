@@ -10,7 +10,7 @@
 //! via the same [`crate::mcp::render_server_json`] pipeline, and checks it
 //! against the vendored schema so a structural defect (an out-of-pattern
 //! `name`, a missing required field, a wrong-typed value) surfaces in the
-//! snapshot/dry-run pass rather than after a real release has uploaded it.
+//! emission-validate pass rather than after a real release has uploaded it.
 //!
 //! Unlike the winget / scoop / krew validators, MCP collects no build
 //! artifacts and runs no per-crate loop: the document references npm / oci /

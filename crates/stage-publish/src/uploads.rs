@@ -731,7 +731,13 @@ impl anodizer_core::Publisher for UploadsPublisher {
             );
             acc = merge(
                 acc,
-                reachability_outcome(status, &url, "preflight: uploads", fail),
+                reachability_outcome(
+                    status,
+                    &url,
+                    "preflight: uploads",
+                    fail,
+                    ctx.preflight_is_strict(),
+                ),
             );
         }
         Ok(acc)

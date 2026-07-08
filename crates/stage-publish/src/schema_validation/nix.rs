@@ -15,7 +15,7 @@
 //! balance + required-attr scanning) and, when `nix-instantiate` is on `PATH`,
 //! a real `nix-instantiate --parse` of each file. A structural defect (a
 //! missing required attribute, an unbalanced template that produced broken
-//! Nix) surfaces in the snapshot/dry-run pass rather than after a pushed
+//! Nix) surfaces in the emission-validate pass rather than after a pushed
 //! overlay fails `nix build` for every installer.
 
 use anodizer_core::context::Context;

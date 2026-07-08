@@ -187,12 +187,12 @@ fn skip_flag_is_noop() {
 }
 
 #[test]
-fn github_release_deselected_self_skips() {
+fn github_release_deselected_skips_asset_check_without_stamping() {
     // github-release out of the `--publishers` surface (e.g. `--publishers npm`)
-    // means no published release was touched, so the gate has nothing in-surface
-    // to verify and short-circuits — the same consumer-aware self-skip `signs:`
-    // performs. Without it, an npm-only publish job re-runs the whole asset /
-    // smoke suite against a release it never published.
+    // means no published release was touched, so the asset check is out of the
+    // selected surface. The stage itself still runs (npm is a landing-check
+    // consumer), but with no publish report recorded nothing is probed — and a
+    // run that verified NOTHING must not stamp a passing verdict.
     let mut ctx = TestContextBuilder::new()
         .tag("v1.0.0")
         .crates(vec![published_crate("myapp", None)])
@@ -204,7 +204,31 @@ fn github_release_deselected_self_skips() {
     ctx.options.publisher_allowlist = vec!["npm".to_string()];
     assert!(
         VerifyReleaseStage.run(&mut ctx).is_ok(),
-        "github-release deselected must short-circuit before any fetch/smoke"
+        "github-release deselected must skip the asset fetch/smoke"
+    );
+    assert!(
+        ctx.verify_release.is_none(),
+        "no check ran, so no verdict may be stamped"
+    );
+}
+
+#[test]
+fn all_consumers_deselected_self_skips() {
+    // Every verifiable publisher out of the selected surface => the stage
+    // short-circuits entirely — the same consumer-aware self-skip `signs:`
+    // performs.
+    let mut ctx = TestContextBuilder::new()
+        .tag("v1.0.0")
+        .crates(vec![published_crate("myapp", None)])
+        .build();
+    ctx.config.verify_release = VerifyReleaseConfig {
+        enabled: true,
+        ..Default::default()
+    };
+    ctx.options.publisher_allowlist = vec!["homebrew".to_string()];
+    assert!(
+        VerifyReleaseStage.run(&mut ctx).is_ok(),
+        "no verifiable publisher selected must short-circuit"
     );
     assert!(
         ctx.verify_release.is_none(),
@@ -393,7 +417,7 @@ fn http_ok(body: String) -> &'static str {
 
 /// `404 Not Found` — what `GET /releases/tags/<tag>` returns when no release
 /// exists for the tag. `find_release_by_tag` maps this to `Ok(None)`, which
-/// `fetch_published_asset_names` turns into a "no release found" bail.
+/// `fetch_published_assets` turns into a "no release found" bail.
 const HTTP_404: &str = "HTTP/1.1 404 Not Found\r\nContent-Type: application/json\r\nContent-Length: 28\r\n\r\n{\"message\":\"Not Found\"}\r\n\r\n";
 
 /// Build a minimal Release JSON octocrab deserializes into
@@ -467,6 +491,7 @@ fn asset_ctx(addr: SocketAddr, crates: Vec<CrateConfig>) -> Context {
         max_elapsed: None,
     });
     ctx.config.verify_release = VerifyReleaseConfig {
+        assert_landing: true,
         enabled: true,
         assert_assets: true,
         glibc_ceiling: None,
@@ -632,7 +657,7 @@ fn asset_existence_orphan_published_asset_is_advisory_not_failure() {
 #[test]
 fn asset_existence_bails_when_release_not_found_for_tag() {
     // GET /releases/tags/<tag> returns 404 => find_release_by_tag yields None
-    // => fetch_published_asset_names bails ("no release found"); the stage logs
+    // => fetch_published_assets bails ("no release found"); the stage logs
     // that as a fetch issue and the gate fails. The publish should have created
     // the release, so its absence is a genuine post-publish defect.
     let routes = vec![ScriptedRoute {
@@ -684,7 +709,7 @@ fn asset_existence_skipped_when_crate_has_no_github_repo() {
 
 #[test]
 fn asset_existence_bails_when_no_token_available() {
-    // With assert_assets enabled but no token, fetch_published_asset_names
+    // With assert_assets enabled but no token, fetch_published_assets
     // errors ("no GitHub token available"); the stage records that as a fetch
     // issue and the gate fails rather than silently skipping.
     let (addr, _log) = spawn_scripted_responder(vec![]);
@@ -940,6 +965,7 @@ fn libc_ctx(ceiling: &str) -> Context {
         .crates(vec![published_crate("app", None)])
         .build();
     ctx.config.verify_release = VerifyReleaseConfig {
+        assert_landing: true,
         enabled: true,
         assert_assets: false,
         glibc_ceiling: Some(ceiling.to_string()),
@@ -1071,6 +1097,7 @@ fn libc_check_off_does_not_inspect_debs() {
         .crates(vec![published_crate("app", None)])
         .build();
     ctx.config.verify_release = VerifyReleaseConfig {
+        assert_landing: true,
         enabled: true,
         assert_assets: false,
         glibc_ceiling: None,
@@ -1681,6 +1708,7 @@ fn live_v080_real_release_fails_missing_signature_assets() {
         .build();
     ctx.config.project_name = "anodizer".to_string();
     ctx.config.verify_release = VerifyReleaseConfig {
+        assert_landing: true,
         enabled: true,
         assert_assets: true,
         glibc_ceiling: None,
@@ -1762,4 +1790,357 @@ fn gate_demands_sig_of_subjectless_sbom_under_release_ids() {
         !msg.contains("drop.zip.cdx.json.sig"),
         "the excluded archive's SBOM sig must NOT be demanded: {msg}"
     );
+}
+
+// ===========================================================================
+// Asset content (size/digest) — stage-level, via loopback responder
+// ===========================================================================
+
+/// Register an artifact backed by a REAL on-disk file so the content check
+/// has local bytes to compare.
+fn add_file_artifact(
+    ctx: &mut Context,
+    dir: &std::path::Path,
+    kind: ArtifactKind,
+    name: &str,
+    crate_name: &str,
+    bytes: &[u8],
+) -> std::path::PathBuf {
+    let path = dir.join(name);
+    std::fs::write(&path, bytes).expect("write artifact fixture");
+    ctx.artifacts.add(Artifact {
+        kind,
+        name: name.to_string(),
+        path: path.clone(),
+        target: None,
+        crate_name: crate_name.to_string(),
+        metadata: HashMap::new(),
+        size: None,
+    });
+    path
+}
+
+/// Release JSON whose single asset carries an explicit stored `size` and
+/// optional `digest` — the coordinates the content check compares.
+fn release_json_with_content_asset(
+    addr: SocketAddr,
+    name: &str,
+    size: u64,
+    digest: Option<&str>,
+) -> String {
+    let mut asset = serde_json::json!({
+        "url": format!("http://{addr}/asset/0"),
+        "browser_download_url": format!("http://{addr}/dl/{name}"),
+        "id": 1,
+        "node_id": "RA_0",
+        "name": name,
+        "label": null,
+        "state": "uploaded",
+        "content_type": "application/octet-stream",
+        "size": size,
+        "download_count": 0,
+        "created_at": "2026-01-01T00:00:00Z",
+        "updated_at": "2026-01-01T00:00:00Z",
+        "uploader": null,
+    });
+    if let Some(d) = digest {
+        asset["digest"] = serde_json::Value::String(d.to_string());
+    }
+    serde_json::json!({
+        "id": 1,
+        "node_id": "RL_1",
+        "tag_name": "v1.0.0",
+        "target_commitish": "main",
+        "name": "v1.0.0",
+        "draft": false,
+        "prerelease": false,
+        "created_at": "2026-01-01T00:00:00Z",
+        "published_at": "2026-01-01T00:00:00Z",
+        "author": null,
+        "assets": [asset],
+        "tarball_url": null,
+        "zipball_url": null,
+        "body": null,
+        "url": format!("http://{addr}/repos/me/repo/releases/1"),
+        "html_url": format!("http://{addr}/me/repo/releases/1"),
+        "assets_url": format!("http://{addr}/repos/me/repo/releases/1/assets"),
+        "upload_url": format!("http://{addr}/upload/1{{?name,label}}"),
+    })
+    .to_string()
+}
+
+/// Spawn a responder serving the tag-lookup route with one content asset,
+/// plus (optionally) the asset bytes themselves at `/asset/0` for the
+/// digest-download fallback.
+fn spawn_content_release_route(
+    name: &str,
+    size: u64,
+    digest: Option<&str>,
+    asset_bytes: Option<&[u8]>,
+) -> SocketAddr {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let body = release_json_with_content_asset(addr, name, size, digest);
+    let mut routes = vec![ScriptedRoute {
+        method: "GET",
+        path_pattern: "/repos/me/repo/releases/tags/v1.0.0",
+        response: http_ok(body),
+        times: None,
+    }];
+    if let Some(bytes) = asset_bytes {
+        let mut raw = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\n\r\n",
+            bytes.len()
+        )
+        .into_bytes();
+        raw.extend_from_slice(bytes);
+        // The scripted responder speaks &'static str; the fixture bytes are
+        // ASCII so the lossless round-trip through String is safe.
+        let raw = String::from_utf8(raw).expect("ascii fixture");
+        routes.push(ScriptedRoute {
+            method: "GET",
+            path_pattern: "/asset/0",
+            response: Box::leak(raw.into_boxed_str()),
+            times: None,
+        });
+    }
+    let (bound, _log) =
+        anodizer_core::test_helpers::scripted_responder::spawn_scripted_responder_on(
+            listener,
+            move |_| routes.clone(),
+        );
+    bound
+}
+
+#[test]
+fn content_check_passes_when_size_and_digest_match_local_bytes() {
+    let bytes = b"release bytes v1";
+    let sha = {
+        use sha2::Digest as _;
+        anodizer_core::hashing::hex_lower(&sha2::Sha256::digest(bytes))
+    };
+    let addr = spawn_content_release_route(
+        "app.tar.gz",
+        bytes.len() as u64,
+        Some(&format!("sha256:{sha}")),
+        None,
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    add_file_artifact(
+        &mut ctx,
+        dir.path(),
+        ArtifactKind::Archive,
+        "app.tar.gz",
+        "app",
+        bytes,
+    );
+    assert!(
+        VerifyReleaseStage.run(&mut ctx).is_ok(),
+        "matching size+digest must pass the gate"
+    );
+}
+
+#[test]
+fn content_check_bails_on_size_mismatch() {
+    // Stored size disagrees with the local file => truncated/stale upload.
+    let bytes = b"release bytes v1";
+    let addr = spawn_content_release_route("app.tar.gz", bytes.len() as u64 + 5, None, None);
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    add_file_artifact(
+        &mut ctx,
+        dir.path(),
+        ArtifactKind::Archive,
+        "app.tar.gz",
+        "app",
+        bytes,
+    );
+    let err = VerifyReleaseStage
+        .run(&mut ctx)
+        .expect_err("size mismatch must fail the gate");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("size mismatch") && msg.contains("app.tar.gz"),
+        "error names the asset and the defect: {msg}"
+    );
+    assert!(msg.contains(PUBLISHED_NOTE), "{msg}");
+}
+
+#[test]
+fn content_check_bails_on_digest_mismatch() {
+    let bytes = b"release bytes v1";
+    let wrong = "0000000000000000000000000000000000000000000000000000000000000000";
+    let addr = spawn_content_release_route(
+        "app.tar.gz",
+        bytes.len() as u64,
+        Some(&format!("sha256:{wrong}")),
+        None,
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    add_file_artifact(
+        &mut ctx,
+        dir.path(),
+        ArtifactKind::Archive,
+        "app.tar.gz",
+        "app",
+        bytes,
+    );
+    let err = VerifyReleaseStage
+        .run(&mut ctx)
+        .expect_err("digest mismatch must fail the gate");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("digest mismatch") && msg.contains("app.tar.gz"),
+        "{msg}"
+    );
+}
+
+#[test]
+fn content_check_falls_back_to_download_when_digest_absent() {
+    // No digest field (older GHES): the gate downloads the asset (small,
+    // under the cap) and hashes it. Serving DIFFERENT bytes than the local
+    // artifact must fail the gate through the download path.
+    let local = b"local bytes.....";
+    let remote = b"remote bytes!!!!";
+    let addr = spawn_content_release_route("app.tar.gz", local.len() as u64, None, Some(remote));
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    add_file_artifact(
+        &mut ctx,
+        dir.path(),
+        ArtifactKind::Archive,
+        "app.tar.gz",
+        "app",
+        local,
+    );
+    let err = VerifyReleaseStage
+        .run(&mut ctx)
+        .expect_err("downloaded bytes differing from local must fail the gate");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("verified via") && msg.contains("digest mismatch"),
+        "the failure must attribute the mismatch to the download path: {msg}"
+    );
+}
+
+#[test]
+fn content_check_prefers_checksum_stage_metadata_sha() {
+    // A checksum-stage sha256 in artifact metadata is trusted over re-hashing:
+    // plant a WRONG metadata sha and serve the file's REAL digest — the gate
+    // must report a mismatch, proving the metadata value was used.
+    let bytes = b"release bytes v1";
+    let real_sha = {
+        use sha2::Digest as _;
+        anodizer_core::hashing::hex_lower(&sha2::Sha256::digest(bytes))
+    };
+    let addr = spawn_content_release_route(
+        "app.tar.gz",
+        bytes.len() as u64,
+        Some(&format!("sha256:{real_sha}")),
+        None,
+    );
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut ctx = asset_ctx(addr, vec![published_crate("app", None)]);
+    let path = dir.path().join("app.tar.gz");
+    std::fs::write(&path, bytes).expect("write fixture");
+    ctx.artifacts.add(Artifact {
+        kind: ArtifactKind::Archive,
+        name: "app.tar.gz".to_string(),
+        path,
+        target: None,
+        crate_name: "app".to_string(),
+        metadata: HashMap::from([(
+            "sha256".to_string(),
+            "1111111111111111111111111111111111111111111111111111111111111111".to_string(),
+        )]),
+        size: None,
+    });
+    let err = VerifyReleaseStage
+        .run(&mut ctx)
+        .expect_err("metadata sha differing from stored digest must fail");
+    assert!(format!("{err:#}").contains("digest mismatch"), "{err:#}");
+}
+
+// ===========================================================================
+// Publisher landing checks — stage-level wiring (real npm HTTP probe)
+// ===========================================================================
+
+/// Publish report with a single succeeded npm publish whose registry points
+/// at the loopback responder.
+fn npm_report(registry: &str) -> anodizer_core::publish_report::PublishReport {
+    use anodizer_core::publish_evidence::{NpmExtra, NpmTargetSnapshot, PublishEvidenceExtra};
+    let mut evidence = anodizer_core::PublishEvidence::new("npm");
+    evidence.extra = PublishEvidenceExtra::Npm(NpmExtra {
+        npm_targets: vec![NpmTargetSnapshot {
+            target: "app".to_string(),
+            package: "app".to_string(),
+            version: "1.0.0".to_string(),
+            registry: registry.to_string(),
+            dist_tag: "latest".to_string(),
+            ..Default::default()
+        }],
+    });
+    anodizer_core::publish_report::PublishReport {
+        results: vec![anodizer_core::publish_report::PublisherResult {
+            name: "npm".to_string(),
+            group: anodizer_core::PublisherGroup::Submitter,
+            required: true,
+            outcome: anodizer_core::publish_report::PublisherOutcome::Succeeded,
+            evidence: Some(evidence),
+        }],
+        ..Default::default()
+    }
+}
+
+/// Context with landing checks as the only enabled axis.
+fn landing_ctx() -> Context {
+    let mut ctx = TestContextBuilder::new().tag("v1.0.0").build();
+    ctx.config.retry = Some(anodizer_core::config::RetryConfig {
+        attempts: 1,
+        delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(1)),
+        max_delay: anodizer_core::config::HumanDuration(std::time::Duration::from_millis(2)),
+        max_elapsed: None,
+    });
+    ctx.config.verify_release = VerifyReleaseConfig {
+        enabled: true,
+        assert_assets: false,
+        ..Default::default()
+    };
+    ctx
+}
+
+#[test]
+fn npm_landing_visible_version_passes_and_stamps_verdict() {
+    let (addr, _log) = spawn_scripted_responder(vec![ScriptedRoute {
+        method: "GET",
+        path_pattern: "/app/1.0.0",
+        response: http_ok("{\"version\":\"1.0.0\"}".to_string()),
+        times: None,
+    }]);
+    let mut ctx = landing_ctx();
+    ctx.set_publish_report(npm_report(&format!("http://{addr}")));
+    assert!(
+        VerifyReleaseStage.run(&mut ctx).is_ok(),
+        "visible npm version must pass the gate"
+    );
+    let verdict = ctx.verify_release.as_ref().expect("landing check ran");
+    assert!(verdict.issues.is_empty());
+}
+
+#[test]
+fn npm_landing_missing_version_bails_naming_the_package() {
+    let (addr, _log) = spawn_scripted_responder(Vec::new());
+    let mut ctx = landing_ctx();
+    ctx.set_publish_report(npm_report(&format!("http://{addr}")));
+    let err = VerifyReleaseStage
+        .run(&mut ctx)
+        .expect_err("invisible npm version must fail the gate");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.contains("app@1.0.0") && msg.contains("not visible"),
+        "{msg}"
+    );
+    assert!(msg.contains(PUBLISHED_NOTE), "{msg}");
 }

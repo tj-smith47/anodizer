@@ -1,19 +1,20 @@
-//! Snapshot / dry-run emission validation.
+//! Emission validation — snapshot, dry-run, nightly, AND real releases.
 //!
-//! In a real release the anodize-only emission features — binstall
+//! The anodize-only emission features — binstall
 //! `[package.metadata.binstall]`, the Nix flake + per-crate derivations, and
-//! version-sync — mutate source files or push to a remote. Snapshot and
-//! dry-run modes skip those side effects, which historically meant a BROKEN
-//! emission (a binstall `pkg_url` pointing at an asset the release never
-//! produces, a nix `packages.<system>` mapped to a missing asset, a crate
-//! with no resolvable version) passed every local check and only blew up at
-//! `cargo binstall` / `nix build` time on a consumer's machine.
+//! version-sync — mutate source files or push to a remote. A BROKEN emission
+//! (a binstall `pkg_url` pointing at an asset the release never produces, a
+//! nix `packages.<system>` mapped to a missing asset, a crate with no
+//! resolvable version) historically passed every local check and only blew up
+//! at `cargo binstall` / `nix build` time on a consumer's machine.
 //!
-//! This module closes that blindspot: in snapshot/dry-run it RENDERS the
-//! would-be output in-memory — never mutating source, never cloning a repo,
-//! never pushing — and cross-checks the rendered emission against the asset
-//! set the run actually produced (`ctx.artifacts`). A mismatch fails the
-//! snapshot loud, naming the crate + emission + what is wrong.
+//! This module closes that blindspot: it RENDERS the would-be output
+//! in-memory — never mutating source, never cloning a repo, never pushing —
+//! and cross-checks the rendered emission against the asset set the run
+//! actually produced (`ctx.artifacts`). A mismatch fails the run loud,
+//! naming the crate + emission + what is wrong. The render costs milliseconds,
+//! so it runs in EVERY mode: a real release aborts before any publisher ships
+//! a manifest the produced asset set cannot back.
 //!
 //! Runs per in-scope crate with that crate's own version/name/tag scope
 //! (via [`anodizer_core::crate_scope::with_crate_scope`]), so it is correct in
@@ -29,9 +30,11 @@ use anyhow::{Context as _, Result, bail};
 
 use crate::nix;
 
-/// Entry point: validate every in-scope crate's snapshot emissions.
+/// Entry point: validate every in-scope crate's emissions.
 ///
-/// No-op outside snapshot/dry-run. Iterates the crate universe honoring
+/// Runs in every mode — snapshot, dry-run, nightly, and real releases (the
+/// render is a pure in-memory cross-check; a real release's manifests deserve
+/// the same scrutiny a snapshot's do). Iterates the crate universe honoring
 /// `--crate` selection, and for each crate carrying a binstall / nix /
 /// version-sync emission, re-scopes the template vars to that crate and runs
 /// the matching cross-check. The first broken emission aborts with an
@@ -46,58 +49,59 @@ use crate::nix;
 /// (its own archives → the windows / linux / macos publishers) are still
 /// validated. This closes the gap where a windows-only asset cross-check ran on
 /// zero shards; it does NOT skip validators wholesale.
-pub(crate) fn validate_snapshot_emissions(ctx: &mut Context, log: &StageLogger) -> Result<()> {
-    validate_snapshot_emissions_with_resolver(ctx, log, &resolve_crate_tag_or_snapshot)
+pub(crate) fn validate_emissions(ctx: &mut Context, log: &StageLogger) -> Result<()> {
+    validate_emissions_with_resolver(ctx, log, &resolve_crate_tag_or_synthesized)
 }
 
 /// Per-crate tag source for the emission-validate pass.
 ///
 /// A real release (or its dry-run) tags every selected crate, so this defers to
-/// [`resolve_crate_tag`]. In SNAPSHOT mode there are no tags by design — the
-/// build stamps every crate with the global synthesized snapshot version
-/// (`<base>-SNAPSHOT-<sha>`, set on `Version` by `apply_snapshot_template_vars`)
-/// — so a tagless crate falls back to that version, the one the produced
-/// artifacts actually carry. Without this, a snapshot run of a binstall/nix/
-/// version-sync crate aborts the whole pipeline at `with_crate_scope`'s
-/// fail-loud tag guard (the determinism harness, which only ever builds an
-/// untagged HEAD in snapshot, can never complete a run otherwise).
-fn resolve_crate_tag_or_snapshot(ctx: &Context, crate_cfg: &CrateConfig) -> Option<String> {
-    resolve_crate_tag(ctx, crate_cfg).or_else(|| snapshot_version_fallback(ctx))
+/// [`resolve_crate_tag`]. In SNAPSHOT and NIGHTLY modes a tagless repo is
+/// legitimate by design — both stamp every crate with a globally synthesized
+/// version (`<base>-SNAPSHOT-<sha>` via `apply_snapshot_template_vars`;
+/// `{{ incpatch(v=Version) }}-{{ ShortCommit }}-nightly` via
+/// `apply_nightly_template_vars`) — so a tagless crate falls back to that
+/// version, the one the produced artifacts actually carry. Without this, a
+/// snapshot or nightly run of a binstall/nix/version-sync crate aborts the
+/// whole pipeline at `with_crate_scope`'s fail-loud tag guard (the determinism
+/// harness only ever builds an untagged HEAD in snapshot, and a nightly from a
+/// rolled-back tagless repo could never complete a run otherwise).
+fn resolve_crate_tag_or_synthesized(ctx: &Context, crate_cfg: &CrateConfig) -> Option<String> {
+    resolve_crate_tag(ctx, crate_cfg).or_else(|| synthesized_version_fallback(ctx))
 }
 
-/// The global snapshot version to scope a tagless crate to, or `None` outside
-/// snapshot mode (a real release must resolve a real tag — never papered over).
-fn snapshot_version_fallback(ctx: &Context) -> Option<String> {
-    if !ctx.is_snapshot() {
+/// The globally synthesized version to scope a tagless crate to, or `None`
+/// outside snapshot/nightly mode (a real release must resolve a real tag —
+/// never papered over).
+fn synthesized_version_fallback(ctx: &Context) -> Option<String> {
+    if !ctx.is_snapshot() && !ctx.is_nightly() {
         return None;
     }
     let version = ctx.version();
     (!version.trim().is_empty()).then_some(version)
 }
 
-/// Inner body of [`validate_snapshot_emissions`] with the per-crate tag source
+/// Inner body of [`validate_emissions`] with the per-crate tag source
 /// injected. Production passes [`resolve_crate_tag`] (git-backed); tests pass a
 /// closure returning fixed tags so the version-dimension fix can be exercised
 /// without a git fixture.
-fn validate_snapshot_emissions_with_resolver(
+fn validate_emissions_with_resolver(
     ctx: &mut Context,
     log: &StageLogger,
     resolve_tag: &dyn Fn(&Context, &CrateConfig) -> Option<String>,
 ) -> Result<()> {
-    if !ctx.is_snapshot() && !ctx.is_dry_run() {
-        return Ok(());
-    }
-
-    // The version that actually NAMED the produced archives. In snapshot it is
-    // the synthesized `<base>-SNAPSHOT-<sha>` (set on the global `Version` var
-    // by `apply_snapshot_template_vars` before the pipeline ran); in real-
-    // release dry-run it is the real version. The asset cross-check MUST render
+    // The version that actually NAMED the produced archives. In snapshot and
+    // nightly it is the synthesized value (set on the global `Version` var by
+    // `apply_snapshot_template_vars` / `apply_nightly_template_vars` before
+    // the pipeline ran); in a real release or its dry-run it is the real
+    // version. The asset cross-check MUST render
     // binstall `pkg_url` / nix derivation URLs with THIS version so a correct
     // `{{ .Version }}` resolves to the same stem the archives carry — not a
     // tag-re-derived version that would never match the `-SNAPSHOT-<sha>` asset.
     let artifact_version = ctx.version();
 
     let crates = in_scope_crates(ctx);
+    let mut validated = 0usize;
     for crate_cfg in &crates {
         let has_binstall = crate_cfg
             .binstall
@@ -112,12 +116,13 @@ fn validate_snapshot_emissions_with_resolver(
         if !has_binstall && !has_version_sync && !has_nix && !consumes_derived {
             continue;
         }
+        validated += 1;
 
         with_crate_scope(ctx, crate_cfg, resolve_tag, |ctx| {
             // version-sync: the per-crate scope already fail-loud-resolved a
             // parseable version (with_crate_scope errors otherwise), so this
-            // is the snapshot twin of the real-release guard — a crate with
-            // no tag / an unparseable tag is caught here, not at release time.
+            // belt-and-suspenders guard catches a crate with no tag / an
+            // unparseable tag before any publisher runs, in every mode.
             // It runs FIRST, while `Version` is the per-crate tag-derived value,
             // because that is the version a real release would stamp.
             if has_version_sync {
@@ -166,6 +171,13 @@ fn validate_snapshot_emissions_with_resolver(
     // version-independent. The resolver is threaded through so tests can drive
     // the version dimension without a git fixture.
     crate::schema_validation::validate_publisher_schemas(ctx, log, resolve_tag)?;
+
+    if validated > 0 {
+        log.status(&format!(
+            "validated emissions for {validated} crate{}",
+            if validated == 1 { "" } else { "s" }
+        ));
+    }
 
     Ok(())
 }
@@ -224,8 +236,8 @@ fn in_scope_crates(ctx: &Context) -> Vec<CrateConfig> {
 /// Assert the in-scope crate resolved a valid, non-empty, parseable per-crate
 /// version. The `with_crate_scope` wrapper already errors on a no-tag /
 /// unparseable-tag crate; this is the belt-and-suspenders check that the
-/// scoped `Version` var is actually populated and parseable, matching the
-/// real-release fail-loud guard.
+/// scoped `Version` var is actually populated and parseable, before any
+/// publisher would stamp it.
 fn validate_version_sync(ctx: &Context, crate_cfg: &CrateConfig) -> Result<()> {
     let version = ctx
         .template_vars()
@@ -235,7 +247,7 @@ fn validate_version_sync(ctx: &Context, crate_cfg: &CrateConfig) -> Result<()> {
         .unwrap_or_default();
     if version.trim().is_empty() {
         bail!(
-            "version-sync: crate '{}' resolved an empty version in snapshot \
+            "version-sync: crate '{}' resolved an empty version during emission \
              validation; a release would stamp Cargo.toml with no version",
             crate_cfg.name
         );
@@ -271,7 +283,7 @@ fn validate_binstall(
         // to cross-check against. The binstall render itself is still
         // exercised below so a template error is caught.
         log.verbose(&format!(
-            "crate '{}' produced no archives for binstall in this snapshot shard; \
+            "crate '{}' produced no archives for binstall in this run; \
              rendering pkg_url without an asset cross-check",
             crate_cfg.name
         ));
@@ -362,7 +374,7 @@ fn validate_binstall(
                 }
                 log.verbose(&format!(
                     "skipped asset cross-check for crate '{}' — binstall override '{}' \
-                     not built in this snapshot shard",
+                     not built in this run",
                     crate_cfg.name, triple
                 ));
                 continue;
@@ -437,7 +449,7 @@ fn validate_derived_asset_names(
     let produced = produced_archives(ctx, &crate_cfg.name);
     if produced.is_empty() {
         log.verbose(&format!(
-            "crate '{}' produced no archives in this snapshot shard; skipping \
+            "crate '{}' produced no archives in this run; skipping \
              the derived asset-name cross-check",
             crate_cfg.name
         ));
@@ -719,7 +731,7 @@ fn validate_nix(ctx: &mut Context, crate_cfg: &CrateConfig, log: &StageLogger) -
     if produced.is_empty() {
         log.verbose(&format!(
             "skipped nix emission validation for crate '{}' — produced no archives for nix \
-             in this snapshot shard (no assets to cross-check)",
+             in this run (no assets to cross-check)",
             crate_cfg.name,
         ));
         return Ok(());
@@ -1306,20 +1318,36 @@ mod tests {
         (cfg, ctx, tmp)
     }
 
-    /// `snapshot_version_fallback` yields the global snapshot version ONLY in
-    /// snapshot mode; a real release returns `None` so the fail-loud tag guard
-    /// still protects it.
+    /// `synthesized_version_fallback` yields the global synthesized version
+    /// ONLY in snapshot/nightly mode; a real release returns `None` so the
+    /// fail-loud tag guard still protects it.
     #[test]
-    fn snapshot_version_fallback_is_snapshot_only() {
+    fn synthesized_version_fallback_is_snapshot_or_nightly_only() {
         let cfg = binstall_crate(BinstallConfig::default());
 
         let snap = scoped_ctx(cfg.clone());
-        assert_eq!(snapshot_version_fallback(&snap).as_deref(), Some("1.0.0"));
+        assert_eq!(
+            synthesized_version_fallback(&snap).as_deref(),
+            Some("1.0.0")
+        );
+
+        let mut nightly = TestContextBuilder::new()
+            .nightly(true)
+            .crates(vec![cfg.clone()])
+            .build();
+        nightly
+            .template_vars_mut()
+            .set("Version", "1.0.1-abc123d-nightly");
+        assert_eq!(
+            synthesized_version_fallback(&nightly).as_deref(),
+            Some("1.0.1-abc123d-nightly"),
+            "nightly versions are synthesized; a tagless repo must fall back"
+        );
 
         let mut real = TestContextBuilder::new().crates(vec![cfg]).build();
         real.template_vars_mut().set("Version", "1.0.0");
         assert!(
-            snapshot_version_fallback(&real).is_none(),
+            synthesized_version_fallback(&real).is_none(),
             "a real release must resolve a real tag, never fall back"
         );
     }
@@ -1351,7 +1379,7 @@ mod tests {
         };
 
         let mut ctx = make();
-        let err = validate_snapshot_emissions_with_resolver(&mut ctx, &log(), &|_, _| None)
+        let err = validate_emissions_with_resolver(&mut ctx, &log(), &|_, _| None)
             .expect_err("a tagless crate with no fallback must fail loud");
         assert!(
             format!("{err}").contains("release tag"),
@@ -1359,12 +1387,46 @@ mod tests {
         );
 
         let mut ctx = make();
-        validate_snapshot_emissions_with_resolver(&mut ctx, &log(), &|c, _| {
-            snapshot_version_fallback(c)
+        validate_emissions_with_resolver(&mut ctx, &log(), &|c, _| {
+            synthesized_version_fallback(c)
         })
         .expect(
             "snapshot fallback lets a tagless crate validate against its snapshot-version assets",
         );
+    }
+
+    /// A tagless NIGHTLY run (the state anodizer's own rollback leaves behind)
+    /// must scope to the synthesized nightly version and validate, exactly
+    /// like snapshot — nightly versions are synthesized, never tag-derived.
+    #[test]
+    fn nightly_no_tag_crate_recovers_via_synthesized_fallback() {
+        let cfg = binstall_crate(BinstallConfig {
+            enabled: Some(true),
+            pkg_url: Some(
+                "https://github.com/o/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-{ target }.tar.gz"
+                    .to_string(),
+            ),
+            ..Default::default()
+        });
+        let mut ctx = TestContextBuilder::new()
+            .nightly(true)
+            .crates(vec![cfg])
+            .sealed_env()
+            .build();
+        let nightly_version = "1.0.1-abc123d-nightly";
+        ctx.template_vars_mut().set("Version", nightly_version);
+        ctx.template_vars_mut().set("RawVersion", nightly_version);
+        ctx.template_vars_mut().set("ProjectName", "cfgd");
+        ctx.template_vars_mut().set("Name", "cfgd");
+        add_archive(
+            &mut ctx,
+            "cfgd",
+            "x86_64-unknown-linux-gnu",
+            &format!("cfgd-{nightly_version}-x86_64-unknown-linux-gnu.tar.gz"),
+        );
+
+        validate_emissions_with_resolver(&mut ctx, &log(), &|c, _| synthesized_version_fallback(c))
+            .expect("tagless nightly must fall back to the synthesized version and pass");
     }
 
     /// A top-level `pkg_url` with NO cargo-binstall `{ target }` token hardcodes
@@ -1888,7 +1950,7 @@ mod tests {
         ctx.options.partial_target = Some(PartialTarget::Targets(vec![
             "x86_64-pc-windows-msvc".to_string(),
         ]));
-        let err = validate_snapshot_emissions(&mut ctx, &log()).expect_err(
+        let err = validate_emissions(&mut ctx, &log()).expect_err(
             "a windows-only shard must now VALIDATE the windows binstall override and catch the 404",
         );
         let msg = format!("{err}");
@@ -1959,7 +2021,7 @@ mod tests {
         ctx.options.partial_target = Some(PartialTarget::Targets(vec![
             "x86_64-pc-windows-msvc".to_string(),
         ]));
-        validate_snapshot_emissions(&mut ctx, &log()).expect(
+        validate_emissions(&mut ctx, &log()).expect(
             "windows-only shard: nix + homebrew self-skip (no Linux/Darwin archive) while the \
              correct windows binstall override cross-checks and passes — the v0.6.0 regression \
              must not return and the pass must not be vacuous",
@@ -2046,7 +2108,7 @@ mod tests {
         ctx.options.partial_target = Some(PartialTarget::Targets(vec![
             "x86_64-unknown-linux-gnu".to_string(),
         ]));
-        validate_snapshot_emissions(&mut ctx, &log()).expect(
+        validate_emissions(&mut ctx, &log()).expect(
             "linux-only shard must validate nix against its linux archive and self-skip the \
              windows winget validator without error",
         );
@@ -2105,10 +2167,12 @@ mod tests {
 
     // -- entry point --------------------------------------------------------
 
-    /// Outside snapshot/dry-run the validator is a no-op even with a broken
-    /// emission — the real release stages own validation there.
+    /// A REAL release (not snapshot, not dry-run) runs the validation too: a
+    /// broken emission must abort the release before any publisher ships it.
+    /// (The validator was previously a no-op outside snapshot/dry-run, letting
+    /// production manifests ship unvalidated.)
     #[test]
-    fn validate_is_noop_outside_snapshot() {
+    fn real_release_runs_validation_and_fails_broken_emission() {
         let cfg = binstall_crate(BinstallConfig {
             enabled: Some(true),
             pkg_url: Some(
@@ -2117,8 +2181,57 @@ mod tests {
             ),
             ..Default::default()
         });
-        let mut ctx = TestContextBuilder::new().crates(vec![cfg]).build();
-        validate_snapshot_emissions(&mut ctx, &log()).expect("no-op outside snapshot/dry-run");
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![cfg])
+            .sealed_env()
+            .build();
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("RawVersion", "1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "cfgd");
+        ctx.template_vars_mut().set("Name", "cfgd");
+        add_archive(
+            &mut ctx,
+            "cfgd",
+            "x86_64-unknown-linux-gnu",
+            "cfgd-1.0.0-x86_64-unknown-linux-gnu.tar.gz",
+        );
+        // Real releases resolve real tags; inject one so no git fixture is needed.
+        let resolver = |_: &Context, _: &CrateConfig| Some("v1.0.0".to_string());
+        let err = validate_emissions_with_resolver(&mut ctx, &log(), &resolver)
+            .expect_err("a real release must fail a 404-class emission, not skip validation");
+        assert!(format!("{err}").contains("404"), "{err}");
+    }
+
+    /// The real-release counterpart with a CORRECT emission passes — the
+    /// validation running in real mode must not false-positive when tags exist
+    /// and `Version` is the real version.
+    #[test]
+    fn real_release_correct_emission_passes() {
+        let cfg = binstall_crate(BinstallConfig {
+            enabled: Some(true),
+            pkg_url: Some(
+                "https://github.com/o/cfgd/releases/download/v{{ .Version }}/cfgd-{{ .Version }}-{ target }.tar.gz"
+                    .to_string(),
+            ),
+            ..Default::default()
+        });
+        let mut ctx = TestContextBuilder::new()
+            .crates(vec![cfg])
+            .sealed_env()
+            .build();
+        ctx.template_vars_mut().set("Version", "1.0.0");
+        ctx.template_vars_mut().set("RawVersion", "1.0.0");
+        ctx.template_vars_mut().set("ProjectName", "cfgd");
+        ctx.template_vars_mut().set("Name", "cfgd");
+        add_archive(
+            &mut ctx,
+            "cfgd",
+            "x86_64-unknown-linux-gnu",
+            "cfgd-1.0.0-x86_64-unknown-linux-gnu.tar.gz",
+        );
+        let resolver = |_: &Context, _: &CrateConfig| Some("v1.0.0".to_string());
+        validate_emissions_with_resolver(&mut ctx, &log(), &resolver)
+            .expect("a correct emission must pass in a real release");
     }
 
     // -- version-dimension fix (snapshot false-positive) --------------------
@@ -2195,7 +2308,7 @@ mod tests {
         // resolves without a git fixture; the asset cross-check then swaps in
         // the snapshot version captured from the global `Version`.
         let resolver = |_: &Context, _: &CrateConfig| Some("0.5.0".to_string());
-        validate_snapshot_emissions_with_resolver(&mut ctx, &log(), &resolver)
+        validate_emissions_with_resolver(&mut ctx, &log(), &resolver)
             .expect("correct override must pass once the cross-check uses the snapshot version");
     }
 }

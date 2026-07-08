@@ -56,6 +56,13 @@ pub struct VerifyReleaseConfig {
     /// already knows the produced set and can fetch the release's asset list).
     /// Independent of Docker and the network smoke-test.
     pub assert_assets: bool,
+    /// Assert that every publisher that succeeded this run actually LANDED:
+    /// each published crate version is visible on the crates.io sparse index,
+    /// each npm package version is visible on its registry, and each uploaded
+    /// blob object exists in its bucket. Default `true` (no extra config: the
+    /// run's own publish report already carries every coordinate the probes
+    /// need). Publishers that did not run — or did not succeed — are skipped.
+    pub assert_landing: bool,
     /// Per-package install smoke-test images. When `None`, smoke-testing is
     /// off. When present, each package type that produced an artifact is
     /// installed in its (configured or default) container and `<bin>
@@ -74,6 +81,7 @@ impl Default for VerifyReleaseConfig {
         Self {
             enabled: false,
             assert_assets: true,
+            assert_landing: true,
             install_smoke: None,
             glibc_ceiling: None,
         }
@@ -91,6 +99,12 @@ impl VerifyReleaseConfig {
     /// enabled AND a ceiling was configured.
     pub fn glibc_check_enabled(&self) -> bool {
         self.enabled && self.glibc_ceiling.is_some()
+    }
+
+    /// Whether the per-publisher landing checks should run: only when the
+    /// whole gate is enabled AND `assert_landing` is set.
+    pub fn landing_checks_enabled(&self) -> bool {
+        self.enabled && self.assert_landing
     }
 }
 
@@ -156,11 +170,21 @@ mod tests {
         let c = VerifyReleaseConfig::default();
         assert!(!c.enabled, "the gate is opt-in");
         assert!(c.assert_assets, "asset-existence defaults on");
+        assert!(c.assert_landing, "landing checks default on");
         assert!(c.install_smoke.is_none(), "smoke off by default");
         assert!(c.glibc_ceiling.is_none(), "libc check off by default");
         // The sub-check gates are still off because the whole gate is off.
         assert!(!c.assert_assets_enabled());
         assert!(!c.glibc_check_enabled());
+        assert!(!c.landing_checks_enabled());
+    }
+
+    #[test]
+    fn assert_landing_independently_toggleable() {
+        let yaml = "enabled: true\nassert_landing: false\n";
+        let c: VerifyReleaseConfig = serde_yaml_ng::from_str(yaml).unwrap();
+        assert!(!c.landing_checks_enabled(), "landing checks opted out");
+        assert!(c.assert_assets_enabled(), "asset check unaffected");
     }
 
     #[test]

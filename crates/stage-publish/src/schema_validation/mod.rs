@@ -15,7 +15,8 @@
 //! reports each violation as a field-named [`SchemaFinding`], and defines the
 //! [`PublisherSchemaValidator`] trait each publisher implements to render and
 //! check its own artifacts. [`validate_publisher_schemas`] drives every
-//! registered validator and fails the snapshot/dry-run pass loud, naming the
+//! registered validator and fails the emission-validate pass loud (in every
+//! mode — snapshot, dry-run, nightly, and real releases), naming the
 //! publisher, the offending field, and what the schema expected.
 
 use std::ffi::OsString;

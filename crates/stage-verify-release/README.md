@@ -2,7 +2,7 @@
 
 # anodizer-stage-verify-release
 
-Post-release verification gate for the anodizer release tool — asset-existence, install smoke-test, and glibc-ceiling checks
+Post-release verification gate for the anodizer release tool — asset-existence and content checks, publisher landing checks, install smoke-test, and glibc-ceiling checks
 
 This crate is an internal building block of [**anodizer**](https://github.com/tj-smith47/anodizer) — a Rust-native release automation tool inspired by GoReleaser. It is published to crates.io so the `anodizer` CLI can depend on it from the registry, but the public, user-facing entry point is the [`anodizer`](https://crates.io/crates/anodizer) binary crate.
 

@@ -1690,7 +1690,13 @@ impl anodizer_core::Publisher for ArtifactoryPublisher {
             );
             acc = merge(
                 acc,
-                reachability_outcome(status, &url, "preflight: artifactory", fail),
+                reachability_outcome(
+                    status,
+                    &url,
+                    "preflight: artifactory",
+                    fail,
+                    ctx.preflight_is_strict(),
+                ),
             );
         }
         Ok(acc)

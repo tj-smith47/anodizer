@@ -325,7 +325,8 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
         // policy — identical to every sibling preflight (gemfury/cloudsmith/…).
         // The community feed being a one-way door does NOT make an OPTIONAL
         // chocolatey entry block the whole release: only a `required:true` entry
-        // (or a transient, which always degrades to Warning below) aborts pre-tag.
+        // aborts pre-tag (a transient degrades to Warning below, unless strict
+        // preflight promotes it).
         let fail = FailSeverity::for_required(Self::resolved_required(self));
         let mut acc = PreflightCheck::Pass;
         for c in ctx.config.crate_universe() {
@@ -367,6 +368,7 @@ impl anodizer_core::Publisher for ChocolateyPublisher {
                     &api_key,
                     &policy,
                     fail,
+                    ctx.preflight_is_strict(),
                     &ctx.logger("preflight"),
                 ),
             );
@@ -424,14 +426,16 @@ enum ChocoKeyProbe {
 /// A DEFINITIVE failure (key rejected, feed unreachable) takes `fail`'s severity
 /// — `Blocker` for a `required:true` entry, `Warning` for the default optional
 /// config — so a transient DNS/TLS blip on an optional chocolatey never aborts
-/// the whole release. An AMBIGUOUS (indeterminate) read always warns regardless,
-/// since a reachable-but-cloudy feed is not proof the key is bad.
+/// the whole release. An AMBIGUOUS (indeterminate) read warns by default,
+/// since a reachable-but-cloudy feed is not proof the key is bad; under strict
+/// preflight (`strict`) it is promoted to a blocker (fail-closed).
 fn choco_key_check(
     push_url: &str,
     feed: &str,
     api_key: &str,
     policy: &anodizer_core::retry::RetryPolicy,
     fail: crate::publisher_preflight::FailSeverity,
+    strict: bool,
     log: &anodizer_core::log::StageLogger,
 ) -> anodizer_core::PreflightCheck {
     use anodizer_core::PreflightCheck;
@@ -445,10 +449,13 @@ fn choco_key_check(
             "chocolatey feed {feed} unreachable ({reason}); cannot verify the API key before \
              pushing to a one-way moderation queue"
         )),
-        ChocoKeyProbe::Ambiguous(reason) => PreflightCheck::Warning(format!(
-            "could not verify the chocolatey API key against {feed} ({reason}); \
-             verify CHOCOLATEY_API_KEY manually"
-        )),
+        ChocoKeyProbe::Ambiguous(reason) => anodizer_core::git::indeterminate_check(
+            strict,
+            format!(
+                "could not verify the chocolatey API key against {feed} ({reason}); \
+                 verify CHOCOLATEY_API_KEY manually"
+            ),
+        ),
     }
 }
 

@@ -11,6 +11,7 @@ mod expected;
 mod helpers;
 mod keyload;
 mod process;
+mod verify;
 
 pub use expected::expected_signature_assets;
 pub use helpers::VALID_SIGN_ARTIFACT_FILTERS;
@@ -364,6 +365,63 @@ impl Stage for DockerSignStage {
                     .map(|a| (a.path.clone(), a.metadata.clone()))
                     .collect();
 
+                // Resolve post-sign verification once per config. Docker
+                // signatures are registry-attached, so verification is
+                // `cosign verify` against the registry the sign just pushed
+                // to — the network path is already proven reachable at that
+                // point. Keyed configs derive the public key once here, the
+                // same way the detached path does.
+                let docker_verify_mode = crate::verify::resolve_config_verify_mode(
+                    docker_sign_cfg.verify.as_ref(),
+                    &cmd,
+                    &args,
+                    docker_sign_cfg.certificate.is_some(),
+                    ctx.env_source(),
+                );
+                match &docker_verify_mode {
+                    crate::verify::ConfigVerifyMode::Disabled => log.verbose(&format!(
+                        "docker-sign config '{}': signature verification disabled by \
+                         `verify.enabled: false`",
+                        sign_id
+                    )),
+                    crate::verify::ConfigVerifyMode::Skip(reason) => log.verbose(&format!(
+                        "docker-sign config '{}': skipping signature verification — {}",
+                        sign_id, reason
+                    )),
+                    _ => {}
+                }
+                let docker_pubkey_file: Option<tempfile::NamedTempFile> = match &docker_verify_mode
+                {
+                    crate::verify::ConfigVerifyMode::CosignKeyed { key_ref, .. }
+                        if !ctx.is_dry_run() && !image_paths.is_empty() =>
+                    {
+                        let derive_env: Vec<(String, String)> =
+                            anodizer_core::config::render_env_entries(
+                                docker_sign_cfg.env.as_deref().unwrap_or(&[]),
+                                |v| ctx.render_template(v),
+                            )
+                            .with_context(|| "docker-sign: render env entries")?;
+                        let tmp = tempfile::Builder::new()
+                            .prefix("anodizer-verify-")
+                            .suffix(".pub")
+                            .tempfile()
+                            .context(
+                                "docker-sign verify: create temp file for derived public key",
+                            )?;
+                        crate::verify::derive_cosign_public_key(
+                            &cmd,
+                            key_ref,
+                            Some(&derive_env),
+                            tmp.path(),
+                        )?;
+                        Some(tmp)
+                    }
+                    _ => None,
+                };
+                let docker_pubkey_path: Option<String> = docker_pubkey_file
+                    .as_ref()
+                    .map(|f| f.path().to_string_lossy().into_owned());
+
                 if anodizer_core::artifact::ids_filter_eliminated_all(
                     docker_sign_cfg.ids.as_deref(),
                     pre_ids,
@@ -525,7 +583,8 @@ impl Stage for DockerSignStage {
                     // Use the already-rendered env pairs (rendered values are what
                     // actually appear in command output, so redact those).
                     let docker_env_pairs: Vec<(String, String)> = docker_rendered_env
-                        .into_iter()
+                        .iter()
+                        .cloned()
                         .chain(std::env::vars())
                         .collect();
 
@@ -567,6 +626,32 @@ impl Stage for DockerSignStage {
                     log.check_output(redacted_output, &cmd)?;
 
                     log.status(&format!("signed image {signed_ref}")); // status-ok: per-image sign result
+
+                    // Re-verify the signature just attached to the registry.
+                    // A bad signature is a deterministic failure and
+                    // fast-fails inside `retry_transient`; the ladder only
+                    // absorbs the transient registry/tlog network class.
+                    if let Some(vargs) = crate::verify::build_docker_verify_args(
+                        &docker_verify_mode,
+                        &signed_ref,
+                        docker_pubkey_path.as_deref(),
+                    ) {
+                        let vjob = crate::verify::VerifyJob {
+                            cmd: cmd.clone(),
+                            args: vargs,
+                            env: (!docker_rendered_env.is_empty())
+                                .then(|| docker_rendered_env.clone()),
+                            what: signed_ref.clone(),
+                        };
+                        crate::process::retry_transient(
+                            &crate::process::COSIGN_TRANSIENT_RETRY,
+                            &log,
+                            &format!("verification of {signed_ref}"),
+                            &|d| std::thread::sleep(d),
+                            &mut || crate::verify::execute_verify_job(&vjob, &log),
+                        )?;
+                        log.status(&format!("verified image signature {signed_ref}")); // status-ok: per-image verification result
+                    }
                 }
             }
 

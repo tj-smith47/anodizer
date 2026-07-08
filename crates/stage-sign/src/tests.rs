@@ -299,6 +299,7 @@ fn all_and_checksum_filters_sign_every_checksum_kind_without_recursion() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     };
 
@@ -443,6 +444,7 @@ fn signs_loop_skips_only_when_every_consumer_is_deselected() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     };
 
@@ -568,6 +570,7 @@ fn binary_signs_loop_skips_only_in_publish_only_mode() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     };
 
@@ -725,6 +728,7 @@ fn test_multiple_sign_configs_run_independently() {
     // Two sign configs targeting different artifact types
     let signs = vec![
         SignConfig {
+            verify: None,
             id: Some("gpg".to_string()),
             cmd: Some("echo".to_string()),
             args: Some(vec!["signing-archive".to_string()]),
@@ -740,6 +744,7 @@ fn test_multiple_sign_configs_run_independently() {
             if_condition: None,
         },
         SignConfig {
+            verify: None,
             id: Some("cosign".to_string()),
             cmd: Some("echo".to_string()),
             args: Some(vec!["signing-checksum".to_string()]),
@@ -883,6 +888,7 @@ fn test_ids_filter_restricts_signed_artifacts() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     };
 
@@ -1021,6 +1027,7 @@ fn test_dry_run_logs_without_executing() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     }];
 
@@ -1108,6 +1115,7 @@ fn test_sign_none_filter_skips_entirely() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     }];
 
@@ -1154,6 +1162,7 @@ fn test_sign_if_false_records_skip_memento() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: Some("false".to_string()),
     }];
 
@@ -1190,6 +1199,7 @@ fn test_sign_positional_label_when_id_missing() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     }];
 
@@ -1226,6 +1236,7 @@ fn test_missing_signing_binary_errors_with_command_name() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     }];
 
@@ -1271,6 +1282,7 @@ fn test_signing_command_nonzero_exit_errors_with_details() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     }];
 
@@ -1334,6 +1346,7 @@ fn test_stdin_file_missing_errors_with_path() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     };
 
@@ -1438,6 +1451,7 @@ fn test_sign_env_vars_passed_to_command() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     }];
 
@@ -1485,6 +1499,7 @@ fn test_docker_sign_ids_filter() {
     use anodizer_core::config::DockerSignConfig;
 
     let docker_signs = vec![DockerSignConfig {
+        verify: None,
         cmd: Some("echo".to_string()),
         args: Some(vec!["sign".to_string(), "{{ .Artifact }}".to_string()]),
         artifacts: Some("all".to_string()),
@@ -1590,6 +1605,7 @@ fn test_sign_with_certificate_dry_run() {
         certificate: Some("{{ .Artifact }}.pem".to_string()),
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     }];
 
@@ -1653,6 +1669,7 @@ fn test_sign_stage_registers_signature_artifacts_dry_run() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     }];
 
@@ -1700,6 +1717,7 @@ fn test_sign_stage_registers_certificate_artifacts_dry_run() {
         certificate: Some("{{ .Artifact }}.pem".to_string()),
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     }];
 
@@ -1768,6 +1786,7 @@ fn test_docker_sign_env_vars_passed_to_command() {
 
     let (cmd, args) = shell_echo_to_file("ANODIZER_TEST_DOCKER_ENV", &marker_str);
     let docker_signs = vec![DockerSignConfig {
+        verify: None,
         id: Some("test-env".to_string()),
         cmd: Some(cmd),
         args: Some(args),
@@ -1820,6 +1839,7 @@ fn assert_docker_sign_deselected_not_run(opts: anodizer_core::context::ContextOp
     let (cmd, args) = shell_echo_to_file("ANODIZER_TEST_DOCKER_SIGN", &marker_str);
 
     let docker_signs = vec![DockerSignConfig {
+        verify: None,
         id: Some("deselect-probe".to_string()),
         cmd: Some(cmd),
         args: Some(args),
@@ -1896,6 +1916,7 @@ fn docker_sign_in_allowlist_is_not_deselected() {
     let marker_str = marker_path.to_string_lossy().to_string();
     let (cmd, args) = shell_echo_to_file("ANODIZER_TEST_DOCKER_SIGN", &marker_str);
     let docker_signs = vec![DockerSignConfig {
+        verify: None,
         id: Some("selected-probe".to_string()),
         cmd: Some(cmd),
         args: Some(args),
@@ -2033,6 +2054,7 @@ fn test_if_condition_false_skips_sign() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: Some("false".to_string()),
     }];
 
@@ -2077,6 +2099,7 @@ fn test_if_condition_true_proceeds() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: Some("true".to_string()),
     }];
 
@@ -2133,6 +2156,7 @@ fn test_if_condition_template_renders_to_empty_skips_sign() {
         // error — use a literal " " that trims to empty instead so we exercise
         // the trimmed-empty branch).
         authenticode: None,
+        verify: None,
         if_condition: Some(" ".to_string()),
     }];
 
@@ -2237,6 +2261,7 @@ fn keyless_cosign_is_skipped_under_harness() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     };
     // dry_run=false: prove the config never spawns real cosign even in the
@@ -2279,6 +2304,7 @@ fn keyed_cosign_is_not_skipped_under_harness() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     };
     let (_result, skips) = run_signs_capture_skips(sign, true, true);
@@ -2359,6 +2385,7 @@ fn keyless_cosign_is_not_skipped_outside_harness() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     };
     let (_result, skips) = run_signs_capture_skips(sign, false, true);
@@ -2390,6 +2417,7 @@ fn gpg_is_not_skipped_under_harness() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     };
     let (_result, skips) = run_signs_capture_skips(sign, true, true);
@@ -2421,6 +2449,7 @@ fn test_if_condition_snapshot_template() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: Some("{{ IsSnapshot }}".to_string()),
     }];
 
@@ -2490,6 +2519,7 @@ fn test_binary_signs_only_signs_binaries() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     }];
 
@@ -2557,6 +2587,7 @@ fn test_binary_signs_if_condition_works() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: Some("false".to_string()),
     }];
 
@@ -2597,6 +2628,7 @@ fn test_docker_sign_digest_and_artifact_id_template_vars() {
         &marker_str,
     );
     let docker_signs = vec![DockerSignConfig {
+        verify: None,
         id: Some("test-vars".to_string()),
         cmd: Some(cmd),
         args: Some(args),
@@ -2698,6 +2730,7 @@ fn test_docker_sign_signs_by_digest_not_tag() {
             )
         };
         let docker_signs = vec![DockerSignConfig {
+            verify: None,
             id: Some("digest-ref".to_string()),
             cmd: Some(cmd),
             args: Some(args),
@@ -2773,6 +2806,7 @@ fn test_docker_sign_without_digest_signs_bare_tag_never_fabricates() {
         ],
     );
     let docker_signs = vec![DockerSignConfig {
+        verify: None,
         id: Some("test-no-meta".to_string()),
         cmd: Some(cmd),
         args: Some(args),
@@ -2841,6 +2875,7 @@ fn test_output_capture_with_real_command() {
         certificate: None,
         output: Some(anodizer_core::config::StringOrBool::Bool(true)),
         authenticode: None,
+        verify: None,
         if_condition: None,
     }];
 
@@ -2947,6 +2982,7 @@ fn test_binary_signs_signature_default_adds_dot_sig() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     };
     let _log = ctx.logger("test");
@@ -2984,6 +3020,7 @@ fn test_binary_signs_signature_arm_artifact_gets_dot_sig() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     };
     let _log = ctx.logger("test");
@@ -3021,6 +3058,7 @@ fn test_binary_signs_signature_amd64v2_artifact_gets_dot_sig() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     };
     let _log = ctx.logger("test");
@@ -3051,6 +3089,7 @@ fn test_normal_signs_uses_simple_default() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     };
     let _log = ctx.logger("test");
@@ -3127,6 +3166,7 @@ fn test_binary_signs_sets_os_arch_from_target_triple() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     };
     let mut ctx = TestContextBuilder::new()
@@ -3198,6 +3238,7 @@ fn test_binary_signs_armv7_default_template_appends_only_sig_ext() {
         certificate: None,
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     };
     let mut ctx = TestContextBuilder::new()
@@ -3267,6 +3308,7 @@ fn test_binary_signs_armv7_templates_render_composite_arch_and_empty_arm() {
         certificate: Some("{{ .Artifact }}.{{ Arch }}.pem".to_string()),
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     };
     let mut ctx = TestContextBuilder::new()
@@ -3334,6 +3376,7 @@ fn test_binary_signs_amd64_variant_metadata_renders_in_signature_template() {
         (Default::default(), "myapp.v1"),
     ] {
         let binary_sign_cfg = SignConfig {
+            verify: None,
             id: None,
             artifacts: Some("binary".to_string()),
             cmd: Some("true".to_string()),
@@ -3405,6 +3448,7 @@ fn test_binary_signs_register_target_qualified_names_per_target() {
         certificate: Some("{{ .Artifact }}.pem".to_string()),
         output: None,
         authenticode: None,
+        verify: None,
         if_condition: None,
     };
     let mut ctx = TestContextBuilder::new()
@@ -3508,6 +3552,7 @@ fn test_docker_sign_id_defaults_to_default() {
 
     // Config with no explicit id — should default to "default".
     let docker_signs = vec![DockerSignConfig {
+        verify: None,
         id: None,
         cmd: Some("echo".to_string()),
         args: Some(vec!["sign".to_string(), "{{ .Artifact }}".to_string()]),
@@ -3546,6 +3591,7 @@ fn test_docker_sign_explicit_id_preserved() {
     use anodizer_core::config::DockerSignConfig;
 
     let cfg = DockerSignConfig {
+        verify: None,
         id: Some("my-signer".to_string()),
         cmd: None,
         args: None,
@@ -3569,6 +3615,7 @@ fn test_docker_sign_none_id_defaults() {
     use anodizer_core::config::DockerSignConfig;
 
     let cfg = DockerSignConfig {
+        verify: None,
         id: None,
         cmd: None,
         args: None,
@@ -3651,6 +3698,7 @@ fn test_docker_sign_duplicate_ids_rejected() {
 
     let docker_signs = vec![
         DockerSignConfig {
+            verify: None,
             id: Some("signer".to_string()),
             cmd: Some("echo".to_string()),
             args: Some(vec!["sign".to_string()]),
@@ -3665,6 +3713,7 @@ fn test_docker_sign_duplicate_ids_rejected() {
             certificate: None,
         },
         DockerSignConfig {
+            verify: None,
             id: Some("signer".to_string()), // duplicate!
             cmd: Some("echo".to_string()),
             args: Some(vec!["sign".to_string()]),
@@ -3703,6 +3752,7 @@ fn test_docker_sign_duplicate_default_ids_rejected() {
     // Two configs with no explicit id — both default to "default"
     let docker_signs = vec![
         DockerSignConfig {
+            verify: None,
             id: None,
             cmd: Some("echo".to_string()),
             args: Some(vec!["sign".to_string()]),
@@ -3717,6 +3767,7 @@ fn test_docker_sign_duplicate_default_ids_rejected() {
             certificate: None,
         },
         DockerSignConfig {
+            verify: None,
             id: None,
             cmd: Some("echo".to_string()),
             args: Some(vec!["sign".to_string()]),
@@ -3764,6 +3815,7 @@ fn test_docker_sign_digest_go_compat_syntax() {
     // Use Go-compat syntax {{ .Digest }} which gets preprocessed to {{ Digest }}
     let (cmd, args) = shell_echo_literal_to_file("{{ Digest }}", &marker_str);
     let docker_signs = vec![DockerSignConfig {
+        verify: None,
         id: Some("test-digest-case".to_string()),
         cmd: Some(cmd),
         args: Some(args),
@@ -4811,6 +4863,7 @@ mod cosign_tuf_race {
     /// with the stub's state directory exported in the child env.
     fn stub_signs(stub: &Path, state: &Path) -> Vec<SignConfig> {
         vec![SignConfig {
+            verify: None,
             id: Some("cosign-keyless".to_string()),
             cmd: Some(stub.to_string_lossy().into_owned()),
             args: Some(vec![
@@ -5222,5 +5275,321 @@ mod cosign_retry_policy {
         assert!(is_deterministic_sign_failure(
             &anyhow::anyhow!("unknown flag: --keyy").context("sign: 'cosign' failed")
         ));
+    }
+}
+
+/// Stage-level gating for post-sign verification: after each successful
+/// sign, the matching verifier must run (gpg `--verify`, cosign
+/// `verify-blob`), keyed cosign must derive the public key first, and every
+/// skip gate (dry-run, `verify.enabled: false`, underivable keyless
+/// identity) must suppress the verifier without failing the stage.
+#[cfg(unix)]
+mod post_sign_verification {
+    use super::write_script;
+    use anodizer_core::artifact::{Artifact, ArtifactKind};
+    use anodizer_core::config::{SignConfig, SignVerifyConfig};
+    use anodizer_core::stage::Stage;
+    use anodizer_core::test_helpers::TestContextBuilder;
+
+    use crate::SignStage;
+
+    /// Recording stub: appends each invocation's argv to `$STATE/calls`,
+    /// creates the file named by `--output <p>` / `--output-signature <p>` /
+    /// `--bundle=<p>` / `--outfile <p>` so downstream reads succeed, exits 0.
+    fn recording_stub(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        write_script(
+            dir,
+            name,
+            concat!(
+                "#!/bin/sh\n",
+                "echo \"$@\" >> \"$STATE/calls\"\n",
+                "prev=\"\"\n",
+                "for a in \"$@\"; do\n",
+                "  case \"$prev\" in --output|--output-signature|--outfile) : > \"$a\" ;; esac\n",
+                "  case \"$a\" in --bundle=*) : > \"${a#--bundle=}\" ;; esac\n",
+                "  prev=\"$a\"\n",
+                "done\n",
+                "exit 0\n",
+            ),
+        )
+    }
+
+    fn add_archive(ctx: &mut anodizer_core::context::Context, dir: &std::path::Path) {
+        let path = dir.join("app.tar.gz");
+        std::fs::write(&path, b"bytes").expect("artifact bytes");
+        ctx.artifacts.add(Artifact {
+            kind: ArtifactKind::Archive,
+            name: "app.tar.gz".to_string(),
+            path,
+            target: None,
+            crate_name: "test".to_string(),
+            metadata: Default::default(),
+            size: None,
+        });
+    }
+
+    fn calls(state: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(state.join("calls"))
+            .expect("calls log")
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn gpg_sign_config(stub: &std::path::Path, state: &std::path::Path) -> SignConfig {
+        SignConfig {
+            cmd: Some(stub.to_string_lossy().to_string()),
+            artifacts: Some("archive".to_string()),
+            args: Some(vec![
+                "--output".to_string(),
+                "{{ .Signature }}".to_string(),
+                "--detach-sig".to_string(),
+                "{{ .Artifact }}".to_string(),
+            ]),
+            env: Some(vec![format!("STATE={}", state.display())]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn gpg_signature_is_verified_after_signing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).expect("state dir");
+        let stub = recording_stub(tmp.path(), "gpg");
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .signs(vec![gpg_sign_config(&stub, &state)])
+            .sealed_env()
+            .build();
+        add_archive(&mut ctx, tmp.path());
+        SignStage.run(&mut ctx).expect("sign + verify succeed");
+
+        let calls = calls(&state);
+        assert_eq!(calls.len(), 2, "one sign + one verify: {calls:?}");
+        assert!(
+            calls[0].starts_with("--output"),
+            "sign argv first: {calls:?}"
+        );
+        let artifact = tmp.path().join("app.tar.gz");
+        assert_eq!(
+            calls[1],
+            format!("--verify {}.sig {}", artifact.display(), artifact.display()),
+            "gpg verify argv"
+        );
+    }
+
+    #[test]
+    fn verify_disabled_by_config_skips_verification() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).expect("state dir");
+        let stub = recording_stub(tmp.path(), "gpg");
+
+        let mut cfg = gpg_sign_config(&stub, &state);
+        cfg.verify = Some(SignVerifyConfig {
+            enabled: Some(false),
+            ..Default::default()
+        });
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .signs(vec![cfg])
+            .sealed_env()
+            .build();
+        add_archive(&mut ctx, tmp.path());
+        SignStage.run(&mut ctx).expect("sign succeeds");
+
+        let calls = calls(&state);
+        assert_eq!(calls.len(), 1, "sign only, no verify: {calls:?}");
+    }
+
+    #[test]
+    fn dry_run_never_spawns_signer_or_verifier() {
+        // The cmd path does not exist; dry-run must neither sign, nor derive
+        // a public key, nor verify.
+        let cfg = SignConfig {
+            cmd: Some("/nonexistent/gpg".to_string()),
+            artifacts: Some("archive".to_string()),
+            ..Default::default()
+        };
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(true)
+            .signs(vec![cfg])
+            .sealed_env()
+            .build();
+        add_archive(&mut ctx, tmp.path());
+        SignStage
+            .run(&mut ctx)
+            .expect("dry-run must not spawn anything");
+    }
+
+    #[test]
+    fn keyed_cosign_derives_pubkey_then_verifies() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).expect("state dir");
+        let stub = recording_stub(tmp.path(), "cosign");
+
+        let cfg = SignConfig {
+            cmd: Some(stub.to_string_lossy().to_string()),
+            artifacts: Some("archive".to_string()),
+            args: Some(vec![
+                "sign-blob".to_string(),
+                "--key=env://COSIGN_KEY".to_string(),
+                "--output-signature".to_string(),
+                "{{ .Signature }}".to_string(),
+                "{{ .Artifact }}".to_string(),
+            ]),
+            env: Some(vec![format!("STATE={}", state.display())]),
+            ..Default::default()
+        };
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .signs(vec![cfg])
+            .sealed_env()
+            .build();
+        add_archive(&mut ctx, tmp.path());
+        SignStage.run(&mut ctx).expect("sign + verify succeed");
+
+        let calls = calls(&state);
+        assert_eq!(
+            calls.len(),
+            3,
+            "public-key derivation + sign + verify: {calls:?}"
+        );
+        assert!(
+            calls[0].starts_with("public-key --key=env://COSIGN_KEY --outfile "),
+            "derivation runs first: {calls:?}"
+        );
+        assert!(calls[1].starts_with("sign-blob"), "then sign: {calls:?}");
+        let artifact = tmp.path().join("app.tar.gz");
+        assert!(
+            calls[2].starts_with("verify-blob --key ")
+                && calls[2].ends_with(&format!(
+                    "--signature {}.sig {}",
+                    artifact.display(),
+                    artifact.display()
+                )),
+            "then verify against the derived pubkey: {calls:?}"
+        );
+    }
+
+    fn keyless_bundle_config(stub: &std::path::Path, state: &std::path::Path) -> SignConfig {
+        SignConfig {
+            cmd: Some(stub.to_string_lossy().to_string()),
+            artifacts: Some("archive".to_string()),
+            args: Some(vec![
+                "sign-blob".to_string(),
+                "--bundle={{ Signature }}".to_string(),
+                "--yes".to_string(),
+                "{{ Artifact }}".to_string(),
+            ]),
+            env: Some(vec![format!("STATE={}", state.display())]),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn keyless_missing_identity_signs_but_skips_verification() {
+        // Sealed env: no GitHub Actions OIDC context and no configured
+        // identity/issuer — the honest outcome is sign-without-verify, not a
+        // failure and not a silent no-op of the whole config.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).expect("state dir");
+        let stub = recording_stub(tmp.path(), "cosign");
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .signs(vec![keyless_bundle_config(&stub, &state)])
+            .sealed_env()
+            .build();
+        add_archive(&mut ctx, tmp.path());
+        SignStage.run(&mut ctx).expect("sign succeeds");
+
+        let calls = calls(&state);
+        assert_eq!(calls.len(), 1, "sign only, honest verify skip: {calls:?}");
+        assert!(calls[0].starts_with("sign-blob"), "{calls:?}");
+    }
+
+    #[test]
+    fn keyless_verifies_with_identity_derived_from_github_actions_env() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).expect("state dir");
+        let stub = recording_stub(tmp.path(), "cosign");
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .signs(vec![keyless_bundle_config(&stub, &state)])
+            .env("GITHUB_ACTIONS", "true")
+            .env("GITHUB_SERVER_URL", "https://github.com")
+            .env(
+                "GITHUB_WORKFLOW_REF",
+                "acme/app/.github/workflows/release.yml@refs/tags/v1.0.0",
+            )
+            .build();
+        add_archive(&mut ctx, tmp.path());
+        SignStage.run(&mut ctx).expect("sign + verify succeed");
+
+        let calls = calls(&state);
+        assert_eq!(calls.len(), 2, "one sign + one verify: {calls:?}");
+        let artifact = tmp.path().join("app.tar.gz");
+        let expected = format!(
+            "verify-blob --bundle {art}.sig --certificate-identity \
+             https://github.com/acme/app/.github/workflows/release.yml@refs/tags/v1.0.0 \
+             --certificate-oidc-issuer https://token.actions.githubusercontent.com {art}",
+            art = artifact.display()
+        );
+        assert_eq!(
+            calls[1], expected,
+            "keyless verify argv derives the workflow identity"
+        );
+    }
+
+    #[test]
+    fn failed_verification_fails_the_stage_without_retry() {
+        // A verifier that reports a deterministic bad signature must fail
+        // the stage after exactly one verify attempt (sign attempt + verify
+        // attempt = 2 stub calls total, despite the cosign retry ladder).
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let state = tmp.path().join("state");
+        std::fs::create_dir(&state).expect("state dir");
+        let stub = write_script(
+            tmp.path(),
+            "gpg",
+            concat!(
+                "#!/bin/sh\n",
+                "echo \"$@\" >> \"$STATE/calls\"\n",
+                "if [ \"$1\" = \"--verify\" ]; then\n",
+                "  echo 'gpg: BAD signature from \"Test\"' >&2\n",
+                "  exit 1\n",
+                "fi\n",
+                "prev=\"\"\n",
+                "for a in \"$@\"; do\n",
+                "  case \"$prev\" in --output) : > \"$a\" ;; esac\n",
+                "  prev=\"$a\"\n",
+                "done\n",
+                "exit 0\n",
+            ),
+        );
+
+        let mut ctx = TestContextBuilder::new()
+            .dry_run(false)
+            .signs(vec![gpg_sign_config(&stub, &state)])
+            .sealed_env()
+            .build();
+        add_archive(&mut ctx, tmp.path());
+        let result = SignStage.run(&mut ctx);
+        assert!(result.is_err(), "a bad signature must fail the stage");
+        assert!(
+            format!("{:#}", result.unwrap_err()).contains("signature verification failed"),
+            "error names the verification"
+        );
+
+        let calls = calls(&state);
+        assert_eq!(calls.len(), 2, "one sign + one verify, no retry: {calls:?}");
     }
 }

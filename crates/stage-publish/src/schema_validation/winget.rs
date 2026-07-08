@@ -8,7 +8,7 @@
 //! the live publish uses — and checks each document against the matching
 //! vendored schema, so a structural defect (a wrong-typed value, an
 //! out-of-enum `Architecture`, a missing required key) is caught in the
-//! snapshot/dry-run pass rather than after a real release has opened a PR.
+//! emission-validate pass rather than after a real release has opened a PR.
 
 use anodizer_core::context::Context;
 use anyhow::Result;

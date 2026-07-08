@@ -870,15 +870,14 @@ fn matches_artifact_pattern(pattern: &str, artifact: &str) -> bool {
 }
 
 /// Validates the anodize-only emissions (binstall, nix, version-sync) in
-/// snapshot / dry-run mode, where the real-release stages skip their source
-/// mutations and remote pushes.
+/// every mode — snapshot, dry-run, nightly, and real releases.
 ///
-/// In a real release this stage is a no-op — the actual emission stages run
-/// and the published output is the source of truth. In snapshot/dry-run it
-/// renders each emission in-memory and cross-checks it against the assets the
-/// run produced, so a broken emission (a 404-class binstall `pkg_url`, a nix
-/// system mapped to a missing asset, a crate with no resolvable version) fails
-/// LOCALLY instead of on a consumer's `cargo binstall` / `nix build`.
+/// Each emission is rendered in-memory (milliseconds, no side effects) and
+/// cross-checked against the assets the run produced, so a broken emission
+/// (a 404-class binstall `pkg_url`, a nix system mapped to a missing asset,
+/// a crate with no resolvable version) fails BEFORE any publisher ships it —
+/// locally in snapshot/dry-run, and ahead of the publish stages in a real
+/// release — instead of on a consumer's `cargo binstall` / `nix build`.
 ///
 /// Placed after the packaging + checksum stages so `ctx.artifacts` carries the
 /// archive set the cross-checks compare against, and before the publishers so
@@ -893,7 +892,7 @@ impl Stage for EmissionValidateStage {
 
     fn run(&self, ctx: &mut Context) -> Result<()> {
         let log = ctx.logger("publish");
-        snapshot_validation::validate_snapshot_emissions(ctx, &log)
+        snapshot_validation::validate_emissions(ctx, &log)
     }
 }
 

@@ -11,7 +11,7 @@
 //! and, when `xmllint` is on `PATH`, a full XSD validation against the vendored
 //! schema. A structural defect (a missing required element, an XML-escaping
 //! bug in user-supplied metadata, a wrong-typed boolean) surfaces in the
-//! snapshot/dry-run pass rather than after a registry-rejected nupkg ships.
+//! emission-validate pass rather than after a registry-rejected nupkg ships.
 
 use anodizer_core::context::Context;
 use anodizer_core::log::StageLogger;

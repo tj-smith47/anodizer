@@ -17,7 +17,7 @@ mod upload;
 mod tests;
 
 pub use provider::Provider;
-pub use publisher::BlobPublisher;
+pub use publisher::{BlobPublisher, blob_object_exists};
 pub use run::BlobStage;
 
 /// Environment requirements for the blob stage, derived per `blobs:` entry:

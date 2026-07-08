@@ -10,7 +10,7 @@
 //!    against nfpm's own draft-2020-12 config schema. The schema is
 //!    `additionalProperties: false` and requires `name` / `arch` / `version`,
 //!    so a misnamed key, a wrong-typed value, or a missing required field
-//!    surfaces in the snapshot/dry-run pass — not after a release uploads a
+//!    surfaces in the emission-validate pass — not after a release uploads a
 //!    broken package.
 //! 2. **Secondary (gated):** when the nfpm stage already built a package in
 //!    this run and the inspection tool is present (`dpkg-deb` for `.deb`,

@@ -10,7 +10,7 @@
 //! an always-on structural floor (pure-Rust stanza scanning) and, when `ruby` is
 //! on `PATH`, a real `ruby -c` syntax check. A structural defect (a missing
 //! required stanza, an unbalanced template that produced broken Ruby) surfaces
-//! in the snapshot/dry-run pass rather than after a tap commit ships an
+//! in the emission-validate pass rather than after a tap commit ships an
 //! uninstallable formula.
 
 use anodizer_core::context::Context;

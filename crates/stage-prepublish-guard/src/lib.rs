@@ -55,7 +55,7 @@ fn run_guard(
     // Match the modes under which one-way publishers + announcers actually
     // run. Snapshot and nightly dispatch neither, so a broken template there is
     // not a release-blocking defect — and emission/announce validation already
-    // runs in the snapshot/dry-run emission-validate pass. Guarding only the
+    // runs in the emission-validate pass in every mode. Guarding only the
     // real-publish path keeps this gate honest.
     if ctx.is_snapshot() {
         log.skip_line(

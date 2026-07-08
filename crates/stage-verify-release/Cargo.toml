@@ -1,6 +1,6 @@
 [package]
 name = "anodizer-stage-verify-release"
-description = "Post-release verification gate for the anodizer release tool — asset-existence, install smoke-test, and glibc-ceiling checks"
+description = "Post-release verification gate for the anodizer release tool — asset-existence and content checks, publisher landing checks, install smoke-test, and glibc-ceiling checks"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,12 +15,16 @@ readme = "README.md"
 
 [dependencies]
 anodizer-core.workspace = true
+anodizer-stage-blob.workspace = true
+anodizer-stage-publish.workspace = true
 anodizer-stage-release.workspace = true
 anodizer-stage-sbom.workspace = true
 anodizer-stage-sign.workspace = true
 anyhow.workspace = true
 flate2.workspace = true
 object.workspace = true
+reqwest.workspace = true
+sha2.workspace = true
 tar.workspace = true
 tokio.workspace = true
 xz2.workspace = true

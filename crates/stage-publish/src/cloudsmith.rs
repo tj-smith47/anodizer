@@ -1769,6 +1769,7 @@ impl anodizer_core::Publisher for CloudsmithPublisher {
                     &ProbeAuth::Token(token),
                     "preflight: cloudsmith",
                     fail,
+                    ctx.preflight_is_strict(),
                     &policy,
                     &ctx.logger("preflight"),
                 ),
