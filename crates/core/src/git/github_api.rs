@@ -47,6 +47,35 @@ pub fn gh_api_get_with_binary(
     serde_json::from_str(&stdout).context("failed to parse gh api response")
 }
 
+/// DELETE a GitHub API endpoint via `gh_binary`.
+///
+/// Path-taking like [`gh_api_get_with_binary`] so tests can point at a stub
+/// binary without mutating `PATH`. Returns `Ok(())` on success; the error
+/// message carries the redacted `gh` stderr (including the HTTP status
+/// shape, e.g. `HTTP 404`) so callers can classify already-absent targets.
+pub fn gh_api_delete_with_binary(
+    gh_binary: &Path,
+    endpoint: &str,
+    token: Option<&str>,
+) -> Result<()> {
+    let mut cmd = Command::new(gh_binary);
+    cmd.args(["api", "-X", "DELETE", endpoint]);
+    if let Some(tok) = token {
+        cmd.env("GITHUB_TOKEN", tok);
+    }
+    let output = cmd
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output()
+        .with_context(|| format!("failed to spawn gh CLI ({})", gh_binary.display()))?;
+    if !output.status.success() {
+        let stderr_raw = String::from_utf8_lossy(&output.stderr);
+        let raw = format!("gh api DELETE {} failed: {}", endpoint, stderr_raw.trim());
+        bail!("{}", redact_gh_stderr(&raw, token));
+    }
+    Ok(())
+}
+
 /// Cache key for [`COMMIT_LOGIN_CACHE`]: `(owner, repo, author_email)`.
 type LoginCacheKey = (String, String, String);
 

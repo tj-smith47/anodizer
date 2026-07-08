@@ -2,7 +2,8 @@ use super::remote::{parse_github_remote, parse_remote_owner_repo, parse_remote_w
 use super::semver::{compare_prerelease, parse_semver, parse_semver_tag};
 use super::tags::{
     find_latest_tag_matching, find_latest_tag_matching_with_prefix, find_previous_tag,
-    find_previous_tag_with_prefix, get_all_semver_tags, strip_monorepo_prefix,
+    find_previous_tag_with_prefix, get_all_semver_tags, list_remote_tag_names_in,
+    strip_monorepo_prefix,
 };
 use crate::redact::redact_url_credentials;
 use crate::test_helpers::CwdGuard;
@@ -1506,4 +1507,64 @@ fn test_find_previous_tag_smartsemver_early_dev_no_panic() {
     };
     let result = find_previous_tag("v0.0.0", Some(&gc), None).unwrap();
     assert_eq!(result, None);
+}
+
+#[test]
+#[serial]
+fn list_remote_tag_names_dedupes_peeled_annotated_entries() {
+    use std::process::Command;
+
+    let work = tempfile::tempdir().unwrap();
+    init_repo_with_tags(work.path(), &["v1.0.0"]);
+
+    let run = |args: &[&str]| {
+        let out = anodizer_core::test_helpers::output_with_spawn_retry(
+            || {
+                let mut cmd = Command::new("git");
+                cmd.args(args)
+                    .current_dir(work.path())
+                    .env("GIT_AUTHOR_NAME", "test")
+                    .env("GIT_AUTHOR_EMAIL", "test@test.com")
+                    .env("GIT_COMMITTER_NAME", "test")
+                    .env("GIT_COMMITTER_EMAIL", "test@test.com");
+                cmd
+            },
+            "git",
+        );
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    // An annotated tag produces BOTH `refs/tags/v1.1.0` and the peeled
+    // `refs/tags/v1.1.0^{}` in ls-remote output; each name must come back once.
+    run(&["tag", "-a", "v1.1.0", "-m", "release v1.1.0"]);
+
+    let bare = tempfile::tempdir().unwrap();
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(["init", "--bare", "-q"]).arg(bare.path());
+            cmd
+        },
+        "git",
+    );
+    assert!(out.status.success(), "git init --bare failed");
+    run(&["remote", "add", "origin", bare.path().to_str().unwrap()]);
+    run(&["push", "origin", "v1.0.0", "v1.1.0"]);
+
+    let mut names = list_remote_tag_names_in(work.path(), "origin").unwrap();
+    names.sort();
+    assert_eq!(names, vec!["v1.0.0".to_string(), "v1.1.0".to_string()]);
+
+    // An unreachable remote propagates the error (callers fall back to local).
+    run(&[
+        "remote",
+        "set-url",
+        "origin",
+        "/nonexistent/never-a-repo.git",
+    ]);
+    assert!(list_remote_tag_names_in(work.path(), "origin").is_err());
 }

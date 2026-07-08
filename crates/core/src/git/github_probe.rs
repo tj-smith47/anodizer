@@ -118,9 +118,10 @@ pub fn is_rate_limit_signature(
 /// and the missing/denied wording names what the caller was probing.
 ///
 /// Every other arm of the probe→check mapping (the `permissions.push` parse
-/// ladder, the rate-limited / inconclusive / client-build warnings) is shared
-/// policy and lives in the mapper itself, so the two preflights cannot drift
-/// apart on how the same token+repo is classified.
+/// ladder, the rate-limited / inconclusive / client-build indeterminates —
+/// warnings by default, blockers under strict preflight) is shared policy and
+/// lives in the mapper itself, so the two preflights cannot drift apart on
+/// how the same token+repo is classified.
 pub struct RepoAccessOutcomes {
     /// Returned when the probe proves `permissions.push == false`.
     pub push_denied: PreflightCheck,
@@ -134,11 +135,15 @@ pub struct RepoAccessOutcomes {
 ///
 /// * 200 + `permissions.push == true` ⇒ `Pass`
 /// * 200 + `permissions.push == false` ⇒ `outcomes.push_denied`
-/// * 200 + `permissions` absent / unparsable body ⇒ `Warning`
+/// * 200 + `permissions` absent / unparsable body ⇒ indeterminate —
+///   `Warning`, or `Blocker` when `strict`
 /// * 404, or 401 / 403 without a rate-limit signal ⇒ `outcomes.missing_or_denied`
-/// * 429, or 401 / 403 carrying a rate-limit header ⇒ `Warning` (a transient
-///   GitHub rate limit must not abort a release that would otherwise succeed)
-/// * 5xx / transport failure / unexpected status ⇒ `Warning`
+/// * 429, or 401 / 403 carrying a rate-limit header ⇒ indeterminate (a
+///   transient GitHub rate limit must not abort a release that would
+///   otherwise succeed) — `Warning`, or `Blocker` when `strict`
+/// * 5xx / transport failure / unexpected status ⇒ indeterminate — `Warning`,
+///   or `Blocker` when `strict`
+#[allow(clippy::too_many_arguments)]
 pub fn github_repo_push_check(
     url: &str,
     owner: &str,
@@ -146,14 +151,18 @@ pub fn github_repo_push_check(
     token: Option<&str>,
     policy: &RetryPolicy,
     outcomes: RepoAccessOutcomes,
+    strict: bool,
     log: &StageLogger,
 ) -> PreflightCheck {
     let client = match crate::http::blocking_client(REPO_PROBE_TIMEOUT) {
         Ok(c) => c,
         Err(e) => {
-            return PreflightCheck::Warning(format!(
-                "could not probe {owner}/{repo} write access ({e}); verify the repo and token manually"
-            ));
+            return indeterminate_check(
+                strict,
+                format!(
+                    "could not probe {owner}/{repo} write access ({e}); verify the repo and token manually"
+                ),
+            );
         }
     };
     probe_to_push_check(
@@ -161,7 +170,20 @@ pub fn github_repo_push_check(
         owner,
         repo,
         outcomes,
+        strict,
     )
+}
+
+/// Wrap an indeterminate probe outcome (the probe could not reach a verdict)
+/// in its effective severity: `Warning` by default so a transient upstream
+/// blip cannot abort an otherwise-valid release, `Blocker` under strict
+/// preflight (fail-closed).
+pub fn indeterminate_check(strict: bool, msg: String) -> PreflightCheck {
+    if strict {
+        PreflightCheck::Blocker(msg)
+    } else {
+        PreflightCheck::Warning(msg)
+    }
 }
 
 /// Pure probe→check mapper backing [`github_repo_push_check`], split out so
@@ -171,32 +193,46 @@ pub fn probe_to_push_check(
     owner: &str,
     repo: &str,
     outcomes: RepoAccessOutcomes,
+    strict: bool,
 ) -> PreflightCheck {
     match probe {
         RepoProbe::Body(body) => match serde_json::from_str::<serde_json::Value>(&body) {
             Ok(v) => match v.pointer("/permissions/push").and_then(|p| p.as_bool()) {
                 Some(true) => PreflightCheck::Pass,
                 Some(false) => outcomes.push_denied,
-                None => PreflightCheck::Warning(format!(
-                    "could not determine push access to {owner}/{repo} (no permissions in API \
-                     response); verify the token scope manually"
-                )),
+                None => indeterminate_check(
+                    strict,
+                    format!(
+                        "could not determine push access to {owner}/{repo} (no permissions in API \
+                         response); verify the token scope manually"
+                    ),
+                ),
             },
-            Err(_) => PreflightCheck::Warning(format!(
-                "could not parse {owner}/{repo} API response; verify the repo and token manually"
-            )),
+            Err(_) => indeterminate_check(
+                strict,
+                format!(
+                    "could not parse {owner}/{repo} API response; verify the repo and token manually"
+                ),
+            ),
         },
         RepoProbe::Missing | RepoProbe::AuthDenied => outcomes.missing_or_denied,
         // A secondary-rate-limit 403 is indistinguishable from auth denial by
-        // status alone; the headers prove it transient, so warn rather than
-        // abort a release whose token is actually fine.
-        RepoProbe::RateLimited => PreflightCheck::Warning(format!(
-            "GitHub API rate-limited while probing {owner}/{repo}; could not verify write access \
-             — verify the repo and token manually"
-        )),
-        RepoProbe::Inconclusive(reason) => PreflightCheck::Warning(format!(
-            "could not probe {owner}/{repo} write access ({reason}); verify the repo and token manually"
-        )),
+        // status alone; the headers prove it transient, so warn (block only
+        // under strict preflight) rather than abort a release whose token is
+        // actually fine.
+        RepoProbe::RateLimited => indeterminate_check(
+            strict,
+            format!(
+                "GitHub API rate-limited while probing {owner}/{repo}; could not verify write \
+                 access — verify the repo and token manually"
+            ),
+        ),
+        RepoProbe::Inconclusive(reason) => indeterminate_check(
+            strict,
+            format!(
+                "could not probe {owner}/{repo} write access ({reason}); verify the repo and token manually"
+            ),
+        ),
     }
 }
 
@@ -286,7 +322,7 @@ mod push_check_tests {
     fn push_true_passes() {
         let probe = RepoProbe::Body(r#"{"permissions":{"push":true}}"#.into());
         assert_eq!(
-            probe_to_push_check(probe, "o", "r", outcomes()),
+            probe_to_push_check(probe, "o", "r", outcomes(), false),
             PreflightCheck::Pass
         );
     }
@@ -295,7 +331,7 @@ mod push_check_tests {
     fn push_false_returns_caller_push_denied() {
         let probe = RepoProbe::Body(r#"{"permissions":{"push":false}}"#.into());
         assert_eq!(
-            probe_to_push_check(probe, "o", "r", outcomes()),
+            probe_to_push_check(probe, "o", "r", outcomes(), false),
             PreflightCheck::Blocker("push denied".into())
         );
     }
@@ -303,7 +339,7 @@ mod push_check_tests {
     #[test]
     fn permissions_absent_warns() {
         let probe = RepoProbe::Body(r#"{"full_name":"o/r"}"#.into());
-        match probe_to_push_check(probe, "o", "r", outcomes()) {
+        match probe_to_push_check(probe, "o", "r", outcomes(), false) {
             PreflightCheck::Warning(msg) => {
                 assert!(msg.contains("could not determine push access"), "{msg}")
             }
@@ -314,7 +350,7 @@ mod push_check_tests {
     #[test]
     fn unparsable_body_warns() {
         let probe = RepoProbe::Body("not json".into());
-        match probe_to_push_check(probe, "o", "r", outcomes()) {
+        match probe_to_push_check(probe, "o", "r", outcomes(), false) {
             PreflightCheck::Warning(msg) => {
                 assert!(msg.contains("could not parse o/r"), "{msg}")
             }
@@ -326,7 +362,7 @@ mod push_check_tests {
     fn missing_and_auth_denied_return_caller_outcome() {
         for probe in [RepoProbe::Missing, RepoProbe::AuthDenied] {
             assert_eq!(
-                probe_to_push_check(probe, "o", "r", outcomes()),
+                probe_to_push_check(probe, "o", "r", outcomes(), false),
                 PreflightCheck::Blocker("missing or denied".into())
             );
         }
@@ -334,16 +370,46 @@ mod push_check_tests {
 
     #[test]
     fn rate_limited_warns_never_escalates() {
-        match probe_to_push_check(RepoProbe::RateLimited, "o", "r", outcomes()) {
+        match probe_to_push_check(RepoProbe::RateLimited, "o", "r", outcomes(), false) {
             PreflightCheck::Warning(msg) => assert!(msg.contains("rate-limited"), "{msg}"),
             other => panic!("expected Warning, got {other:?}"),
         }
     }
 
     #[test]
+    fn strict_promotes_indeterminate_arms_to_blocker() {
+        for probe in [
+            RepoProbe::RateLimited,
+            RepoProbe::Inconclusive("HTTP 500".into()),
+            RepoProbe::Body(r#"{"full_name":"o/r"}"#.into()),
+            RepoProbe::Body("not json".into()),
+        ] {
+            match probe_to_push_check(probe, "o", "r", outcomes(), true) {
+                PreflightCheck::Blocker(_) => {}
+                other => panic!("strict must promote indeterminate to Blocker, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn strict_leaves_definitive_arms_unchanged() {
+        // Definitive outcomes keep the caller-supplied severity — strict only
+        // touches the indeterminate arms.
+        let probe = RepoProbe::Body(r#"{"permissions":{"push":true}}"#.into());
+        assert_eq!(
+            probe_to_push_check(probe, "o", "r", outcomes(), true),
+            PreflightCheck::Pass
+        );
+        assert_eq!(
+            probe_to_push_check(RepoProbe::Missing, "o", "r", outcomes(), true),
+            PreflightCheck::Blocker("missing or denied".into())
+        );
+    }
+
+    #[test]
     fn inconclusive_warns_with_reason() {
         let probe = RepoProbe::Inconclusive("HTTP 500".into());
-        match probe_to_push_check(probe, "o", "r", outcomes()) {
+        match probe_to_push_check(probe, "o", "r", outcomes(), false) {
             PreflightCheck::Warning(msg) => assert!(msg.contains("HTTP 500"), "{msg}"),
             other => panic!("expected Warning, got {other:?}"),
         }

@@ -22,6 +22,44 @@ use anyhow::{Result, bail};
 use regex::Regex;
 use std::sync::LazyLock;
 
+/// A published-state guard refusal: the rollback was declined BY DESIGN
+/// because destroying the tag(s) could only orphan live published state
+/// (a one-way-door registry already holds the version). Distinct from a
+/// mechanical rollback failure (git error, unreachable network probe,
+/// unmappable config): a refusal is final protection with a known next
+/// step, not breakage. Callers that drive rollback programmatically
+/// (the release failure policy) downcast to this type to render the
+/// refusal as protective status output instead of a failure warning.
+#[derive(Debug)]
+pub struct RollbackRefusal {
+    /// Why the rollback was refused — the burn evidence, one line per
+    /// affected tag/version.
+    pub reason: String,
+    /// What the operator should do instead (fix forward / `--force`).
+    pub next_step: String,
+}
+
+impl std::fmt::Display for RollbackRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "refusing to roll back — {}\nnext step: {}",
+            self.reason, self.next_step
+        )
+    }
+}
+
+impl std::error::Error for RollbackRefusal {}
+
+/// Canonical fix-forward guidance shared by every refusal site: the
+/// version is burned, so the only clean path is the NEXT version;
+/// `--force` remains the explicit override.
+fn refusal_next_step() -> String {
+    "fix the failure and cut the NEXT version (auto-tag mints it from the next push). \
+     To override anyway: `anodizer tag rollback --force`."
+        .to_string()
+}
+
 /// Scope filter for which tag shape(s) to operate on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
@@ -274,8 +312,13 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
     // winget / snapcraft never accept the same version twice, so
     // deleting the tag + reverting the bump can never lead to a clean
     // same-version re-cut — only to an orphaned live release.
-    if opts.force {
+    // Tags whose GitHub release this rollback owns (a run summary attributes
+    // them to the attempt being rolled back, or --force overrode the guard).
+    // Only these get their release deleted; an unattributed tag's release is
+    // preserved (it may be a human's draft or a prior reversible release).
+    let attributed: std::collections::HashSet<String> = if opts.force {
         log.warn("skipped the published-state guard — --force");
+        deletable.iter().cloned().collect()
     } else {
         // Fail-closed config load: the config drives the dist-dir resolution
         // for run summaries and the tag→crate mapping for the crates.io index
@@ -309,7 +352,7 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
                 &log,
             )
         };
-        check_not_irreversibly_published(
+        let unsummarized = check_not_irreversibly_published(
             &cwd,
             gh_binary,
             &deletable,
@@ -317,7 +360,12 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
             &index_probe,
             &log,
         )?;
-    }
+        deletable
+            .iter()
+            .filter(|t| !unsummarized.contains(t))
+            .cloned()
+            .collect()
+    };
 
     // Safety check (--mode=revert only). Non-bump commits on top of
     // the target SHA mean someone landed unrelated work since the
@@ -374,7 +422,7 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
                 short(&target_sha)
             ));
         }
-        delete_tags(&cwd, &deletable, &opts, &log);
+        delete_tags(&cwd, gh_binary, &deletable, &attributed, &opts, &log);
         log.warn(
             "--mode=reset rewrote local history. Push with \
              `git push --force-with-lease origin <branch>` when ready.",
@@ -402,20 +450,20 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
     }
 
     if opts.no_push {
-        delete_tags(&cwd, &deletable, &opts, &log);
+        delete_tags(&cwd, gh_binary, &deletable, &attributed, &opts, &log);
         log.status("skipped branch push — --no-push");
         return Ok(());
     }
     let branch = resolve_push_branch(&cwd, &target_sha, opts.branch.as_deref())?;
     if opts.dry_run {
         log.status(&format!("(dry-run) would run: git push origin {branch}"));
-        delete_tags(&cwd, &deletable, &opts, &log);
+        delete_tags(&cwd, gh_binary, &deletable, &attributed, &opts, &log);
     } else {
         // Push BEFORE deleting remote tags: the destructive tag delete is the
         // last step, so a push failure aborts before any tag is dropped.
         git::push_branch_in(&cwd, &branch)?;
         log.status(&format!("pushed revert to origin/{branch}"));
-        delete_tags(&cwd, &deletable, &opts, &log);
+        delete_tags(&cwd, gh_binary, &deletable, &attributed, &opts, &log);
     }
     Ok(())
 }
@@ -424,18 +472,54 @@ fn run_with_gh(opts: RollbackOpts, gh_binary: &std::path::Path) -> Result<()> {
 /// remote-delete glitch doesn't abandon the surrounding mutation.
 /// `dry_run` short-circuits to a status line per tag; `no_push`
 /// skips the remote leg.
+///
+/// The remote leg also deletes the GitHub release AT each tag in
+/// `attributed` — the tags a run summary (or `--force`) ties to the attempt
+/// being rolled back. A release the attempt owns is reversible state of the
+/// aborted attempt; leaving it behind orphans it AND poisons future
+/// unsummarized rollbacks, whose burn-evidence probe would read the orphan as
+/// proof a prior release shipped. A tag NOT in `attributed` keeps any release
+/// it carries (it may be a human's draft or a prior reversible release) — that
+/// state is never destroyed. When an owned release cannot be confirmed gone,
+/// the tag is KEPT (both remote and local) so the rollback stays retryable
+/// rather than orphaning the release under a deleted tag.
 fn delete_tags(
     cwd: &std::path::Path,
+    gh_binary: &std::path::Path,
     deletable: &[String],
+    attributed: &std::collections::HashSet<String>,
     opts: &RollbackOpts,
     log: &StageLogger,
 ) {
     for tag in deletable {
         if opts.dry_run {
+            if !opts.no_push {
+                if attributed.contains(tag) {
+                    log.status(&format!(
+                        "(dry-run) would delete the GitHub release at {tag} (if one exists)"
+                    ));
+                } else {
+                    log.status(&format!(
+                        "(dry-run) would keep any GitHub release at {tag} \
+                         (not attributed to this rollback)"
+                    ));
+                }
+            }
             log.status(&format!("(dry-run) would delete tag {tag} (remote+local)"));
             continue;
         }
         if !opts.no_push {
+            match delete_release_at_tag(cwd, gh_binary, tag, attributed.contains(tag), log) {
+                ReleaseCleanup::Cleared => {}
+                ReleaseCleanup::Retained => {
+                    log.warn(&format!(
+                        "keeping tag {tag} — its GitHub release could not be removed; \
+                         deleting the tag now would orphan the release under a missing tag. \
+                         The rollback stays retryable: re-run once the release is gone."
+                    ));
+                    continue;
+                }
+            }
             match git::delete_remote_tag_in(cwd, tag) {
                 Ok(()) => log.status(&format!("deleted remote tag {tag}")),
                 Err(e) => log.warn(&format!(
@@ -450,6 +534,112 @@ fn delete_tags(
             Err(e) => log.warn(&format!(
                 "local tag delete failed for {tag}: {e} (continuing)"
             )),
+        }
+    }
+}
+
+/// Whether the tag delete may proceed after the release-cleanup attempt.
+enum ReleaseCleanup {
+    /// No release remained that this rollback owns — none existed, it was an
+    /// unattributed release deliberately left in place, or an owned one was
+    /// deleted. Safe to drop the tag.
+    Cleared,
+    /// An owned release may still exist (its delete failed, or the lookup was
+    /// inconclusive). Keep the tag so the rollback stays retryable rather than
+    /// orphaning the release under a deleted tag.
+    Retained,
+}
+
+/// Clean up the GitHub release at `tag` for a rollback.
+///
+/// `attributed` is true when a run summary ties this tag to the attempt being
+/// rolled back (or `--force` overrode the guard): only then is the release
+/// deleted, because only then does anodize know the release belongs to the
+/// aborted attempt. For an UNATTRIBUTED tag any release is left in place — it
+/// may be a human's draft notes or a prior reversible release, and rollback
+/// must never destroy state it cannot attribute.
+///
+/// Warn-and-continue on every failure. Silently inapplicable (verbose-only
+/// note) when origin is not a github.com remote. Returns
+/// [`ReleaseCleanup::Retained`] when an owned release could not be confirmed
+/// gone, so the caller keeps the tag instead of orphaning the release.
+fn delete_release_at_tag(
+    cwd: &std::path::Path,
+    gh_binary: &std::path::Path,
+    tag: &str,
+    attributed: bool,
+    log: &StageLogger,
+) -> ReleaseCleanup {
+    let (owner, repo) = match git::resolve_github_slug_in(None, None, cwd) {
+        Ok(slug) => (slug.owner().to_string(), slug.name().to_string()),
+        Err(_) => {
+            log.verbose(&format!(
+                "skipped GitHub release cleanup for {tag} — origin is not a github.com remote"
+            ));
+            return ReleaseCleanup::Cleared;
+        }
+    };
+    let endpoint = format!("/repos/{owner}/{repo}/releases/tags/{tag}");
+    let release_id = match git::gh_api_get_with_binary(gh_binary, &endpoint, None) {
+        Ok(v) => v.get("id").and_then(serde_json::Value::as_u64),
+        Err(e) => {
+            let msg = e.to_string();
+            if msg.contains("HTTP 404") || msg.contains("Not Found") {
+                log.verbose(&format!(
+                    "no GitHub release exists at {tag} — nothing to clean up"
+                ));
+                return ReleaseCleanup::Cleared;
+            }
+            // A non-404 lookup failure is inconclusive: an owned release might
+            // still exist. Keep the tag for an attributed rollback so we never
+            // orphan it; an unattributed tag's release was never ours to delete.
+            log.warn(&format!(
+                "could not look up the GitHub release at {tag} for cleanup: {msg} (continuing)"
+            ));
+            return if attributed {
+                ReleaseCleanup::Retained
+            } else {
+                ReleaseCleanup::Cleared
+            };
+        }
+    };
+    let Some(id) = release_id else {
+        if attributed {
+            log.warn(&format!(
+                "GitHub release lookup for {tag} returned no numeric id — keeping the tag so \
+                 the rollback stays retryable (delete the release manually at \
+                 https://github.com/{owner}/{repo}/releases/tag/{tag} if one exists)"
+            ));
+            return ReleaseCleanup::Retained;
+        }
+        return ReleaseCleanup::Cleared;
+    };
+    if !attributed {
+        // A release exists but no run evidence attributes it to the attempt
+        // being rolled back — never destroy unattributed state. Flag it and let
+        // the tag delete proceed; the release simply becomes untagged.
+        log.warn(&format!(
+            "a GitHub release exists at {tag} but no run summary attributes it to this \
+             rollback — leaving it in place. Delete it manually if intended: \
+             https://github.com/{owner}/{repo}/releases/tag/{tag}"
+        ));
+        return ReleaseCleanup::Cleared;
+    }
+    let delete_endpoint = format!("/repos/{owner}/{repo}/releases/{id}");
+    match git::gh_api_delete_with_binary(gh_binary, &delete_endpoint, None) {
+        Ok(()) => {
+            log.status(&format!(
+                "deleted the GitHub release at {tag} (it belonged to the rolled-back attempt)"
+            ));
+            ReleaseCleanup::Cleared
+        }
+        Err(e) => {
+            log.warn(&format!(
+                "GitHub release delete failed for {tag}: {e:#} (keeping the tag so the \
+                 rollback stays retryable — re-run once the release is gone, or delete it \
+                 manually at https://github.com/{owner}/{repo}/releases/tag/{tag})"
+            ));
+            ReleaseCleanup::Retained
         }
     }
 }
@@ -545,6 +735,11 @@ fn resolve_push_branch_with_env<E: anodizer_core::EnvSource + ?Sized>(
 /// `index_probe` is `(crate_name, version) -> published?` — production
 /// wires [`anodizer_stage_publish::cargo::published_on_crates_io`];
 /// tests inject stubs (same seam convention as `gh_binary`).
+///
+/// On success returns the subset of `tags` that had NO matching run summary
+/// (the "unattributed" tags). The caller uses that to decide release cleanup:
+/// a summarized tag's GitHub release belongs to the run being rolled back and
+/// may be deleted, while an unattributed tag's release is left untouched.
 fn check_not_irreversibly_published(
     cwd: &std::path::Path,
     gh_binary: &std::path::Path,
@@ -552,7 +747,7 @@ fn check_not_irreversibly_published(
     repo_config: &anodizer_core::config::Config,
     index_probe: &dyn Fn(&str, &str) -> Result<bool>,
     log: &StageLogger,
-) -> Result<()> {
+) -> Result<Vec<String>> {
     let summaries = collect_run_summaries(&resolve_dist_dir(cwd, repo_config), log);
     let mut burned: Vec<(String, Vec<String>)> = Vec::new();
     let mut unsummarized: Vec<String> = Vec::new();
@@ -591,21 +786,24 @@ fn check_not_irreversibly_published(
             })
             .collect::<Vec<_>>()
             .join("\n");
-        bail!(
-            "refusing to roll back — one-way-door publisher(s) already accepted these version(s):\n\
-             {detail}\n\
-             Those registries never accept the same version twice, so deleting the tag(s) \
-             and reverting the bump cannot lead to a clean same-version re-cut — it only \
-             orphans the live published state.\n\
-             Fix forward instead: keep the tag, repair the failure, and cut the NEXT version \
-             (or re-run the failed stages against this tag). Pass --force to override.",
-        );
+        return Err(RollbackRefusal {
+            reason: format!(
+                "one-way-door publisher(s) already accepted these version(s):\n\
+                 {detail}\n\
+                 Those registries never accept the same version twice, so deleting the \
+                 tag(s) and reverting the bump cannot lead to a clean same-version re-cut \
+                 — tags kept to protect the published state."
+            ),
+            next_step: refusal_next_step(),
+        }
+        .into());
     }
-    check_not_burned_on_crates_io(tags, repo_config, index_probe, log)?;
+    check_not_burned_on_crates_io(tags, &unsummarized, repo_config, index_probe, log)?;
     if unsummarized.is_empty() {
-        return Ok(());
+        return Ok(unsummarized);
     }
-    check_no_published_releases(cwd, gh_binary, &unsummarized, log)
+    check_no_published_releases(cwd, gh_binary, &unsummarized, log)?;
+    Ok(unsummarized)
 }
 
 /// Dist-dir resolution for the published-state guard: the repo config's
@@ -707,6 +905,7 @@ fn crates_io_versions_for_tag(
 /// and a bare tag resolving to the same crate).
 fn check_not_burned_on_crates_io(
     tags: &[String],
+    unsummarized: &[String],
     config: &anodizer_core::config::Config,
     index_probe: &dyn Fn(&str, &str) -> Result<bool>,
     log: &StageLogger,
@@ -724,6 +923,7 @@ fn check_not_burned_on_crates_io(
         return Ok(());
     }
     let mut burned: Vec<String> = Vec::new();
+    let mut squat_suspect_crates: Vec<String> = Vec::new();
     let mut indeterminate: Vec<String> = Vec::new();
     let mut unmapped: Vec<String> = Vec::new();
     let mut probed: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
@@ -745,7 +945,12 @@ fn check_not_burned_on_crates_io(
                 continue;
             }
             match index_probe(&name, &version) {
-                Ok(true) => burned.push(format!("  {tag}: {name}@{version}")),
+                Ok(true) => {
+                    if unsummarized.contains(tag) && !squat_suspect_crates.contains(&name) {
+                        squat_suspect_crates.push(name.clone());
+                    }
+                    burned.push(format!("  {tag}: {name}@{version}"));
+                }
                 Ok(false) => log.status(&format!(
                     "'{name}@{version}' is not on the crates.io index — {tag} carries no \
                      cargo one-way door"
@@ -755,15 +960,39 @@ fn check_not_burned_on_crates_io(
         }
     }
     if !burned.is_empty() {
-        bail!(
-            "refusing to roll back — these version(s) are live on the crates.io index \
-             (published by a prior run, whatever this run's summaries say):\n{}\n\
-             crates.io never accepts the same version twice, so deleting the tag(s) cannot \
-             lead to a clean same-version re-cut — it only orphans the live published state.\n\
-             Fix forward instead: keep the tag, repair the failure, and cut the NEXT version. \
-             Pass --force to override.",
-            burned.join("\n")
-        );
+        // A local run summary is per-runner and ephemeral: a fresh CI runner
+        // holds no summary for a burn a prior runner landed, so its absence
+        // is expected for a legitimate own-publish and is NOT evidence of
+        // foreign ownership. The note leads with that likely case and offers
+        // the crates.io page only so the rare squatting possibility can be
+        // ruled out — it never implies the version isn't the operator's own.
+        let squat_note = if squat_suspect_crates.is_empty() {
+            String::new()
+        } else {
+            let urls = squat_suspect_crates
+                .iter()
+                .map(|name| format!("https://crates.io/crates/{name}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                "\nNo local run summary corroborates this publish — most likely a prior \
+                 run of yours (on CI, summaries live on each runner's disk and don't \
+                 carry over); far less likely, the name is held by someone else. Confirm \
+                 ownership at {urls} before assuming either."
+            )
+        };
+        return Err(RollbackRefusal {
+            reason: format!(
+                "these version(s) are live on the crates.io index (published by a prior \
+                 attempt, whatever this run's summaries say):\n{}\n\
+                 crates.io never accepts the same version twice, so deleting the tag(s) \
+                 cannot lead to a clean same-version re-cut — tags kept to protect the \
+                 published state.{squat_note}",
+                burned.join("\n")
+            ),
+            next_step: refusal_next_step(),
+        }
+        .into());
     }
     if !indeterminate.is_empty() {
         bail!(
@@ -936,16 +1165,24 @@ fn check_no_published_releases(
         );
     }
     if !published.is_empty() {
-        bail!(
-            "refusing to roll back: published GitHub release(s) exist for: {} \
-             (and no run summary is available to prove nothing irreversible shipped).\n\
-             One-way-door publishers (crates.io, chocolatey, winget, snapcraft, ...) \
-             usually ship alongside a published release; if any did, the version is \
-             burned and deleting the tag(s) only orphans live published state.\n\
-             Fix forward instead: keep the tag, repair the failure, and cut the NEXT \
-             version. Pass --force to override the guard.",
-            published.join(", ")
-        );
+        return Err(RollbackRefusal {
+            reason: format!(
+                "published GitHub release(s) exist for: {} \
+                 (and no run summary is available to prove nothing irreversible shipped).\n\
+                 One-way-door publishers (crates.io, chocolatey, winget, snapcraft, ...) \
+                 usually ship alongside a published release; if any did, the version is \
+                 burned and deleting the tag(s) only orphans live published state — \
+                 tags kept to protect it.\n\
+                 Caveat: a release left behind by a rollback that predates automatic \
+                 release cleanup may be an ORPHAN of a rolled-back attempt rather than \
+                 real burn evidence — verify the release (and the one-way-door \
+                 registries) before trusting it; if it is an orphan, delete it and \
+                 re-run, or use --force.",
+                published.join(", ")
+            ),
+            next_step: refusal_next_step(),
+        }
+        .into());
     }
     Ok(())
 }
@@ -1617,6 +1854,14 @@ mod tests {
             msg.contains("--force"),
             "must name the override flag: {msg}"
         );
+        assert!(
+            err.downcast_ref::<RollbackRefusal>().is_some(),
+            "a published-release refusal must be typed for the failure policy"
+        );
+        assert!(
+            msg.contains("ORPHAN"),
+            "must warn the release may be an orphan of a pre-cleanup rollback: {msg}"
+        );
     }
 
     #[test]
@@ -1678,6 +1923,11 @@ mod tests {
         assert!(msg.contains("could not determine"), "got: {msg}");
         assert!(msg.contains("v1.0.0"), "must name the tag: {msg}");
         assert!(msg.contains("--force"), "must name the escape hatch: {msg}");
+        assert!(
+            err.downcast_ref::<RollbackRefusal>().is_none(),
+            "an indeterminate (transient) fail-closed is mechanical, not a \
+             by-design refusal — it must NOT be typed as RollbackRefusal"
+        );
     }
 
     #[test]
@@ -1787,6 +2037,138 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
+    // GitHub release cleanup: a rolled-back tag's release belongs to the
+    // aborted attempt and is deleted alongside the tag (matched by tag).
+    // -----------------------------------------------------------------
+
+    /// gh stub that records every invocation's args to `record` and
+    /// answers GETs with a release object (id 7) while accepting DELETEs.
+    #[cfg(unix)]
+    fn write_recording_gh_stub(dir: &Path, record: &Path) -> std::path::PathBuf {
+        write_gh_stub(
+            dir,
+            &format!(
+                "echo \"$@\" >> {record}\n\
+                 case \"$*\" in *DELETE*) exit 0;; *) echo '{{\"id\": 7, \"draft\": true}}';; esac",
+                record = record.display()
+            ),
+        )
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn release_cleanup_deletes_release_matched_by_tag() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let record = tmp.path().join("gh-calls.log");
+        let gh = write_recording_gh_stub(tmp.path(), &record);
+
+        delete_release_at_tag(tmp.path(), &gh, "v1.0.0", true, &quiet_log());
+
+        let calls = std::fs::read_to_string(&record).expect("gh must have been consulted");
+        assert!(
+            calls.contains("/repos/o/r/releases/tags/v1.0.0"),
+            "lookup must match by THIS tag only: {calls}"
+        );
+        assert!(
+            calls.contains("-X DELETE /repos/o/r/releases/7"),
+            "must delete the release id the tag lookup returned: {calls}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn release_cleanup_noop_when_no_release_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let record = tmp.path().join("gh-calls.log");
+        let gh = write_gh_stub(
+            tmp.path(),
+            &format!(
+                "echo \"$@\" >> {}\necho 'gh: HTTP 404: Not Found' >&2; exit 1",
+                record.display()
+            ),
+        );
+
+        delete_release_at_tag(tmp.path(), &gh, "v1.0.0", true, &quiet_log());
+
+        let calls = std::fs::read_to_string(&record).expect("lookup must have run");
+        assert!(
+            !calls.contains("DELETE"),
+            "no release means no DELETE call: {calls}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn release_cleanup_skipped_for_non_github_origin() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _ = init_bump_repo(tmp.path(), 0);
+        run_git(
+            tmp.path(),
+            &["remote", "add", "origin", "https://gitlab.com/o/r.git"],
+        );
+        let record = tmp.path().join("gh-calls.log");
+        let gh = write_recording_gh_stub(tmp.path(), &record);
+
+        delete_release_at_tag(tmp.path(), &gh, "v1.0.0", true, &quiet_log());
+
+        assert!(
+            !record.exists(),
+            "gh must never be spawned for a non-github.com origin"
+        );
+    }
+
+    /// A tag with NO run summary is not attributed to this rollback: any
+    /// GitHub release it carries (a human's draft notes, a prior reversible
+    /// release) must be LEFT IN PLACE, never deleted — even though the tag
+    /// itself is removed.
+    #[test]
+    #[cfg(unix)]
+    fn release_cleanup_preserves_unattributed_release() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let record = tmp.path().join("gh-calls.log");
+        let gh = write_recording_gh_stub(tmp.path(), &record);
+
+        let outcome = delete_release_at_tag(tmp.path(), &gh, "v1.0.0", false, &quiet_log());
+
+        assert!(matches!(outcome, ReleaseCleanup::Cleared));
+        let calls = std::fs::read_to_string(&record).expect("lookup must have run");
+        assert!(
+            !calls.contains("DELETE"),
+            "an unattributed release must never be deleted: {calls}"
+        );
+    }
+
+    /// When an OWNED release lookup succeeds but the DELETE fails, the tag is
+    /// RETAINED so the rollback stays retryable, never orphaning the release
+    /// under a deleted tag.
+    #[test]
+    #[cfg(unix)]
+    fn release_cleanup_retains_tag_when_release_delete_fails() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let record = tmp.path().join("gh-calls.log");
+        let gh = write_gh_stub(
+            tmp.path(),
+            &format!(
+                "echo \"$@\" >> {record}\n\
+                 case \"$*\" in *DELETE*) echo 'gh: HTTP 500' >&2; exit 1;; \
+                 *) echo '{{\"id\": 7}}';; esac",
+                record = record.display()
+            ),
+        );
+
+        let outcome = delete_release_at_tag(tmp.path(), &gh, "v1.0.0", true, &quiet_log());
+
+        assert!(
+            matches!(outcome, ReleaseCleanup::Retained),
+            "a failed owned-release delete must retain the tag for retry"
+        );
+    }
+
+    // -----------------------------------------------------------------
     // Summary-based published-state guard: the run summary on disk is
     // the primary evidence; the gh probe is consulted only for tags
     // with no summary. Proven with gh stubs whose answer CONTRADICTS
@@ -1890,8 +2272,13 @@ mod tests {
             "must name the override flag: {msg}"
         );
         assert!(
-            msg.contains("Fix forward"),
+            msg.contains("cut the NEXT version"),
             "must suggest fix-forward: {msg}"
+        );
+        assert!(
+            err.downcast_ref::<RollbackRefusal>().is_some(),
+            "a burn-evidence refusal must be typed so the failure policy \
+             renders it as protection, not breakage"
         );
     }
 
@@ -2185,12 +2572,65 @@ mod tests {
             msg.contains("cfgd-crd@0.5.0"),
             "must name the burned crate@version: {msg}"
         );
-        assert!(msg.contains("prior run"), "must explain the source: {msg}");
         assert!(
-            msg.contains("Fix forward"),
+            msg.contains("prior attempt"),
+            "must explain the source: {msg}"
+        );
+        assert!(
+            msg.contains("cut the NEXT version"),
             "must suggest fix-forward: {msg}"
         );
         assert!(msg.contains("--force"), "must name the escape hatch: {msg}");
+        assert!(
+            err.downcast_ref::<RollbackRefusal>().is_some(),
+            "an index-burn refusal must be typed for the failure policy"
+        );
+        assert!(
+            !msg.contains("No local run summary corroborates"),
+            "a summarized tag's index burn is corroborated — no ownership caveat: {msg}"
+        );
+    }
+
+    /// Index-only burn evidence (no run summary for the tag at all):
+    /// existence on crates.io proves publication, not ownership. The refusal
+    /// notes the absence of a corroborating summary — leading with the likely
+    /// own-prior-run explanation and pointing at the crates.io page so the
+    /// rarer foreign-ownership case can be ruled out.
+    #[test]
+    #[cfg(unix)]
+    fn crates_io_refusal_notes_possible_squatting_without_summary() {
+        let tmp = tempfile::tempdir().unwrap();
+        init_github_origin_repo(tmp.path());
+        let gh = write_gh_stub(tmp.path(), r#"echo 'gh: HTTP 404: Not Found' >&2; exit 1"#);
+        let config = config_with_cargo_crates(&[("test-project", "v{{ Version }}")]);
+        let probe = |_: &str, _: &str| -> Result<bool> { Ok(true) };
+
+        let err = check_not_irreversibly_published(
+            tmp.path(),
+            &gh,
+            &["v0.1.0".to_string()],
+            &config,
+            &probe,
+            &quiet_log(),
+        )
+        .expect_err("index-live version must refuse rollback");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("No local run summary corroborates"),
+            "uncorroborated index evidence must raise the ownership caveat: {msg}"
+        );
+        assert!(
+            msg.contains("most likely a prior run of yours"),
+            "the caveat must lead with the likely own-publish explanation, not squatting: {msg}"
+        );
+        assert!(
+            msg.contains("https://crates.io/crates/test-project"),
+            "must link the crates.io page to verify ownership: {msg}"
+        );
+        assert!(
+            err.downcast_ref::<RollbackRefusal>().is_some(),
+            "still a typed refusal"
+        );
     }
 
     #[test]

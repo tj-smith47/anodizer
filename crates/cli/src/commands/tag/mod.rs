@@ -28,8 +28,15 @@ pub struct TagOpts {
     pub crate_name: Option<String>,
     /// Push the version-sync bump commit to the release branch atomically with the tag.
     pub push: bool,
-    /// Do not push the version-sync bump commit; push the tag only (leaves the bump commit local).
+    /// Do not push anything; the tag and the version-sync bump commit both stay local.
     pub no_push: bool,
+    /// Push the tag(s) but NOT the version-sync bump commit. The explicit
+    /// opt-in for the deferred-branch CI pattern: the release pipeline pushes
+    /// the tag to trigger publishing and fast-forwards the branch onto the
+    /// bump commit only after publish succeeds, so a failed release advances
+    /// nothing. The branch MUST be advanced separately or the remote tag
+    /// permanently references a commit missing from every branch.
+    pub push_tags_only: bool,
     /// Remote to push to; defaults to `origin` when unset.
     pub push_remote: Option<String>,
     /// Preview the `git push` commands `--push` would run, without executing.
@@ -44,13 +51,16 @@ pub struct TagOpts {
     pub strict: bool,
 }
 
-/// Resolve whether the version-sync bump commit (the branch HEAD) should be
-/// pushed alongside the tag.
+/// Resolve whether this run pushes at all (the bump commit + tag(s),
+/// atomically). A run either pushes branch and tags together or pushes
+/// nothing — a remote tag referencing an unpushed bump commit (an orphan
+/// tag) is not a representable outcome.
 ///
 /// `--no-push` always wins; then an explicit `--push` or `tag.push = true`
-/// selects a branch push; otherwise the per-path default applies (`false` for
-/// the single / lockstep / `--crate` paths, `true` for per-crate
-/// auto-dispatch, whose atomic branch+tags push is the long-standing default).
+/// selects the atomic push; otherwise the per-path default applies (`false`
+/// — fully local — for the single / lockstep / `--crate` paths, `true` for
+/// per-crate auto-dispatch, whose atomic branch+tags push is the
+/// long-standing default).
 fn resolve_effective_push(opts: &TagOpts, config_push: Option<bool>, path_default: bool) -> bool {
     if opts.no_push {
         false
@@ -61,8 +71,8 @@ fn resolve_effective_push(opts: &TagOpts, config_push: Option<bool>, path_defaul
     }
 }
 
-/// Resolve the branch to push the bump commit to, or `None` when the bump
-/// commit should stay local (tag-only push).
+/// Resolve the branch to push the bump commit to, or `None` when nothing
+/// is pushed (the tag(s) and bump commit stay local).
 ///
 /// Returns `Some(current_branch)` when [`resolve_effective_push`] selects a
 /// branch push for the given `path_default`; otherwise `None`.
@@ -374,6 +384,30 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
         Verbosity::from_flags(opts.quiet, effective_verbose, opts.debug),
     );
 
+    // Previous-tag resolution must reflect the REMOTE's tag reality, not this
+    // clone's: a tag deleted on the remote for a re-cut can survive locally
+    // (in this or another clone) and would otherwise silently mint the NEXT
+    // version instead of re-minting the SAME one. One ls-remote call per
+    // invocation; every previous-tag lookup below shares the result. A network
+    // failure falls back to local tags with a warning rather than blocking
+    // offline tagging.
+    let remote_tag_names: Option<std::collections::HashSet<String>> =
+        if git::has_remote_in(&workspace_root_path, &remote) {
+            match git::list_remote_tag_names_in(&workspace_root_path, &remote) {
+                Ok(names) => Some(names.into_iter().collect()),
+                Err(e) => {
+                    log.warn(&format!(
+                        "could not list tags on remote '{remote}' ({e}); previous-tag \
+                         resolution is falling back to LOCAL tags — a local tag that was \
+                         deleted on the remote may mint the wrong next version"
+                    ));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
     // `release_branches` guard, BEFORE shape dispatch so it protects every
     // tagging shape (per-crate and flat-aggregate push by default, so a
     // path-specific guard is a real safety hole: feature-branch CI could cut
@@ -398,7 +432,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
             }
             // Non-release branch: produce a hash-postfixed version, don't tag.
             let short_commit = git::get_short_commit()?;
-            let prev_tag = find_previous_tag(&cfg, git_config.as_ref())?;
+            let prev_tag = find_previous_tag(&cfg, git_config.as_ref(), remote_tag_names.as_ref())?;
             let base_version = match &prev_tag {
                 Some(tag) => {
                     let sv = git::parse_semver_tag(tag)?;
@@ -454,6 +488,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
                 changelog_enabled,
                 pre_hooks: &pre_hooks,
                 post_hooks: &post_hooks,
+                remote_tags: remote_tag_names.as_ref(),
             },
             &log,
         );
@@ -484,15 +519,21 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
     let strict = opts.strict;
     let tag_prefix_for_hooks = cfg.tag_prefix.clone();
 
-    // Single / lockstep / --crate share a `false` push default: today's
-    // behavior pushes only the tag and leaves the bump commit local. `--push`,
-    // `tag.push=true`, or `--push-dry-run` (preview) opt into also pushing the
-    // bump commit (the branch HEAD) atomically with the tag.
+    // Single / lockstep / --crate share a `false` push default: a bare run is
+    // fully LOCAL (tag + bump commit both stay in the clone). `--push`,
+    // `tag.push=true`, or `--push-dry-run` (preview) opt into pushing the bump
+    // commit (the branch HEAD) atomically with the tag. A tag pushed without
+    // its bump commit (an orphan tag) is only producible through the explicit
+    // `--push-tags-only` opt-in, never as a silent default.
     //
     // `--push-dry-run` previews the push commands `--push` would run: treat it
     // as push-mode-on, but every `git push` is replaced by a "(dry-run) would
     // push …" log line.
-    let push_mode = resolve_effective_push(&opts, config_push, false) || opts.push_dry_run;
+    // `--push-tags-only` overrides `tag.push = true` config (an explicit CLI
+    // choice beats persisted config, matching --no-push) and combines with
+    // `--push-dry-run` as a preview of the tags-only push.
+    let push_mode = !opts.push_tags_only
+        && (resolve_effective_push(&opts, config_push, false) || opts.push_dry_run);
     let push_preview = opts.push_dry_run;
     let push_branch = if push_mode {
         Some(git::get_current_branch()?)
@@ -523,24 +564,28 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
         // the tag locally but only prints the push commands).
         let push_dry = dry_run || push_preview;
 
-        if cfg.git_api_tagging {
+        // The API tags a commit by SHA on the remote, so it can only run once
+        // the bump commit is actually pushed — i.e. under a full branch+tag
+        // push. Bare and --push-tags-only invocations fall through to the git
+        // paths below: bare stays fully local (pushes nothing), and
+        // --push-tags-only pushes the tag object via git (the API cannot
+        // reference a commit the remote doesn't yet have).
+        if cfg.git_api_tagging && push_mode {
             log.verbose("using GitHub API for tagging (git_api_tagging=true)");
-            if push_mode {
-                // Push the branch first so the bump commit lands on the remote,
-                // THEN create the tag via the API (which references the
-                // now-pushed HEAD commit).
-                git::push_branch_and_tags_atomic_in(
-                    &cwd,
-                    &git::AtomicPushSpec {
-                        remote: &remote,
-                        branch: push_branch.as_deref(),
-                        tags: &[],
-                        dry_run: push_dry,
-                        strict,
-                    },
-                    &log,
-                )?;
-            }
+            // Push the branch first so the bump commit lands on the remote,
+            // THEN create the tag via the API (which references the
+            // now-pushed HEAD commit).
+            git::push_branch_and_tags_atomic_in(
+                &cwd,
+                &git::AtomicPushSpec {
+                    remote: &remote,
+                    branch: push_branch.as_deref(),
+                    tags: &[],
+                    dry_run: push_dry,
+                    strict,
+                },
+                &log,
+            )?;
             // Resolve the repo identity once (config override -> origin
             // remote) and hand it to the API tagger so it agrees with the
             // rest of the pipeline instead of re-parsing the remote itself.
@@ -559,7 +604,12 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
                 &slug,
                 tag,
                 message,
-                dry_run,
+                // The API creates the tag ref on the REMOTE, so it is a push
+                // operation: honour push-preview (`--push-dry-run`) as well as
+                // `--dry-run`. Passing the closure's `dry_run` here would make
+                // the real `gh api` call during a preview and orphan the tag on
+                // a commit no pushed branch contains.
+                push_dry,
                 &log,
                 strict,
             )?;
@@ -578,8 +628,33 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
                 },
                 &log,
             )?;
+        } else if opts.push_tags_only {
+            // Deferred-branch pattern: the tag goes up now (triggering
+            // tag-driven CI), the branch is advanced onto the bump commit by
+            // the caller after publish succeeds.
+            if cfg.git_api_tagging {
+                log.verbose(
+                    "git_api_tagging is set but --push-tags-only pushes the tag before its \
+                     commit is on the remote; using git tag push (the API cannot reference \
+                     an unpushed commit)",
+                );
+            }
+            git::create_tag_local_only(&cwd, tag, message, dry_run, &log)?;
+            git::push_branch_and_tags_atomic_in(
+                &cwd,
+                &git::AtomicPushSpec {
+                    remote: &remote,
+                    branch: None,
+                    tags: std::slice::from_ref(&tag.to_string()),
+                    dry_run: push_dry,
+                    strict,
+                },
+                &log,
+            )?;
         } else {
-            git::create_and_push_tag(tag, message, dry_run, &log, strict)?;
+            // No push selected: everything stays local. Pushing the tag here
+            // without the branch would orphan the bump commit on the remote.
+            git::create_tag_local_only(&cwd, tag, message, dry_run, &log)?;
         }
 
         if !post_hooks.is_empty() {
@@ -600,7 +675,10 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
             format!("{}{}", cfg.tag_prefix, custom)
         };
         log.verbose(&format!("using custom tag {}", new_tag));
-        let prev_for_custom = find_previous_tag(&cfg, git_config.as_ref()).ok().flatten();
+        let prev_for_custom =
+            find_previous_tag(&cfg, git_config.as_ref(), remote_tag_names.as_ref())
+                .ok()
+                .flatten();
         create_tag(
             &new_tag,
             &format!("Release {}", new_tag),
@@ -618,7 +696,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
     // branch or the guard was bypassed by --version / custom_tag.
 
     // Find previous tag
-    let prev_tag = find_previous_tag(&cfg, git_config.as_ref())?;
+    let prev_tag = find_previous_tag(&cfg, git_config.as_ref(), remote_tag_names.as_ref())?;
 
     log.verbose(&format!(
         "previous tag = {}",
@@ -788,7 +866,6 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
     // `on: push: tags:` release trigger. It is only safe with a
     // `workflow_run`-triggered release; the tag-push pattern
     // must leave it off or the release silently never fires.
-    let mut bump_commit_created = false;
     if let Some(ws) = workspace_info {
         let root = workspace_root_path.as_path();
         // Lockstep shares one version across the whole workspace, so the
@@ -799,7 +876,7 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
         let ws_from_tag = (!old_tag_str.is_empty()).then_some(old_tag_str);
         let cl_config = changelog_config_for(Some(&loaded_config));
         let cl_routing = ChangelogRouting::from_config(&cl_config);
-        bump_commit_created = apply_workspace_bump(
+        apply_workspace_bump(
             root,
             ws,
             &new_version,
@@ -960,12 +1037,11 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
             }
             // Propagate a commit failure (index lock, hook rejection, …)
             // before any tag is created: tagging a commit whose Cargo.toml is
-            // NOT at `new_version` would ship an orphan tag pointing at the
-            // wrong version. `Ok(false)` (no diff to commit) likewise means no
-            // bump commit was produced, so the orphan-bump hint must not fire.
-            // Staged from the discovered workspace root so the repo-relative
-            // paths resolve there, not against a subdirectory cwd.
-            bump_commit_created = git::stage_and_commit_in(
+            // NOT at `new_version` would ship a tag pointing at the wrong
+            // version. Staged from the discovered workspace root so the
+            // repo-relative paths resolve there, not against a subdirectory
+            // cwd.
+            git::stage_and_commit_in(
                 &workspace_root_path,
                 &files_to_stage,
                 &git::release_bump_subject(
@@ -989,22 +1065,22 @@ pub fn run(mut opts: TagOpts) -> Result<()> {
         prev_for_hook,
     )?;
 
-    // When a version-sync bump commit was created but the branch will NOT be
-    // pushed, the freshly-pushed tag references a commit absent from the remote
-    // branch — the orphan footgun this feature exists to kill. Surface a gentle
-    // one-line hint on the implicit tag-only default; stay silent when the user
-    // explicitly chose --no-push (they acknowledged the tradeoff) or in any
-    // dry-run/preview mode (nothing was pushed).
-    if bump_commit_created
-        && push_branch.is_none()
+    // The implicit default kept everything local; make that explicit so a
+    // user expecting a published tag isn't surprised later. Stay silent when
+    // the user explicitly chose --no-push / --push-tags-only (they picked a
+    // push mode deliberately) or in any dry-run/preview mode (nothing was
+    // created for real).
+    if push_branch.is_none()
         && !opts.no_push
+        && !opts.push_tags_only
         && !opts.dry_run
         && !opts.push_dry_run
     {
-        log.status(
-            "tagged a version-sync bump commit but left it local; \
-             pass --push to push the bump commit + tag atomically (or push the branch yourself)",
-        );
+        log.status(&format!(
+            "created {} locally; nothing was pushed — \
+             pass --push to push the bump commit + tag atomically",
+            new_tag
+        ));
     }
 
     let part_str = match bump {
@@ -1721,6 +1797,7 @@ struct GroupTagResult {
 ///
 /// Returns the list of groups that need tagging, skipping groups with no
 /// changes.
+#[allow(clippy::too_many_arguments)]
 fn compute_per_crate_tags(
     workspace_root: &Path,
     groups: &[Vec<CrateConfig>],
@@ -1728,6 +1805,7 @@ fn compute_per_crate_tags(
     cfg: &ResolvedConfig,
     git_config: Option<&GitConfig>,
     preloaded_config: Option<&anodizer_core::config::Config>,
+    remote_tags: Option<&std::collections::HashSet<String>>,
     log: &StageLogger,
 ) -> Result<Vec<GroupTagResult>> {
     use crate::commands::release::detect_changed_crates_pub;
@@ -1792,7 +1870,7 @@ fn compute_per_crate_tags(
             ..cfg.clone()
         };
 
-        let prev_tag = find_previous_tag(&group_cfg, git_config)?;
+        let prev_tag = find_previous_tag(&group_cfg, git_config, remote_tags)?;
 
         // Scan commits across all paths in the group.
         let mut all_messages: Vec<String> = Vec::new();
@@ -1923,6 +2001,11 @@ struct PushControls<'a> {
     /// honors the same hook config as the single/lockstep `create_tag` closure.
     pre_hooks: &'a [anodizer_core::config::HookEntry],
     post_hooks: &'a [anodizer_core::config::HookEntry],
+    /// Tag names present on `remote` (one ls-remote per invocation, fetched by
+    /// [`run`]); `None` when there is no remote or the fetch failed (local
+    /// fallback). Threaded into previous-tag resolution so a remotely-deleted
+    /// tag that survives in this clone never counts as "previous".
+    remote_tags: Option<&'a std::collections::HashSet<String>>,
 }
 
 /// The per-crate engine's dispatched unit: the lockstep groups to tag plus
@@ -2029,6 +2112,7 @@ fn run_per_crate_tag(
         cfg,
         git_config,
         anodizer_config,
+        controls.remote_tags,
         log,
     )?;
 
@@ -2341,21 +2425,34 @@ fn run_per_crate_tag(
     let versions_json = serde_json::to_string(&versions_map).unwrap_or_else(|_| "{}".to_string());
 
     // Per-crate auto-dispatch defaults to pushing the bump commit + tags
-    // atomically (path_default = true). `--no-push` pushes the tags only,
-    // leaving the bump commit local; `--push-dry-run` previews the push.
+    // atomically (path_default = true). `--no-push` keeps everything local
+    // (pushing the tags without the bump commit would orphan them on the
+    // remote); `--push-tags-only` opts into exactly that orphan-and-advance-
+    // later pattern explicitly; `--push-dry-run` previews the push.
     let push_dry = opts.dry_run || opts.push_dry_run;
-    let push_branch = resolve_tag_push_branch(opts, controls.config_push, true)?;
-    git::push_branch_and_tags_atomic_in(
-        &cwd,
-        &git::AtomicPushSpec {
-            remote: controls.remote,
-            branch: push_branch.as_deref(),
-            tags: &all_new_tags,
-            dry_run: push_dry,
-            strict: opts.strict,
-        },
-        log,
-    )?;
+    let push_branch = if opts.push_tags_only {
+        None
+    } else {
+        resolve_tag_push_branch(opts, controls.config_push, true)?
+    };
+    if push_branch.is_some() || opts.push_tags_only {
+        git::push_branch_and_tags_atomic_in(
+            &cwd,
+            &git::AtomicPushSpec {
+                remote: controls.remote,
+                branch: push_branch.as_deref(),
+                tags: &all_new_tags,
+                dry_run: push_dry,
+                strict: opts.strict,
+            },
+            log,
+        )?;
+    } else if !opts.dry_run {
+        log.status(&format!(
+            "created {} locally; nothing was pushed (--no-push)",
+            all_new_tags.join(", ")
+        ));
+    }
 
     // Push succeeded (or was a dry-run/preview no-op that returns Ok). Now it
     // is safe to advertise the tagged crates + versions — and it must happen
@@ -2430,14 +2527,25 @@ fn load_crate_tag_info(
     })
 }
 
+/// Find the previous tag for version derivation.
+///
+/// When `remote_tags` is `Some` (an `origin`-style remote exists and its tag
+/// list was fetched), local candidates absent from the remote are dropped:
+/// a tag deleted on the remote (the documented re-cut recipe) must not count
+/// as "previous" just because a clone still holds it. Remote-only tags are
+/// not added — commit-range scans against them could not resolve locally.
 fn find_previous_tag(
     cfg: &ResolvedConfig,
     git_config: Option<&GitConfig>,
+    remote_tags: Option<&std::collections::HashSet<String>>,
 ) -> Result<Option<String>> {
-    let tags = match cfg.tag_context.as_str() {
+    let mut tags = match cfg.tag_context.as_str() {
         "branch" => git::get_branch_semver_tags(&cfg.tag_prefix, git_config, None)?,
         _ => git::get_all_semver_tags(&cfg.tag_prefix, git_config, None)?,
     };
+    if let Some(remote) = remote_tags {
+        tags.retain(|t| remote.contains(t));
+    }
 
     let tag_sort = git_config
         .and_then(|gc| gc.tag_sort.as_deref())
@@ -2944,6 +3052,7 @@ mod tests {
             crate_name: None,
             push,
             no_push,
+            push_tags_only: false,
             push_remote: None,
             push_dry_run: false,
             changelog: false,
@@ -3504,6 +3613,7 @@ mod tests {
             crate_name: None,
             push: false,
             no_push: false,
+            push_tags_only: false,
             push_remote: None,
             push_dry_run: false,
             changelog: false,
@@ -3543,6 +3653,7 @@ mod tests {
             crate_name: None,
             push: false,
             no_push: false,
+            push_tags_only: false,
             push_remote: None,
             push_dry_run: false,
             changelog: false,
@@ -3592,6 +3703,7 @@ mod tests {
             crate_name: None,
             push: false,
             no_push: false,
+            push_tags_only: false,
             push_remote: None,
             push_dry_run: false,
             changelog: false,

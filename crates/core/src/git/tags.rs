@@ -425,6 +425,35 @@ pub fn get_branch_semver_tags_in(
     )
 }
 
+/// List tag names on `remote` via a single `git ls-remote --tags` call.
+///
+/// Annotated tags appear twice in `ls-remote` output — once as the tag object
+/// (`refs/tags/<name>`) and once peeled to the commit (`refs/tags/<name>^{}`);
+/// the peeled suffix is stripped and names are deduplicated, so each tag is
+/// returned exactly once regardless of whether it is lightweight or annotated.
+///
+/// Errors (unreachable remote, auth failure, …) propagate so callers can
+/// decide whether to fall back to the local tag list.
+pub fn list_remote_tag_names_in(cwd: &Path, remote: &str) -> Result<Vec<String>> {
+    let output = git_output_in(cwd, &["ls-remote", "--tags", remote])?;
+    let mut seen = std::collections::HashSet::new();
+    let mut names = Vec::new();
+    for line in output.lines() {
+        // Each line is `<sha>\trefs/tags/<name>[^{}]`.
+        let Some(refname) = line.split('\t').nth(1) else {
+            continue;
+        };
+        let Some(tag) = refname.strip_prefix("refs/tags/") else {
+            continue;
+        };
+        let tag = tag.strip_suffix("^{}").unwrap_or(tag);
+        if seen.insert(tag.to_string()) {
+            names.push(tag.to_string());
+        }
+    }
+    Ok(names)
+}
+
 /// Create an annotated tag and push it if an `origin` remote exists.
 pub fn create_and_push_tag(
     tag: &str,

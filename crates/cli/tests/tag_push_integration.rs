@@ -1,18 +1,23 @@
 //! Integration tests for `anodizer tag --push` and its flag family.
 //!
-//! `anodizer tag` historically pushed only the version-sync bump commit's
-//! TAG to the remote, leaving the branch HEAD behind — orphaning the
-//! `chore(release): bump …` commit on origin. `--push` makes the tag and the
-//! bump commit land atomically (`git push --atomic`). These tests prove:
-//!   * default (no `--push`): lockstep path leaves remote branch BEHIND the tag
-//!     target (the load-bearing guard that proves the flag matters);
+//! A tag run either pushes the version-sync bump commit and the tag(s)
+//! together (`git push --atomic`) or pushes nothing; a tag pushed without its
+//! bump commit (a remote orphan tag) is only producible via the explicit
+//! `--push-tags-only` opt-in. These tests prove:
+//!   * default (no `--push`): fully local — neither the tag nor the branch
+//!     reaches the remote, and the run says so;
 //!   * `--push`: remote branch HEAD == tag target == local HEAD;
+//!   * `--push-tags-only`: the tag lands, the branch does not (the
+//!     deferred-branch CI pattern);
 //!   * a no-op run (no version change) creates no bump commit even with
 //!     `--push`;
 //!   * a non-fast-forward rejection leaves NEITHER an orphan branch tip NOR an
 //!     orphan tag on the remote (atomic guarantee);
 //!   * `--push-remote <name>` targets a second remote;
-//!   * per-crate `--no-push` pushes the tags but not the branch.
+//!   * per-crate `--no-push` pushes nothing;
+//!   * previous-tag resolution consults the remote's tag list, so a re-cut
+//!     from a clone still holding a remotely-deleted tag re-mints the SAME
+//!     version (with local fallback + warn when the remote is unreachable).
 
 use std::fs;
 use std::path::Path;
@@ -235,9 +240,10 @@ crates:
 }
 
 #[test]
-fn lockstep_default_orphans_bump_commit_on_remote() {
-    // Proves the flag is load-bearing: WITHOUT --push, the lockstep path pushes
-    // only the tag, leaving remote master BEHIND the tag target.
+fn lockstep_default_pushes_nothing() {
+    // A bare `anodizer tag` is fully local: the tag and the bump commit both
+    // stay in the clone. Pushing only the tag (the historical default) left a
+    // remote orphan tag whose bump commit no branch contained.
     let (work, bare) = lockstep_with_origin();
     let remote_master_before = remote_branch_sha(bare.path(), "master").unwrap();
 
@@ -254,18 +260,206 @@ fn lockstep_default_orphans_bump_commit_on_remote() {
 
     let local_head = head_sha(work.path());
     let remote_master_after = remote_branch_sha(bare.path(), "master").unwrap();
-    let tag_target = remote_tag_target(bare.path(), "v0.1.1").expect("tag pushed");
 
-    // Tag landed and points at the local bump commit, but remote master did
-    // NOT advance — the bump commit is orphaned on origin.
-    assert_eq!(tag_target, local_head, "tag should target the bump commit");
+    // The tag exists locally, points at the bump commit…
+    let local_tag = git_out(work.path(), &["rev-parse", "refs/tags/v0.1.1^{}"]);
+    assert_eq!(
+        local_tag, local_head,
+        "local tag must target the bump commit"
+    );
+    // …but NOTHING reached the remote.
+    assert_eq!(
+        remote_tag_target(bare.path(), "v0.1.1"),
+        None,
+        "default run must NOT push the tag"
+    );
     assert_eq!(
         remote_master_after, remote_master_before,
         "default run must NOT advance remote master"
     );
-    assert_ne!(
-        remote_master_after, local_head,
-        "default run leaves remote master behind the tag target (orphan)"
+    // The run tells the user everything stayed local.
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("nothing was pushed"),
+        "expected a local-only hint: {combined}"
+    );
+}
+
+#[test]
+fn git_api_tagging_bare_run_pushes_nothing() {
+    // git_api_tagging drives tag creation through the GitHub API, which tags a
+    // commit already on the remote. A bare `anodizer tag` (no push flag) must
+    // still stay fully local: the API path must NOT fire and orphan a remote
+    // tag whose bump commit no branch on the remote contains.
+    let (work, bare) = lockstep_with_origin();
+    fs::write(
+        work.path().join(".anodizer.yaml"),
+        "tag:\n  git_api_tagging: true\n",
+    )
+    .unwrap();
+    git_add_commit(work.path(), "chore: enable git_api_tagging");
+    let remote_master_before = remote_branch_sha(bare.path(), "master").unwrap();
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let local_head = head_sha(work.path());
+    let local_tag = git_out(work.path(), &["rev-parse", "refs/tags/v0.1.1^{}"]);
+    assert_eq!(
+        local_tag, local_head,
+        "local tag must target the bump commit"
+    );
+    assert_eq!(
+        remote_tag_target(bare.path(), "v0.1.1"),
+        None,
+        "git_api_tagging must NOT push the tag on a bare run"
+    );
+    assert_eq!(
+        remote_branch_sha(bare.path(), "master").unwrap(),
+        remote_master_before,
+        "git_api_tagging must NOT advance remote master on a bare run"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("nothing was pushed"),
+        "expected a local-only hint: {combined}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn git_api_tagging_push_dry_run_previews_without_calling_the_api() {
+    // The GitHub-API tagger creates the tag ref on the REMOTE, so it is a push
+    // operation and must honour `--push-dry-run`. A preview must NOT invoke
+    // `gh api` — doing so would create a real remote tag on a commit no pushed
+    // branch contains (an orphan tag), the exact footgun push-preview avoids.
+    use std::os::unix::fs::PermissionsExt;
+
+    let work = TempDir::new().unwrap();
+    let root = work.path();
+    // A GitHub-looking origin so the API-tagging branch is taken; nothing is
+    // ever contacted under a preview.
+    run_git(root, &["init", "-q", "-b", "master"]);
+    run_git(root, &["config", "user.email", "t@t.com"]);
+    run_git(root, &["config", "user.name", "t"]);
+    run_git(root, &["config", "commit.gpgsign", "false"]);
+    run_git(
+        root,
+        &["remote", "add", "origin", "https://github.com/fake/repo"],
+    );
+    fs::create_dir_all(root.join("crates/a/src")).unwrap();
+    fs::write(
+        root.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/a\"]\nresolver = \"2\"\n\n[workspace.package]\nversion = \"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("crates/a/Cargo.toml"),
+        "[package]\nname = \"a\"\nversion.workspace = true\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::write(root.join("crates/a/src/lib.rs"), "").unwrap();
+    fs::write(
+        root.join(".anodizer.yaml"),
+        "tag:\n  git_api_tagging: true\n",
+    )
+    .unwrap();
+    git_add_commit(root, "initial");
+    run_git(root, &["tag", "v0.1.0"]);
+    fs::write(root.join("crates/a/src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(root, "fix: a deref issue");
+
+    // A `gh` stub on PATH that records every invocation. A preview must leave
+    // this log empty.
+    let stub_dir = root.join("ghbin");
+    fs::create_dir_all(&stub_dir).unwrap();
+    let call_log = root.join("gh_calls.log");
+    fs::write(
+        stub_dir.join("gh"),
+        "#!/usr/bin/env bash\necho \"GH_CALLED: $*\" >> \"$GH_CALL_LOG\"\necho '{}'\n",
+    )
+    .unwrap();
+    fs::set_permissions(stub_dir.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
+    let path = format!(
+        "{}:{}",
+        stub_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    let out = anodizer()
+        .current_dir(root)
+        .args(["tag", "--push-dry-run"])
+        .env("PATH", path)
+        .env("GH_CALL_LOG", &call_log)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "push-dry-run must succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("would create tag v0.1.1 via GitHub API"),
+        "the API tagging step must be previewed, not executed: {combined}"
+    );
+    let logged = fs::read_to_string(&call_log).unwrap_or_default();
+    assert!(
+        logged.trim().is_empty(),
+        "a preview must not invoke `gh api`; recorded calls:\n{logged}"
+    );
+}
+
+#[test]
+fn lockstep_push_tags_only_pushes_tag_without_branch() {
+    // The explicit deferred-branch CI pattern: the tag lands on the remote
+    // (triggering tag-driven pipelines) while the bump commit stays local
+    // until the caller fast-forwards the branch post-publish.
+    let (work, bare) = lockstep_with_origin();
+    let remote_master_before = remote_branch_sha(bare.path(), "master").unwrap();
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--push-tags-only"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag --push-tags-only failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let local_head = head_sha(work.path());
+    assert_eq!(
+        remote_tag_target(bare.path(), "v0.1.1").as_deref(),
+        Some(local_head.as_str()),
+        "--push-tags-only must push the tag"
+    );
+    assert_eq!(
+        remote_branch_sha(bare.path(), "master").unwrap(),
+        remote_master_before,
+        "--push-tags-only must NOT advance remote master"
     );
 }
 
@@ -462,9 +656,9 @@ fn push_remote_targets_named_remote() {
 }
 
 #[test]
-fn per_crate_no_push_pushes_tags_but_not_branch() {
-    // Per-crate auto-dispatch defaults to pushing branch+tags. With --no-push,
-    // the tags must land but the branch (bump commit) must NOT.
+fn per_crate_no_push_pushes_nothing() {
+    // Per-crate auto-dispatch defaults to pushing branch+tags. With --no-push
+    // everything stays local — pushing the tags alone would orphan them.
     let (work, bare) = per_crate_with_origin();
     let remote_master_before = remote_branch_sha(bare.path(), "master").unwrap();
 
@@ -486,15 +680,48 @@ fn per_crate_no_push_pushes_tags_but_not_branch() {
         remote_master_after, remote_master_before,
         "--no-push must NOT advance remote master"
     );
-    assert_ne!(
-        remote_master_after, local_head,
-        "--no-push leaves remote master behind the bump commit"
+    assert_eq!(
+        remote_tag_target(bare.path(), "core-v0.1.1"),
+        None,
+        "--no-push must NOT push the tag"
     );
-    // The tag still lands on the remote.
+    // The tag still exists locally at the bump commit.
+    let local_tag = git_out(work.path(), &["rev-parse", "refs/tags/core-v0.1.1^{}"]);
+    assert_eq!(
+        local_tag, local_head,
+        "local tag must target the bump commit"
+    );
+}
+
+#[test]
+fn per_crate_push_tags_only_pushes_tags_without_branch() {
+    // The deferred-branch pattern in per-crate dispatch: tags land, the bump
+    // commit does not.
+    let (work, bare) = per_crate_with_origin();
+    let remote_master_before = remote_branch_sha(bare.path(), "master").unwrap();
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--push-tags-only"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "per-crate tag --push-tags-only failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let local_head = head_sha(work.path());
     assert_eq!(
         remote_tag_target(bare.path(), "core-v0.1.1").as_deref(),
         Some(local_head.as_str()),
-        "--no-push must still push the tag"
+        "--push-tags-only must push the tag"
+    );
+    assert_eq!(
+        remote_branch_sha(bare.path(), "master").unwrap(),
+        remote_master_before,
+        "--push-tags-only must NOT advance remote master"
     );
 }
 
@@ -832,5 +1059,251 @@ crates:
     assert!(
         subject.contains("chore(release): bump") && subject.contains("[skip ci]"),
         "enabled per-crate bump subject must contain [skip ci]: {subject}"
+    );
+}
+
+/// Single-crate (non-workspace) fixture wired to a bare `origin`, baseline tag
+/// `v0.1.0`, and one patch-worthy commit. Returns `(work, bare)`.
+fn single_crate_with_origin() -> (TempDir, TempDir) {
+    let work = TempDir::new().unwrap();
+    let bare = make_bare();
+    fs::write(
+        work.path().join("Cargo.toml"),
+        "[package]\nname = \"solo\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(work.path().join("src")).unwrap();
+    fs::write(work.path().join("src/lib.rs"), "").unwrap();
+
+    git_init(work.path());
+    run_git(
+        work.path(),
+        &["remote", "add", "origin", bare.path().to_str().unwrap()],
+    );
+    git_add_commit(work.path(), "initial");
+    run_git(work.path(), &["push", "origin", "master"]);
+    run_git(work.path(), &["tag", "v0.1.0"]);
+    run_git(work.path(), &["push", "origin", "v0.1.0"]);
+
+    fs::write(work.path().join("src/lib.rs"), "// touched\n").unwrap();
+    git_add_commit(work.path(), "fix: solo bug");
+
+    (work, bare)
+}
+
+#[test]
+fn single_crate_default_pushes_nothing() {
+    // The single-crate path shares the fully-local default with lockstep.
+    let (work, bare) = single_crate_with_origin();
+    let remote_master_before = remote_branch_sha(bare.path(), "master").unwrap();
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "single-crate tag failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let local_tag = git_out(work.path(), &["rev-parse", "refs/tags/v0.1.1^{}"]);
+    assert!(!local_tag.is_empty(), "tag must exist locally");
+    assert_eq!(
+        remote_tag_target(bare.path(), "v0.1.1"),
+        None,
+        "default run must NOT push the tag"
+    );
+    assert_eq!(
+        remote_branch_sha(bare.path(), "master").unwrap(),
+        remote_master_before,
+        "default run must NOT advance remote master"
+    );
+}
+
+/// Delete `tag` from the bare remote directly (the documented re-cut recipe's
+/// `git push origin :refs/tags/<tag>` as seen from the server side).
+fn delete_remote_tag(bare: &Path, tag: &str) {
+    let out = anodizer_core::test_helpers::output_with_spawn_retry(
+        || {
+            let mut cmd = Command::new("git");
+            cmd.args(["--git-dir"]).arg(bare).args([
+                "update-ref",
+                "-d",
+                &format!("refs/tags/{tag}"),
+            ]);
+            cmd
+        },
+        "git",
+    );
+    assert!(
+        out.status.success(),
+        "remote tag delete failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn lockstep_recut_after_remote_tag_delete_remints_same_version() {
+    // The documented re-cut recipe: delete the remote tag, push fixes, and the
+    // next tag run must mint the SAME version — even from a clone that still
+    // holds the deleted tag locally. Previous-tag resolution must follow the
+    // REMOTE's tag list, not this clone's.
+    let (work, bare) = lockstep_with_origin();
+
+    // Cut and push v0.1.1 fully, then delete it on the remote only.
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--push"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "initial tag --push failed");
+    assert!(remote_tag_target(bare.path(), "v0.1.1").is_some());
+    delete_remote_tag(bare.path(), "v0.1.1");
+
+    // A follow-up fix lands; the clone still holds the stale local v0.1.1.
+    fs::write(work.path().join("crates/a/src/lib.rs"), "// fixed again\n").unwrap();
+    git_add_commit(work.path(), "fix: the real fix");
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "re-cut dry-run failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("new_tag=v0.1.1"),
+        "re-cut must re-mint the SAME version v0.1.1 (remote is the source of truth): {stdout}"
+    );
+    assert!(
+        stdout.contains("old_tag=v0.1.0"),
+        "previous tag must be v0.1.0, not the remotely-deleted v0.1.1: {stdout}"
+    );
+}
+
+#[test]
+fn single_crate_recut_after_remote_tag_delete_remints_same_version() {
+    let (work, bare) = single_crate_with_origin();
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--push"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "initial tag --push failed");
+    assert!(remote_tag_target(bare.path(), "v0.1.1").is_some());
+    delete_remote_tag(bare.path(), "v0.1.1");
+
+    fs::write(work.path().join("src/lib.rs"), "// fixed again\n").unwrap();
+    git_add_commit(work.path(), "fix: the real fix");
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "re-cut dry-run failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("new_tag=v0.1.1") && stdout.contains("old_tag=v0.1.0"),
+        "single-crate re-cut must re-mint v0.1.1 over v0.1.0: {stdout}"
+    );
+}
+
+#[test]
+fn per_crate_recut_after_remote_tag_delete_remints_same_version() {
+    let (work, bare) = per_crate_with_origin();
+
+    // Full per-crate run pushes branch + core-v0.1.1 atomically.
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "initial per-crate tag failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(remote_tag_target(bare.path(), "core-v0.1.1").is_some());
+    delete_remote_tag(bare.path(), "core-v0.1.1");
+
+    fs::write(
+        work.path().join("crates/core/src/lib.rs"),
+        "// fixed again\n",
+    )
+    .unwrap();
+    git_add_commit(work.path(), "fix: core again");
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "per-crate re-cut dry-run failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("\"core\":\"0.1.1\""),
+        "per-crate re-cut must re-mint core 0.1.1 (stale local core-v0.1.1 must not count): {stdout}"
+    );
+}
+
+#[test]
+fn previous_tag_falls_back_to_local_when_remote_unreachable() {
+    // An unreachable remote must not block tagging: previous-tag resolution
+    // warns and falls back to the local tag list.
+    let (work, _bare) = lockstep_with_origin();
+    run_git(
+        work.path(),
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            "/nonexistent/never-a-repo.git",
+        ],
+    );
+
+    let out = anodizer()
+        .current_dir(work.path())
+        .args(["tag", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "tag must succeed offline: stdout={} stderr={}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        combined.contains("falling back to LOCAL tags"),
+        "expected a remote-unreachable warning: {combined}"
+    );
+    assert!(
+        combined.contains("new_tag=v0.1.1"),
+        "local fallback must still derive v0.1.1: {combined}"
     );
 }
