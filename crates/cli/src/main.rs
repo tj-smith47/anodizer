@@ -9,14 +9,31 @@ mod determinism_harness;
 mod pipeline;
 pub mod timeout;
 
+/// Render a deterministic usage/config error, emit the machine-readable
+/// classification marker, and exit with the usage-error code so retry
+/// wrappers do not burn attempts re-running an argv-determined failure.
+fn exit_usage_error(msg: &str) -> ! {
+    eprintln!("{}", anodizer_core::log::render_error(msg));
+    eprintln!("{}", anodizer_core::error_class::CLASS_MARKER);
+    std::process::exit(anodizer_core::error_class::EXIT_DETERMINISTIC);
+}
+
+/// Exit on a clap parse error. clap already exits 2 for usage errors (and 0
+/// for --help/--version); this adds the classification marker line on the
+/// error path so wrappers can classify without trusting the exit code.
+fn exit_clap_error(e: clap::Error) -> ! {
+    if e.use_stderr() {
+        let _ = e.print();
+        eprintln!("{}", anodizer_core::error_class::CLASS_MARKER);
+        std::process::exit(anodizer_core::error_class::EXIT_DETERMINISTIC);
+    }
+    e.exit()
+}
+
 /// Parse a --timeout value or exit with an error message.
 fn parse_timeout_or_exit(timeout: &str) -> std::time::Duration {
     timeout::parse_duration(timeout).unwrap_or_else(|e| {
-        eprintln!(
-            "{}",
-            anodizer_core::log::render_error(&format!("invalid --timeout value '{timeout}': {e}"))
-        );
-        std::process::exit(1);
+        exit_usage_error(&format!("invalid --timeout value '{timeout}': {e}"));
     })
 }
 
@@ -268,7 +285,10 @@ fn run() {
 
     let brontes_cfg = brontes::Config::default().tool_name_prefix("anodizer");
     let augmented = Cli::command().subcommand(brontes::command(Some(&brontes_cfg)));
-    let matches = augmented.clone().get_matches();
+    let matches = augmented
+        .clone()
+        .try_get_matches()
+        .unwrap_or_else(|e| exit_clap_error(e));
 
     if let Some(("mcp", sub)) = matches.subcommand() {
         let rt = tokio::runtime::Builder::new_multi_thread()
@@ -293,7 +313,7 @@ fn run() {
         }
     }
 
-    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| e.exit());
+    let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|e| exit_clap_error(e));
 
     // No subcommand given: print help and exit 0. Required for package-manager
     // validators (winget, chocolatey) that smoke-test the installed binary
@@ -381,16 +401,12 @@ fn run() {
             // safe when no real release is produced. Gate it to snapshot /
             // dry-run so a real release can never ship a partial target set.
             if host_targets && !effective_snapshot && !dry_run {
-                eprintln!(
-                    "{}",
-                    anodizer_core::log::render_error(
-                        "--host-targets is only valid with --snapshot or --dry-run: \
-                         it skips configured targets this host cannot build, which would \
-                         ship an incomplete real release. Add --snapshot (or --dry-run), \
-                         or run on a host that can build every configured target."
-                    )
+                exit_usage_error(
+                    "--host-targets is only valid with --snapshot or --dry-run: \
+                     it skips configured targets this host cannot build, which would \
+                     ship an incomplete real release. Add --snapshot (or --dry-run), \
+                     or run on a host that can build every configured target.",
                 );
-                std::process::exit(1);
             }
 
             let resolved_single_target = resolve_single_target(single_target);
@@ -401,10 +417,7 @@ fn run() {
             // --single-target is enforced at the clap level.
             let resolved_targets = match parse_targets_csv(targets.as_deref()) {
                 Ok(v) => v,
-                Err(msg) => {
-                    eprintln!("{}", anodizer_core::log::render_error(&msg));
-                    std::process::exit(1);
-                }
+                Err(msg) => exit_usage_error(&msg),
             };
 
             // `--publishers` (allowlist) AND `--skip` (unified stage/publisher
@@ -415,8 +428,7 @@ fn run() {
             if let Err(msg) =
                 anodizer_stage_publish::registry::validate_publisher_selection(&publishers, &skip)
             {
-                eprintln!("{}", anodizer_core::log::render_error(&msg));
-                std::process::exit(1);
+                exit_usage_error(&msg);
             }
 
             let parallelism = parallelism.unwrap_or_else(num_cpus);
@@ -495,8 +507,7 @@ fn run() {
             let quiet = cli.quiet;
 
             if let Err(msg) = validate_skip_values(&skip, VALID_BUILD_SKIPS) {
-                eprintln!("{}", anodizer_core::log::render_error(&msg));
-                std::process::exit(1);
+                exit_usage_error(&msg);
             }
 
             timeout::run_with_timeout(duration, move || {
@@ -528,8 +539,7 @@ fn run() {
                 if let Err(msg) =
                     anodizer_stage_publish::registry::validate_publisher_selection(&[], &skip)
                 {
-                    eprintln!("{}", anodizer_core::log::render_error(&msg));
-                    std::process::exit(1);
+                    exit_usage_error(&msg);
                 }
                 commands::check::config::run(
                     cli.config.as_deref(),
@@ -655,6 +665,7 @@ fn run() {
             crate_name,
             push,
             no_push,
+            push_tags_only,
             push_remote,
             push_dry_run,
             changelog,
@@ -670,37 +681,44 @@ fn run() {
                 branch,
             }) => {
                 use commands::tag::rollback::{Mode, RollbackOpts, Scope};
-                (|| -> anyhow::Result<()> {
-                    // The --push family lives on the parent `tag` command, so
-                    // `tag rollback --push` parses but has no meaning here —
-                    // reject it loudly rather than silently ignoring it.
-                    if push || no_push || push_dry_run || push_remote.is_some() {
-                        anyhow::bail!(
-                            "the --push family (--push/--no-push/--push-remote/--push-dry-run) \
-                             applies to `anodizer tag`, not `tag rollback`"
-                        );
-                    }
-                    if changelog {
-                        anyhow::bail!("--changelog applies to `anodizer tag`, not `tag rollback`");
-                    }
-                    if version_override.is_some() {
-                        anyhow::bail!("--version applies to `anodizer tag`, not `tag rollback`");
-                    }
-                    let scope: Scope = scope.parse().map_err(anyhow::Error::msg)?;
-                    let mode: Mode = mode.parse().map_err(anyhow::Error::msg)?;
-                    commands::tag::rollback::run(RollbackOpts {
-                        sha,
-                        dry_run: rb_dry_run,
-                        no_push: rb_no_push,
-                        force,
-                        scope,
-                        mode,
-                        branch,
-                        verbose: cli.verbose,
-                        debug: cli.debug,
-                        quiet: cli.quiet,
-                    })
-                })()
+                // Every rejection below is argv-determined: exit with the
+                // deterministic usage code + marker so retry wrappers do not
+                // burn attempts re-running an invocation that can never differ.
+                //
+                // The --push family lives on the parent `tag` command, so
+                // `tag rollback --push` parses but has no meaning here — reject
+                // it loudly rather than silently ignoring it.
+                if push || no_push || push_tags_only || push_dry_run || push_remote.is_some() {
+                    exit_usage_error(
+                        "the --push family (--push/--no-push/--push-tags-only/\
+                         --push-remote/--push-dry-run) \
+                         applies to `anodizer tag`, not `tag rollback`",
+                    );
+                }
+                if changelog {
+                    exit_usage_error("--changelog applies to `anodizer tag`, not `tag rollback`");
+                }
+                if version_override.is_some() {
+                    exit_usage_error("--version applies to `anodizer tag`, not `tag rollback`");
+                }
+                let scope: Scope = scope
+                    .parse()
+                    .unwrap_or_else(|e: String| exit_usage_error(&format!("invalid --scope: {e}")));
+                let mode: Mode = mode
+                    .parse()
+                    .unwrap_or_else(|e: String| exit_usage_error(&format!("invalid --mode: {e}")));
+                commands::tag::rollback::run(RollbackOpts {
+                    sha,
+                    dry_run: rb_dry_run,
+                    no_push: rb_no_push,
+                    force,
+                    scope,
+                    mode,
+                    branch,
+                    verbose: cli.verbose,
+                    debug: cli.debug,
+                    quiet: cli.quiet,
+                })
             }
             None => commands::tag::run(commands::tag::TagOpts {
                 dry_run,
@@ -710,6 +728,7 @@ fn run() {
                 crate_name,
                 push,
                 no_push,
+                push_tags_only,
                 push_remote,
                 push_dry_run,
                 changelog,
@@ -736,8 +755,7 @@ fn run() {
             if let Err(msg) =
                 anodizer_stage_publish::registry::validate_publisher_selection(&publishers, &skip)
             {
-                eprintln!("{}", anodizer_core::log::render_error(&msg));
-                std::process::exit(1);
+                exit_usage_error(&msg);
             }
             commands::continue_cmd::run(commands::continue_cmd::ContinueOpts {
                 dist,
@@ -765,8 +783,7 @@ fn run() {
             if let Err(msg) =
                 anodizer_stage_publish::registry::validate_publisher_selection(&publishers, &skip)
             {
-                eprintln!("{}", anodizer_core::log::render_error(&msg));
-                std::process::exit(1);
+                exit_usage_error(&msg);
             }
             commands::publish_cmd::run(commands::publish_cmd::PublishOpts {
                 dry_run,
@@ -865,6 +882,10 @@ fn run() {
         // Print the error chain
         for cause in e.chain().skip(1) {
             eprintln!("  {} {}", "caused by:".dimmed(), cause);
+        }
+        if anodizer_core::error_class::is_deterministic(&e) {
+            eprintln!("{}", anodizer_core::error_class::CLASS_MARKER);
+            std::process::exit(anodizer_core::error_class::EXIT_DETERMINISTIC);
         }
         std::process::exit(1);
     }

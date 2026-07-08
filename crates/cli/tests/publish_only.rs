@@ -638,6 +638,95 @@ fn publish_only_no_preflight_suppresses_credential_check() {
     );
 }
 
+/// `--publish-only` runs the live publisher-state preflight by default —
+/// it is the one mode that actually crosses the one-way doors, so the
+/// read-only probes must fire before any publisher runs. With no
+/// one-way-door publishers configured the battery's verbose marker line
+/// proves the check executed (offline-safe: no state checker probes
+/// anything for this fixture, and the github-release resilience probe is
+/// pointed at a refusing loopback port).
+#[test]
+fn publish_only_runs_publisher_state_preflight_by_default() {
+    if !tool_on_path("git") {
+        eprintln!("SKIP publish_only_runs_publisher_state_preflight_by_default: git missing");
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path();
+    bootstrap_minimal_cargo_repo(repo, FIXTURE_CRATE_NAME);
+    configure_tag_template(repo);
+    let commit = head_commit(repo);
+    bootstrap_preserved_dist(repo, "0.1.0", &commit);
+    tag_head(repo, "0.1.0");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["release", "--publish-only", "--verbose"])
+        // A dummy token satisfies the env preflight; an unreachable endpoint
+        // is an indeterminate Warning (never a blocker) in non-strict mode,
+        // so the loopback redirect keeps the run offline without failing it.
+        .env("GITHUB_TOKEN", "dummy-token-for-preflight-test")
+        .env("ANODIZER_GITHUB_API_BASE", "http://127.0.0.1:1")
+        .env_remove("COSIGN_KEY")
+        .env_remove("GPG_PRIVATE_KEY")
+        .current_dir(repo)
+        .output()
+        .expect("invoking anodize release --publish-only --verbose");
+
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let merged = format!("{stdout}\n{stderr}");
+
+    assert!(
+        merged.contains("skipped one-way-door preflight — no one-way-door publishers configured"),
+        "publish-only must run the publisher-state preflight by default; output was:\n{merged}"
+    );
+}
+
+/// `--no-preflight` suppresses the publisher-state preflight in
+/// `--publish-only` too — the single escape hatch covers both preflight
+/// layers.
+#[test]
+fn publish_only_no_preflight_suppresses_publisher_state_preflight() {
+    if !tool_on_path("git") {
+        eprintln!(
+            "SKIP publish_only_no_preflight_suppresses_publisher_state_preflight: git missing"
+        );
+        return;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let repo = tmp.path();
+    bootstrap_minimal_cargo_repo(repo, FIXTURE_CRATE_NAME);
+    configure_tag_template(repo);
+    let commit = head_commit(repo);
+    bootstrap_preserved_dist(repo, "0.1.0", &commit);
+    tag_head(repo, "0.1.0");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
+        .args(["release", "--publish-only", "--no-preflight", "--verbose"])
+        .env("GITHUB_TOKEN", "dummy-token-for-preflight-test")
+        .env("ANODIZER_GITHUB_API_BASE", "http://127.0.0.1:1")
+        .env_remove("COSIGN_KEY")
+        .env_remove("GPG_PRIVATE_KEY")
+        .current_dir(repo)
+        .output()
+        .expect("invoking anodize release --publish-only --no-preflight --verbose");
+
+    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let merged = format!("{stdout}\n{stderr}");
+
+    assert!(
+        !merged.contains("skipped one-way-door preflight"),
+        "--no-preflight must suppress the publisher-state preflight; output was:\n{merged}"
+    );
+    assert!(
+        !merged.contains("preflight found"),
+        "--no-preflight must suppress the publisher-state preflight; output was:\n{merged}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Test 3e: commit mismatch is a hard error
 // ---------------------------------------------------------------------------

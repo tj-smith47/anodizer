@@ -26,6 +26,7 @@ pub mod env;
 pub mod env_expand;
 pub mod env_preflight;
 pub mod env_source;
+pub mod error_class;
 pub mod extrafiles;
 pub mod fs_atomic;
 pub mod git;

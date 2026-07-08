@@ -161,7 +161,7 @@ pub enum Commands {
         preflight_secrets: bool,
         #[arg(
             long,
-            help = "Alias for --strict (also treats Unknown publisher state as a blocker during pre-flight)"
+            help = "Strict pre-flight: treat Unknown publisher state and indeterminate probe results (5xx / rate-limit / network failure / undeterminable permissions) as blockers. Implied by --strict; configurable per-project via preflight.strict"
         )]
         strict_preflight: bool,
         #[arg(long, help = "Set the release as a draft")]
@@ -504,7 +504,7 @@ pub enum Commands {
     },
     /// Auto-tag based on commit message directives
     Tag {
-        #[arg(long, help = "Show what tag would be created without pushing")]
+        #[arg(long, help = "Show what tag would be created, without creating it")]
         dry_run: bool,
         #[arg(long, help = "Override bump logic with a specific tag value")]
         custom_tag: Option<String>,
@@ -532,9 +532,15 @@ pub enum Commands {
         #[arg(
             long,
             conflicts_with = "push",
-            help = "Push the tag only, leaving the version-sync bump commit local"
+            help = "Do not push anything; the tag(s) and version-sync bump commit stay local"
         )]
         no_push: bool,
+        #[arg(
+            long,
+            conflicts_with_all = ["push", "no_push"],
+            help = "Push the tag(s) but not the version-sync bump commit (deferred-branch CI pattern; the branch must be advanced to the bump commit separately)"
+        )]
+        push_tags_only: bool,
         #[arg(
             long,
             value_name = "NAME",

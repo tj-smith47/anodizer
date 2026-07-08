@@ -439,10 +439,32 @@ fn publish_only_signing_free_surface_passes_credential_gate() {
     fs::write(repo.path().join(".gitignore"), "dist/\n.gitignore\n").unwrap();
     bootstrap_preserved_dist(repo.path(), "test-project", "0.1.0", &bump_sha);
 
+    // The publish-only path now runs the live publisher preflight (a mode that
+    // crosses one-way doors must probe registry state). Keep it hermetic: a
+    // local 200 answers the crates.io token-validity probe (a dummy token would
+    // otherwise 401 against live crates.io and false-block this credential-gate
+    // test), and a 404 answers the already-published index probe as "absent".
+    let (api_addr, _) = anodizer_core::test_helpers::responder::spawn_oneshot_http_responder(vec![
+        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}",
+    ]);
+    let (index_addr, _) =
+        anodizer_core::test_helpers::responder::spawn_oneshot_http_responder(vec![
+            "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n",
+        ]);
+
     let output = Command::new(env!("CARGO_BIN_EXE_anodizer"))
         .args(["release", "--publish-only", SKIP_ALL_BUT_PUBLISH])
         .env("GITHUB_TOKEN", "dummy-token")
         .env("CARGO_REGISTRY_TOKEN", "dummy-token")
+        .env("ANODIZE_TEST_HARNESS", "1")
+        .env(
+            "ANODIZER_TEST_CRATES_IO_API_BASE",
+            format!("http://{api_addr}"),
+        )
+        .env(
+            "ANODIZER_TEST_CRATES_IO_INDEX_BASE",
+            format!("http://{index_addr}"),
+        )
         .env_remove("COSIGN_KEY")
         .env_remove("GPG_PRIVATE_KEY")
         .current_dir(repo.path())

@@ -104,7 +104,8 @@ pub fn no_matching_tag_error(ctx: &Context, crate_cfg: &CrateConfig, selected_fo
             "crate '{}' is selected for {selected_for} but has no release tag matching its \
              tag_template '{}': the repository has no git tags at all (likely a fresh clone \
              with no tags fetched, a shallow checkout, or tags deleted by a rollback/re-cut); \
-             run `git fetch --tags`, create a release tag, or use --snapshot for a local build",
+             run `git fetch --tags`, create a release tag, or use --snapshot (local build) \
+             or --nightly (synthesized version) which need no tag",
             crate_cfg.name, crate_cfg.tag_template
         )
     } else {

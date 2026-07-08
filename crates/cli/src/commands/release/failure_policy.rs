@@ -44,7 +44,7 @@ use anodizer_stage_publish::run_summary::{
 use anyhow::Result;
 
 use super::ReleaseOpts;
-use crate::commands::tag::rollback::{Mode, RollbackOpts, Scope};
+use crate::commands::tag::rollback::{Mode, RollbackOpts, RollbackRefusal, Scope};
 
 /// What the policy resolved to for this failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -250,6 +250,10 @@ pub(super) fn finish(
         return result;
     };
     if !applies(opts) {
+        // Modes outside the rollback/hold policy (dry-run, snapshot,
+        // preflight, ...) still count as pipeline failures for the
+        // notification surface.
+        fire_release_on_error(ctx, &err, false, log);
         return Err(err);
     }
     let log = log.with_stage("failure-policy");
@@ -306,16 +310,69 @@ pub(super) fn finish(
         }
     };
     record_outcome(ctx, &record, &log);
+    fire_release_on_error(ctx, &err, record.action == "rolled-back", &log);
     Err(err)
+}
+
+/// `ANODIZER_*` env var → template var pairs exported to a release-level
+/// `on_error` hook. Same injection-safety rationale as the per-publisher
+/// failure hooks: `{{ .Error }}` carries remote-controlled text (HTTP
+/// bodies, subprocess stderr), so hooks read `"$ANODIZER_ERROR"` instead
+/// of interpolating it into the command string.
+const RELEASE_ON_ERROR_ENV_VARS: [(&str, &str); 4] = [
+    ("ANODIZER_ERROR", "Error"),
+    ("ANODIZER_ROLLED_BACK", "RolledBack"),
+    ("ANODIZER_VERSION", "Version"),
+    ("ANODIZER_TAG", "Tag"),
+];
+
+/// Fire the root `on_error:` hooks after ANY release-pipeline failure —
+/// build, sign, package, publish, anything the dispatched mode ran —
+/// once the failure policy (if applicable) has executed, so
+/// `{{ .RolledBack }}` reflects the taken path. Notification / cleanup
+/// hooks: a hook's own failure is logged and never masks the pipeline
+/// error. Dry-run previews the hooks instead of executing them (the
+/// standard hook-runner behavior).
+fn fire_release_on_error(ctx: &Context, err: &anyhow::Error, rolled_back: bool, log: &StageLogger) {
+    let Some(hooks) = ctx
+        .config
+        .on_error
+        .as_ref()
+        .and_then(|h| h.hooks.as_deref())
+    else {
+        return;
+    };
+    if hooks.is_empty() {
+        return;
+    }
+    let mut vars = ctx.template_vars().clone();
+    vars.set("Error", &format!("{err:#}"));
+    vars.set("RolledBack", if rolled_back { "true" } else { "false" });
+    let env: Vec<(String, String)> = RELEASE_ON_ERROR_ENV_VARS
+        .iter()
+        .map(|(env_key, var_key)| {
+            let value = vars.get(var_key).cloned().unwrap_or_default();
+            ((*env_key).to_string(), value)
+        })
+        .collect();
+    let hook_ctx = anodizer_core::hooks::HookRunContext::new(ctx.is_dry_run(), log, Some(&vars))
+        .with_extra_env(&env);
+    if let Err(hook_err) = anodizer_core::hooks::run_hooks(hooks, "on-error", hook_ctx) {
+        log.warn(&format!(
+            "on-error hook failed (ignored — notification/cleanup hooks never mask the \
+             pipeline error): {hook_err:#}"
+        ));
+    }
 }
 
 /// Run the shared `tag rollback` path against HEAD (the tagged commit
 /// every release mode runs at). Its internal published-state guard
 /// stays armed (`force: false`) so cross-run evidence this process
 /// cannot see — a live published GitHub release on a re-publish run —
-/// still refuses destruction; a refusal or error downgrades the
-/// outcome to `rollback-failed` (state held) without masking the
-/// pipeline error.
+/// still refuses destruction. Outcomes split three ways: clean rollback
+/// (`rolled-back`), guard refusal (`rollback-refused` — protective
+/// status output, never a warn), and mechanical failure
+/// (`rollback-failed` — warn, state held). None mask the pipeline error.
 fn execute_rollback(
     opts: &ReleaseOpts,
     configured: OnFailureConfig,
@@ -337,6 +394,18 @@ fn execute_rollback(
         debug: opts.debug,
         quiet: opts.quiet,
     });
+    rollback_record(configured, rollback, log)
+}
+
+/// Map the shared rollback path's result onto the recorded
+/// failure-policy outcome (see [`execute_rollback`]). Split out so the
+/// refusal-vs-mechanical classification is unit-testable without a git
+/// fixture.
+fn rollback_record(
+    configured: OnFailureConfig,
+    rollback: Result<()>,
+    log: &StageLogger,
+) -> FailurePolicyRecord {
     match rollback {
         Ok(()) => {
             log.status("rollback complete — the version can be re-cut once the failure is fixed");
@@ -346,6 +415,27 @@ fn execute_rollback(
                 degraded: false,
                 burned_publishers: Vec::new(),
                 rollback_error: None,
+            }
+        }
+        // A refusal is the guard WORKING, not the rollback breaking:
+        // render it as protective status lines (never a warn) and record
+        // a distinct action so summary consumers can tell "refused by
+        // design" from "mechanically failed".
+        Err(e) if e.downcast_ref::<RollbackRefusal>().is_some() => {
+            let refusal = e
+                .downcast_ref::<RollbackRefusal>()
+                .expect("downcast_ref succeeded in the guard above");
+            log.status(&format!(
+                "rollback REFUSED (by design): {}", // status-ok: refusal banner, a high-level protective outcome
+                refusal.reason
+            ));
+            log.status(&format!("next step: {}", refusal.next_step)); // status-ok: operator guidance paired with the refusal banner
+            FailurePolicyRecord {
+                configured: configured.to_string(),
+                action: "rollback-refused".into(),
+                degraded: false,
+                burned_publishers: Vec::new(),
+                rollback_error: Some(refusal.to_string()),
             }
         }
         Err(e) => {
@@ -976,5 +1066,139 @@ workspaces:
             OnFailureConfig::Rollback,
             "unset policy defaults to rollback"
         );
+    }
+
+    /// Root `on_error:` parses identically in all three config modes —
+    /// a root-level hook block like `before:` / `after:`, so single-crate,
+    /// lockstep, and per-crate configs resolve the same hook list.
+    #[test]
+    fn on_error_hooks_parse_in_every_config_mode() {
+        for (label, yaml) in [
+            (
+                "single-crate",
+                "project_name: app\non_error:\n  hooks:\n    - ./notify.sh\ncrates:\n  - name: app\n    path: \".\"\n",
+            ),
+            (
+                "lockstep",
+                "project_name: ws\non_error:\n  hooks:\n    - ./notify.sh\nworkspaces:\n  - name: ws\n    crates:\n      - name: a\n        path: crates/a\n        tag_template: \"v{{ Version }}\"\n",
+            ),
+            (
+                "per-crate",
+                "project_name: ws\non_error:\n  hooks:\n    - ./notify.sh\nworkspaces:\n  - name: ws\n    crates:\n      - name: a\n        path: crates/a\n        tag_template: \"a-v{{ Version }}\"\n",
+            ),
+        ] {
+            let config: Config = serde_yaml_ng::from_str(yaml)
+                .unwrap_or_else(|e| panic!("{label}: config must parse: {e}"));
+            let hooks = config
+                .on_error
+                .as_ref()
+                .and_then(|h| h.hooks.as_deref())
+                .unwrap_or_default();
+            assert_eq!(hooks.len(), 1, "{label}: one on_error hook resolves");
+        }
+    }
+
+    /// The three rollback outcomes map onto three distinct recorded
+    /// actions: clean → `rolled-back`, guard refusal → `rollback-refused`
+    /// (protection, not breakage), mechanical error → `rollback-failed`.
+    #[test]
+    fn rollback_record_distinguishes_refusal_from_mechanical_failure() {
+        let log = StageLogger::new("test", Verbosity::Quiet);
+
+        let clean = rollback_record(OnFailureConfig::Rollback, Ok(()), &log);
+        assert_eq!(clean.action, "rolled-back");
+        assert!(clean.rollback_error.is_none());
+
+        let refusal = RollbackRefusal {
+            reason: "v0.5.0 is live on crates.io from a prior attempt".into(),
+            next_step: "fix the failure and cut the NEXT version".into(),
+        };
+        let refused = rollback_record(OnFailureConfig::Rollback, Err(refusal.into()), &log);
+        assert_eq!(refused.action, "rollback-refused");
+        assert!(
+            refused
+                .rollback_error
+                .as_deref()
+                .is_some_and(|e| e.contains("crates.io")),
+            "the recorded refusal must carry the burn evidence: {refused:?}"
+        );
+
+        let failed = rollback_record(
+            OnFailureConfig::Rollback,
+            Err(anyhow::anyhow!("git push failed: non-fast-forward")),
+            &log,
+        );
+        assert_eq!(failed.action, "rollback-failed");
+        assert!(
+            failed
+                .rollback_error
+                .as_deref()
+                .is_some_and(|e| e.contains("non-fast-forward")),
+            "the recorded failure must carry the mechanical error: {failed:?}"
+        );
+    }
+
+    /// The refusal classification must survive `anyhow` context wrapping
+    /// (downcast walks the whole chain) so a future `with_context` on
+    /// the rollback path cannot silently demote refusals to warns.
+    #[test]
+    fn rollback_refusal_downcast_survives_context_wrapping() {
+        let err = anyhow::Error::from(RollbackRefusal {
+            reason: "burned".into(),
+            next_step: "next version".into(),
+        })
+        .context("while executing the failure policy");
+        assert!(err.downcast_ref::<RollbackRefusal>().is_some());
+    }
+
+    /// Root `on_error:` hooks fire on a pipeline failure with the error
+    /// text and rollback verdict delivered via `ANODIZER_*` env vars
+    /// (never interpolated into the command string).
+    #[test]
+    #[cfg(unix)]
+    fn release_on_error_hooks_fire_with_error_env() {
+        use anodizer_core::config::{HookEntry, HooksConfig, StructuredHook};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("fired.txt");
+        let out_str = out.display().to_string();
+        let config = Config {
+            on_error: Some(HooksConfig {
+                hooks: Some(vec![HookEntry::Structured(StructuredHook {
+                    cmd: format!(
+                        "printf '%s\\n' \"err=$ANODIZER_ERROR rolled=$ANODIZER_ROLLED_BACK\" \
+                         >> {out_str}"
+                    ),
+                    ..Default::default()
+                })]),
+                post: None,
+            }),
+            ..Default::default()
+        };
+        let ctx = Context::new(config, ContextOptions::default());
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        fire_release_on_error(
+            &ctx,
+            &anyhow::anyhow!("sign stage failed: boom"),
+            true,
+            &log,
+        );
+        let fired = std::fs::read_to_string(&out).expect("hook must have fired");
+        assert!(
+            fired.contains("err=sign stage failed: boom"),
+            "hook must see the pipeline error via env: {fired}"
+        );
+        assert!(
+            fired.contains("rolled=true"),
+            "hook must see the rollback verdict via env: {fired}"
+        );
+    }
+
+    /// With no root `on_error:` configured, a pipeline failure fires
+    /// nothing and panics nothing.
+    #[test]
+    fn release_on_error_without_hooks_is_a_noop() {
+        let ctx = Context::new(Config::default(), ContextOptions::default());
+        let log = StageLogger::new("test", Verbosity::Quiet);
+        fire_release_on_error(&ctx, &anyhow::anyhow!("boom"), false, &log);
     }
 }

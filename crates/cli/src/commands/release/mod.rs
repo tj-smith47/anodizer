@@ -109,8 +109,12 @@ pub struct ReleaseOpts {
     /// carry the same injected secrets but different host-local tools.
     /// Short-circuits before the publisher-state probe and mode dispatch.
     pub preflight_secrets: bool,
-    /// `--strict-preflight`: treat `PublisherState::Unknown` results as
-    /// blockers too. Useful in CI where any uncertainty should fail-fast.
+    /// `--strict-preflight`: treat `PublisherState::Unknown` results and
+    /// indeterminate probe outcomes (5xx / rate-limit / network failure /
+    /// undeterminable permissions) as blockers too. Useful in CI where any
+    /// uncertainty should fail-fast. The global `--strict` and the config
+    /// `preflight.strict: true` imply the same behavior
+    /// ([`Context::preflight_is_strict`]).
     pub strict_preflight: bool,
     /// `--no-post-publish-poll`: skip the post-publish polling that
     /// otherwise waits on chocolatey moderation / winget PR validation
@@ -190,14 +194,13 @@ pub struct ReleaseOpts {
 ///
 /// - `--no-preflight` always wins → false.
 /// - `--snapshot` / `--dry-run` / `--split` skip → no upstream side effects.
-/// - `--publish-only` skips → the config-derived env preflight (run by
-///   the dispatcher just before this check) already validated the
-///   release token + signing-key material; running the publisher-state
-///   preflight implicitly would make network calls (chocolatey/winget/
-///   cargo/aur state probes) before any mutation, which the env preflight
-///   has no need to gate on, so it stays off in this mode.
 /// - `publish` in `skip` → caller opted out of one-way doors.
-/// - otherwise → true.
+/// - otherwise → true. `--publish-only` runs it like a regular release: it
+///   is the one mode that actually crosses the one-way doors, and the
+///   probes (whoami / duplicate-version / moderation-queue / open-PR /
+///   endpoint reachability) are read-only and cost seconds — the
+///   config-derived env preflight has already validated the credentials
+///   they use by the time this fires.
 ///
 /// Note: this is the implicit-run decision. `--preflight` (the explicit
 /// check-only mode) gates separately in the call site and always runs the
@@ -209,10 +212,9 @@ pub(crate) fn should_run_preflight_auto(
     snapshot: bool,
     dry_run: bool,
     split: bool,
-    publish_only: bool,
     publish_skipped: bool,
 ) -> bool {
-    !no_preflight && !snapshot && !dry_run && !split && !publish_only && !publish_skipped
+    !no_preflight && !snapshot && !dry_run && !split && !publish_skipped
 }
 
 /// `--prepare`: runs local build/archive/sign/checksum/sbom stages but skips
@@ -731,10 +733,10 @@ fn enforce_dist_state(config: &Config, opts: &ReleaseOpts, log: &StageLogger) ->
             && let Ok(mut entries) = dist.read_dir()
             && entries.next().is_some()
         {
-            anyhow::bail!(
+            return Err(anodizer_core::error_class::deterministic_msg(format!(
                 "dist directory '{}' is not empty; use --clean to remove it first",
                 dist.display()
-            );
+            )));
         }
     }
     Ok(())
@@ -1153,6 +1155,7 @@ fn build_context_options(
         preflight_secrets: opts.preflight_secrets,
         project_root,
         strict: opts.strict,
+        strict_preflight: opts.strict_preflight,
         resume_release: opts.resume_release || opts.publish_only,
         replace_existing_artifacts: opts.replace_existing,
         skip_post_publish_poll: opts.no_post_publish_poll,
@@ -1471,7 +1474,6 @@ fn run_publisher_preflight(
         opts.snapshot,
         opts.dry_run,
         opts.split,
-        opts.publish_only,
         ctx.should_skip("publish"),
     );
     if !(opts.preflight || should_run_preflight) {
@@ -1491,10 +1493,13 @@ fn run_publisher_preflight(
             log.status(line);
         }
     }
-    // `--strict` already plumbs strict mode globally; treat it as implying
-    // preflight-strict. `--strict-preflight` is kept as an explicit alias for
-    // back-compat with anyone who already plumbed it through their CI.
-    let strict_preflight = opts.strict || opts.strict_preflight;
+    // Effective preflight strictness: the global `--strict` implies it, the
+    // explicit `--strict-preflight` is kept for anyone who already plumbed it
+    // through their CI, and the config-level `preflight.strict` turns it on
+    // per-project. Beyond promoting Unknown publisher-state entries below, the
+    // same predicate promotes indeterminate probe outcomes to blockers inside
+    // `run_preflight` (via each publisher's probe mapping).
+    let strict_preflight = ctx.preflight_is_strict();
     if report.has_blockers(strict_preflight) {
         let blockers = report.blockers(strict_preflight);
         let labels: Vec<String> = blockers
@@ -2582,63 +2587,51 @@ mod tests {
 
     #[test]
     fn should_run_preflight_auto_default_runs() {
-        // No flag set → run.
-        assert!(should_run_preflight_auto(
-            false, false, false, false, false, false
-        ));
+        // No flag set → run. `--publish-only` is intentionally NOT a gate:
+        // it is the one mode that actually crosses the one-way doors, so
+        // the read-only publisher-state / credential probes must run there
+        // by default (only `--no-preflight` opts out).
+        assert!(should_run_preflight_auto(false, false, false, false, false));
     }
 
     #[test]
     fn should_run_preflight_auto_no_preflight_skips() {
-        assert!(!should_run_preflight_auto(
-            true, false, false, false, false, false
-        ));
+        assert!(!should_run_preflight_auto(true, false, false, false, false));
     }
 
     #[test]
     fn should_run_preflight_auto_snapshot_skips() {
-        assert!(!should_run_preflight_auto(
-            false, true, false, false, false, false
-        ));
+        assert!(!should_run_preflight_auto(false, true, false, false, false));
     }
 
     #[test]
     fn should_run_preflight_auto_dry_run_skips() {
-        assert!(!should_run_preflight_auto(
-            false, false, true, false, false, false
-        ));
+        assert!(!should_run_preflight_auto(false, false, true, false, false));
     }
 
     #[test]
     fn should_run_preflight_auto_split_skips() {
-        assert!(!should_run_preflight_auto(
-            false, false, false, true, false, false
-        ));
+        assert!(!should_run_preflight_auto(false, false, false, true, false));
     }
 
     #[test]
-    fn should_run_preflight_auto_publish_only_skips() {
-        // `--publish-only` must skip the publisher-state preflight: its
-        // network state probes (chocolatey/winget/cargo/aur) would run
-        // before the config-derived env preflight has confirmed the
-        // credentials those probes need, so the env preflight (which
-        // aborts before any network call) gets first crack at bailing.
-        assert!(!should_run_preflight_auto(
-            false, false, false, false, true, false
-        ));
+    fn should_run_preflight_auto_no_preflight_wins_over_default() {
+        // The escape hatch beats the default-run rule in every remaining
+        // mode combination.
+        assert!(!should_run_preflight_auto(true, false, false, false, false));
+        assert!(!should_run_preflight_auto(true, true, true, true, true));
     }
 
     #[test]
     fn should_run_preflight_auto_publish_skipped_skips() {
-        assert!(!should_run_preflight_auto(
-            false, false, false, false, false, true
-        ));
+        assert!(!should_run_preflight_auto(false, false, false, false, true));
     }
 
-    /// `--strict-preflight` is folded into `--strict`: either flag (or both)
-    /// must promote Unknown to a blocker, none of them leaves Unknown
-    /// non-blocking. The combiner is a one-liner in the call site but it's
-    /// the gating contract a CI script relies on, so pin it.
+    /// `--strict-preflight`, the global `--strict`, and `preflight.strict`
+    /// all fold into one effective flag (`Context::preflight_is_strict`):
+    /// any of them must promote Unknown to a blocker, none of them leaves
+    /// Unknown non-blocking. It's the gating contract a CI script relies
+    /// on, so pin it against the real combiner.
     #[test]
     fn strict_or_strict_preflight_promotes_unknown_to_blocker() {
         use anodizer_core::preflight::{PreflightEntry, PreflightReport, PublisherState};
@@ -2653,12 +2646,28 @@ mod tests {
             },
         });
 
-        // Combiner used in the call site (`opts.strict || opts.strict_preflight`).
-        let combine = |strict: bool, strict_pref: bool| strict || strict_pref;
-        assert!(!report.has_blockers(combine(false, false)));
-        assert!(report.has_blockers(combine(true, false)));
-        assert!(report.has_blockers(combine(false, true)));
-        assert!(report.has_blockers(combine(true, true)));
+        // The call site consumes `ctx.preflight_is_strict()`; drive the real
+        // combiner across all three inputs.
+        let combine = |strict: bool, strict_pref: bool, cfg_strict: bool| {
+            let config = Config {
+                preflight: anodizer_core::config::PreflightConfig { strict: cfg_strict },
+                ..Default::default()
+            };
+            let ctx = Context::new(
+                config,
+                ContextOptions {
+                    strict,
+                    strict_preflight: strict_pref,
+                    ..Default::default()
+                },
+            );
+            ctx.preflight_is_strict()
+        };
+        assert!(!report.has_blockers(combine(false, false, false)));
+        assert!(report.has_blockers(combine(true, false, false)));
+        assert!(report.has_blockers(combine(false, true, false)));
+        assert!(report.has_blockers(combine(false, false, true)));
+        assert!(report.has_blockers(combine(true, true, true)));
     }
 
     // ---- gate_required_failures -----------------------------------------

@@ -78,7 +78,10 @@ pub fn find_config_with_logger(
         if path.exists() {
             return Ok(path.to_path_buf());
         }
-        bail!("config file not found: {}", path.display());
+        return Err(anodizer_core::error_class::deterministic_msg(format!(
+            "config file not found: {}",
+            path.display()
+        )));
     }
     // An empty base joins to the bare candidate names, so core's shared walk
     // probes cwd-relative here and `anchor_to_cwd` keeps the getcwd-failure
@@ -94,10 +97,10 @@ pub fn find_config_with_logger(
         }
         return Ok(anchor_to_cwd(PathBuf::from("Cargo.toml")));
     }
-    bail!(
+    Err(anodizer_core::error_class::deterministic_msg(format!(
         "no anodizer config file found (tried: {}). Run `anodizer init` to generate one.",
         CONFIG_CANDIDATES.join(", ")
-    )
+    )))
 }
 
 /// Find an anodizer config by searching `base` for the well-known config
@@ -119,11 +122,11 @@ pub fn find_config_in(base: &Path) -> Result<PathBuf> {
     if cargo_toml.exists() {
         return Ok(cargo_toml);
     }
-    bail!(
+    Err(anodizer_core::error_class::deterministic_msg(format!(
         "no anodizer config file found under {} (tried: {}). Run `anodizer init` to generate one.",
         base.display(),
         CONFIG_CANDIDATES.join(", ")
-    )
+    )))
 }
 
 /// Find + load the anodizer config rooted at `base` in one call, without
@@ -192,14 +195,20 @@ pub fn load_config(path: &Path) -> Result<Config> {
         anodizer_core::config::warn_on_legacy_furies_alias(&raw);
         anodizer_core::config::warn_on_legacy_nfpm_builds(&raw);
         anodizer_core::config::warn_on_legacy_disable_alias(&raw);
-        anodizer_core::config::validate_no_docker_v1(&raw).map_err(anyhow::Error::msg)?;
-        anodizer_core::config::validate_no_mcp_github(&raw).map_err(anyhow::Error::msg)?;
+        anodizer_core::config::validate_no_docker_v1(&raw)
+            .map_err(anodizer_core::error_class::deterministic_msg)?;
+        anodizer_core::config::validate_no_mcp_github(&raw)
+            .map_err(anodizer_core::error_class::deterministic_msg)?;
     }
 
     let mut config = match ext {
         "yaml" | "yml" => load_yaml_config_with_includes(path, &content)?,
         "toml" => load_toml_config_with_includes(path, &content)?,
-        _ => bail!("unsupported config format: {}", ext),
+        _ => {
+            return Err(anodizer_core::error_class::deterministic_msg(format!(
+                "unsupported config format: {ext}"
+            )));
+        }
     };
 
     // Fold deprecated archive `format` / `format_overrides[].format` /
@@ -212,47 +221,61 @@ pub fn load_config(path: &Path) -> Result<Config> {
     anodizer_core::config::apply_homebrew_cask_legacy_singulars(&mut config);
 
     // Validate config schema version
-    anodizer_core::config::validate_version(&config).map_err(anyhow::Error::msg)?;
+    anodizer_core::config::validate_version(&config)
+        .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate git.tag_sort if present
-    anodizer_core::config::validate_tag_sort(&config).map_err(anyhow::Error::msg)?;
+    anodizer_core::config::validate_tag_sort(&config)
+        .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate partial.by ("os" | "target") before either target-resolution
     // path reads it (one rejects unknowns, the other silently mis-groups).
-    anodizer_core::config::validate_partial(&config).map_err(anyhow::Error::msg)?;
+    anodizer_core::config::validate_partial(&config)
+        .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate archives[].format_overrides[].os
-    anodizer_core::config::validate_format_overrides(&config).map_err(anyhow::Error::msg)?;
+    anodizer_core::config::validate_format_overrides(&config)
+        .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate release block does not configure multiple SCM backends.
-    anodizer_core::config::validate_release_backends(&config).map_err(anyhow::Error::msg)?;
+    anodizer_core::config::validate_release_backends(&config)
+        .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate release.on_failure appears only in the root release block.
-    anodizer_core::config::validate_on_failure_root_only(&config).map_err(anyhow::Error::msg)?;
+    anodizer_core::config::validate_on_failure_root_only(&config)
+        .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate nightly.publish_repo is "owner/repo" shaped (fail at config
     // time rather than as a confusing 404 when the release is created).
-    anodizer_core::config::validate_nightly_publish_repo(&config).map_err(anyhow::Error::msg)?;
+    anodizer_core::config::validate_nightly_publish_repo(&config)
+        .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate defaults.crates / defaults.workspaces axis matches top-level.
-    anodizer_core::config::validate_defaults_axis(&config).map_err(anyhow::Error::msg)?;
+    anodizer_core::config::validate_defaults_axis(&config)
+        .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate homebrew_cask does not set both url_template and url.template.
     anodizer_core::config::validate_homebrew_cask_url_template(&config)
-        .map_err(anyhow::Error::msg)?;
+        .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate winget.upgrade_behavior is a winget-recognized value (else the
     // generated installer manifest fails winget's own validator at PR time).
-    anodizer_core::config::validate_winget_upgrade_behavior(&config).map_err(anyhow::Error::msg)?;
+    anodizer_core::config::validate_winget_upgrade_behavior(&config)
+        .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate every winget.dependencies[].architectures scope names a known
     // winget arch — a typo (amd64/X64/aarch64) matches no installer and would
     // silently drop the dependency from the generated manifest.
     anodizer_core::config::validate_winget_dependency_architectures(&config)
-        .map_err(anyhow::Error::msg)?;
+        .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate archives[].id and universal_binaries[].id uniqueness.
-    anodizer_core::config::validate_id_uniqueness(&config).map_err(anyhow::Error::msg)?;
+    anodizer_core::config::validate_id_uniqueness(&config)
+        .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate `builder: prebuilt` builds carry a `prebuilt.path`,
     // explicit targets, and no cargo-only knobs.
-    anodizer_core::config::validate_builds(&config).map_err(anyhow::Error::msg)?;
+    anodizer_core::config::validate_builds(&config)
+        .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate changelog.groups subgroup depth (capped at one level).
-    anodizer_core::config::validate_changelog_groups_depth(&config).map_err(anyhow::Error::msg)?;
+    anodizer_core::config::validate_changelog_groups_depth(&config)
+        .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate changelog.paths[] syntax (reject leading `/` and empty entries).
-    anodizer_core::config::validate_changelog_paths(&config).map_err(anyhow::Error::msg)?;
+    anodizer_core::config::validate_changelog_paths(&config)
+        .map_err(anodizer_core::error_class::deterministic_msg)?;
     // Validate every upload-destination `exclude:` glob (blobs / release /
     // artifactories / cloudsmiths / gemfury) — reject a malformed pattern at
     // config-load rather than letting it silently no-op or drop every asset.
-    anodizer_core::config::validate_exclude_globs(&config).map_err(anyhow::Error::msg)?;
+    anodizer_core::config::validate_exclude_globs(&config)
+        .map_err(anodizer_core::error_class::deterministic_msg)?;
     anodizer_core::config::warn_on_legacy_homebrew_formula(&config);
     // The deprecated nested `dockers_v2[].retry:` / `docker_manifests[].retry:`
     // in favour of the top-level `retry:` block.
@@ -403,7 +426,8 @@ fn normalize_crate_commit_author(crate_cfg: &mut anodizer_core::config::CrateCon
 /// - `from_url:` mappings with a `url` key and optional `headers`
 fn load_yaml_config_with_includes(path: &Path, content: &str) -> Result<Config> {
     let base: serde_yaml_ng::Value = serde_yaml_ng::from_str(content)
-        .with_context(|| format!("failed to parse YAML config: {}", path.display()))?;
+        .with_context(|| format!("failed to parse YAML config: {}", path.display()))
+        .map_err(anodizer_core::error_class::deterministic)?;
 
     let include_entries: Vec<serde_yaml_ng::Value> = base
         .get("includes")
@@ -440,6 +464,7 @@ fn load_yaml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
     anodizer_core::config::deserialize_on_worker(move || {
         serde_yaml_ng::from_value::<Config>(merged)
             .with_context(|| format!("failed to deserialize config: {}", path_display))
+            .map_err(anodizer_core::error_class::deterministic)
     })
 }
 
@@ -452,7 +477,8 @@ fn load_yaml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
 fn load_toml_config_with_includes(path: &Path, content: &str) -> Result<Config> {
     // Parse the base TOML to a generic toml::Value first to extract includes.
     let base_toml: toml::Value = toml::from_str(content)
-        .with_context(|| format!("failed to parse TOML config: {}", path.display()))?;
+        .with_context(|| format!("failed to parse TOML config: {}", path.display()))
+        .map_err(anodizer_core::error_class::deterministic)?;
 
     let include_entries: Vec<toml::Value> = base_toml
         .get("includes")
@@ -469,6 +495,7 @@ fn load_toml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
         return anodizer_core::config::deserialize_on_worker(move || {
             toml::from_str::<Config>(&content_owned)
                 .with_context(|| format!("failed to deserialize TOML config: {}", path_display))
+                .map_err(anodizer_core::error_class::deterministic)
         });
     }
 
@@ -505,6 +532,7 @@ fn load_toml_config_with_includes(path: &Path, content: &str) -> Result<Config> 
     anodizer_core::config::deserialize_on_worker(move || {
         serde_yaml_ng::from_value::<Config>(merged)
             .with_context(|| format!("failed to deserialize config: {}", path_display))
+            .map_err(anodizer_core::error_class::deterministic)
     })
 }
 

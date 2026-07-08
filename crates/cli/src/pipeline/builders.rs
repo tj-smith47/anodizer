@@ -137,9 +137,10 @@ fn push_artifact_stages(p: &mut Pipeline) {
     p.add(Box::new(AttestStage));
     p.add(Box::new(SignStage));
 
-    // EmissionValidateStage is a no-op in a real release; in snapshot/dry-run
-    // it validates the binstall/nix/version-sync emissions (which the real
-    // stages mutate/push but snapshot skips) against the produced asset set.
+    // EmissionValidateStage validates the binstall/nix/version-sync emissions
+    // against the produced asset set in EVERY mode (snapshot, dry-run,
+    // nightly, real release) — a millisecond in-memory cross-check, so real
+    // releases get the same 404-class protection a snapshot does.
     // Runs after ChecksumStage so the archive cross-checks see every asset.
     // Not part of the shared publish tail: only the from-scratch builders
     // re-validate emissions; publish-only consumes the preserved dist as-is.

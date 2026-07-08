@@ -81,6 +81,23 @@ pub struct Config {
     pub before: Option<HooksConfig>,
     /// Hooks run after the release pipeline completes.
     pub after: Option<HooksConfig>,
+    /// Hooks run when the release pipeline fails at ANY stage (build,
+    /// sign, publish, ...), after the failure policy (rollback / hold)
+    /// has executed, so `{{ .RolledBack }}` reflects the taken path.
+    ///
+    /// Notification / cleanup hooks: a hook's own failure is logged as a
+    /// warning and never masks the pipeline error. The failure context is
+    /// exposed both as template vars (`{{ .Error }}`, `{{ .RolledBack }}`)
+    /// and as `ANODIZER_*` env vars (`ANODIZER_ERROR`,
+    /// `ANODIZER_ROLLED_BACK`, `ANODIZER_VERSION`, `ANODIZER_TAG`) so
+    /// hooks can consume the error text without shell interpolation.
+    ///
+    /// ```yaml
+    /// on_error:
+    ///   hooks:
+    ///     - cmd: ./notify-release-failed.sh
+    /// ```
+    pub on_error: Option<HooksConfig>,
     /// Hooks run after build/archive/sign/sbom/checksum complete but
     /// immediately before the publish phase dispatches any publisher.
     ///
@@ -232,6 +249,13 @@ pub struct Config {
     /// `verify_release.enabled: true`.
     #[serde(default)]
     pub verify_release: VerifyReleaseConfig,
+    /// Pre-publish preflight tuning. `preflight.strict: true` promotes
+    /// indeterminate probe outcomes (5xx / rate-limit / network failure /
+    /// undeterminable permissions) from warnings to hard blockers. The
+    /// probes themselves always run read-only before any publisher mutates
+    /// a registry; the default (lenient) behavior needs no config.
+    #[serde(default)]
+    pub preflight: PreflightConfig,
     /// Source RPM configuration. Renamed from `srpm:` (singular) for spelling
     /// parity with `Defaults.srpms` and the rest of the plural-name packaging
     /// fields. The `srpm:` spelling is still accepted via serde alias for
@@ -330,6 +354,7 @@ impl Default for Config {
             defaults: None,
             before: None,
             after: None,
+            on_error: None,
             before_publish: None,
             crates: Vec::new(),
             changelog: None,
@@ -368,6 +393,7 @@ impl Default for Config {
             makeselfs: Vec::new(),
             appimages: Vec::new(),
             verify_release: VerifyReleaseConfig::default(),
+            preflight: PreflightConfig::default(),
             srpms: None,
             milestones: None,
             uploads: None,
@@ -2720,7 +2746,7 @@ pub use changelog::*;
 // `anodizer_core::config::{SignConfig, DockerSignConfig}` import paths
 // used by every stage that consumes a sign config.
 
-pub use crate::signing::{AuthenticodeConfig, DockerSignConfig, SignConfig};
+pub use crate::signing::{AuthenticodeConfig, DockerSignConfig, SignConfig, SignVerifyConfig};
 
 // ---------------------------------------------------------------------------
 // UpxConfig
@@ -2843,6 +2869,13 @@ pub use post_publish_poll::*;
 
 mod verify_release;
 pub use verify_release::*;
+
+// ---------------------------------------------------------------------------
+// PreflightConfig (top-level `preflight:` pre-publish probe tuning)
+// ---------------------------------------------------------------------------
+
+mod preflight;
+pub use preflight::*;
 
 // ---------------------------------------------------------------------------
 // StringOrBool — accepts bool or template string in YAML

@@ -247,6 +247,13 @@ pub struct ContextOptions {
     pub project_root: Option<PathBuf>,
     /// Strict mode: configured features that would silently skip become errors.
     pub strict: bool,
+    /// `--strict-preflight`: preflight-scoped strictness. Promotes
+    /// indeterminate publisher-state / probe outcomes (Unknown state, 5xx /
+    /// rate-limit / network failure / undeterminable permissions) to hard
+    /// blockers without widening the global `--strict` semantics. Effective
+    /// preflight strictness ([`Context::preflight_is_strict`]) ORs this with
+    /// `strict` and the config-level `preflight.strict`.
+    pub strict_preflight: bool,
     /// `--resume-release`: opt-in to continue into a release left over from
     /// a prior failed attempt. Bypasses the leftover-assets pre-check that
     /// bails when an existing release already has assets and
@@ -430,6 +437,7 @@ impl Default for ContextOptions {
             preflight_secrets: false,
             project_root: None,
             strict: false,
+            strict_preflight: false,
             resume_release: false,
             replace_existing_artifacts: false,
             skip_post_publish_poll: false,
@@ -922,6 +930,17 @@ impl Context {
 
     pub fn is_strict(&self) -> bool {
         self.options.strict
+    }
+
+    /// Effective preflight strictness: the global `--strict`, the scoped
+    /// `--strict-preflight`, or the config-level `preflight.strict` — any one
+    /// turns it on. Under strict preflight, indeterminate probe outcomes
+    /// (Unknown publisher state, 5xx / rate-limit / network failure /
+    /// undeterminable permissions) become hard blockers instead of warnings.
+    /// Definitive failures keep their required→blocker / optional→warning
+    /// severity either way.
+    pub fn preflight_is_strict(&self) -> bool {
+        self.options.strict || self.options.strict_preflight || self.config.preflight.strict
     }
 
     /// Toggle the runtime strict-render flag (see the `render_strict` field).
